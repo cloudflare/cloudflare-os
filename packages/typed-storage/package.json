@@ -18,6 +18,6 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260413.1",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.6"
   }
 }
