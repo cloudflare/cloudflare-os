@@ -7,6 +7,7 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import { createWorkshopLogger } from "./observability";
 import { getAiGatewayConfig } from "./ai-gateway.js";
+import { defaultModelSeeds } from "./default-models.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
 import type { AdminSettings } from "./admin-settings.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./blueprint-archive.js";
@@ -279,6 +280,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         name: email.split("@")[0],
         id: email,
       });
+      this.#seedDefaultModels();
       return true;
     }
 
@@ -293,6 +295,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.sessions.put({ tokenId, created: new Date() });
 
     return sessionToken.toBase64();
+  }
+
+  // Pre-populate the model list for a brand-new account (see defaultModelSeeds for when this
+  // applies). Runs only at account creation, so a user who deletes a seeded model never sees it
+  // come back. The first seed also becomes the quick model — direct (non-gateway) mode has no
+  // built-in quick model, and without one title generation silently does nothing.
+  #seedDefaultModels(): void {
+    let seeds = defaultModelSeeds(this.env);
+    for (let record of seeds) {
+      this.storage.aiModels.put(record);
+    }
+    if (seeds.length > 0) {
+      this.storage.quickModel.put(seeds[0].profile.id);
+    }
   }
 
   async login(passwordHash: Uint8Array): Promise<string | null> {
@@ -336,6 +352,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       name: displayName,
       id: username,
     });
+    this.#seedDefaultModels();
 
     let passwordHashHash = new Uint8Array(await crypto.subtle.digest('SHA-256', passwordHash));
     this.storage.passwordHashHash.put(passwordHashHash);
@@ -364,6 +381,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         name: email.split("@")[0],
         id: email,
       });
+      this.#seedDefaultModels();
     }
     return this.#newSessionToken();
   }

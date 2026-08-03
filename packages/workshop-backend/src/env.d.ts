@@ -18,6 +18,12 @@ declare global {
       CF_AI_GATEWAY_API_TOKEN?: string;   // Cloudflare API token (used for non-Cloudflare providers)
       CF_AI_GATEWAY_WAI?: string;         // Alternate gateway name for Workers AI (optional)
 
+      // Set by the internal deploy wizard on every instance it provisions (the instance's own
+      // deploy-service URL). Its presence marks a deploy-flow instance; used to gate seeding of
+      // default Workers AI models for new users (see default-models.ts). Never set in dev or
+      // self-hosted configs.
+      DEPLOY_URL?: string;
+
       // Blueprint storage bindings.
       BLUEPRINTS: KVNamespace;             // Workers KV for blueprint metadata lookup
       BLUEPRINT_CONTENT: R2Bucket;         // R2 bucket for blueprint code snapshots
