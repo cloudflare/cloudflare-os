@@ -15,5 +15,5 @@ console.log(
 execFileSync(
   "pnpm",
   ["exec", "vite", "build", "-c", "vite.config.ts", ...(watch ? ["--watch"] : [])],
-  { cwd: pkgDir, stdio: "inherit" },
+  { cwd: pkgDir, stdio: "inherit", shell: process.platform === "win32" },
 );

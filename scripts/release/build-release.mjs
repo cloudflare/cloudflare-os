@@ -42,7 +42,7 @@ function parseArgs(argv) {
 
 function run(command, argv, options = {}) {
   console.log(`running: ${command} ${argv.join(" ")} ${options.cwd ? `(in ${options.cwd})` : ""}`);
-  execFileSync(command, argv, { stdio: "inherit", cwd: ROOT, ...options });
+  execFileSync(command, argv, { stdio: "inherit", cwd: ROOT, shell: process.platform === "win32", ...options });
 }
 
 function gitCommit() {
