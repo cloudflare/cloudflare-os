@@ -21,7 +21,7 @@ import {
   GitHubApi,
   GitHubApiError,
   exchangeAuthCode,
-  revokeOAuthGrant,
+  revokeOAuthToken,
   type ConditionalRequestResult,
   type GitHubIssueCommentResponse,
   type GitHubIssueResponse,
@@ -1179,10 +1179,10 @@ export class UserAccount extends DurableObject<Env> {
     const accessToken = this.ctx.storage.kv.get<string>("accessToken");
     if (accessToken && this.env.CLIENT_ID && this.env.CLIENT_SECRET) {
       try {
-        await revokeOAuthGrant(accessToken, this.env.CLIENT_ID, this.env.CLIENT_SECRET);
+        await revokeOAuthToken(accessToken, this.env.CLIENT_ID, this.env.CLIENT_SECRET);
       } catch (error) {
-        logger.error("failed to revoke GitHub OAuth grant", {
-          event: "oauth.grant.revoke.failed", error,
+        logger.error("failed to revoke GitHub OAuth token", {
+          event: "oauth.token.revoke.failed", error,
         });
       }
     }

@@ -340,14 +340,18 @@ export async function exchangeAuthCode(
   };
 }
 
-export async function revokeOAuthGrant(
+// Revokes one access token. Deliberately the token-scoped endpoint: deleting the *grant*
+// (`/applications/{client_id}/grant`) revokes every token the user holds for this OAuth app, so
+// revoking one account would also invalidate the others sharing it -- including the fresh grant a
+// re-authorization just issued.
+export async function revokeOAuthToken(
   accessToken: string,
   clientId: string,
   clientSecret: string,
 ): Promise<void> {
   await request<void>(
     "DELETE",
-    `/applications/${encodeURIComponent(clientId)}/grant`,
+    `/applications/${encodeURIComponent(clientId)}/token`,
     {
       auth: "basic",
       basicAuth: {
