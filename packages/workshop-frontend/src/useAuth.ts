@@ -94,6 +94,11 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
   }
 
   const logout = () => {
+    if (CF_ACCESS_MODE) {
+      window.location.assign('/cdn-cgi/access/logout')
+      return
+    }
+
     // Use functional updater to read current state (avoids stale closure).
     setAuthState(prev => {
       if (prev.authenticatedApi) {
@@ -107,9 +112,7 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
       }
     })
 
-    if (!CF_ACCESS_MODE) {
-      localStorage.removeItem('authToken')
-    }
+    localStorage.removeItem('authToken')
   }
 
   return {
