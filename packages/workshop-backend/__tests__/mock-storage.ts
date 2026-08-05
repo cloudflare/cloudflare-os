@@ -1,4 +1,5 @@
-import { DurableObjectListOptions, DurableObjectStorage } from "@cloudflare/workers-types/experimental";
+// oxlint-disable-next-line typescript/triple-slash-reference -- Wrangler declarations are globals.
+/// <reference path="../worker-configuration.d.ts" />
 
 // Map-backed mock DurableObjectStorage for unit tests, mirroring
 // packages/typed-storage/__tests__/index.test.ts. structuredClone on every read/write mimics the

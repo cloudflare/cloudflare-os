@@ -17,9 +17,9 @@
     "import:format-blueprint": "node --experimental-strip-types --no-warnings scripts/import-format-blueprint.mjs"
   },
   "dependencies": {
+    "@cloudflare/puppeteer": "^1.2.0",
     "@earendil-works/pi-agent-core": "0.83.0",
     "@earendil-works/pi-ai": "0.83.0",
-    "@cloudflare/puppeteer": "^1.2.0",
     "@gadgets/backend-utils": "workspace:*",
     "@gadgets/error-reporting": "workspace:*",
     "@gadgets/typed-storage": "workspace:*",
@@ -31,10 +31,10 @@
     "yjs": "^13.6.31"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.16.20",
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
     "esbuild": "^0.28.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10",
-    "wrangler": "^4.115.0"
+    "wrangler": "^4.119.0"
   }
 }

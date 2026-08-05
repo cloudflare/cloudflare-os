@@ -13,7 +13,8 @@
     "lint:check": "oxlint",
     "lint:fix": "oxlint --fix",
     "types:check": "pnpm run --recursive --if-present types:check",
-    "lint": "pnpm run lint:check && pnpm run types:check"
+    "lint": "pnpm run lint:check && pnpm run types:check",
+    "types:generate": "node scripts/generate-worker-types.mjs"
   },
   "devDependencies": {
     "aws4fetch": "^1.0.20",
@@ -21,6 +22,6 @@
     "oxlint": "^1.76.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.6",
-    "wrangler": "^4.115.0"
+    "wrangler": "^4.119.0"
   }
 }

@@ -2,12 +2,9 @@ packages:
   - packages/*
 
 overrides:
-  workerd: ">=1.20260623.1"
-  # Pin js-yaml to the patched release (CVE-2026-53550); 4.1.1 (via @mdxeditor/editor) is vulnerable.
-  js-yaml@4.1.1: ^4.2.0
-  '@codemirror/commands': 6.10.3
-  '@codemirror/state': 6.6.0
-  '@codemirror/view': 6.43.1
+  # Vitest peers can resolve vite@latest; pin 7.x until Oxc lowers Stage-3
+  # decorators (workers-sdk#12626).
+  vite: 7.3.6
   # minimumReleaseAge gates direct deps but not these two, so pin them to the last
   # mature release (CI verifies every lockfile entry against the release-age policy):
   # - @types/node arrives as an optional vite/vitest peer resolved to `latest`.

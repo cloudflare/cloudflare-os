@@ -99,7 +99,10 @@ function constantTimeEqual(a: string, b: string): boolean {
 type Env = Cloudflare.Env & {
   // Base URL (protocol+host+optional path) at which the default fetch handler is served. Should
   // NOT include a trailing slash. Omit for localhost dev server.
-  BASE_URL?: string,
+  BASE_URL?: string;
+  // OAuth app credentials (wrangler secrets / .dev.vars); not in wrangler.jsonc.
+  CLIENT_ID?: string;
+  CLIENT_SECRET?: string;
 }
 
 // Well-known Gmail system label IDs — derived from GmailSystemLabel so the

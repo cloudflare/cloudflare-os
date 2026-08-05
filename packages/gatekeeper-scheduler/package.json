@@ -24,16 +24,15 @@
   },
   "devDependencies": {
     "@cloudflare/kumo": "^2.9.0",
-    "@cloudflare/vitest-pool-workers": "^0.16.20",
-    "@cloudflare/workers-types": "^4.20260702.1",
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
     "@phosphor-icons/react": "^2.1.10",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.1.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^4.7.0",
+    "@vitejs/plugin-react": "^5.2.0",
     "jsdom": "^26.1.0",
-    "miniflare": "4.20260625.0",
+    "miniflare": "5.20260801.0-alpha",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "tailwindcss": "^4.3.3",
@@ -42,6 +41,7 @@
     "vite": "^7.3.6",
     "vite-plugin-singlefile": "^2.3.3",
     "vite-tsconfig-paths": "^6.1.1",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "wrangler": "^4.119.0"
   }
 }

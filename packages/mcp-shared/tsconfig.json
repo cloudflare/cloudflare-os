@@ -5,7 +5,7 @@
     "lib": ["ESNext"],
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "types": ["@cloudflare/workers-types"],
+    "types": ["./worker-configuration.d.ts"],
     "outDir": "./dist",
     "declaration": true,
     "sourceMap": true,

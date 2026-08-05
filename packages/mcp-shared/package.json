@@ -42,8 +42,8 @@
     "@modelcontextprotocol/client": "2.0.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260429.1",
+    "@types/node": "^26.1.0",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.10"
   }
 }

@@ -79,7 +79,9 @@ describe("sessionTypeName", () => {
   });
 });
 
-describe("generateSessionTypes", () => {
+// These tests invoke the TypeScript compiler, which can exceed Vitest's 5s default when package
+// test suites compete for CPU in CI.
+describe("generateSessionTypes", { timeout: 15_000 }, () => {
   it("emits an overload per tool, keyed on the literal tool name", () => {
     const output = generate([
       tool({ name: "search", inputSchema: { type: "object", properties: { q: { type: "string" } },

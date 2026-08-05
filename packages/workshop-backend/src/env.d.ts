@@ -9,6 +9,9 @@ declare global {
       // Deployment-wide admin usernames.
       ADMINS?: string[];
 
+      // Workers AI binding (injected by generate-wrangler-prod / run-dev-server; not in base wrangler.jsonc).
+      WORKERS_AI: Ai;
+
       // AI Gateway mode: when CF_AI_GATEWAY is set, supported providers are routed through
       // Cloudflare AI Gateway with server-managed keys. Users don't need their own keys.
       // Inference goes over HTTPS with tokens (there is no Workers-binding transport), so the
