@@ -2,6 +2,22 @@ packages:
   - packages/*
 
 overrides:
+  # Local build of alchemy with the WorkerEntrypoint feature (#1097) and its
+  # not-yet-published @distilled.cloud deps; remove once released to npm.
+  alchemy: file:.alchemy-reference/alchemy-local.tgz
+  '@distilled.cloud/aws': file:.alchemy-reference/distilled.cloud-aws-0.29.1.tgz
+  '@distilled.cloud/cloudflare-runtime': file:.alchemy-reference/distilled.cloud-cloudflare-runtime-0.15.0.tgz
+  '@distilled.cloud/cloudflare-rolldown-plugin': file:.alchemy-reference/distilled.cloud-cloudflare-rolldown-plugin-0.15.0.tgz
+  '@distilled.cloud/cloudflare-vite-plugin': file:.alchemy-reference/distilled.cloud-cloudflare-vite-plugin-0.15.0.tgz
+  '@distilled.cloud/core': file:.alchemy-reference/distilled.cloud-core-0.0.0.tgz
+  '@distilled.cloud/cloudflare': file:.alchemy-reference/distilled.cloud-cloudflare-0.0.0.tgz
+  '@distilled.cloud/axiom': file:.alchemy-reference/distilled.cloud-axiom-0.31.0.tgz
+  '@distilled.cloud/neon': file:.alchemy-reference/distilled.cloud-neon-0.31.0.tgz
+  '@distilled.cloud/planetscale': file:.alchemy-reference/distilled.cloud-planetscale-0.31.0.tgz
+  # Pin while the local-alchemy overrides above force a full re-resolution:
+  # without this, every package's wrangler jumps to latest-in-range and the
+  # lockfile churns repo-wide. Remove together with the block above.
+  wrangler: 4.115.0
   workerd: ">=1.20260623.1"
   # Pin js-yaml to the patched release (CVE-2026-53550); 4.1.1 (via @mdxeditor/editor) is vulnerable.
   js-yaml@4.1.1: ^4.2.0
@@ -29,6 +45,8 @@ allowBuilds:
   '@google/genai': true
   core-js-pure: true
   esbuild: true
+  # msgpackr-extract is an optional native accelerator (via alchemy); the JS fallback is fine.
+  msgpackr-extract: false
   protobufjs: true
   sharp: true
   workerd: true

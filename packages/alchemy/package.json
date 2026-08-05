@@ -1,0 +1,69 @@
+{
+  "name": "cloudflare-os",
+  "version": "0.1.0",
+  "description": "Deploy Cloudflare OS to your own Cloudflare account with alchemy \u2014 one OperatingSystem resource provisions the router, backend, gatekeepers, storage, and AI gateway.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./gatekeepers": "./src/gatekeepers/index.ts",
+    "./package.json": "./package.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cloudflare/cloudflare-os",
+    "directory": "packages/alchemy"
+  },
+  "scripts": {
+    "types:check": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "test:e2e": "vitest run",
+    "deploy": "alchemy deploy ./examples/0-quickstart/alchemy.run.ts",
+    "destroy": "alchemy destroy ./examples/0-quickstart/alchemy.run.ts"
+  },
+  "peerDependencies": {
+    "alchemy": ">=2.0.0-beta.67",
+    "effect": ">=4.0.0-beta.100 || >=4.0.0"
+  },
+  "dependencies": {
+    "@gadgets/cloudflare-gatekeeper": "workspace:*",
+    "@gadgets/confluence-gatekeeper": "workspace:*",
+    "@gadgets/gatekeeper-context": "workspace:*",
+    "@gadgets/gatekeeper-scheduler": "workspace:*",
+    "@gadgets/github-gatekeeper": "workspace:*",
+    "@gadgets/google-gatekeeper": "workspace:*",
+    "@gadgets/homeassistant-gatekeeper": "workspace:*",
+    "@gadgets/linear-gatekeeper": "workspace:*",
+    "@gadgets/mcp-gatekeeper": "workspace:*",
+    "@gadgets/mcp-portal-gatekeeper": "workspace:*",
+    "@gadgets/notion-gatekeeper": "workspace:*",
+    "@gadgets/router": "workspace:*",
+    "@gadgets/slack-gatekeeper": "workspace:*",
+    "@gadgets/spotify-gatekeeper": "workspace:*",
+    "@gadgets/supabase-gatekeeper": "workspace:*",
+    "@gadgets/workshop-backend": "workspace:*",
+    "@gadgets/workshop-frontend": "workspace:*",
+    "@gadgets/zoominfo-gatekeeper": "workspace:*",
+    "esbuild": "^0.28.1",
+    "jsonc-parser": "^3.3.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "@effect/vitest": "4.0.0-beta.103",
+    "@gadgets/workshop-shared": "workspace:*",
+    "@types/node": "26.1.0",
+    "alchemy": ">=2.0.0-beta.67",
+    "effect": "4.0.0-beta.103",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10",
+    "@effect/platform-node": "4.0.0-beta.103",
+    "ws": "^8.20.0"
+  },
+  "files": [
+    "src",
+    "scripts",
+    "examples",
+    "README.md"
+  ]
+}

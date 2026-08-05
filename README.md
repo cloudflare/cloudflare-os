@@ -27,7 +27,7 @@ Then visit: http://localhost:8787
 
 This runs the whole stack locally on wrangler and workerd. This is not meant for production use, but is a quick way to see what the product does.
 
-Alternatively, you can [deploy to your Cloudflare account](https://github.com/cloudflare/cloudflare-os-starter).
+Alternatively, you can deploy to your Cloudflare account with [alchemy](packages/alchemy/README.md) (recommended), or via the [starter repo](https://github.com/cloudflare/cloudflare-os-starter).
 
 (More options at the end of this readme.)
 
@@ -173,13 +173,21 @@ This differs from most agent harnesses, where MCP servers are configured upfront
 
 ### Deploy to your Cloudflare account
 
-We've built an online flow that helps you deploy to your own Cloudflare account:
-
-https://os.cloudflare.app
-
-Or, for more sophisticated deployment, with your gatekeepers and potentially code changes, check out our deployment starter repo:
+The recommended way to deploy your own instance is the starter repo, which
+pins an upstream release and deploys it with [alchemy](https://alchemy.run) —
+one typed `OperatingSystem` resource provisions every worker, binding,
+build, and storage resource:
 
 https://github.com/cloudflare/cloudflare-os-starter
+
+The resource itself lives in this repo as the
+[`cloudflare-os` package](packages/alchemy/README.md), with
+[runnable examples](packages/alchemy/examples/README.md) (a zero-config
+quickstart, configuring built-in gatekeepers, writing a custom gatekeeper).
+
+Alternatively, we've built an online flow that helps you deploy to your own Cloudflare account:
+
+https://os.cloudflare.app
 
 ### Run locally
 

@@ -39,3 +39,6 @@ wrangler.dev.jsonc
 .dev.vars.*
 **/.dev.vars
 **/.dev.vars.*
+
+# alchemy deploy artifacts (bundles, logs, local state)
+.alchemy/
