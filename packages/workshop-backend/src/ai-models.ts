@@ -563,6 +563,9 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
           input: ["text", "image"],
           cost: ZERO_COST,
           ...window,
+          // Ollama Cloud 500s when a request carries both a `developer` message and an image; pi
+          // picks that role because we report reasoning: true above, so pin the role, not the flag.
+          compat: { supportsDeveloperRole: false } satisfies OpenAICompletionsCompat,
         },
         ...(config.apiToken === ""
             ? { apiKey: "unused", headers: { Authorization: null } }
