@@ -1,0 +1,39 @@
+name: Bonk PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  bonk:
+    if: >-
+      github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id &&
+      github.event.sender.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Run Bonk
+        uses: ask-bonk/ask-bonk/github@c3f6dd354ca1f14329e8ea298958c000f0bfef3e
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
+          CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+        with:
+          model: "cloudflare-ai-gateway/anthropic/claude-opus-4-8"
+          variant: "high"
+          forks: "false"
+          permissions: write
+          token_permissions: NO_PUSH
+          agent: bonk
+          opencode_version: 1.15.13 # pin to this version as certain ones cause ProviderInitError issues
