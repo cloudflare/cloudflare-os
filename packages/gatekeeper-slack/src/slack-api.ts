@@ -646,6 +646,8 @@ function mentionedUserIds(text: string): string[] {
   return ids;
 }
 
+const SLACK_TEXT_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">" };
+
 /** Converts Slack mention/link markup and HTML entities to readable text. */
 export function resolveText(text: string, userName: (id: string) => string): string {
   let out = text
@@ -660,8 +662,5 @@ export function resolveText(text: string, userName: (id: string) => string): str
           (_m, url: string, label?: string) => label ? `${label} (${url})` : url)
       .replace(/<(mailto:[^|>]+)(?:\|([^>]*))?>/g,
           (_m, url: string, label?: string) => label || url.replace(/^mailto:/, ""));
-  return out
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">");
+  return out.replace(/&(amp|lt|gt);/g, (_match, name: string) => SLACK_TEXT_ENTITIES[name]);
 }

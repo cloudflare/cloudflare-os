@@ -121,13 +121,16 @@ function renderMacro(el: HTMLElement): string | null {
 }
 
 const tableRow = (vals: string[]): string => `| ${vals.join(" | ")} |`;
+// Escape backslashes as well as pipes so an existing backslash cannot neutralize the pipe escape.
+const escapeTableCell = (value: string): string =>
+  value.replace(/[\\|]/g, character => `\\${character}`);
 
 function renderTable(el: HTMLElement): string {
   const rows = el.querySelectorAll("tr");
   if (rows.length === 0) return "";
   const cells = (row: HTMLElement) =>
     (row.childNodes.filter(n => isElement(n) && ["td", "th"].includes(tagOf(n))) as HTMLElement[])
-      .map(c => renderInline(c.childNodes).trim().replace(/\|/g, "\\|"));
+      .map(c => escapeTableCell(renderInline(c.childNodes).trim()));
 
   const header = cells(rows[0]);
   const lines = [tableRow(header), tableRow(header.map(() => "---"))];

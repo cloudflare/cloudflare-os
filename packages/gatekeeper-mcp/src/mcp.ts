@@ -10,6 +10,7 @@ import { RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { validateRpc, skipRpcValidation } from "capnweb-validate";
 import { createLogger } from "@gadgets/backend-utils/logger";
 import {
+  stripTrailingSlashes,
   type AvatarImage,
   type Gatekeeper,
   type GatekeeperConnectCallback,
@@ -84,7 +85,7 @@ const MCP_AVATAR: AvatarImage = { url: MCP_LOGO_URL };
 // Helpers
 
 function getBaseUrl(env: Env): string {
-  return (env.BASE_URL ?? "http://localhost:8787/gatekeeper/mcp").replace(/\/+$/, "");
+  return stripTrailingSlashes(env.BASE_URL ?? "http://localhost:8787/gatekeeper/mcp");
 }
 
 // ---------------------------------------------------------------------------

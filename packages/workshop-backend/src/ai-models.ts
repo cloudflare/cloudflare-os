@@ -12,7 +12,7 @@ import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.mode
 import { CLOUDFLARE_WORKERS_AI_MODELS } from "@earendil-works/pi-ai/providers/cloudflare-workers-ai.models";
 import { GOOGLE_MODELS } from "@earendil-works/pi-ai/providers/google.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
-import { ApprovalQueue, Gatekeeper, ResourceDescription } from '@gadgets/workshop-shared/gatekeeper';
+import { ApprovalQueue, Gatekeeper, ResourceDescription, stripTrailingSlashes } from '@gadgets/workshop-shared/gatekeeper';
 import { LanguageModelBinding } from "./ai-model-binding";
 import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
 import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT }
@@ -557,8 +557,8 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
           name: config.model,
           api: "openai-completions",
           provider: "ollama",
-          baseUrl: `${(config.apiUrl ?? "http://localhost:11434")
-              .replace(/\/+$/, "").replace(/\/(api|v1)$/, "")}/v1`,
+          baseUrl: `${stripTrailingSlashes(config.apiUrl ?? "http://localhost:11434")
+              .replace(/\/(api|v1)$/, "")}/v1`,
           reasoning: true,
           input: ["text", "image"],
           cost: ZERO_COST,

@@ -1,3 +1,4 @@
+import { stripTrailingSlashes } from "@gadgets/workshop-shared/gatekeeper";
 import { NONCE_BYTES } from "./connect-nonce.js";
 import { htmlResponse, INVALID_LINK_HTML } from "./html.js";
 import type { McpLog } from "./log.js";
@@ -18,7 +19,7 @@ export async function handleMcpHttpRequest<A extends OAuthCallbackAccount>(
   },
 ): Promise<Response> {
   const url = new URL(request.url);
-  const basePath = new URL(options.baseUrl).pathname.replace(/\/+$/, "");
+  const basePath = stripTrailingSlashes(new URL(options.baseUrl).pathname);
   if (!url.pathname.startsWith(`${basePath}/`) && url.pathname !== basePath) {
     return new Response("Not Found", { status: 404 });
   }

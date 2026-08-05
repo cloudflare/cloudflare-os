@@ -16,6 +16,7 @@
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
+  stripTrailingSlashes,
   type AccountDescription,
   type ApprovalQueue,
   type Gatekeeper,
@@ -122,7 +123,7 @@ type StoredAccountInfo = {
 };
 
 function getBaseUrl(env: Env): string {
-  return (env.BASE_URL || "http://localhost:8787/gatekeeper/notion").replace(/\/+$/, "");
+  return stripTrailingSlashes(env.BASE_URL || "http://localhost:8787/gatekeeper/notion");
 }
 
 function getBasePath(env: Env): string {
@@ -204,7 +205,7 @@ function idFromResourceUrl(url: string): string | null {
     return null;
   }
   if (!/(^|\.)notion\.so$/i.test(parsed.hostname)) return null;
-  if (parsed.pathname.replace(/\/+$/, "").length === 0) return null;
+  if (stripTrailingSlashes(parsed.pathname).length === 0) return null;
   try {
     return parseNotionId(url);
   } catch {

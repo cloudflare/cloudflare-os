@@ -222,6 +222,13 @@ export type SupportedResource = {
   grantable?: boolean;
 }
 
+/** Removes every trailing slash from a string in linear time. */
+export function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) --end;
+  return end === value.length ? value : value.slice(0, end);
+}
+
 // Tests whether a resource URL matches a SupportedResource `urlPattern` (a URLPattern string).
 //
 // This is deliberately tolerant of trivial URL variations that a strict URLPattern test would
@@ -245,7 +252,7 @@ export function matchesResourceUrlPattern(pattern: string, url: string): boolean
   }
   // Try the URL as given plus the trailing-slash-toggled variant, since URLPattern distinguishes
   // them and we don't know which form the pattern expects.
-  const candidates = url.endsWith('/') ? [url, url.replace(/\/+$/, '')] : [url, url + '/'];
+  const candidates = url.endsWith('/') ? [url, stripTrailingSlashes(url)] : [url, url + '/'];
   return candidates.some(candidate => {
     try {
       return compiled.test(candidate);

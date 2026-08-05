@@ -2,6 +2,7 @@ import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:
 import { validateRpc, skipRpcValidation } from "capnweb-validate";
 import {
   ApprovalQueue,
+  stripTrailingSlashes,
   type AccountDescription,
   type ActionDescription,
   type Gatekeeper,
@@ -181,7 +182,7 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 function getBaseUrl(env: Env): string {
-  return (env.BASE_URL ?? "http://localhost:8787/gatekeeper/spotify").replace(/\/+$/, "");
+  return stripTrailingSlashes(env.BASE_URL ?? "http://localhost:8787/gatekeeper/spotify");
 }
 
 function getBasePath(env: Env): string {

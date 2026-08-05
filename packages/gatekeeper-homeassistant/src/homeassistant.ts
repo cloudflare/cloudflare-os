@@ -2,6 +2,7 @@ import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   ApprovalQueue,
+  stripTrailingSlashes,
   type AccountDescription,
   type AvatarImage,
   type Gatekeeper,
@@ -104,7 +105,7 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 function getBaseUrl(env: Env): string {
-  return (env.BASE_URL ?? "http://localhost:8787/gatekeeper/homeassistant").replace(/\/+$/, "");
+  return stripTrailingSlashes(env.BASE_URL ?? "http://localhost:8787/gatekeeper/homeassistant");
 }
 
 function getBasePath(env: Env): string {
@@ -318,8 +319,7 @@ export default {
             throw new Error("URL must use http:// or https://");
           }
           // Strip trailing slash
-          normalizedUrl = `${u.protocol}//${u.host}${u.pathname.replace(/\/+$/, "")}`;
-          if (normalizedUrl.endsWith("/")) normalizedUrl = normalizedUrl.slice(0, -1);
+          normalizedUrl = `${u.protocol}//${u.host}${stripTrailingSlashes(u.pathname)}`;
         } catch (e: any) {
           return new Response(
             CONNECT_FORM_HTML({ actionUrl: req.url, error: `Invalid URL: ${e.message}` }),

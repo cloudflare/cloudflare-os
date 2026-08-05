@@ -5,6 +5,7 @@ import {
   ApprovalQueue, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions,
   AccountDescription, SupportedResource, ResourceConfiguratorFrame, ActionKind, Cursor,
   GatekeeperUserVerifier, ObservationDescription,
+  stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   SlackApi, SlackApiError, SlackAccessToken, SlackConversationTypeFilter, exchangeAuthCode,
@@ -59,7 +60,7 @@ type Env = Cloudflare.Env & {
 };
 
 function getBaseUrl(env: Env) {
-  return (env.BASE_URL || "http://localhost:8787/gatekeeper/slack").replace(/\/+$/, "");
+  return stripTrailingSlashes(env.BASE_URL || "http://localhost:8787/gatekeeper/slack");
 }
 
 function getBasePath(env: Env) {

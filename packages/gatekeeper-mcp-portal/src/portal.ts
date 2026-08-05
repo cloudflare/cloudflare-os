@@ -10,6 +10,7 @@ import { validateRpc, skipRpcValidation } from "capnweb-validate";
 import { createLogger } from "@gadgets/backend-utils/logger";
 import {
   matchesResourceUrlPattern,
+  stripTrailingSlashes,
   type AvatarImage,
   type Gatekeeper,
   type GatekeeperConnectCallback,
@@ -99,7 +100,7 @@ const PORTAL_COLOR = "#f6821f";
 // Helpers
 
 function getBaseUrl(env: Env): string {
-  return (env.BASE_URL ?? "http://localhost:8787/gatekeeper/mcp-portal").replace(/\/+$/, "");
+  return stripTrailingSlashes(env.BASE_URL ?? "http://localhost:8787/gatekeeper/mcp-portal");
 }
 
 async function fetchPortalServers(

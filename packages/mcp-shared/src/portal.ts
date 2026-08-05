@@ -93,19 +93,58 @@ export function groupToolsByServer<T extends Pick<McpTool, "name">>(
 //
 // Display metadata only, so an unrecognized line is skipped rather than raised;
 // `reconcilePortalServers` recovers any server the prose failed to describe.
-const PORTAL_SERVER_LINE = /^\s*[-*\u2022]\s*(.+?)\s*\(([^()\s]+)\)\s*:\s*(.*)$/;
+function parseServerLine(line: string): PortalServer | null {
+  const bulletLine = line.trimStart();
+  if (bulletLine[0] !== "-" && bulletLine[0] !== "*" && bulletLine[0] !== "\u2022") return null;
+
+  const content = bulletLine.slice(1);
+  let nameStart = 0;
+  while (nameStart < content.length && content[nameStart].trim().length === 0) ++nameStart;
+
+  let open = -1;
+  let closedOpen = -1;
+  let close = -1;
+  for (let index = nameStart; index < content.length; ++index) {
+    const character = content[index];
+    if (close >= 0) {
+      if (character === ":") {
+        const name = content.slice(nameStart, closedOpen).trimEnd();
+        if (!name && nameStart === 0) return null;
+        const id = content.slice(closedOpen + 1, close);
+        return {
+          id,
+          name: name || id,
+          enabled: !/disabled|\u2717|\u2718/i.test(content.slice(index + 1)),
+        };
+      }
+      if (character.trim().length === 0) continue;
+      close = -1;
+      closedOpen = -1;
+    }
+
+    if (character === "(") {
+      open = index;
+    } else if (open >= 0 && character === ")") {
+      if (index > open + 1) {
+        closedOpen = open;
+        close = index;
+      }
+      open = -1;
+    } else if (open >= 0 && character.trim().length === 0) {
+      open = -1;
+    }
+  }
+  return null;
+}
 
 function parseServerLines(text: string): PortalServer[] {
   const servers: PortalServer[] = [];
   const seen = new Set<string>();
   for (const line of text.split(/\r?\n/)) {
-    const match = PORTAL_SERVER_LINE.exec(line);
-    if (!match) continue;
-    const [, name, id, status] = match;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    // Enabled unless the portal says otherwise, so unrecognized wording shows the server.
-    servers.push({ id, name: name.trim() || id, enabled: !/disabled|\u2717|\u2718/i.test(status) });
+    const server = parseServerLine(line);
+    if (!server || seen.has(server.id)) continue;
+    seen.add(server.id);
+    servers.push(server);
   }
   return servers;
 }

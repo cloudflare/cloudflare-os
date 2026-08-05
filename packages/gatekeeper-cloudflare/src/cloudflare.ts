@@ -3,7 +3,7 @@ import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, GatekeeperUserVerifier, VendorDescription,
   GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription,
-  SupportedResource, ResourceConfiguratorFrame,
+  SupportedResource, ResourceConfiguratorFrame, stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { getOAuthConfig, buildAuthorizeUrl, generatePkce, exchangeCode, refreshTokens, AUTH_SCOPES, FULL_SCOPES } from "./oauth";
@@ -67,7 +67,7 @@ type Env = Cloudflare.Env & {
 };
 
 function getBaseUrl(env: Env) {
-  return (env.BASE_URL || "http://localhost:8787/gatekeeper/cloudflare").replace(/\/+$/, "");
+  return stripTrailingSlashes(env.BASE_URL || "http://localhost:8787/gatekeeper/cloudflare");
 }
 
 function getBasePath(env: Env) {

@@ -1,4 +1,5 @@
 import "cloudflare:workers";
+import { stripTrailingSlashes } from "@gadgets/workshop-shared/gatekeeper";
 
 // ---------------------------------------------------------------------------
 // OAuth (Authorization Code + PKCE) and a thin HTTP wrapper around the ZoomInfo GTM API.
@@ -36,7 +37,7 @@ export function resolveOAuthConfig(env: {
   return {
     authorizeUrl: env.ZOOMINFO_AUTHORIZE_URL || DEFAULT_AUTHORIZE_URL,
     tokenUrl: env.ZOOMINFO_TOKEN_URL || DEFAULT_TOKEN_URL,
-    apiBaseUrl: (env.ZOOMINFO_API_BASE_URL || DEFAULT_API_BASE_URL).replace(/\/+$/, ""),
+    apiBaseUrl: stripTrailingSlashes(env.ZOOMINFO_API_BASE_URL || DEFAULT_API_BASE_URL),
   };
 }
 
@@ -229,7 +230,7 @@ export class ZoomInfoApi {
 
   constructor(getToken: () => Promise<string>, baseUrl: string = DEFAULT_API_BASE_URL) {
     this.#getToken = getToken;
-    this.#baseUrl = baseUrl.replace(/\/+$/, "");
+    this.#baseUrl = stripTrailingSlashes(baseUrl);
   }
 
   async #request(

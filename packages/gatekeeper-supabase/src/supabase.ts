@@ -2,6 +2,7 @@ import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   ApprovalQueue,
+  stripTrailingSlashes,
   type AccountDescription,
   type Gatekeeper,
   type GatekeeperConnectCallback,
@@ -181,7 +182,7 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 function getBaseUrl(env: Env): string {
-  return (env.BASE_URL ?? "http://localhost:8787/gatekeeper/supabase").replace(/\/+$/, "");
+  return stripTrailingSlashes(env.BASE_URL ?? "http://localhost:8787/gatekeeper/supabase");
 }
 
 function getBasePath(env: Env): string {

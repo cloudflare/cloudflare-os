@@ -2,6 +2,7 @@ import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   GatekeeperUser,
+  stripTrailingSlashes,
   GatekeeperUserVerifier,
   GatekeeperVendor as GatekeeperVendorIface,
   Gatekeeper,
@@ -176,7 +177,7 @@ function badRequest(message: string): Response {
 }
 
 function getBaseUrl(env: Env): string {
-  return (env.BASE_URL ?? "http://localhost:8787/gatekeeper/linear").replace(/\/+$/, "");
+  return stripTrailingSlashes(env.BASE_URL ?? "http://localhost:8787/gatekeeper/linear");
 }
 
 function getBasePath(env: Env): string {

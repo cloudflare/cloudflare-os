@@ -15,6 +15,7 @@ import {
   AccountDescription,
   SupportedResource,
   ResourceConfiguratorFrame,
+  stripTrailingSlashes,
 } from '@gadgets/workshop-shared/gatekeeper';
 import {
   EmailSession,
@@ -64,7 +65,7 @@ type Env = Cloudflare.Env & {
 }
 
 function getBaseUrl(env: Env) {
-  return (env.BASE_URL || "http://localhost:8787/gatekeeper/email").replace(/\/+$/, "");
+  return stripTrailingSlashes(env.BASE_URL || "http://localhost:8787/gatekeeper/email");
 }
 
 function getBasePath(env: Env) {
