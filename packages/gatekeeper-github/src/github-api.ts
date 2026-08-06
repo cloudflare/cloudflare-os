@@ -1,5 +1,3 @@
-import "cloudflare:workers";
-
 export type GitHubOAuthGrant = {
   accessToken: string;
   scopes: string[];
