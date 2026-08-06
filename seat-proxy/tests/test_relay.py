@@ -38,7 +38,8 @@ class FakeRequest:
     async def body(self):
         return self._body
 
-def _enrolled_seat(store, tmp_path, owner="alice", provider="anthropic", access_token="ACCESS"):
+def _enrolled_seat(store, tmp_path, owner="alice", provider="anthropic", access_token="ACCESS",
+                    expires_at_ms=99_999_999_999_000):
     # relay() resolves the access token from the provider CLI's credentials file,
     # so any test that expects the relay to succeed needs one seeded — a bare
     # config_dir raises SeatNeedsReauth before the request reaches the upstream.
@@ -46,7 +47,7 @@ def _enrolled_seat(store, tmp_path, owner="alice", provider="anthropic", access_
     cfg.mkdir(exist_ok=True)
     (cfg / ".credentials.json").write_text(json.dumps(
         {"claudeAiOauth": {"accessToken": access_token, "refreshToken": "R",
-                           "expiresAt": 99_999_999_999_000}}), encoding="utf-8")
+                           "expiresAt": expires_at_ms}}), encoding="utf-8")
     return store.put(owner, provider, str(cfg))
 
 # httpx.AsyncByteStream is an abstract base class in this httpx version and cannot
@@ -169,3 +170,20 @@ async def test_upstream_connection_error_returns_provider_shaped_502(tmp_path):
     body = _json.loads(resp.body)
     assert body["type"] == "error"
     assert "detail" not in body
+
+@pytest.mark.asyncio
+async def test_missing_refresher_does_not_typeerror(tmp_path):
+    # The default refresher must match the (provider, tokens) contract, or an
+    # expired seat with no refresher wired would raise TypeError instead of a
+    # clean provider-shaped response.
+    store = SeatStore(str(tmp_path / "s.db"))
+    h = _enrolled_seat(store, tmp_path, expires_at_ms=0)
+
+    async def handler(request):
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    resp = await relay(FakeRequest({"x-api-key": h}, b"{}"), "anthropic",
+                       "https://api.anthropic.com", store, client,
+                       now=5_000.0, upstream_path="v1/messages")
+    assert resp.status_code in (401, 502, 503)

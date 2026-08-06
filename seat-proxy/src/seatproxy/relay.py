@@ -81,5 +81,5 @@ async def relay(request, provider, upstream_base, store, client, now,
         # The BackgroundTask runs on both paths.
         background=BackgroundTask(upstream.aclose))
 
-async def _no_refresh(rec):
+async def _no_refresh(provider, tokens):
     raise RuntimeError("no refresher configured for this provider")

@@ -112,3 +112,15 @@ async def test_exceptions_carry_no_handle(tmp_path):
     with pytest.raises(SeatNeedsReauth) as exc:
         await resolve_access_token(store, h, now=5_000.0, refresher=refresher)
     assert h not in str(exc.value) and h not in repr(exc.value.args)
+
+@pytest.mark.asyncio
+async def test_unreadable_credentials_are_transient_not_reauth(tmp_path, monkeypatch):
+    from seatproxy import refresh as m
+    from seatproxy.credentials import CredentialsUnreadable
+    store, h, _ = seat(tmp_path)
+    def boom(provider, config_dir):
+        raise CredentialsUnreadable(provider)
+    monkeypatch.setattr(m, "read_tokens", boom)
+    with pytest.raises(SeatTemporarilyUnavailable):
+        await resolve_access_token(store, h, now=5_000.0, refresher=never)
+    assert store.get(h).needs_reauth is False

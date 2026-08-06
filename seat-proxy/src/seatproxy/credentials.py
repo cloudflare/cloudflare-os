@@ -18,6 +18,13 @@ class CredentialsMissing(Exception):
 class CredentialsMalformed(Exception):
     """The file exists but does not have the shape we expect (e.g. CLI changed)."""
 
+class CredentialsUnreadable(Exception):
+    """The file exists but could not be read right now (permissions, locking, I/O).
+
+    Distinct from CredentialsMalformed: this is transient and must not be
+    reported to the user as a dead seat.
+    """
+
 @dataclass(repr=False)
 class SeatTokens:
     access_token: str
@@ -42,7 +49,7 @@ def _load(provider: str, config_dir: str) -> dict:
     except FileNotFoundError:
         raise CredentialsMissing(provider) from None
     except OSError:
-        raise CredentialsMalformed(provider) from None
+        raise CredentialsUnreadable(provider) from None
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:

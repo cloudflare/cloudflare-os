@@ -86,3 +86,13 @@ def test_exception_chain_does_not_leak_the_path(tmp_path):
         read_tokens("anthropic", str(tmp_path))
     assert exc.value.__cause__ is None
     assert exc.value.__suppress_context__ is True
+
+def test_unreadable_file_is_distinct_from_malformed(tmp_path, monkeypatch):
+    from pathlib import Path
+    from seatproxy.credentials import CredentialsUnreadable
+    write_claude(tmp_path)
+    def boom(self, *args, **kwargs):
+        raise PermissionError("locked")
+    monkeypatch.setattr(Path, "read_text", boom)
+    with pytest.raises(CredentialsUnreadable):
+        read_tokens("anthropic", str(tmp_path))
