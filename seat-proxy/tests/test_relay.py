@@ -28,8 +28,7 @@ def test_handle_never_appears_in_outbound_headers():
     assert "SECRET-HANDLE" not in " ".join(f"{k}{v}" for k, v in out.items())
 
 import asyncio, httpx, pytest
-from cryptography.fernet import Fernet
-from seatproxy.store import TokenStore
+from seatproxy.store import SeatStore
 from seatproxy.relay import relay
 
 class FakeRequest:
@@ -51,8 +50,8 @@ class _Stream(httpx.AsyncByteStream):
 
 @pytest.mark.asyncio
 async def test_streams_incrementally_without_buffering(tmp_path):
-    store = TokenStore(str(tmp_path / "s.db"), Fernet.generate_key())
-    h = store.put("alice", "anthropic", "ACCESS", "R", 10_000.0)
+    store = SeatStore(str(tmp_path / "s.db"))
+    h = store.put("alice", "anthropic", str(tmp_path / "cfg"))
     chunks_out = [b"data: a\n\n", b"data: b\n\n", b"data: c\n\n"]
 
     async def handler(request):
@@ -69,8 +68,8 @@ async def test_streams_incrementally_without_buffering(tmp_path):
 
 @pytest.mark.asyncio
 async def test_upstream_429_passes_through_with_status(tmp_path):
-    store = TokenStore(str(tmp_path / "s.db"), Fernet.generate_key())
-    h = store.put("alice", "anthropic", "ACCESS", "R", 10_000.0)
+    store = SeatStore(str(tmp_path / "s.db"))
+    h = store.put("alice", "anthropic", str(tmp_path / "cfg"))
 
     async def handler(request):
         return httpx.Response(429, headers={"retry-after": "30"}, json={"error": "slow down"})
@@ -84,7 +83,7 @@ async def test_upstream_429_passes_through_with_status(tmp_path):
 
 @pytest.mark.asyncio
 async def test_unknown_handle_returns_anthropic_shaped_401(tmp_path):
-    store = TokenStore(str(tmp_path / "s.db"), Fernet.generate_key())
+    store = SeatStore(str(tmp_path / "s.db"))
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
     resp = await relay(FakeRequest({"x-api-key": "nope"}, b"{}"), "anthropic",
                        "https://api.anthropic.com", store, client, now=5_000.0,
@@ -95,8 +94,8 @@ async def test_unknown_handle_returns_anthropic_shaped_401(tmp_path):
 
 @pytest.mark.asyncio
 async def test_upstream_response_is_closed_after_streaming(tmp_path):
-    store = TokenStore(str(tmp_path / "s.db"), Fernet.generate_key())
-    h = store.put("alice", "anthropic", "ACCESS", "R", 10_000.0)
+    store = SeatStore(str(tmp_path / "s.db"))
+    h = store.put("alice", "anthropic", str(tmp_path / "cfg"))
 
     async def handler(request):
         return httpx.Response(200, json={"ok": True})
@@ -109,8 +108,8 @@ async def test_upstream_response_is_closed_after_streaming(tmp_path):
 
 @pytest.mark.asyncio
 async def test_route_prefix_is_not_forwarded_upstream(tmp_path):
-    store = TokenStore(str(tmp_path / "s.db"), Fernet.generate_key())
-    h = store.put("alice", "anthropic", "ACCESS", "R", 10_000.0)
+    store = SeatStore(str(tmp_path / "s.db"))
+    h = store.put("alice", "anthropic", str(tmp_path / "cfg"))
     seen = {}
 
     async def handler(request):
@@ -127,8 +126,8 @@ async def test_route_prefix_is_not_forwarded_upstream(tmp_path):
 
 @pytest.mark.asyncio
 async def test_handle_from_other_provider_is_refused(tmp_path):
-    store = TokenStore(str(tmp_path / "s.db"), Fernet.generate_key())
-    h = store.put("alice", "anthropic", "ANTHROPIC-TOKEN", "R", 10_000.0)
+    store = SeatStore(str(tmp_path / "s.db"))
+    h = store.put("alice", "anthropic", str(tmp_path / "cfg"))
     called = {"upstream": False}
 
     async def handler(request):
@@ -144,8 +143,8 @@ async def test_handle_from_other_provider_is_refused(tmp_path):
 
 @pytest.mark.asyncio
 async def test_upstream_connection_error_returns_provider_shaped_502(tmp_path):
-    store = TokenStore(str(tmp_path / "s.db"), Fernet.generate_key())
-    h = store.put("alice", "anthropic", "ACCESS", "R", 10_000.0)
+    store = SeatStore(str(tmp_path / "s.db"))
+    h = store.put("alice", "anthropic", str(tmp_path / "cfg"))
 
     async def handler(request):
         raise httpx.ConnectError("upstream down")
