@@ -563,6 +563,11 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
           input: ["text", "image"],
           cost: ZERO_COST,
           ...window,
+          // pi detects the `developer` system role from the hostname, so an OpenAI-compatible
+          // gateway on an unrecognized domain is assumed to accept it. Most don't — they reject
+          // the request with "developer is not one of [...] - 'messages.[0].role'". Reasoning is
+          // hardcoded on above, which is the other half of pi's condition, so pin the role here.
+          compat: { supportsDeveloperRole: false },
         },
         ...(config.apiToken === ""
             ? { apiKey: "unused", headers: { Authorization: null } }
