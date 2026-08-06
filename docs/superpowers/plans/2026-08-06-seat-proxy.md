@@ -395,6 +395,41 @@ async def test_already_flagged_record_raises_without_refreshing(tmp_path):
         raise AssertionError("must not refresh a flagged seat")
     with pytest.raises(SeatNeedsReauth):
         await resolve_access_token(store, h, now=5_000.0, refresher=refresher)
+
+@pytest.mark.asyncio
+async def test_lock_table_is_emptied_after_use(tmp_path):
+    from seatproxy import refresh as refresh_mod
+    store = make_store(tmp_path)
+    h = store.put("alice", "anthropic", "OLD", "R", 0.0)
+    async def refresher(rec):
+        return ("NEW", "R2", 9_000.0)
+    await asyncio.gather(*[
+        resolve_access_token(store, h, now=5_000.0, refresher=refresher) for _ in range(5)])
+    assert refresh_mod._locks == {}
+    assert refresh_mod._waiters == {}
+
+@pytest.mark.asyncio
+async def test_lock_released_even_when_refresh_fails(tmp_path):
+    from seatproxy import refresh as refresh_mod
+    store = make_store(tmp_path)
+    h = store.put("alice", "anthropic", "OLD", "R", 0.0)
+    async def refresher(rec):
+        raise RuntimeError("revoked")
+    with pytest.raises(SeatNeedsReauth):
+        await resolve_access_token(store, h, now=5_000.0, refresher=refresher)
+    assert refresh_mod._locks == {}
+    assert refresh_mod._waiters == {}
+
+@pytest.mark.asyncio
+async def test_exception_payload_carries_no_handle(tmp_path):
+    store = make_store(tmp_path)
+    h = store.put("alice", "anthropic", "OLD", "R", 0.0)
+    async def refresher(rec):
+        raise RuntimeError("revoked")
+    with pytest.raises(SeatNeedsReauth) as exc:
+        await resolve_access_token(store, h, now=5_000.0, refresher=refresher)
+    assert h not in str(exc.value)
+    assert h not in repr(exc.value.args)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -407,36 +442,63 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'seatproxy.refresh'`
 ```python
 # seat-proxy/src/seatproxy/refresh.py
 import asyncio
-from collections import defaultdict
 
 REFRESH_SKEW_SECONDS = 120
 
 class SeatNeedsReauth(Exception):
-    pass
+    """The seat's tokens are unusable and the user must reconnect.
 
-_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+    Carries no handle or token in its payload: callers may log this exception,
+    and its args must never contain a secret.
+    """
+
+# Refcounted so the table does not grow without bound on a long-running service.
+# Both helpers are fully synchronous — no await between reading and mutating the
+# refcount — so under asyncio's cooperative scheduling they are atomic, and a lock
+# is only evicted once no coroutine still references it.
+_locks: dict[str, asyncio.Lock] = {}
+_waiters: dict[str, int] = {}
+
+def _acquire_lock(handle: str) -> asyncio.Lock:
+    lock = _locks.get(handle)
+    if lock is None:
+        lock = _locks[handle] = asyncio.Lock()
+    _waiters[handle] = _waiters.get(handle, 0) + 1
+    return lock
+
+def _release_lock(handle: str) -> None:
+    remaining = _waiters.get(handle, 1) - 1
+    if remaining <= 0:
+        _waiters.pop(handle, None)
+        _locks.pop(handle, None)
+    else:
+        _waiters[handle] = remaining
 
 async def resolve_access_token(store, handle, now, refresher) -> str:
     rec = store.get(handle)
     if rec is None or rec.needs_reauth:
-        raise SeatNeedsReauth(handle)
+        raise SeatNeedsReauth()
     if now < rec.expires_at - REFRESH_SKEW_SECONDS:
         return rec.access_token
 
-    async with _locks[handle]:
-        rec = store.get(handle)
-        if rec is None or rec.needs_reauth:
-            raise SeatNeedsReauth(handle)
-        # Another waiter may have refreshed while we queued.
-        if now < rec.expires_at - REFRESH_SKEW_SECONDS:
-            return rec.access_token
-        try:
-            access, refresh, expires_at = await refresher(rec)
-        except Exception as exc:
-            store.mark_needs_reauth(handle)
-            raise SeatNeedsReauth(handle) from exc
-        store.update_tokens(handle, access, refresh, expires_at)
-        return access
+    lock = _acquire_lock(handle)
+    try:
+        async with lock:
+            rec = store.get(handle)
+            if rec is None or rec.needs_reauth:
+                raise SeatNeedsReauth()
+            # Another waiter may have refreshed while we queued.
+            if now < rec.expires_at - REFRESH_SKEW_SECONDS:
+                return rec.access_token
+            try:
+                access, refresh, expires_at = await refresher(rec)
+            except Exception as exc:
+                store.mark_needs_reauth(handle)
+                raise SeatNeedsReauth() from exc
+            store.update_tokens(handle, access, refresh, expires_at)
+            return access
+    finally:
+        _release_lock(handle)
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
