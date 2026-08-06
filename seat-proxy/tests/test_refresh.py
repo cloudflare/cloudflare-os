@@ -56,3 +56,38 @@ async def test_already_flagged_record_raises_without_refreshing(tmp_path):
         raise AssertionError("must not refresh a flagged seat")
     with pytest.raises(SeatNeedsReauth):
         await resolve_access_token(store, h, now=5_000.0, refresher=refresher)
+
+@pytest.mark.asyncio
+async def test_lock_table_is_emptied_after_use(tmp_path):
+    from seatproxy import refresh as refresh_mod
+    store = make_store(tmp_path)
+    h = store.put("alice", "anthropic", "OLD", "R", 0.0)
+    async def refresher(rec):
+        return ("NEW", "R2", 9_000.0)
+    await asyncio.gather(*[
+        resolve_access_token(store, h, now=5_000.0, refresher=refresher) for _ in range(5)])
+    assert refresh_mod._locks == {}
+    assert refresh_mod._waiters == {}
+
+@pytest.mark.asyncio
+async def test_lock_released_even_when_refresh_fails(tmp_path):
+    from seatproxy import refresh as refresh_mod
+    store = make_store(tmp_path)
+    h = store.put("alice", "anthropic", "OLD", "R", 0.0)
+    async def refresher(rec):
+        raise RuntimeError("revoked")
+    with pytest.raises(SeatNeedsReauth):
+        await resolve_access_token(store, h, now=5_000.0, refresher=refresher)
+    assert refresh_mod._locks == {}
+    assert refresh_mod._waiters == {}
+
+@pytest.mark.asyncio
+async def test_exception_payload_carries_no_handle(tmp_path):
+    store = make_store(tmp_path)
+    h = store.put("alice", "anthropic", "OLD", "R", 0.0)
+    async def refresher(rec):
+        raise RuntimeError("revoked")
+    with pytest.raises(SeatNeedsReauth) as exc:
+        await resolve_access_token(store, h, now=5_000.0, refresher=refresher)
+    assert h not in str(exc.value)
+    assert h not in repr(exc.value.args)
