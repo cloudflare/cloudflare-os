@@ -69,16 +69,32 @@ Two deployable units per instance.
 **Store:** `handle → {provider, owner, access_token, refresh_token, expires_at, needs_reauth}`,
 encrypted at rest via Odysseus's `secret_storage.py` approach.
 
-### 2. Cloudflare OS fork (five additive edits)
+### 2. Cloudflare OS fork
 
-- `packages/workshop-shared/src/api.ts` — `startSeatAuth`, `pollSeatAuth`, `revokeSeat` signatures
-  and a `SeatProvider` type.
-- `packages/workshop-backend/src/server.ts` — delegates to the proxy, reading a `SEAT_PROXY_URL`
-  var.
-- `run-dev-server.js` — one line adding `SEAT_PROXY_URL` to `OPTIONAL_FEATURE_VARS`
-  (`run-dev-server.js:241-254`), so it passes through from the shell or `.dev.vars`.
-- `packages/workshop-frontend/src/AddModelModal.tsx` — two "Sign in with…" buttons.
-- `packages/workshop-frontend/src/OnboardingWizard.tsx` — the same buttons in first-run.
+Structured so the feature's code lives in **new files**, and the files upstream is actively
+rewriting take only one-line touchpoints. Git never conflicts on a file upstream does not have,
+so this keeps rebase cost proportional to the touchpoints rather than to the feature's size.
+
+**New files (no merge cost, any size):**
+
+- `packages/workshop-shared/src/seat-types.ts` — `SeatProvider` and the enrollment DTOs.
+- `packages/workshop-backend/src/seat-auth.ts` — all proxy communication, polling, and handle
+  lifecycle.
+- `packages/workshop-frontend/src/SeatSignInButtons.tsx` — the two buttons and the device-code
+  UI, self-contained.
+
+**Touchpoints in existing files (keep minimal):**
+
+| File | Edit |
+|---|---|
+| `packages/workshop-shared/src/api.ts` | Three method signatures on `AuthenticatedApi`; type imported from `seat-types.ts`. |
+| `packages/workshop-backend/src/server.ts` | Three one-line delegates into `seat-auth.ts`. |
+| `packages/workshop-frontend/src/AddModelModal.tsx` | One line mounting `<SeatSignInButtons/>`. |
+| `packages/workshop-frontend/src/OnboardingWizard.tsx` | One line mounting the same. |
+| `run-dev-server.js` | Add `SEAT_PROXY_URL` to `OPTIONAL_FEATURE_VARS` (`run-dev-server.js:241-254`). |
+
+`api.ts` and `server.ts` are core and churning upstream; the discipline matters most there. This
+constraint exists only while the fork tracks upstream — if that stops, it can be dropped.
 
 `revokeSeat` is called from the existing model-deletion path: when a user deletes a seat-backed
 model, the backend revokes the handle before removing the config, so no orphaned tokens are left
