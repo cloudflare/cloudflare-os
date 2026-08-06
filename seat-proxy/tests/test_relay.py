@@ -27,7 +27,7 @@ def test_handle_never_appears_in_outbound_headers():
     out = outbound_headers("anthropic", {"x-api-key": "SECRET-HANDLE"}, "ACCESS")
     assert "SECRET-HANDLE" not in " ".join(f"{k}{v}" for k, v in out.items())
 
-import asyncio, httpx, pytest
+import asyncio, httpx, json, pytest
 from seatproxy.store import SeatStore
 from seatproxy.relay import relay
 
@@ -37,6 +37,17 @@ class FakeRequest:
         self.method = "POST"
     async def body(self):
         return self._body
+
+def _enrolled_seat(store, tmp_path, owner="alice", provider="anthropic", access_token="ACCESS"):
+    # relay() resolves the access token from the provider CLI's credentials file,
+    # so any test that expects the relay to succeed needs one seeded — a bare
+    # config_dir raises SeatNeedsReauth before the request reaches the upstream.
+    cfg = tmp_path / "cfg"
+    cfg.mkdir(exist_ok=True)
+    (cfg / ".credentials.json").write_text(json.dumps(
+        {"claudeAiOauth": {"accessToken": access_token, "refreshToken": "R",
+                           "expiresAt": 99_999_999_999_000}}), encoding="utf-8")
+    return store.put(owner, provider, str(cfg))
 
 # httpx.AsyncByteStream is an abstract base class in this httpx version and cannot
 # be constructed directly with `AsyncByteStream(gen())` (raises TypeError: takes no
@@ -51,7 +62,7 @@ class _Stream(httpx.AsyncByteStream):
 @pytest.mark.asyncio
 async def test_streams_incrementally_without_buffering(tmp_path):
     store = SeatStore(str(tmp_path / "s.db"))
-    h = store.put("alice", "anthropic", str(tmp_path / "cfg"))
+    h = _enrolled_seat(store, tmp_path)
     chunks_out = [b"data: a\n\n", b"data: b\n\n", b"data: c\n\n"]
 
     async def handler(request):
@@ -69,7 +80,7 @@ async def test_streams_incrementally_without_buffering(tmp_path):
 @pytest.mark.asyncio
 async def test_upstream_429_passes_through_with_status(tmp_path):
     store = SeatStore(str(tmp_path / "s.db"))
-    h = store.put("alice", "anthropic", str(tmp_path / "cfg"))
+    h = _enrolled_seat(store, tmp_path)
 
     async def handler(request):
         return httpx.Response(429, headers={"retry-after": "30"}, json={"error": "slow down"})
@@ -95,7 +106,7 @@ async def test_unknown_handle_returns_anthropic_shaped_401(tmp_path):
 @pytest.mark.asyncio
 async def test_upstream_response_is_closed_after_streaming(tmp_path):
     store = SeatStore(str(tmp_path / "s.db"))
-    h = store.put("alice", "anthropic", str(tmp_path / "cfg"))
+    h = _enrolled_seat(store, tmp_path)
 
     async def handler(request):
         return httpx.Response(200, json={"ok": True})
@@ -109,7 +120,7 @@ async def test_upstream_response_is_closed_after_streaming(tmp_path):
 @pytest.mark.asyncio
 async def test_route_prefix_is_not_forwarded_upstream(tmp_path):
     store = SeatStore(str(tmp_path / "s.db"))
-    h = store.put("alice", "anthropic", str(tmp_path / "cfg"))
+    h = _enrolled_seat(store, tmp_path)
     seen = {}
 
     async def handler(request):
@@ -144,7 +155,7 @@ async def test_handle_from_other_provider_is_refused(tmp_path):
 @pytest.mark.asyncio
 async def test_upstream_connection_error_returns_provider_shaped_502(tmp_path):
     store = SeatStore(str(tmp_path / "s.db"))
-    h = store.put("alice", "anthropic", str(tmp_path / "cfg"))
+    h = _enrolled_seat(store, tmp_path)
 
     async def handler(request):
         raise httpx.ConnectError("upstream down")

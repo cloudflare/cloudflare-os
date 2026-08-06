@@ -1,18 +1,36 @@
+"""Decide whether a seat's access token is usable, refreshing it when near expiry.
+
+Tokens come from the provider CLI's own credentials file and rotations are written
+back to it, so the user's CLI and the proxy never diverge.
+"""
+
 import asyncio
+
+from .credentials import (
+    CredentialsMalformed, CredentialsMissing, read_tokens, write_tokens)
 
 REFRESH_SKEW_SECONDS = 120
 
 class SeatNeedsReauth(Exception):
-    """The seat's tokens are unusable and the user must reconnect.
+    """The seat is unusable and the user must re-run the CLI login.
 
-    Carries no handle or token in its payload: callers may log this exception,
-    and its args must never contain a secret.
+    Carries no handle or token: callers may log this exception.
     """
 
-# Refcounted so the table does not grow without bound on a long-running service.
-# Both helpers are fully synchronous — no await between reading and mutating the
-# refcount — so under asyncio's cooperative scheduling they are atomic, and a lock
-# is only evicted once no coroutine still references it.
+class SeatTemporarilyUnavailable(Exception):
+    """A transient failure. The seat is fine; the caller should retry later.
+
+    Kept distinct from SeatNeedsReauth so one network blip cannot brick a seat
+    until manual re-enrollment.
+    """
+
+class AuthRejected(Exception):
+    """Raised by a provider refresher when the provider refused the credentials."""
+
+# Refcounted so the table does not grow without bound. Both helpers are fully
+# synchronous — no await between reading and mutating the refcount — so under
+# cooperative scheduling they are atomic, and a lock is only evicted once no
+# coroutine still references it.
 _locks: dict[str, asyncio.Lock] = {}
 _waiters: dict[str, int] = {}
 
@@ -31,12 +49,20 @@ def _release_lock(handle: str) -> None:
     else:
         _waiters[handle] = remaining
 
+def _load(rec):
+    try:
+        return read_tokens(rec.provider, rec.config_dir)
+    except (CredentialsMissing, CredentialsMalformed) as exc:
+        # No usable credentials on disk: only a fresh CLI login fixes this.
+        raise SeatNeedsReauth() from exc
+
 async def resolve_access_token(store, handle, now, refresher) -> str:
     rec = store.get(handle)
     if rec is None or rec.needs_reauth:
         raise SeatNeedsReauth()
-    if now < rec.expires_at - REFRESH_SKEW_SECONDS:
-        return rec.access_token
+    tokens = _load(rec)
+    if now < tokens.expires_at - REFRESH_SKEW_SECONDS:
+        return tokens.access_token
 
     lock = _acquire_lock(handle)
     try:
@@ -44,15 +70,20 @@ async def resolve_access_token(store, handle, now, refresher) -> str:
             rec = store.get(handle)
             if rec is None or rec.needs_reauth:
                 raise SeatNeedsReauth()
-            # Another waiter may have refreshed while we queued.
-            if now < rec.expires_at - REFRESH_SKEW_SECONDS:
-                return rec.access_token
+            tokens = _load(rec)
+            # The CLI itself may have rotated while we queued, so re-read and re-check.
+            if now < tokens.expires_at - REFRESH_SKEW_SECONDS:
+                return tokens.access_token
             try:
-                access, refresh, expires_at = await refresher(rec)
-            except Exception as exc:
+                fresh = await refresher(rec.provider, tokens)
+            except AuthRejected as exc:
                 store.mark_needs_reauth(handle)
                 raise SeatNeedsReauth() from exc
-            store.update_tokens(handle, access, refresh, expires_at)
-            return access
+            except Exception as exc:
+                # Transport, timeout, anything else: the seat is not proven dead.
+                raise SeatTemporarilyUnavailable() from exc
+            write_tokens(rec.provider, rec.config_dir, fresh)
+            store.clear_needs_reauth(handle)
+            return fresh.access_token
     finally:
         _release_lock(handle)

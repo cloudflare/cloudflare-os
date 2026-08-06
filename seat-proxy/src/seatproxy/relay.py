@@ -17,7 +17,7 @@ def outbound_headers(provider: str, incoming: dict, access_token: str) -> dict:
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 from .errors import provider_error
-from .refresh import resolve_access_token, SeatNeedsReauth
+from .refresh import resolve_access_token, SeatNeedsReauth, SeatTemporarilyUnavailable
 
 def _read_handle(provider: str, headers) -> str | None:
     if provider == "anthropic":
@@ -49,6 +49,9 @@ async def relay(request, provider, upstream_base, store, client, now,
     except SeatNeedsReauth:
         return provider_error(provider, 401, "authentication_error",
                               "Your subscription seat needs to be reconnected.")
+    except SeatTemporarilyUnavailable:
+        return provider_error(provider, 503, "api_error",
+                              "Seat temporarily unavailable. Try again shortly.")
     except Exception:
         return provider_error(provider, 502, "api_error", "Seat token refresh failed.")
 
