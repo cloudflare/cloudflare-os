@@ -322,8 +322,9 @@ if (backendHost) {
 console.log(`\nStarting: wrangler dev ${args.join(" ")}\n`);
 
 try {
+  // shell: true so Windows resolves the `pnpm.cmd` shim.
   execFileSync("pnpm", ["exec", "wrangler", "dev", ...args],
-      { stdio: "inherit", cwd: ROOT });
+      { stdio: "inherit", cwd: ROOT, shell: true });
 } catch (e) {
   // wrangler was killed or exited with an error; the output was already shown
   // via stdio: "inherit", so just propagate the exit code.
