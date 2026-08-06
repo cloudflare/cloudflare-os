@@ -19,35 +19,46 @@ def test_enroll_start_rejects_unknown_provider(tmp_path):
     r = app.post("/enroll/bogus/start", headers={"X-Seat-Owner": "alice"})
     assert r.status_code == 400
 
-def test_enroll_start_returns_the_login_command(tmp_path):
-    _, app = build(tmp_path)
-    r = app.post("/enroll/anthropic/start", headers={"X-Seat-Owner": "alice"})
-    assert r.status_code == 200
-    body = r.json()
-    assert "CLAUDE_CONFIG_DIR=" in body["command"]
-    assert body["command"].endswith("claude login")
-    assert body["poll_id"]
+# test_enroll_start_returns_the_login_command (old CLI-command contract) is not
+# translated: test_anthropic_start_returns_an_authorize_url below exercises the
+# exact same scenario (alice, anthropic, /start) under the new contract, so a
+# translation would be a verbatim duplicate rather than added coverage.
 
-def test_poll_reports_pending_until_credentials_appear(tmp_path):
-    _, app = build(tmp_path)
-    start = app.post("/enroll/anthropic/start",
-                     headers={"X-Seat-Owner": "alice"}).json()
-    r = app.post("/enroll/anthropic/poll", json={"poll_id": start["poll_id"]})
-    assert r.json()["status"] == "pending"
+def test_openai_complete_reports_pending_until_authorized(tmp_path):
+    # Translates test_poll_reports_pending_until_credentials_appear: Anthropic no
+    # longer has a poll endpoint, but OpenAI's device flow polls the same way via
+    # repeated /complete calls, returning "pending" until the user authorizes.
+    def handler(request):
+        if str(request.url).endswith("/oauth/device/code"):
+            return httpx.Response(200, json={"device_code": "DC", "user_code": "ABCD-1234",
+                                             "verification_uri_complete": "https://x/y",
+                                             "interval": 5})
+        return httpx.Response(400, json={"error": "authorization_pending"})
+    _, app = build(tmp_path, handler)
+    start = app.post("/enroll/openai/start", headers={"X-Seat-Owner": "alice"}).json()
+    body = app.post("/enroll/openai/complete",
+                    json={"enroll_id": start["enroll_id"]}).json()
+    assert body["status"] == "pending"
 
-def test_poll_completes_once_credentials_exist(tmp_path):
-    _, app = build(tmp_path)
-    start = app.post("/enroll/anthropic/start",
-                     headers={"X-Seat-Owner": "alice"}).json()
-    cfg = tmp_path / "state" / "alice" / "anthropic"
-    (cfg / ".credentials.json").write_text(json.dumps(
-        {"claudeAiOauth": {"accessToken": "A", "refreshToken": "R",
-                           "expiresAt": 9_000_000}}), encoding="utf-8")
-    body = app.post("/enroll/anthropic/poll",
-                    json={"poll_id": start["poll_id"]}).json()
+def test_openai_complete_mints_a_handle_once_authorized(tmp_path):
+    # Translates test_poll_completes_once_credentials_exist: the old test wrote
+    # credentials directly (as if the CLI login had finished) and polled to pick
+    # them up. Under OAuth there is no external process writing the file, so the
+    # equivalent is the device flow's token endpoint succeeding once authorized.
+    def handler(request):
+        if str(request.url).endswith("/oauth/device/code"):
+            return httpx.Response(200, json={"device_code": "DC", "user_code": "ABCD-1234",
+                                             "verification_uri_complete": "https://x/y",
+                                             "interval": 5})
+        return httpx.Response(200, json={"access_token": "A", "refresh_token": "R",
+                                         "expires_in": 3600})
+    store, app = build(tmp_path, handler)
+    start = app.post("/enroll/openai/start", headers={"X-Seat-Owner": "alice"}).json()
+    body = app.post("/enroll/openai/complete",
+                    json={"enroll_id": start["enroll_id"]}).json()
     assert body["status"] == "complete"
-    assert body["handle"]
-    assert "claude-sonnet-5" in body["models"]
+    rec = store.get(body["handle"])
+    assert rec.owner == "alice" and rec.provider == "openai"
 
 def test_delete_rejects_another_owners_handle(tmp_path):
     store, app = build(tmp_path)
@@ -132,3 +143,68 @@ def test_mixed_case_owner_cannot_reach_another_users_directory(tmp_path):
                     headers={"X-Seat-Owner": "alice"}).status_code == 200
     assert app.post("/enroll/anthropic/start",
                     headers={"X-Seat-Owner": "Alice"}).status_code == 400
+
+def test_anthropic_start_returns_an_authorize_url(tmp_path):
+    _, app = build(tmp_path)
+    body = app.post("/enroll/anthropic/start",
+                    headers={"X-Seat-Owner": "alice"}).json()
+    assert body["kind"] == "authorize_url"
+    assert body["url"].startswith("https://claude.com/cai/oauth/authorize?")
+    assert body["enroll_id"]
+    assert "verifier" not in str(body)        # the verifier must stay server-side
+
+def test_complete_rejects_unknown_enroll_id(tmp_path):
+    _, app = build(tmp_path)
+    r = app.post("/enroll/anthropic/complete",
+                 json={"enroll_id": "nope", "code": "x"})
+    assert r.status_code == 404
+
+def test_anthropic_complete_exchanges_and_mints_a_handle(tmp_path):
+    def handler(request):
+        return httpx.Response(200, json={"access_token": "A", "refresh_token": "R",
+                                         "expires_in": 3600})
+    store, app = build(tmp_path, handler)
+    start = app.post("/enroll/anthropic/start",
+                     headers={"X-Seat-Owner": "alice"}).json()
+    body = app.post("/enroll/anthropic/complete",
+                    json={"enroll_id": start["enroll_id"], "code": "THECODE"}).json()
+    assert body["status"] == "complete"
+    rec = store.get(body["handle"])
+    assert rec.owner == "alice" and rec.provider == "anthropic"
+    creds = json.loads(
+        (tmp_path / "state" / "alice" / "anthropic" / ".credentials.json")
+        .read_text(encoding="utf-8"))
+    assert creds["claudeAiOauth"]["accessToken"] == "A"
+
+def test_complete_is_single_use(tmp_path):
+    def handler(request):
+        return httpx.Response(200, json={"access_token": "A", "refresh_token": "R",
+                                         "expires_in": 3600})
+    _, app = build(tmp_path, handler)
+    start = app.post("/enroll/anthropic/start",
+                     headers={"X-Seat-Owner": "alice"}).json()
+    payload = {"enroll_id": start["enroll_id"], "code": "THECODE"}
+    assert app.post("/enroll/anthropic/complete", json=payload).json()["status"] == "complete"
+    assert app.post("/enroll/anthropic/complete", json=payload).status_code == 404
+
+def test_rejected_code_returns_401_not_500(tmp_path):
+    def handler(request):
+        return httpx.Response(400, json={"error": "invalid_grant"})
+    _, app = build(tmp_path, handler)
+    start = app.post("/enroll/anthropic/start",
+                     headers={"X-Seat-Owner": "alice"}).json()
+    r = app.post("/enroll/anthropic/complete",
+                 json={"enroll_id": start["enroll_id"], "code": "BAD"})
+    assert r.status_code == 401
+    assert "detail" not in r.json()
+
+def test_openai_start_returns_a_device_code(tmp_path):
+    def handler(request):
+        return httpx.Response(200, json={"device_code": "DC", "user_code": "ABCD-1234",
+                                         "verification_uri_complete": "https://x/y",
+                                         "interval": 5})
+    _, app = build(tmp_path, handler)
+    body = app.post("/enroll/openai/start", headers={"X-Seat-Owner": "alice"}).json()
+    assert body["kind"] == "device_code"
+    assert body["user_code"] == "ABCD-1234"
+    assert "device_code" not in body          # server-side only

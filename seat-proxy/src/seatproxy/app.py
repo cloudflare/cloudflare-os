@@ -8,9 +8,11 @@ from pathlib import Path
 
 from fastapi import FastAPI, Header, Request, Response
 
-from . import anthropic_seat, openai_seat, providers
-from .credentials import CredentialsMalformed, CredentialsMissing, read_tokens
+from . import anthropic_seat, oauth, openai_seat, providers
+from .credentials import (CredentialsMalformed, CredentialsMissing, create_tokens,
+                          read_tokens)
 from .errors import provider_error
+from .refresh import AuthRejected
 from .relay import relay
 
 _SEAT_MODULES = {providers.ANTHROPIC: anthropic_seat, providers.OPENAI: openai_seat}
@@ -82,30 +84,63 @@ def create_app(store, client, state_dir: str) -> FastAPI:
             os.chmod(cfg, 0o700)
         except OSError:
             pass          # best effort; Windows has no POSIX mode
-        poll_id = secrets.token_urlsafe(16)
-        pending[poll_id] = {"owner": x_seat_owner, "provider": provider,
-                            "config_dir": str(cfg)}
-        env = providers.CONFIG_DIR_ENV[provider]
-        return {"poll_id": poll_id,
-                "config_dir": str(cfg),
-                "command": f'{env}="{cfg}" {providers.LOGIN_COMMAND[provider]}'}
 
-    @app.post("/enroll/{provider}/poll")
-    async def poll(provider: str, payload: dict):
-        entry = pending.get(payload.get("poll_id", ""))
-        if entry is None:
+        enroll_id = secrets.token_urlsafe(16)
+        entry = {"owner": x_seat_owner, "provider": provider, "config_dir": str(cfg)}
+        if provider == providers.ANTHROPIC:
+            verifier, challenge = oauth.new_pkce()
+            # state is part of the flow Anthropic expects, but this is a paste-back
+            # flow (their hosted callback shows the user a code to copy, it never
+            # redirects to us), so we can never verify state on return. It is not
+            # CSRF protection here — do not treat it as one.
+            state = secrets.token_urlsafe(12)
+            entry["verifier"] = verifier
+            pending[enroll_id] = entry
+            # The verifier never leaves the server: the client gets only the URL.
+            return {"enroll_id": enroll_id, "kind": "authorize_url",
+                    "url": oauth.authorize_url(provider, challenge, state)}
+
+        device = await oauth.start_device_code(client)
+        entry["device_code"] = device["device_code"]
+        pending[enroll_id] = entry
+        return {"enroll_id": enroll_id, "kind": "device_code",
+                "user_code": device.get("user_code"),
+                "verification_uri": device.get("verification_uri_complete")
+                                    or device.get("verification_uri"),
+                "interval": device.get("interval", 5)}
+
+    @app.post("/enroll/{provider}/complete")
+    async def complete(provider: str, payload: dict):
+        entry = pending.get(payload.get("enroll_id", ""))
+        if entry is None or entry["provider"] != provider:
             return provider_error(provider, 404, "invalid_request_error",
-                                  "Unknown poll_id.")
+                                  "Unknown enroll_id.")
         try:
-            tokens = read_tokens(entry["provider"], entry["config_dir"])
-        except (CredentialsMissing, CredentialsMalformed):
-            return {"status": "pending"}
+            if provider == providers.ANTHROPIC:
+                code = payload.get("code", "")
+                if not code:
+                    return provider_error(provider, 400, "invalid_request_error",
+                                          "A code is required.")
+                tokens = await oauth.exchange_code(client, provider, code,
+                                                   entry["verifier"])
+            else:
+                tokens = await oauth.poll_device_code(client, entry["device_code"])
+                if tokens is None:
+                    return {"status": "pending"}
+        except AuthRejected:
+            return provider_error(provider, 401, "authentication_error",
+                                  "That authorization was rejected. Start again.")
+        except Exception:
+            return provider_error(provider, 502, "api_error",
+                                  "Could not complete authorization.")
 
+        create_tokens(entry["provider"], entry["config_dir"], tokens)
         existing = store.find(entry["owner"], entry["provider"])
         if existing is not None:
             store.delete(existing.handle)
         handle = store.put(entry["owner"], entry["provider"], entry["config_dir"])
-        pending.pop(payload["poll_id"], None)
+        # Single use: the code and verifier are spent.
+        pending.pop(payload["enroll_id"], None)
         module = _SEAT_MODULES[entry["provider"]]
         models = await module.fetch_available_models(client, tokens.access_token)
         return {"status": "complete", "handle": handle, "models": models}
