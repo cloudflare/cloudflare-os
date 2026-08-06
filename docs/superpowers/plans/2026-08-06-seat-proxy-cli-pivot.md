@@ -202,7 +202,18 @@ def test_write_is_atomic_and_leaves_no_temp_file(tmp_path):
 def test_credentials_path_uses_provider_filename(tmp_path):
     assert credentials_path("anthropic", str(tmp_path)).name == ".credentials.json"
     assert credentials_path("openai", str(tmp_path)).name == "auth.json"
+
+@pytest.mark.skipif(os.name == "nt",
+                    reason="POSIX file modes are not enforced on Windows")
+def test_written_credentials_are_owner_only(tmp_path):
+    # os.replace makes the destination inherit the temp file's mode, so a
+    # default-mode temp would downgrade the user's credentials to world-readable.
+    write_claude(tmp_path)
+    write_tokens("anthropic", str(tmp_path), SeatTokens("NEW", "NEWR", 5000.0))
+    assert (tmp_path / ".credentials.json").stat().st_mode & 0o777 == 0o600
 ```
+
+Add `import os` to the test file's imports.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -249,16 +260,19 @@ def credentials_path(provider: str, config_dir: str) -> Path:
 
 def _load(provider: str, config_dir: str) -> dict:
     path = credentials_path(provider, config_dir)
+    # `from None` throughout: FileNotFoundError and OSError embed the path in their
+    # message, and a chained cause still reaches a rendered traceback. The global
+    # constraint is that exceptions carry no filesystem paths.
     try:
         text = path.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise CredentialsMissing(provider) from exc
-    except OSError as exc:
-        raise CredentialsMalformed(provider) from exc
+    except FileNotFoundError:
+        raise CredentialsMissing(provider) from None
+    except OSError:
+        raise CredentialsMalformed(provider) from None
     try:
         parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise CredentialsMalformed(provider) from exc
+    except json.JSONDecodeError:
+        raise CredentialsMalformed(provider) from None
     if not isinstance(parsed, dict):
         raise CredentialsMalformed(provider)
     return parsed
@@ -282,10 +296,11 @@ def read_tokens(provider: str, config_dir: str) -> SeatTokens:
     return SeatTokens(access, refresh, expires)
 
 def write_tokens(provider: str, config_dir: str, tokens: SeatTokens) -> None:
-    try:
-        raw = _load(provider, config_dir)
-    except (CredentialsMissing, CredentialsMalformed):
-        raw = {}
+    # The CLI's file is authoritative, so refuse to fabricate one. A missing or
+    # unparseable file means the config_dir is wrong or the login never completed;
+    # silently creating a fresh file there would mask that, and leave the user's
+    # real credentials un-rotated while we believe the write succeeded.
+    raw = _load(provider, config_dir)
     if provider == providers.ANTHROPIC:
         node = raw.setdefault("claudeAiOauth", {})
         node["accessToken"] = tokens.access_token
@@ -298,9 +313,15 @@ def write_tokens(provider: str, config_dir: str, tokens: SeatTokens) -> None:
         raw["expires_at"] = tokens.expires_at
 
     # Atomic replace: a torn credentials file would break the user's own CLI.
+    # The temp file is created 0600 because os.replace makes the DESTINATION inherit
+    # the temp file's mode — a default-mode temp would silently downgrade the user's
+    # credentials file to world-readable and expose a durable refresh token to every
+    # other account on the host.
     path = credentials_path(provider, config_dir)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(raw, indent=2))
     os.replace(tmp, path)
 ```
 
