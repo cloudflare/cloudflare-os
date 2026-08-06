@@ -1,7 +1,8 @@
 # Seat proxy: subscription-seat auth for Cloudflare OS
 
 **Date:** 2026-08-06
-**Status:** Approved, not yet implemented
+**Status:** Approved. Relay core and error shapes shipped (`errors.py`, `relay.py`); store and
+refresh being reshaped for the CLI-piggyback pivot; enrollment and app wiring not yet built.
 
 ## Problem
 
