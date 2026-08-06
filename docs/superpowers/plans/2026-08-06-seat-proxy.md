@@ -173,6 +173,7 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'seatproxy.store'`
 ```python
 # seat-proxy/src/seatproxy/store.py
 import secrets, sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from cryptography.fernet import Fernet
 
@@ -197,7 +198,11 @@ class TokenStore:
                 expires_at real not null, needs_reauth integer not null default 0)""")
 
     def _conn(self):
-        return sqlite3.connect(self._db_path, isolation_level=None)
+        # closing() actually closes the handle on exit. A bare `with sqlite3.connect(...)`
+        # only commits or rolls back the transaction — it leaves the connection open, which
+        # leaks a file handle per call on a long-running service. isolation_level=None means
+        # autocommit, so no explicit commit is needed.
+        return closing(sqlite3.connect(self._db_path, isolation_level=None))
 
     def put(self, owner, provider, access, refresh, expires_at) -> str:
         handle = secrets.token_urlsafe(32)
@@ -208,9 +213,10 @@ class TokenStore:
         return handle
 
     def get(self, handle):
-        row = self._conn().execute(
-            "select handle,owner,provider,access,refresh,expires_at,needs_reauth "
-            "from seats where handle=?", (handle,)).fetchone()
+        with self._conn() as c:
+            row = c.execute(
+                "select handle,owner,provider,access,refresh,expires_at,needs_reauth "
+                "from seats where handle=?", (handle,)).fetchone()
         if row is None:
             return None
         return Record(row[0], row[1], row[2], self._f.decrypt(row[3]).decode(),
