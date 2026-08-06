@@ -119,3 +119,16 @@ def test_trailing_dot_owner_cannot_reach_another_users_directory(tmp_path):
     assert app.post("/enroll/anthropic/start",
                     headers={"X-Seat-Owner": "alice."}).status_code == 400
     assert sorted(p.name for p in (tmp_path / "state").iterdir()) == ["alice"]
+
+@pytest.mark.parametrize("bad", ["Alice", "ALICE", "aLiCe", "Bob.Smith"])
+def test_enroll_start_rejects_non_casefolded_owner(tmp_path, bad):
+    _, app = build(tmp_path)
+    r = app.post("/enroll/anthropic/start", headers={"X-Seat-Owner": bad})
+    assert r.status_code == 400
+
+def test_mixed_case_owner_cannot_reach_another_users_directory(tmp_path):
+    _, app = build(tmp_path)
+    assert app.post("/enroll/anthropic/start",
+                    headers={"X-Seat-Owner": "alice"}).status_code == 200
+    assert app.post("/enroll/anthropic/start",
+                    headers={"X-Seat-Owner": "Alice"}).status_code == 400

@@ -61,3 +61,12 @@ async def test_models_returns_empty_list_when_endpoint_fails():
         return httpx.Response(500, text="boom")
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     assert await o.fetch_available_models(client, "ACCESS") == []
+
+@pytest.mark.asyncio
+async def test_rate_limited_refresh_is_transient_not_auth_rejected():
+    async def handler(request):
+        return httpx.Response(429, json={"error": "slow_down"})
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(Exception) as exc:
+        await o.refresh(client, SeatTokens("OLD", "OLDR", 0.0))
+    assert not isinstance(exc.value, AuthRejected)

@@ -69,8 +69,11 @@ async def test_missing_credentials_file_means_reauth(tmp_path):
         await resolve_access_token(store, h, now=5_000.0, refresher=never)
 
 @pytest.mark.asyncio
-async def test_already_flagged_seat_raises_without_reading(tmp_path):
-    store, h, _ = seat(tmp_path, expires_ms=10_000_000)
+async def test_already_flagged_seat_with_expired_credentials_still_raises(tmp_path):
+    # A flagged seat is no longer a permanent door shut: it now reads the
+    # credentials file to check whether a fresh CLI login already fixed things.
+    # Only when those credentials are also expired/unreadable does it still raise.
+    store, h, _ = seat(tmp_path, expires_ms=0)
     store.mark_needs_reauth(h)
     with pytest.raises(SeatNeedsReauth):
         await resolve_access_token(store, h, now=5_000.0, refresher=never)
@@ -124,3 +127,17 @@ async def test_unreadable_credentials_are_transient_not_reauth(tmp_path, monkeyp
     with pytest.raises(SeatTemporarilyUnavailable):
         await resolve_access_token(store, h, now=5_000.0, refresher=never)
     assert store.get(h).needs_reauth is False
+
+@pytest.mark.asyncio
+async def test_flagged_seat_recovers_after_a_fresh_cli_login(tmp_path):
+    store, h, _ = seat(tmp_path, access="FRESH", expires_ms=10_000_000)
+    store.mark_needs_reauth(h)
+    assert await resolve_access_token(store, h, now=5_000.0, refresher=never) == "FRESH"
+    assert store.get(h).needs_reauth is False
+
+@pytest.mark.asyncio
+async def test_flagged_seat_with_expired_credentials_still_raises(tmp_path):
+    store, h, _ = seat(tmp_path, expires_ms=0)
+    store.mark_needs_reauth(h)
+    with pytest.raises(SeatNeedsReauth):
+        await resolve_access_token(store, h, now=5_000.0, refresher=never)

@@ -62,9 +62,18 @@ def _load(rec):
 
 async def resolve_access_token(store, handle, now, refresher) -> str:
     rec = store.get(handle)
-    if rec is None or rec.needs_reauth:
+    if rec is None:
         raise SeatNeedsReauth()
     tokens = _load(rec)
+    if rec.needs_reauth:
+        # A flagged seat recovers by itself once the user re-runs the CLI login:
+        # a readable, non-expired credentials file is proof the seat works again.
+        # Without this the flag is permanent and re-enrolling would mint a new
+        # handle that Cloudflare OS would have to be re-pointed at.
+        if now < tokens.expires_at - REFRESH_SKEW_SECONDS:
+            store.clear_needs_reauth(handle)
+            return tokens.access_token
+        raise SeatNeedsReauth()
     if now < tokens.expires_at - REFRESH_SKEW_SECONDS:
         return tokens.access_token
 
@@ -83,9 +92,11 @@ async def resolve_access_token(store, handle, now, refresher) -> str:
             except AuthRejected as exc:
                 store.mark_needs_reauth(handle)
                 raise SeatNeedsReauth() from exc
-            except Exception as exc:
-                # Transport, timeout, anything else: the seat is not proven dead.
-                raise SeatTemporarilyUnavailable() from exc
+            except Exception:
+                # `from None`: httpx errors carry .request, whose body holds the
+                # refresh token, and an attribute-serializing reporter would
+                # capture it off __cause__.
+                raise SeatTemporarilyUnavailable() from None
             write_tokens(rec.provider, rec.config_dir, fresh)
             store.clear_needs_reauth(handle)
             return fresh.access_token

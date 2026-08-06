@@ -42,6 +42,13 @@ def _valid_owner(owner: str | None) -> bool:
     # Reserved device names raise OSError from mkdir; reject for a clean 400.
     if owner.split(".")[0].lower() in _WINDOWS_RESERVED:
         return False
+    # The filesystem is case-insensitive on Windows and macOS, so "Alice" would
+    # resolve into "alice"'s directory and read her credentials — while SQLite's
+    # owner comparison stays case-sensitive, so her handle would not be revoked
+    # and she would get no signal. Requiring a single canonical spelling removes
+    # the alias rather than trying to keep two representations in sync.
+    if owner != owner.casefold():
+        return False
     return True
 
 def create_app(store, client, state_dir: str) -> FastAPI:

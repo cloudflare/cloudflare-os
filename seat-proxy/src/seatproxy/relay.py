@@ -1,3 +1,5 @@
+from . import providers
+
 HOP_BY_HOP = {"host", "content-length", "connection", "keep-alive",
               "transfer-encoding", "upgrade", "proxy-authorization"}
 
@@ -6,7 +8,7 @@ def outbound_headers(provider: str, incoming: dict, access_token: str) -> dict:
            if k.lower() not in HOP_BY_HOP
            and k.lower() not in {"x-api-key", "authorization"}}
     out["Authorization"] = f"Bearer {access_token}"
-    if provider == "anthropic":
+    if provider == providers.ANTHROPIC:
         out["anthropic-beta"] = "oauth-2025-04-20"
     else:
         out["Origin"] = "https://chatgpt.com"
@@ -20,7 +22,7 @@ from .errors import provider_error
 from .refresh import resolve_access_token, SeatNeedsReauth, SeatTemporarilyUnavailable
 
 def _read_handle(provider: str, headers) -> str | None:
-    if provider == "anthropic":
+    if provider == providers.ANTHROPIC:
         return headers.get("x-api-key")
     auth = headers.get("authorization", "")
     return auth[7:] if auth.lower().startswith("bearer ") else None

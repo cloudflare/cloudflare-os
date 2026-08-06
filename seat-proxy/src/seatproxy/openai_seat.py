@@ -33,8 +33,10 @@ async def refresh(client: httpx.AsyncClient, tokens: SeatTokens) -> SeatTokens:
         data={"grant_type": "refresh_token",
               "refresh_token": tokens.refresh_token,
               "client_id": CLIENT_ID})
-    # 4xx means the credentials were refused; 5xx and transport errors are transient.
-    if 400 <= response.status_code < 500:
+    # Only a genuine credential rejection means the seat is dead. 408 and 429 are
+    # transient and must not brick a seat, and anything else 4xx falls through to
+    # raise_for_status() and is treated as transient by the caller.
+    if response.status_code in (400, 401, 403):
         raise AuthRejected()
     response.raise_for_status()
     data = response.json()

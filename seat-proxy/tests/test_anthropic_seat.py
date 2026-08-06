@@ -51,3 +51,12 @@ async def test_server_error_is_not_auth_rejected():
 @pytest.mark.asyncio
 async def test_models_returns_the_seat_catalog():
     assert "claude-sonnet-5" in await a.fetch_available_models(None, "ACCESS")
+
+@pytest.mark.asyncio
+async def test_rate_limited_refresh_is_transient_not_auth_rejected():
+    async def handler(request):
+        return httpx.Response(429, json={"error": "slow_down"})
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(Exception) as exc:
+        await a.refresh(client, SeatTokens("OLD", "OLDR", 0.0))
+    assert not isinstance(exc.value, AuthRejected)
