@@ -1,3 +1,7 @@
+# Runtime state. `state/` holds every enrolled user's OAuth credentials, and it is
+# the default SEAT_PROXY_STATE location, so it must never be stageable.
+state/
 seats.db
+*.db
 .venv/
 __pycache__/
