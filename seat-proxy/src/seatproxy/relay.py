@@ -15,6 +15,7 @@ def outbound_headers(provider: str, incoming: dict, access_token: str) -> dict:
     return out
 
 from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 from .errors import provider_error
 from .refresh import resolve_access_token, SeatNeedsReauth
 
@@ -47,7 +48,11 @@ async def relay(request, provider, upstream_base, store, client, now, refresher=
         status_code=upstream.status_code,
         headers={k: v for k, v in upstream.headers.items()
                  if k.lower() not in HOP_BY_HOP},
-        background=None)
+        # httpx auto-closes only on full natural consumption. When the client
+        # disconnects mid-stream — every "stop generating" — Starlette cancels the
+        # generator before EOF and the connection is never returned to the pool.
+        # The BackgroundTask runs on both paths.
+        background=BackgroundTask(upstream.aclose))
 
 async def _no_refresh(rec):
     raise RuntimeError("no refresher configured for this provider")

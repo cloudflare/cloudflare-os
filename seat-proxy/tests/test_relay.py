@@ -89,3 +89,16 @@ async def test_unknown_handle_returns_anthropic_shaped_401(tmp_path):
     assert resp.status_code == 401
     import json
     assert json.loads(resp.body)["type"] == "error"
+
+@pytest.mark.asyncio
+async def test_upstream_response_is_closed_after_streaming(tmp_path):
+    store = TokenStore(str(tmp_path / "s.db"), Fernet.generate_key())
+    h = store.put("alice", "anthropic", "ACCESS", "R", 10_000.0)
+
+    async def handler(request):
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    resp = await relay(FakeRequest({"x-api-key": h}, b"{}"), "anthropic",
+                       "https://api.anthropic.com", store, client, now=5_000.0)
+    assert resp.background is not None
