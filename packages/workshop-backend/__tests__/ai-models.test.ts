@@ -366,6 +366,41 @@ describe("getModel direct routing (no gateway)", () => {
   });
 });
 
+describe("custom OpenAI-compatible provider", () => {
+  it("uses the configured base URL verbatim (no legacy-suffix normalization)", () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "custom",
+      model: "anthropic/claude-sonnet-5",
+      apiToken: "sk-or-test",
+      apiUrl: "https://openrouter.ai/api/v1",
+    }, INITIATOR);
+
+    expect(handle.model.api).toBe("openai-completions");
+    expect(handle.model.baseUrl).toBe("https://openrouter.ai/api/v1");
+  });
+
+  it("sends the configured API key as a bearer token", async () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "custom",
+      model: "anthropic/claude-sonnet-5",
+      apiToken: "sk-or-test",
+      apiUrl: "https://openrouter.ai/api/v1",
+    }, INITIATOR);
+
+    const request = await captureRequest(handle);
+    expect(request.url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(request.headers.get("authorization")).toBe("Bearer sk-or-test");
+  }, 15000);
+
+  it("throws a clear error when no API URL is configured", () => {
+    expect(() => getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "custom",
+      model: "anthropic/claude-sonnet-5",
+      apiToken: "sk-or-test",
+    }, INITIATOR)).toThrow("This custom model has no API URL configured.");
+  });
+});
+
 describe("PDF attachment bridging", () => {
   beforeEach(() => {
     capturedRequests.length = 0;

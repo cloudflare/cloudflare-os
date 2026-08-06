@@ -22,6 +22,7 @@ const PROVIDER_LABELS: Record<AiModelProvider, string> = {
   google: 'Google',
   cloudflare: 'Cloudflare Workers AI',
   ollama: 'Ollama',
+  custom: 'Custom (OpenAI-compatible)',
 }
 
 // Placeholder hinting at the shape of each provider's API token.
@@ -31,6 +32,7 @@ const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
   google: 'AIza...',
   cloudflare: 'Cloudflare API token',
   ollama: '(optional)',
+  custom: 'sk-...',
 }
 
 // Example used in the custom-model placeholders for providers that have no suggested models
@@ -160,6 +162,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     }
 
     const isOllama = selection?.provider === 'ollama'
+    const isCustom = selection?.provider === 'custom'
     const isCloudflare = selection?.provider === 'cloudflare'
     const showCredentials = !gatewayMode
 
@@ -173,6 +176,10 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
 
     if (showCredentials && isOllama && !apiUrl.trim()) {
       newErrors.apiUrl = 'Please enter the Ollama API URL'
+    }
+
+    if (showCredentials && isCustom && !apiUrl.trim()) {
+      newErrors.apiUrl = 'Please enter the API URL'
     }
 
     setErrors(newErrors)
@@ -217,6 +224,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const showCustomFields = selection?.type === 'custom'
   const example = selection ? exampleModel(selection.provider) : null
   const isOllama = selection?.provider === 'ollama'
+  const isCustom = selection?.provider === 'custom'
   const isCloudflare = selection?.provider === 'cloudflare'
   const showCredentials = !gatewayMode
 
@@ -317,6 +325,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
                   ? 'Optional for local Ollama access'
                   : isCloudflare
                   ? 'An API token with Workers AI Read + Edit permissions (in the dashboard: Workers AI > Use REST API > Create a Workers AI API Token)'
+                  : isCustom
+                  ? 'API key for this endpoint'
                   : `Your ${PROVIDER_LABELS[selection.provider]} API token for billing`
               }
               value={apiToken}
@@ -339,8 +349,21 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
             />
           )}
 
-          {/* Advanced Settings for non-Ollama, non-Cloudflare providers */}
-          {showCredentials && selection && !isOllama && !isCloudflare && (
+          {/* API URL (always visible and required for a generic custom endpoint) */}
+          {showCredentials && isCustom && (
+            <Input
+              label="API URL"
+              placeholder="https://openrouter.ai/api/v1"
+              description="Base URL of an OpenAI Chat-Completions-compatible endpoint (e.g. OpenRouter, OpenCode Zen)"
+              value={apiUrl}
+              onChange={(e) => { setApiUrl(e.target.value); setErrors(prev => ({ ...prev, apiUrl: '' })) }}
+              error={errors.apiUrl}
+              variant={errors.apiUrl ? 'error' : 'default'}
+            />
+          )}
+
+          {/* Advanced Settings for non-Ollama, non-Cloudflare, non-custom providers */}
+          {showCredentials && selection && !isOllama && !isCustom && !isCloudflare && (
             <Collapsible.Root
               open={advancedOpen}
               onOpenChange={setAdvancedOpen}

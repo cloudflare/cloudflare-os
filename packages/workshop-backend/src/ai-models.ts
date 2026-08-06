@@ -124,6 +124,7 @@ function catalogModel(provider: AiModelConfig["provider"], modelId: string): Mod
     case "google": return (GOOGLE_MODELS as Record<string, Model<Api>>)[modelId];
     case "cloudflare": return (CLOUDFLARE_WORKERS_AI_MODELS as Record<string, Model<Api>>)[modelId];
     case "ollama": return undefined;
+    case "custom": return undefined;
     default: return undefined;
   }
 }
@@ -567,6 +568,31 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
         ...(config.apiToken === ""
             ? { apiKey: "unused", headers: { Authorization: null } }
             : { apiKey: config.apiToken }),
+        sessionAffinity,
+      });
+    case "custom":
+      // Any OpenAI Chat-Completions-compatible endpoint (OpenRouter, OpenCode Zen, a self-hosted
+      // proxy, etc.). Unlike "ollama" this has no default URL and no legacy-suffix normalization:
+      // the user supplies the exact base URL the provider documents (e.g.
+      // "https://openrouter.ai/api/v1").
+      if (!config.apiUrl) {
+        throw new Error(
+            "This custom model has no API URL configured. Re-add it with the base URL of an " +
+            "OpenAI-compatible endpoint (e.g. https://openrouter.ai/api/v1).");
+      }
+      return makeHandle({
+        model: {
+          id: config.model,
+          name: config.model,
+          api: "openai-completions",
+          provider: "custom",
+          baseUrl: stripTrailingSlashes(config.apiUrl),
+          reasoning: true,
+          input: ["text", "image"],
+          cost: ZERO_COST,
+          ...window,
+        },
+        apiKey: config.apiToken,
         sessionAffinity,
       });
     case "openai":
