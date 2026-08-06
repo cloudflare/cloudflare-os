@@ -96,3 +96,43 @@ def test_unreadable_file_is_distinct_from_malformed(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_text", boom)
     with pytest.raises(CredentialsUnreadable):
         read_tokens("anthropic", str(tmp_path))
+
+def test_create_tokens_writes_a_new_file(tmp_path):
+    from seatproxy.credentials import create_tokens
+    cfg = tmp_path / "seat"
+    cfg.mkdir()
+    create_tokens("anthropic", str(cfg), SeatTokens("A", "R", 5000.0))
+    doc = json.loads((cfg / ".credentials.json").read_text(encoding="utf-8"))
+    assert doc["claudeAiOauth"]["accessToken"] == "A"
+    assert doc["claudeAiOauth"]["refreshToken"] == "R"
+    assert doc["claudeAiOauth"]["expiresAt"] == 5_000_000
+
+def test_create_tokens_overwrites_an_existing_file(tmp_path):
+    from seatproxy.credentials import create_tokens
+    write_claude(tmp_path, access="OLD")
+    create_tokens("anthropic", str(tmp_path), SeatTokens("NEW", "NEWR", 5000.0))
+    doc = json.loads((tmp_path / ".credentials.json").read_text(encoding="utf-8"))
+    assert doc["claudeAiOauth"]["accessToken"] == "NEW"
+
+def test_create_tokens_writes_codex_shape(tmp_path):
+    from seatproxy.credentials import create_tokens
+    cfg = tmp_path / "seat"
+    cfg.mkdir()
+    create_tokens("openai", str(cfg), SeatTokens("A", "R", 5000.0))
+    doc = json.loads((cfg / "auth.json").read_text(encoding="utf-8"))
+    assert doc["tokens"]["access_token"] == "A"
+    assert doc["tokens"]["refresh_token"] == "R"
+    assert doc["expires_at"] == 5000.0
+
+@pytest.mark.skipif(os.name == "nt",
+                    reason="POSIX file modes are not enforced on Windows")
+def test_create_tokens_file_is_owner_only(tmp_path):
+    from seatproxy.credentials import create_tokens
+    cfg = tmp_path / "seat"
+    cfg.mkdir()
+    create_tokens("anthropic", str(cfg), SeatTokens("A", "R", 1.0))
+    assert (cfg / ".credentials.json").stat().st_mode & 0o777 == 0o600
+
+def test_write_tokens_still_refuses_a_missing_file(tmp_path):
+    with pytest.raises(CredentialsMissing):
+        write_tokens("anthropic", str(tmp_path), SeatTokens("A", "R", 1.0))

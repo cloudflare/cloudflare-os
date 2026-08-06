@@ -76,12 +76,7 @@ def read_tokens(provider: str, config_dir: str) -> SeatTokens:
         raise CredentialsMalformed(provider)
     return SeatTokens(access, refresh, expires)
 
-def write_tokens(provider: str, config_dir: str, tokens: SeatTokens) -> None:
-    # The CLI's file is authoritative, so refuse to fabricate one. A missing or
-    # unparseable file means the config_dir is wrong or the login never completed;
-    # silently creating a fresh file there would mask that, and leave the user's
-    # real credentials un-rotated while we believe the write succeeded.
-    raw = _load(provider, config_dir)
+def _apply(provider: str, raw: dict, tokens: SeatTokens) -> dict:
     if provider == providers.ANTHROPIC:
         node = raw.setdefault("claudeAiOauth", {})
         node["accessToken"] = tokens.access_token
@@ -92,8 +87,9 @@ def write_tokens(provider: str, config_dir: str, tokens: SeatTokens) -> None:
         node["access_token"] = tokens.access_token
         node["refresh_token"] = tokens.refresh_token
         raw["expires_at"] = tokens.expires_at
+    return raw
 
-    # Atomic replace: a torn credentials file would break the user's own CLI.
+def _atomic_write(provider: str, config_dir: str, raw: dict) -> None:
     # The temp file is created 0600 because os.replace makes the DESTINATION inherit
     # the temp file's mode — a default-mode temp would silently downgrade the user's
     # credentials file to world-readable and expose a durable refresh token to every
@@ -104,3 +100,19 @@ def write_tokens(provider: str, config_dir: str, tokens: SeatTokens) -> None:
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(json.dumps(raw, indent=2))
     os.replace(tmp, path)
+
+def write_tokens(provider: str, config_dir: str, tokens: SeatTokens) -> None:
+    # The CLI's file is authoritative, so refuse to fabricate one. A missing or
+    # unparseable file means the config_dir is wrong or the login never completed;
+    # silently creating a fresh file there would mask that, and leave the user's
+    # real credentials un-rotated while we believe the write succeeded.
+    _atomic_write(provider, config_dir, _apply(provider, _load(provider, config_dir), tokens))
+
+def create_tokens(provider: str, config_dir: str, tokens: SeatTokens) -> None:
+    """Write the FIRST credentials file for a freshly enrolled seat.
+
+    Separate from write_tokens, which refuses to create a missing file so that a
+    wrong config_dir cannot be masked. Enrollment is the one caller that legitimately
+    has nothing to merge into.
+    """
+    _atomic_write(provider, config_dir, _apply(provider, {}, tokens))
