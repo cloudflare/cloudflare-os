@@ -692,6 +692,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           result.quickModel = quickModel.config;
         }
       }
+      // Fall back to the chat's own model when the user hasn't explicitly picked a "Quick
+      // model" in settings, so title generation works out of the box (matching AI Gateway
+      // mode, which always has a quick model) instead of silently never firing.
+      if (!result.quickModel) {
+        result.quickModel = result.aiModel?.config;
+      }
     }
     return result;
   }
