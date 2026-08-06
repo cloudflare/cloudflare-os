@@ -29,8 +29,14 @@ const FRONTEND_DIST = join(ROOT, "packages", "workshop-frontend", "dist");
 const TYPED_STORAGE_DIST = join(ROOT, "packages", "typed-storage", "dist");
 const NODE_MODULES = join(ROOT, "node_modules");
 
-// Forward any extra flags (e.g. --use-workers-ai-binding) on to run-dev-server.js.
-const passthroughArgs = process.argv.slice(2);
+// Forward extra flags (e.g. --use-workers-ai-binding) on to run-dev-server.js. `--port` is
+// handled here because run-dev-server.js derives Wrangler's port from VITE_BACKEND_HOST.
+const cliArgs = process.argv.slice(2);
+const portIndex = cliArgs.indexOf("--port");
+const port = portIndex === -1 ? null : cliArgs[portIndex + 1];
+const passthroughArgs = portIndex === -1
+  ? cliArgs
+  : cliArgs.filter((_, index) => index !== portIndex && index !== portIndex + 1);
 
 // ---------------------------------------------------------------------------
 // Enumerate source files and compute a content hash.
@@ -139,11 +145,14 @@ if (needsBuild) {
 // Launch the local server (serves the built frontend as static assets).
 // ---------------------------------------------------------------------------
 
-console.log("\nStarting local server at http://localhost:8787 ...");
+const backendHost = port ? `localhost:${port}` : process.env.VITE_BACKEND_HOST;
+const localUrl = backendHost ? `http://${backendHost}` : "http://localhost:8787";
+console.log(`\nStarting local server at ${localUrl} ...`);
 const server = spawn(
     process.execPath,
     [join(ROOT, "run-dev-server.js"), "--serve-frontend-assets", ...passthroughArgs],
-    { stdio: "inherit", cwd: ROOT });
+    { stdio: "inherit", cwd: ROOT,
+      env: port ? { ...process.env, VITE_BACKEND_HOST: backendHost } : process.env });
 
 server.on("exit", (code, signal) => {
   if (signal) process.kill(process.pid, signal);

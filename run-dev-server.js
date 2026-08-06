@@ -199,6 +199,14 @@ for (const gk of gatekeepers) {
   const config = parse(readFileSync(srcPath, "utf8"));
   config.build = { ...config.build, cwd: gk.dir };
 
+  // Gatekeepers build callback and resource URLs from BASE_URL. Keep those URLs on the selected
+  // local server when VITE_BACKEND_HOST overrides Wrangler's default port.
+  if (process.env.VITE_BACKEND_HOST) {
+    config.vars = config.vars || {};
+    config.vars.BASE_URL = `http://${process.env.VITE_BACKEND_HOST}/gatekeeper/${
+      gk.name.slice("gatekeeper-".length)}`;
+  }
+
   const shared = SHARED_GATEKEEPER_CREDS[gk.name];
   if (shared && process.env[shared.id] && process.env[shared.secret]) {
     config.vars = config.vars || {};
