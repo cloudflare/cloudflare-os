@@ -62,7 +62,8 @@ async def test_streams_incrementally_without_buffering(tmp_path):
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     resp = await relay(FakeRequest({"x-api-key": h}, b"{}"), "anthropic",
-                       "https://api.anthropic.com", store, client, now=5_000.0)
+                       "https://api.anthropic.com", store, client, now=5_000.0,
+                       upstream_path="v1/messages")
     received = [c async for c in resp.body_iterator]
     assert received == chunks_out
 
@@ -76,7 +77,8 @@ async def test_upstream_429_passes_through_with_status(tmp_path):
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     resp = await relay(FakeRequest({"x-api-key": h}, b"{}"), "anthropic",
-                       "https://api.anthropic.com", store, client, now=5_000.0)
+                       "https://api.anthropic.com", store, client, now=5_000.0,
+                       upstream_path="v1/messages")
     assert resp.status_code == 429
     assert resp.headers["retry-after"] == "30"
 
@@ -85,7 +87,8 @@ async def test_unknown_handle_returns_anthropic_shaped_401(tmp_path):
     store = TokenStore(str(tmp_path / "s.db"), Fernet.generate_key())
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
     resp = await relay(FakeRequest({"x-api-key": "nope"}, b"{}"), "anthropic",
-                       "https://api.anthropic.com", store, client, now=5_000.0)
+                       "https://api.anthropic.com", store, client, now=5_000.0,
+                       upstream_path="v1/messages")
     assert resp.status_code == 401
     import json
     assert json.loads(resp.body)["type"] == "error"
@@ -100,5 +103,59 @@ async def test_upstream_response_is_closed_after_streaming(tmp_path):
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     resp = await relay(FakeRequest({"x-api-key": h}, b"{}"), "anthropic",
-                       "https://api.anthropic.com", store, client, now=5_000.0)
+                       "https://api.anthropic.com", store, client, now=5_000.0,
+                       upstream_path="v1/messages")
     assert resp.background is not None
+
+@pytest.mark.asyncio
+async def test_route_prefix_is_not_forwarded_upstream(tmp_path):
+    store = TokenStore(str(tmp_path / "s.db"), Fernet.generate_key())
+    h = store.put("alice", "anthropic", "ACCESS", "R", 10_000.0)
+    seen = {}
+
+    async def handler(request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    req = FakeRequest({"x-api-key": h}, b"{}")
+    req.url = httpx.URL("http://p/anthropic/v1/messages")
+    await relay(req, "anthropic", "https://api.anthropic.com", store, client,
+                now=5_000.0, upstream_path="v1/messages")
+    assert seen["url"] == "https://api.anthropic.com/v1/messages"
+    assert "/anthropic/v1/messages" not in seen["url"]
+
+@pytest.mark.asyncio
+async def test_handle_from_other_provider_is_refused(tmp_path):
+    store = TokenStore(str(tmp_path / "s.db"), Fernet.generate_key())
+    h = store.put("alice", "anthropic", "ANTHROPIC-TOKEN", "R", 10_000.0)
+    called = {"upstream": False}
+
+    async def handler(request):
+        called["upstream"] = True
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    resp = await relay(FakeRequest({"authorization": f"Bearer {h}"}, b"{}"),
+                       "openai", "https://chatgpt.com/backend-api/codex",
+                       store, client, now=5_000.0, upstream_path="responses")
+    assert resp.status_code == 401
+    assert called["upstream"] is False
+
+@pytest.mark.asyncio
+async def test_upstream_connection_error_returns_provider_shaped_502(tmp_path):
+    store = TokenStore(str(tmp_path / "s.db"), Fernet.generate_key())
+    h = store.put("alice", "anthropic", "ACCESS", "R", 10_000.0)
+
+    async def handler(request):
+        raise httpx.ConnectError("upstream down")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    resp = await relay(FakeRequest({"x-api-key": h}, b"{}"), "anthropic",
+                       "https://api.anthropic.com", store, client,
+                       now=5_000.0, upstream_path="v1/messages")
+    assert resp.status_code == 502
+    import json as _json
+    body = _json.loads(resp.body)
+    assert body["type"] == "error"
+    assert "detail" not in body
