@@ -83,7 +83,13 @@ def write_tokens(provider: str, config_dir: str, tokens: SeatTokens) -> None:
         raw["expires_at"] = tokens.expires_at
 
     # Atomic replace: a torn credentials file would break the user's own CLI.
+    # The temp file is created 0600 because os.replace makes the DESTINATION inherit
+    # the temp file's mode — a default-mode temp would silently downgrade the user's
+    # credentials file to world-readable and expose a durable refresh token to every
+    # other account on the host.
     path = credentials_path(provider, config_dir)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(raw, indent=2))
     os.replace(tmp, path)

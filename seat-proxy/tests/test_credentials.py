@@ -1,4 +1,4 @@
-import json, pytest
+import json, os, pytest
 from seatproxy.credentials import (
     SeatTokens, CredentialsMissing, CredentialsMalformed,
     read_tokens, write_tokens, credentials_path)
@@ -66,3 +66,12 @@ def test_write_is_atomic_and_leaves_no_temp_file(tmp_path):
 def test_credentials_path_uses_provider_filename(tmp_path):
     assert credentials_path("anthropic", str(tmp_path)).name == ".credentials.json"
     assert credentials_path("openai", str(tmp_path)).name == "auth.json"
+
+@pytest.mark.skipif(os.name == "nt",
+                    reason="POSIX file modes are not enforced on Windows")
+def test_written_credentials_are_owner_only(tmp_path):
+    # os.replace makes the destination inherit the temp file's mode, so a
+    # default-mode temp would downgrade the user's credentials to world-readable.
+    write_claude(tmp_path)
+    write_tokens("anthropic", str(tmp_path), SeatTokens("NEW", "NEWR", 5000.0))
+    assert (tmp_path / ".credentials.json").stat().st_mode & 0o777 == 0o600
