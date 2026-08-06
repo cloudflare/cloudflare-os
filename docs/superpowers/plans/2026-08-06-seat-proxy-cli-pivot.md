@@ -244,6 +244,13 @@ class CredentialsMissing(Exception):
 class CredentialsMalformed(Exception):
     """The file exists but does not have the shape we expect (e.g. CLI changed)."""
 
+class CredentialsUnreadable(Exception):
+    """The file exists but could not be read right now (permissions, locking, I/O).
+
+    Distinct from CredentialsMalformed: this is transient and must not be
+    reported to the user as a dead seat.
+    """
+
 @dataclass(repr=False)
 class SeatTokens:
     access_token: str
@@ -268,7 +275,8 @@ def _load(provider: str, config_dir: str) -> dict:
     except FileNotFoundError:
         raise CredentialsMissing(provider) from None
     except OSError:
-        raise CredentialsMalformed(provider) from None
+        # FileNotFoundError is caught above; anything else here is transient.
+        raise CredentialsUnreadable(provider) from None
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
@@ -696,7 +704,8 @@ back to it, so the user's CLI and the proxy never diverge.
 import asyncio
 
 from .credentials import (
-    CredentialsMalformed, CredentialsMissing, read_tokens, write_tokens)
+    CredentialsMalformed, CredentialsMissing, CredentialsUnreadable,
+    read_tokens, write_tokens)
 
 REFRESH_SKEW_SECONDS = 120
 
@@ -741,8 +750,11 @@ def _release_lock(handle: str) -> None:
 def _load(rec):
     try:
         return read_tokens(rec.provider, rec.config_dir)
+    except CredentialsUnreadable as exc:
+        # Present but momentarily unreadable — the seat is fine, retry later.
+        raise SeatTemporarilyUnavailable() from exc
     except (CredentialsMissing, CredentialsMalformed) as exc:
-        # No usable credentials on disk: only a fresh CLI login fixes this.
+        # Absent or corrupt: only a fresh CLI login fixes this.
         raise SeatNeedsReauth() from exc
 
 async def resolve_access_token(store, handle, now, refresher) -> str:
