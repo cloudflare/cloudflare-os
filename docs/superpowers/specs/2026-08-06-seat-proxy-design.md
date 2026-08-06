@@ -52,15 +52,43 @@ JSON by hand (clunky, and asks people to hand over a durable refresh token by co
 
 ### Known-good Anthropic values
 
-Verified against working code in `OpenWhisperer/src-tauri/src/commands/sdk_cmds.rs:482-489, 580-660`:
+**The authorize flow was live-tested on 2026-08-06 and returned a real consent screen.** Endpoints
+extracted from the installed `claude` binary (the authoritative source); refresh shape verified
+against `OpenWhisperer/src-tauri/src/commands/sdk_cmds.rs:482-489, 580-660`.
 
-- client_id `9d1c250a-e61b-44d9-88ed-5944d1962f5e` (Claude Code's public OAuth client)
-- token endpoint `https://console.anthropic.com/v1/oauth/token`
-- refresh is a JSON POST of `{grant_type: "refresh_token", refresh_token, client_id}` — public
-  client, no secret
-- request headers `anthropic-beta: oauth-2025-04-20` and `User-Agent: claude-code/2.0.32`
-- credentials live at `<CLAUDE_CONFIG_DIR>/.credentials.json` under a `claudeAiOauth` key holding
-  `accessToken`, `refreshToken`, `expiresAt` (epoch ms)
+| | |
+|---|---|
+| client_id | `9d1c250a-e61b-44d9-88ed-5944d1962f5e` (Claude Code's public OAuth client) |
+| authorize (subscription) | `https://claude.com/cai/oauth/authorize` |
+| authorize (console) | `https://platform.claude.com/oauth/authorize` |
+| token | `https://platform.claude.com/v1/oauth/token` |
+| redirect_uri | `https://platform.claude.com/oauth/code/callback` (Anthropic-hosted; shows the user a code to copy) |
+| scopes | `user:profile user:inference user:sessions:claude_code user:mcp_servers` |
+| PKCE | S256, accepted |
+
+Authorize also takes `code=true`. Refresh is a JSON POST of
+`{grant_type: "refresh_token", refresh_token, client_id}` — public client, no secret. Request
+headers `anthropic-beta: oauth-2025-04-20` and `User-Agent: claude-code/2.0.32`.
+
+`console.anthropic.com/v1/oauth/token` (what OpenWhisperer uses) still works but appears to be a
+pre-migration alias for `platform.claude.com`. Prefer the latter.
+
+Credentials live at `<CLAUDE_CONFIG_DIR>/.credentials.json` under a `claudeAiOauth` key holding
+`accessToken`, `refreshToken`, `expiresAt` (epoch ms).
+
+### Why enrollment is web OAuth rather than a CLI login
+
+Three approaches were tested before settling:
+
+- `claude auth login` has no headless mode — it opens a browser on whatever machine runs it.
+- `claude setup-token` cannot be driven: it emits **zero bytes** without a TTY (verified). It is a
+  full-screen terminal UI, so scraping it would need a PTY and screen parsing.
+- Doing the OAuth ourselves works, and needs no CLI on the server at all.
+
+The proxy therefore builds the authorize URL, the user approves in their own browser, Anthropic's
+hosted callback shows them a code, and they paste it back. The proxy exchanges code + verifier for
+tokens and **writes them into the CLI's own credentials file format**, so every downstream module
+is unchanged and the server's CLI could use the same credentials.
 
 ## Architecture
 
@@ -72,13 +100,18 @@ Two deployable units per instance.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /enroll/{provider}/start` | Allocate the user's config directory and return the exact CLI command they must run (`CLAUDE_CONFIG_DIR=<dir> claude login`, or `CODEX_HOME=<dir> codex login`) plus a `poll_id`. |
-| `POST /enroll/{provider}/poll` | Check whether the credentials file has appeared and parses. On success mints a handle and returns `{handle, models[]}`. |
+| `POST /enroll/{provider}/start` | Allocate the user's config directory, generate a PKCE pair, and return the provider's authorize URL plus an `enroll_id`. The verifier stays server-side. |
+| `POST /enroll/{provider}/complete` | Take the code the user pasted, exchange it with the verifier, write the tokens into the config directory in the CLI's own file format, mint a handle, return `{handle, models[]}`. |
 | `GET /enroll/{provider}/models` | Models available to that seat. |
 | `DELETE /enroll/{handle}` | Revoke: drop the mapping and delete the user's config directory. |
 
-The user authenticates entirely inside the provider's own CLI. The proxy never sees a password
-and never runs an OAuth flow — it waits for a credentials file to appear in a directory it owns.
+The user authenticates on the provider's own consent page, in their own browser, on whatever
+machine they like. The proxy never sees a password and never needs shell access on the host. The
+pasted value is a single-use authorization code, useless without the server-held verifier.
+
+**Note on the consent screen.** Because the flow uses Claude Code's public client_id, the page a
+user approves reads "Claude Code would like to connect to your Claude chat account" — not the name
+of this deployment. Accepted deliberately; see Risks.
 
 **Relay surface**
 
@@ -208,9 +241,15 @@ and break enrollment or refresh.
 the shape is unexpected. Pin the observed shape in a test fixture so a change surfaces as a test
 failure. Accept that CLI upgrades are a maintenance event.
 
-**Enrollment requires shell access to the proxy host.** Each user must run a CLI command in a
-directory the proxy owns. Fine for the home instance and for a technical team; a real constraint
-for non-technical users at work, who will need someone to run it for them.
+**~~Enrollment requires shell access to the proxy host.~~ RESOLVED** by the move to web OAuth. The
+user approves in their own browser and pastes a code; nobody needs a terminal on the server, and
+the server does not even need the provider CLIs installed.
+
+**The consent screen names the wrong application.** The flow uses Claude Code's public client_id,
+so users approve a page reading "Claude Code would like to connect to your Claude chat account".
+At home that is cosmetic. At work, staff are consenting to something that is not what they are
+actually connecting to, and there is no way to change the name without our own registered OAuth
+client. Raised and accepted.
 
 **Terms of service.** Subscription seats are sold for use with the provider's own clients. Reading
 the CLI's own credentials on a machine where the user has legitimately logged in is closer to the
