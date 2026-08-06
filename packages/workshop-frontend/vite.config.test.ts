@@ -1,8 +1,10 @@
 import type { ConfigEnv, UserConfig, UserConfigExport } from 'vite'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vite-plus/test'
 
-vi.mock('vite', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('vite')>()
+// vite.config.ts takes `loadEnv` from 'vite-plus', so that is the module to stub -- mocking
+// 'vite' would leave the real implementation in place and read the ambient environment.
+vi.mock('vite-plus', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('vite-plus')>()
   return {
     ...actual,
     loadEnv: () => ({

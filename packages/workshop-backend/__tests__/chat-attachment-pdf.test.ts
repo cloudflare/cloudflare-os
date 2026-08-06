@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { bridgePdfAttachments } from "../src/chat-attachment-pdf.js";
 
 // Request-level coverage (real pi adapters emitting real payloads, then bridged) lives in

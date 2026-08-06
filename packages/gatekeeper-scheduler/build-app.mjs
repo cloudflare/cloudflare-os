@@ -5,8 +5,9 @@ import { fileURLToPath } from "node:url";
 const packageDirectory = resolve(fileURLToPath(import.meta.url), "..");
 const watch = process.argv.includes("--watch");
 
-execFileSync(
-  "pnpm",
-  ["exec", "vite", "build", "-c", "vite.config.ts", ...(watch ? ["--watch"] : [])],
-  { cwd: packageDirectory, stdio: "inherit" },
-);
+// `vp build` rather than `vite build`: under Vite+ the `vite` package is an alias for
+// @voidzero-dev/vite-plus-core, which ships no CLI binary of its own.
+execFileSync("vp", ["build", "-c", "vite.config.ts", ...(watch ? ["--watch"] : [])], {
+  cwd: packageDirectory,
+  stdio: "inherit",
+});

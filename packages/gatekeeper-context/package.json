@@ -11,7 +11,7 @@
     "typecheck:app": "tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json",
     "types:check": "pnpm run typecheck:app && pnpm run build:app && tsc --noEmit",
     "build": "pnpm run typecheck:app && pnpm run build:app && tsc",
-    "test": "vitest run"
+    "test": "vp test run"
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
@@ -49,11 +49,11 @@
     "remark-gfm": "^4.0.1",
     "tailwindcss": "^4.3.3",
     "terser": "^5.49.0",
-    "typescript": "^5.9.3",
-    "vite": "^7.3.6",
+    "typescript": "^7.0.2",
+    "vite": "catalog:",
     "vite-plugin-singlefile": "^2.3.3",
     "vite-tsconfig-paths": "^6.1.1",
-    "vitest": "^3.2.7",
+    "vitest": "catalog:",
     "wrangler": "^4.115.0"
   }
 }

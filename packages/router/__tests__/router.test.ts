@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 import { parse } from 'jsonc-parser';
 import router, { type Env } from '../src/index';
 // Imported as text so the config-integrity tests run inside workerd without filesystem access.

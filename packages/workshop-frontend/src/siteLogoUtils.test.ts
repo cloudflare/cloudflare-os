@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vite-plus/test'
 import { MAX_SITE_LOGO_BYTES } from '@gadgets/workshop-shared/api'
 import {
   applySiteFavicon,

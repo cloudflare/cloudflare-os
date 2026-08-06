@@ -11,7 +11,7 @@
     "typecheck:app": "tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json",
     "build": "pnpm run typecheck:app && pnpm run build:app && tsc",
     "types:check": "pnpm run typecheck:app && pnpm run build:app && tsc --noEmit",
-    "test": "vitest run && vitest run -c vitest.app.config.ts",
+    "test": "vp test run",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -38,10 +38,10 @@
     "react-dom": "^19.2.8",
     "tailwindcss": "^4.3.3",
     "terser": "^5.48.0",
-    "typescript": "^5.9.3",
-    "vite": "^7.3.6",
+    "typescript": "^7.0.2",
+    "vite": "catalog:",
     "vite-plugin-singlefile": "^2.3.3",
     "vite-tsconfig-paths": "^6.1.1",
-    "vitest": "^4.1.10"
+    "vitest": "catalog:"
   }
 }

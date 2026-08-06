@@ -8,7 +8,7 @@
 // than side by side, and each swap is undone in afterEach -- not because the files get a process
 // each, which Vitest does not promise.
 
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it } from "vite-plus/test";
 import { NetworkInterceptor, type Handler } from "../src/network-interceptor.js";
 
 const realFetch = globalThis.fetch;

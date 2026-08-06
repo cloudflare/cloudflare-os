@@ -1,7 +1,10 @@
 import { watch } from "node:fs";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import ts from "typescript";
+// TypeScript 7 ships only the `tsc` binary -- its npm package exports `version` and nothing
+// else -- so the compiler API this script transpiles configurator UIs with has to come from
+// the 5.x line, aliased as `typescript-5`. `tsc` itself is on 7; see AGENTS.md.
+import ts from "typescript-5";
 import { loadEnv } from "vite";
 
 const packageDir = resolve(process.argv[2] ?? ".");

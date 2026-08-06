@@ -21,8 +21,8 @@
     "build": "tsc",
     "types:check": "tsc --noEmit && tsc -p tsconfig.type-tests.json",
     "clean": "rm -rf dist",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vp test run",
+    "test:watch": "vp test"
   },
   "dependencies": {
     "@gadgets/error-reporting": "workspace:*"
@@ -30,6 +30,6 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.16.20",
     "@cloudflare/workers-types": "^4.20260702.1",
-    "vitest": "^4.1.10"
+    "vitest": "catalog:"
   }
 }

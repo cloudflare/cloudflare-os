@@ -10,7 +10,7 @@
     "build": "pnpm run build:configurator && tsc",
     "types:check": "pnpm run build:configurator && tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "clean": "rm -rf dist src/generated",
-    "test": "vitest run"
+    "test": "vp test run"
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
@@ -21,8 +21,8 @@
     "capnweb-validate": "0.2.1"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "wrangler": "^4.92.0",
-    "vitest": "^3.2.4"
+    "typescript": "^7.0.2",
+    "vitest": "catalog:",
+    "wrangler": "^4.92.0"
   }
 }

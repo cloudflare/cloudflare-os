@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { after, before, describe, it } from "node:test";
-import ts from "typescript";
+// See build-gatekeeper-configurator.mjs: the compiler API lives in the `typescript-5` alias
+// because TypeScript 7 ships only the `tsc` binary.
+import ts from "typescript-5";
 
 const execFileAsync = promisify(execFile);
 const builder = resolve("scripts/build-gatekeeper-configurator.mjs");

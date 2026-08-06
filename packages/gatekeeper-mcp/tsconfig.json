@@ -8,11 +8,7 @@
     "jsx": "react",
     "jsxFactory": "h",
     "types": ["./worker-configuration.d.ts"],
-    "outDir": "./dist",
-    "declaration": true,
-    "sourceMap": true,
-    "noEmit": false,
-    "baseUrl": ".",
+    "noEmit": true,
     "paths": {
       "@gadgets/configurator-ui": ["../configurator-ui/src/index.ts"],
       "@gadgets/mcp-shared/*": ["../mcp-shared/src/*"],

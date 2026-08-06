@@ -11,7 +11,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { newMessagePortRpcSession, RpcStub, RpcTarget } from "capnweb";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import SandboxedGatekeeperApp from "./SandboxedGatekeeperApp";
 

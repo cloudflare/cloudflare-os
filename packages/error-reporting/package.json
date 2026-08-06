@@ -11,10 +11,9 @@
   "scripts": {
     "build": "tsc",
     "types:check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vp test run"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.10"
+    "typescript": "^7.0.2"
   }
 }

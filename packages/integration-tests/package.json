@@ -9,8 +9,8 @@
     "./rpc-client": "./src/rpc-client.ts"
   },
   "scripts": {
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "vp test run",
+    "test:watch": "vp test",
     "types:check": "tsc --noEmit"
   },
   "dependencies": {
@@ -22,8 +22,8 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260623.1",
     "@types/node": "^26.1.0",
-    "typescript": "^5.9.3",
-    "vitest": "^3.2.4",
+    "typescript": "^7.0.2",
+    "vitest": "catalog:",
     "wrangler": "~4.104.0"
   }
 }

@@ -10,16 +10,16 @@
     "build": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && tsc",
     "types:check": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && tsc --noEmit",
     "clean": "rm -rf dist",
-    "test": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest run && vitest run --config vitest.integration.config.ts",
-    "test:integration": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest run --config vitest.integration.config.ts",
-    "test:watch": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest",
+    "test": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vp test run",
+    "test:integration": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vp test run --project integration",
+    "test:watch": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vp test",
     "build:format-blueprints": "node scripts/build-format-blueprints.mjs",
     "import:format-blueprint": "node --experimental-strip-types --no-warnings scripts/import-format-blueprint.mjs"
   },
   "dependencies": {
+    "@cloudflare/puppeteer": "^1.2.0",
     "@earendil-works/pi-agent-core": "0.83.0",
     "@earendil-works/pi-ai": "0.83.0",
-    "@cloudflare/puppeteer": "^1.2.0",
     "@gadgets/backend-utils": "workspace:*",
     "@gadgets/error-reporting": "workspace:*",
     "@gadgets/typed-storage": "workspace:*",
@@ -34,7 +34,7 @@
     "@cloudflare/vitest-pool-workers": "^0.16.20",
     "esbuild": "^0.28.1",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.10",
+    "vitest": "catalog:",
     "wrangler": "^4.115.0"
   }
 }

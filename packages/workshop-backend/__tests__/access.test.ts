@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { accessRateLimitKey, verifyCfAccessJwt } from "../src/access.js";
 
 const joseMocks = vi.hoisted(() => ({

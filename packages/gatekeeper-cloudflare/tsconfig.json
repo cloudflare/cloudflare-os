@@ -6,11 +6,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "types": ["./worker-configuration.d.ts"],
-    "outDir": "./dist",
-    "declaration": true,
-    "sourceMap": true,
-    "noEmit": false,
-    "baseUrl": ".",
+    "noEmit": true,
     "paths": {
       "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"]
     }

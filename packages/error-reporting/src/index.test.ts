@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   FRONTEND_ERROR_MESSAGE_TYPE,
   MAX_MESSAGE_CHARS,

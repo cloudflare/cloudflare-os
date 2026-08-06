@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { isBlockedHost, validateCustomEndpoint } from "../src/endpoint.js";
 import type { InsecureEnv } from "../src/fetch.js";
 

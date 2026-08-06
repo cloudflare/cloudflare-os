@@ -12,8 +12,9 @@ console.log(
     ? "watching context library app for changes…"
     : "building context library app single-file bundle…",
 );
-execFileSync(
-  "pnpm",
-  ["exec", "vite", "build", "-c", "vite.config.ts", ...(watch ? ["--watch"] : [])],
-  { cwd: pkgDir, stdio: "inherit" },
-);
+// `vp build` rather than `vite build`: under Vite+ the `vite` package is an alias for
+// @voidzero-dev/vite-plus-core, which ships no CLI binary of its own.
+execFileSync("vp", ["build", "-c", "vite.config.ts", ...(watch ? ["--watch"] : [])], {
+  cwd: pkgDir,
+  stdio: "inherit",
+});

@@ -3,11 +3,11 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
+    "dev": "vp dev",
+    "build": "tsc && vp build",
     "types:check": "tsc --noEmit",
-    "test": "vitest run",
-    "preview": "vite preview",
+    "test": "vp test run",
+    "preview": "vp preview",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -38,7 +38,7 @@
     "@vitejs/plugin-react": "^4.7.0",
     "jsdom": "^26.1.0",
     "typescript": "^5.9.3",
-    "vite": "^7.3.6",
-    "vitest": "^4.1.10"
+    "vite": "catalog:",
+    "vitest": "catalog:"
   }
 }

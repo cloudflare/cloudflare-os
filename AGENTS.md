@@ -54,14 +54,17 @@ To test changes:
 - Run `pnpm build` (optionally narrowed to a particular package) to run TypeScript type checks.
 - Run `pnpm test` to run unit tests, though as of this writing most packages don't have tests yet.
 
-Linting (oxlint):
-- `pnpm lint` runs what CI currently enforces: `lint:check` (oxlint) and `types:check` (recursive `tsc --noEmit`). Run this before pushing.
+Linting (oxlint, via Vite+):
+- `pnpm lint` runs what CI currently enforces: `lint:check` (`vp lint`) and `types:check` (recursive `tsc --noEmit`). Run this before pushing.
 - Individual scripts:
-    * `pnpm lint:check` / `pnpm lint:fix` — oxlint (config in `.oxlintrc.json`; `correctness` + `suspicious` as errors).
+    * `pnpm lint:check` / `pnpm lint:fix` — oxlint through `vp lint` (config in the `lint` block of the root `vite.config.ts`; `correctness` + `suspicious` as errors).
     * `pnpm types:check` — recursive `tsc --noEmit`.
 - Unused function parameters and caught errors are not lint-enforced; unused imports and local variables are still errors.
 - Some rules are kept as warnings (e.g. `no-shadow`) for incremental cleanup; warnings don't block CI.
-- Type-aware oxlint rules are intentionally not enabled. The type-aware engine (tsgo) requires an explicit `rootDir` under declaration emit and drops `baseUrl`, which is incompatible with this monorepo's cross-package source imports. Among other things this means `no-floating-promises` is not enforced — which is just as well, since RPC promise pipelining (below) intentionally leaves promises unawaited. Type safety is still enforced by `tsc` through `pnpm types:check` and `pnpm build`.
+- Type-aware oxlint rules are intentionally not enabled. `vp check` can also type-check, but only through the type-aware path (`lint.options.typeAware` is a prerequisite for `typeCheck`), and enabling it reports ~350 rule findings plus type errors in the many files no package tsconfig covers — tests and the gatekeeper SPAs sit outside `include: ["src"]`. Among other things this means `no-floating-promises` is not enforced — which is just as well, since RPC promise pipelining (below) intentionally leaves promises unawaited. Type safety is still enforced by `tsc` through `pnpm types:check` and `pnpm build`.
+- There is no formatter: the repo is not oxfmt-clean, so `check.fmt` is `false` in `vite.config.ts` and `vp check` runs lint only. Don't run `vp fmt` across the repo in an unrelated change.
+
+TypeScript versions: most packages are on TypeScript 7 (`tsc` only — the npm package exports `version` and nothing else). Three are held at 5.9 because they need the 5.x compiler *API* or hit tsgo's limits, each noted in its manifest: `workshop-frontend` (capnweb's recursive `Stub`/`Stubify` types exceed tsgo's instantiation depth), and `workshop-backend` / `gatekeeper-scheduler` (capnweb-validate builds a `ts.Program`). `scripts/build-gatekeeper-configurator.mjs` imports the compiler API through the `typescript-5` alias in the root manifest for the same reason.
 
 IMPORTANT: This repository uses pnpm, not npm. Always use pnpm.
 

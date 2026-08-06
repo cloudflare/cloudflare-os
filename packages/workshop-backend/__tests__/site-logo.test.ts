@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { MAX_SITE_LOGO_BYTES, MAX_SITE_LOGO_DIMENSION } from "@gadgets/workshop-shared/api";
 import {
   SITE_LOGO_R2_KEY,

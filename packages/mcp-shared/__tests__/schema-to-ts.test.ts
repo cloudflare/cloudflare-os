@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import ts from "typescript";
+import { describe, expect, it } from "vite-plus/test";
+// TypeScript 7 ships only the `tsc` binary, so the compiler API used to compile the generated
+// declarations comes from the 5.x line via the `typescript-5` alias. See AGENTS.md.
+import ts from "typescript-5";
 import { MCP_BASE_TYPES } from "../src/base-types.js";
 import { generateSessionTypes, sessionTypeName, } from "../src/schema-to-ts.js";
 import { classifyTool } from "../src/tools.js";

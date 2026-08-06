@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { MessageFormatRef } from "@gadgets/workshop-shared/api";
 
 // overseer.ts reaches capnweb-validate's decorators, which need the bundler plugin. Same stub the

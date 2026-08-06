@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 // The real `h` and the controls throw: the sandbox runtime supplies them at load time. These tests
 // exercise how a resource URL is read and written, not the markup.

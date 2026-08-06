@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 
 import { generateSessionTypes } from "../src/schema-to-ts.js";
 import { installToolMethods } from "../src/session-methods.js";

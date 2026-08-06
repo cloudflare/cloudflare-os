@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { AiChatMessage, AiChatMessageBody } from "@gadgets/workshop-shared/api";
 import {
   buildChatDisplayEntries, computeMessageStates, type CompactionBoundary,

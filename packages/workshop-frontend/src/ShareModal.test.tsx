@@ -3,7 +3,7 @@
 
 import { act, type ComponentProps, type ReactElement, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 import type { RpcStub } from 'capnweb'
 import type {
   AiChatAuthorInfo,

@@ -9,7 +9,7 @@
     "deploy": "pnpm run build:configurator && wrangler deploy",
     "build": "pnpm run build:configurator && tsc",
     "types:check": "pnpm run build:configurator && tsc --noEmit",
-    "test": "vitest run",
+    "test": "vp test run",
     "clean": "rm -rf dist src/generated"
   },
   "dependencies": {
@@ -19,8 +19,8 @@
     "capnweb-validate": "0.2.1"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "vitest": "^3.2.7",
+    "typescript": "^7.0.2",
+    "vitest": "catalog:",
     "wrangler": "^4.115.0"
   }
 }

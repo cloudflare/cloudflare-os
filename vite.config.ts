@@ -1,0 +1,153 @@
+import { defineConfig } from "vite-plus";
+
+// Workspace-wide toolchain configuration. Per-package Vite/Vitest settings live in each
+// package's own vite.config.ts; this file owns everything shared: lint rules, and the
+// `vp check` pipeline.
+export default defineConfig({
+  check: {
+    // The repo has no formatter and is not oxfmt-clean, so `vp check` runs lint and type
+    // checks only. `vp fmt` still works if run directly.
+    fmt: false,
+  },
+  lint: {
+    categories: {
+      correctness: "error",
+      suspicious: "error",
+    },
+    plugins: ["typescript", "unicorn", "oxc", "import"],
+    options: {
+      // Type-aware linting stays off, as it was under `.oxlintrc.json`. `vp check` can also
+      // type-check (`typeCheck`), but only via the type-aware path -- it requires `typeAware`
+      // -- and turning that on today reports ~350 findings plus ~280 type errors in files no
+      // package tsconfig covers (tests and the gatekeeper SPAs are outside `include: ["src"]`).
+      // Type safety is still enforced by `tsc` through `types:check` and `build`.
+      typeAware: false,
+    },
+    env: {
+      es2024: true,
+    },
+    rules: {
+      // False positives: gatekeepers import `.txt` files as bundled text assets,
+      // which the import resolver reports as "no default export".
+      "import/default": "off",
+
+      // Side-effect imports are used deliberately: CSS (`./styles.css`) and the
+      // Workers runtime registration import (`cloudflare:workers`).
+      "import/no-unassigned-import": "off",
+
+      // Comment-only placeholder/reference modules are kept intentionally
+      // (e.g. App.tsx, gatekeeper-cloudflare/src/types.d.ts).
+      "unicorn/no-empty-file": "off",
+
+      // Conflicts with our convention of prefixing intentionally-unused bindings
+      // with `_` (see no-unused-vars below).
+      "no-underscore-dangle": "off",
+
+      // Do not require churny `_` prefixes on unused callback/interface parameters
+      // or catch bindings, but still flag unused imports and local variables.
+      "no-unused-vars": [
+        "error",
+        {
+          args: "none",
+          caughtErrors: "none",
+          varsIgnorePattern: "^_",
+          ignoreRestSiblings: true,
+        },
+      ],
+
+      // Genuine improvements, but churny/judgmental for an initial rollout. Kept
+      // visible as warnings for incremental cleanup rather than blocking CI.
+      "no-shadow": "warn",
+      "typescript/no-this-alias": "warn",
+      "typescript/no-extraneous-class": "warn",
+      "unicorn/consistent-function-scoping": "warn",
+    },
+    ignorePatterns: [
+      "**/dist/**",
+      "**/dist-app/**",
+      "**/generated/**",
+      "**/*.gen.ts",
+      "**/node_modules/**",
+      "**/.wrangler/**",
+      "**/worker-configuration.d.ts",
+    ],
+    overrides: [
+      {
+        files: ["packages/workshop-frontend/**/*.{ts,tsx}"],
+        plugins: ["typescript", "unicorn", "oxc", "import", "react", "jsx-a11y"],
+        env: {
+          browser: true,
+          es2024: true,
+        },
+      },
+      {
+        // Gatekeeper configurator UIs use a classic JSX runtime with the `h`
+        // pragma rather than the automatic react-jsx runtime.
+        files: ["packages/gatekeeper-*/**/*.tsx"],
+        plugins: ["typescript", "unicorn", "oxc", "import", "react"],
+        env: {
+          browser: true,
+          es2024: true,
+        },
+      },
+      {
+        // Cloudflare Workers backends: worker/service-worker global scope.
+        files: [
+          "packages/workshop-backend/**/*.ts",
+          "packages/router/**/*.ts",
+          "packages/gatekeeper-*/src/**/*.ts",
+          "packages/workshop-shared/**/*.ts",
+          "packages/typed-storage/**/*.ts",
+        ],
+        env: {
+          serviceworker: true,
+          es2024: true,
+        },
+      },
+      {
+        files: ["**/*.test.ts", "**/*.test.tsx"],
+        plugins: ["typescript", "unicorn", "oxc", "import", "vitest"],
+        env: {
+          vitest: true,
+          es2024: true,
+        },
+      },
+      {
+        files: ["scripts/**/*.mjs", "*.js", "*.mjs"],
+        env: {
+          node: true,
+          es2024: true,
+        },
+      },
+      {
+        // The integration-test toolkit owns the capnweb boundary. A repo that vendors this one as a
+        // submodule installs its own workspace and this repo's separately, so it ends up with two
+        // copies of capnweb, and a stub minted by one copy is unserialisable by the other's session --
+        // an error that only shows up once the installs are split, i.e. in CI. So value imports are
+        // restricted to rpc-client.ts, which wraps stub minting in stubFor().
+        files: ["packages/integration-tests/**/*.ts"],
+        rules: {
+          "no-restricted-imports": [
+            "error",
+            {
+              paths: [
+                {
+                  name: "capnweb",
+                  message:
+                    "Mint stubs via stubFor() from rpc-client: a consumer repo can hold two capnweb copies, and a stub from the wrong one fails to serialise. `import type` is fine.",
+                  allowTypeImports: true,
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        files: ["packages/integration-tests/src/rpc-client.ts"],
+        rules: {
+          "no-restricted-imports": "off",
+        },
+      },
+    ],
+  },
+});

@@ -12,7 +12,7 @@
 // speaking the real protocol -- one whose verification outcome the tests set, which is the whole reason
 // the fixture exists (see fixtures/gatekeeper-test/src/test-gatekeeper.ts).
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { RpcStub } from "capnweb";
 import type { AuthenticatedApi, Overseer, PublicApi } from "@gadgets/workshop-shared/api";
 import {

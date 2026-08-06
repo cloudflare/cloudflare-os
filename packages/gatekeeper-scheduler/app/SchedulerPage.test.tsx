@@ -1,6 +1,6 @@
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { ManagementSchedule } from "../src/management-types";
 import SchedulerPage, {
   CREATE_SCHEDULE_PROMPT,

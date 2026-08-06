@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createLogger as createBaseLogger } from "../src/logger.js";
 import { createObservabilityContext } from "../src/observability-context.js";
 

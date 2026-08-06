@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   DEFAULT_UI_FEATURE_FLAGS,
   DEV_UI_FEATURE_FLAGS,

@@ -5,7 +5,7 @@ import {
   runDurableObjectAlarm,
   runInDurableObject,
 } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { HookInitiator } from "@gadgets/workshop-shared/gatekeeper";
 import { reportIssue } from "@gadgets/backend-utils/error-reporting";
 import type { ScheduledTaskHook } from "../src/types.js";

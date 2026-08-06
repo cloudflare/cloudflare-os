@@ -34,7 +34,7 @@
     "build": "tsc",
     "types:check": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "clean": "rm -rf dist",
-    "test": "vitest run"
+    "test": "vp test run"
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
@@ -43,7 +43,8 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260429.1",
-    "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "typescript": "^7.0.2",
+    "typescript-5": "npm:typescript@^5.9.3",
+    "vitest": "catalog:"
   }
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vite-plus/test';
 import { StreamingToolInputParser } from '../src/streaming-json-parser.js';
 
 // Helper: feed a complete JSON string in one shot.

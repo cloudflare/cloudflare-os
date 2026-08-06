@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { OAuthError, OAuthErrorCode } from "@modelcontextprotocol/client";
 
 import { isCredentialRejection, revokeToken, safeOAuthError } from "../src/oauth.js";

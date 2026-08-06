@@ -1,4 +1,4 @@
-import { expect, it, describe } from "vitest"
+import { expect, it, describe } from "vite-plus/test"
 import { createTypedStorage, collection, UniqueIndex, NonUniqueIndex } from "../src/index.js";
 import { DurableObjectListOptions, DurableObjectStorage } from "@cloudflare/workers-types/experimental";
 
