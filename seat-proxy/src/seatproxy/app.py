@@ -22,11 +22,27 @@ _SEAT_MODULES = {providers.ANTHROPIC: anthropic_seat, providers.OPENAI: openai_s
 # reject, backed by a resolved-containment check below.
 _OWNER_PATTERN = re.compile(r"^[A-Za-z0-9._@-]{1,64}$")
 
+_WINDOWS_RESERVED = {
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
+
 def _valid_owner(owner: str | None) -> bool:
-    return bool(owner
-                and _OWNER_PATTERN.match(owner)
-                and ".." not in owner
-                and owner not in {".", ".."})
+    if not owner or not _OWNER_PATTERN.match(owner):
+        return False
+    if ".." in owner or owner in {".", ".."}:
+        return False
+    # Windows silently strips trailing dots and spaces from a path component, so
+    # "alice." and "alice" name the SAME directory — verified on this host. Without
+    # this reject, enrolling as "alice." would land in alice's directory, find her
+    # credentials, and mint a handle to her seat.
+    if owner[0] in ". " or owner[-1] in ". ":
+        return False
+    # Reserved device names raise OSError from mkdir; reject for a clean 400.
+    if owner.split(".")[0].lower() in _WINDOWS_RESERVED:
+        return False
+    return True
 
 def create_app(store, client, state_dir: str) -> FastAPI:
     app = FastAPI()

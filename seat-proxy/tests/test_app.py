@@ -102,3 +102,20 @@ def test_traversal_owner_creates_nothing_outside_state_dir(tmp_path):
     app.post("/enroll/anthropic/start", headers={"X-Seat-Owner": "../escaped"})
     assert not (tmp_path / "escaped").exists()
     assert not (tmp_path.parent / "escaped").exists()
+
+@pytest.mark.parametrize("bad", ["alice.", ".alice", "alice ", "con", "CON",
+                                 "nul", "com1", "lpt9", "alice..bob"])
+def test_enroll_start_rejects_aliasing_and_reserved_owners(tmp_path, bad):
+    _, app = build(tmp_path)
+    r = app.post("/enroll/anthropic/start", headers={"X-Seat-Owner": bad})
+    assert r.status_code == 400
+
+def test_trailing_dot_owner_cannot_reach_another_users_directory(tmp_path):
+    # Windows strips trailing dots from a path component, so "alice." and "alice"
+    # are the same directory. It must be rejected outright, never aliased.
+    _, app = build(tmp_path)
+    assert app.post("/enroll/anthropic/start",
+                    headers={"X-Seat-Owner": "alice"}).status_code == 200
+    assert app.post("/enroll/anthropic/start",
+                    headers={"X-Seat-Owner": "alice."}).status_code == 400
+    assert sorted(p.name for p in (tmp_path / "state").iterdir()) == ["alice"]
