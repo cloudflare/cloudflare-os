@@ -75,3 +75,14 @@ def test_written_credentials_are_owner_only(tmp_path):
     write_claude(tmp_path)
     write_tokens("anthropic", str(tmp_path), SeatTokens("NEW", "NEWR", 5000.0))
     assert (tmp_path / ".credentials.json").stat().st_mode & 0o777 == 0o600
+
+def test_write_refuses_to_create_a_missing_credentials_file(tmp_path):
+    with pytest.raises(CredentialsMissing):
+        write_tokens("anthropic", str(tmp_path), SeatTokens("A", "R", 1.0))
+    assert not (tmp_path / ".credentials.json").exists()
+
+def test_exception_chain_does_not_leak_the_path(tmp_path):
+    with pytest.raises(CredentialsMissing) as exc:
+        read_tokens("anthropic", str(tmp_path))
+    assert exc.value.__cause__ is None
+    assert exc.value.__suppress_context__ is True

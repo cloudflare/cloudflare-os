@@ -34,16 +34,19 @@ def credentials_path(provider: str, config_dir: str) -> Path:
 
 def _load(provider: str, config_dir: str) -> dict:
     path = credentials_path(provider, config_dir)
+    # `from None` throughout: FileNotFoundError and OSError embed the path in their
+    # message, and a chained cause still reaches a rendered traceback. The global
+    # constraint is that exceptions carry no filesystem paths.
     try:
         text = path.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise CredentialsMissing(provider) from exc
-    except OSError as exc:
-        raise CredentialsMalformed(provider) from exc
+    except FileNotFoundError:
+        raise CredentialsMissing(provider) from None
+    except OSError:
+        raise CredentialsMalformed(provider) from None
     try:
         parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise CredentialsMalformed(provider) from exc
+    except json.JSONDecodeError:
+        raise CredentialsMalformed(provider) from None
     if not isinstance(parsed, dict):
         raise CredentialsMalformed(provider)
     return parsed
@@ -67,10 +70,11 @@ def read_tokens(provider: str, config_dir: str) -> SeatTokens:
     return SeatTokens(access, refresh, expires)
 
 def write_tokens(provider: str, config_dir: str, tokens: SeatTokens) -> None:
-    try:
-        raw = _load(provider, config_dir)
-    except (CredentialsMissing, CredentialsMalformed):
-        raw = {}
+    # The CLI's file is authoritative, so refuse to fabricate one. A missing or
+    # unparseable file means the config_dir is wrong or the login never completed;
+    # silently creating a fresh file there would mask that, and leave the user's
+    # real credentials un-rotated while we believe the write succeeded.
+    raw = _load(provider, config_dir)
     if provider == providers.ANTHROPIC:
         node = raw.setdefault("claudeAiOauth", {})
         node["accessToken"] = tokens.access_token
