@@ -153,9 +153,10 @@ curl -s -X DELETE localhost:8890/enroll/<handle> -H "X-Seat-Owner: alice"
 ```
 
 The owner must match the handle's enrolled owner. This deletes the handle from
-the database; it does **not** delete the on-disk credentials, so the same owner
-can re-enroll the same provider without logging in again (the next `start` call
-reuses `state/<owner>/<provider>`).
+the database; it does **not** delete the on-disk credentials, but re-enrolling
+the same owner and provider always runs fresh OAuth — `complete` overwrites
+`state/<owner>/<provider>` with the newly obtained tokens, and mints a new
+handle that revokes the previous one.
 
 ## Security properties — read before deploying
 
@@ -167,7 +168,9 @@ of it. **Never expose this service to a network.** Only the Cloudflare OS
 backend running on the same host should be able to reach `127.0.0.1:8890`.
 
 **Each user's tokens live in `state/<owner>/<provider>/`, created by seat-proxy
-itself on enrollment at mode `0700`.** seat-proxy writes the tokens there once
+itself on enrollment.** On POSIX, that directory is created at mode `0700`; on
+Windows `os.chmod` is a near no-op and its failure is silently swallowed, so
+the mode is not actually enforced there. seat-proxy writes the tokens there once
 when `complete` succeeds, then reads them from that file on each subsequent
 request rather than holding a copy in memory. On a shared host, the `0700`
 permission is what is supposed to keep one user's subscription credentials

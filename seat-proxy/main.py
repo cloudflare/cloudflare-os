@@ -18,6 +18,11 @@ STATE_DIR = os.environ.get("SEAT_PROXY_STATE", "state")
 DB_PATH = os.environ.get("SEAT_PROXY_DB", "seats.db")
 PORT = int(os.environ.get("SEAT_PROXY_PORT", "8890"))
 
+# A DB or state path whose parent directory does not exist yet (first run) would
+# otherwise die with a raw sqlite3.OperationalError before create_app even runs.
+Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+Path(STATE_DIR).mkdir(parents=True, exist_ok=True)
+
 # 600s read timeout: a long completion must not be cut off mid-stream.
 app = create_app(SeatStore(DB_PATH),
                  httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0)),

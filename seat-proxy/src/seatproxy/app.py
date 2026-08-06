@@ -22,7 +22,7 @@ _SEAT_MODULES = {providers.ANTHROPIC: anthropic_seat, providers.OPENAI: openai_s
 # poll() would mint a handle bound to that directory, letting the caller relay
 # requests using whoever's seat lives there. Charset plus an explicit traversal
 # reject, backed by a resolved-containment check below.
-_OWNER_PATTERN = re.compile(r"^[A-Za-z0-9._@-]{1,64}$")
+_OWNER_PATTERN = re.compile(r"^[A-Za-z0-9._@-]{1,64}\Z")
 
 _WINDOWS_RESERVED = {
     "con", "prn", "aux", "nul",
@@ -111,7 +111,11 @@ def create_app(store, client, state_dir: str) -> FastAPI:
 
     @app.post("/enroll/{provider}/complete")
     async def complete(provider: str, payload: dict):
-        entry = pending.get(payload.get("enroll_id", ""))
+        enroll_id = payload.get("enroll_id")
+        if not isinstance(enroll_id, str):
+            return provider_error(provider, 404, "invalid_request_error",
+                                  "Unknown enroll_id.")
+        entry = pending.get(enroll_id)
         if entry is None or entry["provider"] != provider:
             return provider_error(provider, 404, "invalid_request_error",
                                   "Unknown enroll_id.")
@@ -127,20 +131,25 @@ def create_app(store, client, state_dir: str) -> FastAPI:
                 tokens = await oauth.poll_device_code(client, entry["device_code"])
                 if tokens is None:
                     return {"status": "pending"}
+            # Inside the try: a write failure here would otherwise put the plaintext
+            # token dict and the config path into an unhandled traceback.
+            create_tokens(entry["provider"], entry["config_dir"], tokens)
         except AuthRejected:
             return provider_error(provider, 401, "authentication_error",
                                   "That authorization was rejected. Start again.")
+        except OSError:
+            return provider_error(provider, 502, "api_error",
+                                  "Could not store the seat credentials.")
         except Exception:
             return provider_error(provider, 502, "api_error",
                                   "Could not complete authorization.")
 
-        create_tokens(entry["provider"], entry["config_dir"], tokens)
         existing = store.find(entry["owner"], entry["provider"])
         if existing is not None:
             store.delete(existing.handle)
         handle = store.put(entry["owner"], entry["provider"], entry["config_dir"])
         # Single use: the code and verifier are spent.
-        pending.pop(payload["enroll_id"], None)
+        pending.pop(enroll_id, None)
         module = _SEAT_MODULES[entry["provider"]]
         models = await module.fetch_available_models(client, tokens.access_token)
         return {"status": "complete", "handle": handle, "models": models}

@@ -97,7 +97,13 @@ async def resolve_access_token(store, handle, now, refresher) -> str:
                 # refresh token, and an attribute-serializing reporter would
                 # capture it off __cause__.
                 raise SeatTemporarilyUnavailable() from None
-            write_tokens(rec.provider, rec.config_dir, fresh)
+            try:
+                write_tokens(rec.provider, rec.config_dir, fresh)
+            except Exception:
+                # The provider has already invalidated the old refresh token, so a
+                # failed write loses the new one. Surface it as transient rather
+                # than marking the seat dead, and still serve this request.
+                pass
             store.clear_needs_reauth(handle)
             return fresh.access_token
     finally:

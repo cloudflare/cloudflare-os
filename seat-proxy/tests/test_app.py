@@ -208,3 +208,28 @@ def test_openai_start_returns_a_device_code(tmp_path):
     assert body["kind"] == "device_code"
     assert body["user_code"] == "ABCD-1234"
     assert "device_code" not in body          # server-side only
+
+def test_complete_with_non_string_enroll_id_returns_provider_error(tmp_path):
+    _, app = build(tmp_path)
+    r = app.post("/enroll/anthropic/complete", json={"enroll_id": {}, "code": "x"})
+    assert r.status_code == 404
+    assert "detail" not in r.json()
+
+def test_credentials_write_failure_returns_provider_error_not_a_traceback(tmp_path,
+                                                                          monkeypatch):
+    def handler(request):
+        return httpx.Response(200, json={"access_token": "A", "refresh_token": "R",
+                                         "expires_in": 3600})
+    _, app = build(tmp_path, handler)
+    start = app.post("/enroll/anthropic/start",
+                     headers={"X-Seat-Owner": "alice"}).json()
+    from seatproxy import app as app_mod
+    def boom(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(app_mod, "create_tokens", boom)
+    r = app.post("/enroll/anthropic/complete",
+                 json={"enroll_id": start["enroll_id"], "code": "C"})
+    assert r.status_code == 502
+    body = r.json()
+    assert "detail" not in body
+    assert "disk full" not in str(body)

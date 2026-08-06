@@ -71,13 +71,20 @@ def _check(response: httpx.Response) -> dict:
 async def exchange_code(client: httpx.AsyncClient, provider: str,
                         code: str, verifier: str) -> SeatTokens:
     if provider == providers.ANTHROPIC:
-        response = await client.post(ANTHROPIC_TOKEN_URL, json={
+        # Anthropic's hosted callback shows the user "<code>#<state>". Both parts
+        # must be sent, and the raw pasted string is not a usable code on its own.
+        raw = code.strip()
+        code_part, _, state_part = raw.partition("#")
+        body = {
             "grant_type": "authorization_code",
-            "code": code,
+            "code": code_part,
             "redirect_uri": ANTHROPIC_REDIRECT_URI,
             "client_id": ANTHROPIC_CLIENT_ID,
             "code_verifier": verifier,
-        })
+        }
+        if state_part:
+            body["state"] = state_part
+        response = await client.post(ANTHROPIC_TOKEN_URL, json=body)
     else:
         response = await client.post(
             OPENAI_TOKEN_URL,

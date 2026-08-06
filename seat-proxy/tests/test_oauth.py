@@ -95,3 +95,34 @@ def test_no_secret_appears_in_the_authorize_url():
     verifier, challenge = oauth.new_pkce()
     url = oauth.authorize_url("anthropic", challenge, "STATE")
     assert verifier not in url
+
+@pytest.mark.asyncio
+async def test_anthropic_exchange_splits_code_and_state():
+    seen = {}
+    async def handler(request):
+        import json as _json
+        seen["body"] = _json.loads(request.content)
+        return httpx.Response(200, json={"access_token": "A", "refresh_token": "R",
+                                         "expires_in": 60})
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await oauth.exchange_code(client, "anthropic", "THECODE#THESTATE", "V")
+    assert seen["body"]["code"] == "THECODE"
+    assert seen["body"]["state"] == "THESTATE"
+
+@pytest.mark.asyncio
+async def test_anthropic_exchange_tolerates_a_bare_code():
+    seen = {}
+    async def handler(request):
+        import json as _json
+        seen["body"] = _json.loads(request.content)
+        return httpx.Response(200, json={"access_token": "A", "refresh_token": "R",
+                                         "expires_in": 60})
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await oauth.exchange_code(client, "anthropic", "  THECODE  ", "V")
+    assert seen["body"]["code"] == "THECODE"
+    assert "state" not in seen["body"]
+
+def test_anthropic_token_host_is_consistent_across_modules():
+    from seatproxy import anthropic_seat
+    assert anthropic_seat.TOKEN_URL == oauth.ANTHROPIC_TOKEN_URL
+    assert "platform.claude.com" in oauth.ANTHROPIC_TOKEN_URL

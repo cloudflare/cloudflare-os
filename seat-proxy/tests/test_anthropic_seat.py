@@ -5,7 +5,10 @@ from seatproxy import anthropic_seat as a
 
 def test_constants_match_the_verified_values():
     assert a.CLIENT_ID == "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-    assert a.TOKEN_URL == "https://console.anthropic.com/v1/oauth/token"
+    # console.anthropic.com was the wrong host, sourced from an older third-party
+    # project. platform.claude.com/v1/oauth/token, extracted from the installed
+    # `claude` binary, is authoritative and shared with oauth.ANTHROPIC_TOKEN_URL.
+    assert a.TOKEN_URL == "https://platform.claude.com/v1/oauth/token"
     assert a.UPSTREAM_BASE == "https://api.anthropic.com"
 
 @pytest.mark.asyncio

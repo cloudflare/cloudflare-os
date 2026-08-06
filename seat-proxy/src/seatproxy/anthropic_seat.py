@@ -9,10 +9,10 @@ import time
 import httpx
 
 from .credentials import SeatTokens
+from .oauth import ANTHROPIC_TOKEN_URL as TOKEN_URL
 from .refresh import AuthRejected
 
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
 UPSTREAM_BASE = "https://api.anthropic.com"
 
 # Anthropic exposes no per-seat model list endpoint, so the catalog is static.

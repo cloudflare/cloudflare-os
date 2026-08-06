@@ -141,3 +141,17 @@ async def test_flagged_seat_with_expired_credentials_still_raises(tmp_path):
     store.mark_needs_reauth(h)
     with pytest.raises(SeatNeedsReauth):
         await resolve_access_token(store, h, now=5_000.0, refresher=never)
+
+@pytest.mark.asyncio
+async def test_write_failure_after_rotation_still_serves_the_request(tmp_path,
+                                                                     monkeypatch):
+    from seatproxy import refresh as m
+    store, h, _ = seat(tmp_path)
+    async def refresher(provider, tokens):
+        return SeatTokens("NEW", "NEWR", 9_000.0)
+    def boom(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(m, "write_tokens", boom)
+    assert await resolve_access_token(store, h, now=5_000.0,
+                                      refresher=refresher) == "NEW"
+    assert store.get(h).needs_reauth is False
