@@ -10,7 +10,7 @@ import { getAiGatewayConfig } from "./ai-gateway.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
 import type { AdminSettings } from "./admin-settings.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./blueprint-archive.js";
-import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
+import { filterEnabledResources, isAiModelDisabled, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
 
 const logger = createWorkshopLogger("workshop.user");
@@ -505,11 +505,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async listModels(): Promise<AiChatAuthorInfo[]> {
     let result: AiChatAuthorInfo[] = [];
 
-    // When AI Gateway mode is active, include all suggested models for enabled providers.
+    // When AI Gateway mode is active, include all suggested models for enabled providers, except
+    // those the deployment admin has disabled.
     let gwConfig = getAiGatewayConfig(this.env);
     let gwModelIds = new Set<string>();
     if (gwConfig) {
+      let adminConfig = await readAdminConfig(this.env);
       for (let entry of gwConfig.getModelList()) {
+        if (isAiModelDisabled(adminConfig, entry.id)) continue;
         result.push(entry);
         gwModelIds.add(entry.id);
       }
@@ -528,6 +531,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let gwConfig = getAiGatewayConfig(this.env);
     if (gwConfig && !gwConfig.providers.has(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
+    }
+    // An admin-disabled built-in can't be re-added as a custom model: in AI Gateway mode a custom
+    // model routes through the platform gateway anyway, so allowing it would undo the disable.
+    if (isAiModelDisabled(await readAdminConfig(this.env), config.model)) {
+      throw new Error(`Model "${config.model}" has been disabled by the administrator.`);
     }
 
     profile.type = "agent";
@@ -567,10 +575,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async setPreferredModel(id: string | null): Promise<void> {
     if (id !== null) {
-      // Validate that the model exists in the user's configured models or as a gateway model.
+      // Validate that the model exists in the user's configured models or as a gateway model, and
+      // that the deployment admin has not disabled it.
       let gwConfig = getAiGatewayConfig(this.env);
       let exists = !!this.storage.aiModels.get(id) || !!gwConfig?.resolveModel(id);
-      if (!exists) {
+      if (!exists || isAiModelDisabled(await readAdminConfig(this.env), id)) {
         throw new Error(`No such model: ${id}`);
       }
     }
@@ -670,6 +679,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       profile: this.storage.profile.get()
     };
     if (modelId) {
+      // Refuse a model the deployment admin has disabled, whether it resolves as a gateway
+      // built-in or as a user-added custom model: a chat pinned to it must pick another model.
+      if (isAiModelDisabled(await readAdminConfig(this.env), modelId)) {
+        throw new Error(`Model "${modelId}" has been disabled by the administrator.`);
+      }
       // In AI Gateway mode, resolve gateway models first.
       if (gwConfig) {
         result.aiModel = gwConfig.resolveModel(modelId);

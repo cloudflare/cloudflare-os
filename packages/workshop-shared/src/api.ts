@@ -651,6 +651,19 @@ export type AdminResourceVendor = {
   | { autoProvisions: true; ambientMode: AmbientGatekeeperMode }
 );
 
+// One AI Gateway built-in model, as the admin AI-models panel sees it. Only present in AI Gateway
+// mode; custom models users add with their own tokens are not curated here.
+export type AdminAiModel = {
+  // The model id (e.g. "@cf/moonshotai/kimi-k2.7-code").
+  id: string;
+  name: string;
+  // The gateway provider offering it (e.g. "cloudflare", "openai").
+  provider: string;
+  // Offered to users. Disabling hides the model from model lists and refuses new use of it, so an
+  // org can offer a provider without offering every one of its models.
+  enabled: boolean;
+};
+
 // A connectable third-party service: its vendor id, display metadata, and the resource types it
 // offers (empty for an auto-provisioning gatekeeper like the Context Library). Returned by both
 // listGatekeeperVendors and listAddableGatekeepers so the connect UI treats both uniformly.
@@ -705,6 +718,9 @@ export type AdminSettingsView = {
   resourceVendors: AdminResourceVendor[];
   // The blueprints promoted as standard output formats, in menu order (including disabled ones).
   formats: AdminFormat[];
+  // AI Gateway built-in models with their enabled state (not hidden when disabled). Empty outside
+  // AI Gateway mode, where there are no deployment-managed models to curate.
+  aiModels: AdminAiModel[];
 };
 
 // One promoted blueprint, as the admin Formats panel sees it: the deployment's curation plus
@@ -777,6 +793,11 @@ export interface AdminApi {
   // gadget already holds, and 'disabled' leaves an ambient account's data dormant rather than deleting
   // it.
   setGatekeeperMode(vendorId: string, mode: AmbientGatekeeperMode): Promise<void>;
+
+  // Enable or disable one AI Gateway built-in model for users. Disabling hides it from model lists
+  // and refuses new use of it (chats pinned to it must pick another model); user-added custom
+  // models are unaffected. Throws for an id that is not a known built-in model.
+  setAiModelEnabled(modelId: string, enabled: boolean): Promise<void>;
 
   // Set the top-bar notice (centered text in the top navigation bar). Pass "" to clear. Rejects over
   // MAX_ANNOUNCEMENT_LENGTH.

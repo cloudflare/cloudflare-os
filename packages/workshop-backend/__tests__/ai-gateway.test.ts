@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AiGatewayLogRetryableError,
+  getAiGatewayConfig,
   getAiGatewayLogCost,
 } from "../src/ai-gateway.js";
 
@@ -12,6 +13,24 @@ function env(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
     ...overrides,
   } as Cloudflare.Env;
 }
+
+describe("getModelCatalog", () => {
+  it("lists every suggested model of the enabled providers, with its provider", () => {
+    let gwConfig = getAiGatewayConfig(env({
+      CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
+      CF_AI_GATEWAY_API_TOKEN: "token",
+      CF_AI_GATEWAY_PROVIDERS: "cloudflare,openai",
+    }))!;
+
+    let catalog = gwConfig.getModelCatalog();
+    expect(catalog.length).toBeGreaterThan(0);
+    // Every entry belongs to an enabled provider; disabled providers contribute nothing.
+    expect(new Set(catalog.map(m => m.provider))).toEqual(new Set(["cloudflare", "openai"]));
+    // Matches what users are offered, entry for entry (the catalog only adds the provider).
+    expect(catalog.map(m => ({ type: "agent", id: m.id, name: m.name })))
+        .toEqual(gwConfig.getModelList());
+  });
+});
 
 describe("getAiGatewayLogCost", () => {
   afterEach(() => vi.unstubAllGlobals());

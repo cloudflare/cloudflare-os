@@ -34,6 +34,10 @@ export type AdminConfig = {
   disabledResources: Record<string, string[]>;
   // Fully-disabled gatekeeper vendor ids.
   disabledGatekeepers: string[];
+  // Disabled AI Gateway built-in model ids (see SUGGESTED_MODELS). A disabled model is hidden from
+  // users and refused at resolution; user-added custom models are unaffected. Only meaningful in
+  // AI Gateway mode. Ids are case-sensitive (e.g. "@cf/moonshotai/kimi-k2.7-code").
+  disabledAiModels: string[];
   // Per-vendor provisioning mode for auto-provisioning ("ambient") gatekeepers (e.g. the Context
   // Library). Absent ⇒ the default ("optional", see provisioning-policy.ts). Only meaningful for
   // vendors that declare autoProvisionsAccount.
@@ -75,6 +79,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   accentColor: "",
   disabledResources: {},
   disabledGatekeepers: [],
+  disabledAiModels: [],
   ambientGatekeeperModes: {},
   formats: [],
 };
@@ -277,6 +282,8 @@ export function parseAdminConfig(raw: string | null): AdminConfig {
       accentColor: typeof p.accentColor === "string" ? p.accentColor : "",
       disabledResources,
       disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
+      // Model ids are case-sensitive, unlike vendor ids.
+      disabledAiModels: strings(p.disabledAiModels),
       ambientGatekeeperModes,
       formats: parseFormats(p.formats),
     };
@@ -306,6 +313,12 @@ export function filterEnabledResources(
   let disabled = config.disabledResources[vendorId];
   if (!disabled || disabled.length === 0) return resources;
   return resources.filter(r => !disabled.includes(r.urlPattern));
+}
+
+// --- AI-model-disable helpers ---
+
+export function isAiModelDisabled(config: AdminConfig, modelId: string): boolean {
+  return config.disabledAiModels.includes(modelId);
 }
 
 // --- Agent system-prompt instructions ---

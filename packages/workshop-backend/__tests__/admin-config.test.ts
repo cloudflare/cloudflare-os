@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_ADMIN_CONFIG, defaultOutputFormatId, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
+import { DEFAULT_ADMIN_CONFIG, defaultOutputFormatId, isAiModelDisabled, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
 
 describe("parseAdminConfig", () => {
   it("backfills fields missing from a config persisted before they existed", () => {
@@ -30,6 +30,23 @@ describe("parseAdminConfig", () => {
       { blueprintId: "good", enabled: true, agentHint: "prefer me" },
       { blueprintId: "defaults-enabled", enabled: true },
     ]);
+  });
+
+  it("keeps disabled AI model ids case-sensitive and drops non-strings", () => {
+    // Model ids like "@cf/moonshotai/kimi-k2.7-code" are case-sensitive, unlike vendor ids, so
+    // parsing must not lowercase them or the disable would silently stop matching.
+    let config = parseAdminConfig(JSON.stringify({
+      disabledAiModels: ["@cf/moonshotai/Kimi-K2.7-code", 42, null, "gpt-5.6-sol"],
+    }));
+
+    expect(config.disabledAiModels).toEqual(["@cf/moonshotai/Kimi-K2.7-code", "gpt-5.6-sol"]);
+    expect(isAiModelDisabled(config, "gpt-5.6-sol")).toBe(true);
+    expect(isAiModelDisabled(config, "@cf/moonshotai/kimi-k2.7-code")).toBe(false);
+  });
+
+  it("survives a serialize/parse round trip with disabled AI models", () => {
+    let config = parseAdminConfig(JSON.stringify({ disabledAiModels: ["gpt-5.6-sol"] }));
+    expect(parseAdminConfig(serializeAdminConfig(config))).toEqual(config);
   });
 
   // Everything downstream keys formats by blueprint id; setFormatOrder() in particular treats the

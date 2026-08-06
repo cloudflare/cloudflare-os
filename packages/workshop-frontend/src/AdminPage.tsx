@@ -3,7 +3,7 @@ import { RpcStub } from 'capnweb'
 import { Switch, Textarea, Input, Button, Tabs, useKumoToastManager } from '@cloudflare/kumo'
 import { Hexagon, ShieldWarning, UserPlus } from '@phosphor-icons/react'
 import { useAuthenticatedApi } from './AuthContext'
-import { AdminApi, AdminFormat, AdminResourceVendor, AmbientGatekeeperMode, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_SITE_NAME_LENGTH, DEFAULT_SITE_NAME, BannerColor, BANNER_COLORS, DEFAULT_BANNER_COLOR } from '@gadgets/workshop-shared/api'
+import { AdminAiModel, AdminApi, AdminFormat, AdminResourceVendor, AmbientGatekeeperMode, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_SITE_NAME_LENGTH, DEFAULT_SITE_NAME, BannerColor, BANNER_COLORS, DEFAULT_BANNER_COLOR } from '@gadgets/workshop-shared/api'
 import { applyAccentColor, DEFAULT_ACCENT_COLOR } from './theme'
 import { cacheBustSiteLogoUrl, prepareSiteLogo } from './siteLogoUtils'
 import SiteLogo from './components/SiteLogo'
@@ -80,6 +80,9 @@ export default function AdminPage() {
   const [resourceVendors, setResourceVendors] = useState<AdminResourceVendor[]>([])
   const [resourceBusy, setResourceBusy] = useState<Set<string>>(new Set())
 
+  // AI Gateway built-in models with their enabled state (empty outside AI Gateway mode).
+  const [aiModels, setAiModels] = useState<AdminAiModel[]>([])
+
   const [activeTab, setActiveTab] = useState('general')
 
   // Promoted output formats, in menu order (see AdminFormatsPanel).
@@ -104,6 +107,7 @@ export default function AdminPage() {
     setSavedAccent(view.accentColor)
     setAccentDraft(view.accentColor)
     setFormats(view.formats)
+    setAiModels(view.aiModels)
   }
 
   // Mint the admin capability once (the access check happens server-side) and load settings.
@@ -150,12 +154,13 @@ export default function AdminPage() {
     return () => { applyAccentColor(savedAccent) }
   }, [accentDraft, savedAccent])
 
-  // Re-fetch just the gatekeeper/resource state (used to revert an optimistic toggle on error).
-  // Leaves the General-tab drafts untouched.
+  // Re-fetch just the gatekeeper/resource and AI-model state (used to revert an optimistic toggle
+  // on error). Leaves the General-tab drafts untouched.
   const reloadResources = async () => {
     if (!admin) return
     const view = await admin.api.getSettings()
     setResourceVendors(view.resourceVendors)
+    setAiModels(view.aiModels)
   }
 
   const handleResourceToggle = async (vendorId: string, urlPattern: string, enabled: boolean) => {
@@ -216,6 +221,27 @@ export default function AdminPage() {
     )
     try {
       await admin.api.setGatekeeperMode(vendorId, mode)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Update failed'
+      toasts.add({ title: message, variant: 'error' })
+      await reloadResources().catch(() => {})
+    } finally {
+      setResourceBusy((prev) => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
+    }
+  }
+
+  const handleAiModelToggle = async (modelId: string, enabled: boolean) => {
+    if (!admin) return
+    const key = `model ${modelId}`
+    setResourceBusy((prev) => new Set(prev).add(key))
+    // Optimistic update.
+    setAiModels((prev) => prev.map((m) => (m.id === modelId ? { ...m, enabled } : m)))
+    try {
+      await admin.api.setAiModelEnabled(modelId, enabled)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Update failed'
       toasts.add({ title: message, variant: 'error' })
@@ -402,6 +428,7 @@ export default function AdminPage() {
         tabs={[
           { value: 'general', label: 'General' },
           { value: 'gatekeepers', label: 'Gatekeepers' },
+          { value: 'models', label: 'AI models' },
           { value: 'formats', label: 'Formats' },
           { value: 'access', label: 'Access' },
         ]}
@@ -948,6 +975,63 @@ export default function AdminPage() {
                 )}
               </div>
             )})}
+          </div>
+        </div>
+      )}
+
+      {/* Built-in AI model curation */}
+      {activeTab === 'models' && (
+        <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
+          <h2 className="text-lg font-semibold text-kumo-strong mb-1">AI models</h2>
+          <p className="text-sm text-kumo-subtle mb-5">
+            Turn built-in models on or off for your users. A disabled model disappears from model
+            pickers and can no longer be used, so you can offer a provider without offering every
+            one of its models. Custom models users add with their own API tokens are not affected.
+          </p>
+
+          {aiModels.length === 0 && (
+            <p className="text-sm text-kumo-subtle">
+              This deployment has no built-in models to curate. Built-in models exist only in AI
+              Gateway mode; users add their own models from the AI providers page.
+            </p>
+          )}
+
+          <div className="space-y-2">
+            {aiModels.map((model) => {
+              const key = `model ${model.id}`
+              return (
+                <div
+                  key={model.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => !resourceBusy.has(key) && handleAiModelToggle(model.id, !model.enabled)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      if (!resourceBusy.has(key)) handleAiModelToggle(model.id, !model.enabled)
+                    }
+                  }}
+                  className="flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer hover:bg-kumo-tint"
+                >
+                  <div className="flex-1 min-w-0">
+                    <span className={`block text-sm font-medium ${model.enabled ? 'text-kumo-default' : 'text-kumo-subtle'}`}>
+                      {model.name}
+                    </span>
+                    <span className="block text-xs text-kumo-subtle font-mono truncate">{model.id}</span>
+                  </div>
+                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-kumo-tint text-kumo-subtle border border-kumo-line">
+                    {model.provider}
+                  </span>
+                  <span onClick={(e) => e.stopPropagation()}>
+                    <Switch
+                      checked={model.enabled}
+                      disabled={resourceBusy.has(key)}
+                      onCheckedChange={(enabled) => handleAiModelToggle(model.id, enabled)}
+                    />
+                  </span>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}

@@ -1,4 +1,4 @@
-import { AdminApi, AdminFormat, AdminFormatPatch, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { AdminAiModel, AdminApi, AdminFormat, AdminFormatPatch, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
@@ -9,6 +9,7 @@ import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, pars
 import { AdminConfig, DEFAULT_ADMIN_CONFIG, FormatCuration, MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, reorderFormats, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
 import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
+import { getAiGatewayConfig } from './ai-gateway.js';
 import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
 import { UserDurableObject } from './user.js';
 import { formatBlueprintsManifestVersion, installFormatBlueprints } from './format-blueprints.js';
@@ -311,7 +312,21 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       accentColor: config.accentColor,
       resourceVendors: await this.#listResourceConfig(config, adminUserId),
       formats: await this.#listFormatConfig(config),
+      aiModels: this.#listAiModelConfig(config),
     };
+  }
+
+  // Admin view of the AI Gateway built-in models with their enabled state. Unlike the user-facing
+  // model list, this does NOT hide disabled models (so admins can re-enable them). Empty outside
+  // AI Gateway mode, where there are no deployment-managed models to curate.
+  #listAiModelConfig(config: AdminConfig): AdminAiModel[] {
+    let gwConfig = getAiGatewayConfig(this.env);
+    if (!gwConfig) return [];
+    let disabled = new Set(config.disabledAiModels);
+    return gwConfig.getModelCatalog().map(model => ({
+      ...model,
+      enabled: !disabled.has(model.id),
+    }));
   }
 
   // --- Standard output formats ---
@@ -422,6 +437,15 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       if (enabled) disabled.delete(urlPattern); else disabled.add(urlPattern);
       if (disabled.size === 0) delete map[vendorId]; else map[vendorId] = [...disabled];
       return { ...config, disabledResources: map };
+    });
+  }
+
+  // Enable/disable a single AI Gateway built-in model atomically (read-modify-write within the DO).
+  async setAiModelEnabled(modelId: string, enabled: boolean): Promise<void> {
+    await this.#mutateAdminConfig(config => {
+      let disabled = new Set(config.disabledAiModels);
+      if (enabled) disabled.delete(modelId); else disabled.add(modelId);
+      return { ...config, disabledAiModels: [...disabled] };
     });
   }
 
@@ -594,6 +618,15 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       throw new Error(`Invalid gatekeeper mode: ${mode}`);
     }
     return this.admin.setGatekeeperMode(vendorId, mode);
+  }
+
+  setAiModelEnabled(modelId: string, enabled: boolean): Promise<void> {
+    // Validated against the full suggested catalog rather than the currently-enabled providers, so
+    // an admin's disable survives provider-list changes and can be set before enabling a provider.
+    if (!Object.values(SUGGESTED_MODELS).some(models => modelId in models)) {
+      throw new Error(`Unknown built-in model: ${modelId}`);
+    }
+    return this.admin.setAiModelEnabled(modelId, enabled);
   }
 
   async setAnnouncement(text: string): Promise<void> {

@@ -39,6 +39,23 @@ export class AiGatewayConfig {
   }
 
   /**
+   * Every built-in model this gateway configuration offers, with its provider — the admin
+   * panel's view. Unlike the user-facing model list, this is never filtered by admin curation:
+   * the panel exists to show disabled models so they can be re-enabled.
+   */
+  getModelCatalog(): { id: string, name: string, provider: string }[] {
+    let result: { id: string, name: string, provider: string }[] = [];
+    for (let [provider, models] of Object.entries(SUGGESTED_MODELS)) {
+      if (this.providers.has(provider)) {
+        for (let [id, model] of Object.entries(models)) {
+          result.push({ id, name: model.name, provider });
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
    * Get the list of models available through AI Gateway, as AiChatAuthorInfo entries.
    */
   getModelList(): AiChatAuthorInfo[] {
