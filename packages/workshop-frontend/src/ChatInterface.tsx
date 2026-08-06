@@ -1835,6 +1835,7 @@ export const ChatInput = ({
 }) => {
   const toasts = useKumoToastManager();
   const [inputValue, setInputValue] = useState("");
+  const [isComposing, setIsComposing] = useState(false);
   const [capsules, setCapsules] = useState<InputCapsule[]>([]);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [isSending, setIsSending] = useState(false);
@@ -3099,6 +3100,8 @@ export const ChatInput = ({
               onSelect={handleCursorChange}
               onClick={handleCursorChange}
               onKeyUp={handleCursorChange}
+              onCompositionStart={() => setIsComposing(true)}
+              onCompositionEnd={() => setIsComposing(false)}
 
               onMouseDown={(e) => {
                 if (e.button !== 0) return;
@@ -3199,8 +3202,8 @@ export const ChatInput = ({
                     return;
                   }
                 }
-                // Enter sends message (unless Shift is held)
-                if (e.key === "Enter" && !e.shiftKey) {
+                // Enter sends message unless Shift is held or IME is composing
+                if (e.key === "Enter" && !e.shiftKey && !isComposing && !e.nativeEvent?.isComposing) {
                   e.preventDefault();
                   if (!isAgentActive && !isBlocked) submitMessage();
                   return;
