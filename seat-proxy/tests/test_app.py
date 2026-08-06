@@ -89,3 +89,16 @@ def test_relay_route_does_not_forward_its_prefix(tmp_path):
     h = store.put("alice", "anthropic", str(cfg))
     app.post("/anthropic/v1/messages", headers={"x-api-key": h}, json={})
     assert seen["url"] == "https://api.anthropic.com/v1/messages"
+
+@pytest.mark.parametrize("bad", ["../evil", "..", ".", "a/b", "a\\b", "x" * 65,
+                                 "../../etc/passwd"])
+def test_enroll_start_rejects_unsafe_owner(tmp_path, bad):
+    _, app = build(tmp_path)
+    r = app.post("/enroll/anthropic/start", headers={"X-Seat-Owner": bad})
+    assert r.status_code == 400
+
+def test_traversal_owner_creates_nothing_outside_state_dir(tmp_path):
+    _, app = build(tmp_path)
+    app.post("/enroll/anthropic/start", headers={"X-Seat-Owner": "../escaped"})
+    assert not (tmp_path / "escaped").exists()
+    assert not (tmp_path.parent / "escaped").exists()

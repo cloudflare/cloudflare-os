@@ -1,6 +1,7 @@
 """HTTP surface: enrollment plus the two relay mounts."""
 
 import os
+import re
 import secrets
 import time
 from pathlib import Path
@@ -14,12 +15,31 @@ from .relay import relay
 
 _SEAT_MODULES = {providers.ANTHROPIC: anthropic_seat, providers.OPENAI: openai_seat}
 
+# X-Seat-Owner is caller-supplied and lands in a filesystem path. Unvalidated, an
+# owner of "../../../../home/someone/.claude" would not merely escape state_dir —
+# poll() would mint a handle bound to that directory, letting the caller relay
+# requests using whoever's seat lives there. Charset plus an explicit traversal
+# reject, backed by a resolved-containment check below.
+_OWNER_PATTERN = re.compile(r"^[A-Za-z0-9._@-]{1,64}$")
+
+def _valid_owner(owner: str | None) -> bool:
+    return bool(owner
+                and _OWNER_PATTERN.match(owner)
+                and ".." not in owner
+                and owner not in {".", ".."})
+
 def create_app(store, client, state_dir: str) -> FastAPI:
     app = FastAPI()
     pending: dict[str, dict] = {}
 
     def config_dir_for(owner: str, provider: str) -> Path:
-        return Path(state_dir) / owner / provider
+        # Belt and braces: even with a validated owner, confirm the resolved path
+        # is still inside state_dir before anything is created or read.
+        root = Path(state_dir).resolve()
+        cfg = (root / owner / provider).resolve()
+        if not cfg.is_relative_to(root):
+            raise ValueError("config dir resolved outside the state directory")
+        return cfg
 
     @app.post("/enroll/{provider}/start")
     async def start(provider: str, x_seat_owner: str | None = Header(default=None)):
@@ -29,6 +49,9 @@ def create_app(store, client, state_dir: str) -> FastAPI:
         if not x_seat_owner:
             return provider_error(provider, 400, "invalid_request_error",
                                   "X-Seat-Owner header is required.")
+        if not _valid_owner(x_seat_owner):
+            return provider_error(provider, 400, "invalid_request_error",
+                                  "X-Seat-Owner is not a valid owner name.")
         cfg = config_dir_for(x_seat_owner, provider)
         cfg.mkdir(parents=True, exist_ok=True)
         # Owner-only: these directories hold durable refresh tokens.
