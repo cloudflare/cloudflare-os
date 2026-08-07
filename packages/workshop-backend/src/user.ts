@@ -3,7 +3,8 @@ import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTE
 import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
-import { supportedThinkingLevelsForConfig, THINKING_LEVEL_ORDER } from "./ai-models.js";
+import { supportedThinkingLevelsForConfig } from "./ai-models.js";
+import { THINKING_LEVEL_ORDER } from "@gadgets/workshop-shared/thinking-level";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import { createWorkshopLogger } from "./observability";

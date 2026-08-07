@@ -486,6 +486,11 @@ describe("resolveThinkingLevel", () => {
     const model = fixtureModel({ xhigh: "xhigh", max: "max" });
     expect(resolveThinkingLevel(model, "off")).toBe("off");
   });
+
+  it("clamps to off for a model with no reasoning support at all, regardless of its map", () => {
+    const model = fixtureModel({ high: "high" }, false);
+    expect(resolveThinkingLevel(model, "high")).toBe("off");
+  });
 });
 
 describe("reasoningOption", () => {

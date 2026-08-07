@@ -32,6 +32,10 @@
     "./seat-types": {
       "types": "./src/seat-types.ts",
       "import": "./src/seat-types.ts"
+    },
+    "./thinking-level": {
+      "types": "./src/thinking-level.ts",
+      "import": "./src/thinking-level.ts"
     }
   },
   "scripts": {

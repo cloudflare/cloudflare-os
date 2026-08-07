@@ -18,6 +18,9 @@ import { LanguageModelBinding } from "./ai-model-binding";
 import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
 import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT }
   from "@gadgets/workshop-shared/api";
+import {
+  resolveThinkingLevel as resolveSupportedThinkingLevel, THINKING_LEVEL_ORDER,
+} from "@gadgets/workshop-shared/thinking-level";
 import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
@@ -338,29 +341,30 @@ function makeHandle(args: HandleArgs): ModelHandle {
 // completeText, which deliberately request no thinking at all -- see ModelStreamOptions.thinking).
 export const DEFAULT_THINKING_LEVEL: ThinkingLevel = "high";
 
-// Ascending order of thinking levels, used to walk downward when a requested level is explicitly
-// unsupported, and as the "no opinion" default level set. Mirrors pi-ai's own internal ordering.
-export const THINKING_LEVEL_ORDER: ThinkingLevel[] =
-    ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+/**
+ * The thinking levels a model supports, ordered "off" through "max" -- e.g. for sizing a picker.
+ * A model with `reasoning: false` supports only "off"; otherwise a level is included unless its
+ * `thinkingLevelMap` entry (sourced from pi-ai's model catalogue -- see
+ * gatewayNativeModel/getModelDirect above, which copy it onto every constructed Model) is
+ * explicitly `null`. A level simply absent from the map -- or a map that's absent entirely -- is
+ * treated as supported: the catalogue has no opinion about it, not "nothing is supported".
+ */
+export function supportedThinkingLevels(model: Model<Api>): ThinkingLevel[] {
+  if (!model.reasoning) return ["off"];
+  const map = model.thinkingLevelMap;
+  if (!map) return [...THINKING_LEVEL_ORDER];
+  return THINKING_LEVEL_ORDER.filter((level) => map[level] !== null);
+}
 
 /**
- * Clamps a requested thinking level to one the model actually supports, per its
- * `thinkingLevelMap` (sourced from pi-ai's model catalogue -- see gatewayNativeModel/getModelDirect
- * above, which copy it onto every constructed Model). A `null` entry for a level means the model
- * explicitly does not support it (most commonly "xhigh"/"max", which only a few model families
- * offer); in that case, fall back to the highest supported level at or below the request. A level
- * that's simply absent from the map -- or a map that's absent entirely -- is treated as supported:
- * the catalogue has no opinion about it, not "nothing is supported".
+ * Clamps a requested thinking level to one `model` actually supports (see supportedThinkingLevels).
+ * Thin wrapper around workshop-shared's resolveThinkingLevel -- the actual clamping algorithm is
+ * shared with the frontend's thinking-level picker (see Overseer.listThinkingLevels() and
+ * ChatInterface.tsx), so a level never renders as selected/sent here and unavailable there, or
+ * vice versa.
  */
 export function resolveThinkingLevel(model: Model<Api>, requested: ThinkingLevel): ThinkingLevel {
-  const map = model.thinkingLevelMap;
-  if (!map) return requested;
-  if (map[requested] !== null) return requested;
-  for (let i = THINKING_LEVEL_ORDER.indexOf(requested) - 1; i >= 0; i--) {
-    const candidate = THINKING_LEVEL_ORDER[i];
-    if (map[candidate] !== null) return candidate;
-  }
-  return "off";
+  return resolveSupportedThinkingLevel(supportedThinkingLevels(model), requested);
 }
 
 /**
@@ -371,19 +375,6 @@ export function resolveThinkingLevel(model: Model<Api>, requested: ThinkingLevel
  */
 export function reasoningOption(level: ThinkingLevel): Exclude<ThinkingLevel, "off"> | undefined {
   return level === "off" ? undefined : level;
-}
-
-/**
- * The thinking levels a model supports, ordered "off" through "max" -- e.g. for sizing a picker.
- * A model with `reasoning: false` supports only "off"; otherwise this is exactly the set
- * resolveThinkingLevel would ever return unclamped for this model (every level not explicitly
- * excluded by thinkingLevelMap, including every level when there's no map at all).
- */
-export function supportedThinkingLevels(model: Model<Api>): ThinkingLevel[] {
-  if (!model.reasoning) return ["off"];
-  const map = model.thinkingLevelMap;
-  if (!map) return [...THINKING_LEVEL_ORDER];
-  return THINKING_LEVEL_ORDER.filter((level) => map[level] !== null);
 }
 
 /**

@@ -84,6 +84,7 @@ import {
   ThinkingLevel,
 } from "@gadgets/workshop-shared/api";
 import { ActionKind, ResourceDescription } from "@gadgets/workshop-shared/gatekeeper";
+import { resolveThinkingLevel, THINKING_LEVEL_ORDER } from "@gadgets/workshop-shared/thinking-level";
 import {
   parseSlashCommandInput, slashCommandTokenKey, stripSlashCommandToken,
 } from "./components/chat/slash-command-input";
@@ -368,12 +369,6 @@ const CHAT_ATTACHMENT_IMAGE_MAX_EDGE = 1568;
 // Matches the backend's own default (see DEFAULT_THINKING_LEVEL in workshop-backend/src/ai-models.ts).
 const DEFAULT_THINKING_LEVEL: ThinkingLevel = "high";
 
-// The thinking-level picker's fallback before a model's actual supported levels have loaded, or
-// for a model the deployment has no catalogue opinion about -- every level, "off" through "max",
-// exactly like the backend's own "no opinion" default (see supportedThinkingLevelsForConfig).
-const ALL_THINKING_LEVELS: ThinkingLevel[] =
-    ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-
 // Human-readable label for a thinking-level picker option.
 const THINKING_LEVEL_LABELS: Record<ThinkingLevel, string> = {
   off: "Off",
@@ -385,11 +380,17 @@ const THINKING_LEVEL_LABELS: Record<ThinkingLevel, string> = {
   max: "Max",
 };
 
-// The level to preselect once a model's supported levels are known: "high" if offered, otherwise
-// the strongest level the model does support.
-function defaultThinkingLevel(supported: ThinkingLevel[]): ThinkingLevel {
-  if (supported.includes(DEFAULT_THINKING_LEVEL)) return DEFAULT_THINKING_LEVEL;
-  return supported[supported.length - 1] ?? "off";
+/**
+ * The thinking level actually shown by the picker and passed to onSend(), given the user's
+ * per-chat preference (undefined until they've chosen one for this chat) and the levels the
+ * currently selected model supports. The picker's active option and the composer's send call both
+ * read from this single expression, so they can never diverge. Clamping reuses the exact same
+ * resolveThinkingLevel the backend clamps with (see ai-models.ts), so a level is never shown
+ * enabled here and then rejected there, or vice versa. Exported for testing.
+ */
+export function effectiveThinkingLevel(
+    preferred: ThinkingLevel | undefined, supportedLevels: ThinkingLevel[]): ThinkingLevel {
+  return resolveThinkingLevel(supportedLevels, preferred ?? DEFAULT_THINKING_LEVEL);
 }
 
 function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
@@ -1812,7 +1813,6 @@ export const ChatInput = ({
   showThinkingTraces = true,
   onToggleThinkingTraces,
   thinkingLevel,
-  availableThinkingLevels,
   onThinkingLevelChange,
 }: {
   createCapsuleGatekeeper: (
@@ -1860,11 +1860,15 @@ export const ChatInput = ({
   onStop?: () => void;
   showThinkingTraces?: boolean;
   onToggleThinkingTraces?: () => void;
-  /** Current thinking-level selection, and the levels the selected model actually supports. Both
-   * omitted on composers that don't offer the picker (e.g. the "start new chat" composer, whose
-   * `newChat()` call has no thinking-level parameter to apply it to). */
+  /** The user's remembered thinking-level preference for this chat (undefined until they've
+   * chosen one). The picker fetches which levels the selected model actually supports itself (via
+   * getOverseer().listThinkingLevels()) and clamps this preference against them -- see
+   * effectiveThinkingLevel(). Omitted on composers that don't offer the picker (e.g. the "start
+   * new chat" composer, whose `newChat()` call has no thinking-level parameter to apply it to). */
   thinkingLevel?: ThinkingLevel;
-  availableThinkingLevels?: ThinkingLevel[];
+  /** Called when the user explicitly picks a level, so the parent can remember it for this chat.
+   * Not called for automatic clamping when the model changes -- that's display/send-only, so
+   * switching back to a permissive model restores the original preference. */
   onThinkingLevelChange?: (level: ThinkingLevel) => void;
   /** Show the "Pre-approve actions" menu item (only when there are uncovered candidates). */
   /** Open the pre-approval dialog (owned by the parent). */
@@ -1887,6 +1891,35 @@ export const ChatInput = ({
   const lastUrlScanRef = useRef({position: -1, text: ""});
   const { authenticatedApi } = useAuthenticatedApi();
   const vendorBranding = useVendorBranding(authenticatedApi);
+
+  // Thinking levels the selected model actually supports, for the picker below. Starts optimistic
+  // (every level enabled) so the control isn't stuck disabled while loading; refetched whenever
+  // the model changes. Only the composers that offer the picker (onThinkingLevelChange is passed)
+  // bother fetching -- the "start new chat" composer doesn't render it at all. Gated on a boolean
+  // rather than `onThinkingLevelChange` itself: whether a composer offers the picker doesn't
+  // change across its own renders, but (like most handlers in this component) the callback's
+  // identity isn't stabilized by the caller, and depending on it directly would refetch on every
+  // unrelated parent re-render.
+  const offersThinkingLevelPicker = onThinkingLevelChange !== undefined;
+  const [supportedThinkingLevels, setSupportedThinkingLevels] =
+    useState<ThinkingLevel[]>(THINKING_LEVEL_ORDER);
+  useEffect(() => {
+    if (!offersThinkingLevelPicker || selectedModel === null) return;
+    let isCancelled = false;
+    (async () => {
+      const overseer = await getOverseer();
+      const levels = await overseer.listThinkingLevels(selectedModel);
+      if (!isCancelled) setSupportedThinkingLevels(levels);
+    })().catch((err) => {
+      console.error("Failed to load thinking levels:", err);
+      if (!isCancelled) setSupportedThinkingLevels(THINKING_LEVEL_ORDER);
+    });
+    return () => { isCancelled = true; };
+  }, [getOverseer, offersThinkingLevelPicker, selectedModel]);
+  // Single source of truth for both the picker's active option and what onSend() receives -- see
+  // effectiveThinkingLevel().
+  const shownThinkingLevel = effectiveThinkingLevel(thinkingLevel, supportedThinkingLevels);
+
   const selectedSlashCommandRef = useRef(selectedSlashCommand);
   selectedSlashCommandRef.current = selectedSlashCommand;
   const sendInFlightRef = useRef(false);
@@ -2475,7 +2508,7 @@ export const ChatInput = ({
       await onSend(message, selectedModel,
           capsuleSpecifiers?.length ? capsuleSpecifiers : undefined,
           readyAttachments.length ? readyAttachments : undefined,
-          formatRefs, thinkingLevel);
+          formatRefs, shownThinkingLevel);
       for (const attachment of attachmentsSnapshot) {
         if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
       }
@@ -3398,47 +3431,71 @@ export const ChatInput = ({
                   </DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu>
-              {onThinkingLevelChange && selectedModel !== null && availableThinkingLevels &&
-                  availableThinkingLevels.length > 1 && (
-                <DropdownMenu>
-                  <DropdownMenu.Trigger
-                    render={
-                      <button
-                        type="button"
-                        className="group inline-flex h-8 min-w-0 max-w-[130px] cursor-pointer items-center gap-1.5 rounded-lg px-2 text-[13px] leading-5 tracking-[-0.25px] text-kumo-subtle transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-default focus-visible:bg-kumo-tint focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.97] data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-default"
-                        aria-label="Select thinking level"
-                      >
-                        <Brain size={13} className="flex-shrink-0 text-kumo-inactive" />
-                        <span className="min-w-0 truncate">
-                          {THINKING_LEVEL_LABELS[thinkingLevel ?? DEFAULT_THINKING_LEVEL]}
-                        </span>
-                        <CaretDown
-                          size={12}
-                          weight="bold"
-                          className="flex-shrink-0 text-kumo-inactive transition-transform duration-150 ease-out group-data-[popup-open]:rotate-180"
-                        />
-                      </button>
-                    }
-                  />
-                  <DropdownMenu.Content className="themed-floating-shadow-lg !z-[1100] !min-w-[150px] rounded-2xl border border-kumo-line/70 bg-kumo-base p-1">
-                    {availableThinkingLevels.map((level) => {
-                      const active = (thinkingLevel ?? DEFAULT_THINKING_LEVEL) === level;
-                      return (
-                        <DropdownMenu.Item
-                          key={level}
-                          onClick={() => onThinkingLevelChange(level)}
-                          className="!h-auto rounded-xl !px-2 !py-1.5 text-[12px] leading-4 font-normal tracking-[-0.15px] text-kumo-subtle transition-colors data-highlighted:bg-kumo-tint/70 data-highlighted:text-kumo-default"
+              {onThinkingLevelChange && selectedModel !== null && (() => {
+                // Disable the whole control when the model supports no real choice (every level
+                // excluded but "off", or the model isn't a reasoning model at all) -- an enabled
+                // control with nothing to pick would be confusing, not helpful. The label itself
+                // says so (rather than relying on a hover-only tooltip), so it's obvious at a
+                // glance, not just on hover.
+                const thinkingControlDisabled = supportedThinkingLevels.length <= 1;
+                return (
+                  <DropdownMenu>
+                    <DropdownMenu.Trigger
+                      render={
+                        <button
+                          type="button"
+                          disabled={thinkingControlDisabled}
+                          title={thinkingControlDisabled
+                              ? "This model doesn't support extended thinking." : undefined}
+                          className="group inline-flex h-8 min-w-0 max-w-[150px] cursor-pointer items-center gap-1.5 rounded-lg px-2 text-[13px] leading-5 tracking-[-0.25px] text-kumo-subtle transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-default focus-visible:bg-kumo-tint focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-default"
+                          aria-label="Select thinking level"
                         >
-                          <span className="min-w-0 flex-1 truncate">{THINKING_LEVEL_LABELS[level]}</span>
-                          {active && (
-                            <Check size={12} weight="bold" className="ml-3 flex-shrink-0 text-kumo-inactive" />
+                          <Brain size={13} className="flex-shrink-0 text-kumo-inactive" />
+                          <span className="min-w-0 truncate">
+                            {thinkingControlDisabled
+                                ? "No thinking" : THINKING_LEVEL_LABELS[shownThinkingLevel]}
+                          </span>
+                          {!thinkingControlDisabled && (
+                            <CaretDown
+                              size={12}
+                              weight="bold"
+                              className="flex-shrink-0 text-kumo-inactive transition-transform duration-150 ease-out group-data-[popup-open]:rotate-180"
+                            />
                           )}
-                        </DropdownMenu.Item>
-                      );
-                    })}
-                  </DropdownMenu.Content>
-                </DropdownMenu>
-              )}
+                        </button>
+                      }
+                    />
+                    <DropdownMenu.Content className="themed-floating-shadow-lg !z-[1100] !min-w-[190px] rounded-2xl border border-kumo-line/70 bg-kumo-base p-1">
+                      {/* Every level always renders, in order -- an unsupported one is disabled
+                          rather than absent, so it's visible that it exists but doesn't apply to
+                          this model, instead of the list silently changing length. */}
+                      {THINKING_LEVEL_ORDER.map((level) => {
+                        const isSupported = supportedThinkingLevels.includes(level);
+                        const active = isSupported && shownThinkingLevel === level;
+                        return (
+                          <DropdownMenu.Item
+                            key={level}
+                            disabled={!isSupported}
+                            onClick={() => isSupported && onThinkingLevelChange(level)}
+                            className="!h-auto rounded-xl !px-2 !py-1.5 text-[12px] leading-4 font-normal tracking-[-0.15px] text-kumo-subtle transition-colors data-highlighted:bg-kumo-tint/70 data-highlighted:text-kumo-default data-disabled:pointer-events-none data-disabled:opacity-40"
+                            title={isSupported ? undefined : "This model doesn't support this thinking level."}
+                          >
+                            <span className="min-w-0 flex-1 truncate">{THINKING_LEVEL_LABELS[level]}</span>
+                            {active && (
+                              <Check size={12} weight="bold" className="ml-3 flex-shrink-0 text-kumo-inactive" />
+                            )}
+                            {!isSupported && (
+                              <span className="ml-3 flex-shrink-0 text-[11px] text-kumo-inactive">
+                                Not supported
+                              </span>
+                            )}
+                          </DropdownMenu.Item>
+                        );
+                      })}
+                    </DropdownMenu.Content>
+                  </DropdownMenu>
+                );
+              })()}
               {isAgentActive && onStop ? (
                 <WorkshopIconButton
                   onClick={onStop}
@@ -4401,18 +4458,14 @@ function ChatInterface({
     [],
   );
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
-  // Thinking levels the selected model actually supports, refreshed whenever it changes (see the
-  // effect below). Starts optimistic (every level) so the picker isn't empty while loading.
-  const [availableThinkingLevels, setAvailableThinkingLevels] =
-    useState<ThinkingLevel[]>(ALL_THINKING_LEVELS);
   // The user's chosen thinking level per chat, remembered for the session (not persisted server-
   // side or across page loads) so switching chats doesn't lose a deliberate choice. Keyed by
   // chatId; `null` holds the choice for the not-yet-created chat while composing the first
-  // message.
+  // message. Undefined for a chat that hasn't had one chosen yet -- ChatInput defaults and clamps
+  // that itself (see effectiveThinkingLevel()), so this map only ever holds explicit user picks.
   const [thinkingLevelByChat, setThinkingLevelByChat] =
     useState<Map<number | null, ThinkingLevel>>(new Map());
-  const selectedThinkingLevel =
-    thinkingLevelByChat.get(selectedChatId) ?? defaultThinkingLevel(availableThinkingLevels);
+  const selectedThinkingLevel = thinkingLevelByChat.get(selectedChatId);
   const handleThinkingLevelChange = (level: ThinkingLevel) => {
     setThinkingLevelByChat((prev) => new Map(prev).set(selectedChatId, level));
   };
@@ -5330,21 +5383,6 @@ function ChatInterface({
       // Note: subscriberRef.current stays alive for potential resubscription
     };
   }, [overseer]);
-
-  // Refresh which thinking levels the picker offers whenever the selected model changes. "No
-  // agent" (null) offers nothing meaningful to pick, so leave the fallback list in place -- the
-  // picker isn't shown without an active model anyway.
-  useEffect(() => {
-    if (selectedModel === null) return;
-    let isMounted = true;
-    overseer.listThinkingLevels(selectedModel).then((levels) => {
-      if (isMounted) setAvailableThinkingLevels(levels);
-    }).catch((err) => {
-      console.error("Failed to load thinking levels:", err);
-      setAvailableThinkingLevels(ALL_THINKING_LEVELS);
-    });
-    return () => { isMounted = false; };
-  }, [overseer, selectedModel]);
 
   // Patch cached chat messages on action upserts.
   useActionEntries(overseer, (record) => {
@@ -7698,7 +7736,6 @@ function ChatInterface({
                     selectedModel={selectedModel}
                     onModelChange={handleModelChange}
                     thinkingLevel={selectedThinkingLevel}
-                    availableThinkingLevels={availableThinkingLevels}
                     onThinkingLevelChange={handleThinkingLevelChange}
                     pendingConsoleLogCount={pendingConsoleLogCount}
                     consoleLogPreview={consoleLogPreview}
