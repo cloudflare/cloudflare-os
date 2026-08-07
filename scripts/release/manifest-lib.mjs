@@ -34,6 +34,16 @@ const HANDLED_CONFIG_KEYS = new Set([
   // gatekeeper-context's Artifacts binding is closed-beta and cannot be provisioned in arbitrary
   // user accounts; it is dropped from customer manifests (the gatekeeper degrades gracefully).
   "artifacts",
+  // D1 (relational) and Vectorize (semantic search) are provisioned at deploy time like KV/R2;
+  // each emits a `$D1_<BINDING>_ID` / `$VECTORIZE_<BINDING>_NAME` placeholder the deploy service
+  // resolves from instance state.
+  "d1_databases",
+  "vectorize",
+  // Workers AI binding (model inference) passes through placeholder-free, like the backend's AI.
+  "ai",
+  // Durable sync pipeline. The workflow class and cron schedule are worker-local; the binding is
+  // emitted as name + class_name (no account-scoped resource).
+  "workflows",
 ]);
 
 const ARTIFACTS_CUT_ALLOWED = new Set(["gatekeeper-context"]);
@@ -46,6 +56,7 @@ const NO_DEFAULT_CRED_INPUTS = new Set([
   "gatekeeper-scheduler",     // auto-provisioned; no third-party OAuth app
   "gatekeeper-mcp",           // MCP OAuth uses dynamic client registration, not a static app
   "gatekeeper-mcp-portal",    // same MCP OAuth chain as gatekeeper-mcp
+  "gatekeeper-salesforce",    // JWT service account (SF_CLIENT_ID/SF_USERNAME/SF_PRIVATE_KEY)
 ]);
 
 // Not installable on customer instances: Email Routing needs a zone, which workers.dev-hosted
@@ -143,6 +154,37 @@ export function buildWorkerEntry({ pkgName, config, mainModule, modules, deployI
       type: "r2_bucket",
       name: r2.binding,
       bucket_name: `$R2_${r2.binding}_NAME`,
+    });
+  }
+  for (const d1 of config.d1_databases ?? []) {
+    if (d1.binding) {
+      bindings.push({
+        type: "d1",
+        name: d1.binding,
+        database_id: `$D1_${d1.binding}_ID`,
+      });
+    }
+  }
+  for (const vz of config.vectorize ?? []) {
+    if (vz.binding) {
+      bindings.push({
+        type: "vectorize",
+        name: vz.binding,
+        index_name: `$VECTORIZE_${vz.binding}_NAME`,
+      });
+    }
+  }
+  if (config.ai) {
+    // Placeholder-free like the backend's Workers AI binding; the deploy renderer passes it through.
+    bindings.push({ type: "ai", name: config.ai.binding ?? "AI" });
+  }
+  for (const wf of config.workflows ?? []) {
+    // Workflows are worker-local (no account-scoped resource): name + class_name + schedules.
+    bindings.push({
+      type: "workflow",
+      name: wf.binding,
+      class_name: wf.class_name,
+      ...(wf.schedules?.length ? { schedules: wf.schedules } : {}),
     });
   }
   if (config.browser) {

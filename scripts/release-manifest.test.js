@@ -23,7 +23,7 @@ const GOLDEN_PATH = join(TESTDATA, "golden-manifest.json");
 
 // Placeholder syntax the deploy-side renderer understands. Closed list — see manifest-lib.mjs.
 const PLACEHOLDER_RE =
-    /^\$(ACCOUNT_ID|PUBLIC_BASE_URL|KV_[A-Z0-9_]+_ID|R2_[A-Z0-9_]+_NAME|WORKER_NAME\([a-z0-9-]+\)|SECRET\([A-Z0-9_]+\))/;
+    /^\$(ACCOUNT_ID|PUBLIC_BASE_URL|KV_[A-Z0-9_]+_ID|R2_[A-Z0-9_]+_NAME|D1_[A-Z0-9_]+_ID|VECTORIZE_[A-Z0-9_]+_NAME|WORKER_NAME\([a-z0-9-]+\)|SECRET\([A-Z0-9_]+\))/;
 
 function buildTestManifest() {
   const workers = findDeployablePackages(join(ROOT, "packages")).map((pkg) => {

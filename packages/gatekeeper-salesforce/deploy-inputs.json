@@ -1,0 +1,28 @@
+[
+  {
+    "name": "SF_CLIENT_ID",
+    "kind": "secret",
+    "label": "Salesforce client ID",
+    "setupSteps": [
+      "Create or reuse an External Client App in your Salesforce org for JWT bearer auth (each environment needs its own consumer key).",
+      "Copy the Consumer Key from the app and provide it here."
+    ]
+  },
+  {
+    "name": "SF_USERNAME",
+    "kind": "secret",
+    "label": "Salesforce username",
+    "setupSteps": [
+      "The integration user principal, e.g. remi@touchless.io. Must be allowed to authenticate via the client app's OAuth scopes."
+    ]
+  },
+  {
+    "name": "SF_PRIVATE_KEY",
+    "kind": "secret",
+    "label": "Salesforce private key (PEM)",
+    "setupSteps": [
+      "The RSA PKCS#8 private key whose public key / certificate is registered on the External Client App.",
+      "Paste the full PEM text including BEGIN/END PRIVATE KEY lines."
+    ]
+  }
+]
