@@ -115,8 +115,20 @@ git commit -m "feat(seats): shared seat-enrollment types and proxy URL config"
 **Files:**
 - Create: `packages/workshop-backend/src/seat-auth.ts`
 - Create: `packages/workshop-backend/src/seat-auth.test.ts`
+- Modify: `packages/workshop-shared/package.json` (add the `./seat-types` export entry)
 - Modify: `packages/workshop-shared/src/api.ts` (three signatures on `AuthenticatedApi`)
 - Modify: `packages/workshop-backend/src/server.ts` (three one-line delegates)
+
+**Do this first.** `workshop-shared` has an explicit `exports` map, so
+`@gadgets/workshop-shared/seat-types` will not resolve until it is listed. Add, matching the
+surrounding entries exactly:
+
+```json
+    "./seat-types": {
+      "types": "./src/seat-types.ts",
+      "import": "./src/seat-types.ts"
+    },
+```
 
 **Interfaces:**
 - Produces: `startSeatAuth(env, owner, provider)`, `completeSeatAuth(env, owner, provider, enrollId, code)`, `revokeSeat(env, owner, handle)`, and `seatProxyUrl(env)`.
