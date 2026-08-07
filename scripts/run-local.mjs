@@ -21,6 +21,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseRunLocalArgs } from "./dev-server-config.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const STAMP_PATH = join(ROOT, ".run-local-stamp");
@@ -31,12 +32,14 @@ const NODE_MODULES = join(ROOT, "node_modules");
 
 // Forward extra flags (e.g. --use-workers-ai-binding) on to run-dev-server.js. `--port` is
 // handled here because run-dev-server.js derives Wrangler's port from VITE_BACKEND_HOST.
-const cliArgs = process.argv.slice(2);
-const portIndex = cliArgs.indexOf("--port");
-const port = portIndex === -1 ? null : cliArgs[portIndex + 1];
-const passthroughArgs = portIndex === -1
-  ? cliArgs
-  : cliArgs.filter((_, index) => index !== portIndex && index !== portIndex + 1);
+let port;
+let passthroughArgs;
+try {
+  ({ port, passthroughArgs } = parseRunLocalArgs(process.argv.slice(2)));
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
 
 // ---------------------------------------------------------------------------
 // Enumerate source files and compute a content hash.
