@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AiChatAuthorInfo, AiModelConfig } from "@gadgets/workshop-shared/api";
-import { getModel, type ModelHandle } from "../src/ai-models.js";
+import { getModel, reasoningOption, resolveThinkingLevel, type ModelHandle } from "../src/ai-models.js";
 
 // These tests exercise the real pi-ai stack: no module mocks. Routing decisions are asserted on
 // the returned handle's model descriptor (baseUrl/id/api) and log route, and request-level
@@ -430,4 +431,66 @@ describe("PDF attachment bridging", () => {
       image_url: "data:image/png;base64,iVBOR",
     }));
   }, 15000);
+});
+
+// Only thinkingLevelMap varies across these tests; the rest of Model<Api> is filled with
+// arbitrary-but-valid values that resolveThinkingLevel never inspects.
+function fixtureModel(thinkingLevelMap?: Model<Api>["thinkingLevelMap"]): Model<Api> {
+  return {
+    id: "test-model",
+    name: "Test Model",
+    api: "anthropic-messages",
+    provider: "anthropic",
+    baseUrl: "https://example.invalid",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 100_000,
+    maxTokens: 4096,
+    thinkingLevelMap,
+  };
+}
+
+describe("resolveThinkingLevel", () => {
+  it("passes a supported level through unchanged", () => {
+    const model = fixtureModel({ high: "high" });
+    expect(resolveThinkingLevel(model, "high")).toBe("high");
+  });
+
+  it("falls back to the highest supported level at or below an explicitly-null level", () => {
+    const model = fixtureModel({ high: null, medium: "medium" });
+    expect(resolveThinkingLevel(model, "high")).toBe("medium");
+  });
+
+  it("keeps walking downward past multiple explicitly-null levels", () => {
+    const model = fixtureModel({ high: null, medium: null, low: "low" });
+    expect(resolveThinkingLevel(model, "high")).toBe("low");
+  });
+
+  it("passes the level through unchanged when the model has no thinkingLevelMap at all", () => {
+    // No map means the catalogue has no opinion, not that nothing is supported -- unlike an
+    // explicit null, this must not be clamped away.
+    const model = fixtureModel(undefined);
+    expect(resolveThinkingLevel(model, "xhigh")).toBe("xhigh");
+  });
+
+  it("treats a level absent from the map (but not the map itself) as supported", () => {
+    const model = fixtureModel({ max: "max" });
+    expect(resolveThinkingLevel(model, "high")).toBe("high");
+  });
+
+  it("respects an explicit off request", () => {
+    const model = fixtureModel({ xhigh: "xhigh", max: "max" });
+    expect(resolveThinkingLevel(model, "off")).toBe("off");
+  });
+});
+
+describe("reasoningOption", () => {
+  it("omits the reasoning option for off", () => {
+    expect(reasoningOption("off")).toBeUndefined();
+  });
+
+  it("passes non-off levels through unchanged", () => {
+    expect(reasoningOption("high")).toBe("high");
+  });
 });

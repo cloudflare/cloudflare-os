@@ -4,6 +4,7 @@ import type {
   AnthropicMessagesCompat, Api, AssistantMessageEventStream, Context, Model, ModelCost,
   OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction,
 } from "@earendil-works/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { stream as anthropicMessagesStream } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { stream as googleGenerativeAiStream } from "@earendil-works/pi-ai/api/google-generative-ai";
 import { stream as openaiCompletionsStream } from "@earendil-works/pi-ai/api/openai-completions";
@@ -331,6 +332,45 @@ function makeHandle(args: HandleArgs): ModelHandle {
     },
   };
   return handle;
+}
+
+// Default reasoning effort for interactive agent turns (as opposed to the cheap one-shot calls in
+// completeText, which deliberately request no thinking at all -- see ModelStreamOptions.thinking).
+export const DEFAULT_THINKING_LEVEL: ThinkingLevel = "high";
+
+// Ascending order of thinking levels, used to walk downward when a requested level is explicitly
+// unsupported. Mirrors pi-ai's own internal ordering.
+const THINKING_LEVEL_ORDER: ThinkingLevel[] =
+    ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/**
+ * Clamps a requested thinking level to one the model actually supports, per its
+ * `thinkingLevelMap` (sourced from pi-ai's model catalogue -- see gatewayNativeModel/getModelDirect
+ * above, which copy it onto every constructed Model). A `null` entry for a level means the model
+ * explicitly does not support it (most commonly "xhigh"/"max", which only a few model families
+ * offer); in that case, fall back to the highest supported level at or below the request. A level
+ * that's simply absent from the map -- or a map that's absent entirely -- is treated as supported:
+ * the catalogue has no opinion about it, not "nothing is supported".
+ */
+export function resolveThinkingLevel(model: Model<Api>, requested: ThinkingLevel): ThinkingLevel {
+  const map = model.thinkingLevelMap;
+  if (!map) return requested;
+  if (map[requested] !== null) return requested;
+  for (let i = THINKING_LEVEL_ORDER.indexOf(requested) - 1; i >= 0; i--) {
+    const candidate = THINKING_LEVEL_ORDER[i];
+    if (map[candidate] !== null) return candidate;
+  }
+  return "off";
+}
+
+/**
+ * Converts a resolved thinking level into the value to pass as `AgentLoopConfig.reasoning`. Unlike
+ * pi-agent-core's own ThinkingLevel, pi-ai's SimpleStreamOptions.reasoning has no "off" member --
+ * pi's stream implementations treat an absent `reasoning` option as "no extended thinking", so
+ * "off" maps to omitting the field entirely.
+ */
+export function reasoningOption(level: ThinkingLevel): Exclude<ThinkingLevel, "off"> | undefined {
+  return level === "off" ? undefined : level;
 }
 
 /**

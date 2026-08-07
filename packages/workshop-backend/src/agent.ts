@@ -17,7 +17,9 @@ import { AgentCatalogSnapshot, formatAlwaysAvailableResourcesPrompt } from "./ag
 import { formatInstanceInstructions } from "./admin-config";
 import type { AiGatewayLogRoute } from "./ai-gateway";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
-import type { ModelHandle } from "./ai-models";
+import {
+  DEFAULT_THINKING_LEVEL, reasoningOption, resolveThinkingLevel, type ModelHandle,
+} from "./ai-models";
 import {
   buildCompactionState, buildSummaryPrompt, COMPACTION_SYSTEM_PROMPT, estimateProjectionTokens,
   findCompactionBoundary, findProtectedFromSequence, getModelTokenLimits, isCompactionTurn,
@@ -3033,12 +3035,17 @@ export async function runAgent(
       tools: toolList,
     };
 
+    // Extended thinking for interactive turns, clamped to what this model actually supports (a
+    // model's thinkingLevelMap may not offer every level -- see resolveThinkingLevel).
+    let thinkingLevel = resolveThinkingLevel(handle.model, DEFAULT_THINKING_LEVEL);
+
     await runAgentLoopContinue(context, {
       model: handle.model,
       // Replay already produces LLM-shaped messages; no custom message types exist.
       convertToLlm: (messages) => messages as Message[],
       toolExecution: "sequential",
       maxTokens: maxOutputTokens,
+      reasoning: reasoningOption(thinkingLevel),
       shouldStopAfterTurn: () =>
           // Cancelled during tool execution: the completed turn was persisted by the turn_end
           // barrier just above; don't start another (doomed) model request.
