@@ -22,7 +22,13 @@ ANTHROPIC_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 ANTHROPIC_AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize"
 ANTHROPIC_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 ANTHROPIC_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
-ANTHROPIC_SCOPES = "user:profile user:inference user:sessions:claude_code user:mcp_servers"
+# Copied verbatim from what `claude auth login` actually requests, captured by running it
+# headlessly and reading the URL it prints. An earlier hand-reconstructed set omitted
+# `org:create_api_key` and `user:file_upload`, which rendered a consent screen but then failed
+# the redirect with "Invalid request format" — the authorize step accepts a bad scope set and
+# only the callback rejects it. Do not trim this list.
+ANTHROPIC_SCOPES = ("org:create_api_key user:profile user:inference "
+                    "user:sessions:claude_code user:mcp_servers user:file_upload")
 
 OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_ISSUER = "https://auth.openai.com"

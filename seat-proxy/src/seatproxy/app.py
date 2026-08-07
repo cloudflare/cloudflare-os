@@ -93,7 +93,10 @@ def create_app(store, client, state_dir: str) -> FastAPI:
             # flow (their hosted callback shows the user a code to copy, it never
             # redirects to us), so we can never verify state on return. It is not
             # CSRF protection here — do not treat it as one.
-            state = secrets.token_urlsafe(12)
+            # 32 bytes to match what `claude auth login` sends; the shorter value we
+            # used before may or may not have mattered, but there is no reason to differ
+            # from the client this flow is registered to.
+            state = secrets.token_urlsafe(32)
             entry["verifier"] = verifier
             pending[enroll_id] = entry
             # The verifier never leaves the server: the client gets only the URL.

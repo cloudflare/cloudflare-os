@@ -24,7 +24,12 @@ def test_anthropic_authorize_url_carries_the_verified_values():
     assert q["code_challenge_method"] == ["S256"]
     assert q["state"] == ["STATE"]
     assert q["response_type"] == ["code"]
-    assert "user:inference" in q["scope"][0]
+    # The full set `claude auth login` requests. Omitting org:create_api_key or
+    # user:file_upload renders a consent screen but fails the redirect afterwards,
+    # so assert every one of them rather than a representative sample.
+    for required in ("org:create_api_key", "user:profile", "user:inference",
+                     "user:sessions:claude_code", "user:mcp_servers", "user:file_upload"):
+        assert required in q["scope"][0], f"missing scope {required}"
 
 def test_authorize_url_rejects_unknown_provider():
     with pytest.raises(ValueError):
