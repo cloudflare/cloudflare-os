@@ -5,6 +5,7 @@ import { useAuthenticatedApi } from './AuthContext'
 import {
   AiChatAuthorInfo,
   AiGatewayInfo,
+  AiModelProvider,
   ConnectedAccountsSubscriber,
 } from '@gadgets/workshop-shared/api'
 import {
@@ -25,6 +26,7 @@ import {
   Hexagon,
 } from '@phosphor-icons/react'
 import AddModelModal from './AddModelModal'
+import SeatSignInButtons from './SeatSignInButtons'
 import { persistSelectedModel } from './modelSelection'
 import { logoComponents } from './components/ConnectionLogos'
 import { getVendorIconBackground } from './components/vendorColors'
@@ -139,6 +141,26 @@ export default function OnboardingWizard({
   useEffect(() => {
     fetchModels()
   }, [fetchModels])
+
+  // Wires a completed subscription-seat sign-in straight into the model list. Unlike
+  // AddModelModal, this step has no review form to hand the enrollment off to, so it enrolls and
+  // adds the seat's first model automatically, then reloads models and selects it.
+  const handleSeatEnrolled = async (provider: AiModelProvider, handle: string, seatModels: string[], seatApiUrl: string) => {
+    const modelId = seatModels[0]
+    if (!modelId) return
+    try {
+      await authenticatedApi.addModel(
+        { type: 'agent', id: modelId, name: modelId },
+        { provider, model: modelId, apiToken: handle, apiUrl: seatApiUrl },
+      )
+      await fetchModels()
+      setSelectedModelId(modelId)
+      toasts.add({ title: 'AI model added successfully', variant: 'success' })
+    } catch (err) {
+      console.error('Failed to add model from seat sign-in:', err)
+      toasts.add({ title: 'Failed to add model', variant: 'error' })
+    }
+  }
 
   // Load vendors and subscribe to connected accounts.
   // We use a url→vendorId lookup map (built from listGatekeeperVendors) so the
@@ -501,6 +523,10 @@ export default function OnboardingWizard({
                 <p className="text-sm text-kumo-subtle mb-6">
                   Pick the AI model you&apos;d like to use by default
                 </p>
+
+                <div className="mb-6">
+                  <SeatSignInButtons authenticatedApi={authenticatedApi} onEnrolled={handleSeatEnrolled} />
+                </div>
 
                 {modelsLoading ? (
                   <div className="flex items-center justify-center py-12">
