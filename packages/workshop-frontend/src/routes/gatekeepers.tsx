@@ -540,6 +540,8 @@ function ConnectorsPage() {
           credentialsValid,
         })
         setAccounts(Array.from(accountMap.values()))
+        // OAuth connections arrive through this subscription, after the connect popup opens.
+        if (description.providesUi) refreshGatekeeperApps(authenticatedApi)
       }
       remove(id: number) {
         accountMap.delete(id)
