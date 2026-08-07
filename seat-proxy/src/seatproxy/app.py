@@ -144,10 +144,17 @@ def create_app(store, client, state_dir: str) -> FastAPI:
             return provider_error(provider, 502, "api_error",
                                   "Could not complete authorization.")
 
+        # Re-enrolling must not invalidate a handle Cloudflare OS is already using:
+        # the config directory is the same and create_tokens has just refreshed the
+        # credentials in place, so the existing handle now points at valid tokens.
+        # Minting a new one here would silently kill every model already configured
+        # with the old handle, and the user would only find out on their next request.
         existing = store.find(entry["owner"], entry["provider"])
         if existing is not None:
-            store.delete(existing.handle)
-        handle = store.put(entry["owner"], entry["provider"], entry["config_dir"])
+            store.clear_needs_reauth(existing.handle)
+            handle = existing.handle
+        else:
+            handle = store.put(entry["owner"], entry["provider"], entry["config_dir"])
         # Single use: the code and verifier are spent.
         pending.pop(enroll_id, None)
         module = _SEAT_MODULES[entry["provider"]]

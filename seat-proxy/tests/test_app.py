@@ -215,6 +215,59 @@ def test_complete_with_non_string_enroll_id_returns_provider_error(tmp_path):
     assert r.status_code == 404
     assert "detail" not in r.json()
 
+def test_reenrolling_same_owner_reuses_the_existing_handle(tmp_path):
+    # H1 regression: minting a NEW handle on re-enrollment would silently strand every
+    # model already configured with the old one, since Cloudflare OS keeps using it.
+    def handler(request):
+        return httpx.Response(200, json={"access_token": "A", "refresh_token": "R",
+                                         "expires_in": 3600})
+    store, app = build(tmp_path, handler)
+    start1 = app.post("/enroll/anthropic/start",
+                      headers={"X-Seat-Owner": "alice"}).json()
+    body1 = app.post("/enroll/anthropic/complete",
+                     json={"enroll_id": start1["enroll_id"], "code": "CODE1"}).json()
+    start2 = app.post("/enroll/anthropic/start",
+                      headers={"X-Seat-Owner": "alice"}).json()
+    body2 = app.post("/enroll/anthropic/complete",
+                     json={"enroll_id": start2["enroll_id"], "code": "CODE2"}).json()
+    assert body1["handle"] == body2["handle"]
+    rec = store.get(body2["handle"])
+    assert rec is not None and rec.owner == "alice" and rec.provider == "anthropic"
+
+def test_reenrolling_clears_needs_reauth_on_the_existing_handle(tmp_path):
+    def handler(request):
+        return httpx.Response(200, json={"access_token": "A", "refresh_token": "R",
+                                         "expires_in": 3600})
+    store, app = build(tmp_path, handler)
+    start1 = app.post("/enroll/anthropic/start",
+                      headers={"X-Seat-Owner": "alice"}).json()
+    body1 = app.post("/enroll/anthropic/complete",
+                     json={"enroll_id": start1["enroll_id"], "code": "CODE1"}).json()
+    store.mark_needs_reauth(body1["handle"])
+    assert store.get(body1["handle"]).needs_reauth is True
+
+    start2 = app.post("/enroll/anthropic/start",
+                      headers={"X-Seat-Owner": "alice"}).json()
+    body2 = app.post("/enroll/anthropic/complete",
+                     json={"enroll_id": start2["enroll_id"], "code": "CODE2"}).json()
+    assert body2["handle"] == body1["handle"]
+    assert store.get(body2["handle"]).needs_reauth is False
+
+def test_different_owners_still_get_different_handles(tmp_path):
+    def handler(request):
+        return httpx.Response(200, json={"access_token": "A", "refresh_token": "R",
+                                         "expires_in": 3600})
+    store, app = build(tmp_path, handler)
+    start_a = app.post("/enroll/anthropic/start",
+                       headers={"X-Seat-Owner": "alice"}).json()
+    body_a = app.post("/enroll/anthropic/complete",
+                      json={"enroll_id": start_a["enroll_id"], "code": "CODE1"}).json()
+    start_b = app.post("/enroll/anthropic/start",
+                       headers={"X-Seat-Owner": "bob"}).json()
+    body_b = app.post("/enroll/anthropic/complete",
+                      json={"enroll_id": start_b["enroll_id"], "code": "CODE2"}).json()
+    assert body_a["handle"] != body_b["handle"]
+
 def test_credentials_write_failure_returns_provider_error_not_a_traceback(tmp_path,
                                                                           monkeypatch):
     def handler(request):

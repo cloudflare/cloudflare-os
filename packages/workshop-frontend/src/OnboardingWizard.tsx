@@ -541,9 +541,14 @@ export default function OnboardingWizard({
                   Pick the AI model you&apos;d like to use by default
                 </p>
 
-                <div className="mb-6">
-                  <SeatSignInButtons authenticatedApi={authenticatedApi} onEnrolled={handleSeatEnrolled} />
-                </div>
+                {/* Subscription-seat sign-in bills the user's Claude/ChatGPT subscription
+                    directly; in AI Gateway mode requests are billed through the gateway
+                    instead, so the button must not be offered here (mirrors AddModelModal). */}
+                {aiConfig?.enabled !== true && (
+                  <div className="mb-6">
+                    <SeatSignInButtons authenticatedApi={authenticatedApi} onEnrolled={handleSeatEnrolled} />
+                  </div>
+                )}
 
                 {modelsLoading ? (
                   <div className="flex items-center justify-center py-12">

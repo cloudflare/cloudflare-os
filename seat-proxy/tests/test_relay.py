@@ -1,4 +1,4 @@
-from seatproxy.relay import outbound_headers
+from seatproxy.relay import outbound_headers, with_claude_code_identity, CLAUDE_CODE_IDENTITY_TEXT
 
 def test_anthropic_strips_api_key_and_adds_oauth_headers():
     out = outbound_headers("anthropic",
@@ -26,6 +26,37 @@ def test_hop_by_hop_headers_are_dropped():
 def test_handle_never_appears_in_outbound_headers():
     out = outbound_headers("anthropic", {"x-api-key": "SECRET-HANDLE"}, "ACCESS")
     assert "SECRET-HANDLE" not in " ".join(f"{k}{v}" for k, v in out.items())
+
+def test_identity_added_when_system_is_absent():
+    body = json.dumps({"model": "claude-3", "messages": []}).encode()
+    out = json.loads(with_claude_code_identity(body))
+    assert out["system"] == [{"type": "text", "text": CLAUDE_CODE_IDENTITY_TEXT}]
+
+def test_identity_prepended_when_system_is_a_string():
+    body = json.dumps({"system": "Be helpful."}).encode()
+    out = json.loads(with_claude_code_identity(body))
+    assert out["system"] == [
+        {"type": "text", "text": CLAUDE_CODE_IDENTITY_TEXT},
+        {"type": "text", "text": "Be helpful."},
+    ]
+
+def test_identity_prepended_when_system_is_a_list():
+    body = json.dumps({"system": [{"type": "text", "text": "Be helpful."}]}).encode()
+    out = json.loads(with_claude_code_identity(body))
+    assert out["system"] == [
+        {"type": "text", "text": CLAUDE_CODE_IDENTITY_TEXT},
+        {"type": "text", "text": "Be helpful."},
+    ]
+
+def test_identity_not_duplicated_when_already_first():
+    already = [{"type": "text", "text": CLAUDE_CODE_IDENTITY_TEXT},
+               {"type": "text", "text": "Be helpful."}]
+    body = json.dumps({"system": already}).encode()
+    assert with_claude_code_identity(body) == body
+
+def test_unparseable_body_is_forwarded_unchanged():
+    for body in (b"not json", b"", b'"just a json string"', b"[1, 2, 3]"):
+        assert with_claude_code_identity(body) == body
 
 import asyncio, httpx, json, pytest
 from seatproxy.store import SeatStore
@@ -59,6 +90,44 @@ class _Stream(httpx.AsyncByteStream):
     async def __aiter__(self):
         for c in self._chunks:
             yield c
+
+@pytest.mark.asyncio
+async def test_relay_injects_claude_code_identity_for_anthropic_leg(tmp_path):
+    store = SeatStore(str(tmp_path / "s.db"))
+    h = _enrolled_seat(store, tmp_path)
+    seen = {}
+
+    async def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await relay(FakeRequest({"x-api-key": h}, b'{"model": "claude-3", "messages": []}'),
+               "anthropic", "https://api.anthropic.com", store, client, now=5_000.0,
+               upstream_path="v1/messages")
+    assert seen["body"]["system"] == [{"type": "text", "text": CLAUDE_CODE_IDENTITY_TEXT}]
+
+@pytest.mark.asyncio
+async def test_relay_leaves_openai_leg_body_untouched(tmp_path):
+    store = SeatStore(str(tmp_path / "s.db"))
+    cfg = tmp_path / "cfg-openai"
+    cfg.mkdir()
+    (cfg / "auth.json").write_text(json.dumps(
+        {"tokens": {"access_token": "ACCESS", "refresh_token": "R"},
+         "expires_at": 99_999_999_999.0}), encoding="utf-8")
+    h = store.put("alice", "openai", str(cfg))
+    seen = {}
+
+    async def handler(request):
+        seen["body"] = request.content
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    original = b'{"model": "gpt-5", "messages": []}'
+    await relay(FakeRequest({"authorization": f"Bearer {h}"}, original),
+               "openai", "https://chatgpt.com/backend-api/codex", store, client,
+               now=5_000.0, upstream_path="responses")
+    assert seen["body"] == original
 
 @pytest.mark.asyncio
 async def test_streams_incrementally_without_buffering(tmp_path):

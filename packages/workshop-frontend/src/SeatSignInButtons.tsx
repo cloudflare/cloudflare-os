@@ -90,14 +90,17 @@ export default function SeatSignInButtons({ authenticatedApi, onEnrolled }: Seat
   }
 
   // Poll for OpenAI's device-code completion on the interval the proxy asked for. Stops on
-  // success, on error, and — critically — on unmount, so a leaked interval can't keep firing RPCs
-  // after the component is gone.
+  // success, on unmount — critically, so a leaked interval can't keep firing RPCs after the
+  // component is gone — and on 3 CONSECUTIVE failures. The user is typically off in another tab
+  // approving the request, so a single transient network blip must not end the flow.
+  const MAX_CONSECUTIVE_POLL_FAILURES = 3
   const pollInFlightRef = useRef(false)
   const polling = step.kind === 'device_code' ? step : null
   useEffect(() => {
     if (!polling) return
     const { provider, enrollId, interval } = polling
     pollInFlightRef.current = false
+    let consecutiveFailures = 0
     const id = setInterval(async () => {
       // Skip this tick if the previous call is still outstanding — otherwise a round trip slower
       // than `interval` lets ticks overlap, and two concurrent "complete" responses could both
@@ -107,11 +110,14 @@ export default function SeatSignInButtons({ authenticatedApi, onEnrolled }: Seat
       try {
         const result = await authenticatedApi.completeSeatAuth(provider, enrollId)
         if (!mountedRef.current) return
+        consecutiveFailures = 0
         if (result.status === 'complete') {
           clearInterval(id)
           finish(result, provider)
         }
       } catch (err) {
+        consecutiveFailures += 1
+        if (consecutiveFailures < MAX_CONSECUTIVE_POLL_FAILURES) return
         clearInterval(id)
         if (!mountedRef.current) return
         setStep({ kind: 'idle' })

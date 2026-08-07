@@ -258,7 +258,13 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
         </Dialog.Title>
 
         <div className="space-y-4">
-          <SeatSignInButtons authenticatedApi={authenticatedApi} onEnrolled={handleSeatEnrolled} />
+          {/* Subscription-seat sign-in bills the user's Claude/ChatGPT subscription directly;
+              in AI Gateway mode requests are billed through the gateway instead, and the
+              enrolled handle/apiUrl have nowhere to go (config below drops both), so the
+              button must not be offered here. */}
+          {!gatewayMode && (
+            <SeatSignInButtons authenticatedApi={authenticatedApi} onEnrolled={handleSeatEnrolled} />
+          )}
 
           {/* Model / Provider selection */}
           <Select
@@ -296,16 +302,17 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
               <Input
                 label="Model ID"
                 placeholder={`e.g., ${example!.modelId}`}
-                description={
-                  seatModels.length > 0
-                    ? `Models available on your subscription: ${seatModels.join(', ')}`
-                    : `The model identifier as specified by the provider (e.g., '${example!.modelId}')`
-                }
+                description={`The model identifier as specified by the provider (e.g., '${example!.modelId}')`}
                 value={modelId}
                 onChange={(e) => { setModelId(e.target.value); setErrors(prev => ({ ...prev, modelId: '' })) }}
                 error={errors.modelId}
                 variant={errors.modelId ? 'error' : 'default'}
               />
+              {seatModels.length > 0 && (
+                <p className="text-xs text-kumo-subtle -mt-2">
+                  Models available on your subscription: {seatModels.join(', ')}
+                </p>
+              )}
 
               <Input
                 label="Display Name"
