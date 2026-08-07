@@ -283,6 +283,7 @@ export async function webFetch(
       signal: abortController.signal,
     });
   } catch (err) {
+    clearTimeout(timeoutId);
     if (
       err instanceof Error &&
       (err.name === "AbortError" || /abort/i.test(err.message))
@@ -290,9 +291,10 @@ export async function webFetch(
       throw new Error(`Fetch timed out after ${FETCH_TIMEOUT_MS}ms`, { cause: err });
     }
     throw err;
-  } finally {
-    clearTimeout(timeoutId);
   }
+  // NB: the timer deliberately stays armed past this point. `fetch` resolves once the response
+  // headers arrive, so clearing it here would leave the body read below unbounded, and a server
+  // that answers promptly and then stalls could hold the agent open indefinitely.
 
   // `response.url` is set by the runtime to the final URL after any redirects. Fall back
   // to the original URL if it happens to be empty.
@@ -302,6 +304,7 @@ export async function webFetch(
   // Respect the Content-Signal header (https://contentsignals.org/). If the site
   // explicitly sets `ai-input=no`, we must not feed its content to the AI agent.
   if (contentSignalDenies(response, "ai-input")) {
+    clearTimeout(timeoutId);
     try {
       await response.body?.cancel();
     } catch {
@@ -313,7 +316,14 @@ export async function webFetch(
     );
   }
 
-  const { bytes, truncated } = await readBodyCapped(response, maxBytes);
+  const { bytes, truncated } = await readBodyCapped(response, maxBytes)
+    .catch((err: unknown) => {
+      if (abortController.signal.aborted) {
+        throw new Error(`Fetch timed out after ${FETCH_TIMEOUT_MS}ms`, { cause: err });
+      }
+      throw err;
+    })
+    .finally(() => clearTimeout(timeoutId));
 
   let body: string;
   if (input.raw) {
