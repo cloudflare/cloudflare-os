@@ -43,13 +43,10 @@ function accountLabel(account: AccountInfo | undefined, accountId: number): stri
   return account?.description.uniqueName || account?.description.displayName || `Account ${accountId}`
 }
 
-/**
- * Returns the grantable resource type needed to verify one observer binding.
- *
- * Account metadata is preferred because it reflects the resources currently available to that
- * account; vendor metadata is the fallback used before an account has been connected. Non-grantable
- * resources require no OAuth scope expansion.
- */
+// Return the grantable resource type needed to verify one observer binding. Account metadata is
+// preferred because it reflects the resources currently available to that account; vendor metadata
+// is the fallback used before an account has been connected. Non-grantable resources require no
+// OAuth scope expansion.
 function requiredResourceUrlPatterns(
   need: ObserverBindingNeed,
   vendor: GatekeeperVendorInfo | undefined,
@@ -63,12 +60,9 @@ function requiredResourceUrlPatterns(
   return resolved.ok && resolved.resource.grantable ? [resolved.resource.urlPattern] : []
 }
 
-/**
- * Filters required resource types down to those the account has not granted yet.
- *
- * An omitted granted-resource list denotes a legacy or full-scope account and is therefore treated
- * as satisfying every requirement.
- */
+// Filter required resource types down to those the account has not granted yet. An omitted
+// granted-resource list denotes a legacy or full-scope account and therefore satisfies every
+// requirement.
 function missingResourceUrlPatterns(account: AccountInfo, required: string[]): string[] {
   const granted = account.description.grantedResourceUrlPatterns
   return granted === undefined ? [] : required.filter(pattern => !granted.includes(pattern))
@@ -255,7 +249,10 @@ export default function ObserverConfigModal({
 
   const handleGrantResourceAccess = async (need: ObserverBindingNeed, account: AccountInfo) => {
     const required = requiredResourceUrlPatterns(
-      need, vendorsById.get(need.vendorId), account)
+      need,
+      vendorsById.get(need.vendorId),
+      account,
+    )
     const missing = missingResourceUrlPatterns(account, required)
     if (missing.length === 0) return
     setGranting(account.id)
@@ -279,7 +276,10 @@ export default function ObserverConfigModal({
   const accountSatisfies = (need: ObserverBindingNeed, account: AccountInfo | undefined) => {
     if (!account?.credentialsValid) return false
     const required = requiredResourceUrlPatterns(
-      need, vendorsById.get(need.vendorId), account)
+      need,
+      vendorsById.get(need.vendorId),
+      account,
+    )
     return missingResourceUrlPatterns(account, required).length === 0
   }
   const allSatisfied = needs.every(need => accountSatisfies(need, accountFor(need.gatekeeperId)))
@@ -411,6 +411,8 @@ export default function ObserverConfigModal({
                         </Select>
                       )}
 
+                      {/* Scope expansion also replaces expired credentials, so prefer this over the
+                          plain re-authentication path when both apply. */}
                       {chosen && missing.length > 0 && (
                         <button
                           type="button"
