@@ -3,6 +3,8 @@ import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
 import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, AiGatewayInfo, AiModelProvider, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
+import type { SeatProvider, SeatStartResult, SeatCompleteResult } from "@gadgets/workshop-shared/seat-types";
+import { startSeatAuth, completeSeatAuth, revokeSeat } from "./seat-auth.js";
 import { getServerConfig } from "./deployment-config.js";
 import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
@@ -123,6 +125,16 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
   addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
     return this.user.addModel(profile, config);
+  }
+  startSeatAuth(provider: SeatProvider): Promise<SeatStartResult> {
+    return startSeatAuth(this.env, this.user.id.name ?? "", provider);
+  }
+  completeSeatAuth(provider: SeatProvider, enrollId: string,
+                   code?: string): Promise<SeatCompleteResult> {
+    return completeSeatAuth(this.env, this.user.id.name ?? "", provider, enrollId, code);
+  }
+  revokeSeat(handle: string): Promise<void> {
+    return revokeSeat(this.env, this.user.id.name ?? "", handle);
   }
   deleteModel(id: string): Promise<void> {
     return this.user.deleteModel(id);
