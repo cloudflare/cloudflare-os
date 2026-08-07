@@ -865,8 +865,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       };
     }
 
+    // Safe decode that falls back to the raw string for malformed percent-escapes (e.g. "50%off").
+    const safeDecodeURI = (value: string): string => {
+      try { return decodeURIComponent(value); } catch { return value; }
+    };
+
     if (parsed.hostname === "calendar.google.com" && parsed.pathname.startsWith("/calendar/")) {
-      let calendarId = decodeURIComponent(parsed.pathname.split("/")[2] ?? "");
+      let calendarId = safeDecodeURI(parsed.pathname.split("/")[2] ?? "");
       if (!calendarId) {
         throw new Error("Invalid Google Calendar URL: no calendar ID found");
       }
@@ -938,11 +943,11 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       // Gmail's own UI encodes spaces in hash searches as `+`, while
       // decodeURIComponent() only decodes `%20`. Normalize both forms.
       const encodedQuery = hash.slice("#search/".length).replace(/\+/g, " ");
-      const query = decodeURIComponent(encodedQuery);
+      const query = safeDecodeURI(encodedQuery);
       validateGmailQueryForGrouping(query);
       props.searchQuery = query;
     } else if (hash.startsWith("#label/")) {
-      const labelName = decodeURIComponent(hash.slice("#label/".length));
+      const labelName = safeDecodeURI(hash.slice("#label/".length));
       if (!labelName || new TextEncoder().encode(labelName).byteLength > 320) {
         throw new Error("Gmail label name must be between 1 and 320 bytes.");
       }
