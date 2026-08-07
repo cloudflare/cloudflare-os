@@ -80,6 +80,10 @@ declare global {
       // Minimum connected-account balance (USD) to proceed via BYOK. Defaults to
       // MINIMUM_CLOUDFLARE_BALANCE.
       MINIMUM_CLOUDFLARE_BALANCE?: string;
+
+      // Base URL of the seat proxy, e.g. "http://localhost:8890". When unset, seat
+      // sign-in is unavailable and the UI hides it.
+      SEAT_PROXY_URL?: string;
     }
   }
 }
