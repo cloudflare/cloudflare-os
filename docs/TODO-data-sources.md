@@ -28,6 +28,16 @@ being kept. This item is the one most likely to actually improve answers.
   `run-dev-server.js`'s `SHARED_GATEKEEPER_CREDS` maps them into the gatekeeper's
   `CLIENT_ID`/`CLIENT_SECRET`, so the per-package `.env` the README describes is unnecessary.
 
+**There is nothing to reuse from Odysseus here.** Checked: Odysseus reaches Gmail over IMAP/SMTP
+(`imaplib`/`smtplib`) with an app password, and has no Google Cloud OAuth client at all — a search
+for the `apps.googleusercontent.com` pattern across the repo returns nothing. IMAP gets mail only;
+Docs, Sheets, Drive and Calendar all require the Google API and therefore a real OAuth client. The
+console setup is unavoidable for those.
+
+Possible shortcut if only Gmail is wanted: `packages/gatekeeper-email` may accept the same IMAP app
+password already in use, skipping Google Cloud entirely. Check what it expects before spending time
+in the console.
+
 **Known limits, verified in the README, not assumed:**
 - **Drive is metadata-only** — used solely so the resource pickers can search Docs/Sheets by title.
   A PDF or image in Drive is not readable. Native Docs and Sheets are, via their own APIs.
