@@ -8,5 +8,5 @@ const watch = process.argv.includes("--watch");
 execFileSync(
   "pnpm",
   ["exec", "vite", "build", "-c", "vite.config.ts", ...(watch ? ["--watch"] : [])],
-  { cwd: packageDirectory, stdio: "inherit" },
+  { cwd: packageDirectory, stdio: "inherit", shell: process.platform === "win32" },
 );

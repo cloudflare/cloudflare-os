@@ -115,7 +115,7 @@ const needsInstall = needsBuild || !existsSync(NODE_MODULES);
 
 function run(cmd, args) {
   console.log(`\n> ${cmd} ${args.join(" ")}`);
-  execFileSync(cmd, args, { stdio: "inherit", cwd: ROOT });
+  execFileSync(cmd, args, { stdio: "inherit", cwd: ROOT, shell: process.platform === "win32" });
 }
 
 if (needsInstall) {
