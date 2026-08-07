@@ -831,15 +831,22 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     const discovery = this.ctx.storage.kv.get<OAuthDiscoveryState>("oauthDiscovery");
     const client = this.ctx.storage.kv.get<StoredOAuthClientInformation>("oauthClient");
     if (tokens && discovery && client) {
-      // Best effort: a server that does not implement RFC 7009 must not block the disconnect.
-      try {
-        const fetchFn = sdkFetch(this.fetchOptions());
-        await revokeToken(discovery, client, tokens.access_token, "access_token", fetchFn);
-        if (tokens.refresh_token) {
+      // Best effort per token: a server that refuses one token type (RFC 7009 §2.2.1) must not
+      // cost the revocation of the other. Refresh token first: RFC 7009 §2.1 says revoking it
+      // SHOULD also invalidate access tokens issued under the same grant.
+      const fetchFn = sdkFetch(this.fetchOptions());
+      if (tokens.refresh_token) {
+        try {
           await revokeToken(discovery, client, tokens.refresh_token, "refresh_token", fetchFn);
+        } catch (err) {
+          this.log().warn("failed to revoke MCP refresh token",
+            { event: "oauth.token.revoke.failed", error: err });
         }
+      }
+      try {
+        await revokeToken(discovery, client, tokens.access_token, "access_token", fetchFn);
       } catch (err) {
-        this.log().warn("failed to revoke MCP tokens",
+        this.log().warn("failed to revoke MCP access token",
           { event: "oauth.token.revoke.failed", error: err });
       }
     }
