@@ -49,6 +49,12 @@ function button(rendered: HTMLElement, label: string): HTMLButtonElement {
   return found
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((next) => { resolve = next })
+  return { promise, resolve }
+}
+
 async function typeInto(input: HTMLInputElement, value: string) {
   const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
   await act(async () => {
@@ -141,8 +147,10 @@ describe('SeatSignInButtons', () => {
     expect(onEnrolled).toHaveBeenCalledWith(
       'anthropic', 'seat-handle-super-secret', ['claude-opus'], 'https://seat-proxy.example/anthropic',
     )
-    // The test that matters most: the handle must never appear in rendered text.
+    // The test that matters most: the handle must never appear in rendered text, nor tucked into
+    // an attribute (title, aria-label, input value, ...) that textContent wouldn't catch.
     expect(rendered.textContent).not.toContain('seat-handle-super-secret')
+    expect(rendered.innerHTML).not.toContain('seat-handle-super-secret')
   })
 
   it('shows the label telling the user to paste the whole code including the "#" suffix', async () => {
@@ -247,10 +255,52 @@ describe('SeatSignInButtons', () => {
       'openai', 'seat-handle-super-secret', ['gpt-5'], 'https://seat-proxy.example/openai',
     )
     expect(rendered.textContent).not.toContain('seat-handle-super-secret')
+    expect(rendered.innerHTML).not.toContain('seat-handle-super-secret')
 
     // Polling stopped: advancing further makes no additional calls.
     await act(async () => vi.advanceTimersByTimeAsync(15_000))
     expect(completeSeatAuth).toHaveBeenCalledTimes(3)
+  })
+
+  it('skips a tick while the previous poll is still in flight, and fires onEnrolled only once', async () => {
+    vi.useFakeTimers()
+    const startSeatAuth = vi.fn<(provider: SeatProvider) => Promise<SeatStartResult>>(async () => ({
+      enrollId: 'enroll-2',
+      kind: 'device_code',
+      userCode: 'ABCD-1234',
+      verificationUri: 'https://platform.openai.com/activate',
+      interval: 5,
+    }))
+    const first = deferred<SeatCompleteResult>()
+    const completeSeatAuth = vi.fn<
+      (provider: SeatProvider, enrollId: string, code?: string) => Promise<SeatCompleteResult>
+    >(() => first.promise)
+    const { rendered, onEnrolled } = await render(fakeApi({ startSeatAuth, completeSeatAuth }))
+
+    await click(button(rendered, 'Sign in with ChatGPT subscription'))
+
+    // First tick fires and calls completeSeatAuth, but its response never arrives before the next
+    // tick would normally fire.
+    await act(async () => vi.advanceTimersByTimeAsync(5_000))
+    expect(completeSeatAuth).toHaveBeenCalledTimes(1)
+
+    // A second interval elapses while the first call is still outstanding. Without the in-flight
+    // guard this would fire a second concurrent call; with it, the tick is skipped.
+    await act(async () => vi.advanceTimersByTimeAsync(5_000))
+    expect(completeSeatAuth).toHaveBeenCalledTimes(1)
+
+    // The slow first call finally resolves as complete.
+    await act(async () => {
+      first.resolve({
+        status: 'complete', handle: 'seat-handle-super-secret', models: ['gpt-5'],
+        apiUrl: 'https://seat-proxy.example/openai',
+      })
+    })
+
+    expect(onEnrolled).toHaveBeenCalledTimes(1)
+    expect(onEnrolled).toHaveBeenCalledWith(
+      'openai', 'seat-handle-super-secret', ['gpt-5'], 'https://seat-proxy.example/openai',
+    )
   })
 
   it('stops polling once unmounted, so no RPC fires after the component is gone', async () => {

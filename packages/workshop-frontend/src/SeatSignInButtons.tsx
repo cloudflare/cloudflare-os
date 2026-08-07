@@ -92,11 +92,18 @@ export default function SeatSignInButtons({ authenticatedApi, onEnrolled }: Seat
   // Poll for OpenAI's device-code completion on the interval the proxy asked for. Stops on
   // success, on error, and — critically — on unmount, so a leaked interval can't keep firing RPCs
   // after the component is gone.
+  const pollInFlightRef = useRef(false)
   const polling = step.kind === 'device_code' ? step : null
   useEffect(() => {
     if (!polling) return
     const { provider, enrollId, interval } = polling
+    pollInFlightRef.current = false
     const id = setInterval(async () => {
+      // Skip this tick if the previous call is still outstanding — otherwise a round trip slower
+      // than `interval` lets ticks overlap, and two concurrent "complete" responses could both
+      // reach finish()/onEnrolled.
+      if (pollInFlightRef.current) return
+      pollInFlightRef.current = true
       try {
         const result = await authenticatedApi.completeSeatAuth(provider, enrollId)
         if (!mountedRef.current) return
@@ -109,6 +116,8 @@ export default function SeatSignInButtons({ authenticatedApi, onEnrolled }: Seat
         if (!mountedRef.current) return
         setStep({ kind: 'idle' })
         setError(err instanceof Error ? err.message : 'Sign-in failed. Please try again.')
+      } finally {
+        pollInFlightRef.current = false
       }
     }, interval * 1000)
     return () => clearInterval(id)
