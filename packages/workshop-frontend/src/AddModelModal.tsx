@@ -3,6 +3,7 @@ import { Dialog, Button, Input, Select, SensitiveInput, Collapsible, useKumoToas
 import { AiChatAuthorInfo, AiModelConfig, AiModelProvider, AiGatewayInfo, SUGGESTED_MODELS } from '@gadgets/workshop-shared/api'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
+import SeatSignInButtons from './SeatSignInButtons'
 
 interface AddModelModalProps {
   visible: boolean
@@ -102,6 +103,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const [apiToken, setApiToken] = useState('')
   const [accountId, setAccountId] = useState('')
   const [apiUrl, setApiUrl] = useState('')
+  // Models available through a just-enrolled subscription seat (see handleSeatEnrolled below).
+  const [seatModels, setSeatModels] = useState<string[]>([])
 
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -124,6 +127,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       setApiToken('')
       setAccountId('')
       setApiUrl('')
+      setSeatModels([])
       setErrors({})
       setAdvancedOpen(false)
     }
@@ -145,6 +149,21 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     setApiToken('')
     setAccountId('')
     setApiUrl(sel.provider === 'ollama' ? 'http://localhost:11434' : '')
+    setSeatModels([])
+  }
+
+  // Wires a completed subscription-seat sign-in into the existing custom-model fields: the handle
+  // becomes the API token, and the returned models are offered as a pre-fill/description so the
+  // user can still pick and submit through the unchanged handleSubmit flow below.
+  const handleSeatEnrolled = (provider: AiModelProvider, handle: string, models: string[], seatApiUrl: string) => {
+    setSelectValue(encodeSelection(provider))
+    setSelection({ type: 'custom', provider })
+    setModelId(models[0] ?? '')
+    setDisplayName(models[0] ?? '')
+    setApiToken(handle)
+    setApiUrl(seatApiUrl)
+    setSeatModels(models)
+    setErrors({})
   }
 
   const validate = (): boolean => {
@@ -239,6 +258,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
         </Dialog.Title>
 
         <div className="space-y-4">
+          <SeatSignInButtons authenticatedApi={authenticatedApi} onEnrolled={handleSeatEnrolled} />
+
           {/* Model / Provider selection */}
           <Select
             label={gatewayMode ? 'Select Provider' : 'Select Model'}
@@ -275,7 +296,11 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
               <Input
                 label="Model ID"
                 placeholder={`e.g., ${example!.modelId}`}
-                description={`The model identifier as specified by the provider (e.g., '${example!.modelId}')`}
+                description={
+                  seatModels.length > 0
+                    ? `Models available on your subscription: ${seatModels.join(', ')}`
+                    : `The model identifier as specified by the provider (e.g., '${example!.modelId}')`
+                }
                 value={modelId}
                 onChange={(e) => { setModelId(e.target.value); setErrors(prev => ({ ...prev, modelId: '' })) }}
                 error={errors.modelId}
