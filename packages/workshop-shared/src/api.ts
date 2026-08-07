@@ -1522,9 +1522,13 @@ export interface Overseer extends RpcTarget {
   // `formats` records where the message names one of the deployment's standard output formats, so
   // the transcript can draw it as a chip. Display only -- what the agent reads is the noun, which
   // is already in the text.
+  //
+  // `thinkingLevel` requests an extended-thinking effort for the chat's first turn (one of
+  // `listThinkingLevels(modelId)`'s results); omitted, it defaults to "high" -- same as
+  // sendChatMessage.
   newChat(initialMessage: string | SlashCommandRequest, modelId: string | null,
           capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-          formats?: MessageFormatRef[]): Promise<number>;
+          formats?: MessageFormatRef[], thinkingLevel?: ThinkingLevel): Promise<number>;
 
   // Send a message to the chat from this client. Sending a message causes the LLM to start
   // running if it isn't already.

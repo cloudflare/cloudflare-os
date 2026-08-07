@@ -3419,6 +3419,7 @@ class OverseerImpl implements AgentHooks {
     responseTargetRegistration?: ExternalMessageResponseTargetRegistration,
     externalChatKey?: string,
     formats?: MessageFormatRef[],
+    thinkingLevel?: ThinkingLevel,
   ): Promise<number> {
     if (responseTargetRegistration) {
       let decision = this.#prepareExternalMessageResponseTargetRegistration(responseTargetRegistration);
@@ -3468,7 +3469,7 @@ class OverseerImpl implements AgentHooks {
     if (prepared.message !== undefined && userMeta.aiModel) {
       let needsAgentTurnKeepAlive = responseTargetRegistration !== undefined;
       this.startAgent(chatId, userMeta.aiModel, userMeta.profile,
-                      clientUser.id.toString(), false, needsAgentTurnKeepAlive);
+                      clientUser.id.toString(), false, needsAgentTurnKeepAlive, thinkingLevel);
     }
 
     if (userMeta.quickModel) {
@@ -8187,10 +8188,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async newChat(initialMessage: string | SlashCommandRequest, chosenModelId: string | null,
                 capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-                formats?: MessageFormatRef[]): Promise<number> {
+                formats?: MessageFormatRef[], thinkingLevel?: ThinkingLevel): Promise<number> {
     let userMeta = await this.clientUser.getChatContext(chosenModelId);
     return this.impl.newChat(this.clientUser, userMeta, initialMessage, capsules, attachments,
-                             undefined, undefined, formats);
+                             undefined, undefined, formats, thinkingLevel);
   }
 
   async sendChatMessage(

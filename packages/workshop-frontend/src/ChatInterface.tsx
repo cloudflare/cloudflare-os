@@ -85,6 +85,7 @@ import {
 } from "@gadgets/workshop-shared/api";
 import { ActionKind, ResourceDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { clampThinkingLevel, THINKING_LEVEL_ORDER } from "@gadgets/workshop-shared/thinking-level";
+import { takePendingChatThinkingLevel } from "./pendingChatThinkingLevel";
 import {
   parseSlashCommandInput, slashCommandTokenKey, stripSlashCommandToken,
 } from "./components/chat/slash-command-input";
@@ -393,6 +394,26 @@ const THINKING_LEVEL_LABELS: Record<ThinkingLevel, string> = {
 export function effectiveThinkingLevel(
     preferred: ThinkingLevel | undefined, supportedLevels: ThinkingLevel[]): ThinkingLevel {
   return clampThinkingLevel(supportedLevels, preferred ?? DEFAULT_THINKING_LEVEL);
+}
+
+/**
+ * Carries an explicit thinking-level pick from the not-yet-created chat (keyed `null` in
+ * `thinkingLevelByChat`) over to the chat `newChat()` just created, so the chat's second message
+ * doesn't silently fall back to the default. Pure so it's testable without mounting the chat
+ * panel; the caller (handleSend/handleNewChatSend) applies the result via setThinkingLevelByChat
+ * right after `newChat()` resolves, before navigating to the new chat. A no-op (returns the same
+ * map instance) when nothing was explicitly picked, so callers can apply it unconditionally.
+ * Exported for testing.
+ */
+export function promoteThinkingLevelSelection(
+    thinkingLevelByChat: Map<number | null, ThinkingLevel>,
+    newChatId: number): Map<number | null, ThinkingLevel> {
+  let preference = thinkingLevelByChat.get(null);
+  if (preference === undefined) return thinkingLevelByChat;
+  let next = new Map(thinkingLevelByChat);
+  next.delete(null);
+  next.set(newChatId, preference);
+  return next;
 }
 
 function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
@@ -1865,8 +1886,9 @@ export const ChatInput = ({
   /** The user's remembered thinking-level preference for this chat (undefined until they've
    * chosen one). The picker fetches which levels the selected model actually supports itself (via
    * getOverseer().listThinkingLevels()) and clamps this preference against them -- see
-   * effectiveThinkingLevel(). Omitted on composers that don't offer the picker (e.g. the "start
-   * new chat" composer, whose `newChat()` call has no thinking-level parameter to apply it to). */
+   * effectiveThinkingLevel(). Omitted only on composers that don't offer the picker at all (none
+   * currently -- every ChatInput instance in this file passes it; the Home page composer in
+   * routes/index.tsx keeps its own separate state since it's a different component). */
   thinkingLevel?: ThinkingLevel;
   /** Called when the user explicitly picks a level, so the parent can remember it for this chat.
    * Not called for automatic clamping when the model changes -- that's display/send-only, so
@@ -4471,6 +4493,14 @@ function ChatInterface({
   const handleThinkingLevelChange = (level: ThinkingLevel) => {
     setThinkingLevelByChat((prev) => new Map(prev).set(selectedChatId, level));
   };
+  // Same map, but always keyed `null` -- the "start a new chat" composer pinned to the bottom of
+  // the sidebar list. Unlike the in-chat picker above, this one must not follow `selectedChatId`:
+  // in sidebar mode both composers are on screen together, and a chat can be selected while this
+  // one is still composing the *next* chat's first message.
+  const newChatThinkingLevel = thinkingLevelByChat.get(null);
+  const handleNewChatThinkingLevelChange = (level: ThinkingLevel) => {
+    setThinkingLevelByChat((prev) => new Map(prev).set(null, level));
+  };
   const [sidebarActiveTab, setSidebarActiveTab] = useState<
     "chat" | "connections"
   >("chat");
@@ -5454,6 +5484,19 @@ function ChatInterface({
     // The LSP error is due to bugs that need to be fixed in Cap'n Web.
   }, [selectedChatId, overseer]);
 
+  // Pick up a thinking level chosen on the Home page's separate composer (routes/index.tsx),
+  // which starts the chat and navigates here -- a full unmount/remount, so it can't hand the
+  // choice off through this component's own state the way promoteThinkingLevelSelection() does
+  // for chats created from within this component. See stashPendingChatThinkingLevel(). Only
+  // applies once per chat: if the map already has an entry (e.g. the user already changed it here
+  // since arriving), that explicit choice wins.
+  useEffect(() => {
+    if (selectedChatId === null || thinkingLevelByChat.has(selectedChatId)) return;
+    const pending = takePendingChatThinkingLevel(selectedChatId);
+    if (pending === undefined) return;
+    setThinkingLevelByChat((prev) => new Map(prev).set(selectedChatId, pending));
+  }, [selectedChatId, thinkingLevelByChat]);
+
   // Sequence of the oldest message loaded, or undefined once the thread's start is loaded. Paging
   // asks for what precedes it, so the control disappears exactly when there is nothing earlier.
   const oldestLoadedSequence = currentMessages[0]?.sequence;
@@ -5500,10 +5543,12 @@ function ChatInterface({
 
     try {
       if (selectedChatId === null) {
-        // Create a new chat (with optional capsules). newChat() has no thinking-level parameter --
-        // the backend just uses its own default for a chat's first turn.
+        // Create a new chat (with optional capsules). The chosen level, if any, was recorded under
+        // the `null` key (see thinkingLevelByChat) while composing; promote it to the new chat's
+        // key so the second message doesn't fall back to the default.
         const newChatId = await overseer.newChat(
-            message, model, capsules, attachments, formats);
+            message, model, capsules, attachments, formats, thinkingLevel);
+        setThinkingLevelByChat((prev) => promoteThinkingLevelSelection(prev, newChatId));
         onNavigateToChatRef.current(newChatId);
       } else {
         // Send message to existing chat.
@@ -5531,13 +5576,15 @@ function ChatInterface({
     capsules?: CapsuleSpecifier[],
     attachments?: ChatAttachmentHandle[],
     formats?: MessageFormatRef[],
+    thinkingLevel?: ThinkingLevel,
   ) => {
     const message = typeof messageText === "string" ? messageText.trim() : messageText ?? "";
     if (!message && (!attachments || attachments.length === 0)) return;
     const model = modelId !== undefined ? modelId : selectedModel;
     try {
       const newChatId = await overseer.newChat(
-          message, model, capsules, attachments, formats);
+          message, model, capsules, attachments, formats, thinkingLevel);
+      setThinkingLevelByChat((prev) => promoteThinkingLevelSelection(prev, newChatId));
       onNavigateToChatRef.current(newChatId);
     } catch (err) {
       console.error("Failed to create new chat:", err);
@@ -6781,6 +6828,8 @@ function ChatInterface({
             models={availableModels}
             selectedModel={selectedModel}
             onModelChange={handleModelChange}
+            thinkingLevel={newChatThinkingLevel}
+            onThinkingLevelChange={handleNewChatThinkingLevelChange}
             showThinkingTraces={showThinkingTraces}
             onToggleThinkingTraces={toggleShowThinkingTraces}
             minRows={2}

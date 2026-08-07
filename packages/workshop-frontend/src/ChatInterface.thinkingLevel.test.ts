@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { ThinkingLevel } from "@gadgets/workshop-shared/api";
-import { effectiveThinkingLevel } from "./ChatInterface";
+import { effectiveThinkingLevel, promoteThinkingLevelSelection } from "./ChatInterface";
 
 // The full ordered set a model with no thinkingLevelMap opinion (or an unrecognized model)
 // supports -- mirrors workshop-shared/thinking-level's THINKING_LEVEL_ORDER.
@@ -68,5 +68,31 @@ describe("effectiveThinkingLevel (thinking-level picker clamping)", () => {
     const sentToServer = effectiveThinkingLevel(preference, supported);
     expect(sentToServer).toBe(displayed);
     expect(displayed).toBe("high");
+  });
+});
+
+describe("promoteThinkingLevelSelection (new-chat continuity)", () => {
+  it("moves an explicit pick from the not-yet-created chat's `null` slot to the new chat id", () => {
+    const before = new Map<number | null, ThinkingLevel>([[null, "max"]]);
+    const after = promoteThinkingLevelSelection(before, 42);
+    expect(after.get(42)).toBe("max");
+    expect(after.has(null)).toBe(false);
+    // The original map is untouched -- callers pass the result to setState, which relies on a new
+    // reference to trigger a re-render.
+    expect(before.get(null)).toBe("max");
+  });
+
+  it("leaves other chats' picks alone", () => {
+    const before = new Map<number | null, ThinkingLevel>([[null, "low"], [7, "xhigh"]]);
+    const after = promoteThinkingLevelSelection(before, 42);
+    expect(after.get(42)).toBe("low");
+    expect(after.get(7)).toBe("xhigh");
+  });
+
+  it("is a no-op (same reference) when nothing was explicitly picked before sending", () => {
+    const before = new Map<number | null, ThinkingLevel>([[7, "xhigh"]]);
+    const after = promoteThinkingLevelSelection(before, 42);
+    expect(after).toBe(before);
+    expect(after.has(42)).toBe(false);
   });
 });

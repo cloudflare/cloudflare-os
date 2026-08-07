@@ -13,6 +13,7 @@ import {
   ChatAttachmentHandle,
   MessageFormatRef,
   SlashCommandRequest,
+  ThinkingLevel,
 } from "@gadgets/workshop-shared/api";
 import {
   getStoredSelectedModel,
@@ -20,6 +21,7 @@ import {
 } from "../modelSelection";
 import { useDocumentTitle } from "../useDocumentTitle";
 import { homePromptFromSearch } from "../homePrompt";
+import { stashPendingChatThinkingLevel } from "../pendingChatThinkingLevel";
 
 type HomeSearch = { prompt?: string };
 
@@ -46,6 +48,11 @@ export function HomePageContent({ prompt }: HomeSearch) {
 
   const [models, setModels] = useState<AiChatAuthorInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  // The thinking level picked for the chat this composer is about to create. Undefined until the
+  // user picks one -- ChatInput defaults and clamps that itself (see effectiveThinkingLevel() in
+  // ChatInterface.tsx). This page only ever creates one chat then unmounts, so unlike
+  // ChatInterface's thinkingLevelByChat there's no per-chat map to maintain here.
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>();
   // Bumped each time a task suggestion is picked; the composer re-seeds its text off the nonce.
   const [seed, setSeed] = useState<{ text: string; nonce: number }>({ text: "", nonce: 0 });
 
@@ -103,17 +110,24 @@ export function HomePageContent({ prompt }: HomeSearch) {
       capsules?: CapsuleSpecifier[],
       attachments?: ChatAttachmentHandle[],
       formats?: MessageFormatRef[],
+      chosenThinkingLevel?: ThinkingLevel,
     ) => {
       try {
         ensureProvisionalGadget();
         const overseer = provisionalOverseerRef.current!.stub;
         // Pipeline both independent calls in one batch, but settle both before releasing the stub.
         const [chat, {id}] = await Promise.all([
-          overseer.newChat(message, modelId, capsules, attachments, formats),
+          overseer.newChat(message, modelId, capsules, attachments, formats, chosenThinkingLevel),
           overseer.getMetadata(),
         ]);
         provisionalOverseerRef.current?.stub[Symbol.dispose]();
         provisionalOverseerRef.current = null;
+        // The workspace page mounts a separate ChatInterface with no memory of this component's
+        // state, so hand the chosen level off through storage -- it picks this up for `chat` the
+        // first time that chat id is selected. See stashPendingChatThinkingLevel().
+        if (chosenThinkingLevel !== undefined) {
+          stashPendingChatThinkingLevel(chat, chosenThinkingLevel);
+        }
         // Open the conversation we just started.
         navigate({ to: "/workspace/$id", params: { id }, search: { chat } });
       } catch (err) {
@@ -181,6 +195,8 @@ export function HomePageContent({ prompt }: HomeSearch) {
           models={models}
           selectedModel={selectedModel}
           onModelChange={handleModelChange}
+          thinkingLevel={thinkingLevel}
+          onThinkingLevelChange={setThinkingLevel}
           newChat
           offerFormats
           autoFocus
