@@ -339,8 +339,8 @@ function makeHandle(args: HandleArgs): ModelHandle {
 export const DEFAULT_THINKING_LEVEL: ThinkingLevel = "high";
 
 // Ascending order of thinking levels, used to walk downward when a requested level is explicitly
-// unsupported. Mirrors pi-ai's own internal ordering.
-const THINKING_LEVEL_ORDER: ThinkingLevel[] =
+// unsupported, and as the "no opinion" default level set. Mirrors pi-ai's own internal ordering.
+export const THINKING_LEVEL_ORDER: ThinkingLevel[] =
     ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /**
@@ -371,6 +371,32 @@ export function resolveThinkingLevel(model: Model<Api>, requested: ThinkingLevel
  */
 export function reasoningOption(level: ThinkingLevel): Exclude<ThinkingLevel, "off"> | undefined {
   return level === "off" ? undefined : level;
+}
+
+/**
+ * The thinking levels a model supports, ordered "off" through "max" -- e.g. for sizing a picker.
+ * A model with `reasoning: false` supports only "off"; otherwise this is exactly the set
+ * resolveThinkingLevel would ever return unclamped for this model (every level not explicitly
+ * excluded by thinkingLevelMap, including every level when there's no map at all).
+ */
+export function supportedThinkingLevels(model: Model<Api>): ThinkingLevel[] {
+  if (!model.reasoning) return ["off"];
+  const map = model.thinkingLevelMap;
+  if (!map) return [...THINKING_LEVEL_ORDER];
+  return THINKING_LEVEL_ORDER.filter((level) => map[level] !== null);
+}
+
+/**
+ * Same as supportedThinkingLevels(), looked up from an AiModelConfig's provider/model pair instead
+ * of a resolved Model<Api> -- for callers (like the thinking-level picker) that only have the
+ * config, not a routed handle. A provider/model pi-ai's catalogue doesn't recognize (an unlisted
+ * Workers AI model, an Ollama model, ...) gets every level: the catalogue has no opinion, which is
+ * not the same as no support.
+ */
+export function supportedThinkingLevelsForConfig(
+    config: Pick<AiModelConfig, "provider" | "model">): ThinkingLevel[] {
+  const catalog = catalogModel(config.provider, config.model);
+  return catalog ? supportedThinkingLevels(catalog) : [...THINKING_LEVEL_ORDER];
 }
 
 /**

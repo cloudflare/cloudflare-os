@@ -81,6 +81,7 @@ import {
   BlueprintOutput,
   MessageFormatRef,
   OutputFormatOffer,
+  ThinkingLevel,
 } from "@gadgets/workshop-shared/api";
 import { ActionKind, ResourceDescription } from "@gadgets/workshop-shared/gatekeeper";
 import {
@@ -363,6 +364,33 @@ const MAX_CHAT_ATTACHMENT_BYTES = 1024 * 1024;
 const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 5 * 1024 * 1024;
 const MAX_CHAT_ATTACHMENT_SOURCE_IMAGE_BYTES = 25 * 1024 * 1024;
 const CHAT_ATTACHMENT_IMAGE_MAX_EDGE = 1568;
+
+// Matches the backend's own default (see DEFAULT_THINKING_LEVEL in workshop-backend/src/ai-models.ts).
+const DEFAULT_THINKING_LEVEL: ThinkingLevel = "high";
+
+// The thinking-level picker's fallback before a model's actual supported levels have loaded, or
+// for a model the deployment has no catalogue opinion about -- every level, "off" through "max",
+// exactly like the backend's own "no opinion" default (see supportedThinkingLevelsForConfig).
+const ALL_THINKING_LEVELS: ThinkingLevel[] =
+    ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+// Human-readable label for a thinking-level picker option.
+const THINKING_LEVEL_LABELS: Record<ThinkingLevel, string> = {
+  off: "Off",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+};
+
+// The level to preselect once a model's supported levels are known: "high" if offered, otherwise
+// the strongest level the model does support.
+function defaultThinkingLevel(supported: ThinkingLevel[]): ThinkingLevel {
+  if (supported.includes(DEFAULT_THINKING_LEVEL)) return DEFAULT_THINKING_LEVEL;
+  return supported[supported.length - 1] ?? "off";
+}
 
 function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
   return new Promise((resolve, reject) => {
@@ -1783,6 +1811,9 @@ export const ChatInput = ({
   onStop,
   showThinkingTraces = true,
   onToggleThinkingTraces,
+  thinkingLevel,
+  availableThinkingLevels,
+  onThinkingLevelChange,
 }: {
   createCapsuleGatekeeper: (
     accountId: number,
@@ -1797,6 +1828,7 @@ export const ChatInput = ({
     capsules?: CapsuleSpecifier[],
     attachments?: ChatAttachmentHandle[],
     formats?: MessageFormatRef[],
+    thinkingLevel?: ThinkingLevel,
   ) => Promise<void> | void;
   isAgentActive: boolean;
   models: AiChatAuthorInfo[];
@@ -1828,6 +1860,12 @@ export const ChatInput = ({
   onStop?: () => void;
   showThinkingTraces?: boolean;
   onToggleThinkingTraces?: () => void;
+  /** Current thinking-level selection, and the levels the selected model actually supports. Both
+   * omitted on composers that don't offer the picker (e.g. the "start new chat" composer, whose
+   * `newChat()` call has no thinking-level parameter to apply it to). */
+  thinkingLevel?: ThinkingLevel;
+  availableThinkingLevels?: ThinkingLevel[];
+  onThinkingLevelChange?: (level: ThinkingLevel) => void;
   /** Show the "Pre-approve actions" menu item (only when there are uncovered candidates). */
   /** Open the pre-approval dialog (owned by the parent). */
   /** Called after a gatekeeper is connected via the attach flow, so the parent can refresh the
@@ -2437,7 +2475,7 @@ export const ChatInput = ({
       await onSend(message, selectedModel,
           capsuleSpecifiers?.length ? capsuleSpecifiers : undefined,
           readyAttachments.length ? readyAttachments : undefined,
-          formatRefs);
+          formatRefs, thinkingLevel);
       for (const attachment of attachmentsSnapshot) {
         if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
       }
@@ -3360,6 +3398,47 @@ export const ChatInput = ({
                   </DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu>
+              {onThinkingLevelChange && selectedModel !== null && availableThinkingLevels &&
+                  availableThinkingLevels.length > 1 && (
+                <DropdownMenu>
+                  <DropdownMenu.Trigger
+                    render={
+                      <button
+                        type="button"
+                        className="group inline-flex h-8 min-w-0 max-w-[130px] cursor-pointer items-center gap-1.5 rounded-lg px-2 text-[13px] leading-5 tracking-[-0.25px] text-kumo-subtle transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-default focus-visible:bg-kumo-tint focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.97] data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-default"
+                        aria-label="Select thinking level"
+                      >
+                        <Brain size={13} className="flex-shrink-0 text-kumo-inactive" />
+                        <span className="min-w-0 truncate">
+                          {THINKING_LEVEL_LABELS[thinkingLevel ?? DEFAULT_THINKING_LEVEL]}
+                        </span>
+                        <CaretDown
+                          size={12}
+                          weight="bold"
+                          className="flex-shrink-0 text-kumo-inactive transition-transform duration-150 ease-out group-data-[popup-open]:rotate-180"
+                        />
+                      </button>
+                    }
+                  />
+                  <DropdownMenu.Content className="themed-floating-shadow-lg !z-[1100] !min-w-[150px] rounded-2xl border border-kumo-line/70 bg-kumo-base p-1">
+                    {availableThinkingLevels.map((level) => {
+                      const active = (thinkingLevel ?? DEFAULT_THINKING_LEVEL) === level;
+                      return (
+                        <DropdownMenu.Item
+                          key={level}
+                          onClick={() => onThinkingLevelChange(level)}
+                          className="!h-auto rounded-xl !px-2 !py-1.5 text-[12px] leading-4 font-normal tracking-[-0.15px] text-kumo-subtle transition-colors data-highlighted:bg-kumo-tint/70 data-highlighted:text-kumo-default"
+                        >
+                          <span className="min-w-0 flex-1 truncate">{THINKING_LEVEL_LABELS[level]}</span>
+                          {active && (
+                            <Check size={12} weight="bold" className="ml-3 flex-shrink-0 text-kumo-inactive" />
+                          )}
+                        </DropdownMenu.Item>
+                      );
+                    })}
+                  </DropdownMenu.Content>
+                </DropdownMenu>
+              )}
               {isAgentActive && onStop ? (
                 <WorkshopIconButton
                   onClick={onStop}
@@ -4322,6 +4401,21 @@ function ChatInterface({
     [],
   );
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  // Thinking levels the selected model actually supports, refreshed whenever it changes (see the
+  // effect below). Starts optimistic (every level) so the picker isn't empty while loading.
+  const [availableThinkingLevels, setAvailableThinkingLevels] =
+    useState<ThinkingLevel[]>(ALL_THINKING_LEVELS);
+  // The user's chosen thinking level per chat, remembered for the session (not persisted server-
+  // side or across page loads) so switching chats doesn't lose a deliberate choice. Keyed by
+  // chatId; `null` holds the choice for the not-yet-created chat while composing the first
+  // message.
+  const [thinkingLevelByChat, setThinkingLevelByChat] =
+    useState<Map<number | null, ThinkingLevel>>(new Map());
+  const selectedThinkingLevel =
+    thinkingLevelByChat.get(selectedChatId) ?? defaultThinkingLevel(availableThinkingLevels);
+  const handleThinkingLevelChange = (level: ThinkingLevel) => {
+    setThinkingLevelByChat((prev) => new Map(prev).set(selectedChatId, level));
+  };
   const [sidebarActiveTab, setSidebarActiveTab] = useState<
     "chat" | "connections"
   >("chat");
@@ -5237,6 +5331,21 @@ function ChatInterface({
     };
   }, [overseer]);
 
+  // Refresh which thinking levels the picker offers whenever the selected model changes. "No
+  // agent" (null) offers nothing meaningful to pick, so leave the fallback list in place -- the
+  // picker isn't shown without an active model anyway.
+  useEffect(() => {
+    if (selectedModel === null) return;
+    let isMounted = true;
+    overseer.listThinkingLevels(selectedModel).then((levels) => {
+      if (isMounted) setAvailableThinkingLevels(levels);
+    }).catch((err) => {
+      console.error("Failed to load thinking levels:", err);
+      setAvailableThinkingLevels(ALL_THINKING_LEVELS);
+    });
+    return () => { isMounted = false; };
+  }, [overseer, selectedModel]);
+
   // Patch cached chat messages on action upserts.
   useActionEntries(overseer, (record) => {
     if (applyActionLogUpdateToCachedMessages(record)) scheduleUpdate();
@@ -5341,6 +5450,7 @@ function ChatInterface({
     capsules?: CapsuleSpecifier[],
     attachments?: ChatAttachmentHandle[],
     formats?: MessageFormatRef[],
+    thinkingLevel?: ThinkingLevel,
   ) => {
     const message = typeof messageText === "string" ? messageText.trim() : messageText ?? "";
     if (!message && (!attachments || attachments.length === 0)) return;
@@ -5350,7 +5460,8 @@ function ChatInterface({
 
     try {
       if (selectedChatId === null) {
-        // Create a new chat (with optional capsules).
+        // Create a new chat (with optional capsules). newChat() has no thinking-level parameter --
+        // the backend just uses its own default for a chat's first turn.
         const newChatId = await overseer.newChat(
             message, model, capsules, attachments, formats);
         onNavigateToChatRef.current(newChatId);
@@ -5363,6 +5474,7 @@ function ChatInterface({
           capsules || undefined,
           attachments || undefined,
           formats,
+          thinkingLevel,
         );
       }
     } catch (err) {
@@ -7585,6 +7697,9 @@ function ChatInterface({
                     models={availableModels}
                     selectedModel={selectedModel}
                     onModelChange={handleModelChange}
+                    thinkingLevel={selectedThinkingLevel}
+                    availableThinkingLevels={availableThinkingLevels}
+                    onThinkingLevelChange={handleThinkingLevelChange}
                     pendingConsoleLogCount={pendingConsoleLogCount}
                     consoleLogPreview={consoleLogPreview}
                     consoleLogSeverity={consoleLogSeverity}

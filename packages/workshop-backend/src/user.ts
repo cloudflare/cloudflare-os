@@ -1,8 +1,9 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult } from '@gadgets/workshop-shared/api';
+import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, ThinkingLevel } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
+import { supportedThinkingLevelsForConfig, THINKING_LEVEL_ORDER } from "./ai-models.js";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import { createWorkshopLogger } from "./observability";
@@ -662,6 +663,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
              resetAt: nextUtcMidnightIso() };
   }
 
+  // Resolves a listModels() id to its record, checking AI Gateway's suggested models before the
+  // user's own configured models (mirroring getChatContext's precedence). Undefined for an id that
+  // matches neither -- a deleted model, or one from a since-disabled gateway provider.
+  #resolveAiModel(modelId: string): UserAiModelRecord | undefined {
+    let gwConfig = getAiGatewayConfig(this.env);
+    return gwConfig?.resolveModel(modelId) ?? this.storage.aiModels.get(modelId);
+  }
+
   // DO NOT MAKE PUBLIC -- returns API keys.
   async getChatContext(modelId: string | null): Promise<UserChatContext> {
     let gwConfig = getAiGatewayConfig(this.env);
@@ -670,13 +679,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       profile: this.storage.profile.get()
     };
     if (modelId) {
-      // In AI Gateway mode, resolve gateway models first.
-      if (gwConfig) {
-        result.aiModel = gwConfig.resolveModel(modelId);
-      }
-      if (!result.aiModel) {
-        result.aiModel = this.storage.aiModels.get(modelId);
-      }
+      result.aiModel = this.#resolveAiModel(modelId);
       if (!result.aiModel) throw new Error(`No such model: ${modelId}`);
     }
 
@@ -694,6 +697,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
     return result;
+  }
+
+  // Public counterpart to getChatContext() for callers that only need to know which thinking
+  // levels a model supports (e.g. to size a picker) -- never returns API keys. An id that doesn't
+  // resolve (a deleted model, one from a since-disabled provider, ...) gets every level: the
+  // deployment has no opinion about it, which is not the same as no support.
+  async listThinkingLevels(modelId: string): Promise<ThinkingLevel[]> {
+    let model = this.#resolveAiModel(modelId);
+    return model ? supportedThinkingLevelsForConfig(model.config) : [...THINKING_LEVEL_ORDER];
   }
 
   async getExternalMessageChatContext(existingChatModelId: string | null): Promise<UserChatContext> {

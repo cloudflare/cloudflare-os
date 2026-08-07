@@ -8,7 +8,7 @@ import type {
   AssistantMessage, ImageContent, Message, TSchema, TextContent, ThinkingContent, ToolCall,
 } from "@earendil-works/pi-ai";
 import {
-  runAgentLoopContinue, type AgentContext, type AgentEvent, type AgentTool,
+  runAgentLoopContinue, type AgentContext, type AgentEvent, type AgentTool, type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
@@ -1072,7 +1072,10 @@ export async function runAgent(
     abortSignal: AbortSignal,
     initiator: AiChatAuthorInfo,
     callbackInitiated: boolean,
-    compaction: CompactionContext): Promise<CompactionCheckpoint | undefined> {
+    compaction: CompactionContext,
+    // Requested extended-thinking effort for this turn; defaults to DEFAULT_THINKING_LEVEL when
+    // the caller doesn't have an opinion (e.g. callback-initiated continuations).
+    thinkingLevel: ThinkingLevel = DEFAULT_THINKING_LEVEL): Promise<CompactionCheckpoint | undefined> {
   let checkpoint = compaction.checkpoint;
 
   // The workspace's gadget registry, snapshotted at the start of the turn (gadgets provisional
@@ -3035,9 +3038,9 @@ export async function runAgent(
       tools: toolList,
     };
 
-    // Extended thinking for interactive turns, clamped to what this model actually supports (a
-    // model's thinkingLevelMap may not offer every level -- see resolveThinkingLevel).
-    let thinkingLevel = resolveThinkingLevel(handle.model, DEFAULT_THINKING_LEVEL);
+    // Clamp the requested thinking level to what this model actually supports (its
+    // thinkingLevelMap may not offer every level -- see resolveThinkingLevel).
+    let resolvedThinkingLevel = resolveThinkingLevel(handle.model, thinkingLevel);
 
     await runAgentLoopContinue(context, {
       model: handle.model,
@@ -3045,7 +3048,7 @@ export async function runAgent(
       convertToLlm: (messages) => messages as Message[],
       toolExecution: "sequential",
       maxTokens: maxOutputTokens,
-      reasoning: reasoningOption(thinkingLevel),
+      reasoning: reasoningOption(resolvedThinkingLevel),
       shouldStopAfterTurn: () =>
           // Cancelled during tool execution: the completed turn was persisted by the turn_end
           // barrier just above; don't start another (doomed) model request.

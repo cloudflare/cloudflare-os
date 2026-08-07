@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AiChatAuthorInfo, AiModelConfig } from "@gadgets/workshop-shared/api";
-import { getModel, reasoningOption, resolveThinkingLevel, type ModelHandle } from "../src/ai-models.js";
+import {
+  getModel, reasoningOption, resolveThinkingLevel, supportedThinkingLevels,
+  supportedThinkingLevelsForConfig, type ModelHandle,
+} from "../src/ai-models.js";
 
 // These tests exercise the real pi-ai stack: no module mocks. Routing decisions are asserted on
 // the returned handle's model descriptor (baseUrl/id/api) and log route, and request-level
@@ -433,16 +436,16 @@ describe("PDF attachment bridging", () => {
   }, 15000);
 });
 
-// Only thinkingLevelMap varies across these tests; the rest of Model<Api> is filled with
-// arbitrary-but-valid values that resolveThinkingLevel never inspects.
-function fixtureModel(thinkingLevelMap?: Model<Api>["thinkingLevelMap"]): Model<Api> {
+// Only thinkingLevelMap/reasoning vary across these tests; the rest of Model<Api> is filled with
+// arbitrary-but-valid values the functions under test never inspect.
+function fixtureModel(thinkingLevelMap?: Model<Api>["thinkingLevelMap"], reasoning = true): Model<Api> {
   return {
     id: "test-model",
     name: "Test Model",
     api: "anthropic-messages",
     provider: "anthropic",
     baseUrl: "https://example.invalid",
-    reasoning: true,
+    reasoning,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 100_000,
@@ -492,5 +495,38 @@ describe("reasoningOption", () => {
 
   it("passes non-off levels through unchanged", () => {
     expect(reasoningOption("high")).toBe("high");
+  });
+});
+
+describe("supportedThinkingLevels", () => {
+  it("returns only off for a model with no reasoning support", () => {
+    const model = fixtureModel({ high: "high" }, false);
+    expect(supportedThinkingLevels(model)).toEqual(["off"]);
+  });
+
+  it("returns every level for a reasoning model with no thinkingLevelMap", () => {
+    const model = fixtureModel(undefined);
+    expect(supportedThinkingLevels(model))
+        .toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("excludes only the levels explicitly marked null", () => {
+    const model = fixtureModel({ minimal: null, xhigh: null, max: null });
+    expect(supportedThinkingLevels(model)).toEqual(["off", "low", "medium", "high"]);
+  });
+});
+
+describe("supportedThinkingLevelsForConfig", () => {
+  it("returns every level for a provider/model pi-ai's catalogue doesn't recognize", () => {
+    expect(supportedThinkingLevelsForConfig({ provider: "ollama", model: "made-up-model" }))
+        .toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("looks up a cataloged model's real thinkingLevelMap", () => {
+    // claude-haiku-4-5 has reasoning support but no explicit thinkingLevelMap in pi-ai's
+    // catalogue as of this writing -- i.e. every level is supported.
+    const levels = supportedThinkingLevelsForConfig({ provider: "anthropic", model: "claude-haiku-4-5" });
+    expect(levels).toContain("off");
+    expect(levels).toContain("high");
   });
 });

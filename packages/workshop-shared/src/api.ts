@@ -959,6 +959,12 @@ export type AiModelConfig = {
 // model's window, so every Cloudflare model reserves this much of it for the response.
 export const WORKERS_AI_OUTPUT_LIMIT = 32768;
 
+// Extended-thinking effort for a model turn, "off" through "max". Mirrors
+// @earendil-works/pi-agent-core's own ThinkingLevel type verbatim (this package doesn't depend on
+// pi-agent-core, so the union is duplicated here rather than imported); keep the two in sync.
+// Not every model supports every level -- see Overseer.listThinkingLevels().
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
 // Models offered in the picker. `contextWindow` is the maximum tokens one request may total.
 // `outputLimit`, when present, is both the requested response cap and the space reserved for it,
 // leaving the remainder as the prompt budget context compaction sizes against.
@@ -1469,6 +1475,12 @@ export interface Overseer extends RpcTarget {
   // chosen something else.
   listModels(): Promise<AiChatAuthorInfo[]>;
 
+  // List the thinking levels `modelId` (one of listModels()'s IDs) supports, ordered "off" through
+  // "max", for sizing a thinking-level picker. A model the deployment has no catalogue opinion
+  // about (an unrecognized ID, or one whose provider doesn't publish per-level support) returns
+  // every level -- no opinion is not the same as no support.
+  listThinkingLevels(modelId: string): Promise<ThinkingLevel[]>;
+
   // Fetch one page of messages in the chat history for the given chat thread. If `beforeSequence`
   // is absent, fetch the current tail. Otherwise, fetch messages before that sequence.
   //
@@ -1523,9 +1535,11 @@ export interface Overseer extends RpcTarget {
   // `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
   // (useful when using chat to talk between humans).
   //
+  // `thinkingLevel` requests an extended-thinking effort for the model's response (one of
+  // `listThinkingLevels(modelId)`'s results); omitted, it defaults to "high".
   sendChatMessage(chatId: number, message: string | SlashCommandRequest, modelId: string | null,
                   capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-                  formats?: MessageFormatRef[]): Promise<void>;
+                  formats?: MessageFormatRef[], thinkingLevel?: ThinkingLevel): Promise<void>;
 
   // Upload an attachment for use in a future chat message. This way by the time the user wants to
   // send the message, likely uploading is complete. `modelId` determines whether the
