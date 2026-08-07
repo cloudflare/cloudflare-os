@@ -1,0 +1,21 @@
+{
+  "name": "@gadgets/gatekeeper-parallel",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/worker.ts",
+  "scripts": {
+    "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
+    "deploy": "wrangler deploy",
+    "build": "tsc",
+    "types:check": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@gadgets/workshop-shared": "workspace:*",
+    "capnweb-validate": "0.2.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "wrangler": "^4.119.0"
+  }
+}

@@ -458,6 +458,22 @@ importers:
         specifier: ^4.119.0
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
+  packages/gatekeeper-parallel:
+    dependencies:
+      '@gadgets/workshop-shared':
+        specifier: workspace:*
+        version: link:../workshop-shared
+      capnweb-validate:
+        specifier: 0.2.1
+        version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      wrangler:
+        specifier: ^4.119.0
+        version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
+
   packages/gatekeeper-scheduler:
     dependencies:
       '@gadgets/backend-utils':

@@ -663,6 +663,63 @@
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/notion"
       }
     },
+    "gatekeeper-parallel": {
+      "bindings": [
+        {
+          "name": "PARALLEL_API_KEY",
+          "text": "$SECRET(PARALLEL_API_KEY)",
+          "type": "secret_text"
+        }
+      ],
+      "compatibilityDate": "2026-02-02",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage"
+      ],
+      "inputs": [
+        {
+          "consoleUrl": "https://platform.parallel.ai/",
+          "kind": "secret",
+          "label": "Parallel API key",
+          "name": "PARALLEL_API_KEY",
+          "setupSteps": [
+            "Create or select a Parallel API key.",
+            "Copy the API key here. It remains a Worker secret and is never exposed to agents or Gadgets."
+          ]
+        }
+      ],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "parallel.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "ParallelGatekeeper"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "parallel.js",
+          "r2Key": "blobs/modules/76bdefe0378ec403224e95708d7869cccd98f8e871e38d79fdeefff6604eeb38",
+          "sha256": "76bdefe0378ec403224e95708d7869cccd98f8e871e38d79fdeefff6604eeb38",
+          "size": 61,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "parallel",
+      "singleton": true,
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/parallel"
+      }
+    },
     "gatekeeper-scheduler": {
       "bindings": [],
       "compatibilityDate": "2026-02-02",

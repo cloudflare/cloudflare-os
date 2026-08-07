@@ -1,0 +1,12 @@
+[
+  {
+    "name": "PARALLEL_API_KEY",
+    "kind": "secret",
+    "label": "Parallel API key",
+    "consoleUrl": "https://platform.parallel.ai/",
+    "setupSteps": [
+      "Create or select a Parallel API key.",
+      "Copy the API key here. It remains a Worker secret and is never exposed to agents or Gadgets."
+    ]
+  }
+]

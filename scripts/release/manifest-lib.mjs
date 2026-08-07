@@ -62,9 +62,13 @@ const PREINSTALL = new Set(["gatekeeper-context", "gatekeeper-scheduler"]);
 // (`AccountDescription.singleton` — context's `ContextLibrary`, scheduler's `ScheduleSession`):
 // the Workshop auto-provisions those accounts and folds the singleton into every workspace as an
 // ambient gatekeeper, so a second install would hand every user a duplicate ambient capsule.
-// Independent of PREINSTALL in principle; the two sets coincide today only because every ambient
-// gatekeeper we ship is also preinstalled.
-const SINGLETON = new Set(["gatekeeper-context", "gatekeeper-scheduler"]);
+// Independent of PREINSTALL: Parallel is install-once but remains an optional install because it
+// requires a deployment API key.
+const SINGLETON = new Set([
+  "gatekeeper-context",
+  "gatekeeper-parallel",
+  "gatekeeper-scheduler",
+]);
 
 export const DEFAULT_CRED_INPUTS = [
   {

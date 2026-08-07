@@ -143,6 +143,19 @@ test("worker entries carry the deploy contract", () => {
       google.bindings.find((b) => b.name === "CLIENT_SECRET"),
       { type: "secret_text", name: "CLIENT_SECRET", text: "$SECRET(CLIENT_SECRET)" });
 
+  // Parallel is an optional install-once singleton backed by a deployment API key.
+  const parallel = workers["gatekeeper-parallel"];
+  assert.equal(parallel.singleton, true);
+  assert.equal(parallel.preinstall, undefined);
+  assert.deepEqual(parallel.inputs.map((i) => i.name), ["PARALLEL_API_KEY"]);
+  assert.deepEqual(
+      parallel.bindings.find((b) => b.name === "PARALLEL_API_KEY"),
+      {
+        type: "secret_text",
+        name: "PARALLEL_API_KEY",
+        text: "$SECRET(PARALLEL_API_KEY)",
+      });
+
   // gatekeeper-email ships in the release but is not installable (needs Email Routing/a zone).
   assert.equal(workers["gatekeeper-email"].installable, false);
   assert.deepEqual(workers["gatekeeper-email"].inputs, []);
