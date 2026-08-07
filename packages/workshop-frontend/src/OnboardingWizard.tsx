@@ -7,6 +7,7 @@ import {
   AiGatewayInfo,
   AiModelProvider,
   ConnectedAccountsSubscriber,
+  SUGGESTED_MODELS,
 } from '@gadgets/workshop-shared/api'
 import {
   VendorDescription,
@@ -149,11 +150,11 @@ export default function OnboardingWizard({
 
   // Wires a completed subscription-seat sign-in straight into the model list. Unlike
   // AddModelModal, this step has no review form to hand the enrollment off to, so it enrolls and
-  // adds the seat's first model automatically, then reloads models and selects it.
+  // adds every model the seat offers automatically, then reloads models and selects the first one
+  // that was added — so one sign-in leaves the user fully set up.
   const handleSeatEnrolled = async (provider: AiModelProvider, handle: string, seatModels: string[], seatApiUrl: string) => {
     if (addingSeatModel) return
-    const modelId = seatModels[0]
-    if (!modelId) {
+    if (seatModels.length === 0) {
       // Realistic, not hypothetical: some providers (e.g. OpenAI's model-listing path) can
       // legitimately return no models for a seat that otherwise signed in fine.
       toasts.add({
@@ -164,16 +165,39 @@ export default function OnboardingWizard({
     }
     setAddingSeatModel(true)
     try {
-      await authenticatedApi.addModel(
-        { type: 'agent', id: modelId, name: modelId },
-        { provider, model: modelId, apiToken: handle, apiUrl: seatApiUrl },
-      )
+      let firstAddedId: string | null = null
+      let succeeded = 0
+      for (const modelId of seatModels) {
+        const name = SUGGESTED_MODELS[provider][modelId]?.name ?? modelId
+        try {
+          await authenticatedApi.addModel(
+            { type: 'agent', id: modelId, name },
+            { provider, model: modelId, apiToken: handle, apiUrl: seatApiUrl },
+          )
+          succeeded++
+          if (firstAddedId === null) firstAddedId = modelId
+        } catch (err) {
+          console.error(`Failed to add model ${modelId} from seat sign-in:`, err)
+        }
+      }
       await fetchModels()
-      setSelectedModelId(modelId)
-      toasts.add({ title: 'AI model added successfully', variant: 'success' })
-    } catch (err) {
-      console.error('Failed to add model from seat sign-in:', err)
-      toasts.add({ title: 'Failed to add model', variant: 'error' })
+      if (firstAddedId) setSelectedModelId(firstAddedId)
+
+      if (succeeded === seatModels.length) {
+        toasts.add({
+          title: succeeded === 1 ? 'AI model added successfully' : `${succeeded} AI models added successfully`,
+          variant: 'success',
+        })
+      } else if (succeeded > 0) {
+        // Partial failure must never be reported as a plain success — say exactly how many made
+        // it so the user knows something still needs attention.
+        toasts.add({
+          title: `Added ${succeeded} of ${seatModels.length} models from your subscription — some failed.`,
+          variant: 'error',
+        })
+      } else {
+        toasts.add({ title: 'Failed to add models from subscription sign-in', variant: 'error' })
+      }
     } finally {
       setAddingSeatModel(false)
     }
@@ -546,7 +570,14 @@ export default function OnboardingWizard({
                     instead, so the button must not be offered here (mirrors AddModelModal). */}
                 {aiConfig?.enabled !== true && (
                   <div className="mb-6">
-                    <SeatSignInButtons authenticatedApi={authenticatedApi} onEnrolled={handleSeatEnrolled} />
+                    {addingSeatModel ? (
+                      <div className="flex items-center gap-2 text-sm text-kumo-subtle">
+                        <div className="w-4 h-4 border-2 border-kumo-brand border-t-transparent rounded-full animate-spin" />
+                        Adding your models...
+                      </div>
+                    ) : (
+                      <SeatSignInButtons authenticatedApi={authenticatedApi} onEnrolled={handleSeatEnrolled} />
+                    )}
                   </div>
                 )}
 

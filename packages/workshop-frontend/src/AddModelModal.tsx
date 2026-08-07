@@ -103,8 +103,9 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const [apiToken, setApiToken] = useState('')
   const [accountId, setAccountId] = useState('')
   const [apiUrl, setApiUrl] = useState('')
-  // Models available through a just-enrolled subscription seat (see handleSeatEnrolled below).
-  const [seatModels, setSeatModels] = useState<string[]>([])
+  // Guards handleSeatEnrolled below against double-submission: SeatSignInButtons resets itself to
+  // idle as soon as onEnrolled is called, before the addModel round trips below have resolved.
+  const [addingSeatModels, setAddingSeatModels] = useState(false)
 
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -127,7 +128,6 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       setApiToken('')
       setAccountId('')
       setApiUrl('')
-      setSeatModels([])
       setErrors({})
       setAdvancedOpen(false)
     }
@@ -149,21 +149,58 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     setApiToken('')
     setAccountId('')
     setApiUrl(sel.provider === 'ollama' ? 'http://localhost:11434' : '')
-    setSeatModels([])
   }
 
-  // Wires a completed subscription-seat sign-in into the existing custom-model fields: the handle
-  // becomes the API token, and the returned models are offered as a pre-fill/description so the
-  // user can still pick and submit through the unchanged handleSubmit flow below.
-  const handleSeatEnrolled = (provider: AiModelProvider, handle: string, models: string[], seatApiUrl: string) => {
-    setSelectValue(encodeSelection(provider))
-    setSelection({ type: 'custom', provider })
-    setModelId(models[0] ?? '')
-    setDisplayName(models[0] ?? '')
-    setApiToken(handle)
-    setApiUrl(seatApiUrl)
-    setSeatModels(models)
-    setErrors({})
+  // Wires a completed subscription-seat sign-in straight into the model list: every model the
+  // seat offers is added immediately, so one sign-in is enough — there's no per-model form to
+  // fill in and resubmit. The handle becomes the shared API token for each model's config.
+  const handleSeatEnrolled = async (provider: AiModelProvider, handle: string, models: string[], seatApiUrl: string) => {
+    if (addingSeatModels) return
+    if (models.length === 0) {
+      // Realistic, not hypothetical: some providers (e.g. OpenAI's model-listing path) can
+      // legitimately return no models for a seat that otherwise signed in fine.
+      toasts.add({
+        title: 'Signed in, but no models were found for this subscription. Add one manually below.',
+        variant: 'error',
+      })
+      return
+    }
+
+    setAddingSeatModels(true)
+    try {
+      let succeeded = 0
+      for (const id of models) {
+        const name = SUGGESTED_MODELS[provider][id]?.name ?? id
+        const profile: AiChatAuthorInfo = { type: 'agent', id, name }
+        const config: AiModelConfig = { provider, model: id, apiToken: handle, apiUrl: seatApiUrl }
+        try {
+          await authenticatedApi.addModel(profile, config)
+          succeeded++
+        } catch (error) {
+          console.error(`Failed to add model ${id} from seat sign-in:`, error)
+        }
+      }
+
+      if (succeeded === models.length) {
+        toasts.add({
+          title: succeeded === 1 ? 'AI model added successfully' : `${succeeded} AI models added successfully`,
+          variant: 'success',
+        })
+        onSuccess()
+      } else if (succeeded > 0) {
+        // Partial failure must never be reported as a plain success — say exactly how many made
+        // it so the user knows something still needs attention.
+        toasts.add({
+          title: `Added ${succeeded} of ${models.length} models from your subscription — some failed.`,
+          variant: 'error',
+        })
+        onSuccess()
+      } else {
+        toasts.add({ title: 'Failed to add models from subscription sign-in', variant: 'error' })
+      }
+    } finally {
+      setAddingSeatModels(false)
+    }
   }
 
   const validate = (): boolean => {
@@ -251,7 +288,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   }
 
   return (
-    <Dialog.Root open={visible} onOpenChange={(open) => { if (!open) onCancel() }}>
+    <Dialog.Root open={visible} onOpenChange={(open) => { if (!open && !addingSeatModels) onCancel() }}>
       <Dialog className="p-6" size="lg">
         <Dialog.Title className="text-lg font-semibold mb-4">
           Add AI Model
@@ -263,7 +300,14 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
               enrolled handle/apiUrl have nowhere to go (config below drops both), so the
               button must not be offered here. */}
           {!gatewayMode && (
-            <SeatSignInButtons authenticatedApi={authenticatedApi} onEnrolled={handleSeatEnrolled} />
+            addingSeatModels ? (
+              <div className="flex items-center gap-2 text-sm text-kumo-subtle">
+                <div className="w-4 h-4 border-2 border-kumo-brand border-t-transparent rounded-full animate-spin" />
+                Adding your models...
+              </div>
+            ) : (
+              <SeatSignInButtons authenticatedApi={authenticatedApi} onEnrolled={handleSeatEnrolled} />
+            )
           )}
 
           {/* Model / Provider selection */}
@@ -308,11 +352,6 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
                 error={errors.modelId}
                 variant={errors.modelId ? 'error' : 'default'}
               />
-              {seatModels.length > 0 && (
-                <p className="text-xs text-kumo-subtle -mt-2">
-                  Models available on your subscription: {seatModels.join(', ')}
-                </p>
-              )}
 
               <Input
                 label="Display Name"
@@ -394,7 +433,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
         {/* Footer */}
         <div className="mt-6 flex justify-end gap-2">
           <Dialog.Close render={(props) => (
-            <Button variant="secondary" {...props} disabled={loading}>
+            <Button variant="secondary" {...props} disabled={loading || addingSeatModels}>
               Cancel
             </Button>
           )} />

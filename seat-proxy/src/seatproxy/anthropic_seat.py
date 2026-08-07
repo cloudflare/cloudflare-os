@@ -15,8 +15,10 @@ from .refresh import AuthRejected
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 UPSTREAM_BASE = "https://api.anthropic.com"
 
-# Anthropic exposes no per-seat model list endpoint, so the catalog is static.
-SEAT_MODELS = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+# Anthropic exposes no per-seat model list endpoint, so this is a static catalogue.
+# The ids match Cloudflare OS's own SUGGESTED_MODELS entries (workshop-shared/src/api.ts)
+# so the UI can resolve display names and context windows.
+SEAT_MODELS = ["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-haiku-4-5"]
 
 async def refresh(client: httpx.AsyncClient, tokens: SeatTokens) -> SeatTokens:
     response = await client.post(TOKEN_URL, json={

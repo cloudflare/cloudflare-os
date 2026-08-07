@@ -53,7 +53,10 @@ async def test_server_error_is_not_auth_rejected():
 
 @pytest.mark.asyncio
 async def test_models_returns_the_seat_catalog():
-    assert "claude-sonnet-5" in await a.fetch_available_models(None, "ACCESS")
+    models = await a.fetch_available_models(None, "ACCESS")
+    # These ids must match Cloudflare OS's own SUGGESTED_MODELS entries
+    # (workshop-shared/src/api.ts) so the UI can resolve display names/context windows.
+    assert models == ["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-haiku-4-5"]
 
 @pytest.mark.asyncio
 async def test_rate_limited_refresh_is_transient_not_auth_rejected():
