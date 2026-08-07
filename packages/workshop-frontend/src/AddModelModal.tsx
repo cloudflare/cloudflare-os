@@ -435,12 +435,9 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
             <Collapsible.Root
               open={advancedOpen}
               onOpenChange={(open) => { if (!manualDisabled) setAdvancedOpen(open) }}
+              className={manualDisabled ? 'opacity-50 pointer-events-none' : undefined}
             >
-              {/* onOpenChange above already blocks the toggle regardless of pointer vs. keyboard, so
-                  this wrapper is purely a visual dim -- no need to touch DefaultTrigger itself. */}
-              <div className={manualDisabled ? 'opacity-50 pointer-events-none' : undefined}>
-                <Collapsible.DefaultTrigger>Advanced Settings</Collapsible.DefaultTrigger>
-              </div>
+              <Collapsible.DefaultTrigger>Advanced Settings</Collapsible.DefaultTrigger>
               <Collapsible.DefaultPanel>
                 <Input
                   label="API URL"

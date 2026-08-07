@@ -366,6 +366,29 @@ describe('AddModelModal seat enrollment', () => {
     expect(addModel).not.toHaveBeenCalled()
   })
 
+  it('disables Add Model once a sign-in becomes active even with a stale manual selection, and re-enables it on reset', async () => {
+    const addModel = vi.fn(async () => {})
+    const { rendered } = await render(addModel as unknown as RpcStub<AuthenticatedApi>['addModel'])
+
+    // A selection made before the sign-in starts is still enough to pass validate() once the
+    // fields are frozen -- submit must not stay armed on a stale selection the user can no longer
+    // change.
+    await selectOption(rendered, 'Other Anthropic...')
+    await typeInto(input(rendered, 'Model ID'), 'my-model')
+    await typeInto(input(rendered, 'Display Name'), 'My Model')
+    await typeInto(input(rendered, 'API Token'), 'sk-ant-test')
+
+    expect(button(rendered, 'Add Model').disabled).toBe(false)
+
+    await click(button(rendered, 'Simulate sign-in start'))
+    expect(button(rendered, 'Add Model').disabled).toBe(true)
+
+    await click(button(rendered, 'Simulate sign-in reset'))
+    expect(button(rendered, 'Add Model').disabled).toBe(false)
+
+    expect(addModel).not.toHaveBeenCalled()
+  })
+
   it('disables the seat sign-in buttons while a manual submission is in flight', async () => {
     const first = deferred<void>()
     const addModel = vi.fn(() => first.promise)
