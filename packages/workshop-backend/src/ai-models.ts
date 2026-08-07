@@ -4,6 +4,7 @@ import type {
   AnthropicMessagesCompat, Api, AssistantMessageEventStream, Context, Model, ModelCost,
   OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction,
 } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { stream as anthropicMessagesStream } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { stream as googleGenerativeAiStream } from "@earendil-works/pi-ai/api/google-generative-ai";
@@ -18,9 +19,6 @@ import { LanguageModelBinding } from "./ai-model-binding";
 import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
 import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT }
   from "@gadgets/workshop-shared/api";
-import {
-  resolveThinkingLevel as resolveSupportedThinkingLevel, THINKING_LEVEL_ORDER,
-} from "@gadgets/workshop-shared/thinking-level";
 import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
@@ -342,32 +340,6 @@ function makeHandle(args: HandleArgs): ModelHandle {
 export const DEFAULT_THINKING_LEVEL: ThinkingLevel = "high";
 
 /**
- * The thinking levels a model supports, ordered "off" through "max" -- e.g. for sizing a picker.
- * A model with `reasoning: false` supports only "off"; otherwise a level is included unless its
- * `thinkingLevelMap` entry (sourced from pi-ai's model catalogue -- see
- * gatewayNativeModel/getModelDirect above, which copy it onto every constructed Model) is
- * explicitly `null`. A level simply absent from the map -- or a map that's absent entirely -- is
- * treated as supported: the catalogue has no opinion about it, not "nothing is supported".
- */
-export function supportedThinkingLevels(model: Model<Api>): ThinkingLevel[] {
-  if (!model.reasoning) return ["off"];
-  const map = model.thinkingLevelMap;
-  if (!map) return [...THINKING_LEVEL_ORDER];
-  return THINKING_LEVEL_ORDER.filter((level) => map[level] !== null);
-}
-
-/**
- * Clamps a requested thinking level to one `model` actually supports (see supportedThinkingLevels).
- * Thin wrapper around workshop-shared's resolveThinkingLevel -- the actual clamping algorithm is
- * shared with the frontend's thinking-level picker (see Overseer.listThinkingLevels() and
- * ChatInterface.tsx), so a level never renders as selected/sent here and unavailable there, or
- * vice versa.
- */
-export function resolveThinkingLevel(model: Model<Api>, requested: ThinkingLevel): ThinkingLevel {
-  return resolveSupportedThinkingLevel(supportedThinkingLevels(model), requested);
-}
-
-/**
  * Converts a resolved thinking level into the value to pass as `AgentLoopConfig.reasoning`. Unlike
  * pi-agent-core's own ThinkingLevel, pi-ai's SimpleStreamOptions.reasoning has no "off" member --
  * pi's stream implementations treat an absent `reasoning` option as "no extended thinking", so
@@ -378,16 +350,21 @@ export function reasoningOption(level: ThinkingLevel): Exclude<ThinkingLevel, "o
 }
 
 /**
- * Same as supportedThinkingLevels(), looked up from an AiModelConfig's provider/model pair instead
- * of a resolved Model<Api> -- for callers (like the thinking-level picker) that only have the
- * config, not a routed handle. A provider/model pi-ai's catalogue doesn't recognize (an unlisted
- * Workers AI model, an Ollama model, ...) gets every level: the catalogue has no opinion, which is
- * not the same as no support.
+ * The thinking levels a model supports, ordered "off" through "max" -- looked up from an
+ * AiModelConfig's provider/model pair instead of a resolved Model<Api>, for callers (like the
+ * thinking-level picker) that only have the config, not a routed handle. Thin wrapper around
+ * pi-ai's own getSupportedThinkingLevels() -- see its notes on which levels a model without a
+ * thinkingLevelMap ends up supporting (not "every level"; e.g. Haiku 4.5 has no map and still
+ * doesn't support xhigh/max). A provider/model pi-ai's catalogue doesn't recognize at all (an
+ * Ollama model, an unlisted Workers AI model, ...) has no Model to ask, so it degrades to "off"
+ * only: we don't know whether the model understands extended thinking, and the safe default is
+ * to not request it (see reasoningOption) rather than guess.
  */
 export function supportedThinkingLevelsForConfig(
     config: Pick<AiModelConfig, "provider" | "model">): ThinkingLevel[] {
   const catalog = catalogModel(config.provider, config.model);
-  return catalog ? supportedThinkingLevels(catalog) : [...THINKING_LEVEL_ORDER];
+  if (!catalog) return ["off"];
+  return getSupportedThinkingLevels(catalog);
 }
 
 /**

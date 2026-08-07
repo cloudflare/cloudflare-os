@@ -4,7 +4,6 @@ import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, A
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { supportedThinkingLevelsForConfig } from "./ai-models.js";
-import { THINKING_LEVEL_ORDER } from "@gadgets/workshop-shared/thinking-level";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import { createWorkshopLogger } from "./observability";
@@ -702,11 +701,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   // Public counterpart to getChatContext() for callers that only need to know which thinking
   // levels a model supports (e.g. to size a picker) -- never returns API keys. An id that doesn't
-  // resolve (a deleted model, one from a since-disabled provider, ...) gets every level: the
-  // deployment has no opinion about it, which is not the same as no support.
+  // resolve at all (a deleted model, one from a since-disabled provider, ...) degrades to "off"
+  // only, same as supportedThinkingLevelsForConfig's own fallback for a model pi-ai's catalogue
+  // doesn't recognize: we don't know anything about it, so the safe default is no choice.
   async listThinkingLevels(modelId: string): Promise<ThinkingLevel[]> {
     let model = this.#resolveAiModel(modelId);
-    return model ? supportedThinkingLevelsForConfig(model.config) : [...THINKING_LEVEL_ORDER];
+    return model ? supportedThinkingLevelsForConfig(model.config) : ["off"];
   }
 
   async getExternalMessageChatContext(existingChatModelId: string | null): Promise<UserChatContext> {

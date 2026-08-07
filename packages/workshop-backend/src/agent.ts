@@ -3,7 +3,7 @@ import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger } from "./observability";
 import * as Y from "yjs";
-import { Type } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, Type } from "@earendil-works/pi-ai";
 import type {
   AssistantMessage, ImageContent, Message, TSchema, TextContent, ThinkingContent, ToolCall,
 } from "@earendil-works/pi-ai";
@@ -17,9 +17,7 @@ import { AgentCatalogSnapshot, formatAlwaysAvailableResourcesPrompt } from "./ag
 import { formatInstanceInstructions } from "./admin-config";
 import type { AiGatewayLogRoute } from "./ai-gateway";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
-import {
-  DEFAULT_THINKING_LEVEL, reasoningOption, resolveThinkingLevel, type ModelHandle,
-} from "./ai-models";
+import { DEFAULT_THINKING_LEVEL, reasoningOption, type ModelHandle } from "./ai-models";
 import {
   buildCompactionState, buildSummaryPrompt, COMPACTION_SYSTEM_PROMPT, estimateProjectionTokens,
   findCompactionBoundary, findProtectedFromSequence, getModelTokenLimits, isCompactionTurn,
@@ -3038,9 +3036,11 @@ export async function runAgent(
       tools: toolList,
     };
 
-    // Clamp the requested thinking level to what this model actually supports (its
-    // thinkingLevelMap may not offer every level -- see resolveThinkingLevel).
-    let resolvedThinkingLevel = resolveThinkingLevel(handle.model, thinkingLevel);
+    // Clamp the requested thinking level to what this model actually supports, using pi-ai's own
+    // clamping (not a hand-rolled equivalent): it knows the real rules, e.g. a model with no
+    // thinkingLevelMap at all (Haiku 4.5) still doesn't support every level, and a model that
+    // cannot be told to disable thinking (Fable 5) clamps "off" up rather than down.
+    let resolvedThinkingLevel = clampThinkingLevel(handle.model, thinkingLevel);
 
     await runAgentLoopContinue(context, {
       model: handle.model,

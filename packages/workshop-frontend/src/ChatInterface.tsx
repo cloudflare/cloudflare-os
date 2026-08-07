@@ -84,7 +84,7 @@ import {
   ThinkingLevel,
 } from "@gadgets/workshop-shared/api";
 import { ActionKind, ResourceDescription } from "@gadgets/workshop-shared/gatekeeper";
-import { resolveThinkingLevel, THINKING_LEVEL_ORDER } from "@gadgets/workshop-shared/thinking-level";
+import { clampThinkingLevel, THINKING_LEVEL_ORDER } from "@gadgets/workshop-shared/thinking-level";
 import {
   parseSlashCommandInput, slashCommandTokenKey, stripSlashCommandToken,
 } from "./components/chat/slash-command-input";
@@ -384,13 +384,15 @@ const THINKING_LEVEL_LABELS: Record<ThinkingLevel, string> = {
  * The thinking level actually shown by the picker and passed to onSend(), given the user's
  * per-chat preference (undefined until they've chosen one for this chat) and the levels the
  * currently selected model supports. The picker's active option and the composer's send call both
- * read from this single expression, so they can never diverge. Clamping reuses the exact same
- * resolveThinkingLevel the backend clamps with (see ai-models.ts), so a level is never shown
- * enabled here and then rejected there, or vice versa. Exported for testing.
+ * read from this single expression, so they can never diverge. Clamping reuses
+ * workshop-shared/thinking-level's clampThinkingLevel, which mirrors pi-ai's own
+ * clampThinkingLevel (the backend clamps with the real one -- see agent.ts -- since pi-ai itself
+ * is backend-only), so a level is never shown enabled here and then rejected there, or vice versa.
+ * Exported for testing.
  */
 export function effectiveThinkingLevel(
     preferred: ThinkingLevel | undefined, supportedLevels: ThinkingLevel[]): ThinkingLevel {
-  return resolveThinkingLevel(supportedLevels, preferred ?? DEFAULT_THINKING_LEVEL);
+  return clampThinkingLevel(supportedLevels, preferred ?? DEFAULT_THINKING_LEVEL);
 }
 
 function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {

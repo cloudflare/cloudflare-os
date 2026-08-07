@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AiChatAuthorInfo, AiModelConfig } from "@gadgets/workshop-shared/api";
 import {
-  getModel, reasoningOption, resolveThinkingLevel, supportedThinkingLevels,
-  supportedThinkingLevelsForConfig, type ModelHandle,
+  getModel, reasoningOption, supportedThinkingLevelsForConfig, type ModelHandle,
 } from "../src/ai-models.js";
 
 // These tests exercise the real pi-ai stack: no module mocks. Routing decisions are asserted on
@@ -436,63 +436,6 @@ describe("PDF attachment bridging", () => {
   }, 15000);
 });
 
-// Only thinkingLevelMap/reasoning vary across these tests; the rest of Model<Api> is filled with
-// arbitrary-but-valid values the functions under test never inspect.
-function fixtureModel(thinkingLevelMap?: Model<Api>["thinkingLevelMap"], reasoning = true): Model<Api> {
-  return {
-    id: "test-model",
-    name: "Test Model",
-    api: "anthropic-messages",
-    provider: "anthropic",
-    baseUrl: "https://example.invalid",
-    reasoning,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 100_000,
-    maxTokens: 4096,
-    thinkingLevelMap,
-  };
-}
-
-describe("resolveThinkingLevel", () => {
-  it("passes a supported level through unchanged", () => {
-    const model = fixtureModel({ high: "high" });
-    expect(resolveThinkingLevel(model, "high")).toBe("high");
-  });
-
-  it("falls back to the highest supported level at or below an explicitly-null level", () => {
-    const model = fixtureModel({ high: null, medium: "medium" });
-    expect(resolveThinkingLevel(model, "high")).toBe("medium");
-  });
-
-  it("keeps walking downward past multiple explicitly-null levels", () => {
-    const model = fixtureModel({ high: null, medium: null, low: "low" });
-    expect(resolveThinkingLevel(model, "high")).toBe("low");
-  });
-
-  it("passes the level through unchanged when the model has no thinkingLevelMap at all", () => {
-    // No map means the catalogue has no opinion, not that nothing is supported -- unlike an
-    // explicit null, this must not be clamped away.
-    const model = fixtureModel(undefined);
-    expect(resolveThinkingLevel(model, "xhigh")).toBe("xhigh");
-  });
-
-  it("treats a level absent from the map (but not the map itself) as supported", () => {
-    const model = fixtureModel({ max: "max" });
-    expect(resolveThinkingLevel(model, "high")).toBe("high");
-  });
-
-  it("respects an explicit off request", () => {
-    const model = fixtureModel({ xhigh: "xhigh", max: "max" });
-    expect(resolveThinkingLevel(model, "off")).toBe("off");
-  });
-
-  it("clamps to off for a model with no reasoning support at all, regardless of its map", () => {
-    const model = fixtureModel({ high: "high" }, false);
-    expect(resolveThinkingLevel(model, "high")).toBe("off");
-  });
-});
-
 describe("reasoningOption", () => {
   it("omits the reasoning option for off", () => {
     expect(reasoningOption("off")).toBeUndefined();
@@ -503,35 +446,77 @@ describe("reasoningOption", () => {
   });
 });
 
-describe("supportedThinkingLevels", () => {
-  it("returns only off for a model with no reasoning support", () => {
-    const model = fixtureModel({ high: "high" }, false);
-    expect(supportedThinkingLevels(model)).toEqual(["off"]);
-  });
+// These exercise pi-ai's own clampThinkingLevel/getSupportedThinkingLevels directly against
+// real cataloged models (constructed the same way agent.ts's runAgent() gets handle.model, via
+// getModel()) -- workshop-backend has no clamping logic of its own to unit test here; the point
+// is to prove our routing correctly threads thinkingLevelMap through to the Model<Api> pi-ai's
+// helpers consume, using models whose real catalogue behavior is known and asymmetric:
+//   - claude-opus-5: thinkingLevelMap = {xhigh, max} -> supports every level, including max.
+//   - claude-haiku-4-5: no thinkingLevelMap at all -> still only off..high (NOT max/xhigh): an
+//     absent map does not mean "every level", contrary to an earlier (incorrect) assumption here.
+//   - claude-fable-5: thinkingLevelMap = {off: null, xhigh, max} -> cannot be told to turn
+//     thinking off at all, so clamping "off" walks *up* to "minimal", not down to nothing.
+describe("thinking-level support and clamping (pi-ai's own helpers)", () => {
+  function modelFor(id: string): Model<Api> {
+    return getModel(env(), { provider: "anthropic", model: id, apiToken: "t" }, INITIATOR).model;
+  }
 
-  it("returns every level for a reasoning model with no thinkingLevelMap", () => {
-    const model = fixtureModel(undefined);
-    expect(supportedThinkingLevels(model))
+  it("opus-5 supports every level and passes max through unclamped", () => {
+    const model = modelFor("claude-opus-5");
+    expect(getSupportedThinkingLevels(model))
         .toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+    expect(clampThinkingLevel(model, "max")).toBe("max");
   });
 
-  it("excludes only the levels explicitly marked null", () => {
-    const model = fixtureModel({ minimal: null, xhigh: null, max: null });
-    expect(supportedThinkingLevels(model)).toEqual(["off", "low", "medium", "high"]);
+  it("haiku-4-5 has no thinkingLevelMap and still clamps max down to high", () => {
+    const model = modelFor("claude-haiku-4-5");
+    expect(getSupportedThinkingLevels(model)).toEqual(["off", "minimal", "low", "medium", "high"]);
+    expect(clampThinkingLevel(model, "max")).toBe("high");
+  });
+
+  it("fable-5 cannot have thinking disabled, so \"off\" clamps up to minimal", () => {
+    const model = modelFor("claude-fable-5");
+    expect(getSupportedThinkingLevels(model)).not.toContain("off");
+    expect(clampThinkingLevel(model, "off")).toBe("minimal");
+  });
+
+  // workshop-shared/thinking-level's clampThinkingLevel reimplements pi-ai's algorithm as a pure
+  // function of a supported-levels list, for the picker (which never has a Model<Api> -- pi-ai is
+  // backend-only). This proves that reimplementation agrees with the real pi-ai clamp, for every
+  // requested level, on every one of these asymmetric real models -- the guarantee the picker
+  // depends on so its displayed/sent level can never diverge from what the backend would choose.
+  it("agrees with workshop-shared's clampThinkingLevel for every level, on every model", async () => {
+    const { clampThinkingLevel: sharedClampThinkingLevel } =
+        await import("@gadgets/workshop-shared/thinking-level");
+    const ALL_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+    for (const id of ["claude-opus-5", "claude-haiku-4-5", "claude-fable-5"]) {
+      const model = modelFor(id);
+      const supported = getSupportedThinkingLevels(model);
+      for (const requested of ALL_LEVELS) {
+        expect(sharedClampThinkingLevel(supported, requested))
+            .toBe(clampThinkingLevel(model, requested));
+      }
+    }
   });
 });
 
 describe("supportedThinkingLevelsForConfig", () => {
-  it("returns every level for a provider/model pi-ai's catalogue doesn't recognize", () => {
-    expect(supportedThinkingLevelsForConfig({ provider: "ollama", model: "made-up-model" }))
+  it("matches pi-ai's own getSupportedThinkingLevels for cataloged models", () => {
+    expect(supportedThinkingLevelsForConfig({ provider: "anthropic", model: "claude-opus-5" }))
         .toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+    expect(supportedThinkingLevelsForConfig({ provider: "anthropic", model: "claude-haiku-4-5" }))
+        .toEqual(["off", "minimal", "low", "medium", "high"]);
+    expect(supportedThinkingLevelsForConfig({ provider: "anthropic", model: "claude-fable-5" }))
+        .not.toContain("off");
   });
 
-  it("looks up a cataloged model's real thinkingLevelMap", () => {
-    // claude-haiku-4-5 has reasoning support but no explicit thinkingLevelMap in pi-ai's
-    // catalogue as of this writing -- i.e. every level is supported.
-    const levels = supportedThinkingLevelsForConfig({ provider: "anthropic", model: "claude-haiku-4-5" });
-    expect(levels).toContain("off");
-    expect(levels).toContain("high");
+  it("degrades to off-only, without throwing, for a model absent from the catalogue", () => {
+    // catalogModel() returns undefined for every Ollama model (and any unrecognized id for other
+    // providers), so there's no Model<Api> to hand to getSupportedThinkingLevels -- we don't know
+    // whether the model understands extended thinking at all, so the safe fallback omits
+    // `reasoning` from the request entirely (see reasoningOption) rather than guessing.
+    expect(() => supportedThinkingLevelsForConfig({ provider: "ollama", model: "llama3" }))
+        .not.toThrow();
+    expect(supportedThinkingLevelsForConfig({ provider: "ollama", model: "llama3" })).toEqual(["off"]);
   });
 });
