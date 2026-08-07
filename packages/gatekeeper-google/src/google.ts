@@ -927,6 +927,15 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       };
     }
 
+    // Reject URLs that don't belong to Gmail before falling through to the default.
+    // Without this check, any URL that doesn't match Docs/Sheets/Calendar/BigQuery
+    // silently receives a Gmail capability, which weakens the resource-URL boundary.
+    if (parsed.hostname !== "mail.google.com") {
+      throw new Error(
+        `Unsupported Google resource URL: ${parsed.hostname}${parsed.pathname}. ` +
+        "Supported resources are Google Docs, Sheets, Calendar, BigQuery, and Gmail.");
+    }
+
     // Default: Gmail
     let props: GmailGatekeeperImplProps = {...this.ctx.props};
 
