@@ -157,6 +157,23 @@ test("worker entries carry the deploy contract", () => {
         namespace_id: "$KV_CONTEXT_COLLECTIONS_ID" });
   assert.deepEqual(context.inputs, []);
 
+  // Ambient gatekeepers are preinstalled on every core deploy; preinstalls must take no
+  // secret inputs (nobody is around to supply them). Both also declare an account-level agent
+  // singleton, so both are install-once.
+  assert.equal(context.preinstall, true);
+  assert.equal(context.singleton, true);
+  assert.equal(workers["gatekeeper-scheduler"].preinstall, true);
+  assert.equal(workers["gatekeeper-scheduler"].singleton, true);
+  assert.deepEqual(workers["gatekeeper-scheduler"].inputs, []);
+  assert.equal(google.preinstall, undefined);
+  assert.equal(google.singleton, undefined);
+  for (const [name, entry] of Object.entries(workers)) {
+    if (entry.preinstall) {
+      assert.ok(entry.installable, `${name}: preinstall requires installable`);
+      assert.deepEqual(entry.inputs, [], `${name}: preinstall requires no inputs`);
+    }
+  }
+
   // Module blobs are content-addressed.
   for (const [name, entry] of Object.entries(workers)) {
     assert.ok(entry.modules.some((m) => m.name === entry.mainModule),

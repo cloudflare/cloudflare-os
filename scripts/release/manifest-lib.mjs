@@ -52,6 +52,20 @@ const NO_DEFAULT_CRED_INPUTS = new Set([
 // instances don't have. The bundle still ships in the release so the entry stays auditable.
 const NOT_INSTALLABLE = new Set(["gatekeeper-email"]);
 
+// Ambient gatekeepers the deploy service installs on every fresh core deploy, server-side with
+// no user interaction. Members must take no inputs of any kind (enforced below): a preinstall
+// has nobody to ask.
+const PREINSTALL = new Set(["gatekeeper-context", "gatekeeper-scheduler"]);
+
+// Gatekeepers that may be installed at most once per instance; the deploy service enforces this
+// at install time. The giveaway is the account declaring an agent singleton
+// (`AccountDescription.singleton` — context's `ContextLibrary`, scheduler's `ScheduleSession`):
+// the Workshop auto-provisions those accounts and folds the singleton into every workspace as an
+// ambient gatekeeper, so a second install would hand every user a duplicate ambient capsule.
+// Independent of PREINSTALL in principle; the two sets coincide today only because every ambient
+// gatekeeper we ship is also preinstalled.
+const SINGLETON = new Set(["gatekeeper-context", "gatekeeper-scheduler"]);
+
 export const DEFAULT_CRED_INPUTS = [
   {
     name: "CLIENT_ID",
@@ -205,12 +219,18 @@ export function buildWorkerEntry({ pkgName, config, mainModule, modules, deployI
         bindings.push({ type: "secret_text", name: input.name, text: `$SECRET(${input.name})` });
       }
     }
+    if (PREINSTALL.has(pkgName) && inputs.length > 0) {
+      throw new Error(`${pkgName} is preinstalled but declares input(s); preinstalls run ` +
+          `with no user interaction, so this release would be broken`);
+    }
   }
 
   return {
     kind,
     ...(kind === "gatekeeper" ? { shortName: shortName(pkgName) } : {}),
     installable,
+    ...(PREINSTALL.has(pkgName) ? { preinstall: true } : {}),
+    ...(SINGLETON.has(pkgName) ? { singleton: true } : {}),
     mainModule,
     modules: modules.map(({ name, type, sha256, size }) => ({
       name, type, sha256, size, r2Key: moduleR2Key(sha256),

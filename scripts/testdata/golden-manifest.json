@@ -188,7 +188,9 @@
           "invocation_logs": false
         }
       },
+      "preinstall": true,
       "shortName": "context",
+      "singleton": true,
       "vars": {
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/context"
       }
@@ -697,7 +699,9 @@
           "invocation_logs": false
         }
       },
+      "preinstall": true,
       "shortName": "scheduler",
+      "singleton": true,
       "vars": {
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/scheduler"
       }
