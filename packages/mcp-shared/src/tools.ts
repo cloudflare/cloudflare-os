@@ -159,9 +159,14 @@ function defuseFences(text: string): string {
 // and headings are neutralized, the text is capped, and the rest is block-quoted.
 function quoteUntrusted(text: string, max: number): string {
   const cleaned = defuseFences(text)
+    // Security fix: strip HTML tags and bidirectional control chars to prevent injection/spoofing
+    .replace(/<[^>]*>/g, "")
+    .replace(/[\u200E-\u200F\u202A-\u202E\u2066-\u2069\u061C]/g, "")
     // Repeated, since one strip leaves `##` as `#` -- still a heading, at heading weight, in the
-    // prompt the approver reads.
+    // prompt the approver reads. Also strip horizontal rules and strikethrough.
     .replace(/^[ \t]*[#>]+[ \t]*/gm, "")
+    .replace(/^[ \t]*(?:-{3,}|\*{3,})[ \t]*/gm, "")
+    .replace(/~~/g, "")
     .trim();
   const clipped = cleaned.length > max ? `${cleaned.slice(0, max)}\u2026` : cleaned;
   return clipped.split("\n").map(line => `> ${line}`).join("\n");

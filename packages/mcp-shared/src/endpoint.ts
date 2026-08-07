@@ -33,12 +33,33 @@ const BLOCKED_HOST_PATTERNS = [
 // spellings of the same address: `http://2130706433/` and `http://0x7f000001/` are both 127.0.0.1,
 // and `[::ffff:127.0.0.1]` is its IPv4-mapped IPv6 form. Each becomes dotted-quad.
 function normalizeHost(hostname: string): string {
+  // Security fix: Strip IPv6 zone IDs and handle IPv4-compatible IPv6 to prevent SSRF bypass
+  hostname = hostname.replace(/(%25|%)[^\]]+\]$/, "]");
+  const compat = /^\[::([^\]]+)\]$/i.exec(hostname);
+  if (compat && compat[1].includes(".")) {
+    hostname = compat[1];
+  }
+
   // `URL` rewrites an IPv4-mapped IPv6 address into hex groups, so `[::ffff:127.0.0.1]` arrives as
   // `[::ffff:7f00:1]` and the dotted-quad spelling is never what we see.
   const mapped = /^\[::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})\]$/i.exec(hostname);
   if (mapped) {
     const [high, low] = [parseInt(mapped[1], 16), parseInt(mapped[2], 16)];
     return [high >>> 8, high & 0xff, low >>> 8, low & 0xff].join(".");
+  }
+
+  // Security fix: Parse each octet individually to handle mixed/hex/octal dotted notation
+  const octets = hostname.split(".");
+  if (octets.length === 4) {
+    const parsedOctets = octets.map(octet => {
+      if (/^0[xX][0-9a-fA-F]+$/.test(octet)) return parseInt(octet, 16);
+      if (/^0[0-7]+$/.test(octet)) return parseInt(octet, 8);
+      if (/^(0|[1-9][0-9]*)$/.test(octet)) return parseInt(octet, 10);
+      return NaN;
+    });
+    if (parsedOctets.every(o => Number.isInteger(o) && o >= 0 && o <= 255)) {
+      return parsedOctets.join(".");
+    }
   }
 
   // A bare integer (decimal, hex, or octal) is a valid IPv4 address to most resolvers.

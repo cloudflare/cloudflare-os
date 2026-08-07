@@ -123,7 +123,10 @@ export default {
     } else if (relPath === "/oauth") {
       const error = url.searchParams.get("error");
       if (error) {
-        return new Response(`${error}: ${url.searchParams.get("error_description")}`);
+        // Security fix: Set Content-Type to text/plain to prevent XSS via reflected parameters
+        return new Response(`${error}: ${url.searchParams.get("error_description")}`, {
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
       }
       const state = url.searchParams.get("state");
       if (!state) return new Response("Error: no 'state' provided");
