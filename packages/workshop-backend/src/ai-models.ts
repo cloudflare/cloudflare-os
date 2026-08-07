@@ -551,6 +551,11 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
       // local proxy may reject an unexpected bearer token): the OpenAI SDK requires *some* key,
       // so give it a placeholder while a null default header deletes the Authorization header
       // the SDK derives from it.
+      // Compat: supportsDeveloperRole off. The Ollama slot is what users point at arbitrary
+      // OpenAI-compatible endpoints (vLLM, LM Studio, self-hosted gateways); pi defaults the
+      // flag on for providers it doesn't recognize, and reasoning: true then sends the system
+      // prompt as role "developer", which strictly-validating endpoints reject. Mirrors
+      // workersAiCompat().
       return makeHandle({
         model: {
           id: config.model,
@@ -563,6 +568,7 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
           input: ["text", "image"],
           cost: ZERO_COST,
           ...window,
+          compat: { supportsDeveloperRole: false },
         },
         ...(config.apiToken === ""
             ? { apiKey: "unused", headers: { Authorization: null } }

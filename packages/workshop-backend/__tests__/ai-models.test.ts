@@ -364,6 +364,39 @@ describe("getModel direct routing (no gateway)", () => {
       expect(handle.model.baseUrl).toBe("http://my-ollama:11434/v1");
     }
   });
+
+  it("pins supportsDeveloperRole off for Ollama's OpenAI-compatible endpoint", () => {
+    // The Ollama slot is what users point at self-hosted OpenAI-compatible endpoints (vLLM,
+    // LM Studio, self-hosted gateways). pi defaults supportsDeveloperRole on for providers it
+    // doesn't recognize, and reasoning: true then sends the system prompt as role "developer",
+    // which strictly-validating endpoints reject with a 400. Mirrors workersAiCompat().
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "ollama",
+      model: "qwen3:8b",
+      apiToken: "",
+      apiUrl: "http://my-ollama:11434",
+    }, INITIATOR);
+
+    expect(handle.model.compat).toMatchObject({ supportsDeveloperRole: false });
+  });
+
+  it("sends the system prompt as role \"system\", not \"developer\", to an Ollama endpoint", async () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "ollama",
+      model: "qwen3:8b",
+      apiToken: "",
+      apiUrl: "http://my-ollama:11434",
+    }, INITIATOR);
+
+    const stream = await handle.stream(handle.model, {
+      systemPrompt: "You are a helpful assistant.",
+      messages: [{ role: "user", content: "hello", timestamp: 0 }],
+    }, { fetch: fetchStub, maxRetries: 0 });
+    await stream.result();
+    expect(capturedRequests.length).toBeGreaterThan(0);
+    const body = JSON.parse(capturedRequests[0].body) as { messages: { role: string }[] };
+    expect(body.messages[0].role).toBe("system");
+  }, 15000);
 });
 
 describe("PDF attachment bridging", () => {
