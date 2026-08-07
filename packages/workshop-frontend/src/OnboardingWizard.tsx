@@ -142,12 +142,27 @@ export default function OnboardingWizard({
     fetchModels()
   }, [fetchModels])
 
+  // Guards handleSeatEnrolled below against double-submission: SeatSignInButtons resets itself to
+  // idle as soon as onEnrolled is called, before the addModel round trip below has resolved, so
+  // without this a second click could add the same model twice.
+  const [addingSeatModel, setAddingSeatModel] = useState(false)
+
   // Wires a completed subscription-seat sign-in straight into the model list. Unlike
   // AddModelModal, this step has no review form to hand the enrollment off to, so it enrolls and
   // adds the seat's first model automatically, then reloads models and selects it.
   const handleSeatEnrolled = async (provider: AiModelProvider, handle: string, seatModels: string[], seatApiUrl: string) => {
+    if (addingSeatModel) return
     const modelId = seatModels[0]
-    if (!modelId) return
+    if (!modelId) {
+      // Realistic, not hypothetical: some providers (e.g. OpenAI's model-listing path) can
+      // legitimately return no models for a seat that otherwise signed in fine.
+      toasts.add({
+        title: 'Signed in, but no models were found for this subscription. Add one manually below.',
+        variant: 'error',
+      })
+      return
+    }
+    setAddingSeatModel(true)
     try {
       await authenticatedApi.addModel(
         { type: 'agent', id: modelId, name: modelId },
@@ -159,6 +174,8 @@ export default function OnboardingWizard({
     } catch (err) {
       console.error('Failed to add model from seat sign-in:', err)
       toasts.add({ title: 'Failed to add model', variant: 'error' })
+    } finally {
+      setAddingSeatModel(false)
     }
   }
 
