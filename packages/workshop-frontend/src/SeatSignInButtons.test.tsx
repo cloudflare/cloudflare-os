@@ -89,12 +89,16 @@ describe('SeatSignInButtons', () => {
     container = undefined
   })
 
-  async function render(api: RpcStub<AuthenticatedApi>, onEnrolled = vi.fn()) {
+  async function render(
+    api: RpcStub<AuthenticatedApi>, onEnrolled = vi.fn(), onActiveChange?: (active: boolean) => void,
+  ) {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
     await act(async () => {
-      root!.render(<SeatSignInButtons authenticatedApi={api} onEnrolled={onEnrolled} />)
+      root!.render(
+        <SeatSignInButtons authenticatedApi={api} onEnrolled={onEnrolled} onActiveChange={onActiveChange} />,
+      )
     })
     return { rendered: container, onEnrolled }
   }
@@ -325,5 +329,42 @@ describe('SeatSignInButtons', () => {
 
     await act(async () => vi.advanceTimersByTimeAsync(30_000))
     expect(completeSeatAuth).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports active once a provider is clicked, and inactive again after Cancel', async () => {
+    const startSeatAuth = vi.fn<(provider: SeatProvider) => Promise<SeatStartResult>>(async () => ({
+      enrollId: 'enroll-1',
+      kind: 'authorize_url',
+      url: 'https://console.anthropic.com/authorize',
+    }))
+    const onActiveChange = vi.fn<(active: boolean) => void>()
+    const { rendered } = await render(fakeApi({ startSeatAuth }), vi.fn(), onActiveChange)
+
+    // Starts inactive, so a parent mounting fresh doesn't have to assume the initial state.
+    expect(onActiveChange).toHaveBeenLastCalledWith(false)
+    onActiveChange.mockClear()
+
+    await click(button(rendered, 'Sign in with Claude subscription'))
+    expect(onActiveChange).toHaveBeenCalledWith(true)
+    expect(onActiveChange).not.toHaveBeenCalledWith(false)
+
+    await click(button(rendered, 'Cancel'))
+    expect(onActiveChange).toHaveBeenLastCalledWith(false)
+  })
+
+  it('reports inactive again when starting the flow fails (error-and-reset)', async () => {
+    const startSeatAuth = vi.fn<(provider: SeatProvider) => Promise<SeatStartResult>>(async () => {
+      throw new Error('network blip')
+    })
+    const onActiveChange = vi.fn<(active: boolean) => void>()
+    const { rendered } = await render(fakeApi({ startSeatAuth }), vi.fn(), onActiveChange)
+    onActiveChange.mockClear()
+
+    await click(button(rendered, 'Sign in with Claude subscription'))
+
+    // Goes active while starting, then back to inactive once the failure resets to idle -- a
+    // consumer must not be left with the form stuck disabled after a failed attempt.
+    expect(onActiveChange).toHaveBeenCalledWith(true)
+    expect(onActiveChange).toHaveBeenLastCalledWith(false)
   })
 })

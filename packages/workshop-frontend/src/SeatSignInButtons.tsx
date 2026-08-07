@@ -9,6 +9,12 @@ interface SeatSignInButtonsProps {
   // Fires once enrollment succeeds. The handle is a bearer credential for the user's
   // subscription — callers must store it, never display it.
   onEnrolled: (provider: SeatProvider, handle: string, models: string[], apiUrl: string) => void
+  // Fires whenever the walkthrough leaves or returns to the idle step: true as soon as a provider
+  // button is clicked, false again on cancel, completion, or an error that resets back to idle.
+  // Lets a parent disable other controls that would otherwise be discarded mid-flow.
+  onActiveChange?: (active: boolean) => void
+  // Disables the provider buttons, e.g. while a separate manual-entry submission is in flight.
+  disabled?: boolean
 }
 
 const PROVIDER_LABELS: Record<SeatProvider, string> = {
@@ -30,7 +36,7 @@ type Step =
 // Walks the user through enrolling an AI-subscription seat: pick a provider, open its consent
 // flow, then either paste back the code (Anthropic) or wait while we poll (OpenAI). Never renders
 // the resulting handle — it's a bearer credential, so it only ever flows up via `onEnrolled`.
-export default function SeatSignInButtons({ authenticatedApi, onEnrolled }: SeatSignInButtonsProps) {
+export default function SeatSignInButtons({ authenticatedApi, onEnrolled, onActiveChange, disabled }: SeatSignInButtonsProps) {
   const [step, setStep] = useState<Step>({ kind: 'idle' })
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -41,6 +47,13 @@ export default function SeatSignInButtons({ authenticatedApi, onEnrolled }: Seat
     mountedRef.current = true
     return () => { mountedRef.current = false }
   }, [])
+
+  // Surfaces the idle/non-idle transition to the parent — every path back to idle (cancel,
+  // completion via finish(), or the error resets in start()/the poll loop) goes through
+  // setStep({ kind: 'idle' }), so this effect alone covers all of them.
+  useEffect(() => {
+    onActiveChange?.(step.kind !== 'idle')
+  }, [step.kind, onActiveChange])
 
   const finish = (result: SeatCompleteResult, provider: SeatProvider): boolean => {
     if (result.status !== 'complete') return false
@@ -146,7 +159,7 @@ export default function SeatSignInButtons({ authenticatedApi, onEnrolled }: Seat
                 className="w-full justify-center"
                 onClick={() => start(provider)}
                 loading={busy && step.kind === 'starting' && step.provider === provider}
-                disabled={busy}
+                disabled={busy || disabled}
               >
                 {PROVIDER_LABELS[provider]}
               </Button>

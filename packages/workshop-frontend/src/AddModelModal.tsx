@@ -106,6 +106,10 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   // Guards handleSeatEnrolled below against double-submission: SeatSignInButtons resets itself to
   // idle as soon as onEnrolled is called, before the addModel round trips below have resolved.
   const [addingSeatModels, setAddingSeatModels] = useState(false)
+  // Mirrors whether SeatSignInButtons is mid-walkthrough (past its idle step). Used, together with
+  // addingSeatModels, to disable the manual-entry controls below — they aren't used by the seat
+  // path and any values typed into them would just be discarded once sign-in completes.
+  const [signInActive, setSignInActive] = useState(false)
 
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -130,6 +134,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       setApiUrl('')
       setErrors({})
       setAdvancedOpen(false)
+      setSignInActive(false)
     }
   }, [visible])
 
@@ -275,6 +280,9 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const isOllama = selection?.provider === 'ollama'
   const isCloudflare = selection?.provider === 'cloudflare'
   const showCredentials = !gatewayMode
+  // The manual path shares no state with the seat path, so while either a sign-in is underway or
+  // its models are still being added, its controls would just be filled in for nothing.
+  const manualDisabled = signInActive || addingSeatModels
 
   // Group options by provider for rendering with visual separators.
   const groupedOptions: { provider: string; items: typeof options }[] = []
@@ -306,7 +314,12 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
                 Adding your models...
               </div>
             ) : (
-              <SeatSignInButtons authenticatedApi={authenticatedApi} onEnrolled={handleSeatEnrolled} />
+              <SeatSignInButtons
+                authenticatedApi={authenticatedApi}
+                onEnrolled={handleSeatEnrolled}
+                onActiveChange={setSignInActive}
+                disabled={loading}
+              />
             )
           )}
 
@@ -318,6 +331,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
             value={selectValue}
             onValueChange={(v) => handleModelSelect(v as string)}
             error={errors.selection}
+            disabled={manualDisabled}
+            description={manualDisabled ? 'Manual setup is unavailable while a sign-in is in progress.' : undefined}
             renderValue={(v) => {
               const opt = options.find(o => o.value === v)
               return opt?.label ?? String(v)
@@ -351,6 +366,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
                 onChange={(e) => { setModelId(e.target.value); setErrors(prev => ({ ...prev, modelId: '' })) }}
                 error={errors.modelId}
                 variant={errors.modelId ? 'error' : 'default'}
+                disabled={manualDisabled}
               />
 
               <Input
@@ -361,6 +377,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
                 onChange={(e) => { setDisplayName(e.target.value); setErrors(prev => ({ ...prev, displayName: '' })) }}
                 error={errors.displayName}
                 variant={errors.displayName ? 'error' : 'default'}
+                disabled={manualDisabled}
               />
             </>
           )}
@@ -375,6 +392,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
               onChange={(e) => { setAccountId(e.target.value); setErrors(prev => ({ ...prev, accountId: '' })) }}
               error={errors.accountId}
               variant={errors.accountId ? 'error' : 'default'}
+              disabled={manualDisabled}
             />
           )}
 
@@ -394,6 +412,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
               onValueChange={(v) => { setApiToken(v); setErrors(prev => ({ ...prev, apiToken: '' })) }}
               error={errors.apiToken}
               variant={errors.apiToken ? 'error' : 'default'}
+              disabled={manualDisabled}
             />
           )}
 
@@ -407,6 +426,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
               onChange={(e) => { setApiUrl(e.target.value); setErrors(prev => ({ ...prev, apiUrl: '' })) }}
               error={errors.apiUrl}
               variant={errors.apiUrl ? 'error' : 'default'}
+              disabled={manualDisabled}
             />
           )}
 
@@ -414,9 +434,11 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
           {showCredentials && selection && !isOllama && !isCloudflare && (
             <Collapsible.Root
               open={advancedOpen}
-              onOpenChange={setAdvancedOpen}
+              onOpenChange={(open) => { if (!manualDisabled) setAdvancedOpen(open) }}
             >
-              <Collapsible.DefaultTrigger>Advanced Settings</Collapsible.DefaultTrigger>
+              <Collapsible.DefaultTrigger className={manualDisabled ? 'opacity-50 pointer-events-none' : undefined}>
+                Advanced Settings
+              </Collapsible.DefaultTrigger>
               <Collapsible.DefaultPanel>
                 <Input
                   label="API URL"
@@ -424,6 +446,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
                   description="Override the default API endpoint (useful for proxies like Cloudflare AI Gateway)"
                   value={apiUrl}
                   onChange={(e) => setApiUrl(e.target.value)}
+                  disabled={manualDisabled}
                 />
               </Collapsible.DefaultPanel>
             </Collapsible.Root>

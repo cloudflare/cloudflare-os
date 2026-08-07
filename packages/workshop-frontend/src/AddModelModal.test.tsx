@@ -32,15 +32,43 @@ vi.mock('@cloudflare/kumo', () => {
         render({ 'aria-label': 'Close' }),
     },
   )
+  // Select/Option are mocked interactive enough to pick an option (via a data-option-value marker
+  // and click delegation) so tests can drive the modal into the "custom model" state, where the
+  // Model ID / Display Name / API Token fields render.
   const Select = Object.assign(
-    ({ children }: { children: ReactNode }) => <div>{children}</div>,
-    { Option: ({ children }: { children: ReactNode }) => <div>{children}</div> },
+    (
+      { children, label, disabled, description, onValueChange }: {
+        children: ReactNode, label?: ReactNode, disabled?: boolean, description?: ReactNode,
+        onValueChange?: (value: unknown) => void,
+      },
+    ) => (
+      <div
+        data-select
+        aria-disabled={disabled ? 'true' : undefined}
+        onClick={(e) => {
+          if (disabled) return
+          const target = (e.target as HTMLElement).closest('[data-option-value]') as HTMLElement | null
+          if (target) onValueChange?.(target.dataset.optionValue)
+        }}
+      >
+        {label}
+        {description && <span>{description}</span>}
+        {children}
+      </div>
+    ),
+    {
+      Option: ({ children, value }: { children: ReactNode, value: unknown }) => (
+        <div data-option-value={String(value)}>{children}</div>
+      ),
+    },
   )
   const Collapsible = Object.assign(
     ({ children }: { children: ReactNode }) => <div>{children}</div>,
     {
       Root: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-      DefaultTrigger: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+      DefaultTrigger: ({ children, className }: { children: ReactNode, className?: string }) => (
+        <div className={className}>{children}</div>
+      ),
       DefaultPanel: ({ children }: { children: ReactNode }) => <div>{children}</div>,
     },
   )
@@ -57,41 +85,51 @@ vi.mock('@cloudflare/kumo', () => {
       </button>
     ),
     Input: (
-      { label, value, onChange }: {
-        label: string, value: string, onChange: (e: { target: { value: string } }) => void,
+      { label, value, onChange, disabled }: {
+        label: string, value: string, onChange: (e: { target: { value: string } }) => void, disabled?: boolean,
       },
     ) => (
       <label>
         {label}
-        <input aria-label={label} value={value} onChange={onChange} />
+        <input aria-label={label} value={value} onChange={onChange} disabled={disabled} />
       </label>
     ),
     SensitiveInput: (
-      { label, value, onValueChange }: {
-        label: string, value: string, onValueChange: (v: string) => void,
+      { label, value, onValueChange, disabled }: {
+        label: string, value: string, onValueChange: (v: string) => void, disabled?: boolean,
       },
     ) => (
       <label>
         {label}
-        <input aria-label={label} value={value} onChange={(e) => onValueChange(e.target.value)} />
+        <input aria-label={label} value={value} onChange={(e) => onValueChange(e.target.value)} disabled={disabled} />
       </label>
     ),
     useKumoToastManager: () => ({ add: toastAdd }),
   }
 })
 
+// The two extra buttons let tests drive onActiveChange directly, standing in for a real sign-in
+// walkthrough leaving/returning to its idle step -- that transition logic is already covered by
+// SeatSignInButtons.test.tsx, so here we only need to simulate it.
 vi.mock('./SeatSignInButtons', () => ({
   default: (
-    { onEnrolled }: {
+    { onEnrolled, onActiveChange, disabled }: {
       onEnrolled: (provider: AiModelProvider, handle: string, models: string[], apiUrl: string) => void,
+      onActiveChange?: (active: boolean) => void,
+      disabled?: boolean,
     },
   ) => (
-    <button
-      type="button"
-      onClick={() => onEnrolled(seatSignIn.provider, seatSignIn.handle, seatSignIn.models, seatSignIn.apiUrl)}
-    >
-      Sign in with Claude subscription
-    </button>
+    <div>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => onEnrolled(seatSignIn.provider, seatSignIn.handle, seatSignIn.models, seatSignIn.apiUrl)}
+      >
+        Sign in with Claude subscription
+      </button>
+      <button type="button" onClick={() => onActiveChange?.(true)}>Simulate sign-in start</button>
+      <button type="button" onClick={() => onActiveChange?.(false)}>Simulate sign-in reset</button>
+    </div>
   ),
 }))
 
@@ -118,6 +156,31 @@ function button(rendered: HTMLElement, label: string): HTMLButtonElement {
     candidate.textContent?.trim() === label)
   if (!found) throw new Error(`No button labelled "${label}"`)
   return found
+}
+
+function selectOption(rendered: HTMLElement, label: string) {
+  const found = [...rendered.querySelectorAll('[data-option-value]')].find(candidate =>
+    candidate.textContent?.trim() === label)
+  if (!found) throw new Error(`No option labelled "${label}"`)
+  return click(found)
+}
+
+function input(rendered: HTMLElement, label: string): HTMLInputElement {
+  const found = [...rendered.querySelectorAll('input')].find(candidate =>
+    candidate.getAttribute('aria-label') === label)
+  if (!found) throw new Error(`No input labelled "${label}"`)
+  return found
+}
+
+// React tracks controlled-input values through the native setter, so a plain `el.value = ...`
+// gets silently reverted -- go through the prototype setter directly, as SeatSignInButtons.test.tsx
+// does for the same reason.
+async function typeInto(el: HTMLInputElement, value: string) {
+  const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+  await act(async () => {
+    setValue.call(el, value)
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+  })
 }
 
 describe('AddModelModal seat enrollment', () => {
@@ -261,6 +324,64 @@ describe('AddModelModal seat enrollment', () => {
     expect(addModel).toHaveBeenCalledTimes(1)
 
     // Let the pending calls resolve so afterEach can unmount cleanly.
+    await act(async () => { first.resolve() })
+  })
+
+  it('disables the manual controls once a sign-in becomes active, and re-enables them if it fails and resets', async () => {
+    const addModel = vi.fn(async () => {})
+    const { rendered } = await render(addModel as unknown as RpcStub<AuthenticatedApi>['addModel'])
+
+    // Pick the custom-model option so the Model ID / Display Name / API Token fields are all on
+    // screen, alongside the Select and the Advanced Settings trigger.
+    await selectOption(rendered, 'Other Anthropic...')
+
+    const select = rendered.querySelector('[data-select]')!
+    expect(select.getAttribute('aria-disabled')).toBeNull()
+    expect(input(rendered, 'Model ID').disabled).toBe(false)
+    expect(input(rendered, 'Display Name').disabled).toBe(false)
+    expect(input(rendered, 'API Token').disabled).toBe(false)
+    expect(button(rendered, 'Cancel').disabled).toBe(false)
+    expect(rendered.textContent).not.toContain('Manual setup is unavailable')
+
+    await click(button(rendered, 'Simulate sign-in start'))
+
+    expect(select.getAttribute('aria-disabled')).toBe('true')
+    expect(input(rendered, 'Model ID').disabled).toBe(true)
+    expect(input(rendered, 'Display Name').disabled).toBe(true)
+    expect(input(rendered, 'API Token').disabled).toBe(true)
+    expect(rendered.textContent).toContain('Manual setup is unavailable')
+    // Cancel must stay usable throughout -- a user abandoning a sign-in still has to be able to
+    // close the dialog.
+    expect(button(rendered, 'Cancel').disabled).toBe(false)
+
+    // A failed sign-in resets SeatSignInButtons back to idle, which reports inactive again.
+    await click(button(rendered, 'Simulate sign-in reset'))
+
+    expect(select.getAttribute('aria-disabled')).toBeNull()
+    expect(input(rendered, 'Model ID').disabled).toBe(false)
+    expect(input(rendered, 'Display Name').disabled).toBe(false)
+    expect(input(rendered, 'API Token').disabled).toBe(false)
+    expect(button(rendered, 'Cancel').disabled).toBe(false)
+    expect(rendered.textContent).not.toContain('Manual setup is unavailable')
+    expect(addModel).not.toHaveBeenCalled()
+  })
+
+  it('disables the seat sign-in buttons while a manual submission is in flight', async () => {
+    const first = deferred<void>()
+    const addModel = vi.fn(() => first.promise)
+    const { rendered } = await render(addModel as unknown as RpcStub<AuthenticatedApi>['addModel'])
+
+    await selectOption(rendered, 'Other Anthropic...')
+    await typeInto(input(rendered, 'Model ID'), 'my-model')
+    await typeInto(input(rendered, 'Display Name'), 'My Model')
+    await typeInto(input(rendered, 'API Token'), 'sk-ant-test')
+
+    expect(button(rendered, 'Sign in with Claude subscription').disabled).toBe(false)
+
+    await click(button(rendered, 'Add Model'))
+
+    expect(button(rendered, 'Sign in with Claude subscription').disabled).toBe(true)
+
     await act(async () => { first.resolve() })
   })
 })
