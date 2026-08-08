@@ -4,6 +4,10 @@ interface __BaseEnv_Env {
 	BASE_URL?: string;
 	MCP_ALLOW_INSECURE?: string;
 	MCP_CLIENT_NAME?: string;
+	MCP_SERVER_URL?: string;
+	MCP_SERVER_NAME?: string;
+	MCP_SERVER_ID?: string;
+	MCP_SERVICE?: Fetcher;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {

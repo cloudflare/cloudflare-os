@@ -64,6 +64,7 @@ import {
 import { connectFormHtml } from "./connect-form.js";
 import { serverIdFromEndpoint } from "./server-id.js";
 import { mcpResourceFor, mcpResources } from "./resources.js";
+import { readFixedMcpService } from "./deployment.js";
 import type { ConfiguratorUIOption } from "@gadgets/configurator-ui";
 import { MCP_BASE_TYPES } from "@gadgets/mcp-shared/base-types";
 import MCP_LOGO_SVG from "./mcp-logo.svg";
@@ -168,15 +169,21 @@ async function continueConnect(
 @validateRpc()
 export class GatekeeperVendor extends WorkerEntrypoint<Env> implements GatekeeperVendorIface {
   async describe(): Promise<VendorDescription> {
+    const fixed = readFixedMcpService(this.env);
     return {
-      displayName: "MCP Server",
+      displayName: fixed?.name ?? "MCP Server",
       url: "https://modelcontextprotocol.io",
       logo: MCP_AVATAR,
       color: "#1a1d21",
-      tagline: "Connect any Model Context Protocol server",
-      description:
-        "Connect a Model Context Protocol server and use its tools from a Gadget. Reads happen " +
-        "straight away. Anything that writes waits for your approval.",
+      tagline: fixed
+        ? "Company capabilities, connected automatically"
+        : "Connect any Model Context Protocol server",
+      description: fixed
+        ? `${fixed.name} is available through an internal Workers service binding. Reads happen ` +
+          "straight away. Anything that writes waits for your approval."
+        : "Connect a Model Context Protocol server and use its tools from a Gadget. Reads happen " +
+          "straight away. Anything that writes waits for your approval.",
+      ...(fixed ? { autoProvisionsAccount: true, providesAuth: false } : {}),
     };
   }
 
@@ -184,6 +191,9 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     callback: Fetcher<GatekeeperConnectCallback>,
     _options?: GatekeeperConnectOptions,
   ): Promise<{ url: string }> {
+    if (readFixedMcpService(this.env)) {
+      throw new Error("This MCP service is connected automatically and has no authorization flow.");
+    }
     const accountId = this.ctx.exports.McpAccount.newUniqueId();
     const initiationNonce = generateNonce();
     await this.ctx.exports.McpAccount.get(accountId).setCallback(callback, initiationNonce);
@@ -191,6 +201,8 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
+    const fixed = readFixedMcpService(this.env);
+    if (fixed) return [fixed.resource];
     return mcpResources(fetchOptions(this.env).allowInsecure === true);
   }
 
@@ -198,6 +210,17 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     // Vendor-level types are the transport-neutral base only; the per-tool `callTool` overloads are
     // generated per resource in `McpGatekeeperImpl.getTypeScriptTypes()`.
     return MCP_BASE_TYPES;
+  }
+
+  @skipRpcValidation()
+  async createAccount(): Promise<Fetcher<GatekeeperUser>> {
+    const fixed = readFixedMcpService(this.env);
+    if (!fixed) throw new Error("This MCP connector requires an explicit account connection.");
+    const accountId = this.ctx.exports.McpAccount.newUniqueId();
+    const account = this.ctx.exports.McpAccount.get(accountId);
+    await account.provision(fixed.server);
+    const props: McpGatekeeperUserProps = { accountObjectId: accountId.toString() };
+    return this.ctx.exports.GatekeeperUserImpl({ props }) as unknown as Fetcher<GatekeeperUser>;
   }
 }
 
@@ -229,6 +252,10 @@ export class McpAccount extends McpAccountBase<Env> {
   async isAwaitingSelection(initiationNonce: string): Promise<boolean> {
     return this.awaitingSelection(initiationNonce);
   }
+
+  async provision(server: ConnectedServer): Promise<void> {
+    await this.provisionService(server);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +276,8 @@ export class GatekeeperUserImpl
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
+    const fixed = readFixedMcpService(this.env);
+    if (fixed) return [fixed.resource];
     return mcpResources(fetchOptions(this.env).allowInsecure === true);
   }
 
@@ -257,6 +286,13 @@ export class GatekeeperUserImpl
     resource: SupportedResource;
   }> {
     const server = await this.#account().getServer();
+
+    const fixed = readFixedMcpService(this.env);
+    if (fixed && !sameEndpoint(server.endpoint, fixed.endpoint)) {
+      throw new Error(
+        `This connection is for ${server.endpoint}, but the deployment now provides ` +
+        `${fixed.endpoint}. Replace the connection.`);
+    }
 
     // The account is bound to one endpoint, so a resource URL naming anything else is not this
     // account's to grant, and the protocol-specific resource pattern matches any URL so this is the whole
@@ -300,6 +336,13 @@ export class GatekeeperUserImpl
       iframeHtml: MCP_SERVER_CONFIGURATOR_HTML,
       ui: new RpcStub(new McpServerConfiguratorUI(this.env, this.#account())),
     };
+  }
+
+  async reconnect(): Promise<{ url: string }> {
+    if (readFixedMcpService(this.env)) {
+      throw new Error("This MCP service binding has no credentials to reconnect.");
+    }
+    return super.reconnect();
   }
 
   @skipRpcValidation()

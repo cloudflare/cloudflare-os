@@ -24,7 +24,12 @@ import {
 } from "@modelcontextprotocol/client";
 
 import { McpAuthRequiredError, McpClient, type McpServerInfo } from "./client.js";
-import { clientName, type ConnectionEnv, type McpConnection } from "./connection.js";
+import {
+  clientName,
+  connectionFetch,
+  type ConnectionEnv,
+  type McpConnection,
+} from "./connection.js";
 import {
   ACCESS_TOKEN_SAFETY_MS,
   CONNECT_TIMEOUT_MS,
@@ -371,7 +376,13 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     server: ConnectedServer, accessToken: string | null, generation: number,
   ): Promise<McpServerInfo> {
     const token = accessToken ?? (server.auth === "token" ? this.staticToken(server) : null);
-    const client = new McpClient(server.endpoint, async () => token, null, this.fetchOptions());
+    const client = new McpClient(
+      server.endpoint,
+      async () => token,
+      null,
+      this.fetchOptions(),
+      connectionFetch(this.env),
+    );
     const info = await client.initialize(clientName(this.env));
     // A newer attempt may have started while initialize was in flight. Its session belongs to that
     // attempt, not this response, so only the captured generation may populate the cache.
@@ -379,6 +390,47 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       this.ctx.storage.kv.put("mcpSessionId", client.sessionId);
     }
     return info;
+  }
+
+  /**
+   * Provisions an account for a deployment-owned Worker service binding.
+   *
+   * The service binding itself is the permission. There is no browser connect flow, bearer token,
+   * or OAuth callback. The MCP initialize call still runs before the account is returned so a bad
+   * target cannot become a visible but unusable connection.
+   */
+  protected async provisionService(server: ConnectedServer): Promise<void> {
+    if (!this.env.MCP_SERVICE) {
+      throw new Error("This MCP deployment has no service binding configured.");
+    }
+    const existing = this.server();
+    if (existing) {
+      if (!sameEndpoint(existing.endpoint, server.endpoint)) {
+        throw new Error("This MCP service account is already provisioned for another endpoint.");
+      }
+      return;
+    }
+
+    const generation = this.advanceConnectionGeneration();
+    const connected = { ...server, auth: "none" as const };
+    this.ctx.storage.kv.put("server", connected);
+    try {
+      await this.probe(connected, null, generation);
+      if (!this.isCurrentConnection(connected, generation)) {
+        throw new Error("This MCP service connection changed while it was being provisioned.");
+      }
+      this.ctx.storage.kv.put("connected", true);
+      this.log().info("service binding provisioned", {
+        event: "connect.service.provisioned",
+        serverId: connected.serverId,
+        serverHost: hostOf(connected.endpoint),
+        provenance: connected.provenance,
+      });
+    } catch (error) {
+      this.ctx.storage.kv.delete("server");
+      this.ctx.storage.kv.delete("mcpSessionId");
+      throw error;
+    }
   }
 
   private oauthProvider(

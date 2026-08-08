@@ -7,7 +7,13 @@
 // landed. A write is left to fail as outcome-unknown; its approved action is closed, and a person
 // must deliberately stage a new one after checking whether the first took effect.
 
-import { McpAuthRequiredError, McpClient, McpSessionExpiredError, type ToolCatalog }
+import {
+  McpAuthRequiredError,
+  McpClient,
+  McpSessionExpiredError,
+  type McpFetch,
+  type ToolCatalog,
+}
   from "./client.js";
 import { fetchOptions, type InsecureEnv } from "./fetch.js";
 import { MAX_TOOLS_PER_SERVER } from "./tools.js";
@@ -16,6 +22,9 @@ import { MAX_TOOLS_PER_SERVER } from "./tools.js";
 export type ConnectionEnv = InsecureEnv & {
   // Name this deployment reports to MCP servers during `initialize`.
   MCP_CLIENT_NAME?: string;
+  // Optional internal transport. When present, MCP requests go to this Worker service binding
+  // instead of the public Internet. The URL remains a stable resource identifier and request path.
+  MCP_SERVICE?: Fetcher;
 };
 
 export type WithClientOptions = {
@@ -52,6 +61,12 @@ export function clientName(env: ConnectionEnv): string {
   return env.MCP_CLIENT_NAME ?? "Gadgets";
 }
 
+/** Selects the standard guarded HTTP transport or a credential-free Workers service binding. */
+export function connectionFetch(env: ConnectionEnv): McpFetch | undefined {
+  if (!env.MCP_SERVICE) return undefined;
+  return (url, init) => env.MCP_SERVICE!.fetch(new Request(url, init));
+}
+
 // Runs `fn` against an initialized client for `endpoint`, using the account's credentials.
 export async function withClient<T>(
   env: ConnectionEnv,
@@ -64,7 +79,12 @@ export async function withClient<T>(
   // valid here stays valid for the handful of requests a single `withClient` makes.
   const { authorization, sessionId, generation } = await account.getConnection(endpoint);
   const client = new McpClient(
-    endpoint, async () => authorization, sessionId, fetchOptions(env));
+    endpoint,
+    async () => authorization,
+    sessionId,
+    fetchOptions(env),
+    connectionFetch(env),
+  );
 
   const run = async (): Promise<T> => {
     const result = await fn(client);

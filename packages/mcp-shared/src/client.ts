@@ -287,12 +287,18 @@ function clampTool(tool: McpWireTool): McpTool {
 // Bearer token supplier; returns null for servers that need no authorization.
 export type AuthorizationProvider = () => Promise<string | null>;
 
+// Request transport used by the client. Remote MCP connectors use guardedFetch; a deployment may
+// instead supply a Workers service binding transport so an internal server never needs a public
+// URL or an authentication credential.
+export type McpFetch = (url: string, init: RequestInit) => Promise<Response>;
+
 // A stateless-per-instance MCP client. Construct one per operation; the only state worth keeping
 // across calls is the transport session id, which the caller owns (see `sessionId`).
 export class McpClient {
   #endpoint: string;
   #getAuthorization: AuthorizationProvider;
   #fetchOptions: FetchOptions;
+  #fetch: McpFetch;
   #requestId = 0;
 
   // Transport session id, assigned by the server during `initialize`. Persist and pass it back.
@@ -303,11 +309,13 @@ export class McpClient {
     getAuthorization: AuthorizationProvider,
     sessionId?: string | null,
     fetchOptions: FetchOptions = {},
+    fetcher?: McpFetch,
   ) {
     this.#endpoint = endpoint;
     this.#getAuthorization = getAuthorization;
     this.sessionId = sessionId ?? null;
     this.#fetchOptions = fetchOptions;
+    this.#fetch = fetcher ?? ((url, init) => guardedFetch(url, init, this.#fetchOptions));
   }
 
   // The credential most recently sent, kept only so it can be recognised if it comes back. See
@@ -328,11 +336,11 @@ export class McpClient {
   }
 
   async #post(body: unknown): Promise<Response> {
-    const response = await guardedFetch(this.#endpoint, {
+    const response = await this.#fetch(this.#endpoint, {
       method: "POST",
       headers: await this.#headers(),
       body: JSON.stringify(body),
-    }, this.#fetchOptions);
+    });
 
     // Only 401 means the credentials are the problem. A 403 is an authenticated caller refused this
     // particular tool; treating it as an auth failure would mark the account expired and prompt a
