@@ -83,6 +83,12 @@ declare global {
       // Minimum connected-account balance (USD) to proceed via BYOK. Defaults to
       // MINIMUM_CLOUDFLARE_BALANCE.
       MINIMUM_CLOUDFLARE_BALANCE?: string;
+
+      // Moonshot AI provider (Kimi). The workshop hits api.moonshot.ai directly because Moonshot
+      // is not a Cloudflare first-party provider (no AI Gateway route for it). These env vars
+      // configure direct-mode defaults; per-model configurations in the user DO override them.
+      MOONSHOT_API_KEY?: string;
+      MOONSHOT_API_URL?: string;
     }
   }
 }
