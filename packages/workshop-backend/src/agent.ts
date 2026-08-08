@@ -1,5 +1,5 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
-import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
+import { chatAttachmentModelParts } from './chat-attachment-parts';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger } from "./observability";
 import * as Y from "yjs";
@@ -1453,39 +1453,8 @@ export async function runAgent(
               if (content) parts.push({type: "text", text: content});
               let attachmentParts = await Promise.all(msg.attachments.map(
                   async (attachment): Promise<(TextContent | ImageContent)[]> => {
-                let filename = attachment.name ? ` (${attachment.name})` : "";
                 let data = await hooks.getChatAttachmentData(chatId, attachment.id);
-                if (attachment.mimeType.startsWith("image/")) {
-                  return [{
-                    type: "image",
-                    data: data.toBase64(),
-                    mimeType: attachment.mimeType,
-                  }];
-                } else if (isTextLikeAttachmentMimeType(attachment.mimeType)) {
-                  return [{
-                    type: "text",
-                    text: `\n\n[Attached text file${filename}]\n${new TextDecoder().decode(data)}`,
-                  }];
-                } else if (attachment.mimeType === PDF_MIME_TYPE &&
-                           modelApiSupportsPdfAttachments(handle.model.api)) {
-                  // pi has no file/document content part, so a PDF rides an ImageContent part;
-                  // the model handle rewrites it into the provider's native document block just
-                  // before the request goes out (see chat-attachment-pdf.ts). The text part
-                  // carries the filename, which the disguised part cannot.
-                  return [
-                    {type: "text", text: `\n\n[Attached PDF file${filename}]`},
-                    {type: "image", data: data.toBase64(), mimeType: attachment.mimeType},
-                  ];
-                } else {
-                  // Attachment types the current model can't take -- a PDF after the chat moved
-                  // to a Workers AI/Ollama model, or types some providers accepted before the pi
-                  // migration -- degrade to a text marker rather than failing the whole replay.
-                  return [{
-                    type: "text",
-                    text: `\n\n[Attached file${filename} (${attachment.mimeType}) omitted — ` +
-                        `this file type is not supported by the current model]`,
-                  }];
-                }
+                return chatAttachmentModelParts(attachment, data, handle.model);
               }));
               parts.push(...attachmentParts.flat());
               modelMessage = { role: "user", content: parts, timestamp: msgTimestamp };
