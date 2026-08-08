@@ -48,7 +48,7 @@ import { hostOf } from "./util.js";
 // How a connected endpoint proves who we are. Discovered for a user-supplied endpoint (the probe in
 // `beginConnect` answers `none` or `oauth`); configured for a deployment's gateway, which may
 // additionally hold a preissued `token`.
-export type ServerAuthKind = "none" | "oauth" | "token";
+export type ServerAuthKind = "none" | "oauth" | "token" | "service_token";
 
 // The endpoint this account is connected to, once chosen.
 export type ConnectedServer = {
@@ -163,6 +163,13 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
   // still names the old endpoint while this method would answer with the new deployment's secret.
   // Implementations must therefore return null unless current configuration still names `server`.
   protected staticToken(_server: ConnectedServer): string | null {
+    return null;
+  }
+
+  // Deployment-scoped request headers for an endpoint whose auth is `"service_token"`. This is
+  // separate from bearer auth because Cloudflare Access service tokens use two headers. As with
+  // `staticToken`, implementations must bind the credentials to the current configured endpoint.
+  protected staticHeaders(_server: ConnectedServer): Record<string, string> | null {
     return null;
   }
 
@@ -313,7 +320,10 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     // Connecting anyway records an account that looks fine in the Workshop and fails on first use,
     // with the misconfiguration surfacing far from the setting that caused it. Refused here, and
     // the form stays open so an administrator can supply the token and retry.
-    if (server.auth === "token" && this.staticToken(server) === null) {
+    const missingStaticCredential =
+      (server.auth === "token" && this.staticToken(server) === null) ||
+      (server.auth === "service_token" && this.staticHeaders(server) === null);
+    if (missingStaticCredential) {
       this.restoreSelection(initiationNonce);
       throw new Error(
         `No preissued token is configured for "${server.serverName}" on this deployment, so it ` +
@@ -332,7 +342,9 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       // handshake says nothing about whether it is public; recording `"none"` here would drop that
       // token from every later request. Only an endpoint that answered with no credential at all is.
       const connected: ConnectedServer =
-        server.auth === "token" ? server : { ...server, auth: "none" };
+        server.auth === "token" || server.auth === "service_token"
+          ? server
+          : { ...server, auth: "none" };
       this.ctx.storage.kv.put("server", connected);
       await this.complete(connected, info, generation);
       log.info("connected without authorization", { event: "connect.completed" });
@@ -342,7 +354,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         this.restoreSelection(initiationNonce);
         throw err;
       }
-      if (server.auth === "token") {
+      if (server.auth === "token" || server.auth === "service_token") {
         // A preissued token that is refused is a misconfiguration; there is no interactive flow to
         // fall back to. Keep the form retryable so an administrator can rotate the configured token
         // without forcing the user to start a new connect flow.
@@ -371,7 +383,9 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     server: ConnectedServer, accessToken: string | null, generation: number,
   ): Promise<McpServerInfo> {
     const token = accessToken ?? (server.auth === "token" ? this.staticToken(server) : null);
-    const client = new McpClient(server.endpoint, async () => token, null, this.fetchOptions());
+    const headers = server.auth === "service_token" ? this.staticHeaders(server) : null;
+    const client = new McpClient(
+      server.endpoint, async () => token, null, this.fetchOptions(), headers ?? {});
     const info = await client.initialize(clientName(this.env));
     // A newer attempt may have started while initialize was in flight. Its session belongs to that
     // attempt, not this response, so only the captured generation may populate the cache.
@@ -643,6 +657,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         `${hostOf(server.endpoint)}. Replace the binding before using it again.`);
     }
     const authorization = await this.#getAuthorization(server, generation);
+    const credentialHeaders = this.#getCredentialHeaders(server);
     // `#getAuthorization` may await a token refresh. A reconnect can interleave there, so recheck
     // before returning the credential to a caller that still intends to contact the old endpoint.
     if (!this.isCurrentConnection(server, generation)) {
@@ -650,6 +665,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     }
     return {
       authorization,
+      credentialHeaders,
       sessionId: this.ctx.storage.kv.get<string>("mcpSessionId") ?? null,
       generation,
     };
@@ -659,7 +675,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
   // expiry, or null for a public server. Every path that awaits rechecks the generation before it
   // can return or mutate state.
   async #getAuthorization(server: ConnectedServer, generation: number): Promise<string | null> {
-    if (server.auth === "none") return null;
+    if (server.auth === "none" || server.auth === "service_token") return null;
     if (server.auth === "token") {
       // Null covers both "never configured" and "configured for some other endpoint now". The
       // second is a repoint the account has not caught up with, and the only safe answer is to
@@ -698,6 +714,17 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     }
 
     return this.#refresh(server, generation, tokens.refresh_token, discovery, client);
+  }
+
+  #getCredentialHeaders(server: ConnectedServer): Record<string, string> {
+    if (server.auth !== "service_token") return {};
+    const headers = this.staticHeaders(server);
+    if (!headers) {
+      throw new Error(
+        `This deployment has no service token for "${server.serverName}" at ` +
+        `${hostOf(server.endpoint)}. If the portal was repointed, reconnect the account.`);
+    }
+    return headers;
   }
 
   // The refresh currently in flight, if any. Tagged so a reconnect never reuses a promise that was

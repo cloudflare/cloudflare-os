@@ -181,9 +181,11 @@ describe("McpClient.listTools", () => {
 describe("error text a server wrote", () => {
   // Answers every request with a JSON-RPC error carrying `message`.
   function stubError(message: string) {
-    vi.stubGlobal("fetch", async () => new Response(
+    const fetchStub = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(
       JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32000, message } }),
       { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
   }
 
   it("redacts the credential this Worker just sent, if the server echoes it back", async () => {
@@ -197,6 +199,22 @@ describe("error text a server wrote", () => {
     const err = await client.callTool("anything", {}).catch(caught => caught);
     expect(err.message).not.toContain(token);
     expect(err.message).toContain("[redacted]");
+  });
+
+  it("sends and redacts deployment credential headers", async () => {
+    const secret = "service-secret-abcdefgh";
+    const fetchStub = stubError(`bad request: CF-Access-Client-Secret: ${secret}`);
+    const client = new McpClient(
+      "https://mcp.example.com/mcp",
+      async () => null,
+      null,
+      {},
+      { "CF-Access-Client-Id": "service-id", "CF-Access-Client-Secret": secret },
+    );
+    await expect(client.callTool("echo", {})).rejects.toThrow(/\[redacted\]/);
+    const request = fetchStub.mock.calls.at(-1)?.[1];
+    expect(new Headers(request?.headers).get("CF-Access-Client-Id")).toBe("service-id");
+    expect(new Headers(request?.headers).get("CF-Access-Client-Secret")).toBe(secret);
   });
 
   it("redacts a credential that straddles the length cap", async () => {

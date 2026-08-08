@@ -63,7 +63,9 @@ export function readPortalConfig(env: Env): PortalConfig | null {
 
   const configured = env.MCP_PORTAL_AUTH?.trim().toLowerCase();
   const auth: ServerAuthKind =
-    configured === "none" || configured === "token" ? configured : "oauth";
+    configured === "none" || configured === "token" || configured === "service_token"
+      ? configured
+      : "oauth";
 
   return {
     endpoint: url.toString(),
@@ -118,7 +120,8 @@ export function portalServer(config: PortalConfig): ConnectedServer {
 export function portalAuthRequiresReconnect(
   connected: ServerAuthKind, configured: ServerAuthKind,
 ): boolean {
-  return (connected === "token") !== (configured === "token");
+  const staticKinds = new Set<ServerAuthKind>(["token", "service_token"]);
+  return connected !== configured && (staticKinds.has(connected) || staticKinds.has(configured));
 }
 
 // The preissued token, but only for the endpoint the deployment currently names.
@@ -138,4 +141,18 @@ export function portalTokenFor(env: Env, endpoint: string): string | null {
   const config = readPortalConfig(env);
   if (config?.auth !== "token" || !sameEndpoint(config.endpoint, endpoint)) return null;
   return env.MCP_PORTAL_TOKEN || null;
+}
+
+export function portalServiceTokenHeadersFor(
+  env: Env, endpoint: string,
+): Record<string, string> | null {
+  const config = readPortalConfig(env);
+  if (config?.auth !== "service_token" || !sameEndpoint(config.endpoint, endpoint)) return null;
+  const clientId = env.MCP_PORTAL_ACCESS_CLIENT_ID;
+  const clientSecret = env.MCP_PORTAL_ACCESS_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+  return {
+    "CF-Access-Client-Id": clientId,
+    "CF-Access-Client-Secret": clientSecret,
+  };
 }

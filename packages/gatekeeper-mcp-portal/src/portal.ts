@@ -71,6 +71,7 @@ import {
   portalAuthRequiresReconnect,
   portalResource,
   portalServer,
+  portalServiceTokenHeadersFor,
   portalTokenFor,
   portalTrust,
   readPortalConfig,
@@ -239,6 +240,11 @@ export class McpAccount extends McpAccountBase<Env> {
   // today. The rule lives beside the configuration it guards, in `portalTokenFor`.
   protected override staticToken(server: ConnectedServer): string | null {
     return portalTokenFor(this.env, server.endpoint);
+  }
+
+
+  protected override staticHeaders(server: ConnectedServer): Record<string, string> | null {
+    return portalServiceTokenHeadersFor(this.env, server.endpoint);
   }
 }
 

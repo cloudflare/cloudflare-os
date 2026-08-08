@@ -292,6 +292,7 @@ export type AuthorizationProvider = () => Promise<string | null>;
 export class McpClient {
   #endpoint: string;
   #getAuthorization: AuthorizationProvider;
+  #credentialHeaders: Headers;
   #fetchOptions: FetchOptions;
   #requestId = 0;
 
@@ -303,16 +304,18 @@ export class McpClient {
     getAuthorization: AuthorizationProvider,
     sessionId?: string | null,
     fetchOptions: FetchOptions = {},
+    credentialHeaders: HeadersInit = {},
   ) {
     this.#endpoint = endpoint;
     this.#getAuthorization = getAuthorization;
+    this.#credentialHeaders = new Headers(credentialHeaders);
     this.sessionId = sessionId ?? null;
     this.#fetchOptions = fetchOptions;
   }
 
   // The credential most recently sent, kept only so it can be recognised if it comes back. See
   // `#quoteServerText`.
-  #lastCredential: string | null = null;
+  #lastCredentials: Array<string | null> = [];
 
   async #headers(): Promise<Headers> {
     const headers = new Headers({
@@ -321,8 +324,9 @@ export class McpClient {
       "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
     });
     const authorization = await this.#getAuthorization();
-    this.#lastCredential = authorization;
+    this.#lastCredentials = [authorization, ...this.#credentialHeaders.values()];
     if (authorization) headers.set("Authorization", `Bearer ${authorization}`);
+    for (const [name, value] of this.#credentialHeaders) headers.set(name, value);
     if (this.sessionId) headers.set("Mcp-Session-Id", this.sessionId);
     return headers;
   }
@@ -401,7 +405,7 @@ export class McpClient {
   // that cap would lose the tail that made it matchable while the head stayed in the message.
   #quoteServerText(text: unknown): string {
     if (typeof text !== "string") return "no reason given";
-    return safeServerText(redactSecrets(text, [this.#lastCredential])) ?? "no reason given";
+    return safeServerText(redactSecrets(text, this.#lastCredentials)) ?? "no reason given";
   }
 
   async #notify(method: string, params?: unknown): Promise<void> {
