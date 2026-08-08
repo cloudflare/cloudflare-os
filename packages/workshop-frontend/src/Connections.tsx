@@ -21,6 +21,7 @@ import {
   loadBindingCardData,
 } from './components/BlueprintBindingCard'
 import { reportIssue } from './errorReporting'
+import { isComposingKeyEvent } from './utils/imeComposition'
 
 interface ConnectionsProps {
   overseer: RpcStub<Overseer>
@@ -266,6 +267,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                           value={editValue}
                           onChange={(e) => setEditValue(e.target.value)}
                           onKeyDown={(e) => {
+                            if (isComposingKeyEvent(e)) return
                             if (e.key === 'Enter') handleEditSave(gk.name)
                             if (e.key === 'Escape') handleEditCancel()
                           }}

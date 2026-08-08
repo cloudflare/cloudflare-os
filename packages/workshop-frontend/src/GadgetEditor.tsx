@@ -55,6 +55,7 @@ import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
 import { useWorkspaceOpen } from './useWorkspaceOpen'
 import { reportIssue } from './errorReporting'
 import GadgetExportMenu from './GadgetExportMenu'
+import { isComposingKeyEvent } from './utils/imeComposition'
 
 const NO_GADGETS: ReadonlySet<WorkpieceId> = new Set()
 
@@ -1348,6 +1349,7 @@ export default function GadgetEditor() {
                 value={titleInput}
                 onChange={e => setTitleInput(e.target.value)}
                 onKeyDown={e => {
+                  if (isComposingKeyEvent(e)) return
                   if (e.key === 'Enter') handleSaveTitle()
                   if (e.key === 'Escape') handleCancelEdit()
                 }}

@@ -11,6 +11,7 @@ import { useAuthenticatedApi } from '../../AuthContext'
 import type { GadgetMetadataWithTimestamps, OutputFormatOffer } from '@gadgets/workshop-shared/api'
 import { FormatGlyph } from '../format/FormatVisuals'
 import { createFromFormat } from '../format/useOutputFormats'
+import { isComposingKeyEvent } from '../../utils/imeComposition'
 
 // A ⌘K command palette: jump to a workspace or a primary destination. Because it's keyboard-driven
 // and opened many times a day, it deliberately has *no* open/close animation (instant feels faster
@@ -311,6 +312,8 @@ export default function CommandPalette({
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // Arrow keys pick IME candidates and Enter commits them; neither is ours mid-composition.
+      if (isComposingKeyEvent(e)) return
       if (e.key === 'ArrowDown') {
         e.preventDefault()
         setActiveIndex((i) => (flat.length ? (i + 1) % flat.length : 0))

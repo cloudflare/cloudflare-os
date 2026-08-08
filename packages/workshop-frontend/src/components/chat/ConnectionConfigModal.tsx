@@ -3,6 +3,7 @@ import { Dialog, Button, Input } from '@cloudflare/kumo'
 import { X } from '@phosphor-icons/react'
 import type { Connection, ConnectionResource } from '../../data/sample'
 import { logoComponents } from '../ConnectionLogos'
+import { isComposingKeyEvent } from '../../utils/imeComposition'
 
 export default function ConnectionConfigModal({
   connection,
@@ -80,6 +81,7 @@ export default function ConnectionConfigModal({
                   value={inputValue}
                   onChange={(e) => setInputValue(e.currentTarget.value)}
                   onKeyDown={(e) => {
+                    if (isComposingKeyEvent(e)) return
                     if (e.key === 'Enter') handleAdd()
                   }}
                   placeholder={config.placeholder}

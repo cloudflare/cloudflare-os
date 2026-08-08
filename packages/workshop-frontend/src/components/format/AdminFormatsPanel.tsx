@@ -22,6 +22,7 @@ import { useAuthenticatedApi } from '../../AuthContext'
 import { MENU_CONTENT } from '../menuStyles'
 import { FORMAT_ICONS, GENERIC_OUTPUT } from './formats'
 import { FormatGlyph, FormatPreview } from './FormatVisuals'
+import { isComposingKeyEvent } from '../../utils/imeComposition'
 
 // A blueprint the admin could promote. `declared` is what it says it produces, when we know --
 // known for the deployment's featured blueprints, unknown for the admin's own published ones.
@@ -501,6 +502,7 @@ function OverrideField({
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
+          if (isComposingKeyEvent(e)) return
           if (e.key === 'Enter') e.currentTarget.blur()
           if (e.key === 'Escape') setDraft(value)
         }}

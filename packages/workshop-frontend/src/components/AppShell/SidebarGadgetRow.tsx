@@ -4,6 +4,7 @@ import { DropdownMenu } from '@cloudflare/kumo'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from '../menuStyles'
 import { useState, useEffect, useRef } from 'react'
 import type { GadgetMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import { isComposingKeyEvent } from '../../utils/imeComposition'
 
 function initials(title: string | undefined): string {
   const t = (title || 'Untitled').trim()
@@ -76,6 +77,7 @@ export default function SidebarGadgetRow({
               onChange={(e) => setRenameValue(e.target.value)}
               onBlur={commit}
               onKeyDown={(e) => {
+                if (isComposingKeyEvent(e)) return
                 if (e.key === 'Enter') commit()
                 if (e.key === 'Escape') setRenaming(false)
               }}

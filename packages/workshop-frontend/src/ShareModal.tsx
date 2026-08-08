@@ -17,6 +17,7 @@ import {
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import { PersonAvatar } from './components/PersonAvatar'
 import { copyToClipboard } from './clipboard'
+import { isComposingKeyEvent } from './utils/imeComposition'
 
 type CollaboratorRow =
   | { kind: 'owner'; profile: AiChatAuthorInfo }
@@ -808,7 +809,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
               aria-label="Username or email"
               value={addUsername}
               onChange={(e) => setAddUsername(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleAddCollaborator() }}
+              onKeyDown={(e) => { if (!isComposingKeyEvent(e) && e.key === 'Enter') handleAddCollaborator() }}
               name="gadget-share-people-search"
               autoComplete="off"
               autoCorrect="off"
@@ -906,7 +907,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                       ref={linkNameRef}
                       value={newLinkNote}
                       onChange={(e) => setNewLinkNote(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') handleCreateShareLink() }}
+                      onKeyDown={(e) => { if (!isComposingKeyEvent(e) && e.key === 'Enter') handleCreateShareLink() }}
                       placeholder="Name this link (optional)…"
                       aria-label="Share link name (optional)"
                       className="h-9 min-w-0 flex-1 border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive"
@@ -1040,6 +1041,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                               value={editingShareLinkNote}
                               onChange={(e) => setEditingShareLinkNote(e.target.value)}
                               onKeyDown={(e) => {
+                                if (isComposingKeyEvent(e)) return
                                 if (e.key === 'Enter') handleSaveShareLinkNote()
                                 if (e.key === 'Escape') cancelRenameShareLink()
                               }}

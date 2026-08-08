@@ -3,6 +3,7 @@ import { Dialog, DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import { DotsThree, DownloadSimple, Pencil, Plus, Trash, X } from '@phosphor-icons/react'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
+import { isComposingKeyEvent } from './utils/imeComposition'
 
 interface FileSidebarProps {
   files: string[]
@@ -213,6 +214,7 @@ export default function FileSidebar({
               value={newFileName}
               onChange={(e) => setNewFileName(e.target.value)}
               onKeyDown={(e) => {
+                if (isComposingKeyEvent(e)) return
                 if (e.key === 'Enter') {
                   e.preventDefault()
                   handleCreateFile()
@@ -347,6 +349,7 @@ function FileRow({
           onChange={(event) => setRenameValue(event.target.value)}
           onClick={(event) => event.stopPropagation()}
           onKeyDown={(event) => {
+            if (isComposingKeyEvent(event)) return
             if (event.key === 'Enter') {
               event.preventDefault()
               onRenameSubmit(renameValue)
