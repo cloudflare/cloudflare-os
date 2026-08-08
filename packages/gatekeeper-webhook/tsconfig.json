@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // The configurator UI module is JSX compiled by build-gatekeeper-configurator.mjs, but it still
+    // has to typecheck as part of src.
+    "jsx": "react",
+    "jsxFactory": "h",
+    "types": ["./worker-configuration.d.ts"],
+    "outDir": "./dist",
+    "declaration": true,
+    "sourceMap": true,
+    "noEmit": false
+  },
+  "include": ["src"],
+  "exclude": ["dist", "node_modules", ".wrangler"]
+}

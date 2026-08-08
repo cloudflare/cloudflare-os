@@ -895,6 +895,54 @@
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/supabase"
       }
     },
+    "gatekeeper-webhook": {
+      "bindings": [],
+      "compatibilityDate": "2026-02-02",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
+      ],
+      "inputs": [],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "webhook.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "EndpointRegistry",
+            "EndpointIndex",
+            "WebhookGatekeeper"
+          ],
+          "tag": "v1"
+        },
+        {
+          "new_sqlite_classes": [
+            "WebhookEndpointGatekeeper"
+          ],
+          "tag": "v2"
+        }
+      ],
+      "modules": [
+        {
+          "name": "webhook.js",
+          "r2Key": "blobs/modules/4b97ee06800babec39a325af431b5959705477d86e5d58f49bfa872b6a69b7cf",
+          "sha256": "4b97ee06800babec39a325af431b5959705477d86e5d58f49bfa872b6a69b7cf",
+          "size": 60,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "webhook",
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/webhook"
+      }
+    },
     "gatekeeper-zoominfo": {
       "bindings": [
         {

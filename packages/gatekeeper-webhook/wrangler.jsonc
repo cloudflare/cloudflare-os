@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "gatekeeper-webhook",
+  "main": ".wrangler/validate/src/worker.ts",
+  "build": {
+    "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
+    "watch_dir": "src",
+  },
+  "compatibility_date": "2026-02-02",
+  // EndpointRegistry persists HookInitiator capabilities in SQLite-backed KV.
+  "compatibility_flags": ["allow_irrevocable_stub_storage", "nodejs_als"],
+  "rules": [{ "type": "Text", "globs": ["**/*.txt"], "fallthrough": false }],
+  "vars": {
+    // Overridden at deploy time with `$PUBLIC_BASE_URL/gatekeeper/webhook` (see
+    // scripts/release/manifest-lib.mjs). The dev value matches `pnpm dev-server`'s router origin,
+    // so endpoint URLs minted locally are the ones a third party can actually reach.
+    "BASE_URL": "http://localhost:8787/gatekeeper/webhook",
+  },
+  // Both Durable Objects are reached through ctx.exports; no binding is required.
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["EndpointRegistry", "EndpointIndex", "WebhookGatekeeper"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["WebhookEndpointGatekeeper"],
+    },
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": false },
+  },
+}

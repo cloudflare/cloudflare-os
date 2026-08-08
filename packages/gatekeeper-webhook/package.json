@@ -1,0 +1,48 @@
+{
+  "name": "@gadgets/gatekeeper-webhook",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
+    "deploy": "pnpm run build:configurator && pnpm run build:app && wrangler deploy",
+    "build:app": "node build-app.mjs",
+    "build:app:watch": "node build-app.mjs --watch",
+    "typecheck:app": "tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json",
+    "build": "pnpm run build:configurator && pnpm run typecheck:app && pnpm run build:app && tsc",
+    "types:check": "pnpm run build:configurator && pnpm run typecheck:app && pnpm run build:app && tsc --noEmit",
+    "test": "vitest run && vitest run -c vitest.app.config.ts",
+    "clean": "rm -rf dist",
+    "build:configurator": "node build-configurator.mjs"
+  },
+  "dependencies": {
+    "@gadgets/backend-utils": "workspace:*",
+    "@gadgets/configurator-ui": "workspace:*",
+    "@gadgets/error-reporting": "workspace:*",
+    "@gadgets/workshop-shared": "workspace:*",
+    "capnweb": "^0.8.0",
+    "capnweb-validate": "0.2.1"
+  },
+  "devDependencies": {
+    "@cloudflare/kumo": "^2.9.0",
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
+    "@phosphor-icons/react": "^2.1.10",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.1.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.2.0",
+    "jsdom": "^26.1.0",
+    "miniflare": "5.20260801.0-alpha",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwindcss": "^4.3.3",
+    "terser": "^5.48.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "vite-plugin-singlefile": "^2.3.3",
+    "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.119.0"
+  }
+}
