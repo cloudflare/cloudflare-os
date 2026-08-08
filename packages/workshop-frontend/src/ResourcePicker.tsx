@@ -1,14 +1,16 @@
+import { logRpcFailure } from './rpcErrors'
 import { useState, useEffect, useRef, useMemo, useCallback, type MutableRefObject } from 'react'
 import { Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { Plus, CaretRight, Warning } from '@phosphor-icons/react'
-import { RpcStub, RpcTarget } from 'capnweb'
-import { AuthenticatedApi, ConnectedAccountsSubscriber } from '@gadgets/workshop-shared/api'
+import { RpcStub } from 'capnweb'
+import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import { AccountDescription, SupportedResource, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 import { extractHostname, extractBaseUrl, matchesResource, matchesResourceText, classifyMatch, getPlaceholderRanges } from './resourceMatching'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
 import {
   PICKER_CAPTION, PICKER_EMPTY, PICKER_ROW, PICKER_ROW_ACTIVE, TabHint,
 } from './components/pickerRows'
+import { AccountsSubscriberAdapter } from './accountsSubscriber'
 
 export interface VendorOption {
   id: string
@@ -107,15 +109,12 @@ export default function ResourcePicker({
   const [grantingAccount, setGrantingAccount] = useState<number | null>(null)
 
   const subscriptionRef = useRef<{ stub: { [Symbol.dispose](): void } } | null>(null)
-  const seenAccountIdsRef = useRef(new Set<number>())
-
   // Subscribe to connected accounts on mount.
   useEffect(() => {
-    seenAccountIdsRef.current = new Set()
+    let cancelled = false
 
-    class AccountsSubscriber extends RpcTarget implements ConnectedAccountsSubscriber {
-      add(id: number, description: AccountDescription, vendor: VendorDescription, supportedResources: SupportedResource[] = [], credentialsValid: boolean = true, _vendorId: string = '') {
-        seenAccountIdsRef.current.add(id)
+    const subscriber = new AccountsSubscriberAdapter({
+      add({ id, description, vendor, supportedResources, credentialsValid }) {
         setAllAccounts(prev => {
           const next = new Map(prev)
           next.set(id, { description, vendor, supportedResources, credentialsValid })
@@ -125,49 +124,33 @@ export default function ResourcePicker({
         if (credentialsValid) {
           setReconnectingAccount(prev => prev === id ? null : prev)
         }
-      }
-
-      remove(id: number) {
-        seenAccountIdsRef.current.delete(id)
+      },
+      remove(id) {
         setAllAccounts(prev => {
           const next = new Map(prev)
           next.delete(id)
           return next
         })
-      }
-
+      },
       ready() {
         setAccountsLoaded(true)
-        const seen = seenAccountIdsRef.current
-        seenAccountIdsRef.current = new Set()
-        setAllAccounts(prev => {
-          let changed = false
-          const next = new Map(prev)
-          for (const id of next.keys()) {
-            if (!seen.has(id)) {
-              next.delete(id)
-              changed = true
-            }
-          }
-          return changed ? next : prev
-        })
-      }
-    }
-
-    const subscriber = new AccountsSubscriber()
+      },
+    })
     const subscribe = async () => {
       try {
         const stub = await authenticatedApi.subscribeConnectedAccounts(subscriber)
-        subscriptionRef.current = { stub }
+        if (cancelled) stub[Symbol.dispose]()
+        else subscriptionRef.current = { stub }
       } catch (error) {
-        console.error('Failed to subscribe to connected accounts:', error)
+        logRpcFailure('Failed to subscribe to connected accounts:', error)
         // Nothing more is coming, so show what we have rather than hiding forever.
-        setAccountsLoaded(true)
+        if (!cancelled) setAccountsLoaded(true)
       }
     }
     subscribe()
 
     return () => {
+      cancelled = true
       if (subscriptionRef.current) {
         subscriptionRef.current.stub[Symbol.dispose]()
         subscriptionRef.current = null
