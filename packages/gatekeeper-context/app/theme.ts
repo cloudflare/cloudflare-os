@@ -12,6 +12,8 @@
 // The two concrete modes the host resolves `light`/`dark`/`system` down to before pushing it here.
 export type ResolvedThemeMode = "light" | "dark";
 
+const appliedAccentVariables = new Set<string>();
+
 // Seed from the pre-paint `data-mode` the bootstrap script in index.html set from the OS preference,
 // so imperative widgets that read getThemeMode() before the host's RPC arrives start correct.
 let current: ResolvedThemeMode =
@@ -30,6 +32,16 @@ export function applyThemeMode(mode: ResolvedThemeMode): void {
   if (mode === current) return;
   current = mode;
   for (const listener of listeners) listener(mode);
+}
+
+export function applyAccentVariables(values: Record<string, string> | null): void {
+  const root = document.documentElement;
+  for (const variable of appliedAccentVariables) root.style.removeProperty(variable);
+  appliedAccentVariables.clear();
+  for (const [variable, value] of Object.entries(values ?? {})) {
+    root.style.setProperty(variable, value);
+    appliedAccentVariables.add(variable);
+  }
 }
 
 // Subscribe to mode changes. Returns an unsubscribe function.

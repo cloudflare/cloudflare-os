@@ -63,7 +63,7 @@ export function applyStoredThemeMode(): ResolvedThemeMode {
 
 // Variables derived from the seed, as (name -> value-template) pairs. `light-dark()` keeps custom
 // deployment accents mode-aware without needing to reapply them when the user toggles themes.
-function accentVars(seed: string): Record<string, string> {
+export function accentVars(seed: string): Record<string, string> {
   return {
     '--color-kumo-brand': `light-dark(${seed}, oklch(from ${seed} 0.45 c h))`,
     // Slightly darker for hover/pressed states.

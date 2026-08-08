@@ -8,17 +8,21 @@ import type { RpcStub } from 'capnweb'
 import type { ContextApi } from '../src/context-types'
 import ContextLibraryPage from './ContextLibraryPage'
 import { ContextApiProvider, PresentationProvider, type PresentAck } from './bridge'
-import { applyThemeMode, type ResolvedThemeMode } from './theme'
+import { applyAccentVariables, applyThemeMode, type ResolvedThemeMode } from './theme'
 import './styles.css'
 import ErrorBoundary from './ErrorBoundary'
 import { installErrorReporting, reportIssue } from './error-reporting'
 
 installErrorReporting()
 
-// The only capability the iframe exposes back to the host: a receiver for theme-mode pushes.
+// The only capability the iframe exposes back to the host: a receiver for theme pushes.
 class AppIframe extends RpcTarget {
   setThemeMode(mode: ResolvedThemeMode): void {
     applyThemeMode(mode)
+  }
+
+  setAccentVariables(variables: Record<string, string> | null): void {
+    applyAccentVariables(variables)
   }
 }
 

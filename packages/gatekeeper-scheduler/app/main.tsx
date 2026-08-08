@@ -3,7 +3,7 @@ import { RpcTarget, newMessagePortRpcSession, type RpcStub } from "capnweb";
 import SchedulerPage, { type ScheduleManagementClient } from "./SchedulerPage";
 import ErrorBoundary from "./ErrorBoundary";
 import { installErrorReporting, reportIssue } from "./error-reporting";
-import { applyThemeMode, type ResolvedThemeMode } from "./theme";
+import { applyAccentVariables, applyThemeMode, type ResolvedThemeMode } from "./theme";
 import "./styles.css";
 
 installErrorReporting();
@@ -11,6 +11,10 @@ installErrorReporting();
 class AppIframe extends RpcTarget {
   setThemeMode(mode: ResolvedThemeMode): void {
     applyThemeMode(mode);
+  }
+
+  setAccentVariables(variables: Record<string, string> | null): void {
+    applyAccentVariables(variables);
   }
 }
 

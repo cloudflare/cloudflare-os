@@ -3,9 +3,11 @@ import { flushSync } from 'react-dom'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
 import { useNavigate } from '@tanstack/react-router'
 import type { GatekeeperUiFrame } from '@gadgets/workshop-shared/gatekeeper'
+import { isHexColor } from '@gadgets/workshop-shared/api'
 import { createRateLimitedCapability } from './rateLimitedCapability'
 import { useTheme } from './ThemeContext'
-import type { ResolvedThemeMode } from './theme'
+import { accentVars, type ResolvedThemeMode } from './theme'
+import { useServerConfig } from './ServerConfigContext'
 import { forwardTrustedFrameError } from './errorReporting'
 import { useAuthenticatedApi } from './AuthContext'
 import {
@@ -17,6 +19,11 @@ import {
 // A receiver, defined by the sandboxed app, that the host calls to push theme changes into the frame.
 interface ThemeReceiver extends RpcTarget {
   setThemeMode(mode: ResolvedThemeMode): void
+  setAccentVariables(variables: Record<string, string> | null): void
+}
+
+function accentVariablesFor(color: string | null): Record<string, string> | null {
+  return color && isHexColor(color) ? accentVars(color) : null
 }
 
 // The content-pane rect, in viewport coordinates, that the app pins its page to while the iframe
@@ -84,6 +91,7 @@ class GatekeeperAppHostImpl extends RpcTarget {
   readonly #resolveWorkspaceTitles: ResolveWorkspaceTitles
   #presenting = false
   #themeMode: ResolvedThemeMode
+  #accentVariables: Record<string, string> | null
   #themeReceiver: RpcStub<ThemeReceiver> | null = null
   // Presentation changes are coalesced to a single apply per animation frame (see #applyPending).
   #pendingActive: boolean | null = null
@@ -94,12 +102,14 @@ class GatekeeperAppHostImpl extends RpcTarget {
     capability: any,
     present: PresentController,
     themeMode: ResolvedThemeMode,
+    accentVariables: Record<string, string> | null,
     openTarget: OpenTarget,
     openPrompt: OpenPrompt,
     resolveWorkspaceTitles: ResolveWorkspaceTitles,
   ) {
     super()
     this.#themeMode = themeMode
+    this.#accentVariables = accentVariables
     const { capability: ui, dispose } = createRateLimitedCapability(capability, {
       maxConcurrency: 8,
       maxCallsPerMinute: 600,
@@ -144,6 +154,7 @@ class GatekeeperAppHostImpl extends RpcTarget {
     this.#themeReceiver?.[Symbol.dispose]?.()
     // The argument stub is disposed when this call returns, so keep our own dup (released in dispose).
     this.#themeReceiver = receiver.dup()
+    this.updateAccentVariables(this.#accentVariables)
     return this.#themeMode
   }
 
@@ -161,6 +172,19 @@ class GatekeeperAppHostImpl extends RpcTarget {
 
     try {
       Promise.resolve(receiver.setThemeMode(mode)).catch(() => this.#dropThemeReceiver(receiver))
+    } catch {
+      this.#dropThemeReceiver(receiver)
+    }
+  }
+
+  updateAccentVariables(variables: Record<string, string> | null) {
+    this.#accentVariables = variables
+    const receiver = this.#themeReceiver
+    if (!receiver) return
+
+    try {
+      Promise.resolve(receiver.setAccentVariables(variables))
+        .catch(() => this.#dropThemeReceiver(receiver))
     } catch {
       this.#dropThemeReceiver(receiver)
     }
@@ -224,13 +248,19 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
   const invalidatedRef = useRef(false)
   const [overlay, setOverlay] = useState<OverlayState>(null)
   const overlayRef = useRef<OverlayState>(null)
-  // Push the Workshop's resolved light/dark mode to the app whenever it changes.
+  // Push the Workshop's resolved light/dark mode and deployment accent into the sandboxed app.
   const { resolvedThemeMode } = useTheme()
+  const accentColor = useServerConfig()?.accentColor ?? null
   const themeModeRef = useRef(resolvedThemeMode)
+  const accentVariablesRef = useRef(accentVariablesFor(accentColor))
   themeModeRef.current = resolvedThemeMode
+  accentVariablesRef.current = accentVariablesFor(accentColor)
   useEffect(() => {
     hostRef.current?.updateTheme(resolvedThemeMode)
   }, [resolvedThemeMode])
+  useEffect(() => {
+    hostRef.current?.updateAccentVariables(accentVariablesFor(accentColor))
+  }, [accentColor])
 
   const setOverlayPhase = useCallback((next: OverlayState) => {
     if (overlayRef.current === next) return
@@ -313,6 +343,7 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
         capabilityRef.current,
         present,
         themeModeRef.current,
+        accentVariablesRef.current,
         openTarget,
         openPrompt,
         resolveWorkspaceTitles,
