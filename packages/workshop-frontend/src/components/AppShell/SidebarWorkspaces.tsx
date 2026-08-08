@@ -1,3 +1,4 @@
+import { logRpcFailure } from '../../rpcErrors'
 import {
   createContext,
   useCallback,
@@ -89,15 +90,14 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
   useEffect(() => {
     let cancelled = false
     setGadgetsLoading(true)
-    authenticatedApi
-      .listGadgets()
+    authenticatedApi.listGadgets()
       .then((list) => {
         if (cancelled) return
         setGadgets(list)
         setGadgetsLoading(false)
       })
       .catch((err) => {
-        console.error('Failed to load workspaces for sidebar:', err)
+        logRpcFailure('Failed to load workspaces for sidebar:', err)
         if (!cancelled) setGadgetsLoading(false)
       })
     return () => { cancelled = true }

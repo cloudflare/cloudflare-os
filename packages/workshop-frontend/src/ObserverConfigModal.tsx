@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { Dialog, Select, Loader, Text, useKumoToastManager } from '@cloudflare/kumo'
 import { Warning, Plus, ArrowClockwise, CheckCircle } from '@phosphor-icons/react'
-import { RpcStub, RpcTarget } from 'capnweb'
+import { RpcStub } from 'capnweb'
 import {
   AuthenticatedApi,
-  ConnectedAccountsSubscriber,
   GatekeeperVendorInfo,
   ObserverBindingNeed,
   ObserverAccountChoice,
@@ -17,6 +16,7 @@ import {
 } from '@gadgets/workshop-shared/gatekeeper'
 import { WorkshopButton } from './components/WorkshopControls'
 import Avatar from './components/Avatar'
+import { AccountsSubscriberAdapter } from './accountsSubscriber'
 
 // Shown when a non-owner opens a shared Gadget that reads data through one or more gatekeeper
 // bindings, and they haven't yet chosen which of their own connected accounts to use for each one.
@@ -104,15 +104,8 @@ export default function ObserverConfigModal({
     let subStub: { [Symbol.dispose](): void } | null = null
     let cancelled = false
 
-    class Subscriber extends RpcTarget implements ConnectedAccountsSubscriber {
-      add(
-        id: number,
-        description: AccountDescription,
-        vendor: VendorDescription,
-        supportedResources: SupportedResource[] = [],
-        credentialsValid: boolean = true,
-        vendorId: string = '',
-      ) {
+    const subscriber = new AccountsSubscriberAdapter({
+      add({ id, description, vendor, supportedResources, credentialsValid, vendorId }) {
         setAccounts(prev => {
           const next = new Map(prev)
           next.set(id, { id, description, vendor, vendorId, supportedResources, credentialsValid })
@@ -127,29 +120,29 @@ export default function ObserverConfigModal({
             setConnecting(null)
           }
         }
-      }
-
-      remove(id: number) {
+      },
+      remove(id) {
         setAccounts(prev => {
           if (!prev.has(id)) return prev
           const next = new Map(prev)
           next.delete(id)
           return next
         })
-      }
-
+      },
       ready() {
         setReady(true)
-      }
-    }
+      },
+    })
 
     authenticatedApi
-      .subscribeConnectedAccounts(new Subscriber(), { includeForcedAutoProvisionedAccounts: true })
+      .subscribeConnectedAccounts(subscriber, { includeForcedAutoProvisionedAccounts: true })
       .then(stub => {
         if (cancelled) { stub[Symbol.dispose](); return }
         subStub = stub
       })
       .catch(err => {
+        // Loud on purpose: the modal has no retry path, so a quieted transient failure would
+        // strand the user on a permanent loader.
         console.error('Failed to subscribe to connected accounts:', err)
         toasts.add({ title: 'Failed to load your connected accounts', variant: 'error' })
       })

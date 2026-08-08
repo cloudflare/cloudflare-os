@@ -70,6 +70,8 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
       setHooks(hookList.filter((hook) => hook.gadgetId === id))
       onHasGatekeepersChange?.(bindingList.length > 0)
     } catch (err) {
+      // Loud on purpose: this panel has no retry path, so a quieted transient failure would
+      // silently render "no connected resources".
       console.error('Failed to load gatekeepers:', err)
       reportIssue('connections.load', err)
       toasts.add({ title: 'Failed to load connections', variant: 'error' })

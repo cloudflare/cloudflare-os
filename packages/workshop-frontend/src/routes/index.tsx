@@ -1,3 +1,4 @@
+import { classifyRpcError, logRpcFailure } from "../rpcErrors";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useKumoToastManager } from "@cloudflare/kumo";
@@ -57,16 +58,19 @@ export function HomePageContent({ prompt }: HomeSearch) {
 
   useEffect(() => {
     let cancelled = false;
-    authenticatedApi
-      .listModels()
+    authenticatedApi.listModels()
       .then((list) => {
         if (cancelled) return;
         setModels(list);
         setSelectedModel(getStoredSelectedModel(list));
       })
       .catch((err) => {
-        console.error("Failed to fetch models:", err);
-        toasts.add({ title: "Couldn't load AI models", variant: "error" });
+        logRpcFailure("Failed to fetch models:", err);
+        // Toast unless it's a connection error (reconnect refetches); a do-reset here already
+        // survived the Worker's same-colo retry, so the user should hear about it.
+        if (classifyRpcError(err) !== "connection") {
+          toasts.add({ title: "Couldn't load AI models", variant: "error" });
+        }
       });
     return () => {
       cancelled = true;
@@ -117,13 +121,16 @@ export function HomePageContent({ prompt }: HomeSearch) {
         // Open the conversation we just started.
         navigate({ to: "/workspace/$id", params: { id }, search: { chat } });
       } catch (err) {
-        console.error("Failed to create gadget:", err);
+        const transient = logRpcFailure("Failed to create gadget:", err,
+            { reportSite: "workspace.create" });
         // A retry reuses the provisional gadget while the draft contains gadget-scoped references.
         if (!attachments?.length && !capsules?.length) {
           provisionalOverseerRef.current?.stub[Symbol.dispose]();
           provisionalOverseerRef.current = null;
         }
-        toasts.add({ title: "Failed to create workspace", variant: "error" });
+        if (!transient) {
+          toasts.add({ title: "Failed to create workspace", variant: "error" });
+        }
         throw err;
       }
     },

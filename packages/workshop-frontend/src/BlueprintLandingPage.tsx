@@ -1,8 +1,9 @@
+import { logRpcFailure } from './rpcErrors'
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
-import { RpcStub, RpcTarget } from 'capnweb'
-import { PublicApi, AuthenticatedApi, AdminApi, BlueprintPublicInfo, BlueprintBinding, BlueprintBindingAssignment, BlueprintUserSummary, AiChatAuthorInfo, ConnectedAccountsSubscriber } from '@gadgets/workshop-shared/api'
-import { AccountDescription, SupportedResource, VendorDescription, ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
+import { RpcStub } from 'capnweb'
+import { PublicApi, AuthenticatedApi, AdminApi, BlueprintPublicInfo, BlueprintBinding, BlueprintBindingAssignment, BlueprintUserSummary, AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
+import { SupportedResource, VendorDescription, ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
 import { Button, Dialog, DropdownMenu, Select, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { ArrowsOutSimple, ArrowLeft, ArrowSquareOut, DotsThree, DownloadSimple, Lightning, Plus, Robot, Sparkle, Star, Trash, X } from '@phosphor-icons/react'
 
@@ -19,6 +20,7 @@ import ResourceConfiguratorHost from './ResourceConfiguratorHost'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './components/menuStyles'
 import { useDocumentTitle } from './useDocumentTitle'
+import { AccountsSubscriberAdapter } from './accountsSubscriber'
 
 interface Props {
   rpcStub: RpcStub<PublicApi>
@@ -120,7 +122,9 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   // When authenticated, fetch models for binding assignment.
   useEffect(() => {
     if (isAuthenticated && authenticatedApi) {
-      authenticatedApi.listModels().then(setModels).catch(console.error)
+      authenticatedApi.listModels()
+        .then(setModels)
+        .catch(err => logRpcFailure('Failed to load models:', err))
     } else {
       setModels([])
     }
@@ -154,15 +158,8 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     const accountMap = new Map<number, AccountOption>()
     let subStub: { [Symbol.dispose](): void } | null = null
 
-    class AccountsSubscriber extends RpcTarget implements ConnectedAccountsSubscriber {
-      add(
-        accountId: number,
-        description: AccountDescription,
-        vendor: VendorDescription,
-        supportedResources: SupportedResource[] = [],
-        credentialsValid: boolean = true,
-        vendorId: string = '',
-      ) {
+    const subscriber = new AccountsSubscriberAdapter({
+      add({ id: accountId, description, vendor, supportedResources, credentialsValid, vendorId }) {
         if (cancelled) return
         accountMap.set(accountId, {
           id: accountId, description, vendorId, vendorDescription: vendor,
@@ -172,16 +169,15 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
         if (credentialsValid) {
           setReconnectingAccountId(prev => prev === accountId ? null : prev)
         }
-      }
-      remove(accountId: number) {
+      },
+      remove(accountId) {
         if (cancelled) return
         accountMap.delete(accountId)
         setAccounts(Array.from(accountMap.values()))
-      }
-      ready() {}
-    }
+      },
+    })
 
-    authenticatedApi.subscribeConnectedAccounts(new AccountsSubscriber())
+    authenticatedApi.subscribeConnectedAccounts(subscriber)
       .then(stub => {
         if (cancelled) {
           stub[Symbol.dispose]()
@@ -190,7 +186,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
         }
       })
       .catch(err => {
-        console.error('Failed to subscribe to connected accounts:', err)
+        logRpcFailure('Failed to subscribe to connected accounts:', err)
       })
 
     return () => {

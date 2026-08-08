@@ -1,3 +1,4 @@
+import { logRpcFailure } from '../rpcErrors'
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
@@ -11,7 +12,6 @@ import {
   Plugs,
 } from '@phosphor-icons/react'
 import ViewToggle from '../components/ViewToggle'
-import { RpcTarget } from 'capnweb'
 import { useAuthenticatedApi } from '../AuthContext'
 import { refreshGatekeeperApps } from '../useGatekeeperApps'
 import { EmptyState } from '../components/EmptyState'
@@ -21,9 +21,10 @@ import {
   SupportedResource,
   VendorDescription,
 } from '@gadgets/workshop-shared/gatekeeper'
-import { ConnectedAccountsSubscriber, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
+import { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { useSiteName } from '../ServerConfigContext'
+import { AccountsSubscriberAdapter } from '../accountsSubscriber'
 
 export const Route = createFileRoute('/gatekeepers')({
   component: ConnectorsPage,
@@ -482,17 +483,15 @@ function ConnectorsPage() {
     setAccountsLoaded(false)
     setVendorsLoaded(false)
 
-    authenticatedApi
-      .listAddableGatekeepers()
+    authenticatedApi.listAddableGatekeepers()
       .then((list) => {
         if (!cancelled) setAddable(list)
       })
       .catch((err) => {
-        console.error('Failed to load addable gatekeepers:', err)
+        logRpcFailure('Failed to load addable gatekeepers:', err)
       })
 
-    authenticatedApi
-      .listGatekeeperVendors()
+    authenticatedApi.listGatekeeperVendors()
       .then((vendorList) => {
         if (cancelled) return
         const unavailable = vendorList.filter((v) => v.unavailable)
@@ -514,22 +513,12 @@ function ConnectorsPage() {
         setVendorsLoaded(true)
       })
       .catch((err) => {
-        console.error('Failed to load available services:', err)
+        logRpcFailure('Failed to load available services:', err)
         if (!cancelled) setLoadError(true)
       })
 
-    class AccountsSubscriber
-      extends RpcTarget
-      implements ConnectedAccountsSubscriber
-    {
-      add(
-        id: number,
-        description: AccountDescription,
-        vendor: VendorDescription,
-        supportedResources: SupportedResource[] = [],
-        credentialsValid: boolean = true,
-        vendorId: string = '',
-      ) {
+    const subscriber = new AccountsSubscriberAdapter({
+      add({ id, description, vendor, supportedResources, credentialsValid, vendorId }) {
         if (cancelled) return
         accountMap.set(id, {
           id,
@@ -540,20 +529,17 @@ function ConnectorsPage() {
           credentialsValid,
         })
         setAccounts(Array.from(accountMap.values()))
-      }
-      remove(id: number) {
+      },
+      remove(id) {
         accountMap.delete(id)
         if (!cancelled) setAccounts(Array.from(accountMap.values()))
-      }
+      },
       ready() {
         if (!cancelled) setAccountsLoaded(true)
-      }
-    }
+      },
+    })
 
-    const subscriber = new AccountsSubscriber()
-
-    authenticatedApi
-      .subscribeConnectedAccounts(subscriber)
+    authenticatedApi.subscribeConnectedAccounts(subscriber)
       .then((stub) => {
         if (cancelled) {
           stub[Symbol.dispose]()
@@ -562,7 +548,7 @@ function ConnectorsPage() {
         }
       })
       .catch((err) => {
-        console.error('Failed to subscribe to connected accounts:', err)
+        logRpcFailure('Failed to subscribe to connected accounts:', err)
         if (!cancelled) setLoadError(true)
       })
 

@@ -1,3 +1,4 @@
+import { logRpcFailure } from '../rpcErrors'
 import { useState, useEffect } from 'react'
 import { createRootRoute, Outlet, useRouterState } from '@tanstack/react-router'
 import { TooltipProvider, Toasty } from '@cloudflare/kumo'
@@ -154,7 +155,7 @@ function AuthenticatedShell({
     authenticatedApi.isOnboardingCompleted().then((completed) => {
       if (!cancelled) setOnboardingNeeded(!completed)
     }).catch((err) => {
-      console.error('Failed to check onboarding status:', err)
+      logRpcFailure('Failed to check onboarding status:', err)
       // If the check fails, skip onboarding to avoid blocking the user
       if (!cancelled) setOnboardingNeeded(false)
     })
