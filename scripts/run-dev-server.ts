@@ -415,6 +415,8 @@ const SHARED_GATEKEEPER_CREDS: Record<string, { id: string; secret: string }> = 
   "gatekeeper-zoominfo": { id: "ZOOMINFO_CLIENT_ID", secret: "ZOOMINFO_CLIENT_SECRET" },
   "gatekeeper-confluence": { id: "CONFLUENCE_CLIENT_ID", secret: "CONFLUENCE_CLIENT_SECRET" },
   "gatekeeper-slack": { id: "SLACK_CLIENT_ID", secret: "SLACK_CLIENT_SECRET" },
+  "gatekeeper-linear": { id: "LINEAR_CLIENT_ID", secret: "LINEAR_CLIENT_SECRET" },
+  "gatekeeper-spotify": { id: "SPOTIFY_CLIENT_ID", secret: "SPOTIFY_CLIENT_SECRET" },
 };
 
 // Deployment-configured vars a gatekeeper reads that its committed `wrangler.jsonc` deliberately
