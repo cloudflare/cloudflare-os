@@ -48,7 +48,26 @@ export type SpreadsheetRange = {
   values: SpreadsheetCellValue[][];
 };
 
-/** Read-only access to one selected Google spreadsheet. */
+/** How values written to cells should be interpreted. */
+export type SpreadsheetInputMode =
+  /** Store values exactly as supplied. */
+  | "raw"
+  /** Parse values as if an employee entered them in Google Sheets. */
+  | "userEntered";
+
+/** A bounded write that is waiting in the Company OS action queue. */
+export type SpreadsheetPendingWrite = {
+  /** Gatekeeper-local action identifier used by the action queue. */
+  actionId: number;
+  /** Canonical operation staged for approval. */
+  operation: "updateRange" | "appendRows";
+  /** A1 range affected by the write. */
+  range: string;
+  /** Number of cells supplied by the caller. */
+  cellCount: number;
+};
+
+/** Read and approval-gated write access to one selected Google spreadsheet. */
 export interface GoogleSpreadsheetSession {
   /** Return spreadsheet metadata and its worksheet list. */
   getSpreadsheet(): Promise<SpreadsheetInfo>;
@@ -71,4 +90,101 @@ export interface GoogleSpreadsheetSession {
     ranges: string[],
     options?: { valueMode?: SpreadsheetValueMode },
   ): Promise<SpreadsheetRange[]>;
+
+  /**
+   * Stage replacement values for one bounded A1 range. The write stays pending until a person
+   * approves its Company OS action card. The value matrix must fit the declared range exactly and
+   * remain within the 100 KiB staged-action limit.
+   */
+  updateRange(
+    range: string,
+    values: SpreadsheetCellValue[][],
+    options?: { inputMode?: SpreadsheetInputMode },
+  ): Promise<SpreadsheetPendingWrite>;
+
+  /**
+   * Stage rows to append after the current table in a bounded A1 range. The write stays pending
+   * until a person approves its Company OS action card. Split input larger than 100 KiB into
+   * separate approval actions.
+   */
+  appendRows(
+    range: string,
+    values: SpreadsheetCellValue[][],
+    options?: { inputMode?: SpreadsheetInputMode },
+  ): Promise<SpreadsheetPendingWrite>;
+}
+
+/** Metadata about one file in the connected Google Drive folder. */
+export type DriveFileInfo = {
+  /** Stable Google Drive file ID. */
+  id: string;
+  /** File name shown in Google Drive. */
+  name: string;
+  /** Google Drive MIME type. */
+  mimeType: string;
+  /** File size in bytes when Google supplies it. Native Google files do not have a byte size. */
+  size?: number;
+  /** Last modification time. */
+  modifiedTime?: Date;
+  /** URL that opens the file in Google Drive. */
+  webViewLink?: string;
+};
+
+/** Metadata about the connected Google Drive folder. */
+export type DriveFolderInfo = {
+  /** Stable Google Drive folder ID. */
+  id: string;
+  /** Folder name shown in Google Drive. */
+  name: string;
+  /** URL that opens the folder in Google Drive. */
+  webViewLink: string;
+};
+
+/** File data staged for upload after Company OS approval. */
+export type DriveUploadInput = {
+  /** File name, including a useful extension. */
+  name: string;
+  /** MIME type of the supplied bytes. */
+  mimeType: string;
+  /** Standard base64-encoded file bytes. Maximum decoded size: 10 MiB. */
+  base64: string;
+  /** Convert textual input to a native Google Doc instead of keeping the source MIME type. */
+  convertToGoogleDoc?: boolean;
+};
+
+/** An upload that is waiting in the Company OS action queue. */
+export type DrivePendingUpload = {
+  /** Gatekeeper-local action identifier used by the action queue. */
+  actionId: number;
+  /** File name shown on the action card. */
+  name: string;
+  /** Decoded upload size in bytes. */
+  bytes: number;
+};
+
+/** Durable state for one staged Drive upload. */
+export type DriveUploadStatus = {
+  /** Gatekeeper-local action identifier. */
+  actionId: number;
+  /** Current upload state. */
+  state: "pending" | "applying" | "completed" | "rejected" | "failed";
+  /** Uploaded file metadata after successful approval and completion. */
+  file?: DriveFileInfo;
+  /** Failure detail when the outcome is known to have failed. */
+  error?: string;
+};
+
+/** Read and approval-gated upload access to one employee-selected Google Drive folder. */
+export interface GoogleDriveFolderSession {
+  /** Return metadata for the connected folder. */
+  getFolder(): Promise<DriveFolderInfo>;
+
+  /** List the most recently modified files directly inside the connected folder. */
+  listFiles(options?: { limit?: number }): Promise<DriveFileInfo[]>;
+
+  /** Stage one file upload. The upload cannot run until a person approves its action card. */
+  uploadFile(input: DriveUploadInput): Promise<DrivePendingUpload>;
+
+  /** Read durable pending, completed, rejected, or failed state for a staged upload. */
+  getUpload(actionId: number): Promise<DriveUploadStatus>;
 }

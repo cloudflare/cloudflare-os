@@ -1,11 +1,13 @@
 import type {
-  SpreadsheetCellValue, SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode,
+  SpreadsheetCellValue, SpreadsheetInfo, SpreadsheetInputMode, SpreadsheetRange,
+  SpreadsheetValueMode,
 } from "./sheets-types";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 
 const API_BASE = "https://sheets.googleapis.com/v4/spreadsheets";
 const MAX_RANGES = 20;
 const MAX_TOTAL_CELLS = 50_000;
+const MAX_WRITE_BYTES = 100 * 1024;
 const MAX_RANGE_LENGTH = 500;
 // Bound the encoded JSON before decoding and parsing.
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
@@ -49,7 +51,7 @@ function columnNumber(column: string): number {
   return result;
 }
 
-function validateRange(range: string): ValidatedRange {
+export function validateRange(range: string): ValidatedRange {
   if (typeof range !== "string" || range.length === 0 || range.length > MAX_RANGE_LENGTH) {
     throw new Error(`A1 ranges must contain between 1 and ${MAX_RANGE_LENGTH} characters.`);
   }
@@ -80,6 +82,59 @@ function validateRange(range: string): ValidatedRange {
     throw new Error(`A1 range "${range}" is too large.`);
   }
   return { range, rows, columns };
+}
+
+export function validateWrite(
+  range: string,
+  values: SpreadsheetCellValue[][],
+  requireExactShape: boolean,
+): { values: SpreadsheetCellValue[][]; cellCount: number } {
+  let validatedRange = validateRange(range);
+  if (!Array.isArray(values) || values.length === 0 || values.length > validatedRange.rows) {
+    throw new Error(
+      `A write to ${validatedRange.range} requires between 1 and ${validatedRange.rows} row(s).`,
+    );
+  }
+  let width = values[0]?.length ?? 0;
+  if (width === 0 || width > validatedRange.columns) {
+    throw new Error(
+      `A write to ${validatedRange.range} requires between 1 and ` +
+      `${validatedRange.columns} column(s).`,
+    );
+  }
+  if (values.some(row => !Array.isArray(row) || row.length !== width)) {
+    throw new Error("Google Sheets writes require a rectangular value matrix.");
+  }
+  if (requireExactShape &&
+      (values.length !== validatedRange.rows || width !== validatedRange.columns)) {
+    throw new Error(
+      `updateRange values must exactly fill ${validatedRange.range} ` +
+      `(${validatedRange.rows} row(s) by ${validatedRange.columns} column(s)).`,
+    );
+  }
+  let cellCount = values.length * width;
+  if (cellCount > MAX_TOTAL_CELLS) {
+    throw new Error(`A write may contain at most ${MAX_TOTAL_CELLS.toLocaleString()} cells.`);
+  }
+  for (let row of values) {
+    for (let value of row) normalizeCell(value);
+  }
+  let encodedBytes = new TextEncoder().encode(JSON.stringify(values)).byteLength;
+  if (encodedBytes > MAX_WRITE_BYTES) {
+    throw new Error(
+      `A staged write may contain at most ${MAX_WRITE_BYTES.toLocaleString()} encoded bytes. ` +
+      "Split this change into smaller approval actions.",
+    );
+  }
+  return { values, cellCount };
+}
+
+function valueInputOption(mode: SpreadsheetInputMode | undefined): string {
+  switch (mode ?? "raw") {
+    case "raw": return "RAW";
+    case "userEntered": return "USER_ENTERED";
+    default: throw new Error(`Unknown Google Sheets input mode: ${String(mode)}`);
+  }
 }
 
 function validateRanges(ranges: string[]): ValidatedRange[] {
@@ -164,9 +219,9 @@ async function readResponseText(response: Response, maxBytes: number): Promise<s
 export class GoogleSheetsApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
-  async #request<T>(url: URL): Promise<T> {
+  async #request<T>(url: URL, init: RequestInit = {}): Promise<T> {
     let response = await fetchWithAuthRetry(
-      url.toString(), {}, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+      url.toString(), init, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
     );
 
     let text: string;
@@ -244,5 +299,42 @@ export class GoogleSheetsApi {
     let result = await this.#request<{ valueRanges?: RestValueRange[] }>(url);
     let returned = result.valueRanges ?? [];
     return validated.map((range, index) => normalizeRange(returned[index] ?? {}, range));
+  }
+
+  async updateRange(
+    spreadsheetId: string,
+    range: string,
+    values: SpreadsheetCellValue[][],
+    inputMode?: SpreadsheetInputMode,
+  ): Promise<void> {
+    validateWrite(range, values, true);
+    let url = new URL(
+      `${API_BASE}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`,
+    );
+    url.searchParams.set("valueInputOption", valueInputOption(inputMode));
+    await this.#request(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ range, majorDimension: "ROWS", values }),
+    });
+  }
+
+  async appendRows(
+    spreadsheetId: string,
+    range: string,
+    values: SpreadsheetCellValue[][],
+    inputMode?: SpreadsheetInputMode,
+  ): Promise<void> {
+    validateWrite(range, values, false);
+    let url = new URL(
+      `${API_BASE}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}:append`,
+    );
+    url.searchParams.set("valueInputOption", valueInputOption(inputMode));
+    url.searchParams.set("insertDataOption", "INSERT_ROWS");
+    await this.#request(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ range, majorDimension: "ROWS", values }),
+    });
   }
 }

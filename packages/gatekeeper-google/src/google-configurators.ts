@@ -5,6 +5,7 @@ import { GoogleCalendarApi } from "./calendar-api";
 import { GoogleAccessToken } from "./google-api";
 import type { BigQueryConfiguratorRpc } from "./configurator/bigquery-configurator-types";
 import type { CalendarConfiguratorRpc } from "./configurator/calendar-configurator-types";
+import type { DriveFolderConfiguratorRpc } from "./configurator/drive-folder-configurator-types";
 import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-types";
 import type { GoogleDocConfiguratorRpc } from "./configurator/google-doc-configurator-types";
 import type { GoogleSheetsConfiguratorRpc } from "./configurator/google-sheets-configurator-types";
@@ -238,6 +239,21 @@ export class GoogleSheetsConfiguratorUI extends RpcTarget implements GoogleSheet
   async listSpreadsheets(query: string): Promise<ConfiguratorOption[]> {
     return listDriveFiles(
       this, query, "application/vnd.google-apps.spreadsheet", "Google Sheets",
+    );
+  }
+}
+
+// RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
+@validateRpc()
+export class DriveFolderConfiguratorUI extends RpcTarget implements DriveFolderConfiguratorRpc {
+  constructor(getToken: () => Promise<GoogleAccessToken>) {
+    super();
+    googleTokenGetters.set(this, getToken);
+  }
+
+  async listFolders(query: string): Promise<ConfiguratorOption[]> {
+    return listDriveFiles(
+      this, query, "application/vnd.google-apps.folder", "Google Drive folders",
     );
   }
 }

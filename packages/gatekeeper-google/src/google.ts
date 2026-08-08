@@ -8,9 +8,13 @@ import {
 } from "./types";
 import { GoogleDocSession, DocMetadata } from "./docs-types";
 import { GoogleDocsApi } from "./docs-api";
-import { GoogleSheetsApi } from "./sheets-api";
+import { GoogleDriveApi } from "./drive-api";
+import { DriveUploadStore } from "./drive-upload-store";
+import { GoogleSheetsApi, validateWrite } from "./sheets-api";
 import type {
-  GoogleSpreadsheetSession, SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode,
+  DriveFileInfo, DriveFolderInfo, DrivePendingUpload, DriveUploadInput, DriveUploadStatus,
+  GoogleDriveFolderSession, GoogleSpreadsheetSession, SpreadsheetCellValue, SpreadsheetInfo,
+  SpreadsheetInputMode, SpreadsheetPendingWrite, SpreadsheetRange, SpreadsheetValueMode,
 } from "./sheets-types";
 import { docToMarkdown, markdownToDocRequests, computeReplaceOperations, DocSnapshot } from "./markdown-converter";
 import { BigQueryApi, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
@@ -35,12 +39,14 @@ import SHEETS_TYPES_CODE from "./sheets-types.txt";
 import {
   BigQueryConfiguratorUI,
   CalendarConfiguratorUI,
+  DriveFolderConfiguratorUI,
   GmailConfiguratorUI,
   GoogleDocConfiguratorUI,
   GoogleSheetsConfiguratorUI,
 } from "./google-configurators";
 import BIGQUERY_CONFIGURATOR_HTML from "./generated/bigquery-configurator-ui.txt";
 import CALENDAR_CONFIGURATOR_HTML from "./generated/calendar-configurator-ui.txt";
+import DRIVE_FOLDER_CONFIGURATOR_HTML from "./generated/drive-folder-configurator-ui.txt";
 import GMAIL_CONFIGURATOR_HTML from "./generated/gmail-configurator-ui.txt";
 import GOOGLE_DOC_CONFIGURATOR_HTML from "./generated/google-doc-configurator-ui.txt";
 import GOOGLE_SHEETS_CONFIGURATOR_HTML from "./generated/google-sheets-configurator-ui.txt";
@@ -239,7 +245,14 @@ const GOOGLE_DOC_RESOURCE: SupportedResource = {
 const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
   urlPattern: "https://docs.google.com/spreadsheets/d/:spreadsheetId/*",
   title: "Google Spreadsheet",
-  description: "Read values from a spreadsheet you choose.",
+  description: "Read and approval-gate writes to a spreadsheet you choose.",
+  grantable: true,
+};
+
+const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
+  urlPattern: "https://drive.google.com/drive/folders/:folderId/*",
+  title: "Google Drive Folder",
+  description: "List files and approval-gate uploads to a folder you choose.",
   grantable: true,
 };
 
@@ -285,9 +298,18 @@ const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] = [
   {
     resource: GOOGLE_SHEETS_RESOURCE,
     scopes: [
-      "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/spreadsheets",
       // Read-only Drive file metadata, used to power the spreadsheet picker.
       "https://www.googleapis.com/auth/drive.metadata.readonly",
+    ],
+  },
+  {
+    resource: GOOGLE_DRIVE_FOLDER_RESOURCE,
+    scopes: [
+      // The gatekeeper narrows this account grant to one employee-selected folder. The Drive API
+      // scope is required because the in-app resource picker is not the Google Picker API and must
+      // be able to create a child under an existing selected folder.
+      "https://www.googleapis.com/auth/drive",
     ],
   },
   {
@@ -475,7 +497,8 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 
   async getTypeScriptTypes(): Promise<string> {
     return [
-      TYPES_CODE, DOCS_TYPES_CODE, SHEETS_TYPES_CODE, CALENDAR_TYPES_CODE, BIGQUERY_TYPES_CODE,
+      TYPES_CODE, DOCS_TYPES_CODE, SHEETS_TYPES_CODE, CALENDAR_TYPES_CODE,
+      BIGQUERY_TYPES_CODE,
     ].join("\n");
   }
 }
@@ -846,6 +869,20 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       return {class: this.ctx.exports.GoogleDocGatekeeperImpl({props}), resource: GOOGLE_DOC_RESOURCE};
     }
 
+    if (parsed.hostname === "drive.google.com" &&
+        parsed.pathname.startsWith("/drive/folders/")) {
+      let folderId = parsed.pathname.split("/")[3];
+      if (!folderId) throw new Error("Invalid Google Drive folder URL: no folder ID found");
+      let props: GoogleDriveFolderGatekeeperImplProps = {
+        userObjectId: this.ctx.props.userObjectId,
+        folderId,
+      };
+      return {
+        class: this.ctx.exports.GoogleDriveFolderGatekeeperImpl({ props }),
+        resource: GOOGLE_DRIVE_FOLDER_RESOURCE,
+      };
+    }
+
     if (parsed.hostname === "docs.google.com" &&
         parsed.pathname.startsWith("/spreadsheets/d/")) {
       let spreadsheetId = parsed.pathname.split("/")[3];
@@ -995,6 +1032,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       };
     }
 
+    if (resourceUrlPattern === GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern) {
+      return {
+        iframeHtml: DRIVE_FOLDER_CONFIGURATOR_HTML,
+        ui: new RpcStub(new DriveFolderConfiguratorUI(getToken)),
+      };
+    }
+
     throw new Error(`Unsupported resource configurator type: ${resourceUrlPattern}`);
   }
 
@@ -1017,7 +1061,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   async ensureResources(resourceUrlPatterns: string[]): Promise<{url?: string}> {
     let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
     let obj = this.ctx.exports.UserAccount.get(id);
-    let granted = new Set(await obj.getGrantedResourceUrlPatterns());
+    let granted = new Set<string>(await obj.getGrantedResourceUrlPatterns());
     if (resourceUrlPatterns.every(pattern => granted.has(pattern))) {
       return {};
     }
@@ -1053,6 +1097,8 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //     own token can open the bound document (Docs API returns 401/403/404 otherwise).
 //   - Google Sheets — strategy B (ACL check, single unit): hasSpreadsheetAccess answers whether the
 //     observer's own token can open the bound spreadsheet.
+//   - Google Drive Folder — strategy B (ACL check, single unit): hasDriveFolderAccess answers
+//     whether the observer's own token can open the bound folder.
 //   - Google Calendar — strategies B/C: hasCalendarWriterAccess covers the bound calendar, while
 //     hasCalendarFreeBusyAccess covers foreign calendars read by an all-visible availability query.
 //   - BigQuery — strategy C (data-set tracking by dataset): hasDatasetAccess answers whether the
@@ -1082,6 +1128,7 @@ function isNoAccessStatus(status: number | undefined): boolean {
 // part of the generic GatekeeperUserVerifier contract.
 export interface GoogleVerifierApi extends GatekeeperUserVerifier {
   hasDocAccess(documentId: string): Promise<boolean>;
+  hasDriveFolderAccess(folderId: string): Promise<boolean>;
   hasSpreadsheetAccess(spreadsheetId: string): Promise<boolean>;
   hasCalendarWriterAccess(calendarId: string): Promise<boolean>;
   hasCalendarFreeBusyAccess(calendarId: string): Promise<boolean>;
@@ -1109,6 +1156,17 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
     let api = new GoogleDocsApi(opts => this.#getToken(opts));
     try {
       await api.getDocument(documentId);
+      return true;
+    } catch (error) {
+      if (isNoAccessStatus(httpStatusFromError(error))) return false;
+      throw error;
+    }
+  }
+
+  async hasDriveFolderAccess(folderId: string): Promise<boolean> {
+    let api = new GoogleDriveApi(opts => this.#getToken(opts));
+    try {
+      await api.getFolder(folderId);
       return true;
     } catch (error) {
       if (isNoAccessStatus(httpStatusFromError(error))) return false;
@@ -2508,8 +2566,257 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
 }
 
 // =======================================================================================
+// Google Drive Folder Gatekeeper
+// =======================================================================================
+
+const MAX_DRIVE_UPLOAD_BYTES = 10 * 1024 * 1024;
+const UPLOAD_DRIVE_FILE_ACTION: ActionKind = {
+  tag: "uploadDriveFile",
+  label: "Drive file uploads",
+};
+
+type GoogleDriveFolderGatekeeperImplProps = {
+  userObjectId: string;
+  folderId: string;
+};
+
+function decodeDriveUpload(input: DriveUploadInput): {
+  name: string;
+  mimeType: string;
+  bytes: Uint8Array;
+  convertToGoogleDoc: boolean;
+} {
+  let name = input.name?.trim();
+  let hasUnsafeControl = [...(name ?? "")].some(character => {
+    let codePoint = character.codePointAt(0)!;
+    return codePoint <= 0x1f || codePoint === 0x7f ||
+      (codePoint >= 0x202a && codePoint <= 0x202e) ||
+      (codePoint >= 0x2066 && codePoint <= 0x2069);
+  });
+  if (!name || new TextEncoder().encode(name).byteLength > 255 || name.includes("/") ||
+      name.includes("\\") || hasUnsafeControl || name === "." || name === "..") {
+    throw new Error(
+      "Drive upload names must be 1-255 bytes and cannot contain path separators or controls.",
+    );
+  }
+  let mimeType = input.mimeType?.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/.test(mimeType)) {
+    throw new Error("Drive uploads require a valid MIME type.");
+  }
+  if (input.convertToGoogleDoc && !mimeType.startsWith("text/")) {
+    throw new Error("Only textual uploads can be converted to a native Google Doc.");
+  }
+  if (typeof input.base64 !== "string" || input.base64.length === 0 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.base64)) {
+    throw new Error("Drive upload data must be standard base64.");
+  }
+  let decoded: string;
+  try {
+    decoded = atob(input.base64);
+  } catch {
+    throw new Error("Drive upload data must be valid standard base64.");
+  }
+  if (decoded.length === 0 || decoded.length > MAX_DRIVE_UPLOAD_BYTES) {
+    throw new Error(`Drive uploads must contain between 1 byte and ${MAX_DRIVE_UPLOAD_BYTES} bytes.`);
+  }
+  let bytes = Uint8Array.from(decoded, character => character.charCodeAt(0));
+  return { name, mimeType, bytes, convertToGoogleDoc: input.convertToGoogleDoc === true };
+}
+
+@validateRpc()
+export class GoogleDriveFolderGatekeeperImpl
+    extends DurableObject<Env, GoogleDriveFolderGatekeeperImplProps>
+    implements Gatekeeper<GoogleDriveFolderSession> {
+  #store: DriveUploadStore | undefined;
+  #tokens = new AccessTokenCache(opts => {
+    let account = this.ctx.exports.UserAccount.get(
+      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId),
+    );
+    return account.getAccessToken(opts);
+  });
+
+  #uploads(): DriveUploadStore {
+    return this.#store ??= new DriveUploadStore(this.ctx.storage.sql);
+  }
+
+  async #getAccessToken(opts?: AccessTokenRequest): Promise<string> {
+    return this.#tokens.get(opts);
+  }
+
+  async describe(): Promise<ResourceDescription> {
+    let folder = await new GoogleDriveApi(opts => this.#getAccessToken(opts))
+      .getFolder(this.ctx.props.folderId);
+    return {
+      url: folder.webViewLink,
+      title: folder.name,
+      snippet: `Google Drive folder: ${folder.name}`,
+      suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
+      tsType: "GoogleDriveFolderSession",
+    };
+  }
+
+  async getTypeScriptTypes(): Promise<string> {
+    return SHEETS_TYPES_CODE;
+  }
+
+  async getAutoApprovableActions(): Promise<ActionKind[]> {
+    return [UPLOAD_DRIVE_FILE_ACTION];
+  }
+
+  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleDriveFolderSession> {
+    return new GoogleDriveFolderSessionImpl(
+      new GoogleDriveApi(opts => this.#getAccessToken(opts)),
+      this.ctx.props.folderId,
+      approvalQueue.dup(),
+      this.#uploads(),
+    );
+  }
+
+  async applyAction(actionId: number): Promise<void> {
+    let upload = this.#uploads().claim(actionId);
+    if (upload.state === "completed") return;
+    try {
+      let file = await new GoogleDriveApi(opts => this.#getAccessToken(opts)).uploadFile(
+        this.ctx.props.folderId,
+        {
+          name: upload.name,
+          mimeType: upload.mimeType,
+          bytes: upload.bytes!,
+          convertToGoogleDoc: upload.convertToGoogleDoc,
+        },
+      );
+      this.#uploads().complete(actionId, file);
+    } catch (error) {
+      let message = error instanceof Error ? error.message : String(error);
+      this.#uploads().fail(
+        actionId,
+        `${message} Check the connected folder before staging another upload because the request ` +
+        "may have reached Google Drive.",
+      );
+      throw error;
+    }
+  }
+
+  async rejectAction(actionId: number): Promise<void> {
+    this.#uploads().reject(actionId);
+  }
+
+  revertAction(_actionId: number): Promise<void> {
+    throw new Error("Google Drive uploads do not implement automatic deletion or revert.");
+  }
+
+  async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
+    let verifier = user as unknown as Fetcher<GoogleVerifierApi>;
+    if (!(await verifier.hasDriveFolderAccess(this.ctx.props.folderId))) {
+      throw new Error(
+        "This collaborator cannot access the bound Google Drive folder, so they cannot observe " +
+        "data that this workspace read from it.",
+      );
+    }
+  }
+
+  async removeObserver(_id: string): Promise<void> {}
+}
+
+@validateRpc()
+class GoogleDriveFolderSessionImpl extends RpcTarget implements GoogleDriveFolderSession {
+  constructor(
+    private api: GoogleDriveApi,
+    private folderId: string,
+    private approvalQueue: RpcStub<ApprovalQueue>,
+    private uploads: DriveUploadStore,
+  ) {
+    super();
+  }
+
+  [Symbol.dispose](): void {
+    this.approvalQueue[Symbol.dispose]();
+  }
+
+  async getFolder(): Promise<DriveFolderInfo> {
+    let folder = await this.api.getFolder(this.folderId);
+    await this.approvalQueue.authorizeObservation({
+      title: "Read Google Drive folder metadata",
+      description: `Read metadata for the connected folder "${folder.name}".`,
+    });
+    return folder;
+  }
+
+  async listFiles(options?: { limit?: number }): Promise<DriveFileInfo[]> {
+    let limit = options?.limit ?? 50;
+    let files = await this.api.listFiles(this.folderId, limit);
+    await this.approvalQueue.authorizeObservation({
+      title: "List Google Drive folder files",
+      description: `List ${files.length} file(s) directly inside the connected Drive folder.`,
+    });
+    return files;
+  }
+
+  async uploadFile(input: DriveUploadInput): Promise<DrivePendingUpload> {
+    let decoded = decodeDriveUpload(input);
+    let upload = this.uploads.stage(decoded);
+    try {
+      await this.approvalQueue.submitAction(upload.id, {
+        title: `Upload ${upload.name} to Google Drive`,
+        description:
+          `Upload ${upload.byteLength.toLocaleString()} byte(s) to the connected folder` +
+          `${upload.convertToGoogleDoc ? " and convert the text to a native Google Doc" : ""}.`,
+        implementsRevert: false,
+        actionKind: UPLOAD_DRIVE_FILE_ACTION,
+        autoApprovable: true,
+      });
+    } catch (error) {
+      this.uploads.discard(upload.id);
+      throw error;
+    }
+    return { actionId: upload.id, name: upload.name, bytes: upload.byteLength };
+  }
+
+  async getUpload(actionId: number): Promise<DriveUploadStatus> {
+    if (!Number.isInteger(actionId) || actionId < 1) {
+      throw new Error("Drive upload actionId must be a positive integer.");
+    }
+    let upload = this.uploads.get(actionId);
+    if (!upload) throw new Error(`Google Drive upload ${actionId} is unknown.`);
+    await this.approvalQueue.authorizeObservation({
+      title: "Read Google Drive upload status",
+      description: `Read state for staged Drive upload ${actionId}.`,
+    });
+    return {
+      actionId,
+      state: upload.state,
+      ...(upload.file ? { file: upload.file } : {}),
+      ...(upload.error ? { error: upload.error } : {}),
+    };
+  }
+}
+
+// =======================================================================================
 // Google Sheets Gatekeeper
 // =======================================================================================
+
+type GoogleSheetsAction = {
+  type: "updateRange" | "appendRows";
+  spreadsheetId: string;
+  submittedAt: number;
+  range: string;
+  values: SpreadsheetCellValue[][];
+  inputMode: SpreadsheetInputMode;
+};
+
+const EDIT_SPREADSHEET_ACTION: ActionKind = {
+  tag: "editSpreadsheet",
+  label: "Spreadsheet edits",
+};
+
+function spreadsheetActionPreview(values: SpreadsheetCellValue[][]): string {
+  const json = JSON.stringify(values)
+    .replaceAll("`", "\\u0060")
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e");
+  const limit = 2_000;
+  return json.length <= limit ? json : `${json.slice(0, limit)}…`;
+}
 
 type GoogleSheetsGatekeeperImplProps = {
   userObjectId: string;
@@ -2537,7 +2844,7 @@ export class GoogleSheetsGatekeeperImpl
     return {
       url: `https://docs.google.com/spreadsheets/d/${this.ctx.props.spreadsheetId}/edit`,
       title: spreadsheet.title,
-      snippet: `Google Spreadsheet: ${spreadsheet.title} (read-only)`,
+      snippet: `Google Spreadsheet: ${spreadsheet.title}`,
       suggestedBindingName: "GOOGLE_SHEET",
       tsType: "GoogleSpreadsheetSession",
     };
@@ -2548,25 +2855,50 @@ export class GoogleSheetsGatekeeperImpl
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [];
+    return [EDIT_SPREADSHEET_ACTION];
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleSpreadsheetSession> {
     let api = new GoogleSheetsApi(opts => this.#getAccessToken(opts));
     return new GoogleSpreadsheetSessionImpl(
-      api, this.ctx.props.spreadsheetId, approvalQueue.dup(),
+      api,
+      this.ctx.props.spreadsheetId,
+      approvalQueue.dup(),
+      new PendingActionStore<GoogleSheetsAction>(this.ctx.storage.kv),
     );
   }
 
-  // Read-only — no side-effecting actions.
-  async applyAction(_action: number): Promise<void> {
-    throw new Error("Google Sheets is read-only and implements no actions.");
+  async applyAction(actionId: number): Promise<void> {
+    let pending = new PendingActionStore<GoogleSheetsAction>(this.ctx.storage.kv);
+    let action = pending.get(actionId);
+    if (!action) throw new Error(`Unknown pending Google Sheets action: ${actionId}`);
+    if (action.spreadsheetId !== this.ctx.props.spreadsheetId) {
+      pending.remove(actionId);
+      throw new Error("Pending Google Sheets action targets a different spreadsheet.");
+    }
+    let api = new GoogleSheetsApi(opts => this.#getAccessToken(opts));
+    if (action.type === "updateRange") {
+      await api.updateRange(
+        action.spreadsheetId, action.range, action.values, action.inputMode,
+      );
+    } else {
+      await api.appendRows(
+        action.spreadsheetId, action.range, action.values, action.inputMode,
+      );
+    }
+    pending.remove(actionId);
   }
-  async rejectAction(_action: number): Promise<void> {
-    throw new Error("Google Sheets is read-only and implements no actions.");
+
+  async rejectAction(actionId: number): Promise<void> {
+    let pending = new PendingActionStore<GoogleSheetsAction>(this.ctx.storage.kv);
+    if (!pending.get(actionId)) {
+      throw new Error(`Unknown pending Google Sheets action: ${actionId}`);
+    }
+    pending.remove(actionId);
   }
-  revertAction(_action: number): Promise<void> {
-    throw new Error("Google Sheets is read-only and implements no actions.");
+
+  revertAction(_actionId: number): Promise<void> {
+    throw new Error("Google Sheets writes do not implement revert.");
   }
 
   // Observer tracking — strategy B (ACL check, single unit). Google applies sharing permissions at
@@ -2590,16 +2922,19 @@ class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpreadshee
   #api: GoogleSheetsApi;
   #spreadsheetId: string;
   #approvalQueue: RpcStub<ApprovalQueue>;
+  #pendingActions: PendingActionStore<GoogleSheetsAction>;
 
   constructor(
     api: GoogleSheetsApi,
     spreadsheetId: string,
     approvalQueue: RpcStub<ApprovalQueue>,
+    pendingActions: PendingActionStore<GoogleSheetsAction>,
   ) {
     super();
     this.#api = api;
     this.#spreadsheetId = spreadsheetId;
     this.#approvalQueue = approvalQueue;
+    this.#pendingActions = pendingActions;
   }
 
   [Symbol.dispose](): void {
@@ -2651,6 +2986,61 @@ class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpreadshee
         "the connected spreadsheet.",
     });
     return result;
+  }
+
+  async updateRange(
+    range: string,
+    values: SpreadsheetCellValue[][],
+    options?: { inputMode?: SpreadsheetInputMode },
+  ): Promise<SpreadsheetPendingWrite> {
+    return this.#stageWrite("updateRange", range, values, options?.inputMode);
+  }
+
+  async appendRows(
+    range: string,
+    values: SpreadsheetCellValue[][],
+    options?: { inputMode?: SpreadsheetInputMode },
+  ): Promise<SpreadsheetPendingWrite> {
+    return this.#stageWrite("appendRows", range, values, options?.inputMode);
+  }
+
+  async #stageWrite(
+    type: GoogleSheetsAction["type"],
+    range: string,
+    values: SpreadsheetCellValue[][],
+    inputMode: SpreadsheetInputMode = "raw",
+  ): Promise<SpreadsheetPendingWrite> {
+    let { cellCount } = validateWrite(range, values, type === "updateRange");
+    if (inputMode !== "raw" && inputMode !== "userEntered") {
+      throw new Error(`Unknown Google Sheets input mode: ${String(inputMode)}`);
+    }
+
+    let action: GoogleSheetsAction = {
+      type,
+      spreadsheetId: this.#spreadsheetId,
+      submittedAt: Date.now(),
+      range,
+      values,
+      inputMode,
+    };
+    let actionId = this.#pendingActions.submit(action);
+    let operation = type === "updateRange" ? "Replace" : "Append";
+    try {
+      await this.#approvalQueue.submitAction(actionId, {
+        title: `${operation} Google Sheets values`,
+        description:
+          `${operation} ${cellCount.toLocaleString()} cell(s) in range ${range}. ` +
+          `Values use ${inputMode === "raw" ? "raw" : "user-entered"} interpretation.\n\n` +
+          `Values preview:\n\n\`${spreadsheetActionPreview(values)}\``,
+        implementsRevert: false,
+        actionKind: EDIT_SPREADSHEET_ACTION,
+        autoApprovable: true,
+      });
+    } catch (error) {
+      this.#pendingActions.remove(actionId);
+      throw error;
+    }
+    return { actionId, operation: type, range, cellCount };
   }
 }
 
