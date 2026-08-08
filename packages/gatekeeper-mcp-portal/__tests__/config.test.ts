@@ -3,7 +3,6 @@ import {
   portalResource,
   portalAuthRequiresReconnect,
   portalServer,
-  portalServiceTokenHeadersFor,
   portalTokenFor,
   portalTrust,
   readPortalConfig,
@@ -54,11 +53,6 @@ describe("readPortalConfig", () => {
     }));
     expect(configured?.name).toBe("Cloudflare MCP Portal");
     expect(configured?.auth).toBe("token");
-
-    expect(readPortalConfig(env({
-      MCP_PORTAL_URL: "https://gw.example.com/mcp",
-      MCP_PORTAL_AUTH: "SERVICE_TOKEN",
-    }))?.auth).toBe("service_token");
   });
 
   it("falls back to oauth for an unrecognized auth kind", () => {
@@ -143,52 +137,11 @@ describe("portalAuthRequiresReconnect", () => {
     expect(portalAuthRequiresReconnect("oauth", "token")).toBe(true);
     expect(portalAuthRequiresReconnect("token", "none")).toBe(true);
     expect(portalAuthRequiresReconnect("token", "oauth")).toBe(true);
-    expect(portalAuthRequiresReconnect("oauth", "service_token")).toBe(true);
-    expect(portalAuthRequiresReconnect("service_token", "none")).toBe(true);
-    expect(portalAuthRequiresReconnect("service_token", "token")).toBe(true);
   });
 
   it("allows none and oauth to differ after probing the endpoint", () => {
     expect(portalAuthRequiresReconnect("none", "oauth")).toBe(false);
     expect(portalAuthRequiresReconnect("oauth", "none")).toBe(false);
-  });
-});
-
-describe("portalServiceTokenHeadersFor", () => {
-  const ENDPOINT = "https://gw.example.com/mcp";
-
-  it("returns both Cloudflare Access headers only for the configured endpoint", () => {
-    const configured = env({
-      MCP_PORTAL_URL: ENDPOINT,
-      MCP_PORTAL_AUTH: "service_token",
-      MCP_PORTAL_ACCESS_CLIENT_ID: "client-id",
-      MCP_PORTAL_ACCESS_CLIENT_SECRET: "client-secret",
-    });
-    expect(portalServiceTokenHeadersFor(configured, ENDPOINT)).toEqual({
-      "CF-Access-Client-Id": "client-id",
-      "CF-Access-Client-Secret": "client-secret",
-    });
-    expect(portalServiceTokenHeadersFor(configured, "https://other.example.com/mcp")).toBeNull();
-  });
-
-  it("fails closed unless both secret fields and service-token mode are present", () => {
-    for (const overrides of <Record<string, string>[]>[
-      { MCP_PORTAL_ACCESS_CLIENT_ID: "client-id" },
-      { MCP_PORTAL_ACCESS_CLIENT_SECRET: "client-secret" },
-      { MCP_PORTAL_ACCESS_CLIENT_ID: "", MCP_PORTAL_ACCESS_CLIENT_SECRET: "client-secret" },
-    ]) {
-      expect(portalServiceTokenHeadersFor(env({
-        MCP_PORTAL_URL: ENDPOINT,
-        MCP_PORTAL_AUTH: "service_token",
-        ...overrides,
-      }), ENDPOINT)).toBeNull();
-    }
-    expect(portalServiceTokenHeadersFor(env({
-      MCP_PORTAL_URL: ENDPOINT,
-      MCP_PORTAL_AUTH: "oauth",
-      MCP_PORTAL_ACCESS_CLIENT_ID: "client-id",
-      MCP_PORTAL_ACCESS_CLIENT_SECRET: "client-secret",
-    }), ENDPOINT)).toBeNull();
   });
 });
 

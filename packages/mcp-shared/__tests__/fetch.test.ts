@@ -6,8 +6,6 @@ type Hop = {
   url: string;
   authorization: string | null;
   sessionId: string | null;
-  accessClientId: string | null;
-  accessClientSecret: string | null;
   method: string;
   body: unknown;
 };
@@ -20,8 +18,6 @@ function stubChain(chain: Record<string, string>, status = 307): Hop[] {
       url: String(input),
       authorization: new Headers(init.headers).get("Authorization"),
       sessionId: new Headers(init.headers).get("Mcp-Session-Id"),
-      accessClientId: new Headers(init.headers).get("CF-Access-Client-Id"),
-      accessClientSecret: new Headers(init.headers).get("CF-Access-Client-Secret"),
       method: init.method ?? "GET",
       body: init.body,
     });
@@ -67,14 +63,10 @@ describe("guardedFetch", () => {
       headers: {
         Authorization: "Bearer secret",
         "Mcp-Session-Id": "origin-session-secret",
-        "CF-Access-Client-Id": "service-id",
-        "CF-Access-Client-Secret": "service-secret",
       },
     });
     expect(hops.map(hop => hop.authorization)).toEqual(["Bearer secret", null]);
     expect(hops.map(hop => hop.sessionId)).toEqual(["origin-session-secret", null]);
-    expect(hops.map(hop => hop.accessClientId)).toEqual(["service-id", null]);
-    expect(hops.map(hop => hop.accessClientSecret)).toEqual(["service-secret", null]);
   });
 
   it("does not replay the body across a 303", async () => {

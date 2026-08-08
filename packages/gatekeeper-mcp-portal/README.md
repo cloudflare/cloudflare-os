@@ -40,10 +40,8 @@ signatures unscoped, and 12 when scoped to one server.
 | --- | --- |
 | `MCP_PORTAL_URL` | The portal's MCP endpoint. Unset means the connector hides itself. |
 | `MCP_PORTAL_NAME` | Display name in the connector list and every approval prompt. Defaults to `MCP Server Portal (<host>)`. |
-| `MCP_PORTAL_AUTH` | `oauth` (default), `none`, `token`, or `service_token`. |
+| `MCP_PORTAL_AUTH` | `oauth` (default), `none`, or `token`. |
 | `MCP_PORTAL_TOKEN` | Secret bearer token, for `MCP_PORTAL_AUTH: "token"`. |
-| `MCP_PORTAL_ACCESS_CLIENT_ID` | Cloudflare Access service-token client ID, for `MCP_PORTAL_AUTH: "service_token"`. |
-| `MCP_PORTAL_ACCESS_CLIENT_SECRET` | Cloudflare Access service-token client secret, for `MCP_PORTAL_AUTH: "service_token"`. |
 | `MCP_PORTAL_TRUST_ANNOTATIONS` | `true` to let upstream tool annotations drive auto-approval. Off by default; see below. |
 | `MCP_ALLOW_INSECURE` | `"true"` to disable the endpoint checks entirely: permits `http://` **and** private, loopback, link-local, and cloud-metadata hosts, for the portal and every OAuth URL discovered from it. Local dev only. |
 
@@ -80,9 +78,8 @@ a rule for each action kind.
 There is no connect form: the endpoint is a deployment setting, so pressing "connect" goes straight
 to the portal's own sign-in. Under `MCP_PORTAL_AUTH: "oauth"` the gatekeeper runs the same
 discovery chain as [`gatekeeper-mcp`](../gatekeeper-mcp/README.md#how-the-connect-flow-works)
-against the portal; under `"token"` it presents `MCP_PORTAL_TOKEN`, and under `"service_token"` it
-presents the two Cloudflare Access service-token headers. Neither static mode needs user
-interaction. Under `"none"` it connects unauthenticated.
+against the portal; under `"token"` it presents `MCP_PORTAL_TOKEN` and no user interaction is
+needed; under `"none"` it connects unauthenticated.
 
 The account records `provenance: "deployment"`, which is what keeps an upstream server from renaming
 itself over `MCP_PORTAL_NAME` in every approval prompt.

@@ -148,8 +148,6 @@ export async function guardedFetch(
     if (crossOrigin) {
       headers = new Headers(headers);
       headers.delete("Authorization");
-      headers.delete("CF-Access-Client-Id");
-      headers.delete("CF-Access-Client-Secret");
       headers.delete("Mcp-Session-Id");
     }
 

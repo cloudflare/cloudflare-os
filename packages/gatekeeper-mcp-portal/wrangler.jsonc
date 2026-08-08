@@ -43,9 +43,8 @@
   //     "MCP Server Portal (<host>)".
   //
   //   MCP_PORTAL_AUTH
-  //     "oauth" (default), "none", "token", or "service_token". For "token", the bearer is the
-  //     MCP_PORTAL_TOKEN secret. For "service_token", install MCP_PORTAL_ACCESS_CLIENT_ID and
-  //     MCP_PORTAL_ACCESS_CLIENT_SECRET as Worker secrets.
+  //     "oauth" (default), "none", or "token". For "token", the bearer is the MCP_PORTAL_TOKEN
+  //     secret.
   //
   //   MCP_PORTAL_TRUST_ANNOTATIONS
   //     "true" to let tool annotations from behind this portal drive auto-approval. Off by default:

@@ -29,9 +29,6 @@ export type WithClientOptions = {
 export type McpConnection = {
   // Bearer token, or null for a public server.
   authorization: string | null;
-  // Additional deployment-scoped credential headers. These are used for access systems whose
-  // machine identity is not a bearer token, such as Cloudflare Access service tokens.
-  credentialHeaders: Record<string, string>;
   // Transport session id from a previous `initialize`, if one is cached.
   sessionId: string | null;
   // Persisted account generation. Every state write after an await returns this to the account, so
@@ -65,10 +62,9 @@ export async function withClient<T>(
 ): Promise<T> {
   // Read once for the whole operation. The account refreshes a token a minute before expiry, so one
   // valid here stays valid for the handful of requests a single `withClient` makes.
-  const { authorization, credentialHeaders, sessionId, generation } =
-    await account.getConnection(endpoint);
+  const { authorization, sessionId, generation } = await account.getConnection(endpoint);
   const client = new McpClient(
-    endpoint, async () => authorization, sessionId, fetchOptions(env), credentialHeaders);
+    endpoint, async () => authorization, sessionId, fetchOptions(env));
 
   const run = async (): Promise<T> => {
     const result = await fn(client);
