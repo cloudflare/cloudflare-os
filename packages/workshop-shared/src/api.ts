@@ -251,6 +251,22 @@ export interface ObserverConfigCallback extends RpcTarget {
   configure(needs: ObserverBindingNeed[]): Promise<ObserverAccountChoice[]>;
 }
 
+/** Builds the create/read helpers for a family of expected errors carrying stable
+ * machine-readable codes. The per-code messages double as the classification fallback for errors
+ * from older deployments that lost the code in transit, so changing one is a compatibility break. */
+function codedErrorFamily<Code extends string>(messages: Record<Code, string>) {
+  const codes = new Set<unknown>(Object.keys(messages));
+  return {
+    create: (code: Code): Error & { code: Code } =>
+        Object.assign(new Error(messages[code]), { code }),
+    getCode: (error: unknown): Code | undefined => {
+      const candidate = typeof error === "object" && error !== null && "code" in error
+          ? error.code : undefined;
+      return codes.has(candidate) ? candidate as Code : undefined;
+    },
+  };
+}
+
 /** Stable error codes attached to expected failures from `AuthenticatedApi.openGadget()`. */
 export const OPEN_GADGET_ERROR_CODES = {
   workspaceNotFound: "WORKSPACE_NOT_FOUND",
@@ -261,29 +277,40 @@ export const OPEN_GADGET_ERROR_CODES = {
 export type OpenGadgetErrorCode =
     typeof OPEN_GADGET_ERROR_CODES[keyof typeof OPEN_GADGET_ERROR_CODES];
 
-const OPEN_GADGET_ERROR_MESSAGES: Record<OpenGadgetErrorCode, string> = {
+const openGadgetErrors = codedErrorFamily<OpenGadgetErrorCode>({
   [OPEN_GADGET_ERROR_CODES.workspaceNotFound]: "Workspace not found.",
   [OPEN_GADGET_ERROR_CODES.workspaceAccessDenied]: "You don't have access to this workspace.",
-};
+});
 
 /** Creates an expected `openGadget()` error with a machine-readable code. */
-export function createOpenGadgetError(
-    code: OpenGadgetErrorCode): Error & { code: OpenGadgetErrorCode } {
-  return Object.assign(new Error(OPEN_GADGET_ERROR_MESSAGES[code]), { code });
-}
+export const createOpenGadgetError = openGadgetErrors.create;
 
 /** Reads the machine-readable code from an expected `openGadget()` error. */
-export function getOpenGadgetErrorCode(error: unknown): OpenGadgetErrorCode | undefined {
-  if (typeof error !== "object" || error === null) return undefined;
+export const getOpenGadgetErrorCode = openGadgetErrors.getCode;
 
-  const candidate = "code" in error ? error.code : undefined;
-  return isOpenGadgetErrorCode(candidate) ? candidate : undefined;
-}
+/** Stable error codes attached to authentication failures. */
+export const AUTH_ERROR_CODES = {
+  invalidSessionToken: "INVALID_SESSION_TOKEN",
+  notAuthenticatedWithAccess: "NOT_AUTHENTICATED_WITH_ACCESS",
+} as const;
 
-function isOpenGadgetErrorCode(value: unknown): value is OpenGadgetErrorCode {
-  return value === OPEN_GADGET_ERROR_CODES.workspaceNotFound ||
-      value === OPEN_GADGET_ERROR_CODES.workspaceAccessDenied;
-}
+/** An expected authentication failure code. */
+export type AuthErrorCode = typeof AUTH_ERROR_CODES[keyof typeof AUTH_ERROR_CODES];
+
+/** Messages for auth failures thrown without a surviving code; clients match these only as a
+ * classification fallback. */
+export const AUTH_ERROR_MESSAGES: Record<AuthErrorCode, string> = {
+  [AUTH_ERROR_CODES.invalidSessionToken]: "invalid session token",
+  [AUTH_ERROR_CODES.notAuthenticatedWithAccess]: "Not authenticated with Access.",
+};
+
+const authErrors = codedErrorFamily(AUTH_ERROR_MESSAGES);
+
+/** Creates an authentication failure with a machine-readable code. */
+export const createAuthError = authErrors.create;
+
+/** Reads the machine-readable code from an authentication failure. */
+export const getAuthErrorCode = authErrors.getCode;
 
 // Top-level API exposed to the user after they have authenticated.
 export interface AuthenticatedApi extends RpcTarget {
