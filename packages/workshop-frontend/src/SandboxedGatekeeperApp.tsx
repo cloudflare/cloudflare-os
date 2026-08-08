@@ -19,6 +19,9 @@ import {
 // A receiver, defined by the sandboxed app, that the host calls to push theme changes into the frame.
 interface ThemeReceiver extends RpcTarget {
   setThemeMode(mode: ResolvedThemeMode): void
+}
+
+interface AccentReceiver extends RpcTarget {
   setAccentVariables(variables: Record<string, string> | null): void
 }
 
@@ -93,6 +96,7 @@ class GatekeeperAppHostImpl extends RpcTarget {
   #themeMode: ResolvedThemeMode
   #accentVariables: Record<string, string> | null
   #themeReceiver: RpcStub<ThemeReceiver> | null = null
+  #accentReceiver: RpcStub<AccentReceiver> | null = null
   // Presentation changes are coalesced to a single apply per animation frame (see #applyPending).
   #pendingActive: boolean | null = null
   #pendingResolvers: ((ack: PresentAck) => void)[] = []
@@ -154,14 +158,25 @@ class GatekeeperAppHostImpl extends RpcTarget {
     this.#themeReceiver?.[Symbol.dispose]?.()
     // The argument stub is disposed when this call returns, so keep our own dup (released in dispose).
     this.#themeReceiver = receiver.dup()
-    this.updateAccentVariables(this.#accentVariables)
     return this.#themeMode
+  }
+
+  subscribeAccent(receiver: RpcStub<AccentReceiver>): Record<string, string> | null {
+    this.#accentReceiver?.[Symbol.dispose]?.()
+    this.#accentReceiver = receiver.dup()
+    return this.#accentVariables
   }
 
   #dropThemeReceiver(receiver: RpcStub<ThemeReceiver>) {
     if (this.#themeReceiver !== receiver) return
     receiver[Symbol.dispose]?.()
     this.#themeReceiver = null
+  }
+
+  #dropAccentReceiver(receiver: RpcStub<AccentReceiver>) {
+    if (this.#accentReceiver !== receiver) return
+    receiver[Symbol.dispose]?.()
+    this.#accentReceiver = null
   }
 
   // Push a new mode to a subscribed app; a no-op until (and unless) the app subscribes.
@@ -179,14 +194,14 @@ class GatekeeperAppHostImpl extends RpcTarget {
 
   updateAccentVariables(variables: Record<string, string> | null) {
     this.#accentVariables = variables
-    const receiver = this.#themeReceiver
+    const receiver = this.#accentReceiver
     if (!receiver) return
 
     try {
       Promise.resolve(receiver.setAccentVariables(variables))
-        .catch(() => this.#dropThemeReceiver(receiver))
+        .catch(() => this.#dropAccentReceiver(receiver))
     } catch {
-      this.#dropThemeReceiver(receiver)
+      this.#dropAccentReceiver(receiver)
     }
   }
 
@@ -218,6 +233,8 @@ class GatekeeperAppHostImpl extends RpcTarget {
     this.#disposeRateLimiter()
     this.#themeReceiver?.[Symbol.dispose]?.()
     this.#themeReceiver = null
+    this.#accentReceiver?.[Symbol.dispose]?.()
+    this.#accentReceiver = null
     if (this.#frameId !== null) {
       cancelAnimationFrame(this.#frameId)
       this.#frameId = null

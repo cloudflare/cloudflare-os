@@ -21,6 +21,7 @@ class AppIframe extends RpcTarget {
 interface HostCapability extends RpcTarget {
   readonly ui: RpcStub<ScheduleManagementClient>;
   subscribeTheme(receiver: AppIframe): Promise<ResolvedThemeMode>;
+  subscribeAccent(receiver: AppIframe): Promise<Record<string, string> | null>;
   openWorkspace(workspaceId: string, gadgetId?: number): Promise<void>;
   resolveWorkspaceTitles(ids: string[]): Promise<(string | null)[]>;
   openPrompt(prompt: string): Promise<void>;
@@ -38,6 +39,7 @@ function main() {
     .subscribeTheme(iframe)
     .then(applyThemeMode)
     .catch(() => {});
+  host.subscribeAccent(iframe).then(applyAccentVariables).catch(() => {});
 
   createRoot(element, {
     onUncaughtError: (error) =>

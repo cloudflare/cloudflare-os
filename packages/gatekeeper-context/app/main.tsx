@@ -32,6 +32,7 @@ interface HostCapability extends RpcTarget {
   setPresenting(active: boolean): Promise<PresentAck>
   // Returns the current resolved theme mode and calls back on `receiver` whenever it changes.
   subscribeTheme(receiver: AppIframe): Promise<ResolvedThemeMode>
+  subscribeAccent(receiver: AppIframe): Promise<Record<string, string> | null>
 }
 
 function main() {
@@ -46,6 +47,7 @@ function main() {
   const host = newMessagePortRpcSession<HostCapability>(port1, iframe)
   // The initial mode comes back from the call; later changes arrive via iframe.setThemeMode().
   host.subscribeTheme(iframe).then(applyThemeMode).catch(() => {})
+  host.subscribeAccent(iframe).then(applyAccentVariables).catch(() => {})
 
   createRoot(root, {
     onUncaughtError: (error) => reportIssue('context.react-root', error, {
