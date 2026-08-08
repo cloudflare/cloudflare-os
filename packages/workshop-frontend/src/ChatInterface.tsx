@@ -1892,6 +1892,13 @@ export const ChatInput = ({
   // Keep inputValue in a ref so handleCursorChange can read it without re-binding.
   const inputValueRef = useRef(inputValue);
   inputValueRef.current = inputValue;
+  // Mobile Safari emits controlled-textarea changes while an IME composition is still in
+  // progress. Treating each provisional value as an ordinary edit can make its occasionally stale
+  // selection range look as though the edit crossed a connection capsule, which removes the
+  // capsule. Keep rendering the provisional text, but defer token bookkeeping until composition
+  // ends and compare the committed value with the value from before composition began.
+  const isComposingRef = useRef(false);
+  const compositionStartValueRef = useRef("");
 
   // Seed the composer from an external suggestion (Home task cards). Re-runs whenever the nonce
   // changes so picking the same suggestion twice still works. Focus + move the cursor to the end.
@@ -3089,12 +3096,30 @@ export const ChatInput = ({
               aria-controls={slashCommandPicker.open ? slashCommandPicker.listboxId : undefined}
               aria-activedescendant={slashCommandPicker.activeDescendant}
               onChange={(e) => {
-                handleInputChange(e.target.value, e.target.selectionStart ?? 0);
+                if (isComposingRef.current) {
+                  setInputValue(e.target.value);
+                } else {
+                  handleInputChange(e.target.value, e.target.selectionStart ?? 0);
+                }
                 syncPickerCaret(e.target.selectionStart ?? 0);
                 requestAnimationFrame(handleCursorChange);
                 // Auto-resize after value change
                 autoResizeTextarea(e.target, minRows, newChat ? 10 : 4);
                 syncMirrorScroll(e.target);
+              }}
+              onCompositionStart={() => {
+                isComposingRef.current = true;
+                compositionStartValueRef.current = inputValueRef.current;
+              }}
+              onCompositionEnd={(e) => {
+                isComposingRef.current = false;
+                // handleInputChange deliberately reads the old value through inputValueRef. React
+                // state has tracked provisional composition text, so restore only the ref long
+                // enough to calculate the complete committed edit against the pre-IME value.
+                inputValueRef.current = compositionStartValueRef.current;
+                handleInputChange(e.currentTarget.value, e.currentTarget.selectionStart ?? 0);
+                syncPickerCaret(e.currentTarget.selectionStart ?? 0);
+                requestAnimationFrame(handleCursorChange);
               }}
               onSelect={handleCursorChange}
               onClick={handleCursorChange}
@@ -3146,6 +3171,9 @@ export const ChatInput = ({
                 }
               }}
               onKeyDown={(e) => {
+                // Enter confirms Japanese input on iOS. It must not select a slash command or send
+                // the message while the browser still considers the keypress part of composition.
+                if (e.nativeEvent.isComposing || isComposingRef.current) return;
                 if (slashCommandPicker.open && e.key === "Escape") {
                   e.preventDefault();
                   slashCommandPicker.dismiss();
