@@ -6,6 +6,12 @@ export type CfAccessEnv = Readonly<{
   CF_ACCESS_ISS?: string;
 }>;
 
+/** Machine API settings for trusted deployment automation. */
+export type MachineAccessEnv = Readonly<{
+  COMPANY_OS_MACHINE_ADMIN_EMAIL?: string;
+  COMPANY_OS_MACHINE_TOKEN?: string;
+}>;
+
 type AccessTokenVerifier = (token: string, env: CfAccessEnv) => Promise<JWTPayload>;
 
 const remoteJwkSets = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
@@ -37,6 +43,29 @@ export async function verifyCfAccessJwt(
   } catch {
     return null;
   }
+}
+
+/** Returns the configured administrator email only for a valid machine bearer token. */
+export async function verifyMachineAccess(
+    request: Request, env: MachineAccessEnv): Promise<string | null> {
+  const expected = env.COMPANY_OS_MACHINE_TOKEN;
+  const email = env.COMPANY_OS_MACHINE_ADMIN_EMAIL?.trim().toLowerCase();
+  const authorization = request.headers.get("authorization");
+  if (!expected || !email || !authorization?.startsWith("Bearer ")) return null;
+
+  const supplied = authorization.slice("Bearer ".length);
+  const encoder = new TextEncoder();
+  const [expectedDigest, suppliedDigest] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(expected)),
+    crypto.subtle.digest("SHA-256", encoder.encode(supplied)),
+  ]);
+  const expectedBytes = new Uint8Array(expectedDigest);
+  const suppliedBytes = new Uint8Array(suppliedDigest);
+  let difference = 0;
+  for (let index = 0; index < expectedBytes.length; index += 1) {
+    difference |= expectedBytes[index] ^ suppliedBytes[index];
+  }
+  return difference === 0 ? email : null;
 }
 
 /** Returns a privacy-preserving limiter key derived only from verified Access claims. */

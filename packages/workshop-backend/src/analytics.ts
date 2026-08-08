@@ -90,12 +90,12 @@ export type ProductAnalyticsInput =
   | {
       event_name: "account_created";
       user_id: string;
-      source: "password" | "cf_access";
+      source: "password" | "cf_access" | "machine_api";
     }
   | {
       event_name: "user_authenticated";
       user_id: string;
-      source: "password" | "cf_access" | "session_token";
+      source: "password" | "cf_access" | "machine_api" | "session_token";
     }
   | {
       event_name: "blueprint_imported";

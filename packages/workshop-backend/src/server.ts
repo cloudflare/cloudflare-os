@@ -24,7 +24,7 @@ import { ExternalMessageGateway } from "./external-message-gateway";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
 import { handleClientErrorRequest } from "./client-errors.js";
-import { verifyCfAccessJwt } from "./access.js";
+import { verifyCfAccessJwt, verifyMachineAccess } from "./access.js";
 import { resolveUiFeatureFlags } from "./feature-flags";
 import { serveSiteLogo, SITE_LOGO_PATH } from "./site-logo.js";
 import { createWorkshopLogger } from "./observability";
@@ -65,6 +65,8 @@ type Env = Cloudflare.Env & {
   // Set these if using Cloudflare Access for authentication, otherwise username/password is used.
   CF_ACCESS_AUD?: string,  // audience
   CF_ACCESS_ISS?: string,  // team URL, i.e. https://<team>.cloudflareaccess.com
+  COMPANY_OS_MACHINE_ADMIN_EMAIL?: string;
+  COMPANY_OS_MACHINE_TOKEN?: string;
   DEV?: boolean;
   FLAGS?: Flagship;
 }
@@ -626,7 +628,8 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
   constructor(private ctx: ExecutionContext, private env: Env,
       private abortSession: (reason: Error) => void,
-      private accessPayload?: JWTPayload) {
+      private accessPayload?: JWTPayload,
+      private accessSource: "cf_access" | "machine_api" = "cf_access") {
     super();
     this.users = this.ctx.exports.UserDurableObject;
   }
@@ -692,13 +695,13 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
       recordAnalytics(this.ctx, this.env, {
         event_name: "account_created",
         user_id: userId.toString(),
-        source: "cf_access",
+        source: this.accessSource,
       });
     }
     recordAnalytics(this.ctx, this.env, {
       event_name: "user_authenticated",
       user_id: userId.toString(),
-      source: "cf_access",
+      source: this.accessSource,
     });
     return new AuthenticatedApiImpl(this.ctx, this.env, stub, this.abortSession);
   }
@@ -825,20 +828,25 @@ export default {
       }
 
       let accessPayload: JWTPayload | undefined;
+      let accessSource: "cf_access" | "machine_api" = "cf_access";
 
       if (env.CF_ACCESS_AUD) {
         if (req.headers.get("Origin") !== url.origin) {
           return new Response("Cross-origin API access not allowed.", { status: 403 });
         }
 
-        const payload = await verifyCfAccessJwt(req, env);
-        if (!payload) return new Response("Invalid CF access JWT.", { status: 403 });
+        const machineEmail = await verifyMachineAccess(req, env);
+        const payload = machineEmail
+          ? { email: machineEmail, sub: `machine:${machineEmail}` }
+          : await verifyCfAccessJwt(req, env);
+        if (!payload) return new Response("Invalid API authentication.", { status: 403 });
 
         if (!payload.email) {
           return new Response("Access JWT didn't specify email address.", { status: 403 });
         }
 
         accessPayload = payload;
+        if (machineEmail) accessSource = "machine_api";
       }
 
       // HACK: Implement `abortSession` callback by closing the websocket.
@@ -851,7 +859,7 @@ export default {
       };
 
       resp = await newWorkersRpcResponse(req,
-          new PublicApiImpl(ctx, env, abortSession, accessPayload));
+          new PublicApiImpl(ctx, env, abortSession, accessPayload, accessSource));
 
       if (aborted) {
         // Oops, we missed the abortSession() call while awaiting, apply now.

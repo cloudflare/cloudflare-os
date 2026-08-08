@@ -58,6 +58,10 @@ declare global {
       CF_ACCESS_AUD?: string;   // audience
       CF_ACCESS_ISS?: string;   // team URL, e.g. https://<team>.cloudflareaccess.com
 
+      // Optional bearer-token identity for trusted deployment automation on the Worker subdomain.
+      COMPANY_OS_MACHINE_ADMIN_EMAIL?: string;
+      COMPANY_OS_MACHINE_TOKEN?: string;
+
       // Comma-separated allowlist of gatekeeper vendor ids permitted to drive sign-in (e.g.
       // "google,github,cloudflare"). A listed gatekeeper must also advertise providesAuth. Empty =
       // no gatekeeper sign-in (password / CF Access only).

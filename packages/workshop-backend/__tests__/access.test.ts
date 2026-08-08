@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { accessRateLimitKey, verifyCfAccessJwt } from "../src/access.js";
+import { accessRateLimitKey, verifyCfAccessJwt, verifyMachineAccess } from "../src/access.js";
 
 const joseMocks = vi.hoisted(() => ({
   createRemoteJWKSet: vi.fn(() => vi.fn()),
@@ -72,5 +72,49 @@ describe("accessRateLimitKey", () => {
     const emailKey = await accessRateLimitKey({ email: "person@example.com" });
     expect(emailKey).toMatch(/^access-email:[0-9a-f]{64}$/);
     expect(emailKey).not.toContain("person@example.com");
+  });
+});
+
+describe("verifyMachineAccess", () => {
+  const machineEnv = {
+    COMPANY_OS_MACHINE_ADMIN_EMAIL: "Admin@Example.com ",
+    COMPANY_OS_MACHINE_TOKEN: "deployment-secret",
+  };
+
+  it("returns the normalized configured administrator for the exact bearer token", async () => {
+    const request = new Request("https://workshop.example/api", {
+      headers: { authorization: "Bearer deployment-secret" },
+    });
+
+    await expect(verifyMachineAccess(request, machineEnv)).resolves.toBe("admin@example.com");
+  });
+
+  it("rejects missing, malformed, and incorrect bearer tokens", async () => {
+    await expect(verifyMachineAccess(
+      new Request("https://workshop.example/api"), machineEnv,
+    )).resolves.toBeNull();
+    await expect(verifyMachineAccess(
+      new Request("https://workshop.example/api", {
+        headers: { authorization: "Basic deployment-secret" },
+      }), machineEnv,
+    )).resolves.toBeNull();
+    await expect(verifyMachineAccess(
+      new Request("https://workshop.example/api", {
+        headers: { authorization: "Bearer wrong-secret" },
+      }), machineEnv,
+    )).resolves.toBeNull();
+  });
+
+  it("stays disabled unless both settings are present", async () => {
+    const request = new Request("https://workshop.example/api", {
+      headers: { authorization: "Bearer deployment-secret" },
+    });
+
+    await expect(verifyMachineAccess(request, {
+      COMPANY_OS_MACHINE_ADMIN_EMAIL: "admin@example.com",
+    })).resolves.toBeNull();
+    await expect(verifyMachineAccess(request, {
+      COMPANY_OS_MACHINE_TOKEN: "deployment-secret",
+    })).resolves.toBeNull();
   });
 });
