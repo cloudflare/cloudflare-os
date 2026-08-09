@@ -10,7 +10,7 @@ export default {
       cf: req.cf ?? null,
       headers: hdrs,
       bodyLen: bytes.length,
-      bodyHex: [...bytes.slice(0, 200)].map(b => b.toString(16).padStart(2, "0")).join(""),
+      bodyHex: Array.from(bytes.slice(0, 200), b => b.toString(16).padStart(2, "0")).join(""),
       bodyText: (() => { try { return new TextDecoder().decode(bytes); } catch { return null; } })(),
     }));
     // Deliberately return 404 so .get() sees a miss; test worker catches errors.

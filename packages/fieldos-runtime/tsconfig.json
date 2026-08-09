@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // The services are plain .js because capnp's `esModule = embed "..."` inlines the source file
+    // itself — a build step would put a dist/ between the config and the code that actually runs,
+    // so the deployed artifact would never be the file you read. checkJs plus JSDoc gives the type
+    // safety without the indirection.
+    "checkJs": true,
+    // Node for the test process, which spawns workerd as a child; Workers types for the services.
+    "types": ["node", "@cloudflare/workers-types/experimental"],
+    "noEmit": true
+  },
+  "include": ["src", "__tests__"],
+  "exclude": ["node_modules"]
+}
