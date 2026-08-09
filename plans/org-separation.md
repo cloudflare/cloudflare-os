@@ -162,7 +162,20 @@ KV-mirrored; `orgId` stamped on the Overseer at creation; an admin read-out show
 org for a user. **Nothing is denied yet.** Done when an admin can confirm every user resolves to
 the org they expect.
 
-**Phase 2 — enforcement.**
+**Phase 2 — enforcement.** *Two obligations carried forward from the Phase 1 review, which must not
+be re-derived:*
+- **Fail closed on `orgUnknown`.** A workspace whose org stamp failed at creation has an absent
+  `orgId`, which otherwise reads as "exempt from the boundary" — identical to a legacy workspace.
+  Anything that makes the creator's user-DO call fail at creation time would otherwise mint a
+  permanently boundary-exempt workspace. `orgUnknown` distinguishes the two; enforcement must deny
+  on it rather than treat it as exempt.
+- **The dry-run should flag creators whose current org differs from the org stamped on workspaces
+  they created recently.** During a live IdP misconfiguration — or while an admin is fixing a
+  broken group mapping — a user can create a workspace stamped X and then resolve to Y. That is the
+  mover problem reappearing one layer down, at the creation instant rather than through ownership,
+  and it is exactly the "looks like it worked" failure this phase exists to catch.
+
+*Original scope:*
 The check in `open()`'s non-owner branch, plus `allowCrossOrgSharing` in `AdminConfig`, behind an
 `ENABLE_ORG_SEPARATION` flag so Phase 1 can be verified in production first and the rollout is not
 one-way. Done when a cross-org open is denied and the flag can be turned off again cleanly.
