@@ -110,3 +110,36 @@ limit (~2 MB; 300 KB is verified). Chunking across keys is ~20 more lines if blo
 **Version-pinned.** These framings are workerd internals, not a public contract, and are valid for
 **1.20260801.1** exactly. Re-run `echo.js` after any workerd upgrade and diff — it takes about two
 minutes and is the cheapest guard available.
+
+## Correction: Workers AI / Browser Rendering are not platform-locked
+
+An earlier reading of the binding union concluded that `ai`, `browser`, `vectorize` and `images`
+"cannot be expressed in a standalone config". True of the union, wrong as a conclusion.
+
+They are `wrapped @14 :WrappedBinding` (`workerd.capnp:403`, struct at `:577`) over modules
+**compiled into the workerd binary**. Enumerated from `1.20260801.1`:
+
+```
+cloudflare-internal:ai-api          cloudflare-internal:br-api
+cloudflare-internal:to-markdown-api cloudflare-internal:images-api
+cloudflare-internal:vectorize-api   cloudflare-internal:aig-api
+cloudflare-internal:workflows-api
+```
+
+`wrapped` instantiates the named internal module and passes `innerBindings` as its `env`. For each
+of these the sole inner binding is a **fetcher** — so the binding is a client, and we supply the
+server:
+
+- `ai-api` → `new Ai(env.fetcher)`
+- `to-markdown-api` → one `POST /to-everything/markdown/transformer`, body
+  `{files:[{name, mimeType, data: <base64>}]}`, response `{result:[{format, data}]}`
+- `br-api` → a bare pass-through; the protocol lives client-side in `@cloudflare/puppeteer`
+  (`GET /v1/devtools/browser` + a WebSocket upgrade)
+
+**Consequence:** a document converter or a headless-browser service needs **zero call-site
+changes** — `web-fetch.ts:201` and `browser-export.ts:251` stay byte-identical. Building either is
+a deferral decision, not an architectural one.
+
+Caveat: `cloudflare-internal:` modules are unversioned internals, verified present in
+`1.20260801.1` only. Nothing on the Phase 1 path depends on them — KV/R2/assets use no `wrapped`
+binding — so this affects only the later cost estimate for those two services.
