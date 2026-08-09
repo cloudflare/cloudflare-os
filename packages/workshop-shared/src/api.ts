@@ -312,6 +312,14 @@ export interface AuthenticatedApi extends RpcTarget {
   // user directory — there is no "revoke everyone" without building one.
   revokeSessionsForUser(username: string): Promise<void>;
 
+  // The organization `username` currently resolves to, for deployments separating orgs. Admin-only.
+  //
+  // Exists because the failure this feature actually hits is a silently mis-mapped group claim:
+  // the claim is present and looks right, the mapping does not apply, and nobody notices until
+  // access breaks. An admin can check what a given account resolved to at its last sign-in before
+  // any enforcement is switched on. Takes a named account for the same reason as above.
+  getOrgForUser(username: string): Promise<OrgLookup>;
+
   // List the user's configured AI models.
   //
   // Note that the list returned here could be different from a particular gadget's Overseer,
@@ -681,6 +689,23 @@ export const MAX_SITE_NAME_LENGTH = 40;
 
 // What this deployment calls itself when the admin has not set a custom `siteName`. Also the
 // product's own name, so it appears in prose the server and UI address to the user.
+/**
+ * What an account currently resolves to, for the admin org read-out.
+ *
+ * `exists` distinguishes "no such account" from "account with no org", which look identical if
+ * only the org is reported — and confusing the two is how an admin concludes org mapping is broken
+ * when they have simply mistyped a username.
+ */
+export type OrgLookup = {
+  /** Whether an account exists for this name at all. */
+  exists: boolean;
+  /**
+   * The org resolved at the account's last sign-in, or null for none. Null is a real answer, not a
+   * missing one: a user whose group claim was absent or ambiguous reaches nothing org-scoped.
+   */
+  orgId: string | null;
+};
+
 export const DEFAULT_SITE_NAME = "FieldOS";
 
 // The name to display for this deployment. Accepts an unset or not-yet-loaded `siteName` so both
