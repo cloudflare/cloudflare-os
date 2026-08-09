@@ -47,3 +47,6 @@ wrangler.dev.jsonc
 # (upstream renamed CLAUDE.md -> AGENTS.md in 87e0163); a local CLAUDE.md is a personal copy,
 # typically with individual workflow and tooling sections appended. Keep it out of the repo.
 CLAUDE.md
+
+# workerd DO storage created by fieldos-runtime tests
+packages/fieldos-runtime/__tests__/fixture/dodata/

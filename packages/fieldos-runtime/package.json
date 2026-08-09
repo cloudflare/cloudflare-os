@@ -1,0 +1,19 @@
+{
+  "name": "@gadgets/fieldos-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "KV, R2 and static-asset services implementing workerd's binding protocols. Runs only under standalone workerd via a hand-written capnp config; never deployed to Cloudflare.",
+  "scripts": {
+    "types:check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260722.1",
+    "@types/node": "^26.1.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10",
+    "workerd": "1.20260801.1"
+  }
+}
