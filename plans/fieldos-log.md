@@ -400,3 +400,155 @@ Verified throughout: full-repo lint clean, 293 backend tests, 67 connector tests
 **Next:** Phase 2 — the check in `open()`'s non-owner branch plus `allowCrossOrgSharing`, behind
 `ENABLE_ORG_SEPARATION` so the rollout is not one-way. Then Phase 3, the Context Library's
 public-collection path, which never passes through `open()`.
+
+---
+
+## 2026-08-09 — Phase 1 research: standalone workerd is closer than the plan assumed
+
+Branch `feat/standalone-workerd`, no code yet. Four parallel investigations into the DO/capnp
+inventory, the KV/R2 surface, the boot path, and what breaks with no Cloudflare and no internet.
+Recording only what was **verified**, the corrections, and the two things that changed the plan.
+
+**The headline, proven by execution, not inference:** the real `workshop-backend` bundle **boots on
+standalone workerd today** — HTTP 101 Cap'n Web upgrade on `/api`, SQLite files created on local
+disk for all four DO namespaces. No Cloudflare account, no wrangler at runtime. Phase 1 is a
+porting job, not a research project.
+
+**`workerd 2026-08-01` was already in the pnpm store**, pulled in transitively by wrangler — the
+exact build the feasibility probe used. Nothing to download, which is itself evidence for the
+airgapped install story. Two versions are present (`1.20260722.1`, `1.20260801.1`) and there is
+**no workerd override in `pnpm-workspace.yaml`**, so the binary must be selected explicitly; the
+plan's version-pinning requirement is currently unenforced.
+
+**The DO namespace list in `fieldos.md` is correct and complete — 4 namespaces**, machine-verified
+against `worker-configuration.d.ts:13`'s `durableNamespaces` union, which wrangler generates from
+`migrations.new_sqlite_classes`. The suspicion that it was incomplete was wrong. `LanguageModelGatekeeper`
+and `AgentSpawnerGatekeeper` are **facet classes only** — reached as `ctx.exports.X({props})`, with
+zero `.get()`/`.getByName()`/`.idFromName()` call sites — and facets need no capnp config at all.
+
+Two corrections worth keeping:
+- **`agent.ts`'s two `export class Gadget` declarations are not code.** Both sit inside the
+  `SYSTEM_PROMPT` template literal (opens `:377`, closes `:522`) as example Gadget source shown to
+  the model. Same for `class Callback` `:446`, `class Greeter` `:500`, and `overseer.ts:56` inside
+  `CODE_MODE_HARNESS`. A grep-based class inventory over this repo produces false positives; the
+  `export { ... }` list in `server.ts` is the only authoritative source. This is the same trap as
+  the `ChatMessage` name-collision recorded in Phase 0 — **resolve, do not grep** — reappearing in
+  a new disguise.
+- **`enableSql = true` is load-bearing despite zero `storage.sql` calls.** The DOs use
+  `ctx.storage.kv`, `transactionSync` (`overseer.ts:1268` and 6 more) and `ctx.storage.sync()`
+  (`:3214`) — the synchronous KV-over-SQLite APIs, available only on SQLite-backed namespaces.
+  Nobody should "optimize it away" on the grounds that `storage.sql` is unused.
+
+**`uniqueKey` should be a fresh UUID, not the plan's `overseer-key`.** The schema
+(`workerd.capnp:621-624`) states the key is what makes an object ID unforgeable. The plan's
+human-readable placeholders are guessable, and `#openGadgetInternal` (`server.ts:281`) takes a DO id
+straight from the client. Access control still runs inside `overseer.open()`, so this is
+defence-in-depth rather than a hole — but it is free to get right now and impossible to change
+later, since there is no migration mechanism for a `uniqueKey`.
+
+### The one thing the plan got materially wrong
+
+**"Shim KV / swap R2 → MinIO" understates and misdirects the work.** `kvNamespace @11` and
+`r2Bucket @12` are **native workerd binding types** — but they are `ServiceDesignator`s: *"A KV
+namespace, implemented by the named service. Requests to the namespace will be converted into HTTP
+requests targeting the given service name."* workerd ships the **client** and no server.
+
+Two consequences:
+1. No call-site changes are needed, which matters because `workshop-backend` is upstream-mergeable
+   and its diffs must stay surgical. The app keeps `KVNamespace`/`R2Bucket` types unchanged.
+2. `docs/configuration.md:134`'s "R2's API is S3-compatible" is a **conflation to correct**: R2's
+   *S3 endpoint* is S3-compatible; the *binding* this code uses is a private HTTP protocol, and
+   MinIO cannot serve it. Pointing the binding at MinIO directly is not possible.
+
+The required surface is genuinely tiny, exhaustively verified across all `packages/*/src`: KV needs
+`get`/`put`/`delete` plus one `get(key, "arrayBuffer")` (avatars, `server.ts:253`); R2 needs
+`get`/`put`/`delete` plus `httpMetadata.contentType`. **Zero** occurrences of `getWithMetadata`,
+`expirationTtl`, `onlyIf`, multipart, `customMetadata`, or `list()`/`head()` on any of these
+bindings.
+
+**A third KV namespace the plan omits: `CONTEXT_COLLECTIONS`** (`gatekeeper-context/wrangler.jsonc:29`).
+
+**KV is on the pre-login hot path**, so this is boot-blocking rather than a later concern:
+`readAdminConfig()` (`admin-config.ts:313`) is reached by `getServerConfig()` before anyone signs
+in, and by `checkSession()` (`user.ts:359`) on every authenticated connection. A missing
+`BLUEPRINTS` breaks the login page, not just blueprints.
+
+Noted for the security review, pre-existing and not introduced by the port: `parseAdminConfig`
+returns `{...DEFAULT_ADMIN_CONFIG}` on failure (`admin-config.ts:302-304`), so a store outage
+**fails open** to permissive defaults including `signupsEnabled: true`. The port changes who
+operates that store, which is what makes it worth an explicit decision.
+
+### The blocker nobody had recorded
+
+**The release pipeline builds an Access-only frontend, so password login is unreachable in the
+shipped bundle.** `scripts/release/build-release.mjs:76` hardcodes `VITE_CF_ACCESS_MODE: "true"`,
+commented as "the one asset variant every release carries". It is a **build-time** flag
+(`useAuth.ts:5`), so no runtime config can undo it: `ProtectedRoute.tsx:74` and `__root.tsx:87`
+render "Authenticating…" forever instead of the login page, and `routes/signup.tsx:14` redirects
+`/signup` to `/`, so no first user can ever be created.
+
+The backend supports password login perfectly; only the build invocation is wrong. **Do not patch
+the components** — the env-var branch is already correct. An airgapped release needs a second asset
+variant.
+
+### SSRF: the control moves into the capnp config
+
+`wrangler.jsonc:16-18` says it plainly: under standalone workerd, blocking private IPs is **already
+the default**, so `global_fetch_strictly_public` effectively only bites on Cloudflare's platform.
+The real lever self-hosted is the `network` service's `allow` list.
+
+Verified by execution: `allow = ["public"]` blocks private and loopback; `allow = []` is a true
+airgap blocking everything including loopback; and **`deny = ["public"]` is a fatal config error**
+(*"don't deny 'public', allow 'private' instead"*).
+
+This has two consequences. First, **local inference is blocked by default** — Ollama on
+`localhost:11434` needs an explicit `allow` entry, so "zero code changes for local inference" is
+true of the code and false of the configuration. Second, and more usefully: the internal-CIDR
+allowlist that Phase 2 (`gatekeeper-shared`) is supposed to implement centrally has a natural home
+in the capnp `network` service, scoped to real CIDRs rather than a blanket `"private"`.
+
+### Boot path
+
+`integration-tests` boots via **wrangler's `createTestHarness` → miniflare → workerd**
+(`harness.ts:12`), patching `wrangler.jsonc` in memory. It cannot be pointed at standalone workerd:
+its config ingestion is wrangler-shaped, and `network-interceptor.ts` works only because miniflare
+inserts a Node loopback as `globalOutbound`. So the standing obligation of a real-workerd suite
+needs a **second boot path**, not an extension of this one.
+
+The airgap guarantee survives more strongly, though: `globalOutbound` pointed at an interceptor
+worker replaces the `globalThis.fetch` patch at the config layer, where gadget code cannot
+monkey-patch its way out. `src/rpc-client.ts` ports verbatim and is where the real value sits.
+
+`harness.ts:102` **deletes `worker_loaders` entirely**, so the existing suite has never covered the
+gadget sandbox — the single largest unverified item, and the thing to test first.
+
+Bundles come from `wrangler deploy --dry-run --outdir`, which works with no Cloudflare account and
+yields exactly what capnp wants: one ESM plus text modules. `hash-lib.mjs:60-66` already asserts the
+one-ESM invariant. Note `.wrangler/validate/` is **not** a bundle — `capnweb-validate` does a
+TypeScript→TypeScript rewrite expanding `@validateRpc()` decorators, so that step is mandatory or
+RPC argument validation is lost.
+
+Also found: `GATEKEEPER_MCP_PORTAL` yields backend vendorId `mcp_portal` (underscore) but router
+path `/gatekeeper/mcp-portal` (hyphen). Upstream behaviour to replicate exactly, not to "fix" —
+changing it breaks the portal's OAuth redirect URIs.
+
+### Corrections to existing docs, to make when the work lands
+
+- `docs/configuration.md:134` — the R2 binding/S3-endpoint conflation above.
+- `docs/integration-testing.md:83-93` — describes a wrangler `~4.104.0` pin and a root workerd
+  override. Neither matches this fork (`~4.119.0`; no override).
+- `docs/configuration.md` § Observability — "all logging is plain `console.*`" is stale; a
+  structured logger exists and the backend has 5 `console.` calls left. Already noted in OZL-229.
+
+### Still unproven
+
+- **The KV wire protocol.** Being settled empirically now: workerd ships the client, so the exact
+  request/response shape must be observed rather than guessed. Miniflare's `kv/namespace.worker.js`
+  is the reference implementation but imports `miniflare:shared`/`miniflare:zod` and extends
+  `MiniflareDurableObject`, so reusing it drags in Miniflare's own DO plumbing.
+- **Worker Loaders end to end.** The binding was declared and the backend booted, but no gadget was
+  loaded. This is how all gadget code runs.
+- Whether `ctx.exports` synthesizes loopback stubs for `WorkerEntrypoint` exports identically
+  off-platform. Affects the `tails:` targets, which have no capnp expression. Config-only fallback
+  exists (a self-referential `service` binding with `entrypoint`), so it cannot invalidate any
+  permanent decision.
