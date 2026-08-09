@@ -11,6 +11,7 @@ import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-bi
 import type { AdminSettings } from "./admin-settings.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./blueprint-archive.js";
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
+import { resolveSessionPolicy, sessionExpiry } from "./auth/session-policy.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
 
 const logger = createWorkshopLogger("workshop.user");
@@ -76,6 +77,13 @@ export type UserChatContext = {
 type LoginSessionRecord = {
   tokenId: string,  // sha256 hash of token, hex-formatted
   created: Date,
+  // Absolute expiry, fixed at mint time and never extended. Optional only so that records written
+  // before session expiry existed still parse; such records are treated as expired on read (see
+  // checkSession), forcing one re-login on the release that ships this rather than grandfathering
+  // tokens the fix exists to invalidate.
+  expiresAt?: Date,
+  // Sliding idle deadline, pushed forward by user-driven activity. Same optionality rule.
+  idleUntil?: Date,
 }
 
 // Blueprint record stored in the user's `blueprints` collection.
@@ -295,13 +303,63 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.vendors = buildGatekeeperVendorMap(env);
   }
 
-  async authenticate(token: string): Promise<void> {
+  // Validates a session token and returns its `tokenId`, which the caller threads back into
+  // `checkSession()` on subsequent calls. Returning it is what makes mid-connection expiry
+  // possible at all: the RPC session authenticates once, so without carrying the session's
+  // identity forward there is nothing later calls can re-validate against.
+  //
+  // The tokenId is the SHA-256 of the bearer token, so it is not itself a credential — it cannot
+  // be replayed as one — and it never leaves the server: PublicApi.authenticate() keeps it inside
+  // the AuthenticatedApi capability rather than returning it to the client.
+  async authenticate(token: string): Promise<string> {
     let tokenBytes = Uint8Array.fromBase64(token);
     let hash = await crypto.subtle.digest('SHA-256', tokenBytes);
     let tokenId = new Uint8Array(hash).toHex();
-    let session = this.storage.sessions.get(tokenId);
-    if (!session) {
+    if (!await this.checkSession(tokenId)) {
       throw new Error("invalid session token");
+    }
+    return tokenId;
+  }
+
+  // Whether this session is still live, refreshing its idle deadline if so. Called on every
+  // authenticated RPC.
+  //
+  // Expired rows are deleted as they are encountered rather than swept by an alarm: sessions are
+  // small rows in a per-user DO and accumulate at human pace, so there is no growth problem to
+  // solve. // ponytail: lazy sweep, bounded by the absolute lifetime; add an alarm only if a
+  // deployment ever shows unbounded session churn for a single user.
+  async checkSession(tokenId: string): Promise<boolean> {
+    let session = this.storage.sessions.get(tokenId);
+    if (!session) return false;
+
+    // Records predating session expiry carry neither deadline. Treat them as expired rather than
+    // backfilling: a token that leaked before this shipped must not keep working.
+    if (!session.expiresAt || !session.idleUntil) {
+      this.storage.sessions.delete(tokenId);
+      return false;
+    }
+
+    let now = Date.now();
+    if (now >= session.expiresAt.getTime() || now >= session.idleUntil.getTime()) {
+      this.storage.sessions.delete(tokenId);
+      return false;
+    }
+
+    // Slide the idle window, clamped to the absolute expiry so activity can never extend a
+    // session past its hard deadline. readAdminConfig() is a single cheap KV get on the hot path
+    // (the same one connect/agent already make); the write only happens for live sessions.
+    let policy = resolveSessionPolicy(this.env, await readAdminConfig(this.env));
+    let idleUntil = new Date(Math.min(now + policy.idleMs, session.expiresAt.getTime()));
+    this.storage.sessions.put({ ...session, idleUntil });
+    return true;
+  }
+
+  // Invalidate every session for this user ("sign out everywhere", and the admin-driven
+  // equivalent). Deliberately all-or-nothing: there is no per-session UI, and a revocation
+  // control that leaves the caller's own session alive is a weaker answer for an auditor.
+  revokeAllSessions(): void {
+    for (let session of Array.from(this.storage.sessions.list())) {
+      this.storage.sessions.delete(session.tokenId);
     }
   }
 
@@ -326,12 +384,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return false;
   }
 
-  async #newSessionToken(): Promise<string> {
+  async #newSessionToken(idpExpiresAt?: Date): Promise<string> {
     let sessionToken = new Uint8Array(32);
     crypto.getRandomValues(sessionToken);
 
     let tokenId = new Uint8Array(await crypto.subtle.digest('SHA-256', sessionToken)).toHex();
-    this.storage.sessions.put({ tokenId, created: new Date() });
+    let now = new Date();
+    // `idpExpiresAt` lets an external identity provider's own expiry win when it is shorter than
+    // ours: the IdP owns the session it issued. sessionExpiry() still clamps to our ceiling, so a
+    // permissive IdP cannot mint an effectively immortal session here.
+    let policy = resolveSessionPolicy(this.env, await readAdminConfig(this.env));
+    let expiresAt = sessionExpiry(policy, now, idpExpiresAt);
+    this.storage.sessions.put({
+      tokenId,
+      created: now,
+      expiresAt,
+      idleUntil: new Date(Math.min(now.getTime() + policy.idleMs, expiresAt.getTime())),
+    });
 
     return sessionToken.toBase64();
   }

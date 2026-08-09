@@ -71,6 +71,13 @@ declare global {
       // on to avoid locking everyone out).
       DISABLE_PASSWORD_AUTH?: string;
 
+      // Session lifetime CEILINGS. An admin may tighten below these from the dashboard but can
+      // never exceed them, so a compromised admin session cannot weaken the control. Defaults in
+      // auth/session-policy.ts. A non-positive or unparseable value falls back to the default —
+      // "0" never means "no expiry".
+      SESSION_MAX_LIFETIME_HOURS?: string;
+      SESSION_MAX_IDLE_MINUTES?: string;
+
       // Enables the Cloudflare free-tier limits + top-up flow when set to "true".
       ENABLE_CLOUDFLARE_LIMITS?: string;
 
