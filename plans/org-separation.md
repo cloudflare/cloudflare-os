@@ -142,7 +142,21 @@ the rollout a one-way door.
 
 ## Phases
 
-**Phase 1 — membership, observable, not enforcing.**
+**Phase 1 — membership, observable, not enforcing. — DONE.**
+Shipped in four slices: `resolveOrg()` in `gatekeeper-oidc`; `orgId` on `UserDurableObject` written
+on every sign-in; `orgId` stamped on the Overseer at creation; `getOrgForUser()` for the admin
+read-out. Nothing denies anyone yet.
+
+Two corrections made during implementation, both worth keeping:
+- **The KV mirror was dropped.** It exists for `AdminConfig` because that is one document read by
+  every connection. Org membership is per-user and `open()` already holds the user namespace, so a
+  mirror would have added a second storage system and a staleness window to save a round-trip that
+  may not exist.
+- **Two paths create a workspace**, not one: `open()`'s first-open block and
+  `receiveExternalMessage()`. Stamping only the first would leave every externally-created
+  workspace permanently untagged — a hole from day one rather than a legacy-data question.
+
+*Original scope, for reference:*
 `OIDC_GROUPS_CLAIM` in `gatekeeper-oidc`; `orgId` on `UserDurableObject` written at sign-in and
 KV-mirrored; `orgId` stamped on the Overseer at creation; an admin read-out showing the resolved
 org for a user. **Nothing is denied yet.** Done when an admin can confirm every user resolves to
