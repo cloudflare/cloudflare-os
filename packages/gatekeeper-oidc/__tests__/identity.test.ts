@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { JWTPayload } from "jose";
-import { discoverEndpoints, identityFromClaims, resolveScopes } from "../src/identity.js";
+import {
+  discoverEndpoints, identityFromClaims, resolveOrg, resolveScopes,
+} from "../src/identity.js";
 
 const claims = (over: Partial<JWTPayload> = {}): JWTPayload => ({
   sub: "user-123",
@@ -72,6 +74,99 @@ describe("identityFromClaims", () => {
 
   it("tolerates an absent exp", () => {
     expect(identityFromClaims(claims()).expiresAt).toBeUndefined();
+  });
+});
+
+describe("resolveOrg", () => {
+  const withPrefix = { claim: "groups", prefix: "fieldos-" };
+
+  it("resolves the single matching group", () => {
+    expect(resolveOrg(claims({ groups: ["fieldos-legal"] }), withPrefix)).toBe("legal");
+  });
+
+  it("ignores groups that do not carry the prefix", () => {
+    expect(resolveOrg(claims({
+      groups: ["all-staff", "vpn-users", "fieldos-legal", "printer-access"],
+    }), withPrefix)).toBe("legal");
+  });
+
+  // Keycloak emits group *paths*, so a leading slash must not defeat the prefix match.
+  it("tolerates Keycloak's leading slash", () => {
+    expect(resolveOrg(claims({ groups: ["/fieldos-legal"] }), withPrefix)).toBe("legal");
+  });
+
+  it("accepts a single string as well as an array", () => {
+    expect(resolveOrg(claims({ groups: "fieldos-legal" }), withPrefix)).toBe("legal");
+  });
+
+  it("lower-cases so casing cannot fork an org", () => {
+    expect(resolveOrg(claims({ groups: ["fieldos-Legal"] }), withPrefix)).toBe("legal");
+  });
+
+  it("treats a repeated group as one, not an ambiguity", () => {
+    expect(resolveOrg(claims({ groups: ["fieldos-legal", "fieldos-legal"] }), withPrefix))
+        .toBe("legal");
+  });
+
+  // Picking the first would make access depend on an IdP's serialization order.
+  it("refuses to choose between two orgs", () => {
+    expect(resolveOrg(claims({ groups: ["fieldos-legal", "fieldos-eng"] }), withPrefix))
+        .toBeUndefined();
+  });
+
+  // THE central safety property. Above 200 groups Entra omits the claim entirely and points at
+  // Microsoft Graph, unreachable airgapped — so a user in 250 groups looks exactly like this.
+  // Defaulting here would put them in someone else's org.
+  it("yields no org when the claim is absent", () => {
+    expect(resolveOrg(claims(), withPrefix)).toBeUndefined();
+  });
+
+  it.each([[[]], [""], [null], [42], [{}]])("yields no org for claim value %o", value => {
+    expect(resolveOrg(claims({ groups: value }), withPrefix)).toBeUndefined();
+  });
+
+  it("yields no org when no group carries the prefix", () => {
+    expect(resolveOrg(claims({ groups: ["all-staff"] }), withPrefix)).toBeUndefined();
+  });
+
+  it("yields no org for a bare prefix with nothing after it", () => {
+    expect(resolveOrg(claims({ groups: ["fieldos-"] }), withPrefix)).toBeUndefined();
+  });
+
+  // Unconfigured means the deployment does not use org separation at all.
+  it("yields no org when no claim is configured", () => {
+    expect(resolveOrg(claims({ groups: ["fieldos-legal"] }), {})).toBeUndefined();
+  });
+
+  it("uses every group when no prefix is configured", () => {
+    expect(resolveOrg(claims({ groups: ["legal"] }), { claim: "groups" })).toBe("legal");
+    expect(resolveOrg(claims({ groups: ["legal", "eng"] }), { claim: "groups" })).toBeUndefined();
+  });
+
+  it("reads whichever claim is configured", () => {
+    expect(resolveOrg(claims({ department: ["fieldos-legal"] }), {
+      claim: "department", prefix: "fieldos-",
+    })).toBe("legal");
+  });
+});
+
+describe("identityFromClaims org wiring", () => {
+  it("carries the resolved org", () => {
+    expect(identityFromClaims(claims({ groups: ["fieldos-legal"] }), {
+      claim: "groups", prefix: "fieldos-",
+    }).orgId).toBe("legal");
+  });
+
+  it("leaves org undefined when org resolution is not configured", () => {
+    expect(identityFromClaims(claims({ groups: ["fieldos-legal"] })).orgId).toBeUndefined();
+  });
+
+  // A user who cannot be placed in an org must still be able to sign in; they simply reach nothing
+  // org-scoped. Refusing the login instead would turn a misconfigured claim into an outage.
+  it("still signs in a user with no resolvable org", () => {
+    let identity = identityFromClaims(claims(), { claim: "groups", prefix: "fieldos-" });
+    expect(identity.email).toBe("alice@corp.example");
+    expect(identity.orgId).toBeUndefined();
   });
 });
 

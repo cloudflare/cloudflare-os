@@ -32,6 +32,29 @@ export interface OidcIdentity {
   subject: string;
   /** `exp` from the ID token, so the Workshop can bound the session it mints. */
   expiresAt?: Date;
+  /**
+   * Organization this user belongs to, from the configured group claim, or undefined when the
+   * deployment does not use org separation or the claim yielded nothing.
+   *
+   * Undefined means **no org**, never a default one. See `resolveOrg`.
+   */
+  orgId?: string;
+}
+
+/** How a deployment maps an IdP group claim onto an org. */
+export interface OrgClaimConfig {
+  /**
+   * Claim to read group membership from. There is no standard name — GitLab exposes this as
+   * `groups_attribute`, Grafana requires a mapper on the Keycloak client — so it is configuration
+   * rather than a constant. Unset disables org resolution entirely.
+   */
+  claim?: string;
+  /**
+   * Optional prefix marking which groups are orgs. A user is typically in many groups that have
+   * nothing to do with FieldOS; with `fieldos-` set, `fieldos-legal` yields the org `legal` and
+   * every other group is ignored.
+   */
+  prefix?: string;
 }
 
 // Scopes we always request. `openid` makes it an OIDC (not bare OAuth) flow, and without `email`
@@ -127,13 +150,53 @@ export async function verifyIdToken(
   idToken: string,
   config: OidcConfig,
   endpoints: OidcEndpoints,
+  org?: OrgClaimConfig,
 ): Promise<OidcIdentity> {
   let { payload } = await jwtVerify(idToken, jwkSetFor(endpoints.jwks), {
     issuer: config.issuer.replace(/\/$/, ""),
     audience: config.clientId,
   });
 
-  return identityFromClaims(payload);
+  return identityFromClaims(payload, org);
+}
+
+/**
+ * Resolves the org a user belongs to from their verified claims.
+ *
+ * Returns undefined — meaning **no org** — whenever the answer is not unambiguous. That is
+ * deliberate and is the whole safety property of this function: a user with no resolvable org gets
+ * no access to org-scoped resources, rather than landing in whichever org a default would have
+ * picked.
+ *
+ * The case that makes this non-theoretical: above 200 groups (JWT) or 150 (SAML), Microsoft Entra
+ * **omits the groups claim entirely** and substitutes a pointer to Microsoft Graph, which an
+ * airgapped deployment cannot reach. A user in 250 groups therefore arrives looking exactly like a
+ * user in none. Defaulting would silently place them in someone else's org.
+ *
+ * Multiple matching groups are also treated as unresolvable: picking the first would make access
+ * depend on the order an IdP happened to serialize a claim.
+ */
+export function resolveOrg(payload: JWTPayload, config: OrgClaimConfig): string | undefined {
+  if (!config.claim) return undefined;
+
+  let raw = payload[config.claim];
+  // Accept an array (the common shape) or a single string; anything else is not a group list.
+  let groups = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+  let names = groups.filter((g): g is string => typeof g === "string" && g.length > 0);
+  if (names.length === 0) return undefined;
+
+  let matched = config.prefix
+      // Keycloak emits group *paths* like `/fieldos-legal`, so tolerate a leading slash rather
+      // than making every Keycloak deployment configure the prefix with one.
+      ? names.map(n => n.replace(/^\//, ""))
+             .filter(n => n.startsWith(config.prefix!))
+             .map(n => n.slice(config.prefix!.length))
+             .filter(n => n.length > 0)
+      : names.map(n => n.replace(/^\//, ""));
+
+  // Deduplicate before deciding: an IdP repeating the same group is not an ambiguity.
+  let unique = [...new Set(matched.map(n => n.toLowerCase()))];
+  return unique.length === 1 ? unique[0] : undefined;
 }
 
 /**
@@ -142,7 +205,7 @@ export async function verifyIdToken(
  * Split from `verifyIdToken` so the claim rules can be tested without standing up a signer; do not
  * call it with unverified claims.
  */
-export function identityFromClaims(payload: JWTPayload): OidcIdentity {
+export function identityFromClaims(payload: JWTPayload, org?: OrgClaimConfig): OidcIdentity {
   let email = payload.email;
   if (typeof email !== "string" || !email.includes("@")) {
     throw new Error(
@@ -167,5 +230,6 @@ export function identityFromClaims(payload: JWTPayload): OidcIdentity {
     email: email.toLowerCase(),
     subject: payload.sub,
     expiresAt: typeof payload.exp === "number" ? new Date(payload.exp * 1000) : undefined,
+    orgId: org ? resolveOrg(payload, org) : undefined,
   };
 }

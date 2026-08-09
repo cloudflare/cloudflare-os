@@ -29,7 +29,7 @@ import {
   stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  OidcConfig, OidcEndpoints, OidcIdentity, discoverEndpoints, verifyIdToken,
+  OidcConfig, OidcEndpoints, OidcIdentity, OrgClaimConfig, discoverEndpoints, verifyIdToken,
 } from "./identity.js";
 import {
   INITIATION_NONCE_LIFETIME_MS, OAUTH_NONCE_LIFETIME_MS, StoredNonce,
@@ -55,6 +55,10 @@ type Env = Cloudflare.Env & {
   OIDC_CLIENT_ID?: string;
   OIDC_CLIENT_SECRET?: string;
   OIDC_SCOPES?: string;
+  // Org separation. Unset means this deployment does not use it, and every sign-in resolves to no
+  // org. See resolveOrg() in identity.ts for why an unresolvable org is never a default one.
+  OIDC_GROUPS_CLAIM?: string;
+  OIDC_ORG_PREFIX?: string;
 };
 
 // A sign-in grant is read once, for the email, and then discarded. Two minutes is long enough for
@@ -84,6 +88,11 @@ function getConfig(env: Env): OidcConfig {
     clientSecret: env.OIDC_CLIENT_SECRET,
     scopes: env.OIDC_SCOPES ?? "",
   };
+}
+
+/** How this deployment maps group claims onto orgs. Absent claim ⇒ org separation is off. */
+function getOrgConfig(env: Env): OrgClaimConfig {
+  return { claim: env.OIDC_GROUPS_CLAIM, prefix: env.OIDC_ORG_PREFIX };
 }
 
 function redirectUri(env: Env): string {
@@ -320,7 +329,7 @@ export class UserAccount extends DurableObject<Env> {
       code, endpoints, config, redirectUri: redirectUri(this.env),
     });
 
-    const identity = await verifyIdToken(idToken, config, endpoints);
+    const identity = await verifyIdToken(idToken, config, endpoints, getOrgConfig(this.env));
 
     // The provider must echo back the nonce we sent, binding this ID token to this request.
     // Checked after signature verification, so the claim is trustworthy by the time we read it.
