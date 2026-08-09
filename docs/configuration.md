@@ -130,13 +130,30 @@ unset, providers are reached directly and the gateway code path is skipped entir
 
 | Binding | Purpose | Self-hosted substitute |
 |---|---|---|
-| `BLUEPRINTS`, `AVATARS` | KV: blueprint metadata, avatar images | Any KV store; volumes are small |
-| `BLUEPRINT_CONTENT` | R2: blueprint archives and screenshots | MinIO or any S3-compatible store — R2's API is S3-compatible |
+| `BLUEPRINTS`, `AVATARS`, `CONTEXT_COLLECTIONS` | KV: blueprint metadata, avatar images, context collections | `packages/fieldos-runtime` — workerd ships the binding's client half only |
+| `BLUEPRINT_CONTENT` | R2: blueprint archives and screenshots | `packages/fieldos-runtime`. **Not MinIO** — see below |
 | `LOADER` | Worker Loader: **the gadget sandbox** | Native to workerd; requires the `--experimental` CLI flag |
+| `ASSETS` (on `router`) | The frontend single-page app | `packages/fieldos-runtime` wrapping a capnp `disk` service; workerd has no `assets` binding type |
 | `BROWSER` | Browser Rendering, for gadget PDF export | Optional — both call sites degrade with a clear error. Self-hosted Chrome later |
-| `WORKERS_AI` | HTML→Markdown for the `webFetch` tool only — **not** inference | Any local Markdown converter; `webFetch` is near-moot on an isolated network |
+| `WORKERS_AI` | Document→Markdown for the `webFetch` tool only — **not** inference | Optional; fails soft to plain text. `webFetch` is near-moot on an isolated network |
 | `PRODUCT_ANALYTICS` | Optional analytics pipeline | No-ops when unbound |
 | `PUBLIC_BASE_URL` | The deployment's public origin | — |
+
+**KV and R2 need a server, not a store.** `kvNamespace` and `r2Bucket` are `ServiceDesignator`s in
+workerd's schema: the runtime converts binding calls into HTTP requests aimed at a service you
+provide, and provides none itself. So "any KV store will do" is not quite right — the store has to
+speak workerd's binding protocol. `packages/fieldos-runtime` implements it.
+
+**MinIO cannot back `BLUEPRINT_CONTENT`.** An earlier version of this table said "R2's API is
+S3-compatible". That is true of R2's *S3 endpoint* and false of the *binding* this code uses, which
+speaks a private protocol. Pointing the binding at MinIO does not work, and the S3-backed R2 that
+Miniflare ships inverts the dependency — it would mean running MinIO as a second server process
+inside the airgapped deployment.
+
+**`WORKERS_AI` is not inference and not HTML-only.** It is `toMarkdown()`, which also converts PDF,
+DOCX, XLSX and ODT. It fails soft: unsupported types return null and the caller falls back to plain
+text. It is a `wrapped` binding over a module compiled into workerd whose only inner binding is a
+fetcher, so a local converter can serve it later with no application change.
 
 ## Observability
 
@@ -146,8 +163,13 @@ unset, providers are reached directly and the gateway code path is skipped entir
 | `FRONTEND_ERROR_RATE_LIMITER` | Same; both must be bound for reporting to dispatch |
 | `ERROR_REPORTER` | `reportIssue()` no-ops. Not declared in any checked-in config |
 
-All logging is plain `console.*`, so under standalone workerd it goes to stdout — tail it with a
-log shipper. There is no OTLP exporter; traces are Cloudflare-specific and unavailable off-platform.
+Logging goes through `@gadgets/backend-utils/logger`, which emits one structured object per call
+with a stable `component` and `event` — already the right shape for indexing, though nothing
+consumes it yet. Under standalone workerd it lands on stdout, so a log shipper is the collection
+path. There is no OTLP exporter; traces are Cloudflare-specific and unavailable off-platform.
+
+*(An earlier version of this section said "all logging is plain `console.*`". That predated the
+structured logger; only a handful of raw `console.` calls remain in the backend.)*
 
 ## Known gaps
 
