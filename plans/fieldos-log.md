@@ -172,7 +172,79 @@ bet; raw AD with no OIDC front door would invalidate it and require an LDAP side
 
 ---
 
+## 2026-08-09 — Session expiry and revocation
+
+**Root cause, found while scoping:** `server.ts` called `await stub.authenticate(split[1])` and
+**discarded the result**. The live connection carried no session identity, so there was nothing
+later calls could re-validate against. That — not the missing TTL — is why mid-connection expiry
+looked hard: `authenticate()` runs once and the resulting capability serves a WebSocket for days.
+
+**Enforcement: a Proxy over `AuthenticatedApiImpl`.** Considered and rejected:
+- *A DO alarm calling `abortSession`* — **impossible**, not merely costly. `abortSession`
+  (`server.ts`, in the fetch handler) is a closure capturing `resp.webSocket`; an alarm fires on
+  `UserDurableObject`, a different isolate with no reference to it, and no registry maps sessions
+  to live connections. Building one is the parallel mechanism the repo forbids.
+- *Enforcing inside `UserDurableObject`* — this was the lead's own first proposal, **retracted on
+  verification**: that class has **77 public methods** versus 54 on `AuthenticatedApiImpl`, so
+  pushing the guard down makes the interception problem worse. There is no convergence point on
+  either side; the RPC layer dispatches straight to methods.
+- *Editing all 54 forwarders* — a 54-line diff in the kernel's most-reviewed file.
+
+The Proxy is ~15 lines at the two (only two) construction sites. Precedent: `overseer.ts:2392`
+already Proxies a facet stub for a cross-cutting concern, and its comments encode the two traps
+that apply verbatim — pass `target` as the `Reflect.get` receiver (not the Proxy, which throws
+"illegal invocation"), and skip non-functions and symbols (`then` is probed on anything awaited).
+That precedent is itself labelled "a hack"; precedent, not endorsement.
+
+**Config: env ceiling, admin tightens within it** (`auth/session-policy.ts`). `AdminConfig` is
+documented as deliberately *not* holding auth config so a compromised admin session cannot weaken
+it (`admin-config.ts:7-8`, `AGENTS.md:37`). Putting timeouts there outright would have inverted
+that. Instead `SESSION_MAX_LIFETIME_HOURS` / `SESSION_MAX_IDLE_MINUTES` set ceilings and the admin
+may only tighten below them — a compromised admin can annoy users, not disable the control.
+Clamping happens at *resolve* time, not write time, so lowering a ceiling immediately tightens
+deployments holding a looser stored value. Defaults 12h / 60min.
+
+**IdP deference:** `sessionExpiry()` takes an optional `idpExpiresAt`; when an external provider
+issues the session, its expiry wins — but still clamped to our ceiling, so a permissive OIDC
+config cannot mint an effectively immortal session. Plumbed through `#newSessionToken()` and unused
+until `gatekeeper-oidc` exists.
+
+**Bypass audit.** Only two sites construct `AuthenticatedApiImpl`. The **Cloudflare Access path
+mints no session record** — `authenticateFromCfAccess()` never calls `#newSessionToken()`;
+authority is the per-request JWT and its lifetime is the IdP's. The wrapper therefore treats a
+missing `tokenId` as "not session-backed, pass through" rather than invalid. Assuming a tokenId
+always exists would crash a path no airgapped deployment would ever exercise; commented so nobody
+later "fixes" it into a rejection.
+
+**Migration: forced re-login.** Records lacking the new deadlines are treated as expired and
+deleted on read. Grandfathering would have meant a token leaked *before* the fix kept working for
+the full new window — the fix doing nothing for its own threat model — and would have cost a
+dual-schema branch.
+
+**Revocation:** `revokeAllSessions()` on the user DO, reached two ways —
+`AuthenticatedApi.revokeAllSessions()` (all-or-nothing, drops the caller's own connection too) and
+`revokeSessionsForUser(username)` gated on `#isAdmin()`. Admin revocation lives on
+`AuthenticatedApiImpl`, **not** `AdminApiImpl`: Codex proposed giving the latter a user-DO binding,
+but its own doc comment (`admin-settings.ts:549`) states it is "fully user-independent" so the
+client "never receives a stub to the DO's internal methods". `AuthenticatedApiImpl` already holds
+both the user namespace and `#isAdmin()`.
+
+**Sweep:** lazy deletion on read, marked with a `ponytail:` comment naming the ceiling. Sessions
+are small rows in a per-user DO accumulating at human pace — no growth problem to justify an alarm.
+
+**Scope boundary worth stating to an accreditation reviewer:** there is no user directory (user DOs
+are `idFromName`, `AdminSettings` has no enumeration method), so revocation targets a *named* user.
+"Force a global re-auth" would require building a directory.
+
+Verified: backend + shared `types:check` clean, **293 backend tests pass** (14 new in
+`__tests__/session-policy.test.ts` covering ceiling fallback, admin tightening, clamping, ceiling
+lowering, and IdP precedence), 118 frontend tests pass, `oxlint` 0 errors.
+
+**Not done:** no admin UI yet — the fields exist in `AdminConfig` and resolve correctly, but the
+dashboard controls come with the future admin panel work. Env vars work today.
+
+---
+
 ## Next
 
-Session expiry and revocation (`user.ts:76`, `:298`, `overseer.ts:7333`), ahead of the OIDC
-connector: it is a likely accreditation blocker, small, and independent of which auth path ships.
+`gatekeeper-oidc`. The IdP-deference hook is already in place for it.

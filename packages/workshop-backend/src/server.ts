@@ -71,6 +71,49 @@ type Env = Cloudflare.Env & {
 
 // =======================================================================================
 
+// Wraps an AuthenticatedApi so every method re-checks the session before running.
+//
+// This exists because the RPC session authenticates exactly once: `authenticate()` mints a
+// capability that then serves a WebSocket which may stay open for days. Checking expiry only at
+// connect time would let an established connection outlive its session indefinitely, which defeats
+// the point of having expiry at all. A DO alarm cannot substitute for this — `abortSession` is a
+// closure over the Worker's response object (see the fetch handler below), unreachable from the
+// user DO where an alarm would fire.
+//
+// `tokenId` is undefined for auth paths that mint no session record (Cloudflare Access, which
+// carries a per-request JWT and whose lifetime the identity provider owns). Those are passed
+// through unchecked rather than rejected — there is no session here to expire.
+function withSessionChecks(
+  impl: AuthenticatedApi,
+  tokenId: string | undefined,
+  user: DurableObjectStub<UserDurableObject>,
+  abortSession: (reason: Error) => void,
+): AuthenticatedApi {
+  if (tokenId === undefined) return impl;
+
+  return new Proxy(impl, {
+    get(target, prop, receiver) {
+      // Use `target` as the receiver: passing the Proxy causes an illegal invocation on methods
+      // that touch private fields. Same reason as the facet-stub Proxy in overseer.ts.
+      let method = Reflect.get(target, prop, target);
+      // Non-functions and symbols are never RPC methods -- notably `then`, which is probed on
+      // anything awaited. Forwarding those unchanged keeps the object promise-safe.
+      if (typeof method !== "function" || typeof prop === "symbol") return method;
+
+      return async (...args: unknown[]) => {
+        if (!await user.checkSession(tokenId)) {
+          // Kill the socket as well as failing the call: the client must re-authenticate, and
+          // leaving the connection open would let it keep trying with a dead credential.
+          let reason = new Error("Session expired or was revoked. Please sign in again.");
+          abortSession(reason);
+          throw reason;
+        }
+        return Reflect.apply(method, target, args);
+      };
+    },
+  });
+}
+
 @validateRpc()
 class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   constructor(private ctx: ExecutionContext, private env: Env,
@@ -117,6 +160,23 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
   hasPasswordLogin(): Promise<boolean> {
     return this.user.hasPasswordLogin();
+  }
+
+  async revokeAllSessions(): Promise<void> {
+    await this.user.revokeAllSessions();
+    // The session wrapper would drop this connection on the next call anyway; closing now means
+    // the client sees a clean disconnect instead of one failed request first.
+    this.abortSession(new Error("All sessions were signed out."));
+  }
+
+  // Lives here rather than on AdminApi: AdminApiImpl is documented as "fully user-independent" so
+  // that a client never receives a stub reaching into user DOs (see admin-settings.ts), and this
+  // class already holds both the user namespace and the #isAdmin() check that mints AdminApi.
+  async revokeSessionsForUser(username: string): Promise<void> {
+    if (!this.#isAdmin()) {
+      throw new Error("Not authorized.");
+    }
+    await this.users.get(this.users.idFromName(username)).revokeAllSessions();
   }
   listModels(): Promise<AiChatAuthorInfo[]> {
     return this.user.listModels();
@@ -669,13 +729,15 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
     let userId = this.users.idFromName(split[0]);
     let stub = this.users.get(userId);
-    await stub.authenticate(split[1]);
+    let tokenId = await stub.authenticate(split[1]);
     recordAnalytics(this.ctx, this.env, {
       event_name: "user_authenticated",
       user_id: userId.toString(),
       source: "session_token",
     });
-    return new AuthenticatedApiImpl(this.ctx, this.env, stub, this.abortSession);
+    return withSessionChecks(
+        new AuthenticatedApiImpl(this.ctx, this.env, stub, this.abortSession),
+        tokenId, stub, this.abortSession);
   }
 
   async authenticateFromCfAccess(): Promise<AuthenticatedApi> {
@@ -700,6 +762,9 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
       user_id: userId.toString(),
       source: "cf_access",
     });
+    // No session record exists on this path: authority is the Access JWT the proxy verified on
+    // the request, and its lifetime belongs to the identity provider. Nothing for us to expire,
+    // hence no session wrapper.
     return new AuthenticatedApiImpl(this.ctx, this.env, stub, this.abortSession);
   }
 

@@ -38,6 +38,13 @@ export type AdminConfig = {
   // Library). Absent ⇒ the default ("optional", see provisioning-policy.ts). Only meaningful for
   // vendors that declare autoProvisionsAccount.
   ambientGatekeeperModes: Record<string, AmbientGatekeeperMode>;
+  // Session bounds, in hours/minutes. These are the one exception to the "no auth config here"
+  // rule above, and only in the tightening direction: both are clamped to env-var ceilings
+  // (SESSION_MAX_LIFETIME_HOURS / SESSION_MAX_IDLE_MINUTES) by resolveSessionPolicy(), so an
+  // admin can shorten a session but never lengthen one beyond what the deployment permits.
+  // Absent ⇒ use the ceiling. See auth/session-policy.ts.
+  sessionLifetimeHours?: number;
+  sessionIdleMinutes?: number;
 
   // The blueprints offered as this deployment's standard output formats. What a user gets from
   // "New Slides", and what the agent is told to prefer. Order is menu order.
@@ -247,6 +254,13 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
 
+// A stored positive number, or undefined for absent/invalid. Used for the optional session bounds,
+// where undefined means "fall back to the deployment ceiling" — so a non-positive value must not
+// survive as 0, which would otherwise read as "expire immediately".
+function positiveNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
 export function parseAdminConfig(raw: string | null): AdminConfig {
   if (!raw) return { ...DEFAULT_ADMIN_CONFIG };
   try {
@@ -278,6 +292,11 @@ export function parseAdminConfig(raw: string | null): AdminConfig {
       disabledResources,
       disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
       ambientGatekeeperModes,
+      // Absent/invalid ⇒ undefined ⇒ resolveSessionPolicy() uses the env ceiling. Values above
+      // the ceiling are not rejected here; they are clamped at resolve time, so lowering the
+      // ceiling tightens existing deployments without a config rewrite.
+      sessionLifetimeHours: positiveNumber(p.sessionLifetimeHours),
+      sessionIdleMinutes: positiveNumber(p.sessionIdleMinutes),
       formats: parseFormats(p.formats),
     };
   } catch {

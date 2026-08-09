@@ -247,11 +247,28 @@ else is untestable without it. 2 and 3 parallel after 1. 4 last.
 
 `LoginSessionRecord` is `{tokenId, created}` (`user.ts:76`) and **`created` is stored but never
 read**. `authenticate()` (`user.ts:298`) hashes the token and does a bare `if (!session) throw`.
-No TTL logic exists anywhere; `overseer.ts:7333` carries a literal `// TODO: Revoke user sessions.`
+No TTL logic exists anywhere.
 
 **A leaked token is valid forever.** On a network handling classified material this is plausibly an
 accreditation blocker — such regimes generally mandate session timeout and administrative
 revocation. It is independent of which auth connector ships, so it goes first.
+
+Constraints established before designing:
+- **The hard part is mid-connection expiry.** `authenticate()` runs **once** at WebSocket setup and
+  returns an `AuthenticatedApi` capability that serves the whole connection — which can last days.
+  Checking expiry only at authenticate-time leaves established connections outliving their
+  sessions, which defeats the purpose. `abortSession()` (`server.ts:78, 848`) force-closes the
+  socket and is the lever available.
+- **`UserDurableObject` uses no alarms today** — an expiry alarm has no conflict to negotiate,
+  unlike `OverseerDurableObject`, which already multiplexes one three ways.
+- **There is no user directory.** User DOs are `idFromName(username|email)`, `AdminSettings` has no
+  enumeration method, and no cross-user index exists. So admin revocation can target a **named**
+  user; "revoke everyone" is not implementable without building a directory. Worth stating to an
+  accreditation reviewer as a scope boundary.
+- **`overseer.ts:7333` is NOT part of this work.** That TODO sits in `deleteSelf()` (workspace
+  deletion), immediately after `destroyAllLiveChats()`. "Sessions" there means live RPC connections
+  to the workspace being torn down, not login tokens. An earlier draft of this plan listed it as a
+  revocation case; that was a misreading.
 
 ## Risks
 

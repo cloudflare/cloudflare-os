@@ -302,6 +302,16 @@ export interface AuthenticatedApi extends RpcTarget {
   // which case the change-password UI should be hidden.
   hasPasswordLogin(): Promise<boolean>;
 
+  // Invalidate every session for this account, including the caller's own — the current connection
+  // is dropped and the user must sign in again. Deliberately all-or-nothing: a "sign out
+  // everywhere" that spares the caller is a weaker guarantee, and there is no per-session UI.
+  revokeAllSessions(): Promise<void>;
+
+  // Invalidate every session belonging to `username`. Admin-only; throws otherwise. Targets a
+  // named account because user Durable Objects are addressed by name and the deployment keeps no
+  // user directory — there is no "revoke everyone" without building one.
+  revokeSessionsForUser(username: string): Promise<void>;
+
   // List the user's configured AI models.
   //
   // Note that the list returned here could be different from a particular gadget's Overseer,
