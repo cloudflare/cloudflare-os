@@ -1,0 +1,44 @@
+{
+  "name": "gatekeeper-oidc",
+  "main": ".wrangler/validate/src/oidc.ts",
+  "build": {
+    "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
+    "watch_dir": "src"
+  },
+  "compatibility_date": "2026-02-02",
+  "compatibility_flags": ["allow_irrevocable_stub_storage", "nodejs_als"],
+  "rules": [
+    { "type": "Text", "globs": ["**/*.txt", "**/*.svg"], "fallthrough": false }
+  ],
+  "migrations": [
+    {
+      "tag": "v0",
+      "new_sqlite_classes": ["UserAccount", "OidcGatekeeperImpl"]
+    }
+  ],
+  // Every var here is deployment configuration for the specific IdP being connected, so this file
+  // deliberately sets none of them to a real value.
+  //
+  //   OIDC_ISSUER
+  //     The IdP's issuer URL (used for OIDC discovery, e.g. Keycloak/Authentik/Dex/ADFS/Okta).
+  //
+  //   OIDC_CLIENT_ID
+  //     OAuth client ID registered with the IdP.
+  //
+  //   OIDC_CLIENT_SECRET
+  //     OAuth client secret registered with the IdP.
+  //
+  //   OIDC_SCOPES
+  //     Space-separated scopes to request (e.g. "openid email profile").
+  // "vars": {
+  //   "OIDC_ISSUER": "",
+  //   "OIDC_CLIENT_ID": "",
+  //   "OIDC_CLIENT_SECRET": "",
+  //   "OIDC_SCOPES": ""
+  // },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": false }
+  }
+}
