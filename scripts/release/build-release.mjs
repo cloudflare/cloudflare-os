@@ -24,6 +24,7 @@ import {
 import {
   findDeployablePackages, generateManifest, readDeployInputs, readWranglerConfig,
 } from "./manifest-lib.mjs";
+import { execPnpm } from "../pnpm-command.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PACKAGES_DIR = join(ROOT, "packages");
@@ -42,6 +43,10 @@ function parseArgs(argv) {
 
 function run(command, argv, options = {}) {
   console.log(`running: ${command} ${argv.join(" ")} ${options.cwd ? `(in ${options.cwd})` : ""}`);
+  if (command === "pnpm") {
+    execPnpm(argv, { stdio: "inherit", cwd: ROOT, ...options });
+    return;
+  }
   execFileSync(command, argv, { stdio: "inherit", cwd: ROOT, ...options });
 }
 

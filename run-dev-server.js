@@ -15,6 +15,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
+import { execPnpm } from "./scripts/pnpm-command.mjs";
 import { getWranglerPortFromBackendHost } from "./scripts/dev-server-config.js";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -322,7 +323,7 @@ if (backendHost) {
 console.log(`\nStarting: wrangler dev ${args.join(" ")}\n`);
 
 try {
-  execFileSync("pnpm", ["exec", "wrangler", "dev", ...args],
+  execPnpm(["exec", "wrangler", "dev", ...args],
       { stdio: "inherit", cwd: ROOT });
 } catch (e) {
   // wrangler was killed or exited with an error; the output was already shown

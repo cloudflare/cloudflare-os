@@ -14,10 +14,10 @@
  *
  * `--check` is non-mutating: writes a sibling temp file, compares, deletes it.
  */
-import { spawnSync } from "node:child_process";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnPnpmSync } from "./pnpm-command.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packagesDir = join(root, "packages");
@@ -126,11 +126,13 @@ async function generateOne(pkgDir) {
     if (runtimeOnlyConfig) {
       args.push("--config", runtimeOnlyConfig, "--include-env", "false");
     }
-    const result = spawnSync(
-      "pnpm",
+    const result = spawnPnpmSync(
       args,
       { cwd: pkgDir, encoding: "utf8", env: process.env },
     );
+    if (result.error) {
+      throw new Error(`failed to spawn pnpm in ${rel}: ${result.error.message}`);
+    }
     if (result.status !== 0) {
       console.error(result.stdout);
       console.error(result.stderr);
