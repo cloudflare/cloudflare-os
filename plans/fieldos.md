@@ -214,37 +214,54 @@ deferring them:
 own source that it "is not a boundary against malicious peer configs" (`domain.ts:1-2`). Fine for
 one trusted deployment; unacceptable across classification levels on shared infrastructure.
 
-## Multi-customer deployment
+## Multi-customer, and orgs within a customer
 
-FieldOS runs for several customers. The model is **one deployment per customer**, with sharing
-limited to stateless components.
+Two separate problems, easily conflated, with opposite answers.
 
-The industry norm for this shape of product — regulated, per-tenant sensitive data, on customer
-infrastructure — is *silo*, not *pool*. Shared-schema multi-tenancy is what you choose to serve
-many small tenants cheaply; it is not what you choose when a tenant boundary is also a
-classification boundary, because a single logic bug in a namespacing check becomes a cross-customer
-disclosure. The isolation here should come from separate deployments, which is a property of the
-topology rather than of any code path staying correct.
+### Across customers: separate deployments, nothing shared
 
-The test to apply to anything proposed as shared: **what happens when one customer is
-compromised?**
+Each customer gets their own airgapped deployment. This is not a policy choice so much as a
+physical fact: there is no route between two isolated networks, so cross-customer sharing of a GPU
+cluster or anything else is not available even if it were desirable. It also happens to be the
+industry norm for this shape of product — silo, not pool — because a tenant boundary that is also a
+classification boundary should not depend on a namespacing check staying correct.
 
-| Component | Share? | Reasoning |
-|---|---|---|
-| Model inference (GPU cluster) | **Yes** | Stateless. Prompts cross the boundary; no persisted state does. Per-deployment API keys plus network policy. The only sharing that saves real money. |
-| Blueprint registry | **One-way only** | Blueprints are code that runs in user sandboxes, so customer-to-customer publishing is a supply-chain path between tenants. We curate and publish; customers consume. |
-| Context gatekeeper | **No** | `domain.ts` states in its own source that `sharingDomain` "is not a boundary against malicious peer configs", and the value arrives from binding props with nothing enforcing a deployment stays in its namespace. Sharing means one customer reads another's documents. |
-| Durable Object storage, KV, R2 | **No** | Per-customer by definition; this is the data. |
-| Identity provider | **No** | Each customer brings their own; `gatekeeper-oidc` is configured per deployment. |
+An earlier draft of this document recommended sharing an inference cluster across customers. That
+was wrong: it assumed a connectivity that an airgapped deployment does not have.
 
-**Open question, and not a technical one:** a shared inference cluster means prompts leave the
-customer's network. For a genuinely classified deployment that may be disqualifying regardless of
-the technical isolation, so confirm it with whoever owns accreditation before banking the saving.
-If it is disqualifying, the fallback is a per-customer inference deployment and no sharing at all —
-which costs more but removes the last cross-customer path.
+### Within one customer: orgs are the real requirement
 
-**Hard gate:** if FieldOS is ever asked to host two customers on *one* deployment, the sharing-domain
-namespacing above is not sufficient and real tenant isolation must be built first.
+The separation customers actually want is **between orgs inside one deployment** — Engineering,
+Legal and Finance on the same airgapped network, sharing the GPU cluster the customer paid for
+while keeping their workspaces and documents apart. Here sharing is the point, not the risk.
+
+**Nothing in the codebase models this today.** There is no org, team, tenant or group concept
+anywhere in `workshop-shared/api.ts`, `user.ts` or `admin-config.ts`. What exists is:
+- a per-workspace **sharing graph** (`sharing.ts`) — access by reachability from the owner, which
+  separates individuals but knows nothing of groups;
+- a flat, deployment-wide **admin list** (`ADMINS`, checked in `#isAdmin()`) — an admin administers
+  everything, with no per-org scoping;
+- one deployment-wide `AdminConfig`;
+- the Context gatekeeper's `sharingDomain`, which its own source says "is not a boundary against
+  malicious peer configs" — namespacing between *trusted* deployments, not a security boundary.
+
+So org separation has to be designed and built. The shape of it, before anyone starts:
+
+| Question | Why it decides the design |
+|---|---|
+| Is an org boundary **advisory** (tidiness, discoverability) or **enforced** (a Legal user must not be able to reach an Engineering workspace even deliberately)? | Advisory is a filter on listings. Enforced means an authorization check at every capability-minting chokepoint, which is kernel work. |
+| Does the customer's IdP already carry org membership? | If a group claim exists, membership is derivable at sign-in and needs no separate directory. `gatekeeper-oidc` would map the claim; without one, FieldOS needs its own org store. |
+| Do orgs need separate admins? | `ADMINS` is flat today. Per-org admin means scoping `AdminConfig` too, which is a much larger change than adding a field. |
+| Should the inference cluster be shared across orgs? | Almost certainly yes — it is the customer's own hardware on their own network, so the accreditation question that applies across customers does not arise here. |
+
+**Recommended default until those are answered:** enforced separation, with org membership derived
+from the IdP where available. Advisory separation is cheap but tends to be sold as a boundary and
+then discovered not to be one — the failure mode this codebase already demonstrates with
+`sharingDomain`.
+
+**Hard gate, unchanged:** the existing `sharingDomain` namespacing is not sufficient for enforced
+org separation. It is a naming convention, not an authorization check, and treating it as the
+latter would be repeating the mistake its own comment warns about.
 
 ## Three things to resist "improving"
 
