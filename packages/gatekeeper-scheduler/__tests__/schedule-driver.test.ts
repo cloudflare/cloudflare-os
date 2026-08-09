@@ -30,6 +30,7 @@ type TestHooks = HookInitiator<ScheduleHookTarget> & {
   }>;
   release(): Promise<void>;
   reset(): Promise<void>;
+  setCallbackBarrier(size: number, limit: number): Promise<void>;
   waitUntilBlocked(): Promise<void>;
 };
 
@@ -696,6 +697,9 @@ describe("ScheduleDriver", () => {
   it("bounds callback concurrency and immediately continues a due backlog", async () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
     const driver = testEnv.SCHEDULE_DRIVER.getByName("batching");
+    // The batch of 20 delivers as five full sets of lanes; hold each set so the observed peak is
+    // the runner's bound and not RPC timing. The 21st, a round of one, is left unbarriered.
+    await testEnv.TEST_HOOKS.setCallbackBarrier(4, 20);
     const activationTime = Date.now();
     for (let index = 0; index < 21; index++) {
       await enableSchedule(
