@@ -1,0 +1,168 @@
+# Git workflow
+
+How we work on FieldOS. This is a fork of Cloudflare OS, which shapes several of the rules below —
+see [Upstream](#upstream).
+
+## The short version
+
+1. **One branch per concern.** Start it before the first edit, not after.
+2. **Never commit to `main`.** Branch, PR, merge.
+3. **A commit says *why*.** The diff already says what.
+4. **Verify before committing**, and record what you ran in the commit message.
+5. **Log substantive work** in `plans/fieldos-log.md`.
+
+## Branches
+
+Name them `<type>/<short-slug>`:
+
+```
+feat/gatekeeper-oidc          auth/session-expiry
+fix/usage-quota-gating        chore/rebrand-fieldos
+docs/git-workflow             refactor/gatekeeper-shared
+```
+
+**Branch before you start.** The common failure is starting work on the branch you happen to be on,
+noticing three commits later that two of them are unrelated, and having to choose between messy
+history and branch surgery. Deciding "this is a separate concern" costs nothing beforehand and is
+annoying afterwards. This has already happened once on this repo — Phase 0's rebrand, the usage-quota
+change and the plan docs all landed on `phase0-rebrand` because nobody switched branches.
+
+One branch should answer one question in review. If you cannot describe it in a sentence without
+"and", it is two branches.
+
+## Commits
+
+Subject line in the imperative, under ~72 characters, no trailing period:
+
+```
+Decouple usage quotas from Cloudflare billing
+```
+
+not `Fixed stuff` or `WIP` or `changes`.
+
+The body carries the reasoning. Assume the reader has the diff and does not have your context. In
+particular, write down:
+
+- **Why this approach**, and what you rejected. This is the highest-value content in a commit
+  message — it stops the next person re-litigating a settled question. A good example from this
+  repo's history explains why the frontend keys on an existing `unlimited` flag rather than a new
+  one.
+- **What you verified.** Not "tested" — the actual commands and results.
+- **What you deliberately did not do**, if a reviewer would otherwise wonder.
+
+Commits should build and pass tests on their own. A reviewer bisecting a regression should never
+land on a commit that does not run.
+
+Every commit ends with:
+
+```
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+```
+
+## Verify before you commit
+
+The gate CI enforces:
+
+```bash
+pnpm lint          # oxlint + recursive tsc --noEmit
+pnpm test
+```
+
+Narrow it while iterating:
+
+```bash
+pnpm --filter @gadgets/workshop-frontend run types:check
+pnpm --filter @gadgets/workshop-backend  run types:check
+pnpm --filter @gadgets/workshop-frontend run test
+```
+
+`oxlint` currently emits ~64 warnings that predate this fork. Warnings do not block; **errors must
+be zero**. Check the exit code rather than eyeballing output — a piped `tail` hides it:
+
+```bash
+pnpm lint:check > /tmp/lint.txt 2>&1; echo "exit=$?"
+```
+
+State the results in the commit message. "Verified: frontend + backend types:check clean, 118
+frontend tests pass, oxlint 0 errors" is worth more than "tested".
+
+## Deleting code
+
+This repo has two traps that have already produced wrong answers.
+
+**Resolve imports; do not grep names.** `ChatMessage.tsx` had zero importers but 35 apparent
+references, because the name collides with the `AiChatMessage` API type. Grep tells you about
+strings; you need to know about *modules*. Resolve each relative specifier against the filesystem
+and check what actually points at the file.
+
+**Delete clusters as a unit.** Dead files usually reference each other, so each looks "used" in
+isolation. Verify the whole set has no importers from outside the set, then remove it in one commit.
+
+## Logging work
+
+Substantive changes get an entry in `plans/fieldos-log.md`, appended at the bottom. Design decisions
+update `plans/fieldos.md` as well.
+
+The log is append-only: **corrections are new entries, not edits.** A record showing that an earlier
+claim was wrong and how it was caught is more useful than one that has been quietly tidied. There is
+already an entry walking back an overstated "confirmed from primary source" claim — that entry is
+doing its job.
+
+Record what was *verified* rather than what was assumed, and cite `file:line` for anything a reader
+would otherwise have to hunt for.
+
+## PRs
+
+Push the branch and open a PR even when merging it yourself — the PR is where CI runs and where the
+change is reviewable later.
+
+```bash
+git push -u origin feat/my-thing
+gh pr create --fill
+```
+
+Merge with `--no-ff` so the branch remains visible as a unit:
+
+```bash
+git checkout main && git merge --no-ff feat/my-thing
+```
+
+Delete the branch after merging. `git branch -d` (lowercase) refuses to delete unmerged work;
+prefer it to `-D`.
+
+## Upstream
+
+FieldOS is a **soft fork** of Cloudflare OS, and the merge model is deliberate: **cherry-pick
+inward, never merge upstream wholesale.** Watch upstream for security fixes and port them
+individually. Rebase-and-replay was considered and rejected — replaying our patches onto a
+fast-moving 9,500-line kernel and 44,000-line frontend is an unbounded recurring cost, and deleting
+ten connectors diverges history immediately. The reasoning is in `plans/fieldos.md`.
+
+Which packages remain upstream-mergeable, and which we own outright, is tabled in the same document.
+For mergeable packages — `workshop-backend`, `workshop-shared`, `router`, `mcp-shared` — **keep
+diffs surgical.** Every line changed there is a line to reconcile on every future port. Prefer
+adding a new file over editing an existing one where the choice exists.
+
+Cherry-picked upstream commits keep their original author and message, with a note about why:
+
+```
+git cherry-pick -x <sha>     # -x appends the source commit hash
+```
+
+**Gate every upstream cherry-pick on our own workerd integration suite**, not upstream's CI.
+Upstream tests against Cloudflare's platform; we run standalone `workerd`, and they are not the same
+environment. This is the parity risk recorded in `plans/fieldos.md`.
+
+## Things not to commit
+
+- Secrets, tokens, `.dev.vars`, anything under `.wrangler/`
+- Generated output — `src/generated/`, `worker-configuration.d.ts`, `dist/`
+- Commented-out code. Git remembers it; delete it.
+- Unrelated formatting churn. It buries the real change in review.
+
+## Kernel changes
+
+`workshop-backend` and API changes in `workshop-shared` are held to a higher bar — reviewers read
+every line. Keep those diffs small, doc-comment every exported member of the `workshop-shared`
+public API, and split large changes so kernel commits can be reviewed apart from UI. See the
+repository `CLAUDE.md` for the full standard.
