@@ -681,6 +681,13 @@ function makeOverseerStorage(storage: DurableObjectStorage) {
       // explicit admin action, precisely so it can never happen silently from whoever opens next.
       orgId: <string | undefined>undefined,
 
+      // Set when stamping the org at creation failed, distinguishing "this workspace predates org
+      // separation" (absent orgId, legitimately outside the boundary) from "we could not determine
+      // the creator's org" (absent orgId, accidentally outside it). Enforcement must fail closed on
+      // this rather than treating the workspace as exempt, or an induced failure at creation time
+      // becomes a permanent boundary bypass.
+      orgUnknown: false,
+
       // Version of this DO's storage schema, gating lazy migrations. Used to trigger migrations
       // at construction time.
       //   0 = Workspace from before multi-gadget mode was introduced (unless `ownerId` is absent,
@@ -6364,15 +6371,22 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   // initialize a workspace (open()'s first-open block and receiveExternalMessage), so that neither
   // can leave a workspace untagged while org separation is in use.
   //
-  // Best-effort: a workspace that cannot learn its org is created untagged rather than not created
-  // at all. Untagged means "no org boundary applies", so the failure is visible in the admin
-  // read-out and correctable, whereas failing creation would turn a user-DO hiccup into an outage.
+  // Best-effort about *creation*: a workspace that cannot learn its org is still created, because
+  // failing creation would turn a user-DO hiccup into an outage. But the failure is recorded, not
+  // just logged. An absent `orgId` otherwise has two very different causes that look identical —
+  // "created before org separation existed" (exempt from the boundary, by design) and "we failed
+  // to read the creator's org" (exempt by accident). Without `orgUnknown`, anything that makes
+  // this one RPC fail at creation time yields a permanently boundary-exempt workspace, and
+  // enforcement would have no way to tell the two apart. Enforcement should fail closed on
+  // `orgUnknown` rather than treat it as exempt.
   async #stampOrg(creator: DurableObjectStub<UserDurableObject>): Promise<void> {
     try {
       let orgId = await creator.getOrgId();
       if (orgId) this.impl.storage.orgId.put(orgId);
     } catch (err) {
-      this.impl.logger.warn("failed to record workspace org", {
+      this.impl.storage.orgUnknown.put(true);
+      // error, not warn: this is an integrity failure in a security boundary, not routine noise.
+      this.impl.logger.error("failed to record workspace org", {
         event: "workspace.org.stamp.failed", error: err,
       });
     }
