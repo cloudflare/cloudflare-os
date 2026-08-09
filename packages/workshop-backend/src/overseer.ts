@@ -668,6 +668,19 @@ function makeOverseerStorage(storage: DurableObjectStorage) {
       // Initialized on first startup.
       ownerId: <string | undefined>undefined,
 
+      // Organization this workspace belongs to, captured from its creator when the workspace is
+      // created. Deliberately stamped here rather than resolved through the owner on each access:
+      // ownership is immutable and there is no offboarding path, so reading the owner's *current*
+      // org would mean a person moving teams silently drags every workspace they own with them,
+      // and their former collaborators lose access with no admin action.
+      //
+      // undefined means "no org boundary applies" — a workspace created before org separation
+      // existed, or by a user who resolved to no org. Such workspaces stay reachable by everyone
+      // who already has a role, which keeps enabling org separation from breaking existing
+      // collaboration. Nothing backfills this: assigning an org to a legacy workspace is an
+      // explicit admin action, precisely so it can never happen silently from whoever opens next.
+      orgId: <string | undefined>undefined,
+
       // Version of this DO's storage schema, gating lazy migrations. Used to trigger migrations
       // at construction time.
       //   0 = Workspace from before multi-gadget mode was introduced (unless `ownerId` is absent,
@@ -6347,6 +6360,24 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
   // `notifyClosed` should be invoked when the return `Overseer` stub is disposed, which is used
   // by AuthenticatedApiImpl.#openGadgetInternal() to detect Durable Object disconnects.
+  // Record the creator's org on this workspace, at creation only. Called from both paths that
+  // initialize a workspace (open()'s first-open block and receiveExternalMessage), so that neither
+  // can leave a workspace untagged while org separation is in use.
+  //
+  // Best-effort: a workspace that cannot learn its org is created untagged rather than not created
+  // at all. Untagged means "no org boundary applies", so the failure is visible in the admin
+  // read-out and correctable, whereas failing creation would turn a user-DO hiccup into an outage.
+  async #stampOrg(creator: DurableObjectStub<UserDurableObject>): Promise<void> {
+    try {
+      let orgId = await creator.getOrgId();
+      if (orgId) this.impl.storage.orgId.put(orgId);
+    } catch (err) {
+      this.impl.logger.warn("failed to record workspace org", {
+        event: "workspace.org.stamp.failed", error: err,
+      });
+    }
+  }
+
   async open(userId: string, profileId: string,
              notifyClosed: NativeRpcStub<() => void>,
              shareKey?: string,
@@ -6375,6 +6406,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         this.impl.ownerId = userId;
 
         this.impl.storage.ownerId.put(userId);
+        await this.#stampOrg(owner);
 
         this.#initializeEmptyCodeSnapshot();
       });
@@ -6523,6 +6555,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       this.impl.storage.ownerId.put(callerId);
       this.impl.storage.title.put(input.title);
       this.impl.storage.ownerRegistrationPending.put(true);
+      // The other workspace-creation path; stamped for the same reason as in open().
+      await this.#stampOrg(caller);
       this.#initializeEmptyCodeSnapshot();
       ownerId = callerId;
     }

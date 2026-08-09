@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult } from '@gadgets/workshop-shared/api';
+import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, OrgLookup } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -223,6 +223,15 @@ function makeUserStorage(storage: DurableObjectStorage) {
       //
       // null = password disabled (e.g. because some other auth mechanism is used)
       passwordHashHash: <Uint8Array | null>null,
+
+      // Organization this user belongs to, for deployments that separate orgs within one instance.
+      // Refreshed from the identity provider on every gatekeeper sign-in, so the IdP stays the
+      // source of truth and a departure or team change takes effect at next login.
+      //
+      // null = no org. That is a real answer, not a missing one: a user whose group claim was
+      // absent or ambiguous reaches nothing org-scoped, rather than inheriting a default org.
+      // Deployments not using org separation leave every user null.
+      orgId: <string | null>null,
     }
   });
 }
@@ -465,7 +474,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   //
   // When the account doesn't yet exist and `allowCreate` is false (deployment signups are closed),
   // returns null instead of creating one — existing users can still sign in.
-  async loginOrCreateViaGatekeeper(email: string, allowCreate: boolean): Promise<string | null> {
+  // `orgId` comes from the sign-in gatekeeper when the deployment separates orgs, and is written
+  // on every sign-in rather than only at account creation: the identity provider is the source of
+  // truth, so a team change or a departure takes effect at next login. `undefined` means the
+  // vendor does not report orgs at all and leaves any stored value alone; `null` is a real answer
+  // ("this user resolves to no org") and is stored as such.
+  async loginOrCreateViaGatekeeper(email: string, allowCreate: boolean, orgId?: string | null)
+      : Promise<string | null> {
     if (!this.storage.created.get()) {
       if (!allowCreate) return null;
       this.storage.created.put(true);
@@ -475,7 +490,25 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         id: email,
       });
     }
+    if (orgId !== undefined) {
+      this.storage.orgId.put(orgId);
+    }
     return this.#newSessionToken();
+  }
+
+  /** The org this user belongs to, or null when they resolve to none. */
+  async getOrgId(): Promise<string | null> {
+    return this.storage.orgId.get();
+  }
+
+  /**
+   * The org read-out for the admin panel. Reports existence alongside the org so a mistyped
+   * username is distinguishable from an account that genuinely resolved to no org — the two look
+   * identical otherwise, and confusing them is how an admin concludes the mapping is broken.
+   */
+  async getOrgLookup(): Promise<OrgLookup> {
+    if (!this.storage.created.get()) return { exists: false, orgId: null };
+    return { exists: true, orgId: this.storage.orgId.get() };
   }
 
   // Whether this account has a password set (false for gatekeeper sign-in accounts).

@@ -63,6 +63,11 @@ export type VendorDescription = {
   // such a vendor as a login method, subject to its own auth allowlist. Defaults to false.
   providesAuth?: boolean;
 
+  // True if this vendor can also report which organization an account belongs to, via
+  // `GatekeeperUser.getAuthenticatedOrg()`. Only meaningful alongside `providesAuth`: the org is
+  // established at sign-in. Deployments that do not separate orgs ignore this. Defaults to false.
+  providesOrg?: boolean;
+
   // If set, this vendor can mint a connected account with no OAuth flow (see
   // GatekeeperVendor.createAccount) and recommends the Workshop auto-provision one account per user.
   // The account — not the vendor — declares whether it provides an agent singleton and/or a
@@ -536,6 +541,15 @@ export interface GatekeeperUser extends WorkerEntrypoint {
   // Workshop keys accounts by email, so an unverified address would allow account takeover.
   // Returns null when the account has no verified email or the vendor does not support auth.
   getAuthenticatedEmail(): Promise<string | null>;
+
+  // For vendors that advertise `providesOrg`, returns the organization this account belongs to,
+  // for deployments that separate orgs within one instance. Returns null when the vendor cannot
+  // determine one — which the Workshop treats as "no org", never as a default org, since a user
+  // whose group claim is missing must not silently inherit someone else's org.
+  //
+  // Present only on vendors that set VendorDescription.providesOrg; callers gate on that flag
+  // rather than probing, since RPC stubs cannot report optional-method presence.
+  getAuthenticatedOrg?(): Promise<string | null>;
 
   // Get a `GatekeeperUserVerifier` representing this user.
   getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>>;

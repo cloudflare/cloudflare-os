@@ -29,9 +29,43 @@ Set on the connector, not the backend. See
 | `OIDC_CLIENT_ID` | yes | Confidential client registered for this deployment. |
 | `OIDC_CLIENT_SECRET` | yes | That client's secret. |
 | `OIDC_SCOPES` | no | Extra scopes; `openid` and `email` are always requested. |
+| `OIDC_GROUPS_CLAIM` | no | Claim to read group membership from, for org separation. There is no standard name, so this is configuration rather than a constant. Unset means this deployment does not use org separation at all. |
+| `OIDC_ORG_PREFIX` | no | Optional prefix marking which groups are orgs, e.g. with `fieldos-` set, the group `fieldos-legal` yields org `legal`. Users are typically in many groups unrelated to FieldOS, so most deployments that set `OIDC_GROUPS_CLAIM` will want this too. |
 
 Add `oidc` to `AUTH_GATEKEEPERS` to surface the button. The provider must issue a **verified**
 email — sign-in is refused when `email_verified` is not `true`, because accounts are keyed by email.
+
+#### Org resolution
+
+Org separation is off unless `OIDC_GROUPS_CLAIM` is set. When it is set, a missing or ambiguous
+claim resolves to **no org, never a default org** — a user is either placed in exactly one org or
+placed in none; there is no fallback org that soaks up the unresolved cases. Concretely:
+
+- If the claim is absent, empty, or not a string/array, the user has no org.
+- If more than one group matches (after applying `OIDC_ORG_PREFIX`), the user has no org. Picking
+  one of several matches would make access depend on the IdP's serialization order for the claim,
+  which is not something to build authorization on.
+
+**Microsoft Entra: this is a hard requirement, not a tip.** Above 200 groups (JWT tokens) or 150
+groups (SAML), Entra omits the groups claim entirely and substitutes a pointer to Microsoft Graph
+for the full list — which an airgapped deployment cannot reach. A user in 250 groups then looks
+identical to a user in zero groups: no claim, no org. **Entra deployments must be configured to
+emit only the groups assigned to the application** (via the app registration's group claims
+configuration), not the user's full group membership, or affected users will silently lose org
+access.
+
+Keycloak emits group membership as paths (a leading `/`, e.g. `/fieldos-legal`); the connector
+strips the leading slash before matching, so `OIDC_ORG_PREFIX` does not need to account for it.
+
+Where the groups claim comes from, per provider:
+
+- **Keycloak**: not included by default — add a "Group Membership" mapper to the client's client
+  scope, and use the path (with or without leading slash) as the group name.
+- **Okta**: add a Groups claim to the authorization server's claims, filtered to the groups you
+  want visible to this application.
+- **Authentik**: group names are available via a scope mapping that includes `groups` in the token.
+- **Entra**: configure the app registration's optional claims / group claims to emit only
+  application-assigned groups — see the hard requirement above.
 
 ### Cloudflare Access
 

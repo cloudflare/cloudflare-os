@@ -360,3 +360,43 @@ it needs no further decisions: KV shim, R2 → MinIO, local inference, then the 
 login → gadget → local model chat → MCP call → restart → state survives.
 
 Org separation is a design question, not yet a task — it needs the four answers above first.
+
+---
+
+## 2026-08-09 — Org separation, Phase 1 (observable, not enforcing)
+
+Design in `plans/org-separation.md`, shipped in four slices on `feat/org-membership`. **No access
+decision changed**; a deployment that leaves `OIDC_GROUPS_CLAIM` unset is bit-for-bit unaffected.
+
+Decisions taken from research (Slack Grid, Notion teamspaces, GitHub, GitLab, Grafana):
+- **Container, not grouping** — the data model had already chosen: one immutable `ownerId` and
+  sharing as reachability from it. Presenting this as an open choice would have been a false one.
+- **Org stamped on the workspace, never resolved through the owner.** With immutable ownership and
+  no offboarding path, `orgOf(owner)` means a person moving teams silently drags every workspace
+  they own along. Confirmed against practice: GitHub documents repo transfer under "best practices
+  for leaving your company"; Notion built a "Recently Left" lost-and-found. We have neither.
+- **Fail closed on a missing claim** — never a default org. Verified from Microsoft's docs: above
+  200 groups (JWT) / 150 (SAML) Entra omits the groups claim entirely and points at Graph, which is
+  unreachable airgapped. A user in 250 groups is otherwise indistinguishable from one in none.
+- **No approval workflow for membership changes.** Every comparable product re-syncs silently on
+  login; building one would invent a mechanism the industry does not have. The real failure is
+  *misconfiguration that looks like it worked* — GitLab #556879 and Grafana #97663 are the same
+  shape — so the mitigation is the admin read-out, not a gate.
+
+Three things caught by verifying delegated analysis rather than accepting it:
+- The KV mirror (recommended by both Codex and me) was **dropped after reading `open()`** — it
+  already holds the user namespace, so the mirror bought nothing and cost a staleness window.
+- Codex's **backfill-on-owner-open was rejected**: it is the mover trap relocated to first-open,
+  firing silently when an owner who changed teams simply opens an old project. Codex itself called
+  it "mover-trap-shaped" and then argued it was fine.
+- Codex's chokepoint enumeration **missed `receiveExternalMessage()`** as a second
+  workspace-creation path. Stamping only `open()` would have left a permanent hole.
+
+Also: `#migrateStorage` is for restructuring data whose meaning changed; an absent `orgId` is a
+legitimate permanent state, not a legacy encoding, so no schema version bump.
+
+Verified throughout: full-repo lint clean, 293 backend tests, 67 connector tests, manifest 4/4.
+
+**Next:** Phase 2 — the check in `open()`'s non-owner branch plus `allowCrossOrgSharing`, behind
+`ENABLE_ORG_SEPARATION` so the rollout is not one-way. Then Phase 3, the Context Library's
+public-collection path, which never passes through `open()`.

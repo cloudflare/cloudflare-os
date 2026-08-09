@@ -29,7 +29,7 @@ import {
   stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  OidcConfig, OidcEndpoints, OidcIdentity, discoverEndpoints, verifyIdToken,
+  OidcConfig, OidcEndpoints, OidcIdentity, OrgClaimConfig, discoverEndpoints, verifyIdToken,
 } from "./identity.js";
 import {
   INITIATION_NONCE_LIFETIME_MS, OAUTH_NONCE_LIFETIME_MS, StoredNonce,
@@ -55,6 +55,10 @@ type Env = Cloudflare.Env & {
   OIDC_CLIENT_ID?: string;
   OIDC_CLIENT_SECRET?: string;
   OIDC_SCOPES?: string;
+  // Org separation. Unset means this deployment does not use it, and every sign-in resolves to no
+  // org. See resolveOrg() in identity.ts for why an unresolvable org is never a default one.
+  OIDC_GROUPS_CLAIM?: string;
+  OIDC_ORG_PREFIX?: string;
 };
 
 // A sign-in grant is read once, for the email, and then discarded. Two minutes is long enough for
@@ -84,6 +88,11 @@ function getConfig(env: Env): OidcConfig {
     clientSecret: env.OIDC_CLIENT_SECRET,
     scopes: env.OIDC_SCOPES ?? "",
   };
+}
+
+/** How this deployment maps group claims onto orgs. Absent claim ⇒ org separation is off. */
+function getOrgConfig(env: Env): OrgClaimConfig {
+  return { claim: env.OIDC_GROUPS_CLAIM, prefix: env.OIDC_ORG_PREFIX };
 }
 
 function redirectUri(env: Env): string {
@@ -233,6 +242,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
           "Sign in with your organization's identity provider. Works with any standards-compliant " +
           "OpenID Connect service, including Keycloak, Okta, Authentik, Dex and ADFS.",
       providesAuth: true,
+      // Only claim to provide an org when this deployment configured a claim to read it from.
+      // Advertising it unconditionally would make every sign-in look like a deliberate "no org"
+      // answer rather than "org separation is not in use here".
+      providesOrg: !!this.env.OIDC_GROUPS_CLAIM,
     };
   }
 
@@ -320,7 +333,7 @@ export class UserAccount extends DurableObject<Env> {
       code, endpoints, config, redirectUri: redirectUri(this.env),
     });
 
-    const identity = await verifyIdToken(idToken, config, endpoints);
+    const identity = await verifyIdToken(idToken, config, endpoints, getOrgConfig(this.env));
 
     // The provider must echo back the nonce we sent, binding this ID token to this request.
     // Checked after signature verification, so the claim is trustworthy by the time we read it.
@@ -430,6 +443,14 @@ export class OidcUserImpl extends WorkerEntrypoint<Env, OidcUserImplProps>
   async getAuthenticatedEmail(): Promise<string | null> {
     const identity = await this.#account().getIdentity();
     return identity?.email ?? null;
+  }
+
+  async getAuthenticatedOrg(): Promise<string | null> {
+    const identity = await this.#account().getIdentity();
+    // Undefined and null both mean "no org". Never substitute a default: a user whose group claim
+    // was missing or ambiguous must reach nothing org-scoped rather than inherit someone else's
+    // org. See resolveOrg() in identity.ts.
+    return identity?.orgId ?? null;
   }
 
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
