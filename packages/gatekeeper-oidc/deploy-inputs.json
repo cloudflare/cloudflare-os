@@ -1,0 +1,39 @@
+[
+  {
+    "name": "OIDC_ISSUER",
+    "kind": "secret",
+    "label": "Issuer URL",
+    "setupSteps": [
+      "Enter the base URL of your identity provider's OIDC issuer — the value it publishes as `issuer`, without a trailing slash.",
+      "The connector reads {ISSUER}/.well-known/openid-configuration to discover the authorization, token and JWKS endpoints, so no other URLs need configuring.",
+      "Keycloak: https://your-host/realms/{realm}. Okta: https://your-org.okta.com. Authentik: https://your-host/application/o/{slug}. ADFS: https://your-host/adfs.",
+      "Must be reachable over HTTPS from this deployment, and every endpoint it advertises must share this origin."
+    ]
+  },
+  {
+    "name": "OIDC_CLIENT_ID",
+    "kind": "secret",
+    "label": "Client ID",
+    "setupSteps": [
+      "In your identity provider, register a confidential client (one that can hold a secret) for this deployment.",
+      "Set its redirect URI to the value below, exactly.",
+      "Grant it the `openid` and `email` scopes; the connector requests both regardless and cannot sign anyone in without them.",
+      "Ensure the client's ID token includes a verified `email` claim. Sign-in is refused when `email_verified` is not true, because Workshop accounts are keyed by email."
+    ],
+    "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/oidc/callback"
+  },
+  {
+    "name": "OIDC_CLIENT_SECRET",
+    "kind": "secret",
+    "label": "Client secret"
+  },
+  {
+    "name": "OIDC_SCOPES",
+    "kind": "secret",
+    "label": "Additional scopes (leave blank unless your provider needs one)",
+    "setupSteps": [
+      "Space-separated scopes to request in addition to `openid` and `email`, which are always included.",
+      "Leave blank unless your provider needs an extra scope to release the email claim."
+    ]
+  }
+]
