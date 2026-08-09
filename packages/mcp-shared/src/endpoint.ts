@@ -79,7 +79,7 @@ export function validateCustomEndpoint(env: InsecureEnv, input: string): Endpoin
     return { ok: false, reason: "The endpoint must use https://." };
   }
   if (!insecureAllowed && isBlockedHost(url.hostname)) {
-    return { ok: false, reason: "That host is not reachable from Cloudflare OS." };
+    return { ok: false, reason: "That host is not reachable from FieldOS." };
   }
 
   // Credentials in the URL would end up in logs and approval prompts.

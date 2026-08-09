@@ -687,7 +687,7 @@ const CONTENT_SOURCE_OPTIONS = [
     value: "web" as const,
     Icon: PencilSimple,
     title: "Editable documents",
-    description: "Create, edit, and delete files through the Cloudflare OS UI.",
+    description: "Create, edit, and delete files through the FieldOS UI.",
   },
   {
     value: "git" as const,
