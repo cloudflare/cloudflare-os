@@ -98,6 +98,36 @@ and check what actually points at the file.
 **Delete clusters as a unit.** Dead files usually reference each other, so each looks "used" in
 isolation. Verify the whole set has no importers from outside the set, then remove it in one commit.
 
+## Traps in this repo
+
+Things that have already cost time here. Each is cheap to avoid once known.
+
+**Workerd-only APIs break under the Node test runner.** `crypto.subtle.timingSafeEqual` and
+`Uint8Array.prototype.toHex` exist in workerd and not in the Node that most packages' vitest runs
+under. If you need one in code that is unit-tested, write a portable implementation — a *real* one,
+not a test stub — or move the package to the workers pool (`@cloudflare/vitest-pool-workers`, as
+`workshop-backend` and `gatekeeper-scheduler` do). Note the copies of `constantTimeEqual` scattered
+across the connectors are untested everywhere, for exactly this reason.
+
+**A new deployable package needs three things beyond its own source**, or it ships broken:
+1. `deploy-inputs.json` — without it the package inherits `DEFAULT_CRED_INPUTS`
+   (`CLIENT_ID`/`CLIENT_SECRET`). Since the deploy wizard blocks Install on unfilled secret inputs,
+   the wrong shape makes a connector **uninstallable**.
+2. Only `kind: "secret"` produces a binding (`manifest-lib.mjs`). A `kind: "var"` input renders in
+   the wizard and reaches the worker as *nothing*.
+3. A fixture bundle under `scripts/testdata/fixture-bundles/<pkg>/`. The golden manifest test fails
+   closed without one — deliberately, so a new worker cannot skip the deploy contract silently.
+   Regenerate the golden with `UPDATE_GOLDEN=1 node --test scripts/release-manifest.test.js` and
+   **read the diff**.
+
+**A gatekeeper exposing a Session type needs `types.txt` as a *symlink*** to `src/types.d.ts`, not
+a copy (`.agents/skills/write-gatekeeper/SKILL.md`). A copy silently goes stale.
+
+**`AdminConfig` must not hold authentication or authorization settings.** They stay env-driven so a
+compromised admin session cannot weaken them (`admin-config.ts`, `AGENTS.md`). Where an admin
+genuinely needs a knob — session timeouts, say — give the env var a *ceiling* the admin may tighten
+within, never exceed.
+
 ## Logging work
 
 Substantive changes get an entry in `plans/fieldos-log.md`, appended at the bottom. Design decisions

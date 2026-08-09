@@ -7,7 +7,23 @@ connectors only to on-prem services.
 
 Not "a laptop offline". Not "a Cloudflare tenant with restricted egress".
 
-Progress and decisions-as-taken are recorded in [`fieldos-log.md`](./fieldos-log.md).
+Progress and decisions-as-taken are recorded in [`fieldos-log.md`](./fieldos-log.md); operator
+configuration is in [`docs/configuration.md`](../docs/configuration.md).
+
+## Status
+
+| | |
+|---|---|
+| ✅ Rebrand, dead-code removal, GitLab CI dropped | Phase 0, minus connector deletion (deferred) |
+| ✅ Usage quotas decoupled from billing | `ENABLE_USAGE_QUOTAS` |
+| ✅ Session expiry and revocation | was the accreditation blocker |
+| ✅ `gatekeeper-oidc` | generic SSO, one connector per deployment config |
+| ✅ workerd feasibility proven by execution | sandbox, SQLite DOs, alarms, restart persistence |
+| ⬜ **Phase 1 — standalone workerd end to end** | the gate everything else is untestable behind |
+| ⬜ Connector deletion (10 packages, 34,290 lines) | deferred by request |
+| ⬜ SSRF inversion + `gatekeeper-shared` | the most delicate change in the fork |
+| ⬜ GHES adaptation | incl. the `awaitDecision` correctness bug |
+| ⬜ Multi-node DO placement + deploy operator | deliberately last |
 
 ## Current state (one paragraph)
 
@@ -198,6 +214,55 @@ deferring them:
 own source that it "is not a boundary against malicious peer configs" (`domain.ts:1-2`). Fine for
 one trusted deployment; unacceptable across classification levels on shared infrastructure.
 
+## Multi-customer, and orgs within a customer
+
+Two separate problems, easily conflated, with opposite answers.
+
+### Across customers: separate deployments, nothing shared
+
+Each customer gets their own airgapped deployment. This is not a policy choice so much as a
+physical fact: there is no route between two isolated networks, so cross-customer sharing of a GPU
+cluster or anything else is not available even if it were desirable. It also happens to be the
+industry norm for this shape of product — silo, not pool — because a tenant boundary that is also a
+classification boundary should not depend on a namespacing check staying correct.
+
+An earlier draft of this document recommended sharing an inference cluster across customers. That
+was wrong: it assumed a connectivity that an airgapped deployment does not have.
+
+### Within one customer: orgs are the real requirement
+
+The separation customers actually want is **between orgs inside one deployment** — Engineering,
+Legal and Finance on the same airgapped network, sharing the GPU cluster the customer paid for
+while keeping their workspaces and documents apart. Here sharing is the point, not the risk.
+
+**Nothing in the codebase models this today.** There is no org, team, tenant or group concept
+anywhere in `workshop-shared/api.ts`, `user.ts` or `admin-config.ts`. What exists is:
+- a per-workspace **sharing graph** (`sharing.ts`) — access by reachability from the owner, which
+  separates individuals but knows nothing of groups;
+- a flat, deployment-wide **admin list** (`ADMINS`, checked in `#isAdmin()`) — an admin administers
+  everything, with no per-org scoping;
+- one deployment-wide `AdminConfig`;
+- the Context gatekeeper's `sharingDomain`, which its own source says "is not a boundary against
+  malicious peer configs" — namespacing between *trusted* deployments, not a security boundary.
+
+So org separation has to be designed and built. The shape of it, before anyone starts:
+
+| Question | Why it decides the design |
+|---|---|
+| Is an org boundary **advisory** (tidiness, discoverability) or **enforced** (a Legal user must not be able to reach an Engineering workspace even deliberately)? | Advisory is a filter on listings. Enforced means an authorization check at every capability-minting chokepoint, which is kernel work. |
+| Does the customer's IdP already carry org membership? | If a group claim exists, membership is derivable at sign-in and needs no separate directory. `gatekeeper-oidc` would map the claim; without one, FieldOS needs its own org store. |
+| Do orgs need separate admins? | `ADMINS` is flat today. Per-org admin means scoping `AdminConfig` too, which is a much larger change than adding a field. |
+| Should the inference cluster be shared across orgs? | Almost certainly yes — it is the customer's own hardware on their own network, so the accreditation question that applies across customers does not arise here. |
+
+**Recommended default until those are answered:** enforced separation, with org membership derived
+from the IdP where available. Advisory separation is cheap but tends to be sold as a boundary and
+then discovered not to be one — the failure mode this codebase already demonstrates with
+`sharingDomain`.
+
+**Hard gate, unchanged:** the existing `sharingDomain` namespacing is not sufficient for enforced
+org separation. It is a naming convention, not an authorization check, and treating it as the
+latter would be repeating the mistake its own comment warns about.
+
 ## Three things to resist "improving"
 
 1. **`UseOverseerInterface`** (`overseer.ts:8788`) — a separate class deny-listing ~70 methods, so
@@ -218,14 +283,16 @@ Note gatekeepers render their **own** OAuth callback HTML and never see `ServerC
 hardcode the product name — 57 occurrences across 16 files, not the 5 an initial frontend-only read
 suggests. Plumbing branding through to gatekeepers is kernel API work, deferred.
 
-**Phase 1 — Single-node self-hosted workerd, end to end.** *Prerequisite gate.*
+**Phase 1 — Single-node self-hosted workerd, end to end.** *Prerequisite gate. Session expiry
+(below) is **done**; the rest is outstanding.*
 Stand up standalone workerd (not `wrangler dev`), shim KV, swap R2 → MinIO, point inference at
 local vLLM/Ollama, confirm PDF export degrades cleanly (`BROWSER?` is optional in the env type and
 both call sites guard). **Add session expiry and revocation here** — see below.
 *Done when:* password login → create gadget → chat with a local model → gadget calls an on-prem MCP
 server → restart workerd → **state survives**.
 
-**Phase 2 — SSRF inversion, `gatekeeper-shared`, auth.** *Parallel with Phase 3.*
+**Phase 2 — SSRF inversion, `gatekeeper-shared`, auth.** *Auth is **done** (`gatekeeper-oidc`);
+the SSRF inversion and `gatekeeper-shared` extraction are outstanding.*
 Extract `gatekeeper-shared` first (~1,500–2,500 lines duplicated across 12 connectors:
 `constantTimeEqual`, `generateNonce`, `hexEncode`, the `UserAccount` DO base). Do the SSRF
 inversion centrally in it. Ship `gatekeeper-oidc`.
@@ -243,17 +310,18 @@ Nothing else blocks on it; single-node is a legitimate first shipping target.
 Sequencing rule: Phase 0 first (cheap, clarifies review). Phase 1 is the hard gate — everything
 else is untestable without it. 2 and 3 parallel after 1. 4 last.
 
-## Prerequisite: sessions never expire
+## Session expiry — DONE
 
-`LoginSessionRecord` is `{tokenId, created}` (`user.ts:76`) and **`created` is stored but never
-read**. `authenticate()` (`user.ts:298`) hashes the token and does a bare `if (!session) throw`.
-No TTL logic exists anywhere.
+*Was: sessions never expired and could not be revoked, so a leaked token was valid forever —
+plausibly an accreditation blocker, since such regimes generally mandate session timeout and
+administrative revocation.*
 
-**A leaked token is valid forever.** On a network handling classified material this is plausibly an
-accreditation blocker — such regimes generally mandate session timeout and administrative
-revocation. It is independent of which auth connector ships, so it goes first.
+Shipped: absolute + idle expiry enforced on **every** RPC via a Proxy over `AuthenticatedApiImpl`,
+env-ceiling config the admin may tighten within, IdP-expiry deference clamped to that ceiling, and
+all-or-nothing revocation reachable by the user and by an admin for a named user. See
+`auth/session-policy.ts` and the log entry for the reasoning.
 
-Constraints established before designing:
+The constraints that shaped it, kept because they still bind anything touching this area:
 - **The hard part is mid-connection expiry.** `authenticate()` runs **once** at WebSocket setup and
   returns an `AuthenticatedApi` capability that serves the whole connection — which can last days.
   Checking expiry only at authenticate-time leaves established connections outliving their

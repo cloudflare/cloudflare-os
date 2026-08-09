@@ -321,8 +321,42 @@ it must know `SKILL.md:318` requires a **symlink**, not a copy.
 
 ---
 
+## 2026-08-09 — Correction: the sharing question was the wrong question
+
+The earlier entry recommended sharing a GPU cluster across customers, and flagged "prompts leave
+the customer's network" as an open accreditation question. **Both were wrong, for the same
+reason:** an airgapped deployment has no route to another customer's network, so cross-customer
+sharing of anything is not merely inadvisable, it is unavailable. The accreditation question does
+not arise because the connectivity does not exist.
+
+The separation customers actually want is **between orgs inside one deployment** — several
+departments on one airgapped network, sharing the GPU cluster that customer bought, with their
+workspaces and documents kept apart. There, sharing is the point rather than the risk, and the
+hardware is the customer's own on their own network.
+
+**Nothing models this today** (verified): no org/team/tenant/group concept in
+`workshop-shared/api.ts`, `user.ts` or `admin-config.ts`. What exists is a per-workspace sharing
+graph that separates individuals but knows nothing of groups, a flat deployment-wide `ADMINS` list
+checked by `#isAdmin()` with no per-org scoping, a single `AdminConfig`, and the Context
+gatekeeper's `sharingDomain` — which its own source calls out as "not a boundary against malicious
+peer configs".
+
+Four questions decide the design, recorded in `fieldos.md`: whether org boundaries are advisory or
+enforced, whether the customer's IdP carries group membership (in which case `gatekeeper-oidc` maps
+a claim rather than FieldOS keeping its own directory), whether orgs need separate admins (`ADMINS`
+is flat, so this is the expensive one), and whether inference is shared across orgs (almost
+certainly yes).
+
+Recommended default: **enforced**, with membership from the IdP where available. Advisory
+separation is cheap but gets sold as a boundary and later discovered not to be one — precisely the
+failure `sharingDomain` already demonstrates.
+
+---
+
 ## Next
 
 Phase 1 — standalone workerd end to end. It is the gate everything else is untestable behind, and
 it needs no further decisions: KV shim, R2 → MinIO, local inference, then the checkpoint of
 login → gadget → local model chat → MCP call → restart → state survives.
+
+Org separation is a design question, not yet a task — it needs the four answers above first.
