@@ -37,7 +37,7 @@
   --color-kumo-interact: #cac8c3;
 
   /* Brand — warm orange accent (intent only) */
-  --color-kumo-brand: #ff4801;
+  --color-kumo-brand: #2d6a4f;
   --color-kumo-brand-hover: #e03f00;
 
   /* Border / line tokens — neutral hairlines */
@@ -68,14 +68,14 @@
   --text-color-kumo-strong: #100f0d;
   --text-color-kumo-subtle: oklch(52% 0.006 60);
   --text-color-kumo-inactive: oklch(66% 0.005 60);
-  --text-color-kumo-brand: #ff4801;
-  --text-color-kumo-link: #ff4801;
+  --text-color-kumo-brand: #2d6a4f;
+  --text-color-kumo-link: #2d6a4f;
   --text-color-kumo-success: oklch(72.3% 0.219 149.579);
   --text-color-kumo-danger: oklch(63.7% 0.237 25.331);
   --text-color-kumo-warning: oklch(47.6% 0.114 61.907);
 
   /* ===== CUSTOM BRAND TOKENS (for direct use alongside Kumo tokens) ===== */
-  --color-accent-100: #ff4801;
+  --color-accent-100: #2d6a4f;
   --color-accent-200: #ff7038;
   --color-background-100: #fcfcfb;
   --color-background-200: #f8f8f7;

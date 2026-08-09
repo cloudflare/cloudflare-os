@@ -97,7 +97,7 @@ const extractors: DescriptionExtractor[] = [
       return yamlDescription(lines) ?? leadingYamlComment(lines);
     },
   },
-  // JSON files: a top-level `_comment` (Cloudflare OS convention), else description/summary.
+  // JSON files: a top-level `_comment` (FieldOS convention), else description/summary.
   {
     appliesTo: (ct) => ct === "application/json",
     extract: (body) => {

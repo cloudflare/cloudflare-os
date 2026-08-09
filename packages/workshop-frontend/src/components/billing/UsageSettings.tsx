@@ -30,16 +30,15 @@ export default function UsageSettings() {
   }, [authenticatedApi])
 
   useEffect(() => {
-    if (!limitsEnabled) {
-      setLoading(false)
-      return
-    }
+    // Fetch unconditionally: the server reports `unlimited: true` when no limit applies, and
+    // quota-only deployments report real usage with `cloudflareLimitsEnabled: false`, so the
+    // client cannot decide from `limitsEnabled` alone whether there is usage worth showing.
     refresh()
     // Re-check when the tab regains focus (e.g. after connecting / topping up elsewhere).
     const onFocus = () => refresh()
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
-  }, [limitsEnabled, refresh])
+  }, [refresh])
 
   // When the server says the user must pick an account, load the list of accounts to choose from.
   useEffect(() => {
@@ -50,8 +49,12 @@ export default function UsageSettings() {
     }
   }, [usage, accounts, authenticatedApi])
 
-  // Hidden entirely when the feature is off, or while the unlimited (self-hosted) default applies.
-  if (!limitsEnabled || (usage && usage.unlimited)) return null
+  // Hidden while usage is unlimited (the self-hosted default), and when no usage is reported at
+  // all. Note `limitsEnabled` is NOT the gate: quota-only deployments enforce a daily counter with
+  // no Cloudflare billing, so they report `cloudflareLimitsEnabled: false` with `unlimited: false`
+  // and still need the usage readout. The Cloudflare connect/top-up affordances below are
+  // separately gated on `limitsEnabled`.
+  if (!usage || usage.unlimited) return null
 
   const connect = async () => {
     setBusy(true)
@@ -107,8 +110,9 @@ export default function UsageSettings() {
             )}
           </div>
 
-          {/* Cloudflare connection / credits */}
-          <div>
+          {/* Cloudflare connection / credits. Suppressed in quota-only deployments, which enforce
+              the same daily counter with no account to connect and no credits to buy. */}
+          {limitsEnabled && <div>
             <p className="text-xs font-medium text-kumo-subtle mb-1">Cloudflare account</p>
             {!usage.connected ? (
               <div className="space-y-3">
@@ -193,9 +197,9 @@ export default function UsageSettings() {
                 </div>
               </div>
             )}
-          </div>
+          </div>}
 
-          <p className="text-xs text-kumo-subtle border-t border-kumo-line pt-3">
+          {limitsEnabled && <p className="text-xs text-kumo-subtle border-t border-kumo-line pt-3">
             Learn more about{' '}
             <a
               href="https://developers.cloudflare.com/ai-gateway/features/unified-billing/"
@@ -206,7 +210,7 @@ export default function UsageSettings() {
               AI Gateway unified billing
             </a>
             .
-          </p>
+          </p>}
         </div>
       )}
       </div>

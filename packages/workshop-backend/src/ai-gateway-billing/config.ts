@@ -21,3 +21,14 @@ export function getMinimumCloudflareBalance(env: Cloudflare.Env): number {
 export function isCloudflareLimitsEnabled(env: Cloudflare.Env): boolean {
   return env.ENABLE_CLOUDFLARE_LIMITS === "true";
 }
+
+// Whether per-user daily call quotas are enforced WITHOUT any billing. This is the airgapped
+// deployment's throttle: there is no money and no Cloudflare account, but an admin still wants to
+// stop one user exhausting a shared local inference cluster. Implies no balance lookup, no BYOK,
+// and no top-up UI -- the daily counter applies to every user uniformly.
+//
+// Ignored when ENABLE_CLOUDFLARE_LIMITS is on, since that path already enforces the same counter
+// (plus the balance bypass) and enabling both would be ambiguous.
+export function isUsageQuotaOnlyEnabled(env: Cloudflare.Env): boolean {
+  return !isCloudflareLimitsEnabled(env) && env.ENABLE_USAGE_QUOTAS === "true";
+}

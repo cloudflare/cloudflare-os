@@ -9,7 +9,7 @@
 
 import { canProceedWithRequest, hasMinimumBalance, LimitWindowKind } from "@gadgets/workshop-shared/limits";
 import { CloudflareUsageInfo } from "@gadgets/workshop-shared/api";
-import { isCloudflareLimitsEnabled, getMinimumCloudflareBalance } from "../config.js";
+import { isCloudflareLimitsEnabled, isUsageQuotaOnlyEnabled, getMinimumCloudflareBalance } from "../config.js";
 import { getDailyLlmCallLimit } from "./config.js";
 import { getConnectionStatus, resolveConnection, ByokGatewayRouting } from "../cloudflare/connection-service.js";
 import type { UserDurableObject } from "../../user.js";
@@ -61,6 +61,26 @@ export async function checkUsageAndBalance(
   env: Cloudflare.Env,
   userStub: DurableObjectStub<UserDurableObject>,
 ): Promise<UsageCheckResult> {
+  // Quota-only mode: enforce the same daily counter with no balance lookup, no BYOK and no
+  // top-up path. Used by deployments that throttle a shared inference cluster rather than bill.
+  if (isUsageQuotaOnlyEnabled(env)) {
+    const limit = getDailyLlmCallLimit(env);
+    const quota = await userStub.consumeDailyLlmCall(limit);
+    return {
+      allowed: quota.withinLimits,
+      reason: quota.withinLimits ? undefined
+          : `Daily limit of ${quota.limit} model calls reached. Resets at ${quota.resetAt}.`,
+      shouldUseByok: false,
+      withinLimits: quota.withinLimits,
+      remaining: quota.remaining,
+      limit: quota.limit,
+      windowKind: "daily",
+      resetAt: quota.resetAt,
+      balance: null,
+      hasUserToken: false,
+    };
+  }
+
   if (!isCloudflareLimitsEnabled(env)) {
     return unlimitedResult();
   }
@@ -127,6 +147,22 @@ export async function getUsageInfo(
   env: Cloudflare.Env,
   userStub: DurableObjectStub<UserDurableObject>,
 ): Promise<CloudflareUsageInfo> {
+  // Quota-only mode: report real counter state, but never "connected"/balance -- there is no
+  // account to connect and no top-up affordance to offer.
+  if (isUsageQuotaOnlyEnabled(env)) {
+    const quota = await userStub.checkDailyLlmCount(getDailyLlmCallLimit(env));
+    return {
+      cloudflareLimitsEnabled: false,
+      unlimited: false,
+      dailyUsed: quota.used,
+      dailyLimit: quota.limit,
+      remaining: quota.remaining,
+      resetAt: quota.resetAt,
+      connected: false,
+      balance: null,
+    };
+  }
+
   if (!isCloudflareLimitsEnabled(env)) {
     return {
       cloudflareLimitsEnabled: false,
