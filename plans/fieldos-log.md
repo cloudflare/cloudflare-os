@@ -245,6 +245,84 @@ dashboard controls come with the future admin panel work. Env vars work today.
 
 ---
 
+## 2026-08-09 — Multi-customer decisions
+
+The deployment model is **mostly isolated, some shared**: a deployment per customer, with some
+shared services. Two consequences.
+
+**Shared infrastructure — recommended split.** Share the GPU/inference cluster only; keep
+everything stateful per-customer. Inference is stateless, so prompts cross the boundary but no
+persisted state does; per-deployment API keys plus network policy cover it. Everything else fails
+the "what if customer A is compromised?" test:
+- *Shared Context gatekeeper* — A reads B's documents. `domain.ts:1-2` says its namespacing "is not
+  a boundary against malicious peer configs", and `sharingDomain` arrives from binding props set at
+  deploy time with nothing enforcing a deployment stays in its own namespace.
+- *Shared blueprint registry* — blueprints are code that runs in user sandboxes, so A publishes
+  into B. Acceptable only one-way: we curate and publish, customers consume.
+
+Caveat raised to the user and not yet resolved: a shared GPU cluster means prompts leave the
+customer's network, which may be disqualifying for a genuinely classified deployment regardless of
+technical isolation.
+
+**Auth is generic, configured per deployment.** Multiple customers means multiple IdPs, so the
+connector takes issuer/client/scopes as config rather than shipping a connector per provider.
+
+## 2026-08-09 — gatekeeper-oidc
+
+Generic OIDC sign-in. Three layers, deliberately separate so each can be read alone:
+`identity.ts` (discovery + ID token verification), `oauth.ts` (nonces, authorize URL, code
+exchange), `oidc.ts` (durable state + the Workshop contract). The first two hold no Workers types,
+so their rules are unit-testable directly — 46 tests covering every rejection path.
+
+**The security-critical rule:** `email_verified` must be exactly boolean `true`. Absent counts as
+unverified (some IdPs omit the claim rather than sending `false`), and a string `"true"` is
+rejected. The Workshop keys accounts by email, so without this anyone able to register
+`victim@corp` at a permissive IdP signs in as that Workshop user.
+
+**Discovery is required, not optional.** Hand-configuring three endpoint URLs is three chances to
+point token verification at the wrong host. The document's declared issuer must match the
+configured one, and every endpoint must share its origin and use HTTPS.
+
+**Two nonce stages**, mirroring the other OAuth connectors: the initiation nonce is spent when the
+user opens the link, and only then is the `state` nonce minted, so a captured link cannot be
+reused. The nonce is deleted *before* the code exchange, so a replayed callback cannot reach the
+provider twice. The provider's echoed `nonce` is checked *after* signature verification, so the
+claim is trustworthy when read.
+
+**Sign-in only by construction:** `getSupportedResources()` returns `[]`, `getGatekeeperClassFor()`
+throws, and no access token is stored — there is no resource to reach with one. The grant
+self-destructs two minutes after the Workshop reads the email; abandoned attempts are reaped after
+an hour.
+
+Three things worth recording as traps:
+- **`deploy-inputs.json` was nearly missed.** Without it the connector inherits
+  `DEFAULT_CRED_INPUTS` (`CLIENT_ID`/`CLIENT_SECRET`) and, since the deploy wizard blocks Install on
+  unfilled secret inputs, would have been **uninstallable**. A first draft used `kind: "var"` for
+  the non-credential inputs; `manifest-lib.mjs:218` only emits a `secret_text` binding for
+  `kind: "secret"`, so those would have produced no binding at all and the worker would never have
+  seen `OIDC_ISSUER`. All four are `secret`.
+- **The golden manifest test fails closed on a new deployable package** ("missing fixture bundle"),
+  which is a good guard — a new worker cannot silently skip the deploy contract. Fixture added,
+  golden regenerated with `UPDATE_GOLDEN=1` and the diff read rather than trusted.
+- **Two workerd-only APIs broke under the Node test runner:** `crypto.subtle.timingSafeEqual` and
+  `Uint8Array.prototype.toHex`. Both now have portable implementations — the constant-time
+  comparison falls back to XOR accumulation branching only on length, which is a real
+  implementation rather than a test stub. Note the GitHub connector's copy of `constantTimeEqual`
+  is untested in every package that has it, for exactly this reason.
+
+A commit-hygiene correction: the first OIDC commit claimed "23 tests pass" but `vitest.config.ts`
+had been added afterwards and was not in it, so the claim was not reproducible from that SHA.
+Amended. A commit whose stated verification cannot be reproduced from itself is worse than one
+that claims nothing.
+
+**Not done:** no `src/types.d.ts` / `types.txt` symlink, since a sign-in-only connector exposes no
+Session type. If OIDC ever grows a resource (group membership for authorization, say), whoever adds
+it must know `SKILL.md:318` requires a **symlink**, not a copy.
+
+---
+
 ## Next
 
-`gatekeeper-oidc`. The IdP-deference hook is already in place for it.
+Phase 1 — standalone workerd end to end. It is the gate everything else is untestable behind, and
+it needs no further decisions: KV shim, R2 → MinIO, local inference, then the checkpoint of
+login → gadget → local model chat → MCP call → restart → state survives.

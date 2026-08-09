@@ -1,0 +1,28 @@
+{
+  "name": "@gadgets/gatekeeper-oidc",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/oidc.ts",
+  "scripts": {
+    "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
+    "build:configurator": "node ../../scripts/build-gatekeeper-configurator.mjs .",
+    "deploy": "pnpm run build:configurator && wrangler deploy",
+    "build": "pnpm run build:configurator && tsc",
+    "types:check": "pnpm run build:configurator && tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist src/generated"
+  },
+  "dependencies": {
+    "@gadgets/backend-utils": "workspace:*",
+    "@gadgets/configurator-ui": "workspace:*",
+    "@gadgets/workshop-shared": "workspace:*",
+    "capnweb": "^0.8.0",
+    "capnweb-validate": "0.2.1",
+    "jose": "^6.2.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.119.0"
+  }
+}
