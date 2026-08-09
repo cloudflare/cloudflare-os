@@ -242,6 +242,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
           "Sign in with your organization's identity provider. Works with any standards-compliant " +
           "OpenID Connect service, including Keycloak, Okta, Authentik, Dex and ADFS.",
       providesAuth: true,
+      // Only claim to provide an org when this deployment configured a claim to read it from.
+      // Advertising it unconditionally would make every sign-in look like a deliberate "no org"
+      // answer rather than "org separation is not in use here".
+      providesOrg: !!this.env.OIDC_GROUPS_CLAIM,
     };
   }
 
@@ -439,6 +443,14 @@ export class OidcUserImpl extends WorkerEntrypoint<Env, OidcUserImplProps>
   async getAuthenticatedEmail(): Promise<string | null> {
     const identity = await this.#account().getIdentity();
     return identity?.email ?? null;
+  }
+
+  async getAuthenticatedOrg(): Promise<string | null> {
+    const identity = await this.#account().getIdentity();
+    // Undefined and null both mean "no org". Never substitute a default: a user whose group claim
+    // was missing or ambiguous must reach nothing org-scoped rather than inherit someone else's
+    // org. See resolveOrg() in identity.ts.
+    return identity?.orgId ?? null;
   }
 
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {

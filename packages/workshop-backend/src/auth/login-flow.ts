@@ -24,6 +24,7 @@ import { GatekeeperConnectCallback, GatekeeperUser } from "@gadgets/workshop-sha
 import { createWorkshopLogger } from "../observability";
 import { CLOUDFLARE_VENDOR_ID } from "../user.js";
 import { readAdminConfig } from "../admin-config.js";
+import { getAuthVendorBinding } from "./auth-vendors.js";
 
 const logger = createWorkshopLogger("workshop.auth");
 
@@ -108,7 +109,8 @@ export class LoginConnectCallbackImpl
       // Closed signups block first-time account creation here too (not just password signup); an
       // existing user signing in is unaffected.
       const signupsEnabled = (await readAdminConfig(this.env)).signupsEnabled;
-      const secret = await userStub.loginOrCreateViaGatekeeper(email, signupsEnabled);
+      const orgId = await this.#resolveOrg(account);
+      const secret = await userStub.loginOrCreateViaGatekeeper(email, signupsEnabled, orgId);
       if (secret === null) {
         loginLogger.info("gatekeeper login finished", {
           event: "gatekeeper.login.finished", outcome: "signups_disabled",
@@ -136,6 +138,37 @@ export class LoginConnectCallbackImpl
         event: "gatekeeper.login.finished", outcome: "error",
       });
       await pending.fail("Sign-in failed. Please try again.");
+    }
+  }
+
+  // The org this account belongs to, for deployments that separate orgs. Returns `undefined` when
+  // the vendor does not report orgs at all — leaving any stored value untouched — and `null` when
+  // it reports the user resolves to none, which is a real answer and is stored.
+  //
+  // Gated on `providesOrg` rather than probing for the method, since RPC stubs cannot report
+  // optional-method presence (same convention as `autoProvisionsAccount`/`createAccount`).
+  //
+  // Failure to resolve is deliberately not fatal: a login that succeeds without an org leaves the
+  // user unable to reach org-scoped resources, which is recoverable and visible. Failing the login
+  // instead would turn a misconfigured claim — the failure mode comparable products actually hit —
+  // into an outage.
+  async #resolveOrg(account: Fetcher<GatekeeperUser>): Promise<string | null | undefined> {
+    const vendor = getAuthVendorBinding(this.env, this.ctx.props.vendorId);
+    if (!vendor) return undefined;
+    try {
+      if (!(await vendor.describe()).providesOrg) return undefined;
+      // `providesOrg` is the contract's guarantee that this method exists; the view is needed
+      // only because an optional method on an RPC stub is not callable through the interface
+      // type. Derived from the real type (Required<Pick<...>>) rather than hand-written, and
+      // called on the stub rather than detached from it — stub methods are proxy-backed and are
+      // not reliably invocable once pulled off the object.
+      let withOrg = account as Required<Pick<GatekeeperUser, "getAuthenticatedOrg">>;
+      return (await withOrg.getAuthenticatedOrg()) ?? null;
+    } catch (err) {
+      logger.warn("failed to resolve org membership", {
+        event: "gatekeeper.login.org.failed", error: err,
+      });
+      return undefined;
     }
   }
 
