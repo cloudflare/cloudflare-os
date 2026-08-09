@@ -7,7 +7,23 @@ connectors only to on-prem services.
 
 Not "a laptop offline". Not "a Cloudflare tenant with restricted egress".
 
-Progress and decisions-as-taken are recorded in [`fieldos-log.md`](./fieldos-log.md).
+Progress and decisions-as-taken are recorded in [`fieldos-log.md`](./fieldos-log.md); operator
+configuration is in [`docs/configuration.md`](../docs/configuration.md).
+
+## Status
+
+| | |
+|---|---|
+| ✅ Rebrand, dead-code removal, GitLab CI dropped | Phase 0, minus connector deletion (deferred) |
+| ✅ Usage quotas decoupled from billing | `ENABLE_USAGE_QUOTAS` |
+| ✅ Session expiry and revocation | was the accreditation blocker |
+| ✅ `gatekeeper-oidc` | generic SSO, one connector per deployment config |
+| ✅ workerd feasibility proven by execution | sandbox, SQLite DOs, alarms, restart persistence |
+| ⬜ **Phase 1 — standalone workerd end to end** | the gate everything else is untestable behind |
+| ⬜ Connector deletion (10 packages, 34,290 lines) | deferred by request |
+| ⬜ SSRF inversion + `gatekeeper-shared` | the most delicate change in the fork |
+| ⬜ GHES adaptation | incl. the `awaitDecision` correctness bug |
+| ⬜ Multi-node DO placement + deploy operator | deliberately last |
 
 ## Current state (one paragraph)
 
@@ -198,6 +214,38 @@ deferring them:
 own source that it "is not a boundary against malicious peer configs" (`domain.ts:1-2`). Fine for
 one trusted deployment; unacceptable across classification levels on shared infrastructure.
 
+## Multi-customer deployment
+
+FieldOS runs for several customers. The model is **one deployment per customer**, with sharing
+limited to stateless components.
+
+The industry norm for this shape of product — regulated, per-tenant sensitive data, on customer
+infrastructure — is *silo*, not *pool*. Shared-schema multi-tenancy is what you choose to serve
+many small tenants cheaply; it is not what you choose when a tenant boundary is also a
+classification boundary, because a single logic bug in a namespacing check becomes a cross-customer
+disclosure. The isolation here should come from separate deployments, which is a property of the
+topology rather than of any code path staying correct.
+
+The test to apply to anything proposed as shared: **what happens when one customer is
+compromised?**
+
+| Component | Share? | Reasoning |
+|---|---|---|
+| Model inference (GPU cluster) | **Yes** | Stateless. Prompts cross the boundary; no persisted state does. Per-deployment API keys plus network policy. The only sharing that saves real money. |
+| Blueprint registry | **One-way only** | Blueprints are code that runs in user sandboxes, so customer-to-customer publishing is a supply-chain path between tenants. We curate and publish; customers consume. |
+| Context gatekeeper | **No** | `domain.ts` states in its own source that `sharingDomain` "is not a boundary against malicious peer configs", and the value arrives from binding props with nothing enforcing a deployment stays in its namespace. Sharing means one customer reads another's documents. |
+| Durable Object storage, KV, R2 | **No** | Per-customer by definition; this is the data. |
+| Identity provider | **No** | Each customer brings their own; `gatekeeper-oidc` is configured per deployment. |
+
+**Open question, and not a technical one:** a shared inference cluster means prompts leave the
+customer's network. For a genuinely classified deployment that may be disqualifying regardless of
+the technical isolation, so confirm it with whoever owns accreditation before banking the saving.
+If it is disqualifying, the fallback is a per-customer inference deployment and no sharing at all —
+which costs more but removes the last cross-customer path.
+
+**Hard gate:** if FieldOS is ever asked to host two customers on *one* deployment, the sharing-domain
+namespacing above is not sufficient and real tenant isolation must be built first.
+
 ## Three things to resist "improving"
 
 1. **`UseOverseerInterface`** (`overseer.ts:8788`) — a separate class deny-listing ~70 methods, so
@@ -218,14 +266,16 @@ Note gatekeepers render their **own** OAuth callback HTML and never see `ServerC
 hardcode the product name — 57 occurrences across 16 files, not the 5 an initial frontend-only read
 suggests. Plumbing branding through to gatekeepers is kernel API work, deferred.
 
-**Phase 1 — Single-node self-hosted workerd, end to end.** *Prerequisite gate.*
+**Phase 1 — Single-node self-hosted workerd, end to end.** *Prerequisite gate. Session expiry
+(below) is **done**; the rest is outstanding.*
 Stand up standalone workerd (not `wrangler dev`), shim KV, swap R2 → MinIO, point inference at
 local vLLM/Ollama, confirm PDF export degrades cleanly (`BROWSER?` is optional in the env type and
 both call sites guard). **Add session expiry and revocation here** — see below.
 *Done when:* password login → create gadget → chat with a local model → gadget calls an on-prem MCP
 server → restart workerd → **state survives**.
 
-**Phase 2 — SSRF inversion, `gatekeeper-shared`, auth.** *Parallel with Phase 3.*
+**Phase 2 — SSRF inversion, `gatekeeper-shared`, auth.** *Auth is **done** (`gatekeeper-oidc`);
+the SSRF inversion and `gatekeeper-shared` extraction are outstanding.*
 Extract `gatekeeper-shared` first (~1,500–2,500 lines duplicated across 12 connectors:
 `constantTimeEqual`, `generateNonce`, `hexEncode`, the `UserAccount` DO base). Do the SSRF
 inversion centrally in it. Ship `gatekeeper-oidc`.
@@ -243,17 +293,18 @@ Nothing else blocks on it; single-node is a legitimate first shipping target.
 Sequencing rule: Phase 0 first (cheap, clarifies review). Phase 1 is the hard gate — everything
 else is untestable without it. 2 and 3 parallel after 1. 4 last.
 
-## Prerequisite: sessions never expire
+## Session expiry — DONE
 
-`LoginSessionRecord` is `{tokenId, created}` (`user.ts:76`) and **`created` is stored but never
-read**. `authenticate()` (`user.ts:298`) hashes the token and does a bare `if (!session) throw`.
-No TTL logic exists anywhere.
+*Was: sessions never expired and could not be revoked, so a leaked token was valid forever —
+plausibly an accreditation blocker, since such regimes generally mandate session timeout and
+administrative revocation.*
 
-**A leaked token is valid forever.** On a network handling classified material this is plausibly an
-accreditation blocker — such regimes generally mandate session timeout and administrative
-revocation. It is independent of which auth connector ships, so it goes first.
+Shipped: absolute + idle expiry enforced on **every** RPC via a Proxy over `AuthenticatedApiImpl`,
+env-ceiling config the admin may tighten within, IdP-expiry deference clamped to that ceiling, and
+all-or-nothing revocation reachable by the user and by an admin for a named user. See
+`auth/session-policy.ts` and the log entry for the reasoning.
 
-Constraints established before designing:
+The constraints that shaped it, kept because they still bind anything touching this area:
 - **The hard part is mid-connection expiry.** `authenticate()` runs **once** at WebSocket setup and
   returns an `AuthenticatedApi` capability that serves the whole connection — which can last days.
   Checking expiry only at authenticate-time leaves established connections outliving their
