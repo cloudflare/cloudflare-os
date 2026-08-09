@@ -49,6 +49,7 @@ function buildTestManifest() {
     workers,
     assetVariants: {
       access: collectAssets(join(TESTDATA, "fixture-assets", "access")),
+      password: collectAssets(join(TESTDATA, "fixture-assets", "password")),
     },
   });
 }
@@ -124,7 +125,10 @@ test("worker entries carry the deploy contract", () => {
   assert.ok(router.bindings.some((b) => b.type === "assets" && b.name === "ASSETS"));
   assert.ok(router.assetsConfig.run_worker_first.includes("/gatekeeper/*"));
   assert.equal(router.assetsConfig.not_found_handling, "single-page-application");
-  assert.deepEqual(Object.keys(router.assetsConfig.variants), ["access"]);
+  // Both variants ship in every release: the auth mode is baked in at build time, so a deployment
+  // selects one rather than configuring it. A release carrying only `access` cannot be deployed
+  // airgapped at all — it has no login page and no way to create a first user.
+  assert.deepEqual(Object.keys(router.assetsConfig.variants).toSorted(), ["access", "password"]);
   for (const variant of Object.values(router.assetsConfig.variants)) {
     for (const { hash } of Object.values(variant.manifest)) {
       assert.ok(manifest.assets[hash], `asset blob ${hash} missing from release index`);

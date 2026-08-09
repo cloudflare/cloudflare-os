@@ -70,10 +70,22 @@ function pinnedWranglerVersion() {
   return pkg.version;
 }
 
-// Builds the Access-mode frontend (VITE_CF_ACCESS_MODE is a build-time flag,
-// workshop-frontend/src/useAuth.ts) — the one asset variant every release carries.
-function buildFrontend() {
-  const env = { ...process.env, VITE_CF_ACCESS_MODE: "true" };
+// Builds one frontend asset variant.
+//
+// `VITE_CF_ACCESS_MODE` is a *build-time* flag (workshop-frontend/src/useAuth.ts:5), so it cannot
+// be chosen at deploy time — each mode is a separate asset build, and a deployment picks a variant.
+//
+// Getting this wrong is not a soft failure. With Access mode on and no Cloudflare in front,
+// ProtectedRoute renders "Authenticating…" forever and /signup redirects away, so the deployment
+// has no login page and no way to create a first user.
+function buildFrontend(accessMode) {
+  const env = { ...process.env };
+  if (accessMode) {
+    env.VITE_CF_ACCESS_MODE = "true";
+  } else {
+    // Vite reads .env files, so an inherited value would silently leak into this build.
+    delete env.VITE_CF_ACCESS_MODE;
+  }
   run("pnpm", ["run", "build"], { cwd: FRONTEND_DIR, env });
   return collectAssets(join(FRONTEND_DIR, "dist"));
 }
@@ -91,8 +103,15 @@ function main() {
 
   // 1. Frontend first: the router's wrangler.jsonc points its assets directory at
   //    workshop-frontend/dist, so it must exist before the router's dry-run.
+  //
+  //    Two variants, because the auth mode is baked in at build time and a deployment cannot flip
+  //    it later. `access` runs behind Cloudflare Access; `password` is the self-hosted build, and
+  //    the only one an airgapped deployment can use — Access mode there is a permanent spinner.
+  //    Each build overwrites dist/, so the assets are read from the returned variant maps rather
+  //    than from dist/ afterwards; only the directory's existence matters to the dry-run.
   const assetVariants = {
-    access: buildFrontend(),
+    access: buildFrontend(true),
+    password: buildFrontend(false),
   };
   for (const { blobs } of Object.values(assetVariants)) {
     for (const [hash, blob] of blobs) {
