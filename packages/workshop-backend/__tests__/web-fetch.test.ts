@@ -261,6 +261,32 @@ describe("webFetch document conversion", () => {
     // only cares that the call didn't go through toMarkdown.
     expect(typeof result.body).toBe("string");
   });
+
+  it("times out a response whose body stalls after the headers arrive", async () => {
+    vi.useFakeTimers();
+    try {
+      // Headers arrive at once; the body yields one chunk and then never completes, as the
+      // runtime would present a stalled origin. Only an abort ends the read.
+      globalThis.fetch = vi.fn(async (_url: string, init: RequestInit) =>
+        new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("partial"));
+            init.signal?.addEventListener("abort", () =>
+              controller.error(Object.assign(new Error("aborted"), { name: "AbortError" })));
+          },
+        }), { headers: { "content-type": "text/plain" } }),
+      ) as unknown as typeof globalThis.fetch;
+
+      // Assert before advancing: the rejection lands inside advanceTimersByTimeAsync().
+      const settled = expect(
+        webFetch(makeEnv(), { url: "https://example.com/slow", raw: true }),
+      ).rejects.toThrow(/timed out/);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settled;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("formatWebFetchResult", () => {
