@@ -35,5 +35,26 @@
       "Space-separated scopes to request in addition to `openid` and `email`, which are always included.",
       "Leave blank unless your provider needs an extra scope to release the email claim."
     ]
+  },
+  {
+    "name": "OIDC_GROUPS_CLAIM",
+    "kind": "secret",
+    "label": "Groups claim (optional — leave blank unless this deployment uses org separation)",
+    "setupSteps": [
+      "Optional. Leave blank unless this deployment separates users into orgs by identity provider group.",
+      "Enter the name of the ID token claim that carries group membership. There is no standard name, so check your provider — it is often not included by default and needs a mapper or claims configuration to appear.",
+      "A missing or ambiguous claim always resolves to no org, never a default org, so a misconfiguration here fails closed.",
+      "Microsoft Entra: above 200 groups (JWT) or 150 (SAML), Entra omits this claim entirely unless the app registration is configured to emit only application-assigned groups. See docs/configuration.md for details."
+    ]
+  },
+  {
+    "name": "OIDC_ORG_PREFIX",
+    "kind": "secret",
+    "label": "Org group prefix (optional — leave blank unless this deployment uses org separation)",
+    "setupSteps": [
+      "Optional. Only meaningful when the groups claim above is also set.",
+      "A prefix marking which groups are orgs, e.g. `fieldos-` so the group `fieldos-legal` yields org `legal`. Users are typically members of many groups unrelated to this deployment, so a prefix is usually needed to pick the right one out.",
+      "Leave blank to treat every group name in the claim as a candidate org (only safe if the provider is configured to emit exactly the relevant groups)."
+    ]
   }
 ]

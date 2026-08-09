@@ -16,6 +16,8 @@ address the Workshop can trust.
 | `OIDC_CLIENT_ID` | yes | Client ID of a confidential client registered for this deployment. |
 | `OIDC_CLIENT_SECRET` | yes | That client's secret. |
 | `OIDC_SCOPES` | no | Extra scopes. `openid` and `email` are always requested. |
+| `OIDC_GROUPS_CLAIM` | no | Claim to read group membership from, for org separation. Unset means this deployment does not use org separation. |
+| `OIDC_ORG_PREFIX` | no | Optional prefix marking which groups are orgs, e.g. `fieldos-` so `fieldos-legal` yields org `legal`. |
 
 Issuer examples: Keycloak `https://host/realms/{realm}`, Okta `https://org.okta.com`,
 Authentik `https://host/application/o/{slug}`, ADFS `https://host/adfs`.
@@ -36,6 +38,12 @@ Discovery is required rather than optional. Hand-configuring endpoint URLs is re
 to point token verification at the wrong host, and every supported provider publishes a discovery
 document. Its declared `issuer` must match what is configured, and every endpoint it advertises
 must share that origin and use HTTPS.
+
+**If using `OIDC_GROUPS_CLAIM` for org separation**, the provider must be configured to actually
+emit that claim (it's rarely on by default — see per-provider notes) and, for Microsoft Entra,
+to emit only application-assigned groups rather than the user's full group list. See
+[org resolution in `docs/configuration.md`](../../docs/configuration.md#org-resolution) for the
+full reasoning and the Entra constraint.
 
 ## Design notes
 
