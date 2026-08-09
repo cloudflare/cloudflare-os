@@ -18,6 +18,25 @@ Two rules explain most of the layout:
 | `AUTH_GATEKEEPERS` | unset | Comma-separated vendor ids offered as sign-in buttons, e.g. `oidc`. Only vendors advertising `providesAuth` are eligible. Unset means password login only. |
 | `DISABLE_PASSWORD_AUTH` | `false` | `"true"` hides username/password login. Ignored unless at least one auth gatekeeper is allowlisted, so a deployment cannot lock everyone out. |
 
+### Frontend asset variant — a build-time choice, not a setting
+
+`VITE_CF_ACCESS_MODE` is compiled into the frontend bundle, so it **cannot be changed at deploy
+time**. Every release therefore ships two asset variants and a deployment selects one:
+
+| Variant | For | |
+|---|---|---|
+| `password` | **Self-hosted and airgapped deployments** | Renders the password login and `/signup`. |
+| `access` | Deployments behind Cloudflare Access | Delegates auth to Access; no login page of its own. |
+
+**An airgapped deployment must use `password`.** With the `access` variant and no Cloudflare in
+front, the app calls `authenticateFromCfAccess()`, which throws because `CF_ACCESS_AUD` is unset —
+so the page renders "Authenticating…" forever and `/signup` redirects away, leaving no way to
+create a first user. It looks like a hang rather than a misconfiguration, which is what makes it
+worth stating plainly.
+
+The variants are content-addressed and share whatever bytes are identical, so carrying both costs
+far less than double.
+
 ### Single sign-on (`gatekeeper-oidc`)
 
 Set on the connector, not the backend. See

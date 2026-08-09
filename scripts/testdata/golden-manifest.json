@@ -4,6 +4,10 @@
       "r2Key": "blobs/assets/03a936d819bd1a6df9f9d9f16f1df3a5",
       "size": 41
     },
+    "102f25d5abc25dc7f56e0d6a1e87e179": {
+      "r2Key": "blobs/assets/102f25d5abc25dc7f56e0d6a1e87e179",
+      "size": 30
+    },
     "8d2e76555a7166d0e6b7da22cabfa055": {
       "r2Key": "blobs/assets/8d2e76555a7166d0e6b7da22cabfa055",
       "size": 28
@@ -11,6 +15,10 @@
     "924064d945426fd30c24d0d24235610d": {
       "r2Key": "blobs/assets/924064d945426fd30c24d0d24235610d",
       "size": 19
+    },
+    "ad769b4eb3d97471a3698c978656378b": {
+      "r2Key": "blobs/assets/ad769b4eb3d97471a3698c978656378b",
+      "size": 43
     }
   },
   "commit": "0000000000000000000000000000000000000000",
@@ -1120,6 +1128,26 @@
               "/index.html": {
                 "hash": "03a936d819bd1a6df9f9d9f16f1df3a5",
                 "size": 41
+              }
+            }
+          },
+          "password": {
+            "manifest": {
+              "/assets/app.js": {
+                "hash": "102f25d5abc25dc7f56e0d6a1e87e179",
+                "size": 30
+              },
+              "/assets/print.css": {
+                "hash": "924064d945426fd30c24d0d24235610d",
+                "size": 19
+              },
+              "/assets/shared.css": {
+                "hash": "924064d945426fd30c24d0d24235610d",
+                "size": 19
+              },
+              "/index.html": {
+                "hash": "ad769b4eb3d97471a3698c978656378b",
+                "size": 43
               }
             }
           }
