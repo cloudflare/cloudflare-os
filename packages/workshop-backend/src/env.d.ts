@@ -74,6 +74,11 @@ declare global {
       // Enables the Cloudflare free-tier limits + top-up flow when set to "true".
       ENABLE_CLOUDFLARE_LIMITS?: string;
 
+      // Enforces per-user daily call quotas with no billing when set to "true": no balance
+      // lookup, no BYOK, no top-up UI. For deployments that throttle a shared local inference
+      // cluster rather than bill for it. Ignored when ENABLE_CLOUDFLARE_LIMITS is on.
+      ENABLE_USAGE_QUOTAS?: string;
+
       // Public base URL of the deployment.
       PUBLIC_BASE_URL?: string;
 

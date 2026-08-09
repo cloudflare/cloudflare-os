@@ -3,6 +3,7 @@ import { CloudflareUsageInfo, CloudflareAccountOption } from '@gadgets/workshop-
 import { Dialog, Button, Loader, useKumoToastManager } from '@cloudflare/kumo'
 import { CloudWarning, Lightning } from '@phosphor-icons/react'
 import { useOptionalAuthenticatedApi } from '../../AuthContext'
+import { useCloudflareLimitsEnabled } from '../../ServerConfigContext'
 import { buildAddCreditsUrl } from './creditsUrl'
 import ResetCountdown from './ResetCountdown'
 
@@ -82,6 +83,7 @@ export default function OutOfCreditsModal({ open, onClose }: OutOfCreditsModalPr
     }
   }
 
+  const limitsEnabled = useCloudflareLimitsEnabled()
   const connected = usage?.connected ?? false
   const needsSelection = connected && (usage?.needsAccountSelection ?? false)
 
@@ -90,14 +92,30 @@ export default function OutOfCreditsModal({ open, onClose }: OutOfCreditsModalPr
       <Dialog className="p-6 sm:w-[560px]" size="base">
         <Dialog.Title className="text-lg font-semibold mb-2 flex items-center gap-2">
           <CloudWarning size={22} weight="bold" className="text-kumo-warning" />
-          You've reached your free usage limit
+          {/* "free" implies a paid tier; in quota-only deployments there isn't one. */}
+          {limitsEnabled ? "You've reached your free usage limit" : "You've reached your daily limit"}
         </Dialog.Title>
 
         {usage === null ? (
           <div className="flex justify-center py-8"><Loader size="base" /></div>
         ) : (
           <div className="space-y-4">
-            {!connected ? (
+            {/* Quota-only deployments (ENABLE_USAGE_QUOTAS) hit the same daily limit but have no
+                account to connect and no credits to buy, so waiting for the reset is the only
+                remedy to offer. Checked first: every branch below is Cloudflare-specific. */}
+            {!limitsEnabled ? (
+              <p className="text-sm text-kumo-subtle">
+                You've used all {usage.dailyLimit} of your {usage.dailyLimit === 1 ? 'request' : 'requests'} for
+                today
+                {usage.resetAt ? (
+                  <>
+                    . Your {usage.dailyLimit === 1 ? 'allowance resets' : 'allowance resets'} at
+                    00:00 UTC, in <ResetCountdown resetAt={usage.resetAt} onElapsed={refresh} />.
+                  </>
+                ) : '.'}
+                {' '}Contact your administrator if you need a higher limit.
+              </p>
+            ) : !connected ? (
               <p className="text-sm text-kumo-subtle">
                 You've used all {usage.dailyLimit} of your free {usage.dailyLimit === 1 ? 'request' : 'requests'} for
                 today. Connect your Cloudflare account to keep building now — usage beyond the free
@@ -154,7 +172,7 @@ export default function OutOfCreditsModal({ open, onClose }: OutOfCreditsModalPr
               </div>
             )}
 
-            <p className="text-sm text-kumo-subtle">
+            {limitsEnabled && <p className="text-sm text-kumo-subtle">
               Learn more about{' '}
               <a
                 href="https://developers.cloudflare.com/ai-gateway/features/unified-billing/"
@@ -165,10 +183,12 @@ export default function OutOfCreditsModal({ open, onClose }: OutOfCreditsModalPr
                 AI Gateway unified billing
               </a>
               .
-            </p>
+            </p>}
 
             <div className="flex items-center justify-end gap-2 pt-2">
-              {!connected ? (
+              {!limitsEnabled ? (
+                <Button variant="secondary" onClick={onClose}>Close</Button>
+              ) : !connected ? (
                 <>
                   <Button variant="secondary" onClick={onClose}>Maybe later</Button>
                   <Button variant="primary" onClick={connect} loading={connecting}>
