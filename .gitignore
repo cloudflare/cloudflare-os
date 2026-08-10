@@ -50,3 +50,6 @@ CLAUDE.md
 
 # workerd DO storage created by fieldos-runtime tests
 packages/fieldos-runtime/__tests__/fixture/dodata/
+
+# standalone workerd build output and DO state (scripts/run-workerd.mjs)
+.workerd/
