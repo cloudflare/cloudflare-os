@@ -1,4 +1,4 @@
-import { RpcStub, RpcTarget, newWorkersRpcResponse } from "capnweb";
+import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
 import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, AiGatewayInfo, AiModelProvider, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError } from '@gadgets/workshop-shared/api';
@@ -843,25 +843,76 @@ export default {
 
       // HACK: Implement `abortSession` callback by closing the websocket.
       // TODO: When ctx.abort() becomes non-experimental, consider using that instead.
-      let resp: Response | undefined;
-      let aborted = false;
+      let abortController = new AbortController();
       let abortSession = (reason: Error) => {
         // Closing the socket fails no invocation, so nothing else logs this.
         logger.warn("aborting api session", { event: "session.abort", error: reason });
-        aborted = true;
-        resp?.webSocket?.close();
+        abortController.abort(reason);
       };
 
-      resp = await newWorkersRpcResponse(req,
-          new PublicApiImpl(ctx, env, abortSession, accessPayload));
-
-      if (aborted) {
-        // Oops, we missed the abortSession() call while awaiting, apply now.
-        resp?.webSocket?.close();
-      }
-      return resp;
+      return await newWorkersRpcResponse(req,
+          new PublicApiImpl(ctx, env, abortSession, accessPayload),
+          { abortSignal: abortController.signal });
     }
 
     return new Response("Not Found", {status: 404});
   }
 } satisfies ExportedHandler<Env>;
+
+// Extend Cap'n Web's RpcSessionOptions with an AbortSignal.
+//
+// TODO: Consider adding this feature to Cap'n Web. However, we might not actually need it for
+//   long: ctx.abort() will soon be available non-experimentally, in which case we can just use
+//   that instead.
+type ExtendedRpcSessionOptions = RpcSessionOptions & {
+  // Abort WebSocket sessions when this AbortSignal is aborted. (No effect on HTTP batch sessions.)
+  abortSignal: AbortSignal;
+};
+
+// Clone of newWorkersRpcResponse() from Cap'n Web, except the `options` has been extended with
+// `abortSignal`.
+async function newWorkersRpcResponse(
+    request: Request, localMain: any, options?: ExtendedRpcSessionOptions) {
+  if (request.method === "POST") {
+    let response = await newHttpBatchRpcResponse(request, localMain, options);
+    // Since we're exposing the same API over WebSocket, too, and WebSocket always allows
+    // cross-origin requests, the API necessarily must be safe for cross-origin use (e.g. because
+    // it uses in-band authorization, as recommended in the readme). So, we might as well allow
+    // batch requests to be made cross-origin as well.
+    response.headers.set("Access-Control-Allow-Origin", "*");
+    return response;
+  } else if (request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
+    return newWorkersWebSocketRpcResponse(request, localMain, options);
+  } else {
+    return new Response("This endpoint only accepts POST or WebSocket requests.", { status: 400 });
+  }
+}
+
+function newWorkersWebSocketRpcResponse(
+    request: Request, localMain?: any, options?: ExtendedRpcSessionOptions): Response {
+  if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    return new Response("This endpoint only accepts WebSocket requests.", { status: 400 });
+  }
+
+  let pair = new WebSocketPair();
+  let server = pair[0];
+  server.accept()
+  let stub = newWebSocketRpcSession(server, localMain, options);
+
+  // -- ADDED FOR GADGETS --
+  if (options?.abortSignal) {
+    if (options.abortSignal.aborted) {
+      stub[Symbol.dispose]();
+    } else {
+      options.abortSignal.addEventListener("abort", () => {
+        stub[Symbol.dispose]();
+      });
+    }
+  }
+  // -- END ADDED FOR GADGETS --
+
+  return new Response(null, {
+    status: 101,
+    webSocket: pair[1],
+  });
+}
