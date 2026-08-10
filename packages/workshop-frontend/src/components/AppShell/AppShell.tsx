@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { useRouterState } from '@tanstack/react-router'
 import { List, X } from '@phosphor-icons/react'
 import TopBarNotice from '../../TopBarNotice'
+import ReconnectingChip from '../ReconnectingChip'
+import { useConnectionLost } from '../../RpcContext'
 import Sidebar from './Sidebar'
 import CommandPalette from './CommandPalette'
 import { OPEN_COMMAND_PALETTE_EVENT } from './commandPaletteBus'
@@ -28,6 +30,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState<boolean>(readCollapsed)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const connectionLost = useConnectionLost()
 
   const toggleCollapsed = useCallback(() => {
     setCollapsed((prev) => {
@@ -97,8 +100,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       {/* Main column */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Top bar. Same height as the sidebar's brand row (h-14) so they read as one continuous
-            chrome strip across the top. Mostly empty — carries the mobile hamburger on the left and
-            any admin TopBarNotice centered. */}
+            chrome strip across the top. Mostly empty — carries the mobile hamburger on the left,
+            any admin TopBarNotice centered, and the reconnecting chip on the right. */}
         <div className="relative flex h-14 shrink-0 items-center justify-between border-b border-kumo-line bg-kumo-base px-3">
           <button
             type="button"
@@ -109,7 +112,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             {mobileOpen ? <X size={16} /> : <List size={16} />}
           </button>
           <TopBarNotice />
-          <span aria-hidden="true" className="h-7 w-7 md:hidden" />
+          {/* `ml-auto` rather than the container's `justify-between`: on desktop the hamburger is
+              hidden, leaving this the only in-flow child, which `justify-between` would park on the
+              left. */}
+          <div className="ml-auto flex items-center gap-2">
+            {connectionLost && <ReconnectingChip />}
+            <span aria-hidden="true" className="h-7 w-7 md:hidden" />
+          </div>
         </div>
 
         {/* Routed content. Flat enterprise canvas — no texture. */}
