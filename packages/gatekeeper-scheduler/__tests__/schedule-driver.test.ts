@@ -1182,20 +1182,25 @@ describe("ScheduleDriver", () => {
   it("permanently fences mutations and cleans revoked storage in bounded alarm passes", async () => {
     const driver = testEnv.SCHEDULE_DRIVER.getByName("revocation");
     const activationTime = Date.now();
-    for (let index = 0; index < 60; index++) {
-      await enableSchedule(
-        driver,
-        {
-          workspaceId: "workspace-a",
-          scheduleId: `schedule-${index}`,
-          spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
-          title: `Task ${index}`,
-          description: "Test revocation cleanup.",
-          gadgetId,
-        },
-        activationTime,
-      );
-    }
+    // Seeded through the real enable() path, so each schedule gets its capabilities row too, but
+    // in a single Durable Object invocation: this fixture has to exceed the cleanup batch size,
+    // and sixty separate round-trips spent most of the default test timeout on their own.
+    await runInDurableObject(driver, async (instance) => {
+      for (let index = 0; index < 60; index++) {
+        await instance.enable(
+          {
+            workspaceId: "workspace-a",
+            scheduleId: `schedule-${index}`,
+            spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
+            title: `Task ${index}`,
+            description: "Test revocation cleanup.",
+            gadgetId,
+          },
+          testInitiator(instance),
+          activationTime,
+        );
+      }
+    });
 
     await driver.revoke();
     await expect(driver.disable("workspace-a", "schedule-0")).resolves.toBeUndefined();
