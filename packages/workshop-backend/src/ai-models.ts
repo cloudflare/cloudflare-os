@@ -154,6 +154,29 @@ function workersAiCompat(catalog: Model<Api> | undefined): OpenAICompletionsComp
   };
 }
 
+// Compat flags for a self-hosted OpenAI-compatible server — vLLM, TGI, llama.cpp, LM Studio,
+// Ollama. They all implement `/v1/chat/completions`, but pi decides which *fields* to emit by
+// matching the base URL against known public hostnames (`detectCompat`, pi-ai's
+// openai-completions). An internal endpoint matches nothing, so it falls through to OpenAI's own
+// defaults and sends fields these servers reject: `store`, `strict` on every tool, and a
+// `developer` system role. The last is not a maybe — pi gates it on `model.reasoning &&
+// compat.supportsDeveloperRole`, and both were unconditionally true here, so every request carried
+// a role that most Qwen/Llama chat templates answer with a 400.
+//
+// These flags are the intersection of what that whole list accepts.
+//
+// ponytail: one constant for every self-hosted server, rather than per-endpoint capability
+// negotiation. A well-configured vLLM could take strict-mode structured output and reasoning
+// effort; if a customer needs those, the upgrade is a per-model compat override in AiModelConfig.
+const SELF_HOSTED_COMPAT: OpenAICompletionsCompat = {
+  supportsStore: false,
+  supportsDeveloperRole: false,
+  supportsReasoningEffort: false,
+  supportsStrictMode: false,
+  maxTokensField: "max_tokens",
+  supportsLongCacheRetention: false,
+};
+
 // Build the pi model descriptor for reaching a provider's own native API through an AI Gateway
 // (the platform's or a user's). `gatewayUrl` is a gateway root
 // (https://gateway.ai.cloudflare.com/v1/{accountId}/{gateway}); each provider's native API is
@@ -543,8 +566,11 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
         sessionAffinity,
       });
     case "ollama":
-      // `apiUrl` is the Ollama server base; its OpenAI-compat endpoint lives under /v1. Accept
-      // (and strip) a trailing `/api` or `/v1` path: configs saved before the pi migration store
+      // Any self-hosted OpenAI-compatible server, not just Ollama — see SELF_HOSTED_COMPAT. The
+      // provider id is historical; the UI labels it "Local / OpenAI-compatible".
+      //
+      // `apiUrl` is the server base; its OpenAI-compat endpoint lives under /v1. Accept (and
+      // strip) a trailing `/api` or `/v1` path: configs saved before the pi migration store
       // the native-API base `http://host:11434/api` (the old ollama provider's convention), and
       // users may paste the /v1 endpoint directly. When no API key was configured we assume
       // local auth and send no Authorization header at all (as before the pi migration; a strict
@@ -559,9 +585,14 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
           provider: "ollama",
           baseUrl: `${stripTrailingSlashes(config.apiUrl ?? "http://localhost:11434")
               .replace(/\/(api|v1)$/, "")}/v1`,
-          reasoning: true,
+          // Deliberately false. pi asks for a `developer` role and `reasoning_effort` when this is
+          // true, and most self-hosted servers reject both. A reasoning-capable local model loses
+          // thinking rather than every request losing a 400; wrong-by-default beats broken-by-
+          // default, and it is recoverable per model later.
+          reasoning: false,
           input: ["text", "image"],
           cost: ZERO_COST,
+          compat: SELF_HOSTED_COMPAT,
           ...window,
         },
         ...(config.apiToken === ""

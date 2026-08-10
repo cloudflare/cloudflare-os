@@ -49,7 +49,7 @@ npm, with no Cloudflare account. Results:
 | SQLite DOs + disk persistence | works | `durableObjectStorage` union (`:681`) with `localDisk` (`:698`); `enableSql` (`:653`). Counter went 3 → `pkill` → restart → **4**. Real `.sqlite` files under `state/<uniqueKey>/`. |
 | DO alarms | works | `setAlarm(+5s)` fired; nothing external wakes them — workerd's own event loop, persisted per-namespace. |
 | DO Facets | works | Needs **no capnp config at all**; `ctx.facets` is pure runtime surface. |
-| Local LLM inference | zero code changes | `ollama` provider already defaults to `http://localhost:11434` and handles the no-API-key case (`ai-models.ts:545-571`). vLLM/TGI are OpenAI-compatible. |
+| Local LLM inference | works, but **not** zero code changes | The `ollama` provider is the right mechanism — it defaults to `http://localhost:11434` and handles the no-API-key case (`ai-models.ts:545-571`). But "vLLM/TGI are OpenAI-compatible" conflates the *endpoint* with the *request body*: pi picks which fields to emit by matching the base URL against known public hostnames, so an internal endpoint fell through to OpenAI's defaults and sent `store`, tool `strict` and a `developer` system role — all rejected by real self-hosted servers. Fixed with a compat block (`SELF_HOSTED_COMPAT`). Reaching a local endpoint at all also needs `allow = ["public", "private"]` in the capnp `network` service, since standalone workerd blocks private IPs by default. |
 
 Two facts a schema read alone would have missed, found by running it:
 - **Worker Loader bindings require the `--experimental` CLI flag**; workerd rejects the config

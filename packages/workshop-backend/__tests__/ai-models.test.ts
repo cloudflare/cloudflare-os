@@ -431,3 +431,54 @@ describe("PDF attachment bridging", () => {
     }));
   }, 15000);
 });
+
+describe("self-hosted OpenAI-compatible servers", () => {
+  beforeEach(() => {
+    capturedRequests.length = 0;
+  });
+
+  const SELF_HOSTED_CONFIG: AiModelConfig = {
+    provider: "ollama",
+    model: "Qwen/Qwen3-8B",
+    apiToken: "",
+    apiUrl: "http://vllm.internal:8000",
+  };
+
+  // pi picks which fields to emit by matching the base URL against known public hostnames, so an
+  // internal endpoint gets OpenAI's own defaults. Each field below is one a real self-hosted
+  // server rejects, so these assertions are the thing standing between us and a 400 on request #1.
+  // Testing against Ollama would not catch any of them — it tolerates all of these.
+  it("omits fields that self-hosted servers reject", async () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), SELF_HOSTED_CONFIG, INITIATOR);
+    expect(handle.model.api).toBe("openai-completions");
+
+    const body = JSON.parse((await captureRequest(handle)).body) as Record<string, unknown> & {
+      messages: { role: string }[];
+    };
+
+    // vLLM validates against a strict schema and 400s on fields outside it.
+    expect(body).not.toHaveProperty("store");
+    expect(body).not.toHaveProperty("reasoning_effort");
+    // Many OSS servers read only `max_tokens`.
+    expect(body).not.toHaveProperty("max_completion_tokens");
+    // The one that breaks unconditionally: most Qwen/Llama chat templates 400 on `developer`.
+    expect(body.messages.some((m) => m.role === "developer")).toBe(false);
+  }, 15000);
+
+  it("sends no Authorization header when the server needs no auth", async () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), SELF_HOSTED_CONFIG, INITIATOR);
+    const request = await captureRequest(handle);
+    expect(request.url).toBe("http://vllm.internal:8000/v1/chat/completions");
+    // A strict local proxy may reject an unexpected bearer token, so the header is deleted
+    // outright rather than sent with a placeholder.
+    expect(request.headers.get("authorization")).toBeNull();
+  }, 15000);
+
+  it("keeps a base URL whose path is not an /api or /v1 suffix", async () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      ...SELF_HOSTED_CONFIG,
+      apiUrl: "https://gateway.internal/inference",
+    }, INITIATOR);
+    expect(handle.model.baseUrl).toBe("https://gateway.internal/inference/v1");
+  });
+});

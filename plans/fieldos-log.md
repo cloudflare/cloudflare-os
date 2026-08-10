@@ -650,3 +650,92 @@ assertions repo-wide, golden manifest 4/4.
 
 **Next:** OZL-235, the Access-only frontend build, which blocks the Phase 1 gate harder than
 anything remaining — no airgapped deployment can render a login page or create a first user.
+
+---
+
+## 2026-08-10 — Phase 1 gate passed: FieldOS runs on standalone workerd (OZL-215)
+
+Branch `feat/workerd-phase1`. The gate everything else was untestable behind is met, end to end,
+on `workerd 2026-08-01` with no Cloudflare account.
+
+**The done-when, each leg verified by execution:**
+
+| Leg | Evidence |
+|---|---|
+| SPA serves | `GET /` → 200 `text/html`; hashed assets immutable |
+| API | `/api` → **101 Switching Protocols**, real Cap'n Web session |
+| password login | `createAccount` + `login` return tokens; a wrong hash returns null |
+| chat with a local model | response text `"HELLO FROM LOCAL MODEL"` from Ollama `LFM2.5-8B` |
+| **tool calling** | `executeCode` ran; `input={code: 6*7}` → `output="42"` |
+| gadget → on-prem MCP | read ran as an observation; write queued `{"status":"pending"}` |
+| **restart** | `kill -9` → restart → login, workspaces, chat history, MCP account all survived |
+
+`scripts/run-workerd.mjs` does the whole thing: bundles nine workers with `wrangler deploy
+--dry-run` (no account needed), translates each `wrangler.jsonc` to capnp, spawns workerd.
+
+**The MCP trust boundary holds off-platform**, which was the security-relevant unknown.
+`classifyTool` behaved exactly as `tools.ts` documents — `readOnlyHint: true` → observation,
+unannotated → queued action — and the write **provably did not reach the server before approval**:
+the MCP server's own request log showed one `tools/call`, and a second only after
+`approveAction()`.
+
+### Three findings that changed the plan
+
+**1. No resource limits exist in standalone workerd (OZL-239, Alpha/Urgent).** CPU and memory
+limits are enforced by Cloudflare's *platform*, not by workerd; the only `limits` field in the
+schema is `MemoryCacheLimits`. Verified twice independently: a gadget running `while(true){}` pins
+100% CPU, **times out requests to unrelated Durable Objects**, and needs `kill -9`. One gadget takes
+down the whole deployment. Isolation is intact; availability is not — and gadget code is
+LLM-authored, so an accidental infinite loop is a plausible Tuesday rather than an attacker.
+
+**2. "Local inference is zero code changes" was wrong** — corrected in `fieldos.md` and fixed. It
+conflated the *endpoint* with the *request body*. pi picks which fields to emit by substring-
+matching the base URL against known public hostnames, so an internal endpoint fell through to
+OpenAI's defaults and sent `store`, tool `strict`, and a `developer` system role. The last was
+unconditional (pi gates it on `model.reasoning && compat.supportsDeveloperRole`, and the branch
+hardcoded `reasoning: true`), so **every** agent request carried a role most Qwen/Llama templates
+400 on. None of it reproduces against Ollama, which tolerates all of them — only against the
+servers customers actually run. Fixed with `SELF_HOSTED_COMPAT`, reusing the `workersAiCompat`
+precedent ten lines up in the same file.
+
+**3. On-prem MCP servers are unreachable as shipped (OZL-240).** `MCP_ALLOW_INSECURE` is pinned
+`"false"`, so `validateCustomEndpoint` refuses private hosts. The investigation recommended adding
+an `--allow-insecure-mcp` flag to the generator; **rejected**, because that var disables the HTTPS
+check *and* the private-host block together, and `fieldos.md:187` already says not to reuse it.
+Filed for OZL-219 to separate the two controls rather than baking the shortcut into our tooling.
+
+### Bugs found by booting it rather than reading it
+
+- **The router's `services` array was never translated**, so `WORKSHOP_BACKEND` was missing and
+  every `/api` request died with "Cannot read properties of undefined (reading 'fetch')". The SPA
+  still served, so it *looked* like a working stack.
+- **workerd picks the main ES module by list position, not content**, so `collectModules`'
+  alphabetical order put a `.txt` first and workerd rejected a valid bundle.
+- **`BASE_URL`/`PUBLIC_BASE_URL` are injected at deploy time**, not read from any `wrangler.jsonc`,
+  so gatekeepers defaulted to `localhost:8787` and a connect flow handed the browser a dead link on
+  any other port. Now derived from `--port`, mirroring the manifest contract.
+- **`updateCode()` accepts a malformed Yjs update and bricks the workspace permanently** (OZL-241).
+  Not airgap-specific — a V1 update in a V2 log is replayed on every load, and the log is
+  append-only, so there is no recovery. Latent only because the frontend is the sole caller today.
+
+### Corrections to my own testing, recorded because the failure modes were silent
+
+- A DoS repro **silently did not reproduce** because the loader definition omitted `mainModule`:
+  the gadget never started, the process looked healthy, and the result read as a pass. Caught by
+  reading the log rather than trusting green.
+- Reported "no SQLite on disk" from looking in `.workerd/state/`, a directory I created by hand
+  that the generator never used. State was in `.workerd/do-disk/` all along.
+- Flagged missing KV/R2 services from a grep whose character class excluded underscores, hiding the
+  two services whose names contain them. All four were wired correctly.
+
+### Still unproven
+
+- The MCP **OAuth chain** (RFC 9728/8414/7591/7636) — the connect path tested was unauthenticated.
+- The `ctx.restore()` "Wacky hack" (`overseer.ts:5452`), which depends on DO self-token semantics
+  rather than the loader.
+- **Model quality is the real limit, not the platform.** The 8B model emits well-formed tool calls
+  but writes poor `executeCode` bodies against non-trivial APIs, and crashed llama-server on a long
+  generation. Size the local model before judging the agent loop.
+
+**Next:** OZL-239 is the blocker worth taking first — a single gadget can currently take the
+deployment down.

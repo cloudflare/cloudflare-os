@@ -138,9 +138,29 @@ change.
 ## Model inference
 
 Not env-driven: models are configured per user or per deployment as records carrying a provider and
-an optional `apiUrl`. For a local endpoint use the `ollama` provider — which defaults to
-`http://localhost:11434` and sends no `Authorization` header when no key is set — pointed at any
-OpenAI-compatible server (vLLM, TGI, Ollama). No code changes are needed for local inference.
+an optional `apiUrl`.
+
+For a self-hosted endpoint pick the provider labelled **Local / OpenAI-compatible** and set the
+base URL, e.g. `http://vllm.internal:8000/v1`. It works with any server implementing
+`/v1/chat/completions` — vLLM, TGI, llama.cpp, LM Studio, Ollama — and sends no `Authorization`
+header when no key is set, since a strict local proxy may reject an unexpected bearer token. (The
+stored provider id is still `ollama` for backwards compatibility with existing configs.)
+
+**Do not use the `openai` provider for a self-hosted server.** It accepts an `apiUrl`, but speaks
+the newer `/v1/responses` API, which most self-hosted servers either lack or implement partially.
+
+Two things that are *not* automatic:
+
+- **Tool calling must be enabled on the server.** vLLM needs `--enable-auto-tool-choice` and a
+  `--tool-call-parser` matching the model; llama.cpp needs `--jinja`. Without them the agent loop
+  degrades silently — tool syntax comes back as ordinary text rather than a tool call.
+- **Reaching a private address requires a workerd config change**, not a code change. Standalone
+  workerd blocks private IPs by default (`connect() blocked by restrictPeers()`); the capnp
+  `network` service needs `allow = ["public", "private"]`, and ideally specific CIDRs or an
+  `ExternalServer` binding for the inference host rather than the whole RFC1918 range.
+
+Context windows are not discoverable over the OpenAI API: an unknown model falls back to a 128k
+assumption, so a server started with a smaller `--max-model-len` will receive over-sized requests.
 
 `CF_AI_GATEWAY*` routes inference through Cloudflare AI Gateway and is opt-in; leave unset. When
 unset, providers are reached directly and the gateway code path is skipped entirely.

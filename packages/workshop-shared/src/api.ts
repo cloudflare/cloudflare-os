@@ -951,7 +951,9 @@ export type CloudflareAccountOption = {
   accountName: string;
 };
 
-// Supported AI providers.
+// Supported AI providers. `"ollama"` is any self-hosted OpenAI-compatible chat-completions server
+// — vLLM, TGI, llama.cpp, LM Studio, Ollama — reached at `apiUrl`. The value is historical and
+// kept so existing model configs keep working; the UI labels it "Local / OpenAI-compatible".
 export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" | "ollama";
 
 // Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`.
