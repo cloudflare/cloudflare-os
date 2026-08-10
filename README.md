@@ -17,6 +17,15 @@ Cloudflare OS provides three things in particular:
 
 We are making Cloudflare OS open source so that others can copy it and customize it for their own company. The idea is not that your company uses Cloudflare OS, but rather that you make it "*Your Company* OS".
 
+## Contents
+
+* [Quick Start](#quick-start)
+* [Overview: What is Cloudflare OS really?](#overview-what-is-cloudflare-os-really)
+* [Features](#features)
+* [Get Started](#get-started)
+* [Developing](#developing)
+* [Credits](#credits)
+
 ## Quick Start
 
 To quickly run Cloudflare OS locally, [install pnpm](https://pnpm.io/), then do:
@@ -225,6 +234,19 @@ When developing, you'll want to run the front-end and back-end as two separate c
     pnpm dev-client
 
 Then visit: http://localhost:3000
+
+### Repository layout
+
+A quick map of the monorepo, following the OS analogy above:
+
+* `packages/workshop-backend` -- the "kernel": workspaces, sandboxing, and access control.
+* `packages/workshop-frontend` -- the "shell": the web UI.
+* `packages/workshop-shared` -- types and utilities shared between front-end and back-end.
+* `packages/gatekeeper-*` -- the "drivers": one package per external service (GitHub, Google, Slack, ...), each with its own setup README.
+* `packages/router` -- routes incoming requests to the right Worker.
+* `packages/typed-storage`, `packages/backend-utils`, `packages/error-reporting`, `packages/mcp-shared` -- supporting libraries.
+* `packages/integration-tests` -- end-to-end tests; see [docs/integration-testing.md](docs/integration-testing.md).
+* `docs/` -- design and operations notes ([blueprints](docs/blueprints.md), [sharing](docs/sharing.md), [observers](docs/observers.md), and more).
 
 ### Contributing
 
