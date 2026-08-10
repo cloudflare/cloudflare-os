@@ -163,10 +163,18 @@ prefer it to `-D`.
 ## Upstream
 
 FieldOS is a **soft fork** of Cloudflare OS, and the merge model is deliberate: **cherry-pick
-inward, never merge upstream wholesale.** Watch upstream for security fixes and port them
-individually. Rebase-and-replay was considered and rejected — replaying our patches onto a
-fast-moving 9,500-line kernel and 44,000-line frontend is an unbounded recurring cost, and deleting
-ten connectors diverges history immediately. The reasoning is in `plans/fieldos.md`.
+inward, never merge upstream wholesale.** Rebase-and-replay was considered and rejected — replaying
+our patches onto a fast-moving 9,500-line kernel and 44,000-line frontend is an unbounded recurring
+cost, and deleting ten connectors diverges history immediately. The reasoning is in
+`plans/fieldos.md`.
+
+**The runbook is [`upstream-sync.md`](./upstream-sync.md)** — cadence, the triage decision
+procedure, the conflict surface with real numbers, and the security fast path. Ported and
+deliberately-skipped commits are recorded in [`upstream-ports.md`](./upstream-ports.md).
+
+Note an earlier version of this section said to "watch upstream for security fixes". That is not
+implementable as written: upstream publishes **no tags, releases or advisories**, so there is
+nothing to subscribe to. We watch a scoped set of *files* instead.
 
 Which packages remain upstream-mergeable, and which we own outright, is tabled in the same document.
 For mergeable packages — `workshop-backend`, `workshop-shared`, `router`, `mcp-shared` — **keep

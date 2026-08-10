@@ -367,10 +367,17 @@ console.log(`\nwrote ${configPath}`);
 // ignored by a wedged process (verified), so there is no graceful path — go straight to SIGKILL.
 // Nothing in-process can report health while the loop is blocked, so the probe is an external
 // HTTP request from this parent process against the socket.
+// Resolve the pinned binary rather than letting `pnpm exec` pick one by hoisting. Several workerd
+// versions can sit in the store at once, and the KV/R2 binding protocols fieldos-runtime
+// implements are UNVERSIONED workerd internals valid for the pinned version exactly — so a
+// hoisting change could silently run the deployment on a runtime whose protocol has drifted, while
+// every test still passes against the pinned one. Same resolution the test suite uses.
+const WORKERD = fileURLToPath(import.meta.resolve("workerd/bin/workerd"));
+
 function spawnWorkerd() {
   console.log(`\nstarting: workerd serve config.capnp --experimental (port ${args.port})\n`);
   return spawn(
-      "pnpm", ["exec", "workerd", "serve", "config.capnp", "--experimental"],
+      WORKERD, ["serve", "config.capnp", "--experimental"],
       { stdio: "inherit", cwd: args.out },
   );
 }

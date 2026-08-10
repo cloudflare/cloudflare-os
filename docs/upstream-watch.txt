@@ -1,0 +1,11 @@
+# Files that are both ours and security-relevant, or ours and upstream-hot.
+# The CI watcher scopes its log to these; see docs/upstream-sync.md.
+# Prefer regenerating this in CI from `git diff --name-only --diff-filter=M <merge-base> HEAD`
+# rather than maintaining it by hand — a stale list goes quiet on exactly the file that needed it.
+packages/workshop-backend/src/overseer.ts
+packages/workshop-backend/src/user.ts
+packages/workshop-backend/src/server.ts
+packages/workshop-backend/src/auth/login-flow.ts
+packages/workshop-shared/src/api.ts
+packages/workshop-shared/src/gatekeeper.ts
+packages/mcp-shared/src/endpoint.ts

@@ -28,6 +28,9 @@ importers:
       vite:
         specifier: 7.3.6
         version: 7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0)
+      workerd:
+        specifier: 1.20260801.1
+        version: 1.20260801.1
       wrangler:
         specifier: ^4.119.0
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
