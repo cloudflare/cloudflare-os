@@ -118,9 +118,16 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
     }
   }
 
+  // Keyed on the `gadget` stub rather than `overseer`, even though the load uses both. The gadget
+  // stub is derived from the overseer by an effect in the parent, so on reconnect it arrives one
+  // render *after* the replacement overseer: keying on `overseer` fired this load while `gadget`
+  // still pointed into the dead session (a guaranteed spurious failure), and then never fired
+  // again once the live stub showed up, leaving the panel showing pre-disconnect state. Keying on
+  // the derived stub can't observe that intermediate render, and a new overseer always yields a
+  // new gadget stub, so reconnects are still covered.
   useEffect(() => {
     loadGatekeepers()
-  }, [overseer, chatId])
+  }, [gadget, chatId])
 
   // Re-load when the tab becomes visible, so hooks enabled elsewhere (e.g. from the Activity log)
   // show up without a full page reload.
