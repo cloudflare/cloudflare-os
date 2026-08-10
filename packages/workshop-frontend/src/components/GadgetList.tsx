@@ -74,7 +74,7 @@ function AppRow({
     <Link
       to="/workspace/$id"
       params={{ id: gadget.id }}
-      className="group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-150 ease-out hover:bg-kumo-tint"
+      className="group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 transition-[background-color,box-shadow] duration-150 ease-out hover:bg-kumo-tint hover:shadow-[inset_2px_0_0_0_var(--color-kumo-brand)]"
       onClick={(e) => {
         // Prevent navigation when renaming or clicking the menu
         if (isRenaming) e.preventDefault()

@@ -162,12 +162,19 @@ export function HomePageContent({ prompt }: HomeSearch) {
         <MeshBackground />
       </div>
       <div className="flex w-full max-w-2xl flex-col items-stretch gap-8">
-        {/* Hero */}
+        {/* Hero — ForterCIP treatment: blue eyebrow with a leading dash, bold headline with a
+            brand-accented tail (mirrors the "Know who to trust." lockup). */}
         <header className="text-center">
-          <h1 className="text-3xl font-semibold tracking-tight leading-tight text-kumo-default sm:text-4xl">
-            What are we working on?
+          <div className="mb-4 flex items-center justify-center gap-2.5">
+            <span aria-hidden="true" className="h-0.5 w-7 rounded-full bg-kumo-brand" />
+            <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-kumo-brand">
+              The AI productivity platform
+            </span>
+          </div>
+          <h1 className="text-4xl font-bold tracking-tight leading-[1.1] text-kumo-strong sm:text-5xl">
+            What are we <span className="text-kumo-brand">working on?</span>
           </h1>
-          <p className="mx-auto mt-3 max-w-md text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
+          <p className="mx-auto mt-4 max-w-md text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
             Ask a question, create an output, or create an app that works with your tools and data.
           </p>
         </header>

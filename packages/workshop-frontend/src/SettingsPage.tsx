@@ -248,7 +248,7 @@ export default function SettingsPage() {
   return (
     <div className="mx-auto flex h-full w-full max-w-2xl flex-col px-6 pb-16 sm:px-10">
       <header className="px-1 pb-2 pt-10">
-        <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">Profile</h1>
+        <h1 className="text-3xl font-bold tracking-tight text-kumo-strong">Profile</h1>
         <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
           Manage your account details, avatar, and security.
         </p>

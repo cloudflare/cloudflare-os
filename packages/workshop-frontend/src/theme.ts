@@ -27,11 +27,12 @@ export function getSystemThemeMode(): ResolvedThemeMode {
 }
 
 export function readThemeMode(): ThemeMode {
+  // Default to dark: the Forter command-center look. Users can still switch to light/system.
   try {
     const stored = window.localStorage.getItem(THEME_MODE_STORAGE_KEY)
-    return isThemeMode(stored) ? stored : 'system'
+    return isThemeMode(stored) ? stored : 'dark'
   } catch {
-    return 'system'
+    return 'dark'
   }
 }
 
@@ -94,4 +95,4 @@ export function applyAccentColor(color: string | null | undefined): void {
 }
 
 // The base/default accent, shown in the admin picker when no custom color is set.
-export const DEFAULT_ACCENT_COLOR = '#ff4801'
+export const DEFAULT_ACCENT_COLOR = '#005de8'

@@ -154,7 +154,7 @@ function OutputCard({
       tabIndex={0}
       onClick={onOpen}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() } }}
-      className="themed-card-hover-shadow press group flex cursor-pointer flex-col overflow-hidden rounded-xl border border-kumo-line bg-kumo-base text-left transition-[border-color,box-shadow] duration-150 ease-out hover:border-kumo-fill"
+      className="themed-card-hover-shadow press group flex cursor-pointer flex-col overflow-hidden rounded-xl border border-kumo-line bg-kumo-base text-left transition-[border-color,box-shadow] duration-150 ease-out"
     >
       <div className="relative aspect-[4/3] w-full border-b border-kumo-line">
         <FormatThumbnail output={output.output} />
@@ -206,6 +206,20 @@ function OutputRow({
       </div>
       <OutputMenu onOpen={onOpen} onOpenWorkspace={onOpenWorkspace}
                   onRename={onRename} onRemove={onRemove} />
+    </div>
+  )
+}
+
+// ─── KPI stat tile ───────────────────────────────────────────────────────────
+
+// One tile of the header stat band: bold Poppins number over a letter-spaced small-caps label.
+function StatTile({ value, label }: { value: number; label: string }) {
+  return (
+    <div className="bg-kumo-elevated px-5 py-4">
+      <div className="text-2xl font-bold tracking-tight text-kumo-strong">{value}</div>
+      <div className="mt-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-kumo-subtle">
+        {label}
+      </div>
     </div>
   )
 }
@@ -576,13 +590,27 @@ function OutputsPage() {
     <div className="mx-auto flex h-full w-full max-w-5xl flex-col px-6 sm:px-10">
       <header className="flex items-end justify-between gap-4 px-3 pb-4 pt-10">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">Outputs</h1>
+          <h1 className="text-3xl font-bold tracking-tight text-kumo-strong">Outputs</h1>
           <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
             Everything your workspaces have produced, in one place.
           </p>
         </div>
         <ViewToggle view={view} onChange={setView} />
       </header>
+
+      {/* KPI band — ForterCIP-style stat tiles: bold number, small-caps label, hairline grid. */}
+      {outputs.length > 0 && (
+        <div className="mx-3 mb-4 grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-kumo-line bg-kumo-line sm:grid-cols-4">
+          <StatTile value={outputs.length} label="Outputs" />
+          {presentTypes.slice(0, 3).map(([id, plural]) => (
+            <StatTile
+              key={id}
+              value={outputs.filter((o) => formatOf(o.output).id === id).length}
+              label={plural}
+            />
+          ))}
+        </div>
+      )}
 
       {/* Toolbar: format chips on the left (the browsing axis), scope + search on the right (the
           refining controls). Configured categories stay visible with zero counts. */}

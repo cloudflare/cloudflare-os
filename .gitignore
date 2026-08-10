@@ -1,5 +1,7 @@
 # Dependencies
 node_modules/
+# This is a pnpm workspace; ignore stray npm lockfiles.
+package-lock.json
 
 # Build outputs
 dist/

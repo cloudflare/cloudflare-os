@@ -79,7 +79,7 @@ export default function BlueprintsPage() {
     <div className="mx-auto flex h-full w-full max-w-5xl flex-col px-6 sm:px-10">
       <header className="flex items-end justify-between gap-4 px-3 pb-4 pt-10">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">Explore</h1>
+          <h1 className="text-3xl font-bold tracking-tight text-kumo-strong">Explore</h1>
           <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
             Discover featured blueprints to use as starting points. Open one to create a workspace
             from it, or save it to reuse later.

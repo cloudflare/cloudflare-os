@@ -81,9 +81,9 @@ function SuggestionRow({
       <button
         type="button"
         onClick={onClick}
-        className="press group flex w-full cursor-pointer items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-kumo-tint"
+        className="press group flex w-full cursor-pointer items-center gap-3 rounded-xl border border-kumo-line bg-kumo-elevated px-3 py-2.5 text-left transition-[border-color,background-color] duration-150 hover:border-kumo-brand/50 hover:bg-kumo-tint"
       >
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-kumo-fill text-kumo-subtle transition-colors group-hover:text-kumo-default">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-kumo-brand/12 text-kumo-brand transition-colors">
           {icon}
         </span>
         <span className="min-w-0 flex-1">
