@@ -739,3 +739,69 @@ Filed for OZL-219 to separate the two controls rather than baking the shortcut i
 
 **Next:** OZL-239 is the blocker worth taking first — a single gadget can currently take the
 deployment down.
+
+---
+
+## 2026-08-10 — Gadget containment: the cheap options are dead (OZL-239)
+
+Branch `feat/gadget-isolation`. Two independent designs — deep-reasoner and Codex, neither shown
+the other's answer — converged on every material point. Recording what was *proved*, because it
+eliminates a whole branch of the design space and nobody should re-derive it.
+
+**`ctx.facets.abort()` cannot contain a runaway, and the reason is categorical.** Not because abort
+is weak — because **you can never call it**. The host DO and the spinning facet share one event
+loop, so the request carrying "please abort" queues behind the infinite loop. Tested directly: the
+abort call itself times out. Every sibling idea dies the same way — a host-side deadline, a
+`Promise.race`, a DO alarm all need the loop to turn. Codex reached the identical verdict from
+workerd's C++, where `IoContext::abort()` is asynchronous and "cannot cancel any tasks
+synchronously".
+
+**The wedge crosses service and socket boundaries.** A separate service on a separate port *in the
+same process* also stops answering, because workerd serves everything on one event loop thread. So
+no capnp topology change isolates anything — the OS process is the only boundary. A second process
+answered in 0 ms while the first was fully wedged.
+
+**`SIGTERM` is ignored by a wedged process.** A supervisor must go straight to `SIGKILL`, or it
+hangs exactly when it is needed.
+
+**Upstream is not coming.** workerd issue #49 (CPU/Memory limits) is closed as *not planned*;
+`IsolateLimitEnforcer` has 9 symbol hits in the binary and zero CLI surface. Waiting is not a
+strategy.
+
+### What shipped, and what it is not
+
+An external watchdog in `scripts/run-workerd.mjs`: probe, `SIGKILL` after N consecutive failures,
+respawn, exponential backoff, and a crash-loop guard that stops supervising after repeated rapid
+restarts. Verified three ways on my own run, not just the implementer's:
+
+| | |
+|---|---|
+| healthy for 7 probe cycles | **0 restarts**, same pid — the false-positive case, which matters most |
+| external `kill -9` | **respawned in 1 s**, serving 200 again |
+| repeated kills | guard tripped, supervisor exited with a legible operator message |
+
+**This is recovery, not isolation, and the code says so.** Codex's pushback is recorded because it
+is the thing most likely to be forgotten: *"cgroups, alarms and `facets.abort()` should not be
+described as gadget isolation — they only throttle or enable whole-process recovery."* Calling a
+watchdog "containment" is how a known ceiling becomes a customer surprise.
+
+The framing that makes the ceiling tolerable: **isolation is intact, availability is not.** A
+runaway gadget cannot reach anything it should not — `globalOutbound: null`, tails and facet
+persistence all hold. It can only refuse to stop.
+
+### Why the real fix is deferred, not dodged
+
+A gadget is a **facet of its workspace DO** (`overseer.ts:2392-2399`) — in-process by definition,
+sharing the parent's storage. Moving it out means it stops being a facet, gains its own storage, and
+needs explicit RPC replacing the facet-stub Proxy (`:2412-2453`), `ctx.exports` tail delivery
+(`:2342`) and the `ctx.restore()` hack (`:5432`), plus cross-process equivalents for the three
+`facets.abort()` call sites. There is an unresolved **migration question for existing gadget
+state**, which deserves a spike before anyone commits.
+
+Correction to an assumption I carried in: **OZL-221's sharding does not fix this on its own.** It
+shrinks the blast radius from the deployment to one shard only if gadgets still run in-process
+there. Both designs said so independently.
+
+**Not done:** cgroups `memory.max` as a backstop for the memory hog. It belongs in the deployment
+unit rather than this script, and it addresses only the memory half — `cpu.max` throttles the whole
+process, making every workspace slow rather than isolating one.
