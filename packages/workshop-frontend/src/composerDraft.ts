@@ -21,6 +21,11 @@ export type StoredComposerDraft = {
   formats: MessageFormatRef[];
 };
 
+export type RestoredComposerDraft = {
+  text: string;
+  formats: Array<ComposerDraftFormat & { logo?: string }>;
+};
+
 export function composerDraftStorageKey(userId: string, scope: string): string {
   return `${COMPOSER_DRAFT_PREFIX}:${userId}:${scope}`;
 }
@@ -59,6 +64,33 @@ export function serializeComposerDraft(
   normalized += text.slice(cursor);
 
   return { version: 1, text: normalized, formats: storedFormats };
+}
+
+export function decorateComposerDraft(
+  draft: StoredComposerDraft,
+  logos: readonly (string | undefined)[],
+  logoSlot: string,
+): RestoredComposerDraft {
+  let text = "";
+  let cursor = 0;
+  const formats: RestoredComposerDraft["formats"] = [];
+  for (const [index, format] of draft.formats.entries()) {
+    text += draft.text.slice(cursor, format.position);
+    const logo = logos[index];
+    const prefix = logo ? logoSlot : "";
+    const start = text.length;
+    text += prefix + format.noun;
+    formats.push({
+      start,
+      length: prefix.length + format.length,
+      noun: format.noun,
+      icon: format.icon,
+      ...(logo ? { logo } : {}),
+    });
+    cursor = format.position + format.length;
+  }
+  text += draft.text.slice(cursor);
+  return { text, formats };
 }
 
 export function readComposerDraft(key: string | undefined): StoredComposerDraft | undefined {

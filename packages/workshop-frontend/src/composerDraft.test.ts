@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   composerDraftStorageKey,
+  decorateComposerDraft,
   readComposerDraft,
   serializeComposerDraft,
   writeComposerDraft,
@@ -57,6 +58,47 @@ describe("composer drafts", () => {
       noun: "Document",
       icon: "fileText",
     }]);
+  });
+
+  it("decorates restored formats and adjusts later token positions", () => {
+    const stored: StoredComposerDraft = {
+      version: 1,
+      text: "Create a Document and a Sheet",
+      formats: [
+        { position: 9, length: 8, noun: "Document", icon: "fileText" },
+        { position: 24, length: 5, noun: "Sheet", icon: "table" },
+      ],
+    };
+    const logoSlot = "\u2003\u2060\u00a0";
+
+    const restored = decorateComposerDraft(stored, ["data:doc", "data:sheet"], logoSlot);
+
+    expect(restored.text).toBe(`Create a ${logoSlot}Document and a ${logoSlot}Sheet`);
+    expect(restored.formats).toEqual([
+      {
+        start: 9,
+        length: logoSlot.length + 8,
+        noun: "Document",
+        icon: "fileText",
+        logo: "data:doc",
+      },
+      {
+        start: 24 + logoSlot.length,
+        length: logoSlot.length + 5,
+        noun: "Sheet",
+        icon: "table",
+        logo: "data:sheet",
+      },
+    ]);
+  });
+
+  it("leaves a restored format undecorated when its icon cannot be rendered", () => {
+    const restored = decorateComposerDraft(draft, [undefined], "\u2003\u2060\u00a0");
+
+    expect(restored).toEqual({
+      text: draft.text,
+      formats: [{ start: 9, length: 8, noun: "Document", icon: "fileText" }],
+    });
   });
 
   it("rejects stored format ranges that do not match the text", () => {

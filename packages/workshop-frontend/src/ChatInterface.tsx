@@ -125,6 +125,7 @@ import { formatFullTimestamp } from "./utils/formatTimestamp";
 import { copyToClipboard } from "./clipboard";
 import {
   composerDraftStorageKey,
+  decorateComposerDraft,
   readComposerDraft,
   serializeComposerDraft,
   writeComposerDraft,
@@ -1928,8 +1929,76 @@ export const ChatInput = ({
 
   const loadedDraftKeyRef = useRef(draftStorageKey);
   const skipDraftWriteRef = useRef(false);
+  const draftRestoreGenerationRef = useRef(0);
+
+  const placeRestoredCaretAtEnd = (
+    text: string,
+    key: string | undefined,
+    generation: number,
+  ) => {
+    requestAnimationFrame(() => {
+      if (draftRestoreGenerationRef.current !== generation ||
+          loadedDraftKeyRef.current !== key || inputValueRef.current !== text) {
+        return;
+      }
+      const textarea = composerTextareaRef.current;
+      if (!textarea) return;
+      if (autoFocus) textarea.focus();
+      textarea.setSelectionRange(text.length, text.length);
+      autoResizeTextarea(textarea, minRows, newChat ? 10 : 4);
+    });
+  };
+
+  const composerMatchesStoredDraft = (draft: StoredComposerDraft) => {
+    if (inputValueRef.current !== draft.text || capsulesRef.current.length > 0 ||
+        selectedSlashCommandRef.current) {
+      return false;
+    }
+    const currentFormats = formatTokensRef.current;
+    return currentFormats.length === draft.formats.length && currentFormats.every((format, index) => {
+      const stored = draft.formats[index];
+      return !format.logo && format.start === stored.position && format.length === stored.length &&
+        format.noun === stored.noun && format.icon === stored.icon;
+    });
+  };
+
+  const restoreDraftPresentation = (
+    draft: StoredComposerDraft,
+    key: string | undefined,
+    generation: number,
+  ) => {
+    placeRestoredCaretAtEnd(draft.text, key, generation);
+    if (draft.formats.length === 0) return;
+    void Promise.all(draft.formats.map(({icon}) => formatIconDataUrl(icon))).then((logos) => {
+      requestAnimationFrame(() => {
+        if (draftRestoreGenerationRef.current !== generation ||
+            loadedDraftKeyRef.current !== key || !composerMatchesStoredDraft(draft)) {
+          return;
+        }
+        const restored = decorateComposerDraft(draft, logos, CAPSULE_LOGO_SLOT);
+        setInputValue(restored.text);
+        setFormatTokens(restored.formats);
+        placeRestoredCaretAtEnd(restored.text, key, generation);
+      });
+    });
+  };
+
+  useEffect(() => {
+    if (!initialDraft) return;
+    const generation = ++draftRestoreGenerationRef.current;
+    restoreDraftPresentation(initialDraft, draftStorageKey, generation);
+    return () => {
+      if (draftRestoreGenerationRef.current === generation) {
+        draftRestoreGenerationRef.current++;
+      }
+    };
+    // Restoration belongs to the draft captured during initialization, not later prop values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (loadedDraftKeyRef.current === draftStorageKey) return;
+    const generation = ++draftRestoreGenerationRef.current;
     const previousKey = loadedDraftKeyRef.current;
     loadedDraftKeyRef.current = draftStorageKey;
     skipDraftWriteRef.current = true;
@@ -1956,6 +2025,7 @@ export const ChatInput = ({
       setSelectedSlashCommand(null);
     }
     setFormatTokens(formatTokensFromDraft(storedDraft));
+    if (storedDraft) restoreDraftPresentation(storedDraft, draftStorageKey, generation);
   }, [draftStorageKey]);
 
   useEffect(() => {
@@ -1978,6 +2048,7 @@ export const ChatInput = ({
   // changes so picking the same suggestion twice still works. Focus + move the cursor to the end.
   useEffect(() => {
     if (seedNonce === undefined) return;
+    draftRestoreGenerationRef.current++;
     const text = seedText ?? "";
     setSelectedSlashCommand(null);
     setCapsules([]);
@@ -3211,6 +3282,7 @@ export const ChatInput = ({
               aria-activedescendant={slashCommandPicker.activeDescendant}
               onChange={(e) => {
                 draftEditedRef.current = true;
+                draftRestoreGenerationRef.current++;
                 handleInputChange(e.target.value, e.target.selectionStart ?? 0);
                 syncPickerCaret(e.target.selectionStart ?? 0);
                 requestAnimationFrame(handleCursorChange);
