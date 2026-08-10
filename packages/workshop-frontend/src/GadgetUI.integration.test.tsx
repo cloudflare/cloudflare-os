@@ -163,6 +163,8 @@ describe('GadgetUI RPC recovery', () => {
 
   afterEach(async () => {
     vi.useRealTimers()
+    delete document.documentElement.dataset.mode
+    document.documentElement.style.removeProperty('--color-kumo-brand')
     for (const session of childSessions.splice(0)) session[Symbol.dispose]()
     await act(async () => root.unmount())
     container.remove()
@@ -175,6 +177,48 @@ describe('GadgetUI RPC recovery', () => {
     dispatchIframeHandshake(iframe, port2)
     return child
   }
+
+  it('injects the shared Gadget stylesheet with the current platform theme', async () => {
+    document.documentElement.dataset.mode = 'dark'
+    document.documentElement.style.setProperty('--color-kumo-brand', '#d15b19')
+    const gadget = fakeGadget('themed', 'document.body.textContent = "themed"')
+
+    await act(async () => {
+      root.render(<GadgetUI gadget={gadget.stub} height="100px" />)
+    })
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+
+    const decoded = decodeURIComponent(container.querySelector('iframe')!.srcdoc)
+    expect(decoded).toContain('--gadget-color-accent: #ff4801')
+    expect(decoded).toContain('.gadget-panel')
+    expect(decoded).toContain('"mode":"dark"')
+    expect(decoded).toContain('"--gadget-color-accent":"#d15b19"')
+
+    delete document.documentElement.dataset.mode
+    document.documentElement.style.removeProperty('--color-kumo-brand')
+  })
+
+  it('forwards platform theme changes without replacing the Gadget iframe', async () => {
+    const gadget = fakeGadget('themed', 'document.body.textContent = "themed"')
+    await act(async () => {
+      root.render(<GadgetUI gadget={gadget.stub} height="100px" />)
+    })
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    const iframe = container.querySelector('iframe')!
+    const postMessage = vi.spyOn(iframe.contentWindow!, 'postMessage')
+
+    document.documentElement.dataset.mode = 'dark'
+    await vi.waitFor(() => expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'workshop-gadget-theme',
+        theme: expect.objectContaining({ mode: 'dark' }),
+      }),
+      '*',
+    ))
+    expect(container.querySelector('iframe')).toBe(iframe)
+
+    delete document.documentElement.dataset.mode
+  })
 
   it('keeps the iframe while redirecting calls to the replacement gadget client', async () => {
     const first = fakeGadget('first', 'document.body.textContent = "first"')

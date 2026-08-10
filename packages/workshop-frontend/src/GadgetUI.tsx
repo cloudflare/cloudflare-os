@@ -3,6 +3,12 @@ import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
 import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
+import {
+  createGadgetThemeBootstrapSource,
+  GADGET_THEME_MESSAGE_TYPE,
+  type GadgetThemeSnapshot,
+} from '@gadgets/workshop-shared/gadget-ui-theme'
+import { observeGadgetTheme, readGadgetThemeSnapshot } from './gadget-theme'
 
 // We want to inject Cap'n Web into the Gadget. Luckily it has no dependencies, so we can just take
 // the whole module and embed it. We can import the module using ?raw to get a string of the
@@ -18,10 +24,12 @@ let CAPNWEB_BUNDLE_ANNOTATED = `//# sourceURL=jsrpc.js\n${CAPNWEB_BUNDLE}`
 // a data: URL, so we have a doubly-nested data: URL. We'll use base64 encoding for the inner
 // data: and URL encoding for the outer, as this largely avoids double-escaping.
 //
-// In any case, we'll prefix the gadget code with this prefix which imports the Cap'n Web library
-// (from a massive data URL) and sets up the RPC connection to the parent.
-let INJECTED_CODE_PREFIX = encodeURIComponent(String.raw`//# sourceURL=client.js
+// In any case, we'll prefix the gadget code with code which imports the Cap'n Web library (from a
+// massive data URL), installs the platform-owned theme, and connects RPC to the parent.
+const createInjectedCodePrefix = (theme: GadgetThemeSnapshot) => encodeURIComponent(String.raw`//# sourceURL=client.js
 import { RpcTarget, RpcStub, newMessagePortRpcSession } from "data:text/javascript;charset=utf-8;base64,${btoa(CAPNWEB_BUNDLE_ANNOTATED)}";
+
+` + createGadgetThemeBootstrapSource(theme) + String.raw`
 
 let gadget;  // RPC stub to the gadget's server-side Durable Object.
 {
@@ -100,14 +108,14 @@ window.addEventListener('unhandledrejection', (event) => {
 
 `);
 
-const createSandboxedHtml = (jsCode: string): string => {
+const createSandboxedHtml = (jsCode: string, theme: GadgetThemeSnapshot): string => {
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src 'none'; script-src data: 'unsafe-inline'; style-src data: 'unsafe-inline'; img-src data:; media-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';">
 </head>
 <body>
-    <script type="module" src="data:text/javascript;charset=utf-8,${INJECTED_CODE_PREFIX}${encodeURIComponent(jsCode)}"></script>
+    <script type="module" src="data:text/javascript;charset=utf-8,${createInjectedCodePrefix(theme)}${encodeURIComponent(jsCode)}"></script>
 </body>
 </html>`.trim()
 }
@@ -291,7 +299,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         const bundle = await gadget.getUiBundle(chatId)
         if (!isCurrent()) return
         if (bundle) {
-          const html = createSandboxedHtml(bundle.jsCode)
+          const html = createSandboxedHtml(bundle.jsCode, readGadgetThemeSnapshot())
           setSandboxedHtml(html)
         } else {
           setSandboxedHtml(null)
@@ -319,6 +327,17 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   // LSP reports an error here, but tsc does not.
   // The LSP error is due to bugs that need to be fixed in Cap'n Web.
   }, [gadget, isVisible, hasLoaded, isInvalidated, chatId, retryNonce])
+
+  const postThemeToIframe = () => {
+    iframeRef.current?.contentWindow?.postMessage({
+      type: GADGET_THEME_MESSAGE_TYPE,
+      theme: readGadgetThemeSnapshot(),
+    }, '*')
+  }
+
+  // Theme mode and deployment accent can change without reloading the Gadget. Mirror both into the
+  // sandbox while leaving the Gadget's DOM and RPC session intact.
+  useEffect(() => observeGadgetTheme(postThemeToIframe), [])
 
   // Effect to handle iframe RPC handshake
   useEffect(() => {
@@ -491,6 +510,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         key={`${reloadTrigger}:${iframeGeneration}`}
         ref={iframeRef}
         srcDoc={sandboxedHtml}
+        onLoad={postThemeToIframe}
         style={{
           display: 'block',
           width: '100%',

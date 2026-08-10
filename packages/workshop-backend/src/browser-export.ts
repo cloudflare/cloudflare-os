@@ -1,6 +1,7 @@
 import { launch, type Page } from "@cloudflare/puppeteer";
 import { RpcSession, type RpcStub, type RpcTransport } from "capnweb";
 import { createLogger } from "@gadgets/backend-utils/logger";
+import { createGadgetThemeBootstrapSource } from "@gadgets/workshop-shared/gadget-ui-theme";
 import BROWSER_EXPORT_RUNTIME from "./generated/browser-export-runtime.txt";
 
 type BrowserExportLogFields = {
@@ -130,11 +131,11 @@ function scriptUrl(source: string): string {
   return `data:text/javascript;charset=utf-8,${encodeURIComponent(source)}`;
 }
 
-function makeExportHtml(clientCode: string): string {
+export function makeExportHtml(clientCode: string): string {
   let clientPrefix = String.raw`//# sourceURL=client.js
 const { gadget, RpcStub, RpcTarget } = globalThis.__workshopExportRuntime;
 delete globalThis.__workshopExportRuntime;
-`;
+` + createGadgetThemeBootstrapSource({ mode: "light", tokens: {} });
   let clientUrl = scriptUrl(clientPrefix + clientCode);
   let runtimeUrl = scriptUrl(
       `globalThis.__workshopExportClientUrl = ${JSON.stringify(clientUrl)};\n` +

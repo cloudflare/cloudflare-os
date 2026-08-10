@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const launch = vi.hoisted(() => vi.fn());
 vi.mock("@cloudflare/puppeteer", () => ({ launch }));
 
-const { BrowserRpcTransport, limitStream, renderGadgetPdf } =
+const { BrowserRpcTransport, limitStream, makeExportHtml, renderGadgetPdf } =
     await import("../src/browser-export.js");
 
 type Harness = {
@@ -140,6 +140,17 @@ describe("limitStream", () => {
 });
 
 describe("renderGadgetPdf", () => {
+  it("installs the shared light theme before running exported Gadget code", () => {
+    let html = makeExportHtml("document.body.textContent = 'ready'");
+    let decoded = decodeURIComponent(decodeURIComponent(html));
+
+    expect(decoded).toContain("--gadget-color-accent: #ff4801");
+    expect(decoded).toContain(".gadget-panel");
+    expect(decoded.indexOf("__workshopApplyTheme")).toBeLessThan(
+      decoded.indexOf("document.body.textContent = 'ready'"),
+    );
+  });
+
   it("settles the client render, streams a PDF, and releases the browser", async () => {
     let { stream, harness } = render();
 

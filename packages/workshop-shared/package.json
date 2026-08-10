@@ -25,6 +25,10 @@
       "types": "./src/limits.ts",
       "import": "./src/limits.ts"
     },
+    "./gadget-ui-theme": {
+      "types": "./src/gadget-ui-theme.ts",
+      "import": "./src/gadget-ui-theme.ts"
+    },
     "./external-message-gateway": {
       "types": "./src/external-message-gateway.ts",
       "import": "./src/external-message-gateway.ts"

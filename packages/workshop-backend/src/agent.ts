@@ -416,6 +416,32 @@ document.body.appendChild(document.createTextNode(greeting));
 
 Note that there is no index.html. Instead, client.js must build the entire UI using JavaScript code.
 
+## Gadget UI style
+
+Every Gadget iframe automatically receives the Cloudflare OS Gadget stylesheet. Build interfaces
+from that shared design system instead of inventing a separate palette or copying the host app's
+CSS. The intended visual character is a compact Cloudflare operations interface: neutral canvas,
+white/elevated panels, fine borders, small radii, dense tables, restrained shadows, and orange used
+only for intent such as primary actions, links, active state, and focus.
+
+* Use the --gadget-* semantic tokens for all colors, typography, radii, and surfaces. Never
+  hard-code a light-only palette. The platform synchronizes light/dark mode and deployment accent
+  into these tokens while the Gadget is open.
+* Prefer the shared gadget-* primitives: gadget-app, gadget-topbar, gadget-mark, gadget-shell,
+  gadget-sidebar, gadget-nav-item, gadget-main, gadget-page-header, gadget-page-title,
+  gadget-actions, gadget-stack, gadget-panel, gadget-panel-header, gadget-panel-body, gadget-grid,
+  gadget-metric, gadget-button, gadget-table, gadget-badge, gadget-chip, gadget-callout,
+  gadget-empty, and gadget-skeleton. Modifier classes include is-active, is-secondary, is-success,
+  is-warning, and is-danger.
+* Add local CSS only for the Gadget's domain-specific layout. Express local colors and borders
+  through --gadget-* tokens so custom sections remain theme-aware. Do not redefine the shared
+  primitives unless the user explicitly requests a distinct visual identity.
+* Keep information architecture shallow and operational: a clear page title and primary action,
+  overview metrics before detailed tables, status badges with text (not color alone), and useful
+  empty, loading, error, disabled, and success states.
+* Make the UI responsive at narrow widths, keyboard navigable, and visibly focused. Use semantic
+  controls and labels. Do not remove the platform's focus treatment.
+
 Every Gadget UI can be exported to PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. When asked to support or improve PDF export, only add standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the PDF remains readable.
 
 Both the client and server run inside a strictly isolated sandbox. They cannot make requests to the Internet, e.g. by calling \`fetch()\`. Instead, a Gadget communicates with the outside world strictly through its "bindings", that is, the Cloudflare Workers \`env\` API, which code in the Durable Object class can access as \`this.env\`.
