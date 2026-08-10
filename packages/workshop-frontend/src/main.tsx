@@ -59,12 +59,12 @@ let lastConnectTime: number = 0;
 let backoff: number = 1000;
 
 function getBackendHost(): string {
-  const backendHost = import.meta.env.VITE_BACKEND_HOST?.trim();
-  if (backendHost) return backendHost;
-
-  // When opening the Vite dev server directly (localhost:3000), the backend is at localhost:8787.
-  // Otherwise, the API is on the same host as the frontend.
-  return window.location.hostname === 'localhost' ? 'localhost:8787' : window.location.host;
+  // Only the Vite dev server is hosted separately from the backend. Built assets are served from
+  // the same origin in both production and run-local mode.
+  if (import.meta.env.DEV) {
+    return import.meta.env.VITE_BACKEND_HOST?.trim() || 'localhost:8787';
+  }
+  return window.location.host;
 }
 
 function startConnection(): RpcStub<PublicApi> {

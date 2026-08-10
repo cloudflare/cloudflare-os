@@ -6,6 +6,7 @@
 // Flags:
 //   --use-workers-ai-binding   Include the Workers AI binding in
 //                               workshop-backend (requires Cloudflare login).
+//   --port PORT                 Listen on PORT instead of 8787.
 //
 // Env:
 //   VITE_BACKEND_HOST=localhost:9000  Also pass --port 9000 to wrangler dev.
@@ -15,7 +16,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
-import { getWranglerPortFromBackendHost } from "./scripts/dev-server-config.js";
+import { getDevServerConfig } from "./scripts/dev-server-config.js";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PACKAGES_DIR = join(ROOT, "packages");
@@ -57,6 +58,16 @@ execFileSync(
 // Vite dev server). In normal dev mode we leave assets unconfigured so the frontend is served by
 // Vite on :3000 and no `vite build` is required to start the dev server.
 const serveFrontendAssets = process.argv.includes("--serve-frontend-assets");
+
+let backendHost;
+let wranglerPort;
+try {
+  ({ backendHost, wranglerPort } = getDevServerConfig(
+      process.argv.slice(2), process.env.VITE_BACKEND_HOST));
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
 
 // ---------------------------------------------------------------------------
 // Discover gatekeeper packages.
@@ -198,10 +209,11 @@ for (const gk of gatekeepers) {
   const srcPath = join(gk.dir, "wrangler.jsonc");
   const config = parse(readFileSync(srcPath, "utf8"));
   config.build = { ...config.build, cwd: gk.dir };
+  config.vars = config.vars || {};
+  config.vars.BASE_URL = `http://${backendHost}/gatekeeper/${gk.name.slice("gatekeeper-".length)}`;
 
   const shared = SHARED_GATEKEEPER_CREDS[gk.name];
   if (shared && process.env[shared.id] && process.env[shared.secret]) {
-    config.vars = config.vars || {};
     if (config.vars.CLIENT_ID === undefined) config.vars.CLIENT_ID = process.env[shared.id];
     if (config.vars.CLIENT_SECRET === undefined) config.vars.CLIENT_SECRET = process.env[shared.secret];
   }
@@ -210,7 +222,6 @@ for (const gk of gatekeepers) {
   // `"false"` in wrangler.jsonc without editing it.
   for (const name of PASSTHROUGH_GATEKEEPER_VARS[gk.name] ?? []) {
     if (process.env[name] !== undefined) {
-      config.vars = config.vars || {};
       config.vars[name] = process.env[name];
     }
   }
@@ -301,23 +312,12 @@ const configs = [
 ];
 
 const args = configs.flatMap(c => ["-c", c]);
-const backendHost = process.env.VITE_BACKEND_HOST;
-if (backendHost) {
-  let wranglerPort;
-  try {
-    wranglerPort = getWranglerPortFromBackendHost(backendHost);
-  } catch (err) {
-    console.error(err.message);
-    process.exit(1);
-  }
-
-  if (wranglerPort) {
-    args.push("--port", wranglerPort);
-  } else {
-    console.warn(
-        "VITE_BACKEND_HOST did not include a port, so run-dev-server.js could not derive " +
-        "a Wrangler --port override.");
-  }
+if (wranglerPort) {
+  args.push("--port", wranglerPort);
+} else {
+  console.warn(
+      "VITE_BACKEND_HOST did not include a port, so run-dev-server.js could not derive " +
+      "a Wrangler --port override.");
 }
 console.log(`\nStarting: wrangler dev ${args.join(" ")}\n`);
 
