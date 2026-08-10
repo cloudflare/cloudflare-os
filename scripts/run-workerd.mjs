@@ -55,6 +55,10 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv.slice(2));
 
+// The origin the browser reaches this deployment on. Baked into the config rather than discovered,
+// because the workers need it to build absolute callback URLs.
+const publicBaseUrl = `http://localhost:${args.port}`;
+
 // ---------------------------------------------------------------------------
 // 1. Discover + bundle each worker with `wrangler deploy --dry-run --outdir`.
 // ---------------------------------------------------------------------------
@@ -192,6 +196,20 @@ for (const w of workers) {
   for (const [name, value] of Object.entries(config.vars ?? {})) {
     if (typeof value === "string") bindingLines.push(`      (name = ${capnpString(name)}, text = ${capnpString(value)}),`);
     else bindingLines.push(`      (name = ${capnpString(name)}, json = ${capnpString(JSON.stringify(value))}),`);
+  }
+
+  // The public origin. On a real deploy these are injected at PUT time, not read from any
+  // wrangler.jsonc, so nothing above supplies them and the defaults baked into the workers point
+  // at localhost:8787. Without this, an OAuth/connect flow hands the browser a dead link on any
+  // port but 8787 — it fails at the *end* of a connect flow rather than at boot, so it looks like
+  // the gatekeeper is broken. Mirrors the release manifest's contract (manifest-lib.mjs:187,208):
+  // PUBLIC_BASE_URL on the backend, per-gatekeeper BASE_URL under the shared origin.
+  if (pkgName === "workshop-backend") {
+    bindingLines.push(`      (name = "PUBLIC_BASE_URL", text = ${capnpString(publicBaseUrl)}),`);
+  } else if (pkgName.startsWith("gatekeeper-")) {
+    const shortName = pkgName.slice("gatekeeper-".length);
+    bindingLines.push(
+        `      (name = "BASE_URL", text = ${capnpString(`${publicBaseUrl}/gatekeeper/${shortName}`)}),`);
   }
 
   // Service bindings the package declares for itself, e.g. the router's WORKSHOP_BACKEND. These
