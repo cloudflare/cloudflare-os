@@ -66,13 +66,19 @@ window.addEventListener('keydown', (event) => {
   }
 }, true);
 
+// Strip the opener from every link the user clicks. This deliberately does not try to work out
+// which links open a new context: a link with no target attribute of its own still opens one when
+// the document carries a <base target="_blank">, which the CSP's base-uri does not restrict, and an
+// SVG anchor's .target is an SVGAnimatedString rather than a string. Since the frame's popups
+// escape the sandbox, missing one matters; adding rel=noopener to a same-context navigation
+// does not, because it is inert there.
 window.addEventListener('click', (event) => {
   if (!(event.target instanceof Element)) {
     return;
   }
 
-  const anchor = event.target.closest('a[href][target]');
-  if (!anchor || anchor.target.toLowerCase() !== '_blank') {
+  const anchor = event.target.closest('a[href]');
+  if (!anchor) {
     return;
   }
 
