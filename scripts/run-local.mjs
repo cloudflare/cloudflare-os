@@ -21,6 +21,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getDevServerConfig } from "./dev-server-config.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const STAMP_PATH = join(ROOT, ".run-local-stamp");
@@ -31,6 +32,7 @@ const NODE_MODULES = join(ROOT, "node_modules");
 
 // Forward any extra flags (e.g. --use-workers-ai-binding) on to run-dev-server.js.
 const passthroughArgs = process.argv.slice(2);
+const { backendHost } = getDevServerConfig(passthroughArgs, process.env.VITE_BACKEND_HOST);
 
 // ---------------------------------------------------------------------------
 // Enumerate source files and compute a content hash.
@@ -139,7 +141,7 @@ if (needsBuild) {
 // Launch the local server (serves the built frontend as static assets).
 // ---------------------------------------------------------------------------
 
-console.log("\nStarting local server ...");
+console.log(`\nStarting local server at http://${backendHost} ...`);
 const server = spawn(
     process.execPath,
     [join(ROOT, "run-dev-server.js"), "--serve-frontend-assets", ...passthroughArgs],
