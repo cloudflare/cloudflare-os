@@ -210,6 +210,39 @@ path. There is no OTLP exporter; traces are Cloudflare-specific and unavailable 
 *(An earlier version of this section said "all logging is plain `console.*`". That predated the
 structured logger; only a handful of raw `console.` calls remain in the backend.)*
 
+## Gadget runaway: a known availability ceiling
+
+**A gadget stuck in an infinite loop interrupts the whole deployment until it is restarted.** State
+is not lost — it is on disk — but every workspace in that process stops answering for the seconds
+the restart takes.
+
+This is not a bug we can close in the runtime. CPU, wall-clock and memory limits for Workers are
+enforced by Cloudflare's *platform*, not by workerd; the open-source binary has no equivalent and
+upstream is not planning one. The wedge also crosses service and socket boundaries, because workerd
+serves everything on one event loop thread — so an OS process is the only boundary available.
+
+**Isolation is unaffected.** A runaway gadget still cannot reach anything it should not: the
+sandbox's `globalOutbound: null`, observation logging and approval gating all hold. It can only
+refuse to stop.
+
+`scripts/run-workerd.mjs` supervises workerd for this reason:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--watchdog-interval` | `5000` | Milliseconds between health probes |
+| `--watchdog-failures` | `3` | Consecutive failures before the process is killed and respawned |
+| `--no-watchdog` | off | Disable supervision — use when attaching a debugger, or the watchdog will kill the process you are inspecting |
+
+The probe is an external HTTP request, because nothing inside a blocked process can report its own
+health. A wedged workerd also ignores `SIGTERM`, so the supervisor sends `SIGKILL` directly.
+
+**The defaults are calibration knobs, not constants.** The watchdog cannot tell "wedged" from
+"legitimately busy" — it only sees that the socket did not answer in time. Raise them for a
+deployment doing heavy synchronous work; lower them to shorten the outage.
+
+After repeated restarts in a short window the supervisor stops and exits non-zero rather than
+looping: a gadget that wedges on load would otherwise restart forever. That state needs an operator.
+
 ## Known gaps
 
 - **No admin UI for session bounds yet.** The `AdminConfig` fields exist and resolve correctly; the

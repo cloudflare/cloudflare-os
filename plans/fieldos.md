@@ -263,6 +263,56 @@ then discovered not to be one — the failure mode this codebase already demonst
 org separation. It is a naming convention, not an authorization check, and treating it as the
 latter would be repeating the mistake its own comment warns about.
 
+## Gadget containment: the OS process is the only boundary
+
+Self-hosting loses something Cloudflare gave us for free, and it is worth stating precisely because
+the obvious workarounds all fail.
+
+**Standalone workerd has no CPU, wall-clock or memory limits.** Those are enforced by Cloudflare's
+platform, not the runtime. The only `limits` field in the schema is `MemoryCacheLimits`, unrelated
+to execution, and no CLI flag exposes one. Upstream is not planning to add them — workerd issue #49
+is closed as *not planned*, and `IsolateLimitEnforcer` exists as an interface with no usable
+open-source implementation. So waiting is not a strategy.
+
+The consequence, verified by execution: a gadget running `while(true){}` pins a core and wedges the
+whole process. **The wedge crosses service and socket boundaries** — a separate service on a
+separate port in the same process stops answering too, because workerd serves everything on one
+event loop thread. A second OS process is unaffected, answering in 0 ms while the first is fully
+wedged.
+
+Three things follow, each established rather than assumed:
+
+1. **`ctx.facets.abort()` cannot be the answer, and neither can any host-side deadline.** Not
+   because abort is weak — because *you can never call it*. The host and the runaway gadget share
+   one event loop, so the request carrying "please abort" queues behind the infinite loop. Tested
+   directly: the abort call itself times out. Alarms and `Promise.race` deadlines fail for the same
+   reason. Confirmed independently against workerd's own source, where `IoContext::abort()` is
+   asynchronous and "cannot cancel any tasks synchronously".
+2. **A capnp topology change buys nothing.** Since the wedge crosses services, splitting gadgets
+   into their own *service* does not isolate them. The boundary has to be a real OS process.
+3. **`SIGTERM` is ignored by a wedged process.** A supervisor must go straight to `SIGKILL`, or it
+   will hang exactly when it is needed.
+
+**Isolation is intact; availability is not.** `globalOutbound: null`, tail delivery and facet
+persistence all still hold — a runaway gadget cannot reach anything it should not. It can only
+refuse to stop. That distinction is what makes an interim limitation tolerable.
+
+**Decision — staged.** For Alpha, supervise the single process with an external watchdog and accept
+a documented ceiling: a runaway interrupts the deployment for the seconds until restart, and state
+survives because it is on disk. Do *not* describe cgroups or a watchdog as isolation; they give
+recovery, not containment, and calling them containment is how a known ceiling becomes a surprise.
+
+The real fix is a separate supervised process for gadget execution, and it is expensive for one
+specific reason: **a gadget is currently a facet of its workspace DO** (`overseer.ts:2392-2399`),
+which is by definition in-process and shares the parent's storage. Moving it means the gadget stops
+being a facet, gains its own storage, and needs an explicit RPC protocol in place of the facet-stub
+Proxy (`:2412-2453`), `ctx.exports` tail delivery (`:2342`) and the `ctx.restore()` hack (`:5432`).
+There is also a migration question for existing gadget state that deserves a spike before anyone
+commits.
+
+Note that OZL-221's sharding does **not** solve this on its own: it shrinks the blast radius from
+the deployment to one shard only if gadgets still run in-process there.
+
 ## Three things to resist "improving"
 
 1. **`UseOverseerInterface`** (`overseer.ts:8788`) — a separate class deny-listing ~70 methods, so

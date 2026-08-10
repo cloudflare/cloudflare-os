@@ -5,7 +5,8 @@
 // (unless --build-only) spawns `workerd serve` on it.
 //
 // Usage: node scripts/run-workerd.mjs [--out .workerd] [--port 8080] [--allow public,private]
-//                                      [--build-only]
+//                                      [--build-only] [--no-watchdog]
+//                                      [--watchdog-interval 5000] [--watchdog-failures 3]
 
 import { execFileSync, spawn } from "node:child_process";
 import {
@@ -30,7 +31,10 @@ const INCLUDED_GATEKEEPERS = new Set([
 ]);
 
 function parseArgs(argv) {
-  const args = { out: join(ROOT, ".workerd"), port: 8080, allow: ["public", "private"], buildOnly: false };
+  const args = {
+    out: join(ROOT, ".workerd"), port: 8080, allow: ["public", "private"], buildOnly: false,
+    watchdog: true, watchdogInterval: 5000, watchdogFailures: 3,
+  };
   for (let i = 0; i < argv.length; i++) {
     // Accept both `--flag value` and `--flag=value`.
     let a = argv[i];
@@ -48,6 +52,9 @@ function parseArgs(argv) {
       const raw = nextValue();
       args.allow = raw === "none" ? [] : raw.split(",").map((s) => s.trim()).filter(Boolean);
     } else if (a === "--build-only") args.buildOnly = true;
+    else if (a === "--no-watchdog") args.watchdog = false;
+    else if (a === "--watchdog-interval") args.watchdogInterval = Number.parseInt(nextValue(), 10);
+    else if (a === "--watchdog-failures") args.watchdogFailures = Number.parseInt(nextValue(), 10);
     else throw new Error(`unknown argument: ${argv[i]}`);
   }
   return args;
@@ -351,20 +358,113 @@ writeFileSync(configPath, capnp);
 console.log(`\nwrote ${configPath}`);
 
 // ---------------------------------------------------------------------------
-// 4. Spawn workerd, unless --build-only.
-// ---------------------------------------------------------------------------
+// 4. Spawn workerd, unless --build-only, supervised by a watchdog unless --no-watchdog.
+//
+// Watchdog: standalone workerd has no CPU/memory limits, and it serves every worker and
+// socket on one event loop thread, so a gadget running `while(true){}` pins a core and wedges
+// the ENTIRE process — every workspace, not just the one that caused it. This gives RECOVERY,
+// not isolation: a runaway still interrupts everyone until the restart completes. SIGTERM is
+// ignored by a wedged process (verified), so there is no graceful path — go straight to SIGKILL.
+// Nothing in-process can report health while the loop is blocked, so the probe is an external
+// HTTP request from this parent process against the socket.
+function spawnWorkerd() {
+  console.log(`\nstarting: workerd serve config.capnp --experimental (port ${args.port})\n`);
+  return spawn(
+      "pnpm", ["exec", "workerd", "serve", "config.capnp", "--experimental"],
+      { stdio: "inherit", cwd: args.out },
+  );
+}
 
 if (args.buildOnly) {
   console.log("--build-only: not starting workerd.");
   process.exit(0);
-}
+} else if (!args.watchdog) {
+  const child = spawnWorkerd();
+  child.on("exit", (code, signal) => {
+    if (signal) process.kill(process.pid, signal);
+    else process.exit(code ?? 0);
+  });
+} else {
+  // CALIBRATION KNOBS: the watchdog can't distinguish "wedged" from "legitimately busy under
+  // load" — it only sees that the socket didn't answer in time. --watchdog-interval and
+  // --watchdog-failures trade false-kills of a heavy-but-healthy workload against how long a
+  // real wedge stays up before recovery. Don't hardcode these lower without re-checking against
+  // real gadget workloads.
+  const RAPID_RESTART_WINDOW_MS = 60_000; // a restart inside this window of the previous one counts as "wedged again soon"
+  const MAX_RAPID_RESTARTS = 5; // crash-loop ceiling before we give up and let an operator look
 
-console.log(`\nstarting: workerd serve config.capnp --experimental (port ${args.port})\n`);
-const child = spawn(
-    "pnpm", ["exec", "workerd", "serve", "config.capnp", "--experimental"],
-    { stdio: "inherit", cwd: args.out },
-);
-child.on("exit", (code, signal) => {
-  if (signal) process.kill(process.pid, signal);
-  else process.exit(code ?? 0);
-});
+  let child = spawnWorkerd();
+  let consecutiveFailures = 0;
+  let rapidRestarts = 0;
+  let lastRestartAt = 0;
+  let stopped = false;
+
+  child.on("exit", (code, signal) => {
+    // Only relevant once we've deliberately stopped supervising (crash loop, or shutting down).
+    if (stopped) {
+      if (signal) process.kill(process.pid, signal);
+      else process.exit(code ?? 0);
+    }
+  });
+
+  async function probeHealthy() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    try {
+      const res = await fetch(`http://localhost:${args.port}/`, { signal: controller.signal });
+      return res.ok || res.status < 500; // any real HTTP response means the event loop is alive
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  function respawn(reason) {
+    console.error(`watchdog: restarting workerd (${reason}, ${consecutiveFailures} consecutive failures)`);
+    child.removeAllListeners("exit");
+    child.kill("SIGKILL"); // SIGTERM is ignored by a wedged process (verified) -- don't try it first.
+
+    const now = Date.now();
+    rapidRestarts = now - lastRestartAt < RAPID_RESTART_WINDOW_MS ? rapidRestarts + 1 : 1;
+    lastRestartAt = now;
+
+    if (rapidRestarts > MAX_RAPID_RESTARTS) {
+      stopped = true;
+      console.error(
+          `watchdog: ${rapidRestarts} restarts within ${RAPID_RESTART_WINDOW_MS}ms -- ` +
+          "this looks like a crash loop, not a transient wedge. Stopping supervision; " +
+          "operator needs to investigate before this is restarted again.");
+      process.exit(1);
+    }
+
+    // Exponential backoff before respawning, so a fast crash loop doesn't hot-loop the CPU.
+    const backoffMs = Math.min(1000 * 2 ** (rapidRestarts - 1), 30_000);
+    consecutiveFailures = 0;
+    setTimeout(() => {
+      child = spawnWorkerd();
+      child.on("exit", (code, signal) => {
+        if (stopped) {
+          if (signal) process.kill(process.pid, signal);
+          else process.exit(code ?? 0);
+        }
+      });
+    }, backoffMs);
+  }
+
+  (async function watchdogLoop() {
+    while (!stopped) {
+      await new Promise((r) => setTimeout(r, args.watchdogInterval));
+      if (stopped) break;
+      const healthy = await probeHealthy();
+      if (healthy) {
+        consecutiveFailures = 0;
+        continue;
+      }
+      consecutiveFailures++;
+      if (consecutiveFailures >= args.watchdogFailures) {
+        respawn("health probe failed");
+      }
+    }
+  })();
+}
