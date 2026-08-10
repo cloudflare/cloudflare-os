@@ -89,7 +89,9 @@ export async function saveStreamToFile(
   }
 
   const stream = await createStream()
-  triggerBlobDownload(await new Response(stream).blob(), filename)
+  triggerBlobDownload(await new Response(stream, {
+    headers: { 'Content-Type': fileType.contentType },
+  }).blob(), filename)
 }
 
 export function saveTextToFile(filename: string, content: string): void {

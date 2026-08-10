@@ -4,14 +4,17 @@ import { parseBlueprintArchive, parseBlueprintKvRecord, sanitizeBlueprintOutput 
 import { formatBlueprintsManifestVersion, installFormatBlueprints } from "../src/format-blueprints.js";
 import { FORMAT_BLUEPRINTS } from "../src/generated/format-blueprints.js";
 
-async function readClientCode(entry: (typeof FORMAT_BLUEPRINTS)[number]): Promise<string> {
+async function readBlueprintFile(
+  entry: (typeof FORMAT_BLUEPRINTS)[number],
+  filename: string,
+): Promise<string> {
   let archive = new Response(Uint8Array.fromBase64(entry.archive) as BufferSource).body!;
   let {content} = await parseBlueprintArchive(archive);
   let decompressed = content.pipeThrough(new DecompressionStream("gzip"));
   let update = new Uint8Array(await new Response(decompressed).arrayBuffer());
   let doc = new Y.Doc();
   Y.applyUpdateV2(doc, update);
-  return doc.getMap<Y.Text>().get("client.js")?.toString() ?? "";
+  return doc.getMap<Y.Text>().get(filename)?.toString() ?? "";
 }
 
 // Minimal in-memory stand-ins for the two bindings the installer writes to. They record what was
@@ -79,7 +82,44 @@ describe("bundled format blueprints", () => {
 
   it("ships print layouts for every standard output format", async () => {
     for (let entry of FORMAT_BLUEPRINTS) {
-      expect(await readClientCode(entry), entry.blueprintId).toContain("@media print");
+      expect(await readBlueprintFile(entry, "client.js"), entry.blueprintId)
+        .toContain("@media print");
+    }
+  });
+
+  it("renders document HTML and PDF exports without the editor chrome", async () => {
+    let entry = FORMAT_BLUEPRINTS.find(blueprint => blueprint.blueprintId === "format.document")!;
+    let client = await readBlueprintFile(entry, "client.js");
+
+    expect(client).toContain('["html", "pdf"].includes(globalThis.gadgetExportFormatId)');
+    expect(client).toContain('document.documentElement.classList.add("document-export")');
+    expect(client).toContain("app.replaceChildren(canvas)");
+  });
+
+  it("declares the intended export formats for every standard output format", async () => {
+    let expectedFormats: Record<string, string[]> = {
+      "format.document": [
+        'id: "markdown", label: "Markdown", mode: "server", contentType: "text/markdown"',
+        'id: "html", label: "HTML", mode: "browser", contentType: "text/html"',
+        'id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf"',
+      ],
+      "format.slides": [
+        'id: "html", label: "HTML", mode: "browser", contentType: "text/html"',
+        'id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf"',
+      ],
+      "format.spreadsheet": [
+        'const CSV_FORMAT_PREFIX = "csv:"',
+        'mode: "server"',
+        'contentType: "text/csv"',
+      ],
+    };
+
+    for (let entry of FORMAT_BLUEPRINTS) {
+      let serverCode = await readBlueprintFile(entry, "server.js");
+      expect(serverCode, entry.blueprintId).toContain("export class ExportHandler");
+      for (let declaration of expectedFormats[entry.blueprintId] ?? []) {
+        expect(serverCode, `${entry.blueprintId}: ${declaration}`).toContain(declaration);
+      }
     }
   });
 

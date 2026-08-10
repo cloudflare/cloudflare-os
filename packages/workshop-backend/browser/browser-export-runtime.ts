@@ -1,8 +1,8 @@
 import { RpcSession, RpcStub, RpcTarget, type RpcTransport } from "capnweb";
 
-// This code runs in the remote browser used for rendering the Gadget UI for export. It
-// runs before the Gadget client module is loaded and is mainly responsible for setting
-// up the RPC session to the Gadget server.
+// This code runs in the main world of the remote browser used for rendering the
+// Gadget UI for export. It runs before the Gadget client module is loaded and
+// is mainly responsible for setting up the RPC session to the Gadget server.
 
 declare global {
   /** Data URL containing the Gadget client module. */

@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const launch = vi.hoisted(() => vi.fn());
 vi.mock("@cloudflare/puppeteer", () => ({ launch }));
 
-const { BrowserRpcTransport, limitStream, renderGadgetPdf } =
+const { BrowserRpcTransport, renderGadgetInBrowser } =
     await import("../src/browser-export.js");
+const { createExportDeadline, limitExportStream } =
+    await import("../src/export-limits.js");
 
 type Harness = {
   browserClosed: () => boolean;
@@ -12,6 +14,15 @@ type Harness = {
   gadgetDisposed: () => boolean;
   pdfRequested: () => boolean;
   renderSettled: () => boolean;
+  exportDocument: () => string;
+  exportDocumentCsp: () => string | undefined;
+  blobRequestAborted: () => boolean;
+  htmlSanitized: () => boolean;
+  sanitizerInstalled: () => boolean;
+  sanitizedInIsolatedRealm: () => boolean;
+  mediaType: () => string | undefined;
+  screenshotType: () => string | undefined;
+  screenshotFullPage: () => boolean | undefined;
 };
 
 function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
@@ -21,26 +32,94 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
   let gadgetDisposed = false;
   let pdfRequested = false;
   let renderSettled = false;
+  let exportDocument = "";
+  let exportDocumentCsp: string | undefined;
+  let blobRequestAborted = false;
+  let htmlSanitized = false;
+  let sanitizerInstalled = false;
+  let sanitizedInIsolatedRealm = false;
+  let mediaType: string | undefined;
+  let screenshotType: string | undefined;
+  let screenshotFullPage: boolean | undefined;
+  let navigated = false;
+  let requestHandler: ((request: unknown) => void) | undefined;
+  const evaluate = (
+    isolated: boolean,
+    fn: ((...args: never[]) => unknown) | string,
+    ...args: unknown[]
+  ) => {
+    if (typeof fn === "string") {
+      if (!isolated) throw new Error("HTML sanitizer was installed in the main world.");
+      sanitizerInstalled = true;
+      return Promise.resolve();
+    }
+    if (fn.toString().includes("__workshopExportModulePromise")) {
+      if (isolated) throw new Error("Client module was awaited outside the main world.");
+      clientInitialized = true;
+      return Promise.resolve();
+    }
+    if (fn.toString().includes("MutationObserver")) {
+      if (!isolated) throw new Error("DOM settling ran in the main world.");
+      expect(clientInitialized).toBe(true);
+      renderSettled = true;
+      return Promise.resolve();
+    }
+    if (fn.toString().includes("document.title")) {
+      if (!isolated) throw new Error("Document title was assigned in the main world.");
+      documentTitle = typeof args[0] === "string" ? args[0] : undefined;
+      return Promise.resolve();
+    }
+    if (fn.toString().includes("__workshopExportSanitizeHtml")) {
+      if (!isolated) throw new Error("Main-world sanitizer was invoked.");
+      expect(sanitizerInstalled).toBe(true);
+      sanitizedInIsolatedRealm = true;
+      htmlSanitized = typeof args[0] === "string" &&
+        args[0].includes("script-src 'none'") &&
+        fn.toString().includes("ownerDocument") &&
+        !fn.toString().includes("DOMParser") &&
+        fn.toString().includes("charset");
+      return Promise.resolve("<!DOCTYPE html>\n<html><head></head><body>Snapshot</body></html>");
+    }
+    // The RPC transport polls this; the fake page never has a message to deliver.
+    return new Promise(() => {});
+  };
+  const mainFrame = {
+    isolatedRealm: () => ({
+      evaluate: (fn: (...args: never[]) => unknown, ...args: unknown[]) =>
+        evaluate(true, fn, ...args),
+    }),
+  };
 
   let page = {
     setRequestInterception: async () => {},
-    on: () => {},
-    goto: async () => {},
-    mainFrame: () => ({}),
-    emulateMediaType: async () => {},
-    evaluate: (fn: (...args: never[]) => unknown, ...args: unknown[]) => {
-      if (fn.toString().includes("__workshopExportModulePromise")) {
-        clientInitialized = true;
-        renderSettled = fn.toString().includes("MutationObserver");
-        return Promise.resolve();
-      }
-      if (fn.toString().includes("document.title")) {
-        documentTitle = typeof args[0] === "string" ? args[0] : undefined;
-        return Promise.resolve();
-      }
-      // The RPC transport polls this; the fake page never has a message to deliver.
-      return new Promise(() => {});
+    on: (event: string, handler: (request: unknown) => void) => {
+      if (event === "request") requestHandler = handler;
     },
+    goto: async () => {
+      navigated = true;
+      requestHandler?.({
+        url: () => "https://gadget-export.invalid/",
+        isNavigationRequest: () => true,
+        frame: () => mainFrame,
+        respond: async (response: {body: string, headers?: Record<string, string>}) => {
+          exportDocument = response.body;
+          exportDocumentCsp = response.headers?.["Content-Security-Policy"];
+        },
+      });
+      requestHandler?.({
+        url: () => "blob:https://gadget-export.invalid/test",
+        isNavigationRequest: () => false,
+        frame: () => mainFrame,
+        abort: async () => { blobRequestAborted = true; },
+      });
+    },
+    mainFrame: () => mainFrame,
+    emulateMediaType: async (value: string) => {
+      expect(navigated).toBe(false);
+      mediaType = value;
+    },
+    evaluate: (fn: (...args: never[]) => unknown, ...args: unknown[]) =>
+      evaluate(false, fn, ...args),
     createPDFStream: async () => {
       expect(clientInitialized).toBe(true);
       expect(renderSettled).toBe(true);
@@ -52,6 +131,11 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
           if (closePdf) controller.close();
         },
       });
+    },
+    screenshot: async ({type, fullPage}: {type: string, fullPage?: boolean}) => {
+      screenshotType = type;
+      screenshotFullPage = fullPage;
+      return new TextEncoder().encode(type);
     },
   };
 
@@ -74,17 +158,37 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
     gadgetDisposed: () => gadgetDisposed,
     pdfRequested: () => pdfRequested,
     renderSettled: () => renderSettled,
+    exportDocument: () => exportDocument,
+    exportDocumentCsp: () => exportDocumentCsp,
+    blobRequestAborted: () => blobRequestAborted,
+    htmlSanitized: () => htmlSanitized,
+    sanitizerInstalled: () => sanitizerInstalled,
+    sanitizedInIsolatedRealm: () => sanitizedInIsolatedRealm,
+    mediaType: () => mediaType,
+    screenshotType: () => screenshotType,
+    screenshotFullPage: () => screenshotFullPage,
   };
   return { gadget, harness };
 }
 
-function render(pdfChunks?: string[], closePdf = true) {
+function render(
+  pdfChunks?: string[],
+  closePdf = true,
+  contentType = "application/pdf",
+) {
   let { gadget, harness } = makeHarness(pdfChunks, closePdf);
-  let stream = renderGadgetPdf(
+  let stream = renderGadgetInBrowser(
     {} as BrowserRun,
     "export default {}",
     "Test Gadget",
     gadget as never,
+    {
+      id: "test-format",
+      label: "Test",
+      mode: "browser",
+      contentType,
+      fileExtension: ".test",
+    },
   );
   return { stream, harness };
 }
@@ -129,17 +233,51 @@ describe("BrowserRpcTransport", () => {
 
 describe("limitStream", () => {
   it("passes through output that stays within the cap", async () => {
-    expect(await collect(limitStream(streamOf(["abc", "de"]), 5))).toBe("abcde");
+    expect(await collect(limitExportStream(
+      streamOf(["abc", "de"]),
+      createExportDeadline("timed out"),
+      undefined,
+      5,
+    ))).toBe("abcde");
   });
 
   it("fails as soon as the cap is exceeded rather than buffering the whole export", async () => {
-    let reader = limitStream(streamOf(["abcd", "efgh"]), 6).getReader();
+    let reader = limitExportStream(
+      streamOf(["abcd", "efgh"]),
+      createExportDeadline("timed out"),
+      undefined,
+      6,
+    ).getReader();
     await expect(reader.read()).resolves.toMatchObject({ done: false });
     await expect(reader.read()).rejects.toThrow("may not exceed 6 bytes");
   });
+
+  it("releases resources when a hostile source never settles cancellation", async () => {
+    vi.useFakeTimers();
+    try {
+      const release = vi.fn(async () => {});
+      const source = new ReadableStream<Uint8Array>({
+        pull() { return new Promise(() => {}); },
+        cancel() { return new Promise(() => {}); },
+      });
+      const reader = limitExportStream(
+        source,
+        createExportDeadline("timed out", 10),
+        release,
+      ).getReader();
+      const rejection = expect(reader.read()).rejects.toThrow("timed out");
+
+      await vi.advanceTimersByTimeAsync(10);
+
+      await rejection;
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
-describe("renderGadgetPdf", () => {
+describe("renderGadgetInBrowser", () => {
   it("settles the client render, streams a PDF, and releases the browser", async () => {
     let { stream, harness } = render();
 
@@ -147,6 +285,35 @@ describe("renderGadgetPdf", () => {
     expect(harness.clientInitialized()).toBe(true);
     expect(harness.renderSettled()).toBe(true);
     expect(harness.pdfRequested()).toBe(true);
+    expect(harness.mediaType()).toBe("print");
+    expect(harness.browserClosed()).toBe(true);
+    expect(harness.exportDocument()).toContain(
+      'globalThis.gadgetExportFormatId%20%3D%20%22test-format%22',
+    );
+    expect(harness.exportDocumentCsp()).toContain("img-src data:");
+    expect(harness.exportDocumentCsp()).not.toContain("blob:");
+    expect(harness.blobRequestAborted()).toBe(true);
+  });
+
+  it("exports an inert snapshot with locally bundled DOMPurify", async () => {
+    let { stream, harness } = render(undefined, true, "text/html");
+
+    expect(await collect(await stream)).toContain("Snapshot");
+    expect(harness.htmlSanitized()).toBe(true);
+    expect(harness.sanitizerInstalled()).toBe(true);
+    expect(harness.sanitizedInIsolatedRealm()).toBe(true);
+    expect(harness.browserClosed()).toBe(true);
+  });
+
+  it.each([
+    ["image/png", "png"],
+    ["image/jpeg", "jpeg"],
+  ])("captures full-page %s screenshots", async (contentType, screenshotType) => {
+    let { stream, harness } = render(undefined, true, contentType);
+
+    expect(await collect(await stream)).toBe(screenshotType);
+    expect(harness.screenshotType()).toBe(screenshotType);
+    expect(harness.screenshotFullPage()).toBe(true);
     expect(harness.browserClosed()).toBe(true);
   });
 
@@ -166,11 +333,12 @@ describe("renderGadgetPdf", () => {
       let { stream, harness } = render(["first"], false);
       let reader = (await stream).getReader();
       await expect(reader.read()).resolves.toMatchObject({ done: false });
+      let timedOut = expect(reader.read()).rejects.toThrow("Browser export timed out.");
 
       await vi.advanceTimersByTimeAsync(30_000);
 
+      await timedOut;
       expect(harness.browserClosed()).toBe(true);
-      await reader.cancel();
     } finally {
       vi.useRealTimers();
     }
@@ -183,11 +351,18 @@ describe("renderGadgetPdf", () => {
       let browserClosed = false;
       let gadgetDisposed = false;
       launch.mockReturnValue(pendingLaunch.promise);
-      let result = renderGadgetPdf(
+      let result = renderGadgetInBrowser(
         {} as BrowserRun,
         "export default {}",
         "Test Gadget",
         { [Symbol.dispose]: () => { gadgetDisposed = true; } } as never,
+        {
+          id: "pdf",
+          label: "PDF",
+          mode: "browser",
+          contentType: "application/pdf",
+          fileExtension: ".pdf",
+        },
       );
       let rejection = expect(result).rejects.toThrow("Browser export timed out.");
 
@@ -209,11 +384,18 @@ describe("renderGadgetPdf", () => {
     let gadgetDisposed = false;
     launch.mockRejectedValue(new Error("no browser available"));
 
-    await expect(renderGadgetPdf(
+    await expect(renderGadgetInBrowser(
       {} as BrowserRun,
       "export default {}",
       "Test Gadget",
       { [Symbol.dispose]: () => { gadgetDisposed = true; } } as never,
+      {
+        id: "pdf",
+        label: "PDF",
+        mode: "browser",
+        contentType: "application/pdf",
+        fileExtension: ".pdf",
+      },
     )).rejects.toThrow("no browser available");
     expect(gadgetDisposed).toBe(true);
   });

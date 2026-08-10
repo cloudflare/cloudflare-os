@@ -10,6 +10,8 @@ packages/gatekeeper-*/src/generated/app.txt
 # Bundled format blueprints (regenerated at build time from FORMAT_BLUEPRINTS_DIR).
 packages/workshop-backend/src/generated/format-blueprints.ts
 packages/workshop-backend/src/generated/browser-export-runtime.txt
+packages/workshop-backend/src/generated/html-sanitizer-runtime.txt
+packages/workshop-backend/src/generated/browser-export-page.js
 
 # TypeScript build info
 *.tsbuildinfo

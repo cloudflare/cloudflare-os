@@ -9,5 +9,5 @@
     "icon": "table"
   },
   "author": { "type": "user", "name": "Cloudflare", "id": "agent@cloudflare.com" },
-  "revision": 5
+  "revision": 6
 }

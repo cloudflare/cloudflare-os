@@ -87,4 +87,31 @@ describe('export file transfers', () => {
     expect(source).not.toHaveBeenCalled()
   })
 
+  it('preserves the advertised content type in the Blob fallback', async () => {
+    const createObjectURL = vi.fn<(blob: Blob) => string>(() => 'blob:test')
+    const oldCreateObjectURL = URL.createObjectURL
+    const oldRevokeObjectURL = URL.revokeObjectURL
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    URL.createObjectURL = createObjectURL
+    URL.revokeObjectURL = vi.fn<(url: string) => void>()
+    try {
+      await saveStreamToFile(
+        async () => new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('a,b'))
+            controller.close()
+          },
+        }),
+        'report.csv',
+        { description: 'CSV', contentType: 'text/csv', extension: '.csv' },
+      )
+
+      expect(createObjectURL.mock.calls[0]?.[0].type).toBe('text/csv')
+    } finally {
+      URL.createObjectURL = oldCreateObjectURL
+      URL.revokeObjectURL = oldRevokeObjectURL
+      click.mockRestore()
+    }
+  })
+
 })
