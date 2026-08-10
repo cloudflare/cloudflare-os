@@ -17,8 +17,11 @@ vi.mock('@cloudflare/kumo', () => ({
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>(next => { resolve = next })
-  return { promise, resolve }
+  const dispose = vi.fn<() => void>()
+  const promise = Object.assign(new Promise<T>(next => { resolve = next }), {
+    [Symbol.dispose]: dispose,
+  })
+  return { promise, resolve, dispose }
 }
 
 describe('ResourcePicker', () => {
@@ -31,9 +34,8 @@ describe('ResourcePicker', () => {
     vi.restoreAllMocks()
   })
 
-  it('disposes a connected-account subscription that resolves after unmount', async () => {
+  it('disposes a pending connected-account subscription on unmount', async () => {
     const pendingSubscription = deferred<{ [Symbol.dispose](): void }>()
-    const dispose = vi.fn<() => void>()
     const authenticatedApi = {
       subscribeConnectedAccounts: () => pendingSubscription.promise,
       listGatekeeperVendors: async () => [],
@@ -52,11 +54,7 @@ describe('ResourcePicker', () => {
 
     act(() => root!.unmount())
     root = undefined
-    await act(async () => {
-      pendingSubscription.resolve({ [Symbol.dispose]: dispose })
-      await Promise.resolve()
-    })
 
-    expect(dispose).toHaveBeenCalledOnce()
+    expect(pendingSubscription.dispose).toHaveBeenCalledOnce()
   })
 })
