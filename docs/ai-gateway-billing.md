@@ -13,10 +13,9 @@ turn, the overseer calls `checkUsageAndBalance`:
 - **Connected, balance ≥ `$2`** → allowed, routed through the user's own account so usage bills
   their Cloudflare credits — even while free-tier allowance remains. The platform is never charged
   for funded users, and their daily free-tier counter is left untouched.
-- **Otherwise, within the free tier** → allowed, served via the platform's configured AI Gateway.
-  Workers AI uses the same Gateway ID unless `CF_AI_GATEWAY_WAI_DIRECT=true` sends it straight to
-  the Workers AI REST endpoint or `CF_AI_GATEWAY_WAI` selects another Gateway. This includes
-  connected users whose balance is below `$2` (incl. $0).
+- **Otherwise, within the free tier** → allowed, served via the platform's configured AI Gateway
+  (all providers, Workers AI included). This includes connected users whose balance is below `$2`
+  (incl. $0).
 - **Free tier exhausted, no Cloudflare account connected** → blocked, with a prompt to connect.
 - **Free tier exhausted, connected but balance below `$2`** → blocked, with a prompt to add credits.
 
@@ -57,11 +56,8 @@ CF_AI_GATEWAY_PROVIDERS=anthropic,openai,google
 # Required whenever CF_AI_GATEWAY is set:
 CF_AI_GATEWAY_ACCOUNT_ID=...
 # Required unless the WORKERS_AI binding carries gateway traffic; always required for the
-# google provider and for CF_AI_GATEWAY_WAI_DIRECT:
+# google provider:
 CF_AI_GATEWAY_API_TOKEN=...
-
-# To send Workers AI straight to its REST endpoint (no gateway, no cost logs):
-CF_AI_GATEWAY_WAI_DIRECT=true
 ```
 
 Gateway mode always requires `CF_AI_GATEWAY_ACCOUNT_ID` plus a transport: the `WORKERS_AI`
@@ -71,12 +67,8 @@ access lets Gadgets retrieve each log's cost for user-visible accounting. The bi
 only works when the Gateway lives in the Worker's own account, which the Worker can't verify at
 runtime — a deployment whose Gateway is in a different account must set
 `CF_AI_GATEWAY_USE_BINDING=false` to opt out and use the token transport. The token stays
-required for the `google` provider and for `CF_AI_GATEWAY_WAI_DIRECT` even when the binding
-transport applies — and since `CF_AI_GATEWAY_WAI_DIRECT` calls the Workers AI REST endpoint, its
-token additionally needs Workers AI Read permission. Workers AI uses `CF_AI_GATEWAY` as its
-Gateway ID by default; set `CF_AI_GATEWAY_WAI` to select another Gateway, or
-`CF_AI_GATEWAY_WAI_DIRECT=true` to call the Workers AI REST endpoint directly (token
-credentials, no gateway cost logs).
+required for the `google` provider even when the binding transport applies. Every provider,
+Workers AI included, routes through the same Gateway.
 
 The Cloudflare dashboard OAuth endpoints and scopes are **hardcoded** in the Cloudflare gatekeeper
 (`packages/gatekeeper-cloudflare/src/oauth.ts`):

@@ -93,19 +93,14 @@ describe("AiGatewayConfig transport selection", () => {
     }))).toThrow("enabling the google provider requires CF_AI_GATEWAY_API_TOKEN");
   });
 
-  it("requires the token for WAI_DIRECT", () => {
-    expect(() => new AiGatewayConfig({
-      ...bindingOnly,
-      CF_AI_GATEWAY_WAI_DIRECT: "true",
-    })).toThrow("CF_AI_GATEWAY_WAI_DIRECT bypasses the gateway");
-  });
-
-  it("keeps rejecting conflicting Workers AI routing", () => {
-    expect(() => new AiGatewayConfig({
-      ...bindingOnly,
-      CF_AI_GATEWAY_WAI: "workers-ai-gateway",
-      CF_AI_GATEWAY_WAI_DIRECT: "true",
-    })).toThrow("CF_AI_GATEWAY_WAI and CF_AI_GATEWAY_WAI_DIRECT cannot be configured together.");
+  it("resolves the same-account gateway for binding-based callers (webFetch)", () => {
+    expect(new AiGatewayConfig(bindingOnly).sameAccountGateway).toBe("platform-gateway");
+    expect(new AiGatewayConfig(env({
+      CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
+      CF_AI_GATEWAY_API_TOKEN: "gateway-token",
+      CF_AI_GATEWAY_USE_BINDING: "false",
+      WORKERS_AI: binding,
+    })).sameAccountGateway).toBeUndefined();
   });
 });
 

@@ -404,7 +404,7 @@ export function buildWorkerEntry(
     // the backend's default AI Gateway transport (the deploy service creates the gateway in the
     // user's own account, so the in-account requirement holds; CF_AI_GATEWAY_USE_BINDING=false
     // is the cross-account opt-out) — binding requests are pre-authenticated, so inference and
-    // cost-log reads need no CF_AI_GATEWAY_API_TOKEN (google provider and WAI_DIRECT excepted).
+    // cost-log reads need no CF_AI_GATEWAY_API_TOKEN (google provider excepted).
     // No placeholders — the deploy renderer passes it through.
     bindings.push({ type: "ai", name: "WORKERS_AI" });
     // Installed gatekeepers are called through GATEKEEPER_* service bindings with the

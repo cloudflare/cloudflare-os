@@ -134,7 +134,7 @@ describe("webFetch document conversion", () => {
     });
   });
 
-  it("does not pass a gateway to toMarkdown when direct Workers AI is configured", async () => {
+  it("does not pass a gateway to toMarkdown when the gateway is cross-account", async () => {
     mockResponse("<h1>Title</h1>", "text/html");
 
     const toMarkdown = vi.fn(async (doc: { name: string; blob: Blob }) => ({
@@ -145,11 +145,13 @@ describe("webFetch document conversion", () => {
       tokens: 1,
       data: "# Title",
     }));
+    // CF_AI_GATEWAY_USE_BINDING=false marks the platform gateway as living in a different
+    // account; the binding-based toMarkdown call can't log through it.
     const gateway = new AiGatewayConfig({
       CF_AI_GATEWAY: "platform-gateway",
       CF_AI_GATEWAY_ACCOUNT_ID: "gateway-account-id",
       CF_AI_GATEWAY_API_TOKEN: "gateway-token",
-      CF_AI_GATEWAY_WAI_DIRECT: "true",
+      CF_AI_GATEWAY_USE_BINDING: "false",
     } as Cloudflare.Env);
 
     await webFetch(makeEnv(toMarkdown, gateway), { url: "https://example.com/page" });

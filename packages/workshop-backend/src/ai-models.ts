@@ -447,31 +447,6 @@ function getModelViaGateway(
       ? { gateway }
       : { gateway, accountId: gwConfig.accountId, apiToken: gwConfig.apiToken! };
 
-  if (config.provider === "cloudflare" && !gwConfig.workersAiGateway) {
-    // CF_AI_GATEWAY_WAI_DIRECT: the plain Workers AI REST endpoint -- no gateway, no log route,
-    // no gateway metadata (mirroring the old direct-binding path, which had no
-    // aiGatewayLogRoute). Reuses the CF_AI_GATEWAY_* account/token pair (the config constructor
-    // guarantees the token in this mode).
-    const catalog = catalogModel(config.provider, config.model);
-    const model: Model<Api> = {
-      id: config.model,
-      name: catalog?.name ?? config.model,
-      api: "openai-completions",
-      provider: "cloudflare-workers-ai",
-      baseUrl: `https://api.cloudflare.com/client/v4/accounts/${gwConfig.accountId}/ai/v1`,
-      reasoning: catalog?.reasoning ?? false,
-      input: catalog?.input ?? ["text"],
-      cost: catalog?.cost ?? ZERO_COST,
-      ...modelTokenWindow(config, catalog),
-      compat: workersAiCompat(catalog),
-    };
-    return makeHandle({
-      model,
-      apiKey: gwConfig.apiToken,
-      sessionAffinity: options.sessionAffinity,
-    });
-  }
-
   if (config.provider === "google" && !gwConfig.apiToken) {
     // Unreachable when google is an enabled provider (the config constructor throws), but a
     // stored model config can still name google directly.
@@ -479,10 +454,9 @@ function getModelViaGateway(
         "transport cannot carry them).");
   }
 
-  // Workers AI may be routed through a different gateway than the other providers
-  // (CF_AI_GATEWAY_WAI); either way, gateway log route and attribution metadata apply.
-  const gateway = config.provider === "cloudflare"
-      ? gwConfig.workersAiGateway! : gwConfig.gateway;
+  // Every provider -- Workers AI included -- rides the same gateway, with the same log route
+  // and attribution metadata.
+  const gateway = gwConfig.gateway;
   const gatewayUrl = `${gatewayBase}/${gateway}`;
   const model = gatewayNativeModel(config, gatewayUrl);
   if (!model) {

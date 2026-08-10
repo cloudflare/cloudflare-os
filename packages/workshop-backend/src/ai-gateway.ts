@@ -9,7 +9,10 @@ const QUICK_MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 export class AiGatewayConfig {
   readonly gateway: string;
-  readonly workersAiGateway?: string;
+  // The gateway name for Workers-AI-binding calls (webFetch's toMarkdown): binding calls only
+  // reach gateways in the Worker's own account, so this is the platform gateway unless
+  // CF_AI_GATEWAY_USE_BINDING=false marks it cross-account.
+  readonly sameAccountGateway?: string;
   readonly accountId: string;
   readonly apiToken?: string;
   // Workers AI binding, used as the gateway transport whenever present unless
@@ -42,18 +45,8 @@ export class AiGatewayConfig {
           "AI Gateway mode needs a transport: bind Workers AI (WORKERS_AI; in local dev start " +
           "with --use-workers-ai-binding) or set CF_AI_GATEWAY_API_TOKEN (a Run + Read token).");
     }
-    if (env.CF_AI_GATEWAY_WAI_DIRECT === "true" && env.CF_AI_GATEWAY_WAI) {
-      throw new Error(
-          "CF_AI_GATEWAY_WAI and CF_AI_GATEWAY_WAI_DIRECT cannot be configured together.");
-    }
-    if (env.CF_AI_GATEWAY_WAI_DIRECT === "true" && !this.apiToken) {
-      throw new Error(
-          "CF_AI_GATEWAY_WAI_DIRECT bypasses the gateway and calls the Workers AI REST " +
-          "endpoint, which requires CF_AI_GATEWAY_API_TOKEN.");
-    }
-    this.workersAiGateway = env.CF_AI_GATEWAY_WAI_DIRECT === "true"
-      ? undefined
-      : env.CF_AI_GATEWAY_WAI || this.gateway;
+    this.sameAccountGateway =
+        env.CF_AI_GATEWAY_USE_BINDING === "false" ? undefined : this.gateway;
     this.providers = new Set(
       (env.CF_AI_GATEWAY_PROVIDERS || "").split(",").map(s => s.trim()).filter(s => s !== "")
     );

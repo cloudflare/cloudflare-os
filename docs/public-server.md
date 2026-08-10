@@ -43,11 +43,8 @@ CF_AI_GATEWAY_PROVIDERS=anthropic,openai,google
 # Required whenever CF_AI_GATEWAY is set:
 CF_AI_GATEWAY_ACCOUNT_ID=...
 # Required unless the WORKERS_AI binding carries gateway traffic (see below); always required
-# for the google provider and for CF_AI_GATEWAY_WAI_DIRECT:
+# for the google provider:
 CF_AI_GATEWAY_API_TOKEN=...
-
-# To send Workers AI straight to its REST endpoint (no gateway, no cost logs):
-CF_AI_GATEWAY_WAI_DIRECT=true
 ```
 
 Gateway mode always requires `CF_AI_GATEWAY_ACCOUNT_ID`, plus a transport for gateway requests.
@@ -59,14 +56,10 @@ deployments whose Gateway is in a different account must set `CF_AI_GATEWAY_USE_
 opt out and route over HTTPS instead. Without the binding transport, set
 `CF_AI_GATEWAY_API_TOKEN` — a token with AI Gateway Run and Read permissions so Gadgets can
 execute models and report their costs (over HTTPS the Gateway may live in the Worker's own
-account or a different one). The token stays required in two cases regardless of the binding: the
-`google` provider (its SDK can't ride the binding transport — note the platform config above
-enables it, so the platform server itself still needs the token) and `CF_AI_GATEWAY_WAI_DIRECT`
-(which calls the Workers AI REST endpoint, so its token additionally needs Workers AI Read
-permission). Workers AI defaults to the same Gateway ID; set `CF_AI_GATEWAY_WAI` to route it
-through a different Gateway in the same account, or `CF_AI_GATEWAY_WAI_DIRECT=true` to bypass
-gateways and call the Workers AI REST endpoint directly (using the account/token pair; such
-requests produce no cost logs).
+account or a different one). The token stays required for the `google` provider regardless of the
+binding (its SDK can't ride the binding transport — note the platform config above enables it, so
+the platform server itself still needs the token). Every provider, Workers AI included, routes
+through the same Gateway.
 
 When using `CF_AI_GATEWAY*` in local development, start the server with
 `pnpm run dev-server -- --use-workers-ai-binding` so the server has a `WORKERS_AI` binding for

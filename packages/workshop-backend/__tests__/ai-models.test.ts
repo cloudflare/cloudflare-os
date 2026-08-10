@@ -150,14 +150,6 @@ describe("getModel AI Gateway routing", () => {
         INITIATOR)).toThrow("AI Gateway mode needs a transport");
   });
 
-  it("rejects conflicting Workers AI routing configuration", () => {
-    expect(() => getModel(env({
-      CF_AI_GATEWAY_WAI: "workers-ai-gateway",
-      CF_AI_GATEWAY_WAI_DIRECT: "true",
-    }), WORKERS_AI_CONFIG, INITIATOR)).toThrow(
-        "CF_AI_GATEWAY_WAI and CF_AI_GATEWAY_WAI_DIRECT cannot be configured together.");
-  });
-
   it("prioritizes a connected user's Gateway over platform routing", async () => {
     const handle = getModel(env(), WORKERS_AI_CONFIG, INITIATOR, {
       userGateway: { accountId: "user-account-id", apiKey: "user-token" },
@@ -212,31 +204,9 @@ describe("getModel AI Gateway routing", () => {
     expect(request.headers.get("authorization")).toBeNull();
   }, 15000);
 
-  it("routes Workers AI to its REST endpoint when explicitly configured direct", async () => {
-    const handle = getModel(
-        env({ CF_AI_GATEWAY_WAI_DIRECT: "true" }),
-        WORKERS_AI_CONFIG,
-        INITIATOR,
+  it("routes Workers AI through the platform gateway like every other provider", async () => {
+    const handle = getModel(env(), WORKERS_AI_CONFIG, INITIATOR,
         { sessionAffinity: "session-a" });
-
-    expect(handle.model.api).toBe("openai-completions");
-    expect(handle.model.id).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
-    expect(handle.model.baseUrl).toBe(
-        "https://api.cloudflare.com/client/v4/accounts/gateway-account-id/ai/v1");
-    // No gateway in the path: no log route (and no gateway metadata).
-    expect(handle.aiGatewayLogRoute).toBeUndefined();
-
-    const request = await captureRequest(handle);
-    expect(request.url).toBe(
-        "https://api.cloudflare.com/client/v4/accounts/gateway-account-id/ai/v1/chat/completions");
-    expect(request.headers.get("authorization")).toBe("Bearer gateway-token");
-    expect(request.headers.get("cf-aig-metadata")).toBeNull();
-    // Session affinity flows through (Workers AI models opt in to the affinity headers).
-    expect(request.headers.get("x-session-affinity")).toBe("session-a");
-  }, 15000);
-
-  it("routes same-account Workers AI through the platform gateway by default", () => {
-    const handle = getModel(env(), WORKERS_AI_CONFIG, INITIATOR);
 
     expect(handle.model.api).toBe("openai-completions");
     expect(handle.model.id).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
@@ -247,20 +217,15 @@ describe("getModel AI Gateway routing", () => {
       accountId: "gateway-account-id",
       apiToken: "gateway-token",
     });
-  });
 
-  it("uses an explicit Workers AI gateway override", () => {
-    const handle = getModel(
-        env({ CF_AI_GATEWAY_WAI: "workers-ai-gateway" }), WORKERS_AI_CONFIG, INITIATOR);
-
-    expect(handle.model.baseUrl).toBe(
-        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/workers-ai-gateway/workers-ai/v1");
-    expect(handle.aiGatewayLogRoute).toEqual({
-      gateway: "workers-ai-gateway",
-      accountId: "gateway-account-id",
-      apiToken: "gateway-token",
-    });
-  });
+    const request = await captureRequest(handle);
+    expect(request.url).toBe(
+        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/workers-ai/" +
+        "v1/chat/completions");
+    expect(request.headers.get("cf-aig-authorization")).toBe("Bearer gateway-token");
+    // Session affinity flows through (Workers AI models opt in to the affinity headers).
+    expect(request.headers.get("x-session-affinity")).toBe("session-a");
+  }, 15000);
 });
 
 describe("getModel AI Gateway binding transport", () => {
@@ -348,16 +313,15 @@ describe("getModel AI Gateway binding transport", () => {
   }, 15000);
 
   it("drives Workers AI through the binding via its gateway route", async () => {
-    const handle = getModel(bindingEnv({ CF_AI_GATEWAY_WAI: "workers-ai-gateway" }),
-        WORKERS_AI_CONFIG, INITIATOR);
+    const handle = getModel(bindingEnv(), WORKERS_AI_CONFIG, INITIATOR);
 
     expect(handle.model.baseUrl).toBe(
-        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/workers-ai-gateway/" +
+        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/" +
         "workers-ai/v1");
-    expect(handle.aiGatewayLogRoute).toEqual({ gateway: "workers-ai-gateway" });
+    expect(handle.aiGatewayLogRoute).toEqual({ gateway: "platform-gateway" });
 
     const entry = await captureEntry(handle);
-    expect(entry.gatewayId).toBe("workers-ai-gateway");
+    expect(entry.gatewayId).toBe("platform-gateway");
     expect(entry.provider).toBe("workers-ai");
     expect(entry.endpoint).toBe("v1/chat/completions");
     expect((entry.query as { model: string }).model)
@@ -370,12 +334,6 @@ describe("getModel AI Gateway binding transport", () => {
     expect(headerNames).not.toContain("x-api-key");
     expect(headerNames).not.toContain("cf-aig-authorization");
   }, 15000);
-
-  it("requires the token for direct Workers AI REST routing", () => {
-    expect(() => getModel(bindingEnv({ CF_AI_GATEWAY_WAI_DIRECT: "true" }),
-        WORKERS_AI_CONFIG, INITIATOR)).toThrow(
-        "CF_AI_GATEWAY_WAI_DIRECT bypasses the gateway");
-  });
 
   it("lets a per-call fetch override the binding transport", async () => {
     // Tests and diagnostics inject options.fetch; it must win over the handle's binding shim.

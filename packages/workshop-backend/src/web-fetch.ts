@@ -177,14 +177,15 @@ const TO_MARKDOWN_MIME_TYPES = new Set([
   "application/vnd.apple.numbers",                                           // .numbers
 ]);
 
-// `toMarkdown()` uses the Workers AI binding, so only apply the same-account Workers AI gateway
-// resolved by AiGatewayConfig. A cross-account platform gateway cannot be used by this binding.
+// `toMarkdown()` uses the Workers AI binding, and binding calls only reach gateways in the
+// Worker's own account -- so apply the platform gateway only when AiGatewayConfig resolves it
+// as same-account (CF_AI_GATEWAY_USE_BINDING=false marks it cross-account).
 function buildGatewayOptions(
   gateway: AiGatewayConfig | null,
 ): GatewayOptions | undefined {
   if (!gateway) return undefined;
-  if (!gateway.workersAiGateway) return undefined;
-  return { id: gateway.workersAiGateway, metadata: { tool: "webFetch", automated: true } };
+  if (!gateway.sameAccountGateway) return undefined;
+  return { id: gateway.sameAccountGateway, metadata: { tool: "webFetch", automated: true } };
 }
 
 // Attempt to convert a document to Markdown using the Workers AI binding. Returns the
