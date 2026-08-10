@@ -33,6 +33,10 @@ export default defineConfig({
     onUnhandledError(error) {
       const code = "code" in error ? error.code : undefined;
       if (typeof code === "string" && EXPECTED_OPEN_ERROR_CODES.has(code)) return false;
+      // The reset-recovery tests abort every Durable Object mid-session; capabilities that were
+      // held across the abort (e.g. the fire-and-forget AdminSettings install kicked off by the
+      // fetch handler) reject on their own schedule, independent of any awaited call.
+      if (error.message?.includes("abortAllDurableObjects")) return false;
     },
   },
 });

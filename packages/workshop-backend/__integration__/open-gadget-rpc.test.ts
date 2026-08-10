@@ -1,3 +1,4 @@
+import { abortAllDurableObjects } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { newWebSocketRpcSession, type RpcStub } from "capnweb";
 import {
@@ -131,5 +132,51 @@ describe.skip("openGadget errors across native RPC and Cap'n Web", () => {
 
     const browserError = await openRejection(intruder, metadata.id);
     expectRpcCode(browserError, OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+  });
+});
+
+// In production, workerd tags rejections from a reset DO with the structured flags do-reset.ts
+// reads. Locally, vitest-pool-workers aborts reject FLAGLESS — this test pins that, so if a
+// future pool upgrade starts attaching the production flags, it fails and the flag paths can
+// graduate from synthetic unit tests to real-reset integration tests. abortAllDurableObjects()
+// is the non-graceful teardown (deliberately not evictDurableObject(), which never breaks a
+// stub).
+describe("user-DO reset flags", () => {
+  it("local aborts reject flagless — flag-based recovery is untestable locally", async () => {
+    using publicApi = await connect();
+    const account = await createAccount(publicApi, "probe");
+    using authenticated = await publicApi.authenticate(account.token);
+
+    expect(await authenticated.listModels()).toBeInstanceOf(Array);
+
+    // Bind a native stub to the current DO incarnation BEFORE the reset — a stub minted after
+    // the abort would simply restart the object and succeed. This poisoned-stub rejection is
+    // the exact shape AuthenticatedApiImpl sees when one of its calls loses the reset race.
+    const userStub = exports.UserDurableObject.get(
+      exports.UserDurableObject.idFromName(account.username));
+    expect(await userStub.listModels()).toBeInstanceOf(Array);
+
+    await abortAllDurableObjects();
+
+    // The session recovers: AuthenticatedApiImpl resolves a fresh stub per call, so the
+    // restarted object serves this read — the browser never sees the reset.
+    expect(await authenticated.listModels()).toBeInstanceOf(Array);
+
+    const nativeErr = await rejection(userStub.listModels());
+    expect({
+      message: nativeErr.message,
+      durableObjectReset: (nativeErr as Record<string, unknown>).durableObjectReset,
+      retryable: (nativeErr as Record<string, unknown>).retryable,
+      overloaded: (nativeErr as Record<string, unknown>).overloaded,
+    }).toEqual({
+      message: "Application called abortAllDurableObjects().",
+      durableObjectReset: undefined,
+      retryable: undefined,
+      overloaded: undefined,
+    });
+
+    // Permanently broken, not fail-once: the fresh-stub-per-call design rests on this.
+    const nativeErr2 = await rejection(userStub.listModels());
+    expect(nativeErr2.message).toBe("Application called abortAllDurableObjects().");
   });
 });
