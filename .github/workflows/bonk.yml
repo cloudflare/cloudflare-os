@@ -30,6 +30,7 @@ jobs:
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
         with:
+          oidc_base_url: https://ask-bonk.cloudflare-exponent.workers.dev/auth
           model: "cloudflare-ai-gateway/anthropic/claude-opus-4-8"
           variant: "high"
           mentions: "/bonk,@ask-bonk"
