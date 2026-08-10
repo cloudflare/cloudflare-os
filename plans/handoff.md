@@ -5,6 +5,11 @@ Written 2026-08-10. What is done, what is true, and what to pick up next.
 The living design is [`fieldos.md`](./fieldos.md); the append-only record is
 [`fieldos-log.md`](./fieldos-log.md). This file is the orientation layer: read it first, then those.
 
+Two process docs matter as much as the design:
+[`docs/testing.md`](../docs/testing.md) (the tiers, and the cherry-pick gate) and
+[`docs/upstream-sync.md`](../docs/upstream-sync.md) (how we take upstream changes, and why "watch
+for security advisories" is not implementable — upstream publishes none).
+
 ## Where things stand
 
 **FieldOS runs end to end on standalone workerd with no Cloudflare account.** That was the gate
