@@ -32,7 +32,13 @@ const NODE_MODULES = join(ROOT, "node_modules");
 
 // Forward any extra flags (e.g. --use-workers-ai-binding) on to run-dev-server.js.
 const passthroughArgs = process.argv.slice(2);
-const { backendHost } = getDevServerConfig(passthroughArgs, process.env.VITE_BACKEND_HOST);
+let backendHost;
+try {
+  ({ backendHost } = getDevServerConfig(passthroughArgs, process.env.VITE_BACKEND_HOST));
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
 
 // ---------------------------------------------------------------------------
 // Enumerate source files and compute a content hash.
