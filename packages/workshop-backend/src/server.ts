@@ -16,6 +16,7 @@ export { PendingLogin, LoginConnectCallbackImpl };
 import { GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { LanguageModelGatekeeper } from "./ai-models";
 import { getAiGatewayConfig } from "./ai-gateway.js";
+import { getServerModelsConfig } from "./server-models.js";
 import { AdminSettings, AdminApiImpl } from "./admin-settings.js";
 import { BlueprintKvRecord, buildBlueprintArchiveStream, sanitizeBlueprintOutput, listFeaturedBlueprintsFromKv, parseBlueprintArchive, randomBlueprintId, readBlueprintContent, readBlueprintKvRecord } from "./blueprint-archive.js";
 import { GatekeeperConnectCallbackImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID } from "./user";
@@ -187,14 +188,18 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   getAiConfig(): Promise<AiGatewayInfo> {
+    let serverConfig = getServerModelsConfig(this.env);
+    let serverModelIds = serverConfig ? [...serverConfig.models.keys()] : undefined;
+
     let gwConfig = getAiGatewayConfig(this.env);
     if (gwConfig) {
       return Promise.resolve({
         enabled: true,
         enabledProviders: [...gwConfig.providers] as AiModelProvider[],
+        serverModelIds,
       });
     } else {
-      return Promise.resolve({ enabled: false });
+      return Promise.resolve({ enabled: false, serverModelIds });
     }
   }
 

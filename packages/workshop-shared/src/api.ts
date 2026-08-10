@@ -947,11 +947,16 @@ export type CloudflareAccountOption = {
 export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" | "ollama";
 
 // Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`.
-export type AiGatewayInfo = {
+export type AiGatewayInfo = ({
   enabled: true;
   enabledProviders: AiModelProvider[];
 } | {
   enabled: false;
+}) & {
+  // Ids of models the deployment supplies for every user (see the SERVER_MODELS environment
+  // variable). Users may select these but cannot edit or delete them. Independent of AI Gateway
+  // mode: a deployment may offer server models with or without a Gateway configured.
+  serverModelIds?: string[];
 };
 
 // Configuration specifying how to connect to an AI model provider.
@@ -973,6 +978,17 @@ export type AiModelConfig = {
   // useful in order to use AI proxy products like Cloudflare's AI gateway, or even to use an
   // alternative provider that provides a compatible API.
   apiUrl?: string;
+
+  // Set on models supplied by the deployment (see SERVER_MODELS). Such a model always talks to
+  // its own `apiUrl` with its own `apiToken`, and is never re-routed through an AI Gateway --
+  // the deployment, not the user, is paying, and the endpoint may not be one a Gateway can serve.
+  serverManaged?: boolean;
+
+  // Token limits for models that have no SUGGESTED_MODELS entry. Without these a custom model
+  // falls back to a conservative default window, so a large-context model would be compacted
+  // far earlier than necessary.
+  contextWindow?: number;
+  outputLimit?: number;
 };
 
 // Workers AI adds the response cap to the prompt and rejects a request whose total exceeds the

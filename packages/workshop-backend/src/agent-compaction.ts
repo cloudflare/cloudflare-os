@@ -26,10 +26,14 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
 export function getModelTokenLimits(config: AiModelConfig):
     {inputBudget: number, maxOutputTokens?: number} {
   let model = SUGGESTED_MODELS[config.provider][config.model];
-  let maxOutputTokens = model?.outputLimit ??
+  // An explicitly configured window wins: a server model or a hand-configured endpoint has no
+  // catalog entry, and defaulting a large-context model to DEFAULT_CONTEXT_WINDOW would compact
+  // it far earlier than necessary.
+  let maxOutputTokens = config.outputLimit ?? model?.outputLimit ??
       (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined);
+  let contextWindow = config.contextWindow ?? model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   return {
-    inputBudget: (model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW) - (maxOutputTokens ?? 0),
+    inputBudget: contextWindow - (maxOutputTokens ?? 0),
     maxOutputTokens,
   };
 }

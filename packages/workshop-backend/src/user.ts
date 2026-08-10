@@ -7,6 +7,7 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import { createWorkshopLogger } from "./observability";
 import { getAiGatewayConfig } from "./ai-gateway.js";
+import { getServerModelsConfig } from "./server-models.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
 import type { AdminSettings } from "./admin-settings.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./blueprint-archive.js";
@@ -515,7 +516,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
 
-    // Also include user-configured models, skipping any that duplicate a gateway model.
+    // Models supplied by the deployment are offered to everyone.
+    let serverConfig = getServerModelsConfig(this.env);
+    if (serverConfig) {
+      for (let entry of serverConfig.getModelList()) {
+        if (!gwModelIds.has(entry.id)) {
+          result.push(entry);
+          gwModelIds.add(entry.id);
+        }
+      }
+    }
+
+    // Also include user-configured models, skipping any that duplicate a gateway or server model.
     for (let model of this.storage.aiModels.list()) {
       if (!gwModelIds.has(model.profile.id)) {
         result.push(model.profile);
@@ -528,6 +540,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let gwConfig = getAiGatewayConfig(this.env);
     if (gwConfig && !gwConfig.providers.has(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
+    }
+    // A user model with a server model's id would be shadowed by it in listModels() and
+    // getChatContext(), so reject it rather than silently store something unreachable.
+    if (getServerModelsConfig(this.env)?.has(profile.id)) {
+      throw new Error(`"${profile.id}" is provided by this deployment and cannot be replaced.`);
+    }
+    // serverManaged is what exempts a model from Gateway routing; it must never be user-settable.
+    if (config.serverManaged) {
+      throw new Error("Cannot mark a user-configured model as server-managed.");
     }
 
     profile.type = "agent";
@@ -545,6 +566,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
 
+    if (getServerModelsConfig(this.env)?.has(id)) {
+      throw new Error("Cannot delete a model provided by this deployment.");
+    }
+
     this.storage.aiModels.delete(id);
   }
 
@@ -554,7 +579,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async getQuickModel(): Promise<null | string> {
     let result = this.storage.quickModel.get();
-    if (result && this.storage.aiModels.get(result)) {
+    if (result && (this.storage.aiModels.get(result) ||
+                   getServerModelsConfig(this.env)?.has(result))) {
       return result;
     } else {
       return null;
@@ -569,7 +595,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (id !== null) {
       // Validate that the model exists in the user's configured models or as a gateway model.
       let gwConfig = getAiGatewayConfig(this.env);
-      let exists = !!this.storage.aiModels.get(id) || !!gwConfig?.resolveModel(id);
+      let exists = !!this.storage.aiModels.get(id) || !!gwConfig?.resolveModel(id) ||
+          !!getServerModelsConfig(this.env)?.has(id);
       if (!exists) {
         throw new Error(`No such model: ${id}`);
       }
@@ -675,6 +702,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         result.aiModel = gwConfig.resolveModel(modelId);
       }
       if (!result.aiModel) {
+        result.aiModel = getServerModelsConfig(this.env)?.resolveModel(modelId);
+      }
+      if (!result.aiModel) {
         result.aiModel = this.storage.aiModels.get(modelId);
       }
       if (!result.aiModel) throw new Error(`No such model: ${modelId}`);
@@ -687,7 +717,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     } else {
       let quickModelId = this.storage.quickModel.get();
       if (quickModelId) {
-        let quickModel = this.storage.aiModels.get(quickModelId);
+        let quickModel = this.storage.aiModels.get(quickModelId) ??
+            getServerModelsConfig(this.env)?.resolveModel(quickModelId);
         if (quickModel) {
           result.quickModel = quickModel.config;
         }

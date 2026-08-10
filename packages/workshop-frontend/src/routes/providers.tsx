@@ -168,6 +168,8 @@ function ProvidersPage() {
   const gatewayMode = aiConfig?.enabled === true
 
   const isBuiltIn = (modelId: string): boolean => {
+    // Models the deployment supplies are built-in whether or not a Gateway is configured.
+    if (aiConfig?.serverModelIds?.includes(modelId)) return true
     if (!aiConfig?.enabled) return false
     const enabled = new Set((aiConfig as Extract<AiGatewayInfo, { enabled: true }>).enabledProviders)
     return PROVIDER_ORDER.some((p) => enabled.has(p) && modelId in SUGGESTED_MODELS[p])

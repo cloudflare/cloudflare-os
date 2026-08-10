@@ -26,6 +26,17 @@ declare global {
       // Note: outside gateway mode, Workers AI (provider "cloudflare") is BYOK like every other
       // provider -- the account ID and API token live in the user's model config, not in env.
 
+      // Models the deployment supplies to every user, as a JSON array. Each entry needs at
+      // least `provider` and `model`, plus whatever the endpoint requires:
+      //
+      //   [{"id": "house-sonnet", "name": "Sonnet (internal)", "provider": "anthropic",
+      //     "model": "claude-sonnet-5", "apiUrl": "https://llm.example.com",
+      //     "apiToken": "...", "contextWindow": 1000000}]
+      //
+      // Users can select these but cannot edit or delete them, and never see the token. Holds
+      // credentials, so it should be set as a secret. See server-models.ts.
+      SERVER_MODELS?: string;
+
       // Blueprint storage bindings.
       BLUEPRINTS: KVNamespace;             // Workers KV for blueprint metadata lookup
       BLUEPRINT_CONTENT: R2Bucket;         // R2 bucket for blueprint code snapshots

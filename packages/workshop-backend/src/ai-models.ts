@@ -351,6 +351,13 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
         options.sessionAffinity);
   }
 
+  // Models supplied by the deployment always talk to their own endpoint with their own
+  // credentials. Re-routing them through a Gateway would discard both, and the endpoint is
+  // frequently one no Gateway can reach (an internal proxy, a self-hosted router).
+  if (config.serverManaged) {
+    return getModelDirect(config, options.sessionAffinity);
+  }
+
   // Otherwise: when a platform AI Gateway is configured, route through it (platform-funded free
   // tier). The config's apiToken/apiUrl are ignored in that mode.
   let gwConfig = getAiGatewayConfig(env);
