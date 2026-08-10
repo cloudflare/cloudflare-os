@@ -1,10 +1,13 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type {
-  AnthropicMessagesCompat, Api, AssistantMessageEventStream, Context, Model, ModelCost,
-  OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction,
+  AnthropicMessagesCompat, Api, AssistantMessageEventStream, Context, FetchFunction, Model,
+  ModelCost, OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction,
 } from "@earendil-works/pi-ai";
 import { stream as anthropicMessagesStream } from "@earendil-works/pi-ai/api/anthropic-messages";
+import {
+  CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL, createGatewayBindingFetch,
+} from "./ai-gateway-binding-fetch.js";
 import { stream as googleGenerativeAiStream } from "@earendil-works/pi-ai/api/google-generative-ai";
 import { stream as openaiCompletionsStream } from "@earendil-works/pi-ai/api/openai-completions";
 import { stream as openaiResponsesStream } from "@earendil-works/pi-ai/api/openai-responses";
@@ -268,6 +271,9 @@ type HandleArgs = {
   gatewayMetadata?: GatewayMetadata;
   sessionAffinity?: string;
   aiGatewayLogRoute?: AiGatewayLogRoute;
+  // Transport override for every request on this handle (e.g. the AI Gateway binding shim).
+  // A per-call options.fetch still wins, which tests rely on to capture requests.
+  fetch?: FetchFunction;
 };
 
 function makeHandle(args: HandleArgs): ModelHandle {
@@ -315,6 +321,7 @@ function makeHandle(args: HandleArgs): ModelHandle {
         ...(thinking
             ? apiExtras
             : args.model.api === "anthropic-messages" ? { thinkingEnabled: false } : {}),
+        ...(args.fetch !== undefined ? { fetch: args.fetch } : {}),
         ...options,
         ...(args.apiKey !== undefined ? { apiKey: args.apiKey } : {}),
         ...(Object.keys(headers).length > 0 ? { headers } : {}),
@@ -333,9 +340,6 @@ function makeHandle(args: HandleArgs): ModelHandle {
           const replaced = await options.onPayload?.(payload, payloadModel);
           return bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
         },
-        // NOTE(binding-transport): pi passes `options.fetch` into its SDK clients on all paths.
-        // If Workers-binding-backed inference returns (upstream ask filed), inject a
-        // fetch-to-binding shim here and relax the token requirements in ai-gateway.ts.
       };
       return streamFn(model, context, merged);
     },
@@ -420,23 +424,34 @@ function getModelViaGateway(
   options: ModelRoutingOptions,
 ): ModelHandle {
   const metadata = buildMetadata(initiator, options.metadata);
+  // Binding transport when available (all providers except Google): requests go through
+  // env.WORKERS_AI.gateway().run(), pre-authenticated in-account. pi's API impls require a
+  // recognized auth header before dispatch, so binding-routed requests carry a sentinel
+  // cf-aig-authorization that the shim strips before it reaches the wire.
+  const binding = gwConfig.bindingFor(config.provider);
   const gatewayAuthHeaders: ProviderHeaders = {
     // pi's API impls explicitly recognize cf-aig-authorization and skip SDK auth; the null
     // values suppress the SDKs' own auth headers so the gateway's server-managed provider keys
     // apply.
-    "cf-aig-authorization": `Bearer ${gwConfig.apiToken}`,
+    "cf-aig-authorization":
+        `Bearer ${binding ? CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL : gwConfig.apiToken}`,
     Authorization: null,
     "x-api-key": null,
   };
   const gatewayBase =
       `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}`;
-  const logRoute = (gateway: string): AiGatewayLogRoute =>
-      ({ gateway, accountId: gwConfig.accountId, apiToken: gwConfig.apiToken });
+  // Cost-log reads are same-account, so the binding arm applies whenever the binding transport
+  // is active (gwConfig.binding is unset when CF_AI_GATEWAY_USE_BINDING=false opts out) --
+  // even for Google inference, which itself rides HTTPS (see AiGatewayConfig.bindingFor).
+  const logRoute = (gateway: string): AiGatewayLogRoute => gwConfig.binding
+      ? { gateway }
+      : { gateway, accountId: gwConfig.accountId, apiToken: gwConfig.apiToken! };
 
   if (config.provider === "cloudflare" && !gwConfig.workersAiGateway) {
     // CF_AI_GATEWAY_WAI_DIRECT: the plain Workers AI REST endpoint -- no gateway, no log route,
     // no gateway metadata (mirroring the old direct-binding path, which had no
-    // aiGatewayLogRoute). Reuses the CF_AI_GATEWAY_* account/token pair.
+    // aiGatewayLogRoute). Reuses the CF_AI_GATEWAY_* account/token pair (the config constructor
+    // guarantees the token in this mode).
     const catalog = catalogModel(config.provider, config.model);
     const model: Model<Api> = {
       id: config.model,
@@ -457,11 +472,19 @@ function getModelViaGateway(
     });
   }
 
+  if (config.provider === "google" && !gwConfig.apiToken) {
+    // Unreachable when google is an enabled provider (the config constructor throws), but a
+    // stored model config can still name google directly.
+    throw new Error("Google models require CF_AI_GATEWAY_API_TOKEN (the Workers AI binding " +
+        "transport cannot carry them).");
+  }
+
   // Workers AI may be routed through a different gateway than the other providers
   // (CF_AI_GATEWAY_WAI); either way, gateway log route and attribution metadata apply.
   const gateway = config.provider === "cloudflare"
       ? gwConfig.workersAiGateway! : gwConfig.gateway;
-  const model = gatewayNativeModel(config, `${gatewayBase}/${gateway}`);
+  const gatewayUrl = `${gatewayBase}/${gateway}`;
+  const model = gatewayNativeModel(config, gatewayUrl);
   if (!model) {
     throw new Error(
       `Provider "${config.provider}" is not supported through AI Gateway. ` +
@@ -479,6 +502,9 @@ function getModelViaGateway(
     // the gateway recognizes its own token there and applies the stored Google key instead.
     ...(config.provider === "google" ? { apiKey: gwConfig.apiToken } : {}),
     headers: gatewayAuthHeaders,
+    ...(binding
+        ? { fetch: createGatewayBindingFetch({ binding, baseUrl: gatewayUrl, gateway }) }
+        : {}),
     gatewayMetadata: metadata,
     sessionAffinity: options.sessionAffinity,
     aiGatewayLogRoute: logRoute(gateway),

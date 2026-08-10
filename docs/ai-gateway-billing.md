@@ -54,19 +54,29 @@ CLOUDFLARE_OAUTH_CLIENT_SECRET=...
 CF_AI_GATEWAY=your-gateway
 CF_AI_GATEWAY_PROVIDERS=anthropic,openai,google
 
-# Required whenever CF_AI_GATEWAY is set (all inference goes over HTTPS with tokens):
+# Required whenever CF_AI_GATEWAY is set:
 CF_AI_GATEWAY_ACCOUNT_ID=...
+# Required unless the WORKERS_AI binding carries gateway traffic; always required for the
+# google provider and for CF_AI_GATEWAY_WAI_DIRECT:
 CF_AI_GATEWAY_API_TOKEN=...
 
 # To send Workers AI straight to its REST endpoint (no gateway, no cost logs):
 CF_AI_GATEWAY_WAI_DIRECT=true
 ```
 
-Gateway mode always requires `CF_AI_GATEWAY_ACCOUNT_ID` and an API token with AI Gateway Run and
-Read permissions; Read access lets Gadgets retrieve each log's cost for user-visible accounting.
-Workers AI uses `CF_AI_GATEWAY` as its Gateway ID by default; set `CF_AI_GATEWAY_WAI` to select
-another Gateway, or `CF_AI_GATEWAY_WAI_DIRECT=true` to call the Workers AI REST endpoint directly
-(same credentials, no gateway cost logs).
+Gateway mode always requires `CF_AI_GATEWAY_ACCOUNT_ID` plus a transport: the `WORKERS_AI`
+binding when present (binding requests are pre-authenticated, and cost-log reads work through
+the binding too), or otherwise an API token with AI Gateway Run and Read permissions — Read
+access lets Gadgets retrieve each log's cost for user-visible accounting. The binding transport
+only works when the Gateway lives in the Worker's own account, which the Worker can't verify at
+runtime — a deployment whose Gateway is in a different account must set
+`CF_AI_GATEWAY_USE_BINDING=false` to opt out and use the token transport. The token stays
+required for the `google` provider and for `CF_AI_GATEWAY_WAI_DIRECT` even when the binding
+transport applies — and since `CF_AI_GATEWAY_WAI_DIRECT` calls the Workers AI REST endpoint, its
+token additionally needs Workers AI Read permission. Workers AI uses `CF_AI_GATEWAY` as its
+Gateway ID by default; set `CF_AI_GATEWAY_WAI` to select another Gateway, or
+`CF_AI_GATEWAY_WAI_DIRECT=true` to call the Workers AI REST endpoint directly (token
+credentials, no gateway cost logs).
 
 The Cloudflare dashboard OAuth endpoints and scopes are **hardcoded** in the Cloudflare gatekeeper
 (`packages/gatekeeper-cloudflare/src/oauth.ts`):

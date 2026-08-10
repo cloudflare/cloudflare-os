@@ -11,24 +11,45 @@ export class AiGatewayConfig {
   readonly gateway: string;
   readonly workersAiGateway?: string;
   readonly accountId: string;
-  readonly apiToken: string;
+  readonly apiToken?: string;
+  // Workers AI binding, used as the gateway transport whenever present unless
+  // CF_AI_GATEWAY_USE_BINDING=false opts out: binding requests are pre-authenticated in-account,
+  // so inference and cost-log reads need no API token. Binding requests only reach gateways in
+  // the Worker's own account, and the Worker can't verify that itself (it can't discover its own
+  // account ID), so deployments whose gateway lives in a DIFFERENT account must set the opt-out
+  // and use CF_AI_GATEWAY_API_TOKEN over HTTPS. Absent in local dev unless run-dev-server is
+  // started with --use-workers-ai-binding.
+  readonly binding?: Ai;
   readonly providers: Set<string>;
 
   constructor(env: Cloudflare.Env) {
     this.gateway = env.CF_AI_GATEWAY!;
-    // Inference now goes over HTTPS with tokens (pi has no Workers-binding transport), so the
-    // account/token pair is required whenever gateway mode is enabled. The token-less
-    // same-account mode existed only because of the Workers binding.
-    if (!env.CF_AI_GATEWAY_ACCOUNT_ID || !env.CF_AI_GATEWAY_API_TOKEN) {
-      throw new Error(
-          "CF_AI_GATEWAY_ACCOUNT_ID and CF_AI_GATEWAY_API_TOKEN (a Run + Read token) are " +
-          "required when CF_AI_GATEWAY is set.");
+    if (!env.CF_AI_GATEWAY_ACCOUNT_ID) {
+      throw new Error("CF_AI_GATEWAY_ACCOUNT_ID is required when CF_AI_GATEWAY is set.");
     }
     this.accountId = env.CF_AI_GATEWAY_ACCOUNT_ID;
-    this.apiToken = env.CF_AI_GATEWAY_API_TOKEN;
+    this.apiToken = env.CF_AI_GATEWAY_API_TOKEN || undefined;
+    this.binding = env.CF_AI_GATEWAY_USE_BINDING === "false"
+        ? undefined
+        : (env as { WORKERS_AI?: Ai }).WORKERS_AI;
+    if (env.CF_AI_GATEWAY_USE_BINDING === "true" && !this.binding) {
+      throw new Error(
+          "CF_AI_GATEWAY_USE_BINDING requires the WORKERS_AI binding; without it the config " +
+          "would silently fall back to the HTTPS transport.");
+    }
+    if (!this.apiToken && !this.binding) {
+      throw new Error(
+          "AI Gateway mode needs a transport: bind Workers AI (WORKERS_AI; in local dev start " +
+          "with --use-workers-ai-binding) or set CF_AI_GATEWAY_API_TOKEN (a Run + Read token).");
+    }
     if (env.CF_AI_GATEWAY_WAI_DIRECT === "true" && env.CF_AI_GATEWAY_WAI) {
       throw new Error(
           "CF_AI_GATEWAY_WAI and CF_AI_GATEWAY_WAI_DIRECT cannot be configured together.");
+    }
+    if (env.CF_AI_GATEWAY_WAI_DIRECT === "true" && !this.apiToken) {
+      throw new Error(
+          "CF_AI_GATEWAY_WAI_DIRECT bypasses the gateway and calls the Workers AI REST " +
+          "endpoint, which requires CF_AI_GATEWAY_API_TOKEN.");
     }
     this.workersAiGateway = env.CF_AI_GATEWAY_WAI_DIRECT === "true"
       ? undefined
@@ -36,6 +57,21 @@ export class AiGatewayConfig {
     this.providers = new Set(
       (env.CF_AI_GATEWAY_PROVIDERS || "").split(",").map(s => s.trim()).filter(s => s !== "")
     );
+    if (this.providers.has("google") && !this.apiToken) {
+      throw new Error(
+          "Google models cannot use the Workers AI binding transport (the @google/genai SDK " +
+          "does not support a custom fetch), so enabling the google provider requires " +
+          "CF_AI_GATEWAY_API_TOKEN.");
+    }
+  }
+
+  /**
+   * Transport for a provider's gateway inference: the Workers AI binding when present, except
+   * for Google (pi's Google adapter rejects a custom fetch, so Google rides HTTPS with the
+   * token; the constructor guarantees a token whenever google is an enabled provider).
+   */
+  bindingFor(provider: string): Ai | undefined {
+    return provider === "google" ? undefined : this.binding;
   }
 
   /**

@@ -400,9 +400,12 @@ export function buildWorkerEntry(
     // the deploy service's backendExtraVars at PUT time, never manifest-templated.
     vars.PUBLIC_BASE_URL = "$PUBLIC_BASE_URL";
     // Every deployed backend gets the Workers AI binding (hardcoded like PUBLIC_BASE_URL, not
-    // read from wrangler.jsonc): webFetch's toMarkdown conversion depends on it, and it costs
-    // nothing when unused. (Inference does not — Workers AI models are reached over HTTPS like
-    // every other provider.) No placeholders — the deploy renderer passes it through.
+    // read from wrangler.jsonc): webFetch's toMarkdown conversion depends on it, and it is also
+    // the backend's default AI Gateway transport (the deploy service creates the gateway in the
+    // user's own account, so the in-account requirement holds; CF_AI_GATEWAY_USE_BINDING=false
+    // is the cross-account opt-out) — binding requests are pre-authenticated, so inference and
+    // cost-log reads need no CF_AI_GATEWAY_API_TOKEN (google provider and WAI_DIRECT excepted).
+    // No placeholders — the deploy renderer passes it through.
     bindings.push({ type: "ai", name: "WORKERS_AI" });
     // Installed gatekeepers are called through GATEKEEPER_* service bindings with the
     // GatekeeperVendor entrypoint (same shape run-dev-server.ts generates for dev).

@@ -15,12 +15,22 @@ declare global {
 
       // AI Gateway mode: when CF_AI_GATEWAY is set, supported providers are routed through
       // Cloudflare AI Gateway with server-managed keys. Users don't need their own keys.
-      // Inference goes over HTTPS with tokens (there is no Workers-binding transport), so the
-      // ACCOUNT_ID/API_TOKEN pair is REQUIRED whenever CF_AI_GATEWAY is set.
+      // Transport: the WORKERS_AI binding when present (pre-authenticated in-account -- no API
+      // token; in local dev the binding needs --use-workers-ai-binding) unless
+      // CF_AI_GATEWAY_USE_BINDING=false opts out, HTTPS with CF_AI_GATEWAY_API_TOKEN otherwise.
+      // The token stays REQUIRED for the google provider (pi's Google adapter can't use the
+      // binding transport) and for CF_AI_GATEWAY_WAI_DIRECT.
       CF_AI_GATEWAY?: string;            // Gateway name (enables gateway mode)
       CF_AI_GATEWAY_PROVIDERS?: string;   // Comma-separated list: "anthropic,openai,google,cloudflare"
       CF_AI_GATEWAY_ACCOUNT_ID?: string;  // Gateway owner account ID (required with CF_AI_GATEWAY)
-      CF_AI_GATEWAY_API_TOKEN?: string;   // Run + Read token for inference and cost-log reads
+      CF_AI_GATEWAY_API_TOKEN?: string;   // Run + Read token; optional when the binding transport
+                                          // applies (still required for google / WAI_DIRECT)
+      // "false" = never use the WORKERS_AI binding as the gateway transport. Binding requests
+      // only reach gateways in the Worker's own account, and the Worker can't verify where the
+      // gateway lives (it can't discover its own account ID at runtime) -- so deployments whose
+      // gateway is in a DIFFERENT account (e.g. the internal production Workshop) must set this
+      // opt-out and route over HTTPS with the token. Unset/"true" = binding when present.
+      CF_AI_GATEWAY_USE_BINDING?: string;
       CF_AI_GATEWAY_WAI?: string;         // Optional Workers AI gateway override
       CF_AI_GATEWAY_WAI_DIRECT?: string;  // "true" to route Workers AI to its plain REST endpoint
                                           // (no gateway, no cost logs) instead of a named Gateway
