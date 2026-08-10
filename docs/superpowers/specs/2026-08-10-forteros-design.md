@@ -18,11 +18,17 @@ It is explicitly **not a chat clone**. Three interaction models coexist:
 
 Everything runs on the same **agentic data layer**: six live MCP capabilities plus feedback tools, which customers can also wire into their own tools (Claude, Claude Code, ChatGPT, Copilot, Gemini, business apps).
 
-### Implementation foundation
+### Implementation foundation (revised 2026-08-10: platform extension, not shell replacement)
 
-- **Fork of `cloudflare-os`** (this repository), rebranded and re-skinned. The upstream concepts map directly: workshop-backend = kernel, gatekeepers = connectors/capability enforcement, agents = ForterOS agents/jobs, frontend = the ForterCIP shell.
+ForterOS is built **on top of Cloudflare OS's existing capabilities**, not as a re-skinned fork. We adopt the platform's agent runtime (Code Mode), chat, gatekeeper security model (connectors + access grants + action logs), asynchronous human-in-the-loop (simulate side effects, approve in bulk later), scheduler, blueprints, and sharing **as-is**. New engineering is concentrated in three ForterOS-specific layers:
+
+1. **`gatekeeper-forter`** — a Gatekeeper wrapping the Forter Portal MCP (`https://portal.forter.com/mcp`): the six capabilities + feedback tools, with per-capability grants and action logging like any gatekeeper.
+2. **The ROI accounting layer** (§3.5) — first-class cost → net / return-multiple / impact reporting computed from gatekeeper action logs. This is ForterOS's novel platform capability.
+3. **The Trust Command Center** — the domain surfaces (Pulse boards, ⌘K ask-bar, answer cards, identity dossier, role lenses) shipped as a **bundled format Blueprint** (a gadget every user instantiates), keeping the mockup's exact visual design inside the gadget sandbox and exposing a Cap'n Web API so platform agents can drive it.
+
+Consequences accepted with this approach: the outer chrome (sidebar, chat) is Cloudflare OS's UI restyled with Forter tokens rather than the mockup's bespoke shell; agents are free-form Code Mode agents with scoped capability grants rather than fixed trigger→tools→logic→action pipelines (agent "templates" become saved prompts + capability grants; "run traces" render from action logs); the mockup's synchronous chat confirms are replaced by the platform's superior async approval queue.
+
 - **Self-hosted on `workerd`** (Forter-controlled infrastructure; note upstream tooling for this path is still maturing — the implementation plan must include the workerd deployment work).
-- **Forter Portal MCP** (`https://portal.forter.com/mcp`) is wrapped as a **Gatekeeper** exposing the six capabilities + feedback tools.
 - Sign-in via **Forter SSO**; all external connectors OAuth with least-privilege, revocable scopes.
 
 ---
@@ -76,7 +82,16 @@ Four departments, eight personas. The active persona is a **lens**: it changes s
 | **Signals** (2 tokens/call) | Read-only risk attributes | Consumer trust score · Risk score · IP quality · Email reputation · Account age & history · Trusted payment methods · Bot signal · Cross-merchant behavior |
 | **LLM tools** (220 tokens/call) | Agentic analysis, higher latency | Review customer · Analyze transaction · Summarize case · Deep investigation |
 
-### 3.4 The CapsPanel
+### 3.4 ROI accounting layer (new ForterOS platform capability)
+
+The differentiating addition ForterOS builds on top of Cloudflare OS: every gatekeeper already logs every action; ForterOS turns that log into first-class **impact accounting**.
+
+- **Cost side (mechanical):** a pricing table over action-log events — Decisions 6 tokens/call, Signals 2, LLM tools 220 (§3.3), plus LLM spend attributed from agent runs. Cost of an agent (or user, or connector) over a period = priced sum of its logged calls.
+- **Value side (attribution rules, a product decision per capability outcome):** e.g. an accepted `request_approve` attributes the order amount as recovered revenue; a hardened decline attributes fraud prevented; submitted dispute evidence attributes recovery on a won dispute. Rules are declarative data (capability + outcome → value formula), versioned, and auditable.
+- **Ledger:** an aggregation job folds action-log events through the pricing table and attribution rules into a per-principal ledger (typed-storage), rolled up weekly.
+- **Surfaces:** the agent ROI block (headline value, this-month delta, return multiple, cost → net), the Pulse "Top active agents" leaderboard, weekly value-trend bars, outcome rows ("Borderline orders flipped to approve · 312 · $402K recovered"), and chat asks like "what impact did the fraud agent have this week?" — all rendering the same ledger.
+
+### 3.5 The CapsPanel
 
 A popover (from the sidebar "6 capabilities live" button) listing the six core capabilities with descriptions and ENABLED status: *"Every surface in ForterCIP runs on the same agentic data layer you can wire into your own tools via MCP."*
 
@@ -588,21 +603,21 @@ Apps: pick client → follow embedded guide → SSO auth → tools scoped by rol
 
 ---
 
-## 8. Architecture (fork mapping)
+## 8. Architecture (platform-extension mapping)
 
-| ForterOS concept | cloudflare-os primitive |
+| ForterOS concept | How it's realized on Cloudflare OS |
 |---|---|
-| ForterCIP shell (all §5 surfaces) | `workshop-frontend` replacement/re-skin (React, same build chain) |
-| Workspace / user session | Durable Object per workspace (upstream unchanged) |
-| Forter capabilities (Ask Orders, Investigate Order, …) | New **`gatekeeper-forter`** wrapping the Forter Portal MCP, with per-capability enable flags, action logging, and human-in-the-loop on side-effecting tools (`request_approve/decline`, `feedback_add_info`) |
-| Connectors (Slack, Snowflake, Salesforce, Zendesk, …) | Gatekeepers (existing: slack, google, github, confluence; new: snowflake, jira, salesforce/zendesk as needed) with the design's read/write tool toggles mapped to gatekeeper capability grants |
-| Access control UI (§5.9) | UI over gatekeeper capability grants (touchpoints/systems = principals) |
-| Agents & jobs (§5.8) | OS agents + `gatekeeper-scheduler` for cron/interval triggers; run traces = agent action logs |
-| Pinned views/boards | Typed storage per user (upstream `typed-storage`) |
-| Live decision stream | Server-sent events from the Forter gatekeeper (demo: seeded pool) |
-| Answer cards / charts | Frontend chart primitives (pure SVG: area, HBar, donut, stacked bars, grouped bars, Sankey, gauge, constellation) |
-| LLM answers | OS agent loop (pi-agent-core), provider-configurable |
-| Auth | Forter SSO (OIDC) replacing the OAuth sign-in flow in `docs/oauth-signin.md` |
+| Trust Command Center (§5.2–5.6: Pulse, ⌘K, answer cards, dossiers, pins/views, roles) | **Bundled format Blueprint** (`packages/workshop-backend/format-blueprints/`, fork-specific set via `FORMAT_BLUEPRINTS_DIR`). The gadget's `client.js` is a single self-contained prebundled ES module (React compiled in — the gadget sandbox provides no bundler, no JSX, no network); `server.js` is a Durable Object class exposing the data seam as Cap'n Web methods, so platform agents can drive the gadget natively |
+| Outer chrome (sidebar, chat, sign-in) | Upstream `workshop-frontend`, restyled with Forter tokens (site logo/branding hooks) — **not rebuilt** |
+| Chat (§5.4) & live LLM answers | Upstream Code Mode agent chat — **not rebuilt**; the gadget's Cap'n Web API is the agent's toolset for command-center asks |
+| Forter capabilities (Ask Orders, Investigate Order, …) | New **`gatekeeper-forter`** wrapping the Forter Portal MCP, with per-capability grants, action logging, and the platform's **async human-in-the-loop** (simulated results + bulk approval) on side-effecting tools (`request_approve/decline`, `feedback_add_info`) |
+| Connectors (§5.10) & Access control (§5.9) | Upstream gatekeepers + `configurator-ui` — **adopted, not rebuilt** (design's read/write toggles = gatekeeper capability grants) |
+| Agents & jobs (§5.8) | Upstream Code Mode agents + `gatekeeper-scheduler` triggers. Templates = saved prompts + capability grants; "run traces" render from action logs; the mockup's fixed-pipeline visual is presentation over logged runs |
+| **ROI accounting (§3.4)** | **New:** pricing table + attribution rules + aggregation job over gatekeeper action logs into a per-principal ledger (`typed-storage`); surfaced in the gadget (ROI blocks, leaderboard, impact reports) and via chat |
+| Pinned views/boards | Gadget server storage (per-instance DO SQLite/KV) |
+| Live decision stream | Gadget server push (demo: seeded pool; live: Forter gatekeeper subscription) |
+| Answer cards / charts | Pure-SVG chart primitives inside the gadget bundle (area, HBar, donut, stacked bars, grouped bars, Sankey, gauge, constellation) |
+| Auth | Forter SSO (OIDC) via the existing OAuth sign-in flow (`docs/oauth-signin.md`) |
 | Hosting | Self-hosted `workerd` (deployment tooling to be built as part of the plan) |
 
 **Demo vs live:** the mockup ships with a coherent demo dataset (approval series, 859 declines/10 reasons, orders 40E018J/40E025T, disputes, agents with ROI). The implementation keeps this as a **demo mode** (seeded fixtures behind the same interfaces) so every surface works before the live Forter MCP is wired in; live mode swaps the data source per capability.
@@ -624,12 +639,14 @@ Apps: pick client → follow embedded guide → SSO auth → tools scoped by rol
 
 ---
 
-## 10. Phasing (suggested MVP cut)
+## 10. Phasing (suggested MVP cut — revised for platform extension)
 
-1. **P0 — Shell + Ask + Investigate (demo mode):** intro, sidebar shell, ⌘K with 12 answer cards + live fallback, chat with cards/order cards, full + rail dossier, pins/views, Pulse KPIs + boards, roles/lenses. All on demo fixtures.
-2. **P1 — Feedback + live data:** `gatekeeper-forter` wired to Portal MCP (6 capabilities + feedback tools), feedback wizard end-to-end, disputes live, live decision stream.
-3. **P2 — Agents:** console, templates, test-run, pause/resume/remove, chat guided agent actions, impact reports; scheduler-backed execution.
-4. **P3 — Platform governance:** Connectors (OAuth + tool toggles), Access control (item + matrix), Apps setup guides, chat-driven governance actions.
-5. **P4 — Hardening:** workerd self-host deployment, SSO, multi-user persistence, FlowMap live wiring, mobile polish.
+1. **P0 — Trust Command Center blueprint (demo mode):** the gadget (Pulse KPIs/FlowMap/dept cards/boards, ⌘K with 12 answer cards, full dossier + constellation, pins/views, roles/lenses, disputes panel, intro state) running on demo fixtures served by its own `server.js`, shipped as a bundled format blueprint and instantiable on a local `pnpm run-local` instance. Upstream chat/agents/gatekeepers untouched.
+2. **P1 — `gatekeeper-forter` + live data:** the gatekeeper (6 capabilities + feedback tools, async HITL on side-effecting calls), gadget `server.js` swaps demo fixtures for gatekeeper bindings, feedback wizard end-to-end inside the gadget, live decision stream.
+3. **P2 — ROI accounting layer:** pricing table, attribution rules, ledger aggregation over action logs, ROI surfaces in the gadget (agent leaderboard, impact reports) and via chat; agent "templates" as saved prompts + grants using the scheduler.
+4. **P3 — Branding & distribution:** Forter tokens on the upstream chrome, Forter SSO, MCP apps documentation (Claude/Claude Code/ChatGPT/Copilot/Gemini setup guides), connector set curation (Snowflake, Salesforce, Zendesk gatekeepers as needed).
+5. **P4 — Hardening:** workerd self-host deployment, multi-tenant policy review, mobile polish.
+
+Dropped from the original plan (adopted from upstream instead of rebuilt): custom chat surface, custom agents console, custom Connectors/Access admin UIs, synchronous chat action-confirm flows. The mockup's §5.2 sidebar / §5.4 chat / §5.8–5.11 wireframes remain the *design intent* for how upstream surfaces should eventually be themed, and the visual source for the gadget-internal surfaces.
 
 Out of scope for v1: real Salesforce/Zendesk/etc. bidirectional sync beyond the toggle model; ChatGPT connector beyond documented limited support; the 3D bag/concierge experiments in the design project (separate prototypes).
