@@ -8,7 +8,6 @@
     "deploy": "wrangler deploy",
     "build:worker": "node build-browser-runtime.mjs && pnpm exec capnweb-validate build --out .wrangler/validate",
     "build": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && tsc",
-    "types:check": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && tsc --noEmit",
     "clean": "rm -rf dist",
     "test": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest run && vitest run --config vitest.integration.config.ts",
     "test:integration": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest run --config vitest.integration.config.ts",
@@ -31,10 +30,10 @@
     "yjs": "^13.6.31"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.18.8",
+    "@cloudflare/vitest-pool-workers": "catalog:",
     "esbuild": "^0.28.1",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.10",
-    "wrangler": "^4.119.0"
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   }
 }

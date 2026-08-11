@@ -10,7 +10,6 @@
     "build:app:watch": "node build-app.mjs --watch",
     "typecheck:app": "tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json",
     "build": "pnpm run typecheck:app && pnpm run build:app && tsc",
-    "types:check": "pnpm run typecheck:app && pnpm run build:app && tsc --noEmit",
     "test": "vitest run && vitest run -c vitest.app.config.ts",
     "clean": "rm -rf dist"
   },
@@ -24,7 +23,7 @@
   },
   "devDependencies": {
     "@cloudflare/kumo": "^2.9.0",
-    "@cloudflare/vitest-pool-workers": "^0.18.8",
+    "@cloudflare/vitest-pool-workers": "catalog:",
     "@phosphor-icons/react": "^2.1.10",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.1.0",
@@ -37,11 +36,11 @@
     "react-dom": "^19.2.8",
     "tailwindcss": "^4.3.3",
     "terser": "^5.48.0",
-    "typescript": "^5.9.3",
-    "vite": "^7.3.6",
+    "typescript": "catalog:",
+    "vite": "catalog:",
     "vite-plugin-singlefile": "^2.3.3",
     "vite-tsconfig-paths": "^6.1.1",
-    "vitest": "^4.1.10",
-    "wrangler": "^4.119.0"
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   }
 }

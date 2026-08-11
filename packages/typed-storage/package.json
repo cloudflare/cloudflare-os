@@ -12,14 +12,14 @@
   },
   "scripts": {
     "build": "tsc",
-    "types:check": "tsc --noEmit",
     "build:watch": "tsc --watch",
+    "clean": "rm -rf dist",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.18.8",
+    "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "^5.20260722.1",
-    "vitest": "^4.1.10"
+    "vitest": "catalog:"
   }
 }

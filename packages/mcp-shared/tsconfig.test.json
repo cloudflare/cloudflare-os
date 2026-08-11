@@ -1,9 +1,8 @@
-// Type-checks the tests too. Separate from `tsconfig.json` so `build` keeps emitting only `src`.
+// Type-checks the tests too. Separate from `tsconfig.json` so the Worker's own check stays free of
+// test files and Node types.
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "noEmit": true,
-    "declaration": false,
     "types": ["./worker-configuration.d.ts", "node"]
   },
   "include": ["src", "__tests__"]

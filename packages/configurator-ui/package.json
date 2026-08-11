@@ -2,8 +2,6 @@
   "name": "@gadgets/configurator-ui",
   "version": "1.0.0",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./src/index.ts",
@@ -12,12 +10,11 @@
   },
   "scripts": {
     "build": "tsc",
-    "types:check": "tsc --noEmit",
     "clean": "rm -rf dist",
     "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.10"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

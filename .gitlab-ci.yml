@@ -12,6 +12,10 @@ stages:
   - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 # Shared setup: install a pinned Node, enable pnpm via corepack, install deps.
+#
+# The store lives inside the project directory because GitLab can only cache paths under it. With
+# the cache warm, `pnpm install` is a link step against already-downloaded tarballs rather than a
+# fetch of the whole dependency graph.
 .node_before_script: &node_before_script
   - curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o "/tmp/node-v${NODE_VERSION}-linux-x64.tar.xz"
   - echo "${NODE_LINUX_X64_SHA256}  /tmp/node-v${NODE_VERSION}-linux-x64.tar.xz" | sha256sum -c -
@@ -20,31 +24,31 @@ stages:
   - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.cfdata.org/".insteadOf "git@gitlab.cfdata.org:"
   - corepack enable
   - git submodule update --init
-  - pnpm install --frozen-lockfile
+  - pnpm install --frozen-lockfile --store-dir .pnpm-store
 
 # ---------------------------------------------------------------------------
-# Lint (blocking)
+# Lint, build and test (blocking)
 # ---------------------------------------------------------------------------
-# Runs `oxlint` and recursive `tsc --noEmit` (`types:check`).
-lint:
+# One job on purpose. Split across `lint` and `test` the two shared nothing: each paid for its own
+# Node download and install, and the type check ran twice -- once as `lint`'s `types:check`, once
+# as `test`'s `build`, which after dropping the dead declaration emit are the same command.
+check:
   stage: test
   tags:
     - vm-linux-x86-4cpu-8gb
   rules: *default_rules
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store
   before_script: *node_before_script
   script:
-    - pnpm lint
-
-# ---------------------------------------------------------------------------
-# Test
-# ---------------------------------------------------------------------------
-test:
-  stage: test
-  tags:
-    - vm-linux-x86-4cpu-8gb
-  rules: *default_rules
-  before_script: *node_before_script
-  script:
+    # oxlint. `pnpm lint` is this plus `build`, kept as separate steps here so a failure names
+    # which one broke.
+    - pnpm lint:check
+    # Codegen, type check and the frontend/SPA bundles.
     - pnpm build
     - pnpm test
 

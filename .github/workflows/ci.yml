@@ -13,8 +13,12 @@ env:
   NODE_VERSION: "22.14.0"
 
 jobs:
-  lint:
-    name: Lint
+  # Lint, type check and test in one job. Split across two, the jobs shared nothing: each paid for
+  # its own install, and the type check ran twice -- once as `lint`'s `types:check`, once as
+  # `test`'s `build`, which after dropping the dead declaration emit are the same command. One job
+  # installs once and type-checks once.
+  check:
+    name: Lint, build and test
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -22,40 +26,23 @@ jobs:
         with:
           persist-credentials: false
 
+      # Ahead of setup-node, which shells out to `pnpm store path` to find the directory it caches.
+      - name: Enable Corepack
+        run: corepack enable
+
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-
-      - name: Enable Corepack
-        run: corepack enable
+          cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Lint
-        run: pnpm lint
+        run: pnpm lint:check
 
-  test:
-    name: Build and test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Enable Corepack
-        run: corepack enable
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
+      # Codegen, type check and the frontend/SPA bundles. `pnpm types:check` is an alias for this.
       - name: Build
         run: pnpm build
 

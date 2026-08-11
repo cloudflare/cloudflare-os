@@ -4,6 +4,21 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+catalogs:
+  default:
+    '@cloudflare/vitest-pool-workers':
+      specifier: ^0.18.8
+      version: 0.18.8
+    typescript:
+      specifier: ^5.9.3
+      version: 5.9.3
+    vitest:
+      specifier: ^4.1.10
+      version: 4.1.10
+    wrangler:
+      specifier: ^4.119.0
+      version: 4.119.0
+
 overrides:
   vite: 7.3.6
   '@types/node': 26.1.0
@@ -23,13 +38,13 @@ importers:
         specifier: ^1.76.0
         version: 1.76.0
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vite:
         specifier: 7.3.6
         version: 7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0)
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/backend-utils:
@@ -39,31 +54,31 @@ importers:
         version: link:../error-reporting
     devDependencies:
       '@cloudflare/vitest-pool-workers':
-        specifier: ^0.18.8
+        specifier: 'catalog:'
         version: 0.18.8(@cloudflare/workers-types@5.20260804.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0)))
       '@cloudflare/workers-types':
         specifier: ^5.20260722.1
         version: 5.20260804.1
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
 
   packages/configurator-ui:
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
 
   packages/error-reporting:
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
 
   packages/gatekeeper-cloudflare:
@@ -82,10 +97,10 @@ importers:
         version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-confluence:
@@ -107,13 +122,13 @@ importers:
         version: 7.1.0
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-context:
@@ -219,7 +234,7 @@ importers:
         specifier: ^5.49.0
         version: 5.49.0
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vite:
         specifier: 7.3.6
@@ -231,10 +246,10 @@ importers:
         specifier: ^6.1.1
         version: 6.1.1(supports-color@10.2.2)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-email:
@@ -259,10 +274,10 @@ importers:
         version: 2.7.5
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-github:
@@ -284,13 +299,13 @@ importers:
         version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-google:
@@ -318,10 +333,10 @@ importers:
         version: 2.7.5
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-homeassistant:
@@ -340,10 +355,10 @@ importers:
         version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-linear:
@@ -365,10 +380,10 @@ importers:
         version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-mcp:
@@ -393,13 +408,13 @@ importers:
         version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-mcp-portal:
@@ -424,13 +439,13 @@ importers:
         version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-notion:
@@ -449,13 +464,13 @@ importers:
         version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-scheduler:
@@ -483,7 +498,7 @@ importers:
         specifier: ^2.9.0
         version: 2.9.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.17)(date-fns@4.4.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
       '@cloudflare/vitest-pool-workers':
-        specifier: ^0.18.8
+        specifier: 'catalog:'
         version: 0.18.8(@cloudflare/workers-types@5.20260804.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0)))
       '@phosphor-icons/react':
         specifier: ^2.1.10
@@ -522,7 +537,7 @@ importers:
         specifier: ^5.48.0
         version: 5.49.0
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vite:
         specifier: 7.3.6
@@ -534,10 +549,10 @@ importers:
         specifier: ^6.1.1
         version: 6.1.1(supports-color@10.2.2)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-slack:
@@ -556,10 +571,10 @@ importers:
         version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-spotify:
@@ -578,10 +593,10 @@ importers:
         version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-supabase:
@@ -603,10 +618,10 @@ importers:
         version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/gatekeeper-zoominfo:
@@ -625,10 +640,10 @@ importers:
         version: 0.2.1(capnweb@0.8.0)(esbuild@0.28.1)(rollup@4.62.3)(typescript@5.9.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/integration-tests:
@@ -653,13 +668,13 @@ importers:
         specifier: 26.1.0
         version: 26.1.0
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       wrangler:
-        specifier: ~4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/mcp-shared:
@@ -678,40 +693,40 @@ importers:
         specifier: 26.1.0
         version: 26.1.0
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
 
   packages/router:
     devDependencies:
       '@cloudflare/vitest-pool-workers':
-        specifier: ^0.18.8
+        specifier: 'catalog:'
         version: 0.18.8(@cloudflare/workers-types@5.20260804.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0)))
       jsonc-parser:
         specifier: ^3.3.1
         version: 3.3.1
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/typed-storage:
     devDependencies:
       '@cloudflare/vitest-pool-workers':
-        specifier: ^0.18.8
+        specifier: 'catalog:'
         version: 0.18.8(@cloudflare/workers-types@5.20260804.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0)))
       '@cloudflare/workers-types':
         specifier: ^5.20260722.1
         version: 5.20260804.1
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
 
   packages/workshop-backend:
@@ -754,19 +769,19 @@ importers:
         version: 13.6.31
     devDependencies:
       '@cloudflare/vitest-pool-workers':
-        specifier: ^0.18.8
+        specifier: 'catalog:'
         version: 0.18.8(@cloudflare/workers-types@5.20260804.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10(@opentelemetry/api@1.9.0)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0)))
       esbuild:
         specifier: ^0.28.1
         version: 0.28.1
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.0)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
       wrangler:
-        specifier: ^4.119.0
+        specifier: 'catalog:'
         version: 4.119.0(@cloudflare/workers-types@5.20260804.1)
 
   packages/workshop-frontend:
@@ -845,13 +860,13 @@ importers:
         specifier: ^26.1.0
         version: 26.1.0(supports-color@10.2.2)
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
       vite:
         specifier: 7.3.6
         version: 7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0)
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(yaml@2.9.0))
 
   packages/workshop-shared:
@@ -864,7 +879,7 @@ importers:
         version: 0.8.0
     devDependencies:
       typescript:
-        specifier: ^5.9.3
+        specifier: 'catalog:'
         version: 5.9.3
 
 packages:

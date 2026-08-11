@@ -31,8 +31,7 @@
     "./util": "./src/util.ts"
   },
   "scripts": {
-    "build": "tsc",
-    "types:check": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "build": "tsc && tsc -p tsconfig.test.json",
     "clean": "rm -rf dist",
     "test": "vitest run"
   },
@@ -43,7 +42,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.10"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

@@ -8,10 +8,6 @@
     "jsx": "react",
     "jsxFactory": "h",
     "types": ["./worker-configuration.d.ts"],
-    "outDir": "./dist",
-    "declaration": true,
-    "sourceMap": true,
-    "noEmit": false,
     "baseUrl": ".",
     "paths": {
       "@gadgets/configurator-ui": ["../configurator-ui/src/index.ts"],
@@ -19,6 +15,8 @@
       "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"]
     }
   },
-  "include": ["src"],
-  "exclude": ["dist", "node_modules"]
+  // The tests are checked by this one project: with nothing emitted there is no reason to keep
+  // them in a separate config.
+  "include": ["src", "__tests__"],
+  "exclude": ["node_modules"]
 }

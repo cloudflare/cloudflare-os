@@ -1,9 +1,11 @@
 # Dependencies
 node_modules/
+# pnpm store, only ever created in GitLab CI (which can only cache paths inside the project).
+.pnpm-store/
 
 # Build outputs
 dist/
-# Generated gatekeeper UI bundles, rebuilt as a prerequisite of build/types:check/deploy
+# Generated gatekeeper UI bundles, rebuilt as a prerequisite of build/deploy
 packages/gatekeeper-*/src/generated/*-configurator-ui.txt
 packages/gatekeeper-*/src/generated/*-configurator-ui.js*
 packages/gatekeeper-*/src/generated/app.txt

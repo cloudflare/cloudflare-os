@@ -150,8 +150,22 @@ export type BundledFormatBlueprint = {
 export const FORMAT_BLUEPRINTS: BundledFormatBlueprint[] = ${JSON.stringify(entries, null, 2)};
 `;
 
-await mkdir(dirname(outFile), { recursive: true });
-await writeFile(outFile, generated);
+// Skip the write when nothing changed. This script runs as a prerequisite of `build` and `test`,
+// and rewriting an identical module would give it a fresh mtime, invalidating tsc's incremental
+// cache for the whole package on every invocation. Same reason build-browser-runtime.mjs and the
+// two SPA builds compare before writing.
+let unchanged = false;
+try {
+  unchanged = await readFile(outFile, "utf8") === generated;
+} catch (err) {
+  if (err?.code !== "ENOENT") throw err;
+}
 
-console.log(`Bundled ${entries.length} format blueprint(s) from ${sourceDir}, ` +
-    `${(totalBytes / 1024).toFixed(0)} KiB raw -> ${outFile}`);
+if (unchanged) {
+  console.log(`format blueprints up-to-date (${entries.length}): ${outFile}`);
+} else {
+  await mkdir(dirname(outFile), { recursive: true });
+  await writeFile(outFile, generated);
+  console.log(`Bundled ${entries.length} format blueprint(s) from ${sourceDir}, ` +
+      `${(totalBytes / 1024).toFixed(0)} KiB raw -> ${outFile}`);
+}

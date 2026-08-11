@@ -10,11 +10,11 @@
   },
   "scripts": {
     "build": "tsc",
-    "types:check": "tsc --noEmit",
+    "clean": "rm -rf dist",
     "test": "vitest run"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.10"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

@@ -7,7 +7,6 @@
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
     "deploy": "wrangler deploy",
     "build": "tsc",
-    "types:check": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -17,7 +16,7 @@
     "capnweb-validate": "0.2.1"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "wrangler": "^4.119.0"
+    "typescript": "catalog:",
+    "wrangler": "catalog:"
   }
 }

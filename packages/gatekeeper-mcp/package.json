@@ -8,7 +8,6 @@
     "build:configurator": "node ../../scripts/build-gatekeeper-configurator.mjs .",
     "deploy": "pnpm run build:configurator && wrangler deploy",
     "build": "pnpm run build:configurator && tsc",
-    "types:check": "pnpm run build:configurator && tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "clean": "rm -rf dist src/generated",
     "test": "vitest run"
   },
@@ -21,8 +20,8 @@
     "capnweb-validate": "0.2.1"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.10",
-    "wrangler": "^4.119.0"
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   }
 }

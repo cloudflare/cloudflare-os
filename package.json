@@ -13,7 +13,7 @@
     "clean": "pnpm run --recursive clean",
     "lint:check": "oxlint",
     "lint:fix": "oxlint --fix",
-    "types:check": "pnpm run --recursive --if-present types:check",
+    "types:check": "pnpm run build",
     "lint": "pnpm run lint:check && pnpm run types:check",
     "types:generate": "node scripts/generate-worker-types.mjs"
   },
@@ -21,8 +21,8 @@
     "aws4fetch": "^1.0.20",
     "jsonc-parser": "^3.3.1",
     "oxlint": "^1.76.0",
-    "typescript": "^5.9.3",
-    "vite": "^7.3.6",
-    "wrangler": "^4.119.0"
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "wrangler": "catalog:"
   }
 }
