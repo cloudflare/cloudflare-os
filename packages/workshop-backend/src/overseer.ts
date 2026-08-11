@@ -8572,10 +8572,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     let codeSnapshot: Uint8Array | undefined;
     if (options.updateCode || options.updateBindings) {
-      // Re-collect binding metadata from the source gadget (validates annotations). Records
-      // written before multi-gadget support carry no gadgetId; they export the default gadget.
       let gadgetId = this.impl.resolveGadgetId(record.gadgetId);
-      record.metadata.bindings = this.impl.collectBindingMetadata(gadgetId);
+      if (options.updateBindings) {
+        // Re-collect binding metadata from the source gadget (validates annotations). Records
+        // written before multi-gadget support carry no gadgetId; they export the default gadget.
+        record.metadata.bindings = this.impl.collectBindingMetadata(gadgetId);
+      }
       if (options.updateCode) {
         record.codeVersion = this.impl.storage.codeVersion.get();
         record.metadata.version++;
