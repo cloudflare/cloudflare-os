@@ -110,9 +110,10 @@ locally, do the same.
 
 The toolkit therefore owns the capnweb boundary: mint callback stubs with `stubFor()` from
 `rpc-client`, never with an imported `RpcStub`. Importing `RpcStub` as a *type* is fine. This is
-enforced structurally in this repo — `.oxlintrc.json` restricts `capnweb` value imports within this
-package to `rpc-client.ts` (`allowTypeImports` leaves type imports alone). A consumer repo without a
-linter should treat the rule as a convention its test files follow via `stubFor()`.
+enforced structurally in this repo — the lint rules in `vite.config.ts` restrict `capnweb` value
+imports within this package to `rpc-client.ts` (`allowTypeImports` leaves type imports alone). A
+consumer repo without a linter should treat the rule as a convention its test files follow via
+`stubFor()`.
 
 ### Worker entry modules may export only classes and the default handler
 

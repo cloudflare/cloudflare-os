@@ -6,16 +6,18 @@ packages:
 catalog:
   '@cloudflare/vitest-pool-workers': ^0.18.8
   typescript: ^5.9.3
+  # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
+  # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
   vite: 7.3.6
+  vite-plus: ^0.2.8
   vitest: ^4.1.10
   wrangler: ^4.119.0
 
 overrides:
-  # Vitest peers can resolve vite@latest; pin 7.x until Oxc lowers Stage-3
-  # decorators (workers-sdk#12626). Repeated from the catalog above, and identical to it on
-  # purpose: a catalog only covers what a workspace manifest declares itself, so the override is
-  # what reaches vite as somebody else's transitive peer.
-  vite: 7.3.6
+  # Vitest peers can resolve vite@latest, so the version is pinned rather than ranged. Points at the
+  # catalog so this and the manifests can't disagree: a catalog only covers what a workspace
+  # manifest declares itself, and the override is what reaches vite as somebody else's peer.
+  vite: "catalog:"
   # minimumReleaseAge gates direct deps but not these two, so pin them to the last
   # mature release (CI verifies every lockfile entry against the release-age policy):
   # - @types/node arrives as an optional vite/vitest peer resolved to `latest`.

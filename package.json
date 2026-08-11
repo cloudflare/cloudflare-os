@@ -11,8 +11,8 @@
     "dev-client": "cd packages/workshop-frontend && pnpm run dev",
     "dev-server": "node run-dev-server.js",
     "clean": "pnpm run --recursive clean",
-    "lint:check": "oxlint",
-    "lint:fix": "oxlint --fix",
+    "lint:check": "vp lint",
+    "lint:fix": "vp lint --fix",
     "types:check": "pnpm run build",
     "lint": "pnpm run lint:check && pnpm run types:check",
     "types:generate": "node scripts/generate-worker-types.mjs"
@@ -20,9 +20,9 @@
   "devDependencies": {
     "aws4fetch": "^1.0.20",
     "jsonc-parser": "^3.3.1",
-    "oxlint": "^1.76.0",
     "typescript": "catalog:",
     "vite": "catalog:",
+    "vite-plus": "catalog:",
     "wrangler": "catalog:"
   }
 }

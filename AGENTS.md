@@ -55,10 +55,10 @@ To test changes:
 - Run `pnpm test` to run unit tests, though as of this writing most packages don't have tests yet.
 - The five packages whose tests run in workerd (`router`, `typed-storage`, `backend-utils`, `workshop-backend`, `gatekeeper-scheduler`) load `test-setup/assert-workerd.ts` as a `setupFiles` entry. It throws unless `navigator.userAgent` is `Cloudflare-Workers`, so a `@cloudflare/vitest-pool-workers` pool that fails to start fails the suite instead of silently falling back to Node — which otherwise looks like a pass in the packages that import no `cloudflare:*` module. Don't remove it to make a suite green.
 
-Linting (oxlint):
+Linting (oxlint, via Vite+):
 - `pnpm lint` runs what CI enforces: `lint:check` (oxlint) and `types:check`. Run this before pushing.
 - Individual scripts:
-    * `pnpm lint:check` / `pnpm lint:fix` — oxlint (config in `.oxlintrc.json`; `correctness` + `suspicious` as errors).
+    * `pnpm lint:check` / `pnpm lint:fix` — `vp lint`, i.e. oxlint driven by Vite+ (rules in the `lint` block of the root `vite.config.ts`; `correctness` + `suspicious` as errors). Vite+ pins the oxlint it runs (1.76.0), so there is no separate `oxlint` dependency to drift from it and no `.oxlintrc.json` beside the config — one toolchain config, one version. Diagnostics are identical to what running that oxlint directly would emit.
     * `pnpm types:check` — an alias for `pnpm build`. They were separate scripts running the same recursive `tsc` twice; one name is kept for habit and the other because the codegen prerequisites hang off it.
 - Unused function parameters and caught errors are not lint-enforced; unused imports and local variables are still errors.
 - Some rules are kept as warnings (e.g. `no-shadow`) for incremental cleanup; warnings don't block CI.
