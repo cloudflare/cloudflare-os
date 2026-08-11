@@ -74,7 +74,7 @@ type Env = Cloudflare.Env & {
 
 type UserStub = DurableObjectStub<UserDurableObject>;
 
-/** Async-method view of the user stub, backing the #query/#command sugar: the same method
+/** Async-method view of the user stub, backing the #user sugar: the same method
  * surface and (Unstubify-transformed) types a direct stub call has, minus the Fetcher members
  * and symbol keys the proxy doesn't dispatch. */
 type UserDoProxy = {
@@ -105,18 +105,16 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   // A stub is permanently poisoned once its incarnation resets, so re-resolve per call instead
   // of caching one for the session (stub creation is local — not a network call). The trade:
-  // e-order is per stub, so cross-call delivery ordering is gone; #userCommand restores it for
-  // commands, but nothing orders a query against an in-flight command — a call site that
-  // depends on a prior user-DO call must await it. `#`-private because RpcTarget members are
-  // runtime-visible and TS `private` is erased.
-  get #user(): DurableObjectStub<UserDurableObject> {
+  // e-order is per stub, so cross-call delivery ordering is gone — a call site that depends on
+  // a prior user-DO call must await it, and UI that can fire overlapping writes to the same
+  // state must guard in-flight (see the BlueprintList pin and providers quick-model toggles).
+  // `#`-private because RpcTarget members are runtime-visible and TS `private` is erased.
+  get #userStub(): DurableObjectStub<UserDurableObject> {
     return this.users.get(this.#userId);
   }
 
-  // Every RPC into the user DO goes through #userCall or #userCommand — a naked
-  // `this.#user.x()` elsewhere is a review defect. The #query/#command proxies below are sugar
-  // routing plain delegations through these chokepoints; the split is about ordering (a
-  // command is effectful and serializes on the per-session chain, a query runs concurrent).
+  // Every RPC into the user DO goes through #userCall — a naked `this.#userStub.x()` elsewhere
+  // is a review defect. The #user proxy below is sugar routing plain delegations through it.
   // Resets are deliberately NOT retried here: fresh per-call stubs already fix the
   // wedged-session failure mode, workerd's structured reset flags reach the client (which
   // classifies and quiets them), and the DO platform is moving toward transparent recovery.
@@ -124,43 +122,18 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   // effectful call double-applies (e.g. listProvidedAccounts provisions vendor-side
   // accounts).
 
-  /** Effectful command: serializes on the per-session chain — unguarded optimistic UI (e.g.
-   * BlueprintList's pin toggle, which flips local state with no in-flight guard) can issue
-   * overlapping commands whose reversed cross-stub arrival would silently invert the final
-   * durable state; both calls succeed, so nothing reverts the UI. Queries stay concurrent.
-   *
-   * Never call #userCommand from inside another #userCommand closure: the inner call chains
-   * behind the outer's own unresolved result and self-deadlocks. A command needing two DO
-   * calls uses one closure (see getGatekeeperApp). */
-  async #userCommand<T>(operation: string,
-                        fn: (user: DurableObjectStub<UserDurableObject>) => Promise<T>): Promise<T> {
-    let result = this.#commandChain.then(() => this.#userCall(operation, fn));
-    this.#commandChain = result.then(() => {}, () => {});
-    return result;
-  }
-
-  /** Tail of a promise-chain serial queue: "every command issued so far has settled". Fresh
-   * per-call stubs forfeit workerd's per-stub delivery order (e-order), so #userCommand
-   * re-establishes command→command issue order here; command→query ordering is deliberately
-   * not restored. The tail attaches BOTH handlers so a failed command neither poisons the
-   * chain for later commands nor fires unhandledrejection — the caller still observes the
-   * failure through `result`. */
-  #commandChain: Promise<void> = Promise.resolve();
-
-  /** Shared dispatch: #userCommand routes here, and queries plus other chain-exempt calls
-   * (subscription registration, getCloudflareUsage — both await slow vendor work that must not
-   * stall commands) use it directly. Observes reset flags for telemetry, rethrows unchanged. */
+  /** Sole dispatch chokepoint: observes reset flags for telemetry, rethrows unchanged. */
   async #userCall<T>(operation: string,
                      fn: (user: DurableObjectStub<UserDurableObject>) => Promise<T>): Promise<T> {
     try {
-      return await fn(this.#user);
+      return await fn(this.#userStub);
     } catch (e) {
       if (isDoResetError(e)) this.#onUserDoReset(operation, e);
       throw e;
     }
   }
 
-  /** Builds the #query/#command sugar: `this.#query.listGadgets()` routes through #userCall
+  /** Builds the #user sugar: `this.#user.listGadgets()` routes through #userCall
    * with the DO method name as the telemetry operation (so the logged operation names the DO
    * method that was hit, which for a handful of endpoints differs from the API method —
    * `dismissSharedGadget` logs as `forgetSharedGadget`). Sites whose closure does more than a
@@ -178,8 +151,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     }) as UserDoProxy;
   }
 
-  #query = this.#doProxy((op, fn) => this.#userCall(op, fn));
-  #command = this.#doProxy((op, fn) => this.#userCommand(op, fn));
+  #user = this.#doProxy((op, fn) => this.#userCall(op, fn));
 
   /** Central reset observation point. Fresh per-call stubs absorb resets structurally (the
    * next call simply restarts the object), so what surfaces is only a call in flight at the
@@ -213,50 +185,49 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   whoami(): Promise<AiChatAuthorInfo> {
-    return this.#query.whoami();
+    return this.#user.whoami();
   }
   setOwnDisplayName(name: string): Promise<void> {
-    return this.#command.setOwnDisplayName(name);
+    return this.#user.setOwnDisplayName(name);
   }
   changePassword(oldHash: Uint8Array, newHash: Uint8Array): Promise<void> {
-    return this.#command.changePassword(oldHash, newHash);
+    return this.#user.changePassword(oldHash, newHash);
   }
   hasPasswordLogin(): Promise<boolean> {
-    return this.#query.hasPasswordLogin();
+    return this.#user.hasPasswordLogin();
   }
   listModels(): Promise<AiChatAuthorInfo[]> {
-    return this.#query.listModels();
+    return this.#user.listModels();
   }
   addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
-    return this.#command.addModel(profile, config);
+    return this.#user.addModel(profile, config);
   }
   deleteModel(id: string): Promise<void> {
-    return this.#command.deleteModel(id);
+    return this.#user.deleteModel(id);
   }
   setQuickModel(id: string | null): Promise<void> {
-    return this.#command.setQuickModel(id);
+    return this.#user.setQuickModel(id);
   }
   getQuickModel(): Promise<null | string> {
-    return this.#query.getQuickModel();
+    return this.#user.getQuickModel();
   }
 
   getPreferredModel(): Promise<string | null> {
-    return this.#query.getPreferredModel();
+    return this.#user.getPreferredModel();
   }
   setPreferredModel(id: string | null): Promise<void> {
-    return this.#command.setPreferredModel(id);
+    return this.#user.setPreferredModel(id);
   }
   isOnboardingCompleted(): Promise<boolean> {
-    return this.#query.isOnboardingCompleted();
+    return this.#user.isOnboardingCompleted();
   }
   completeOnboarding(): Promise<void> {
-    return this.#command.completeOnboarding();
+    return this.#user.completeOnboarding();
   }
 
   getCloudflareUsage(): Promise<CloudflareUsageInfo> {
-    // #userCall, not #userCommand: slow (OAuth token fetch), so it must not stall the command
-    // chain; its cache write-backs (account selection / credit snapshots) tolerate racing.
-    // A reset surfaces to the usage panel's fallback.
+    // Cache write-backs inside (account selection / credit snapshots) tolerate racing; a reset
+    // surfaces to the usage panel's fallback.
     return this.#userCall("getCloudflareUsage", u => getUsageInfo(this.env, u));
   }
 
@@ -265,7 +236,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   selectCloudflareAccount(accountId: string): Promise<void> {
-    return this.#userCommand("selectCloudflareAccount", u => selectAccount(this.env, u, accountId));
+    return this.#userCall("selectCloudflareAccount", u => selectAccount(this.env, u, accountId));
   }
 
   async setAvatar(data: Uint8Array | null): Promise<void> {
@@ -356,7 +327,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
       // (refreshAffectedCollaboratorListings), but that push is best-effort. Only catches entries
       // they click; others stay frozen at revocation, as a disconnected collaborator gets no pushes.
       if (getOpenGadgetErrorCode(err) === OPEN_GADGET_ERROR_CODES.workspaceAccessDenied) {
-        await this.#command.forgetSharedGadget(id);
+        await this.#user.forgetSharedGadget(id);
       }
       throw err;
     }
@@ -380,7 +351,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   async newGadget(): Promise<RpcStub<Overseer>> {
     let id = this.overseers.newUniqueId().toString();
-    await this.#command.newGadget(id, "Untitled Workspace");
+    await this.#user.newGadget(id, "Untitled Workspace");
     recordAnalytics(this.ctx, this.env, {
       event_name: "gadget_created",
       user_id: this.#userId.toString(),
@@ -395,13 +366,13 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
-    return this.#query.listGadgets();
+    return this.#user.listGadgets();
   }
 
   listOutputs(): Promise<ListOutputsResult> {
-    // A #query despite the backfill inside: the DO sweeps one page per call and advances the
-    // cursor itself, so concurrent or reordered calls are harmless.
-    return this.#query.listOutputs();
+    // The backfill inside is safe under concurrency: the DO sweeps one page per call and
+    // advances the cursor itself.
+    return this.#user.listOutputs();
   }
 
   async listOutputFormats(): Promise<OutputFormatOffer[]> {
@@ -411,31 +382,28 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   listGatekeeperVendors(filter?: GatekeeperVendorFilter): Promise<GatekeeperVendorInfo[]> {
-    return this.#query.listGatekeeperVendors(filter);
+    return this.#user.listGatekeeperVendors(filter);
   }
 
   connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<{url: string}> {
-    return this.#command.connectAccount(vendorId, resourceUrlPatterns);
+    return this.#user.connectAccount(vendorId, resourceUrlPatterns);
   }
 
   ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<{url?: string}> {
-    return this.#command.ensureAccountResources(accountId, resourceUrlPatterns);
+    return this.#user.ensureAccountResources(accountId, resourceUrlPatterns);
   }
 
   listAddableGatekeepers(): Promise<GatekeeperVendorInfo[]> {
-    return this.#query.listAddableGatekeepers();
+    return this.#user.listAddableGatekeepers();
   }
 
   provisionAmbientAccount(vendorId: string): Promise<void> {
-    return this.#command.provisionAmbientAccount(vendorId);
+    return this.#user.provisionAmbientAccount(vendorId);
   }
 
   subscribeConnectedAccounts(
       subscriber: RpcStub<ConnectedAccountsSubscriber>, filter?: ConnectedAccountsFilter)
       : Promise<RpcStub<{}>> {
-    // #userCall: registration must not stall the command chain (its catch-up replay awaits
-    // vendor describes).
-    //
     // TODO(deferred): the DO holds this registration in memory only, so a reset silently kills
     // it while the browser's WebSocket stays healthy — the connected-accounts list stops
     // updating until the component re-subscribes or the socket-level reconnect kicks in.
@@ -446,41 +414,41 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   disconnectAccount(accountId: number): Promise<void> {
-    return this.#command.disconnectAccount(accountId);
+    return this.#user.disconnectAccount(accountId);
   }
 
   reconnectAccount(accountId: number): Promise<{url: string}> {
-    return this.#command.reconnectAccount(accountId);
+    return this.#user.reconnectAccount(accountId);
   }
 
   startResourceConfigurator(
       accountId: number,
       resourceUrlPattern: string) {
-    return this.#command.startResourceConfigurator(accountId, resourceUrlPattern);
+    return this.#user.startResourceConfigurator(accountId, resourceUrlPattern);
   }
 
   async dismissSharedGadget(gadgetId: string): Promise<void> {
-    return this.#command.forgetSharedGadget(gadgetId);
+    return this.#user.forgetSharedGadget(gadgetId);
   }
 
   async listOwnBlueprints(): Promise<BlueprintUserSummary[]> {
-    return this.#query.listBlueprints();
+    return this.#user.listBlueprints();
   }
 
   async getOwnBlueprint(blueprintId: string): Promise<BlueprintUserSummary | null> {
-    return this.#query.getBlueprint(blueprintId);
+    return this.#user.getBlueprint(blueprintId);
   }
 
   async listLibraryBlueprints(): Promise<BlueprintLibrarySummary[]> {
-    return this.#query.listLibraryBlueprints();
+    return this.#user.listLibraryBlueprints();
   }
 
   async setBlueprintPinned(blueprintId: string, pinned: boolean): Promise<void> {
-    return this.#command.setBlueprintPinned(blueprintId, pinned);
+    return this.#user.setBlueprintPinned(blueprintId, pinned);
   }
 
   async isBlueprintPinned(blueprintId: string): Promise<boolean> {
-    return this.#query.isBlueprintPinned(blueprintId);
+    return this.#user.isBlueprintPinned(blueprintId);
   }
 
   async listFeaturedBlueprints(): Promise<BlueprintPublicInfo[]> {
@@ -489,15 +457,15 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async addBlueprintToLibrary(blueprintId: string): Promise<void> {
-    return this.#command.addBlueprintToLibrary(blueprintId);
+    return this.#user.addBlueprintToLibrary(blueprintId);
   }
 
   async removeBlueprintFromLibrary(blueprintId: string): Promise<void> {
-    return this.#command.removeBlueprintFromLibrary(blueprintId);
+    return this.#user.removeBlueprintFromLibrary(blueprintId);
   }
 
   isBlueprintInLibrary(blueprintId: string): Promise<{ uploaded: boolean } | null> {
-    return this.#query.isBlueprintInLibrary(blueprintId);
+    return this.#user.isBlueprintInLibrary(blueprintId);
   }
 
   async importBlueprint(archive: ReadableStream<Uint8Array>): Promise<string> {
@@ -521,7 +489,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
       await this.env.BLUEPRINTS.put(blueprintId, JSON.stringify(kvRecord));
 
-      await this.#command.importBlueprint(blueprintId, metadata);
+      await this.#user.importBlueprint(blueprintId, metadata);
 
       recordAnalytics(this.ctx, this.env, {
         event_name: "blueprint_imported",
@@ -553,7 +521,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
     // 3. Create new Overseer DO (same as newGadget()).
     let id = this.overseers.newUniqueId().toString();
-    await this.#command.newGadget(id, kvRecord.metadata.title);
+    await this.#user.newGadget(id, kvRecord.metadata.title);
     let overseerResult = await this.#openGadgetInternal(id);
 
     // 4. Initialize from blueprint code.
@@ -659,7 +627,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async deleteOrphanedBlueprint(blueprintId: string): Promise<void> {
-    return this.#command.deleteOwnedBlueprint(blueprintId);
+    return this.#user.deleteOwnedBlueprint(blueprintId);
   }
 
   // --- Gatekeeper management apps ---
@@ -671,8 +639,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   async listGatekeeperApps(): Promise<GatekeeperAppInfo[]> {
     // listProvidedAccounts provisions auto-provisioned accounts first (idempotent), so their apps
     // appear in the nav even before the user opens a gadget — in a single round trip.
-    // #command: provisioning is effectful, so it takes the command chain (same in getGatekeeperApp).
-    let accounts = await this.#command.listProvidedAccounts();
+    let accounts = await this.#user.listProvidedAccounts();
     return accounts
         .filter(account => account.description.providesUi)
         .map(account => ({
@@ -685,9 +652,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   async getGatekeeperApp(id: string): Promise<GatekeeperUiFrame | null> {
     // Self-sufficient: listProvidedAccounts provisions auto-provisioned accounts first (idempotent),
     // so a direct URL load of /gatekeepers/$id works without racing the Header's listGatekeeperApps.
-    // #userCommand for the provisioning side effect (see listGatekeeperApps); one closure so
-    // both DO calls share a stub.
-    return this.#userCommand("getGatekeeperApp", async u => {
+    // One closure so both DO calls share a stub and a telemetry operation.
+    return this.#userCall("getGatekeeperApp", async u => {
       let accounts = await u.listProvidedAccounts();
       let app = accounts.find(account => account.vendorId === id && account.description.providesUi);
       if (!app) return null;
