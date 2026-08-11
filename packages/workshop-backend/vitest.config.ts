@@ -22,5 +22,7 @@ export default defineConfig({
   ],
   test: {
     include: ['__tests__/*.test.ts'],
+    // Asserts the pool actually started, rather than trusting a green run to mean workerd.
+    setupFiles: ['../../test-setup/assert-workerd.ts'],
   },
 })

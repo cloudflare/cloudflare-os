@@ -23,6 +23,8 @@ export default defineConfig({
   ],
   test: {
     include: ["__integration__/*.test.ts"],
+    // Asserts the pool actually started, rather than trusting a green run to mean workerd.
+    setupFiles: ["../../test-setup/assert-workerd.ts"],
     // Whichever test runs first pays for workerd booting and instantiating the whole backend
     // bundle -- ~6s on a dev machine and roughly 3x that on a CI runner, while every subsequent
     // test in the file finishes in tens of milliseconds. The timeout has to clear that cold

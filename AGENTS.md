@@ -53,6 +53,7 @@ Release pipeline (`scripts/release/`) — how customer instances get deployed:
 To test changes:
 - Run `pnpm build` (optionally narrowed to a particular package) to run TypeScript type checks. It is a type check and codegen pass, not a compile: every package but `typed-storage` is `noEmit`, because nothing imports the others' `dist` — wrangler and vite bundle from source. `typed-storage` still emits because its `exports` resolves to `dist/index.js`.
 - Run `pnpm test` to run unit tests, though as of this writing most packages don't have tests yet.
+- The five packages whose tests run in workerd (`router`, `typed-storage`, `backend-utils`, `workshop-backend`, `gatekeeper-scheduler`) load `test-setup/assert-workerd.ts` as a `setupFiles` entry. It throws unless `navigator.userAgent` is `Cloudflare-Workers`, so a `@cloudflare/vitest-pool-workers` pool that fails to start fails the suite instead of silently falling back to Node — which otherwise looks like a pass in the packages that import no `cloudflare:*` module. Don't remove it to make a suite green.
 
 Linting (oxlint):
 - `pnpm lint` runs what CI enforces: `lint:check` (oxlint) and `types:check`. Run this before pushing.
