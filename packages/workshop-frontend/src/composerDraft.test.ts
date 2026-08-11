@@ -9,11 +9,20 @@ import {
   writeComposerDraft,
   type StoredComposerDraft,
 } from "./composerDraft";
+import type { SlashCommandChoice } from "@gadgets/workshop-shared/api";
 
 const draft: StoredComposerDraft = {
   version: 1,
   text: "Create a Document",
   formats: [{ position: 9, length: 8, noun: "Document", icon: "fileText" }],
+};
+
+const deployCommand: SlashCommandChoice = {
+  selection: { gatekeeperId: 42, commandId: "deploy" },
+  name: "deploy",
+  description: "Deploy the current project",
+  providerLabel: "GitHub",
+  resourceLabel: "octo/repo",
 };
 
 describe("composer drafts", () => {
@@ -92,6 +101,53 @@ describe("composer drafts", () => {
     ]);
   });
 
+  it("preserves an inline slash command through token normalization and decoration", () => {
+    const logoSlot = "\u2003\u2060\u00a0";
+    const text = `Use Q3 Plan as a ${logoSlot}Document, then /deploy it`;
+    const formatStart = text.indexOf(logoSlot);
+    const commandStart = text.indexOf("/deploy");
+
+    const stored = serializeComposerDraft(
+      text,
+      [{ start: 4, length: "Q3 Plan".length, url: "https://example.com/q3" }],
+      [{
+        start: formatStart,
+        length: logoSlot.length + "Document".length,
+        noun: "Document",
+        icon: "fileText",
+      }],
+      { start: commandStart, length: "/deploy".length, choice: deployCommand },
+    );
+
+    expect(stored.text).toBe("Use https://example.com/q3 as a Document, then /deploy it");
+    expect(stored.command).toEqual({
+      position: stored.text.indexOf("/deploy"),
+      length: "/deploy".length,
+      choice: deployCommand,
+    });
+
+    const restored = decorateComposerDraft(stored, ["data:doc"], logoSlot);
+    expect(restored.command).toEqual({
+      start: restored.text.indexOf("/deploy"),
+      length: "/deploy".length,
+      choice: deployCommand,
+    });
+  });
+
+  it("round-trips the exact slash command provider selection", () => {
+    const key = composerDraftStorageKey("user-a", "workspace:one:chat:2");
+    const stored = serializeComposerDraft(
+      "Please /deploy this",
+      [],
+      [],
+      { start: 7, length: 7, choice: deployCommand },
+    );
+
+    writeComposerDraft(key, stored);
+
+    expect(readComposerDraft(key)?.command?.choice).toEqual(deployCommand);
+  });
+
   it("leaves a restored format undecorated when its icon cannot be rendered", () => {
     const restored = decorateComposerDraft(draft, [undefined], "\u2003\u2060\u00a0");
 
@@ -106,6 +162,39 @@ describe("composer drafts", () => {
     sessionStorage.setItem(key, JSON.stringify({
       ...draft,
       formats: [{ position: 0, length: 8, noun: "Document", icon: "fileText" }],
+    }));
+
+    expect(readComposerDraft(key)).toBeUndefined();
+  });
+
+  it("rejects stored slash command metadata that does not match the text", () => {
+    const key = composerDraftStorageKey("user-a", "home");
+    sessionStorage.setItem(key, JSON.stringify({
+      version: 1,
+      text: "Please /deploy this",
+      formats: [],
+      command: { position: 0, length: 7, choice: deployCommand },
+    }));
+
+    expect(readComposerDraft(key)).toBeUndefined();
+  });
+
+  it("rejects a built-in command stored under a different name", () => {
+    const key = composerDraftStorageKey("user-a", "home");
+    sessionStorage.setItem(key, JSON.stringify({
+      version: 1,
+      text: "/delete this",
+      formats: [],
+      command: {
+        position: 0,
+        length: 7,
+        choice: {
+          selection: { builtin: true, commandId: "compact" },
+          name: "delete",
+          description: "Misleading command",
+          providerLabel: "Workshop",
+        },
+      },
     }));
 
     expect(readComposerDraft(key)).toBeUndefined();

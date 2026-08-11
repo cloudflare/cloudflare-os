@@ -92,7 +92,7 @@ import {
   ComposerMirror, composerTextareaClass, type ComposerMirrorHandle, type MirrorToken,
 } from "./components/chat/ComposerMirror";
 import {
-  useSlashCommandChoice, type OverseerSource,
+  slashCommandKey, useSlashCommandChoice, type OverseerSource,
 } from "./components/chat/slash-command-catalog";
 import {
   removeComposerToken, snapCaretOutOfRanges, spliceComposerToken, type ComposerRange,
@@ -336,6 +336,13 @@ function formatTokensFromDraft(draft: StoredComposerDraft | undefined): FormatTo
     noun,
     icon,
   })) ?? [];
+}
+
+function slashCommandFromDraft(draft: StoredComposerDraft | undefined): SelectedSlashCommand | null {
+  const command = draft?.command;
+  return command
+    ? { start: command.position, length: command.length, choice: command.choice }
+    : null;
 }
 
 const cssLogoUrls = new Map<string, string>();
@@ -1872,7 +1879,9 @@ export const ChatInput = ({
   const [sendHiccup, setSendHiccup] = useState<{ chatKey?: number | null } | null>(null);
   useEffect(() => setSendHiccup(null), [chatKey]);
   const [isAttachmentDragActive, setIsAttachmentDragActive] = useState(false);
-  const [selectedSlashCommand, setSelectedSlashCommand] = useState<SelectedSlashCommand | null>(null);
+  const [selectedSlashCommand, setSelectedSlashCommand] = useState<SelectedSlashCommand | null>(
+    () => slashCommandFromDraft(initialDraft),
+  );
   // The caret the slash command picker parses at. Deliberately updated only when it moves to a
   // different command token (see `syncPickerCaret`): the mirror owns the caret the user sees,
   // so ordinary caret movement doesn't have to re-render the composer.
@@ -1950,8 +1959,14 @@ export const ChatInput = ({
   };
 
   const composerMatchesStoredDraft = (draft: StoredComposerDraft) => {
+    const currentCommand = selectedSlashCommandRef.current;
+    const storedCommand = draft.command;
     if (inputValueRef.current !== draft.text || capsulesRef.current.length > 0 ||
-        selectedSlashCommandRef.current) {
+        !!currentCommand !== !!storedCommand || currentCommand && storedCommand &&
+        (currentCommand.start !== storedCommand.position ||
+          currentCommand.length !== storedCommand.length ||
+          slashCommandKey(currentCommand.choice.selection) !==
+            slashCommandKey(storedCommand.choice.selection))) {
       return false;
     }
     const currentFormats = formatTokensRef.current;
@@ -1978,6 +1993,7 @@ export const ChatInput = ({
         const restored = decorateComposerDraft(draft, logos, CAPSULE_LOGO_SLOT);
         setInputValue(restored.text);
         setFormatTokens(restored.formats);
+        setSelectedSlashCommand(restored.command ?? null);
         placeRestoredCaretAtEnd(restored.text, key, generation);
       });
     });
@@ -2016,6 +2032,7 @@ export const ChatInput = ({
           url: description.url,
         })),
         formatTokensRef.current,
+        selectedSlashCommandRef.current ?? undefined,
       ));
       skipDraftWriteRef.current = false;
       return;
@@ -2024,9 +2041,9 @@ export const ChatInput = ({
     if (previousKey !== undefined) {
       draftEditedRef.current = false;
       setCapsules([]);
-      setSelectedSlashCommand(null);
     }
     setFormatTokens(formatTokensFromDraft(storedDraft));
+    setSelectedSlashCommand(slashCommandFromDraft(storedDraft));
     if (storedDraft) restoreDraftPresentation(storedDraft, draftStorageKey, generation);
   }, [draftStorageKey]);
 
@@ -2043,8 +2060,9 @@ export const ChatInput = ({
         url: description.url,
       })),
       formatTokens,
+      selectedSlashCommand ?? undefined,
     ));
-  }, [capsules, draftStorageKey, formatTokens, inputValue]);
+  }, [capsules, draftStorageKey, formatTokens, inputValue, selectedSlashCommand]);
 
   // Seed the composer from an external suggestion (Home task cards). Re-runs whenever the nonce
   // changes so picking the same suggestion twice still works. Focus + move the cursor to the end.
@@ -6820,7 +6838,9 @@ function ChatInterface({
           extra p-4 (which would shrink the input vs. the in-chat composer). */}
       <div className="flex-shrink-0 border-t border-kumo-line">
         <div className={useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}>
+          {/* Attachments and pending resource operations belong to this workspace's composer. */}
           <ChatInput
+            key={workspaceId}
             createCapsuleGatekeeper={(accountId, url) =>
               overseer.newGatekeeper(accountId, url)
             }
@@ -7779,7 +7799,9 @@ function ChatInterface({
               {/* ── Bottom: input, update state, and cost ──────────────── */}
               <div className={`flex-shrink-0 bg-kumo-base ${sidebarMode ? "" : "border-t border-kumo-line"}`}>
                 <div className={useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}>
+                  {/* Remount all transient composer state when the conversation changes. */}
                   <ChatInput
+                    key={`${workspaceId}:${selectedChatId}`}
                     chatKey={selectedChatId}
                     createCapsuleGatekeeper={(accountId, url) =>
                       overseer.newGatekeeper(accountId, url)
