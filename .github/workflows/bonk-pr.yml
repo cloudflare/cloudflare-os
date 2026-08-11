@@ -28,6 +28,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
         run: |
+          permission=$(gh api \
+            "repos/$GH_REPO/collaborators/$GITHUB_ACTOR/permission" \
+            --jq '.permission')
+          if [[ ! "$permission" =~ ^(admin|maintain|write)$ ]]; then
+            echo "$GITHUB_ACTOR does not have permission to bypass Bonk."
+            exit 1
+          fi
+
           pr=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")
           head_repo=$(jq -r '.head.repo.full_name' <<< "$pr")
           head_sha=$(jq -r '.head.sha' <<< "$pr")
