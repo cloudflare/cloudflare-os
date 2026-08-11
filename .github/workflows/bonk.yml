@@ -8,7 +8,9 @@ on:
 
 jobs:
   bonk:
-    if: github.event.sender.type != 'Bot'
+    if: >-
+      github.event.sender.type != 'Bot' &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
