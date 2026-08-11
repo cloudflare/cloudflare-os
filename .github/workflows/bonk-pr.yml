@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Run Bonk
-        uses: ask-bonk/ask-bonk/github@c3f6dd354ca1f14329e8ea298958c000f0bfef3e
+        uses: ask-bonk/ask-bonk/github@d00cbcf581a5463f7adc2d81e470234b1727f8dd
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}

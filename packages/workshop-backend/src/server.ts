@@ -28,6 +28,7 @@ import { verifyCfAccessJwt } from "./access.js";
 import { resolveUiFeatureFlags } from "./feature-flags";
 import { serveSiteLogo, SITE_LOGO_PATH } from "./site-logo.js";
 import { createWorkshopLogger } from "./observability";
+import { wrapDoStubForTelemetry } from "./do-telemetry";
 
 const logger = createWorkshopLogger("workshop.server");
 
@@ -74,10 +75,11 @@ type Env = Cloudflare.Env & {
 @validateRpc()
 class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   constructor(private ctx: ExecutionContext, private env: Env,
-      private user: DurableObjectStub<UserDurableObject>,
+      userId: DurableObjectId,
       private abortSession: (reason: Error) => void) {
     super();
 
+    this.#userId = userId;
     this.overseers = this.ctx.exports.OverseerDurableObject;
     this.adminSettings = this.ctx.exports.AdminSettings;
     this.users = this.ctx.exports.UserDurableObject;
@@ -87,8 +89,16 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   private adminSettings: DurableObjectNamespace<AdminSettings>;
   private users: DurableObjectNamespace<UserDurableObject>;
 
+  #userId: DurableObjectId;
+
+  // Get a stub pointing at the user DO. We create a new stub for every request so that we don't
+  // have to worry about detecting when a stub has become broken.
+  get #user(): DurableObjectStub<UserDurableObject> {
+    return wrapDoStubForTelemetry(this.users.get(this.#userId));
+  }
+
   #isAdmin(): boolean {
-    let name = this.user.id.name;
+    let name = this.#userId.name;
     let admins = this.env.ADMINS;
 
     if (!name || !admins) return false;
@@ -107,56 +117,56 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   whoami(): Promise<AiChatAuthorInfo> {
-    return this.user.whoami();
+    return this.#user.whoami();
   }
   setOwnDisplayName(name: string): Promise<void> {
-    return this.user.setOwnDisplayName(name);
+    return this.#user.setOwnDisplayName(name);
   }
   changePassword(oldHash: Uint8Array, newHash: Uint8Array): Promise<void> {
-    return this.user.changePassword(oldHash, newHash);
+    return this.#user.changePassword(oldHash, newHash);
   }
   hasPasswordLogin(): Promise<boolean> {
-    return this.user.hasPasswordLogin();
+    return this.#user.hasPasswordLogin();
   }
   listModels(): Promise<AiChatAuthorInfo[]> {
-    return this.user.listModels();
+    return this.#user.listModels();
   }
   addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
-    return this.user.addModel(profile, config);
+    return this.#user.addModel(profile, config);
   }
   deleteModel(id: string): Promise<void> {
-    return this.user.deleteModel(id);
+    return this.#user.deleteModel(id);
   }
   setQuickModel(id: string | null): Promise<void> {
-    return this.user.setQuickModel(id);
+    return this.#user.setQuickModel(id);
   }
   getQuickModel(): Promise<null | string> {
-    return this.user.getQuickModel();
+    return this.#user.getQuickModel();
   }
 
   getPreferredModel(): Promise<string | null> {
-    return this.user.getPreferredModel();
+    return this.#user.getPreferredModel();
   }
   setPreferredModel(id: string | null): Promise<void> {
-    return this.user.setPreferredModel(id);
+    return this.#user.setPreferredModel(id);
   }
   isOnboardingCompleted(): Promise<boolean> {
-    return this.user.isOnboardingCompleted();
+    return this.#user.isOnboardingCompleted();
   }
   completeOnboarding(): Promise<void> {
-    return this.user.completeOnboarding();
+    return this.#user.completeOnboarding();
   }
 
   getCloudflareUsage(): Promise<CloudflareUsageInfo> {
-    return getUsageInfo(this.env, this.user);
+    return getUsageInfo(this.env, this.#user);
   }
 
   listCloudflareAccounts(): Promise<CloudflareAccountOption[]> {
-    return listConnectedAccounts(this.env, this.user);
+    return listConnectedAccounts(this.env, this.#user);
   }
 
   selectCloudflareAccount(accountId: string): Promise<void> {
-    return selectAccount(this.env, this.user, accountId);
+    return selectAccount(this.env, this.#user, accountId);
   }
 
   async setAvatar(data: Uint8Array | null): Promise<void> {
@@ -173,7 +183,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     }
     // Avatar data lives in KV (global), not the user's DO storage, so we
     // read/write it directly here to avoid routing through the DO location.
-    let userId = this.user.id.name!;
+    let userId = this.#userId.name!;
     if (data) {
       await this.env.AVATARS.put(userId, data);
     } else {
@@ -199,14 +209,14 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   getUiFeatureFlags(): Promise<UiFeatureFlags> {
-    return resolveUiFeatureFlags(this.env, this.user.id.name!);
+    return resolveUiFeatureFlags(this.env, this.#userId.name!);
   }
 
   async #openGadgetInternal(id: string, shareKey?: string,
                             configureObservers?: RpcStub<ObserverConfigCallback>)
       : Promise<NativeRpcStub<Overseer>> {
-    let userId = this.user.id.toString();
-    let profileId = this.user.id.name!;
+    let userId = this.#userId.toString();
+    let profileId = this.#userId.name!;
     let overseerId;
     try {
       overseerId = this.overseers.idFromString(id);
@@ -247,7 +257,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
       // (refreshAffectedCollaboratorListings), but that push is best-effort. Only catches entries
       // they click; others stay frozen at revocation, as a disconnected collaborator gets no pushes.
       if (getOpenGadgetErrorCode(err) === OPEN_GADGET_ERROR_CODES.workspaceAccessDenied) {
-        await this.user.forgetSharedGadget(id);
+        await this.#user.forgetSharedGadget(id);
       }
       throw err;
     }
@@ -271,10 +281,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   async newGadget(): Promise<RpcStub<Overseer>> {
     let id = this.overseers.newUniqueId().toString();
-    await this.user.newGadget(id, "Untitled Workspace");
+    await this.#user.newGadget(id, "Untitled Workspace");
     recordAnalytics(this.ctx, this.env, {
       event_name: "gadget_created",
-      user_id: this.user.id.toString(),
+      user_id: this.#userId.toString(),
       gadget_id: id,
       source: "blank",
     });
@@ -286,11 +296,11 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
-    return this.user.listGadgets();
+    return this.#user.listGadgets();
   }
 
   listOutputs(): Promise<ListOutputsResult> {
-    return this.user.listOutputs();
+    return this.#user.listOutputs();
   }
 
   async listOutputFormats(): Promise<OutputFormatOffer[]> {
@@ -300,67 +310,67 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   listGatekeeperVendors(filter?: GatekeeperVendorFilter): Promise<GatekeeperVendorInfo[]> {
-    return this.user.listGatekeeperVendors(filter);
+    return this.#user.listGatekeeperVendors(filter);
   }
 
   connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<{url: string}> {
-    return this.user.connectAccount(vendorId, resourceUrlPatterns);
+    return this.#user.connectAccount(vendorId, resourceUrlPatterns);
   }
 
   ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<{url?: string}> {
-    return this.user.ensureAccountResources(accountId, resourceUrlPatterns);
+    return this.#user.ensureAccountResources(accountId, resourceUrlPatterns);
   }
 
   listAddableGatekeepers(): Promise<GatekeeperVendorInfo[]> {
-    return this.user.listAddableGatekeepers();
+    return this.#user.listAddableGatekeepers();
   }
 
   provisionAmbientAccount(vendorId: string): Promise<void> {
-    return this.user.provisionAmbientAccount(vendorId);
+    return this.#user.provisionAmbientAccount(vendorId);
   }
 
   subscribeConnectedAccounts(
       subscriber: RpcStub<ConnectedAccountsSubscriber>, filter?: ConnectedAccountsFilter)
       : Promise<RpcStub<{}>> {
-    return this.user.subscribeConnectedAccounts(subscriber, filter);
+    return this.#user.subscribeConnectedAccounts(subscriber, filter);
   }
 
   disconnectAccount(accountId: number): Promise<void> {
-    return this.user.disconnectAccount(accountId);
+    return this.#user.disconnectAccount(accountId);
   }
 
   reconnectAccount(accountId: number): Promise<{url: string}> {
-    return this.user.reconnectAccount(accountId);
+    return this.#user.reconnectAccount(accountId);
   }
 
   startResourceConfigurator(
       accountId: number,
       resourceUrlPattern: string) {
-    return this.user.startResourceConfigurator(accountId, resourceUrlPattern);
+    return this.#user.startResourceConfigurator(accountId, resourceUrlPattern);
   }
 
   async dismissSharedGadget(gadgetId: string): Promise<void> {
-    return this.user.forgetSharedGadget(gadgetId);
+    return this.#user.forgetSharedGadget(gadgetId);
   }
 
   async listOwnBlueprints(): Promise<BlueprintUserSummary[]> {
-    return this.user.listBlueprints();
+    return this.#user.listBlueprints();
   }
 
   async getOwnBlueprint(blueprintId: string): Promise<BlueprintUserSummary | null> {
-    return this.user.getBlueprint(blueprintId);
+    return this.#user.getBlueprint(blueprintId);
   }
 
   async listLibraryBlueprints(): Promise<BlueprintLibrarySummary[]> {
-    return this.user.listLibraryBlueprints();
+    return this.#user.listLibraryBlueprints();
   }
 
   async setBlueprintPinned(blueprintId: string, pinned: boolean): Promise<void> {
-    return this.user.setBlueprintPinned(blueprintId, pinned);
+    return this.#user.setBlueprintPinned(blueprintId, pinned);
   }
 
   async isBlueprintPinned(blueprintId: string): Promise<boolean> {
-    return this.user.isBlueprintPinned(blueprintId);
+    return this.#user.isBlueprintPinned(blueprintId);
   }
 
   async listFeaturedBlueprints(): Promise<BlueprintPublicInfo[]> {
@@ -369,15 +379,15 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async addBlueprintToLibrary(blueprintId: string): Promise<void> {
-    return this.user.addBlueprintToLibrary(blueprintId);
+    return this.#user.addBlueprintToLibrary(blueprintId);
   }
 
   async removeBlueprintFromLibrary(blueprintId: string): Promise<void> {
-    return this.user.removeBlueprintFromLibrary(blueprintId);
+    return this.#user.removeBlueprintFromLibrary(blueprintId);
   }
 
   isBlueprintInLibrary(blueprintId: string): Promise<{ uploaded: boolean } | null> {
-    return this.user.isBlueprintInLibrary(blueprintId);
+    return this.#user.isBlueprintInLibrary(blueprintId);
   }
 
   async importBlueprint(archive: ReadableStream<Uint8Array>): Promise<string> {
@@ -396,16 +406,16 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
       let kvRecord: BlueprintKvRecord = {
         metadata,
-        ownerId: this.user.id.toString(),
+        ownerId: this.#userId.toString(),
       };
 
       await this.env.BLUEPRINTS.put(blueprintId, JSON.stringify(kvRecord));
 
-      await this.user.importBlueprint(blueprintId, metadata);
+      await this.#user.importBlueprint(blueprintId, metadata);
 
       recordAnalytics(this.ctx, this.env, {
         event_name: "blueprint_imported",
-        user_id: this.user.id.toString(),
+        user_id: this.#userId.toString(),
         blueprint_id: blueprintId,
       });
 
@@ -433,7 +443,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
     // 3. Create new Overseer DO (same as newGadget()).
     let id = this.overseers.newUniqueId().toString();
-    await this.user.newGadget(id, kvRecord.metadata.title);
+    await this.#user.newGadget(id, kvRecord.metadata.title);
     let overseerResult = await this.#openGadgetInternal(id);
 
     // 4. Initialize from blueprint code.
@@ -527,7 +537,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
     recordAnalytics(this.ctx, this.env, {
       event_name: "gadget_created",
-      user_id: this.user.id.toString(),
+      user_id: this.#userId.toString(),
       gadget_id: id,
       blueprint_id: blueprintId,
       source: "blueprint",
@@ -539,7 +549,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async deleteOrphanedBlueprint(blueprintId: string): Promise<void> {
-    return this.user.deleteOwnedBlueprint(blueprintId);
+    return this.#user.deleteOwnedBlueprint(blueprintId);
   }
 
   // --- Gatekeeper management apps ---
@@ -551,7 +561,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   async listGatekeeperApps(): Promise<GatekeeperAppInfo[]> {
     // listProvidedAccounts provisions auto-provisioned accounts first (idempotent), so their apps
     // appear in the nav even before the user opens a gadget — in a single round trip.
-    let accounts = await this.user.listProvidedAccounts();
+    let accounts = await this.#user.listProvidedAccounts();
     return accounts
         .filter(account => account.description.providesUi)
         .map(account => ({
@@ -564,11 +574,12 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   async getGatekeeperApp(id: string): Promise<GatekeeperUiFrame | null> {
     // Self-sufficient: listProvidedAccounts provisions auto-provisioned accounts first (idempotent),
     // so a direct URL load of /gatekeepers/$id works without racing the Header's listGatekeeperApps.
-    let accounts = await this.user.listProvidedAccounts();
+    let user = this.#user;  // one stub for both calls
+    let accounts = await user.listProvidedAccounts();
     let app = accounts.find(account => account.vendorId === id && account.description.providesUi);
     if (!app) return null;
     // isAdmin is supplied fresh per open so admin-gated features reflect the user's current status.
-    return this.user.startAccountAppUi(app.accountId, { isAdmin: this.#isAdmin() });
+    return user.startAccountAppUi(app.accountId, { isAdmin: this.#isAdmin() });
   }
 
   // --- Deployment admin ---
@@ -581,7 +592,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     if (!this.#isAdmin()) return null;
     // #isAdmin() guarantees a non-empty user id name. Forwarded to gatekeepers when listing the
     // resource catalog so RBAC-gated ones still surface for this admin.
-    let adminUserId = this.user.id.name!;
+    let adminUserId = this.#userId.name!;
     // @ts-expect-error Cap'n Web RPC stubs and native RPC targets are compatible but the type
     //     system doesn't know this.
     return new AdminApiImpl(this.adminSettings.getByName(""), adminUserId);
@@ -668,14 +679,13 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     }
 
     let userId = this.users.idFromName(split[0]);
-    let stub = this.users.get(userId);
-    await stub.authenticate(split[1]);
+    await this.users.get(userId).authenticate(split[1]);
     recordAnalytics(this.ctx, this.env, {
       event_name: "user_authenticated",
       user_id: userId.toString(),
       source: "session_token",
     });
-    return new AuthenticatedApiImpl(this.ctx, this.env, stub, this.abortSession);
+    return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession);
   }
 
   async authenticateFromCfAccess(): Promise<AuthenticatedApi> {
@@ -685,9 +695,9 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
     let email = this.accessPayload.email as string;
     let userId = this.users.idFromName(email);
-    let stub = this.users.get(userId);
     let signupsEnabled = (await readAdminConfig(this.env)).signupsEnabled;
-    let accountCreated = await stub.authenticateFromCfAccess(email, signupsEnabled);
+    let accountCreated =
+        await this.users.get(userId).authenticateFromCfAccess(email, signupsEnabled);
     if (accountCreated) {
       recordAnalytics(this.ctx, this.env, {
         event_name: "account_created",
@@ -700,7 +710,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
       user_id: userId.toString(),
       source: "cf_access",
     });
-    return new AuthenticatedApiImpl(this.ctx, this.env, stub, this.abortSession);
+    return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession);
   }
 
   async login(username: string, passwordHash: Uint8Array): Promise<string | null> {
@@ -714,9 +724,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     username = normalizeUsername(username);
 
     let id = this.users.idFromName(username);
-    let user = this.users.get(id);
-
-    let token = await user.login(passwordHash);
+    let token = await this.users.get(id).login(passwordHash);
     if (!token) return null;
 
     recordAnalytics(this.ctx, this.env, {

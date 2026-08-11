@@ -81,6 +81,7 @@ import {
   WorkpieceId,
   BlueprintOutput,
   MessageFormatRef,
+  OutputIcon,
   OutputFormatOffer,
 } from "@gadgets/workshop-shared/api";
 import { ActionKind, ResourceDescription } from "@gadgets/workshop-shared/gatekeeper";
@@ -91,7 +92,7 @@ import {
   ComposerMirror, composerTextareaClass, type ComposerMirrorHandle, type MirrorToken,
 } from "./components/chat/ComposerMirror";
 import {
-  useSlashCommandChoice, type OverseerSource,
+  slashCommandKey, useSlashCommandChoice, type OverseerSource,
 } from "./components/chat/slash-command-catalog";
 import {
   removeComposerToken, snapCaretOutOfRanges, spliceComposerToken, type ComposerRange,
@@ -122,6 +123,14 @@ import OutOfCreditsModal from "./components/billing/OutOfCreditsModal";
 import { useSlashCommandPicker } from "./components/chat/SlashCommandPicker";
 import { formatFullTimestamp } from "./utils/formatTimestamp";
 import { copyToClipboard } from "./clipboard";
+import {
+  composerDraftStorageKey,
+  decorateComposerDraft,
+  readComposerDraft,
+  serializeComposerDraft,
+  writeComposerDraft,
+  type StoredComposerDraft,
+} from "./composerDraft";
 
 export interface StreamingProposedChanges {
   updates: Uint8Array[];
@@ -313,11 +322,28 @@ const CAPSULE_LOGO_SLOT = "\u2003\u2060\u00a0";
 
 // The format a new workspace will be made from, as a token in the composer's text.
 type FormatToken = ComposerRange & {
-  format: OutputFormatOffer;
+  noun: string;
+  icon: OutputIcon;
   // Data URL for the format's icon, painted into the token's logo slot. Absent if it couldn't be
   // rendered, in which case the token carries no slot either.
   logo?: string;
 };
+
+function formatTokensFromDraft(draft: StoredComposerDraft | undefined): FormatToken[] {
+  return draft?.formats.map(({position, length, noun, icon}) => ({
+    start: position,
+    length,
+    noun,
+    icon,
+  })) ?? [];
+}
+
+function slashCommandFromDraft(draft: StoredComposerDraft | undefined): SelectedSlashCommand | null {
+  const command = draft?.command;
+  return command
+    ? { start: command.position, length: command.length, choice: command.choice }
+    : null;
+}
 
 const cssLogoUrls = new Map<string, string>();
 
@@ -1778,6 +1804,7 @@ export const ChatInput = ({
   minRows = 2,
   seedText,
   seedNonce,
+  draftStorageKey,
   attachLabel,
   draftUpdateBanner,
   blockedReason,
@@ -1821,6 +1848,8 @@ export const ChatInput = ({
    * whenever `seedNonce` changes, so the same text can be re-seeded by bumping the nonce. */
   seedText?: string;
   seedNonce?: number;
+  /** Session-storage key used to recover this composer's draft prompt after a page refresh. */
+  draftStorageKey?: string;
   /** Optional label for the attach menu item. */
   attachLabel?: string;
   draftUpdateBanner?: ReactNode;
@@ -1838,8 +1867,11 @@ export const ChatInput = ({
    * pre-approval catalog and proactively offer to pre-approve its actions. */
 }) => {
   const toasts = useKumoToastManager();
-  const [inputValue, setInputValue] = useState("");
+  const [initialDraft] = useState(() => readComposerDraft(draftStorageKey));
+  const [inputValue, setInputValue] = useState(() => initialDraft?.text ?? "");
   const [capsules, setCapsules] = useState<InputCapsule[]>([]);
+  const [formatTokens, setFormatTokens] = useState<FormatToken[]>(() =>
+    formatTokensFromDraft(initialDraft));
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [isSending, setIsSending] = useState(false);
   // The chat the "may not have been sent" hint belongs to; the render condition scopes it, and
@@ -1847,7 +1879,9 @@ export const ChatInput = ({
   const [sendHiccup, setSendHiccup] = useState<{ chatKey?: number | null } | null>(null);
   useEffect(() => setSendHiccup(null), [chatKey]);
   const [isAttachmentDragActive, setIsAttachmentDragActive] = useState(false);
-  const [selectedSlashCommand, setSelectedSlashCommand] = useState<SelectedSlashCommand | null>(null);
+  const [selectedSlashCommand, setSelectedSlashCommand] = useState<SelectedSlashCommand | null>(
+    () => slashCommandFromDraft(initialDraft),
+  );
   // The caret the slash command picker parses at. Deliberately updated only when it moves to a
   // different command token (see `syncPickerCaret`): the mirror owns the caret the user sees,
   // so ordinary caret movement doesn't have to re-render the composer.
@@ -1900,13 +1934,145 @@ export const ChatInput = ({
   // Keep inputValue in a ref so handleCursorChange can read it without re-binding.
   const inputValueRef = useRef(inputValue);
   inputValueRef.current = inputValue;
+  const draftEditedRef = useRef(false);
+
+  const loadedDraftKeyRef = useRef(draftStorageKey);
+  const skipDraftWriteRef = useRef(false);
+  const draftRestoreGenerationRef = useRef(0);
+
+  const placeRestoredCaretAtEnd = (
+    text: string,
+    key: string | undefined,
+    generation: number,
+  ) => {
+    requestAnimationFrame(() => {
+      if (draftRestoreGenerationRef.current !== generation ||
+          loadedDraftKeyRef.current !== key || inputValueRef.current !== text) {
+        return;
+      }
+      const textarea = composerTextareaRef.current;
+      if (!textarea) return;
+      if (autoFocus) textarea.focus();
+      textarea.setSelectionRange(text.length, text.length);
+      autoResizeTextarea(textarea, minRows, newChat ? 10 : 4);
+    });
+  };
+
+  const composerMatchesStoredDraft = (draft: StoredComposerDraft) => {
+    const currentCommand = selectedSlashCommandRef.current;
+    const storedCommand = draft.command;
+    if (inputValueRef.current !== draft.text || capsulesRef.current.length > 0 ||
+        !!currentCommand !== !!storedCommand || currentCommand && storedCommand &&
+        (currentCommand.start !== storedCommand.position ||
+          currentCommand.length !== storedCommand.length ||
+          slashCommandKey(currentCommand.choice.selection) !==
+            slashCommandKey(storedCommand.choice.selection))) {
+      return false;
+    }
+    const currentFormats = formatTokensRef.current;
+    return currentFormats.length === draft.formats.length && currentFormats.every((format, index) => {
+      const stored = draft.formats[index];
+      return !format.logo && format.start === stored.position && format.length === stored.length &&
+        format.noun === stored.noun && format.icon === stored.icon;
+    });
+  };
+
+  const restoreDraftPresentation = (
+    draft: StoredComposerDraft,
+    key: string | undefined,
+    generation: number,
+  ) => {
+    placeRestoredCaretAtEnd(draft.text, key, generation);
+    if (draft.formats.length === 0) return;
+    void Promise.all(draft.formats.map(({icon}) => formatIconDataUrl(icon))).then((logos) => {
+      requestAnimationFrame(() => {
+        if (draftRestoreGenerationRef.current !== generation ||
+            loadedDraftKeyRef.current !== key || !composerMatchesStoredDraft(draft)) {
+          return;
+        }
+        const restored = decorateComposerDraft(draft, logos, CAPSULE_LOGO_SLOT);
+        setInputValue(restored.text);
+        setFormatTokens(restored.formats);
+        setSelectedSlashCommand(restored.command ?? null);
+        placeRestoredCaretAtEnd(restored.text, key, generation);
+      });
+    });
+  };
+
+  useEffect(() => {
+    // On a cold load the user-scoped key usually arrives after authentication; the key-change
+    // effect below restores that draft, while this path handles drafts available at mount.
+    if (!initialDraft) return;
+    const generation = ++draftRestoreGenerationRef.current;
+    restoreDraftPresentation(initialDraft, draftStorageKey, generation);
+    return () => {
+      if (draftRestoreGenerationRef.current === generation) {
+        draftRestoreGenerationRef.current++;
+      }
+    };
+    // Restoration belongs to the draft captured during initialization, not later prop values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (loadedDraftKeyRef.current === draftStorageKey) return;
+    const generation = ++draftRestoreGenerationRef.current;
+    const previousKey = loadedDraftKeyRef.current;
+    loadedDraftKeyRef.current = draftStorageKey;
+    skipDraftWriteRef.current = true;
+    const storedDraft = readComposerDraft(draftStorageKey);
+    const preserveLocalDraft = previousKey === undefined &&
+      (draftEditedRef.current || inputValueRef.current.length > 0);
+    if (preserveLocalDraft) {
+      writeComposerDraft(draftStorageKey, serializeComposerDraft(
+        inputValueRef.current,
+        capsulesRef.current.map(({start, length, description}) => ({
+          start,
+          length,
+          url: description.url,
+        })),
+        formatTokensRef.current,
+        selectedSlashCommandRef.current ?? undefined,
+      ));
+      skipDraftWriteRef.current = false;
+      return;
+    }
+    setInputValue(storedDraft?.text ?? "");
+    if (previousKey !== undefined) {
+      draftEditedRef.current = false;
+      setCapsules([]);
+    }
+    setFormatTokens(formatTokensFromDraft(storedDraft));
+    setSelectedSlashCommand(slashCommandFromDraft(storedDraft));
+    if (storedDraft) restoreDraftPresentation(storedDraft, draftStorageKey, generation);
+  }, [draftStorageKey]);
+
+  useEffect(() => {
+    if (skipDraftWriteRef.current) {
+      skipDraftWriteRef.current = false;
+      return;
+    }
+    writeComposerDraft(draftStorageKey, serializeComposerDraft(
+      inputValue,
+      capsules.map(({start, length, description}) => ({
+        start,
+        length,
+        url: description.url,
+      })),
+      formatTokens,
+      selectedSlashCommand ?? undefined,
+    ));
+  }, [capsules, draftStorageKey, formatTokens, inputValue, selectedSlashCommand]);
 
   // Seed the composer from an external suggestion (Home task cards). Re-runs whenever the nonce
   // changes so picking the same suggestion twice still works. Focus + move the cursor to the end.
   useEffect(() => {
     if (seedNonce === undefined) return;
+    draftRestoreGenerationRef.current++;
     const text = seedText ?? "";
     setSelectedSlashCommand(null);
+    setCapsules([]);
+    setFormatTokens([]);
     setInputValue(text);
     requestAnimationFrame(() => {
       const ta = composerTextareaRef.current;
@@ -2255,6 +2421,9 @@ export const ChatInput = ({
       capsule.start >= tokenEnd
         ? {...capsule, start: capsule.start + splice.delta}
         : capsule));
+    setFormatTokens(previous => previous.map(token => token.start >= tokenEnd
+      ? {...token, start: token.start + splice.delta}
+      : token));
     setSelectedSlashCommand({choice, start: splice.start, length: splice.length});
     requestAnimationFrame(() => {
       composerTextareaRef.current?.focus();
@@ -2269,6 +2438,13 @@ export const ChatInput = ({
     setSelectedSlashCommand(previous => previous && previous.start >= position
       ? {...previous, start: previous.start + delta}
       : previous);
+  };
+
+  const shiftFormatTokens = (position: number, delta: number) => {
+    if (delta === 0) return;
+    setFormatTokens(previous => previous.map(token => token.start >= position
+      ? {...token, start: token.start + delta}
+      : token));
   };
 
   const slashCommandPicker = useSlashCommandPicker({
@@ -2304,6 +2480,7 @@ export const ChatInput = ({
 
     sendInFlightRef.current = true;
     setIsSending(true);
+    const sendingDraftKey = draftStorageKey;
     try {
       let messageInput = inputValue;
       let inputCapsules = capsules;
@@ -2315,7 +2492,7 @@ export const ChatInput = ({
         let delta = 0;
         for (const token of formatTokens) {
           if (token.start + token.length <= position) {
-            delta += token.format.output.noun.length - token.length;
+            delta += token.noun.length - token.length;
           }
         }
         return delta;
@@ -2328,7 +2505,7 @@ export const ChatInput = ({
         // back-to-front so earlier offsets stay valid while the text is rewritten.
         let text = messageInput;
         for (const token of [...formatTokens].toSorted((a, b) => b.start - a.start)) {
-          text = text.slice(0, token.start) + token.format.output.noun +
+          text = text.slice(0, token.start) + token.noun +
               text.slice(token.start + token.length);
         }
         inputCapsules = capsules.map(capsule => {
@@ -2441,12 +2618,15 @@ export const ChatInput = ({
       // arguments: the part the transcript renders as the user's words.
       const formatRefs = locateMessageFormatRefs(
           typeof message === "string" ? message : message.args,
-          [...formatTokens].toSorted((a, b) => a.start - b.start).map(token => token.format));
+          [...formatTokens].toSorted((a, b) => a.start - b.start));
 
       await onSend(message, selectedModel,
           capsuleSpecifiers?.length ? capsuleSpecifiers : undefined,
           readyAttachments.length ? readyAttachments : undefined,
           formatRefs);
+      writeComposerDraft(sendingDraftKey, undefined);
+      if (loadedDraftKeyRef.current !== sendingDraftKey) return;
+      draftEditedRef.current = false;
       for (const attachment of attachmentsSnapshot) {
         if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
       }
@@ -2511,6 +2691,7 @@ export const ChatInput = ({
 
         // Adjust positions of existing capsules and add the new one.
         shiftSelectedSlashCommand(urlEnd, splice.delta);
+        shiftFormatTokens(urlEnd, splice.delta);
         setCapsules((prev) => [
           ...prev.map((c) => c.start >= urlEnd ? { ...c, start: c.start + splice.delta } : c),
           {
@@ -2557,6 +2738,7 @@ export const ChatInput = ({
 
     // Adjust positions of any capsules that come after the URL.
     shiftSelectedSlashCommand(urlEnd, lengthDiff);
+    shiftFormatTokens(urlEnd, lengthDiff);
     if (lengthDiff !== 0) {
       setCapsules((prev) => {
         const adjusted = prev.map((c) =>
@@ -2622,6 +2804,7 @@ export const ChatInput = ({
 
     // Shift any existing capsules after the insertion point.
     shiftSelectedSlashCommand(insertPos, splice.delta);
+    shiftFormatTokens(insertPos, splice.delta);
     setCapsules((prev) => [
       ...prev.map((c) =>
         c.start >= insertPos ? { ...c, start: c.start + splice.delta } : c),
@@ -2897,7 +3080,6 @@ export const ChatInput = ({
   // Formats named in the message are inline tokens like capsules, addressed by the caret as one
   // unit. There can be several, and where each sits says which part of the request it belongs to,
   // so they stay in the text rather than becoming a separate field.
-  const [formatTokens, setFormatTokens] = useState<FormatToken[]>([]);
   const formatTokensRef = useRef(formatTokens);
   formatTokensRef.current = formatTokens;
 
@@ -2924,7 +3106,13 @@ export const ChatInput = ({
       ...previous.map(token => token.start >= at
         ? {...token, start: token.start + splice.delta}
         : token),
-      {format, logo, start: splice.start, length: splice.length},
+      {
+        noun: format.output.noun,
+        icon: format.output.icon,
+        logo,
+        start: splice.start,
+        length: splice.length,
+      },
     ]);
     requestAnimationFrame(() => {
       composerTextareaRef.current?.focus();
@@ -3113,6 +3301,8 @@ export const ChatInput = ({
               aria-controls={slashCommandPicker.open ? slashCommandPicker.listboxId : undefined}
               aria-activedescendant={slashCommandPicker.activeDescendant}
               onChange={(e) => {
+                draftEditedRef.current = true;
+                draftRestoreGenerationRef.current++;
                 handleInputChange(e.target.value, e.target.selectionStart ?? 0);
                 syncPickerCaret(e.target.selectionStart ?? 0);
                 requestAnimationFrame(handleCursorChange);
@@ -4044,6 +4234,7 @@ function fallbackToStoredModelSelection(
 }
 
 interface ChatInterfaceProps {
+  workspaceId: string | undefined;
   overseer: RpcStub<Overseer>;
   selectedChatId: number | null;
   onNavigateToChat: (
@@ -4237,6 +4428,7 @@ function getOrCreateProvisionalToolCall(
 }
 
 function ChatInterface({
+  workspaceId,
   overseer,
   selectedChatId,
   onNavigateToChat,
@@ -6646,7 +6838,9 @@ function ChatInterface({
           extra p-4 (which would shrink the input vs. the in-chat composer). */}
       <div className="flex-shrink-0 border-t border-kumo-line">
         <div className={useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}>
+          {/* Attachments and pending resource operations belong to this workspace's composer. */}
           <ChatInput
+            key={workspaceId}
             createCapsuleGatekeeper={(accountId, url) =>
               overseer.newGatekeeper(accountId, url)
             }
@@ -6660,6 +6854,9 @@ function ChatInterface({
             onToggleThinkingTraces={toggleShowThinkingTraces}
             minRows={2}
             newChat
+            draftStorageKey={currentUser && workspaceId
+              ? composerDraftStorageKey(currentUser.id, `workspace:${workspaceId}:new`)
+              : undefined}
           />
           {/* Reserve the same height as the token/cost row to avoid layout shift. */}
           <div aria-hidden className="min-h-[1rem]" />
@@ -7602,7 +7799,9 @@ function ChatInterface({
               {/* ── Bottom: input, update state, and cost ──────────────── */}
               <div className={`flex-shrink-0 bg-kumo-base ${sidebarMode ? "" : "border-t border-kumo-line"}`}>
                 <div className={useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}>
+                  {/* Remount all transient composer state when the conversation changes. */}
                   <ChatInput
+                    key={`${workspaceId}:${selectedChatId}`}
                     chatKey={selectedChatId}
                     createCapsuleGatekeeper={(accountId, url) =>
                       overseer.newGatekeeper(accountId, url)
@@ -7621,6 +7820,12 @@ function ChatInterface({
                     onStop={handleStop}
                     showThinkingTraces={showThinkingTraces}
                     onToggleThinkingTraces={toggleShowThinkingTraces}
+                    draftStorageKey={currentUser && workspaceId && selectedChatId !== null
+                      ? composerDraftStorageKey(
+                          currentUser.id,
+                          `workspace:${workspaceId}:chat:${selectedChatId}`,
+                        )
+                      : undefined}
                     blockedReason={
                       hasPendingConnectionRequest
                         ? "Set up or deny the connection request above to continue."

@@ -3,9 +3,14 @@ import { flushSync } from 'react-dom'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
 import { useNavigate } from '@tanstack/react-router'
 import type { GatekeeperUiFrame } from '@gadgets/workshop-shared/gatekeeper'
+import type {
+  GatekeeperAppTheme,
+  GatekeeperAppThemeReceiver,
+} from '@gadgets/workshop-shared/theme'
+import { isHexColor } from '@gadgets/workshop-shared/api'
 import { createRateLimitedCapability } from './rateLimitedCapability'
 import { useTheme } from './ThemeContext'
-import type { ResolvedThemeMode } from './theme'
+import { useServerConfig } from './ServerConfigContext'
 import { forwardTrustedFrameError } from './errorReporting'
 import { useAuthenticatedApi } from './AuthContext'
 import {
@@ -13,11 +18,6 @@ import {
   parseGatekeeperAppWorkspaceTarget,
   type GatekeeperAppWorkspaceTarget,
 } from './gatekeeperAppNavigation'
-
-// A receiver, defined by the sandboxed app, that the host calls to push theme changes into the frame.
-interface ThemeReceiver extends RpcTarget {
-  setThemeMode(mode: ResolvedThemeMode): void
-}
 
 // The content-pane rect, in viewport coordinates, that the app pins its page to while the iframe
 // is full-viewport.
@@ -83,8 +83,8 @@ class GatekeeperAppHostImpl extends RpcTarget {
   readonly #openPrompt: OpenPrompt
   readonly #resolveWorkspaceTitles: ResolveWorkspaceTitles
   #presenting = false
-  #themeMode: ResolvedThemeMode
-  #themeReceiver: RpcStub<ThemeReceiver> | null = null
+  #theme: GatekeeperAppTheme
+  #themeReceiver: RpcStub<GatekeeperAppThemeReceiver> | null = null
   // Presentation changes are coalesced to a single apply per animation frame (see #applyPending).
   #pendingActive: boolean | null = null
   #pendingResolvers: ((ack: PresentAck) => void)[] = []
@@ -93,13 +93,13 @@ class GatekeeperAppHostImpl extends RpcTarget {
   constructor(
     capability: any,
     present: PresentController,
-    themeMode: ResolvedThemeMode,
+    theme: GatekeeperAppTheme,
     openTarget: OpenTarget,
     openPrompt: OpenPrompt,
     resolveWorkspaceTitles: ResolveWorkspaceTitles,
   ) {
     super()
-    this.#themeMode = themeMode
+    this.#theme = theme
     const { capability: ui, dispose } = createRateLimitedCapability(capability, {
       maxConcurrency: 8,
       maxCallsPerMinute: 600,
@@ -138,29 +138,29 @@ class GatekeeperAppHostImpl extends RpcTarget {
     this.#openPrompt(normalizeGatekeeperAppPrompt(prompt))
   }
 
-  // The app calls this once to learn the current mode and register a receiver for later changes.
+  // The app calls this once to learn the current theme and register a receiver for later changes.
   // Apps that don't theme themselves never call it.
-  subscribeTheme(receiver: RpcStub<ThemeReceiver>): ResolvedThemeMode {
+  subscribeTheme(receiver: RpcStub<GatekeeperAppThemeReceiver>): GatekeeperAppTheme {
     this.#themeReceiver?.[Symbol.dispose]?.()
     // The argument stub is disposed when this call returns, so keep our own dup (released in dispose).
     this.#themeReceiver = receiver.dup()
-    return this.#themeMode
+    return this.#theme
   }
 
-  #dropThemeReceiver(receiver: RpcStub<ThemeReceiver>) {
+  #dropThemeReceiver(receiver: RpcStub<GatekeeperAppThemeReceiver>) {
     if (this.#themeReceiver !== receiver) return
     receiver[Symbol.dispose]?.()
     this.#themeReceiver = null
   }
 
-  // Push a new mode to a subscribed app; a no-op until (and unless) the app subscribes.
-  updateTheme(mode: ResolvedThemeMode) {
-    this.#themeMode = mode
+  // Push a new theme to a subscribed app; a no-op until (and unless) the app subscribes.
+  updateTheme(theme: GatekeeperAppTheme) {
+    this.#theme = theme
     const receiver = this.#themeReceiver
     if (!receiver) return
 
     try {
-      Promise.resolve(receiver.setThemeMode(mode)).catch(() => this.#dropThemeReceiver(receiver))
+      Promise.resolve(receiver.setTheme(theme)).catch(() => this.#dropThemeReceiver(receiver))
     } catch {
       this.#dropThemeReceiver(receiver)
     }
@@ -224,13 +224,17 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
   const invalidatedRef = useRef(false)
   const [overlay, setOverlay] = useState<OverlayState>(null)
   const overlayRef = useRef<OverlayState>(null)
-  // Push the Workshop's resolved light/dark mode to the app whenever it changes.
+  // Push the Workshop's resolved light/dark mode and deployment accent whenever either changes.
   const { resolvedThemeMode } = useTheme()
-  const themeModeRef = useRef(resolvedThemeMode)
-  themeModeRef.current = resolvedThemeMode
+  const configuredAccentColor = useServerConfig()?.accentColor
+  const accentColor = configuredAccentColor && isHexColor(configuredAccentColor)
+    ? configuredAccentColor
+    : null
+  const themeRef = useRef<GatekeeperAppTheme>({ mode: resolvedThemeMode, accentColor })
+  themeRef.current = { mode: resolvedThemeMode, accentColor }
   useEffect(() => {
-    hostRef.current?.updateTheme(resolvedThemeMode)
-  }, [resolvedThemeMode])
+    hostRef.current?.updateTheme({ mode: resolvedThemeMode, accentColor })
+  }, [resolvedThemeMode, accentColor])
 
   const setOverlayPhase = useCallback((next: OverlayState) => {
     if (overlayRef.current === next) return
@@ -312,7 +316,7 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
       const host = new GatekeeperAppHostImpl(
         capabilityRef.current,
         present,
-        themeModeRef.current,
+        themeRef.current,
         openTarget,
         openPrompt,
         resolveWorkspaceTitles,

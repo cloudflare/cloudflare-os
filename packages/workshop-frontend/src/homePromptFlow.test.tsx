@@ -11,10 +11,12 @@ const testState = vi.hoisted(() => {
   return {
     addToast: vi.fn<(toast: unknown) => void>(),
     authenticatedApi: { listModels, newGadget },
+    currentUser: { id: "user-a", name: "User A" },
     listModels,
     navigate: vi.fn<(options: unknown) => void>(),
     newGadget,
     seeds: [] as Array<{ text?: string; nonce?: number }>,
+    draftStorageKeys: [] as Array<string | undefined>,
   };
 });
 
@@ -30,12 +32,18 @@ vi.mock("@cloudflare/kumo", () => ({
 vi.mock("./AuthContext", () => ({
   useAuthenticatedApi: () => ({
     authenticatedApi: testState.authenticatedApi,
+    currentUser: testState.currentUser,
   }),
 }));
 
 vi.mock("./ChatInterface", () => ({
-  ChatInput: ({ seedText, seedNonce }: { seedText?: string; seedNonce?: number }) => {
+  ChatInput: ({ seedText, seedNonce, draftStorageKey }: {
+    seedText?: string;
+    seedNonce?: number;
+    draftStorageKey?: string;
+  }) => {
     testState.seeds.push({ text: seedText, nonce: seedNonce });
+    testState.draftStorageKeys.push(draftStorageKey);
     return <textarea aria-label="Prompt" readOnly value={seedText ?? ""} />;
   },
 }));
@@ -57,6 +65,7 @@ describe("Home prompt route flow", () => {
     container?.remove();
     localStorage.clear();
     testState.seeds.length = 0;
+    testState.draftStorageKeys.length = 0;
     vi.clearAllMocks();
   });
 
@@ -72,5 +81,6 @@ describe("Home prompt route flow", () => {
     expect(Math.max(...testState.seeds.map(({ nonce }) => nonce ?? 0))).toBe(1);
     expect(testState.navigate).toHaveBeenCalledWith({ to: "/", search: {}, replace: true });
     expect(testState.newGadget).not.toHaveBeenCalled();
+    expect(testState.draftStorageKeys).toContain("gadgets:composer-draft:v1:user-a:home");
   });
 });

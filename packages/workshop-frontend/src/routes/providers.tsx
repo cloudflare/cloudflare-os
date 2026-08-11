@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import { useAuthenticatedApi } from '../AuthContext'
 import {
@@ -187,7 +187,12 @@ function ProvidersPage() {
     }
   }
 
+  // Overlapping setQuickModel calls have no ordering guarantee, so ignore clicks while one is
+  // in flight.
+  const quickInFlight = useRef(false)
   const handleSetQuick = async (modelId: string) => {
+    if (quickInFlight.current) return
+    quickInFlight.current = true
     const next = quickModel === modelId ? null : modelId
     setQuickModel(next)
     try {
@@ -196,6 +201,8 @@ function ProvidersPage() {
       console.error('Failed to set quick model:', err)
       setQuickModel(quickModel) // revert
       toasts.add({ title: 'Failed to update default model', variant: 'error' })
+    } finally {
+      quickInFlight.current = false
     }
   }
 

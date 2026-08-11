@@ -10,18 +10,18 @@
 // first. A hand-typed noun can still take a chip's place, which is cosmetic -- it names the same
 // format.
 
-import type { MessageFormatRef, OutputFormatOffer } from '@gadgets/workshop-shared/api'
+import type { MessageFormatRef } from '@gadgets/workshop-shared/api'
 
 export function locateMessageFormatRefs(
   text: string,
-  formats: readonly OutputFormatOffer[],
+  formats: readonly Pick<MessageFormatRef, 'noun' | 'icon'>[],
 ): MessageFormatRef[] | undefined {
   if (formats.length === 0) return undefined
 
   const refs: MessageFormatRef[] = []
   let cursor = 0
   for (const format of formats) {
-    const noun = format.output.noun
+    const noun = format.noun
     const position = text.indexOf(noun, cursor)
     // A noun can genuinely go missing: a slash command's arguments may not include the part of the
     // line the format was in. Dropping the ref leaves the message correct, just unadorned.
@@ -30,7 +30,7 @@ export function locateMessageFormatRefs(
       position,
       length: noun.length,
       noun,
-      icon: format.output.icon,
+      icon: format.icon,
     })
     cursor = position + noun.length
   }
