@@ -7,6 +7,10 @@ on:
     types: [created]
 
 jobs:
+  # Break-glass invariants:
+  # - The main ruleset requires `bonk` from GitHub Actions app 15368.
+  # - Labeled PRs run a successful step so future head SHAs also pass `bonk`.
+  # - Authorized users may bypass Bonk even for changes to this workflow.
   break-glass:
     if: >-
       github.event_name == 'issue_comment' &&
