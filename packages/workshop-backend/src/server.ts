@@ -158,8 +158,6 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   getCloudflareUsage(): Promise<CloudflareUsageInfo> {
-    // Cache write-backs inside (account selection / credit snapshots) tolerate racing; a reset
-    // surfaces to the usage panel's fallback.
     return getUsageInfo(this.env, this.#user);
   }
 
