@@ -34,7 +34,7 @@ jobs:
           model: "cloudflare-ai-gateway/anthropic/claude-opus-4-8"
           variant: "high"
           mentions: "/bonk,@ask-bonk"
-          forks: "false"
+          forks: "true"
           permissions: write
           token_permissions: NO_PUSH
           agent: bonk
