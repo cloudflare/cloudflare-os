@@ -3175,7 +3175,8 @@ export const ChatInput = ({
                   slashCommandPicker.dismiss();
                   return;
                 }
-                if (slashCommandPicker.open && e.key === "Enter" && !e.shiftKey) {
+                if (slashCommandPicker.open && e.key === "Enter" && !e.shiftKey &&
+                    !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   if (slashCommandPicker.selectable && slashCommandPicker.activeChoice) {
                     slashCommandPicker.select(slashCommandPicker.activeChoice);
@@ -3223,8 +3224,9 @@ export const ChatInput = ({
                     return;
                   }
                 }
-                // Enter sends message (unless Shift is held)
-                if (e.key === "Enter" && !e.shiftKey) {
+                // Enter sends message (unless Shift is held or an IME
+                // composition is in progress)
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   if (!isAgentActive && !isBlocked) submitMessage();
                   return;
@@ -6538,7 +6540,7 @@ function ChatInterface({
                             onChange={(e) => setRenamingInput(e.target.value)}
                             onClick={(e) => e.stopPropagation()}
                             onKeyDown={(e) => {
-                              if (e.key === "Enter") {
+                              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                                 e.preventDefault();
                                 handleSaveListRename(chat.id);
                               } else if (e.key === "Escape") {
