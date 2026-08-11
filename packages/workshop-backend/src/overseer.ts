@@ -7137,8 +7137,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // We create a new stub for every call so that we don't have to worry about detecting when a
   // stub has become broken (see AuthenticatedApiImpl.#user in server.ts).
   get #owner(): DurableObjectStub<UserDurableObject> {
+    if (!this.impl.ownerId) throw new Error("Workspace has been deleted.");
     return wrapDoStubForTelemetry(
-        this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId!)),
+        this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId)),
         this.impl.logger);
   }
 
@@ -8811,8 +8812,9 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
 
   // Fresh stub per call; see OverseerClientInterface.#clientUser.
   get #owner(): DurableObjectStub<UserDurableObject> {
+    if (!this.impl.ownerId) throw new Error("Workspace has been deleted.");
     return wrapDoStubForTelemetry(
-        this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId!)),
+        this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId)),
         this.impl.logger);
   }
 

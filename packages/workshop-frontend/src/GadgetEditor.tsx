@@ -1211,13 +1211,17 @@ export default function GadgetEditor() {
   }, [authenticatedApi])
 
   // ── title save/cancel ─────────────────────────────────────────────────────────
+  const titleSaveInFlight = useRef(false)
   const handleSaveTitle = async () => {
     if (!overseer || !titleInput.trim()) return
+    if (titleSaveInFlight.current) return
+    titleSaveInFlight.current = true
     try {
       await overseer.stub.setTitle(titleInput.trim())
       updateTitle(titleInput.trim())
       setIsEditingTitle(false)
     } catch { toasts.add({ title: 'Failed to update title', variant: 'error' }) }
+    finally { titleSaveInFlight.current = false }
   }
   const handleCancelEdit = () => {
     setTitleInput(metadata?.title || '')
