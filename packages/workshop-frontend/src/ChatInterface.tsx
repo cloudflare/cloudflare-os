@@ -1984,6 +1984,8 @@ export const ChatInput = ({
   };
 
   useEffect(() => {
+    // On a cold load the user-scoped key usually arrives after authentication; the key-change
+    // effect below restores that draft, while this path handles drafts available at mount.
     if (!initialDraft) return;
     const generation = ++draftRestoreGenerationRef.current;
     restoreDraftPresentation(initialDraft, draftStorageKey, generation);

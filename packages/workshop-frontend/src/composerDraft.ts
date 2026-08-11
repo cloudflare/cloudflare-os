@@ -49,6 +49,7 @@ export function serializeComposerDraft(
       continue;
     }
     normalized += text.slice(cursor, token.start);
+    // Capsule capability URLs restore as plain links, not chips.
     const replacement = token.kind === "capsule" ? token.url : token.noun;
     if (token.kind === "format") {
       storedFormats.push({
