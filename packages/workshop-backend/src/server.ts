@@ -302,8 +302,6 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   listOutputs(): Promise<ListOutputsResult> {
-    // The backfill inside is safe under concurrency: the DO sweeps one page per call and
-    // advances the cursor itself.
     return this.#user.listOutputs();
   }
 
