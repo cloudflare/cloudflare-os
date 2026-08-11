@@ -37,6 +37,8 @@ export default defineConfig({
       // held across the abort (e.g. the fire-and-forget AdminSettings install kicked off by the
       // fetch handler) reject on their own schedule, independent of any awaited call.
       if (error.message?.includes("abortAllDurableObjects")) return false;
+      // Same, for the test that aborts only the user DO (state.abort with this reason).
+      if (error.message?.includes("user-DO reset injected by test")) return false;
     },
   },
 });

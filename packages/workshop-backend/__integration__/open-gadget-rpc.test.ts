@@ -1,4 +1,4 @@
-import { abortAllDurableObjects } from "cloudflare:test";
+import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { newWebSocketRpcSession, type RpcStub } from "capnweb";
 import {
@@ -14,6 +14,9 @@ import { describe, expect, it } from "vitest";
 type CodedError = Error & { code?: unknown };
 
 const PASSWORD_HASH = new Uint8Array([1, 2, 3]);
+// Also whitelisted in vitest.integration.config.ts onUnhandledError: capabilities held across
+// the injected abort reject on their own schedule.
+const USER_DO_ABORT_REASON = "user-DO reset injected by test";
 const EXPECTED_MESSAGES: Record<OpenGadgetErrorCode, string> = {
   [OPEN_GADGET_ERROR_CODES.workspaceNotFound]: "Workspace not found.",
   [OPEN_GADGET_ERROR_CODES.workspaceAccessDenied]: "You don't have access to this workspace.",
@@ -178,5 +181,42 @@ describe("user-DO reset flags", () => {
     // Permanently broken, not fail-once: the fresh-stub-per-call design rests on this.
     const nativeErr2 = await rejection(userStub.listModels());
     expect(nativeErr2.message).toBe("Application called abortAllDurableObjects().");
+  });
+});
+
+// The asymmetric reset a retained-stub design can't absorb: the USER DO resets while the
+// workspace (Overseer) DO keeps running. The Overseer used to mint its owner/clientUser stubs
+// once at open(); after the user DO's incarnation died, every user-DO-carrying call on the
+// still-open session — newChat, listModels, createGadget, setPinned — failed against the
+// poisoned stub until the WebSocket reconnected. The session capabilities now mint a fresh stub
+// per call, so the first post-reset call simply restarts the object — no reset flags needed,
+// which is also why this is testable despite local aborts rejecting flagless (see above).
+// abortAllDurableObjects() can't produce the asymmetry (it kills the Overseer too), so the
+// reset is injected into the one object via runInDurableObject + state.abort().
+describe("workspace session across a user-DO-only reset", () => {
+  it("chat, models, and gadget capabilities survive the user DO resetting", async () => {
+    using publicApi = await connect();
+    const account = await createAccount(publicApi, "chatreset");
+    using authenticated = await publicApi.authenticate(account.token);
+    using workspace = await authenticated.newGadget();
+
+    // Model id null: commits the message without starting an agent — the pure chat-start path.
+    expect(await workspace.newChat("before the reset", null)).toEqual(expect.any(Number));
+
+    const userStub = exports.UserDurableObject.get(
+      exports.UserDurableObject.idFromName(account.username));
+    // The abort kills the very call delivering it, so the rejection is the success signal.
+    await rejection(runInDurableObject(userStub, (_instance, state) => {
+      state.abort(USER_DO_ABORT_REASON);
+    }));
+
+    // Every operation below crosses into the user DO through the SAME retained workspace
+    // capability. Each minting a fresh stub is what restarts the object and recovers.
+    expect(await workspace.newChat("after the reset", null)).toEqual(expect.any(Number));
+    expect(await workspace.listModels()).toBeInstanceOf(Array);
+    // createGadget resolves the binding name via getChatContext, and hands back a nested
+    // GadgetClient capability that must also be born with the fresh-stub design.
+    using gadget = await workspace.createGadget("post-reset gadget");
+    expect(await gadget.getTitle()).toBe("post-reset gadget");
   });
 });

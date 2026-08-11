@@ -23,8 +23,10 @@ export function isDoResetError(e: unknown): boolean {
 
 /** Wraps a DO stub so every method call observes DO-reset rejections for telemetry
  * (`user_do.reset.surfaced`, with the method name as the operation) and rethrows them
- * unchanged. Otherwise transparent. */
-export function wrapDoStubForTelemetry<T extends { id: DurableObjectId }>(stub: T): T {
+ * unchanged. Otherwise transparent. Pass the caller's logger so the log attributes the reset
+ * to the component (and context, e.g. gadgetId) that observed it; defaults to the Worker's. */
+export function wrapDoStubForTelemetry<T extends { id: DurableObjectId }>(
+    stub: T, log: ReturnType<typeof createWorkshopLogger> = logger): T {
   return new Proxy(stub, {
     get(target, prop) {
       const value = Reflect.get(target, prop) as unknown;
@@ -42,7 +44,7 @@ export function wrapDoStubForTelemetry<T extends { id: DurableObjectId }>(stub: 
             return await (result as PromiseLike<unknown>);
           } catch (e) {
             if (isDoResetError(e)) {
-              logger.warn("user DO reset observed", {
+              log.warn("user DO reset observed", {
                 event: "user_do.reset.surfaced",
                 operation: prop,
                 durableObjectId: target.id.toString(),
