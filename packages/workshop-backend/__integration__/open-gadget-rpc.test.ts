@@ -135,8 +135,8 @@ describe.skip("openGadget errors across native RPC and Cap'n Web", () => {
   });
 });
 
-// In production, workerd tags rejections from a reset DO with the structured flags do-reset.ts
-// reads. Locally, vitest-pool-workers aborts reject FLAGLESS — this test pins that, so if a
+// In production, workerd tags rejections from a reset DO with the structured flags
+// do-telemetry.ts reads. Locally, vitest-pool-workers aborts reject FLAGLESS — this test pins that, so if a
 // future pool upgrade starts attaching the production flags, it fails and the flag paths can
 // graduate from synthetic unit tests to real-reset integration tests. abortAllDurableObjects()
 // is the non-graceful teardown (deliberately not evictDurableObject(), which never breaks a

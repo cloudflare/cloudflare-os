@@ -203,9 +203,8 @@ export default function BlueprintList() {
     }
   }, [authenticatedApi, load, toasts])
 
-  // Overlapping setBlueprintPinned calls have no ordering guarantee and could invert the
-  // durable state, so ignore clicks while one is in flight (see server.ts's stub-lifetime
-  // comment).
+  // Overlapping setBlueprintPinned calls have no ordering guarantee, so ignore clicks while
+  // one is in flight.
   const pinsInFlight = useRef(new Set<string>())
   const handleTogglePin = async (item: BlueprintItem) => {
     if (pinsInFlight.current.has(item.id)) return

@@ -28,7 +28,7 @@ import { verifyCfAccessJwt } from "./access.js";
 import { resolveUiFeatureFlags } from "./feature-flags";
 import { serveSiteLogo, SITE_LOGO_PATH } from "./site-logo.js";
 import { createWorkshopLogger } from "./observability";
-import { isDoResetError } from "./do-reset";
+import { wrapDoStubForTelemetry } from "./do-telemetry";
 
 const logger = createWorkshopLogger("workshop.server");
 
@@ -72,18 +72,6 @@ type Env = Cloudflare.Env & {
 
 // =======================================================================================
 
-type UserStub = DurableObjectStub<UserDurableObject>;
-
-/** Async-method view of the user stub, backing the #user sugar: the same method
- * surface and (Unstubify-transformed) types a direct stub call has, minus the Fetcher members
- * and symbol keys the proxy doesn't dispatch. */
-type UserDoProxy = {
-  [K in Exclude<keyof UserStub, keyof Fetcher | symbol>
-      as UserStub[K] extends (...args: never) => unknown ? K : never]:
-    UserStub[K] extends (...args: infer A) => infer R
-        ? (...args: A) => Promise<Awaited<R>> : never;
-};
-
 @validateRpc()
 class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   constructor(private ctx: ExecutionContext, private env: Env,
@@ -103,66 +91,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   #userId: DurableObjectId;
 
-  // A stub is permanently poisoned once its incarnation resets, so re-resolve per call instead
-  // of caching one for the session (stub creation is local — not a network call). The trade:
-  // e-order is per stub, so cross-call delivery ordering is gone — a call site that depends on
-  // a prior user-DO call must await it, and UI that can fire overlapping writes to the same
-  // state must guard in-flight (see the BlueprintList pin and providers quick-model toggles).
-  // `#`-private because RpcTarget members are runtime-visible and TS `private` is erased.
-  get #userStub(): DurableObjectStub<UserDurableObject> {
-    return this.users.get(this.#userId);
-  }
-
-  // Every RPC into the user DO goes through #userCall — a naked `this.#userStub.x()` elsewhere
-  // is a review defect. The #user proxy below is sugar routing plain delegations through it.
-  // Resets are deliberately NOT retried here: fresh per-call stubs already fix the
-  // wedged-session failure mode, workerd's structured reset flags reach the client (which
-  // classifies and quiets them), and the DO platform is moving toward transparent recovery.
-  // If a retry layer ever returns, idempotency becomes load-bearing again — a retried
-  // effectful call double-applies (e.g. listProvidedAccounts provisions vendor-side
-  // accounts).
-
-  /** Sole dispatch chokepoint: observes reset flags for telemetry, rethrows unchanged. */
-  async #userCall<T>(operation: string,
-                     fn: (user: DurableObjectStub<UserDurableObject>) => Promise<T>): Promise<T> {
-    try {
-      return await fn(this.#userStub);
-    } catch (e) {
-      if (isDoResetError(e)) this.#onUserDoReset(operation, e);
-      throw e;
-    }
-  }
-
-  /** Builds the #user sugar: `this.#user.listGadgets()` routes through #userCall
-   * with the DO method name as the telemetry operation (so the logged operation names the DO
-   * method that was hit, which for a handful of endpoints differs from the API method —
-   * `dismissSharedGadget` logs as `forgetSharedGadget`). Sites whose closure does more than a
-   * single same-args delegation (multi-call closures, helpers that take the stub) use the
-   * chokepoints directly. */
-  #doProxy(dispatch: (operation: string,
-                      fn: (user: UserStub) => Promise<unknown>) => Promise<unknown>): UserDoProxy {
-    return new Proxy({}, {
-      get: (_target, prop) => typeof prop === "string"
-          ? (...args: unknown[]) => dispatch(prop, user => {
-              let methods = user as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
-              return methods[prop](...args);
-            })
-          : undefined,
-    }) as UserDoProxy;
-  }
-
-  #user = this.#doProxy((op, fn) => this.#userCall(op, fn));
-
-  /** Central reset observation point. Fresh per-call stubs absorb resets structurally (the
-   * next call simply restarts the object), so what surfaces is only a call in flight at the
-   * reset moment; this keeps that volume visible in telemetry now that sessions stop wedging. */
-  #onUserDoReset(operation: string, error: unknown) {
-    logger.warn("user DO reset observed", {
-      event: "user_do.reset.surfaced",
-      operation,
-      durableObjectId: this.#userId.toString(),
-      error,
-    });
+  // Get a stub pointing at the user DO. We create a new stub for every request so that we don't
+  // have to worry about detecting when a stub has become broken.
+  get #user(): DurableObjectStub<UserDurableObject> {
+    return wrapDoStubForTelemetry(this.users.get(this.#userId));
   }
 
   #isAdmin(): boolean {
@@ -228,15 +160,15 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   getCloudflareUsage(): Promise<CloudflareUsageInfo> {
     // Cache write-backs inside (account selection / credit snapshots) tolerate racing; a reset
     // surfaces to the usage panel's fallback.
-    return this.#userCall("getCloudflareUsage", u => getUsageInfo(this.env, u));
+    return getUsageInfo(this.env, this.#user);
   }
 
   listCloudflareAccounts(): Promise<CloudflareAccountOption[]> {
-    return this.#userCall("listCloudflareAccounts", u => listConnectedAccounts(this.env, u));
+    return listConnectedAccounts(this.env, this.#user);
   }
 
   selectCloudflareAccount(accountId: string): Promise<void> {
-    return this.#userCall("selectCloudflareAccount", u => selectAccount(this.env, u, accountId));
+    return selectAccount(this.env, this.#user, accountId);
   }
 
   async setAvatar(data: Uint8Array | null): Promise<void> {
@@ -404,13 +336,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   subscribeConnectedAccounts(
       subscriber: RpcStub<ConnectedAccountsSubscriber>, filter?: ConnectedAccountsFilter)
       : Promise<RpcStub<{}>> {
-    // TODO(deferred): the DO holds this registration in memory only, so a reset silently kills
-    // it while the browser's WebSocket stays healthy — the connected-accounts list stops
-    // updating until the component re-subscribes or the socket-level reconnect kicks in.
-    // Self-healing (incarnation-stamped re-registration from the session, which survives DO
-    // resets) is deliberately split out to feat/do-reset-subscription-self-heal.
-    return this.#userCall("subscribeConnectedAccounts",
-        user => user.subscribeConnectedAccounts(subscriber, filter));
+    return this.#user.subscribeConnectedAccounts(subscriber, filter);
   }
 
   disconnectAccount(accountId: number): Promise<void> {
@@ -652,14 +578,12 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   async getGatekeeperApp(id: string): Promise<GatekeeperUiFrame | null> {
     // Self-sufficient: listProvidedAccounts provisions auto-provisioned accounts first (idempotent),
     // so a direct URL load of /gatekeepers/$id works without racing the Header's listGatekeeperApps.
-    // One closure so both DO calls share a stub and a telemetry operation.
-    return this.#userCall("getGatekeeperApp", async u => {
-      let accounts = await u.listProvidedAccounts();
-      let app = accounts.find(account => account.vendorId === id && account.description.providesUi);
-      if (!app) return null;
-      // isAdmin is supplied fresh per open so admin-gated features reflect the user's current status.
-      return u.startAccountAppUi(app.accountId, { isAdmin: this.#isAdmin() });
-    });
+    let user = this.#user;  // one stub for both calls
+    let accounts = await user.listProvidedAccounts();
+    let app = accounts.find(account => account.vendorId === id && account.description.providesUi);
+    if (!app) return null;
+    // isAdmin is supplied fresh per open so admin-gated features reflect the user's current status.
+    return user.startAccountAppUi(app.accountId, { isAdmin: this.#isAdmin() });
   }
 
   // --- Deployment admin ---

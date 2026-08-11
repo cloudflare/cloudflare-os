@@ -187,8 +187,8 @@ function ProvidersPage() {
     }
   }
 
-  // Overlapping setQuickModel calls have no ordering guarantee and could invert the durable
-  // state, so ignore clicks while one is in flight (see server.ts's stub-lifetime comment).
+  // Overlapping setQuickModel calls have no ordering guarantee, so ignore clicks while one is
+  // in flight.
   const quickInFlight = useRef(false)
   const handleSetQuick = async (modelId: string) => {
     if (quickInFlight.current) return
