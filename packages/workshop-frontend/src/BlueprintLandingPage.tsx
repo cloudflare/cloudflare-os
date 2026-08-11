@@ -38,7 +38,13 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   const { isAuthenticated, authenticatedApi, isLoading: authLoading, login } = useAuth(rpcStub)
   const toasts = useKumoToastManager()
 
-  const [blueprint, setBlueprint] = useState<BlueprintPublicInfo | null>(null)
+  const [loadedBlueprint, setBlueprint] = useState<BlueprintPublicInfo | null>(null)
+  const [blueprintLoadKey, setBlueprintLoadKey] = useState<{
+    id: string,
+    rpcStub: RpcStub<PublicApi>,
+  } | null>(null)
+  const isCurrentBlueprintLoad = blueprintLoadKey?.id === id && blueprintLoadKey.rpcStub === rpcStub
+  const blueprint = isCurrentBlueprintLoad ? loadedBlueprint : null
   useDocumentTitle(blueprint?.metadata.title)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
@@ -89,6 +95,11 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   )
   // Fetch blueprint metadata.
   useEffect(() => {
+    let cancelled = false
+
+    setBlueprintLoadKey({ id, rpcStub })
+    setBlueprint(null)
+    setError(null)
     if (!id) {
       setLoading(false)
       setNotFound(true)
@@ -96,19 +107,25 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     }
     setLoading(true)
     setNotFound(false)
-    setError(null)
 
     rpcStub.getBlueprint(id).then(result => {
+      if (cancelled) return
       if (result) {
         setBlueprint(result)
       } else {
         setNotFound(true)
       }
     }).catch(err => {
+      if (cancelled) return
       setError(err.message || 'Failed to load blueprint.')
     }).finally(() => {
+      if (cancelled) return
       setLoading(false)
     })
+
+    return () => {
+      cancelled = true
+    }
   }, [id, rpcStub])
 
   useEffect(() => {
@@ -732,7 +749,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     return <LoginPage rpcStub={rpcStub} onLoginSuccess={handleLoginSuccess} />
   }
 
-  if (loading || authLoading) {
+  if (!isCurrentBlueprintLoad || loading || authLoading) {
     return <BlueprintStatePage title="Loading blueprint..." loading />
   }
 
