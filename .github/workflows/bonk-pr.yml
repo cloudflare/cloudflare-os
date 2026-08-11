@@ -2,28 +2,106 @@ name: Bonk PR Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, unlabeled]
+  issue_comment:
+    types: [created]
 
 jobs:
+  break-glass:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      github.event.sender.type != 'Bot' &&
+      github.event.comment.body == 'bonk break glass' &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      checks: write
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Skip Bonk review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          pr=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")
+          head_repo=$(jq -r '.head.repo.full_name' <<< "$pr")
+          head_sha=$(jq -r '.head.sha' <<< "$pr")
+          if [[ "$head_repo" != "$GH_REPO" ]]; then
+            echo "Bonk reviews do not run on fork pull requests."
+            exit 1
+          fi
+
+          gh label create bonk-break-glass \
+            --color B60205 \
+            --description "Skip automatic Bonk PR review" \
+            --force
+          gh api --method POST "repos/$GH_REPO/issues/$PR_NUMBER/labels" \
+            -f 'labels[]=bonk-break-glass'
+
+          runs=$(gh api \
+            "repos/$GH_REPO/actions/workflows/bonk-pr.yml/runs?event=pull_request&head_sha=$head_sha&per_page=100")
+          run_ids=$(jq -r \
+            '.workflow_runs[] | select(.status != "completed") | .id' \
+            <<< "$runs")
+
+          for run_id in $run_ids; do
+            gh api --method POST "repos/$GH_REPO/actions/runs/$run_id/cancel" || \
+              [[ $(gh api "repos/$GH_REPO/actions/runs/$run_id" --jq '.status') == "completed" ]]
+          done
+
+          for run_id in $run_ids; do
+            for _ in {1..30}; do
+              status=$(gh api "repos/$GH_REPO/actions/runs/$run_id" --jq '.status')
+              [[ "$status" == "completed" ]] && break
+              sleep 2
+            done
+            [[ "$status" == "completed" ]] || {
+              echo "Timed out waiting for Bonk run $run_id to stop."
+              exit 1
+            }
+          done
+
+          gh api --method POST "repos/$GH_REPO/check-runs" \
+            -f name=bonk \
+            -f head_sha="$head_sha" \
+            -f status=completed \
+            -f conclusion=success \
+            -f "details_url=$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID" \
+            -f 'output[title]=Bonk review bypassed' \
+            -f 'output[summary]=An authorized collaborator used the break-glass command.'
+
   bonk:
     if: >-
+      github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id &&
-      github.event.sender.type != 'Bot'
+      (github.event.sender.type != 'Bot' ||
+      contains(github.event.pull_request.labels.*.name, 'bonk-break-glass'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
       group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-      cancel-in-progress: false
+      cancel-in-progress: ${{ contains(github.event.pull_request.labels.*.name, 'bonk-break-glass') }}
     permissions:
       id-token: write
       contents: read
       issues: write
       pull-requests: write
     steps:
+      - name: Break glass active
+        if: contains(github.event.pull_request.labels.*.name, 'bonk-break-glass')
+        run: echo "Skipping Bonk review because the bonk-break-glass label is set."
+
       - name: Checkout repository
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'bonk-break-glass') }}
         uses: actions/checkout@v7
 
       - name: Run Bonk
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'bonk-break-glass') }}
         uses: ask-bonk/ask-bonk/github@d00cbcf581a5463f7adc2d81e470234b1727f8dd
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
