@@ -17,10 +17,9 @@ export default defineConfig({
     plugins: ['typescript', 'unicorn', 'oxc', 'import'],
     options: {
       // Note: type-aware linting is intentionally not enabled. The type-aware engine
-      // uses tsgo (TypeScript 7), which has dropped `baseUrl` -- and every backend
-      // tsconfig here uses it to import sibling-package *source* files via `paths`.
-      // (tsgo also wants an explicit `rootDir` when emitting declarations, which used
-      // to compound this and no longer applies: only `typed-storage` emits now.)
+      // uses tsgo (TypeScript 7), and three packages do not type-check under it:
+      // workshop-frontend, integration-tests and workshop-backend blow past tsgo's
+      // instantiation depth on capnweb's recursive Stub/Stubify types (TS2321/TS2589).
       // Full type safety is still enforced by `tsc` via the `build` script.
       typeAware: false,
     },

@@ -9,8 +9,7 @@
     "outDir": "./dist",
     "declaration": true,
     "sourceMap": true,
-    "noEmit": false,
-    "baseUrl": "."
+    "noEmit": false
   },
   "include": ["src"],
   "exclude": ["dist", "node_modules"]

@@ -6,7 +6,6 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "types": ["./worker-configuration.d.ts", "node"],
-    "baseUrl": ".",
     "paths": {
       "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"],
       "@gadgets/typed-storage": ["../typed-storage/src/index.ts"]
