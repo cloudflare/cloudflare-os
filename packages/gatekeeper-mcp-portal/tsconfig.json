@@ -15,8 +15,6 @@
       "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"]
     }
   },
-  // The tests are checked by this one project: with nothing emitted there is no reason to keep
-  // them in a separate config.
   "include": ["src", "__tests__"],
-  "exclude": ["node_modules"]
+  "exclude": ["dist", "node_modules"]
 }

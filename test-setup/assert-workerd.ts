@@ -4,7 +4,7 @@
 // so they exercise the production runtime. When that pool cannot start, vitest falls back to running
 // the files under Node -- and only the suites that import `cloudflare:test` or `cloudflare:workers`
 // notice. `router` and `typed-storage` import neither, so they would stay green while silently
-// testing the wrong runtime; that is how PR #33 came to report a broken pool as "passing".
+// testing the wrong runtime.
 //
 // `navigator.userAgent` is the cheapest unambiguous probe: workerd hardcodes it, Node does not define
 // `navigator.userAgent` as this value.

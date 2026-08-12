@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: "22.14.0"
+  NODE_VERSION: "24.19.0"
 
 jobs:
   # Deliberately parallel to `test`, so a lint failure and a test failure surface on the same run
