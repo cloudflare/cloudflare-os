@@ -585,14 +585,25 @@ class Greeter extends RpcTarget {
 
 Notice that the restore method is named using a symbol. This allows the system to access it, without making the method directly available over RPC.
 
-Once you have a Gadget with a restorer method, you can then call \`ctx.restore(params)\`. The given \`params\` (which must be serializable) will be passed to the Gadget's restorer, and the resulting persistent RpcStub will be returned to you:
+Within a Gadget class with a restore method, you can call \`this.ctx.restore(params)\`. The given \`params\` (which must be serializable) will be passed back to the Gadget's restore method, and the resulting persistent RpcStub will be returned. This can then be passed to an API that requires persistent stubs, e.g.:
 
 \`\`\`
-let greeter = await ctx.restore({type: "greeter", greeting: "Howdy"});
-env.SOME_BINDING.registerGreeter(greeter);
+let greeter = await this.ctx.restore({type: "greeter", greeting: "Howdy"});
+await this.env.SOME_BINDING.registerGreeter(greeter);
 \`\`\`
 
-In Gadget code, the \`ctx\` object is passed to the \`DurableObject\` constructor and is automatically available as \`this.ctx\` within the class. When writing code for the \`executeCode\` tool call, the \`ctx\` object is passed as a parameter to your function. You can call \`ctx.restore()\` from either location, though usually it's best to call it as part of \`executeCode\` as usually registering hooks is something you do one time, not programmatically.
+Typically, though, a Gadget doesn't register hooks from within its own code. Instead, you will probably want to register a hook once as part of an \`executeCode\` tool call. To facilitate this, within an \`executeCode\` invocation you have the ability to directly invoke each Gadget's restore method via its RPC stub. This is not normally possible over RPC, but the \`executeCode\` environment has been set up to make it possible. You can thus call a gadget's restorer in an \`executeCode\` invocation by providing code like:
+
+\`\`\`
+import { restore } from "cloudflare:workers";
+
+export default async function(self, env, ctx) {
+  let greeter = await env.MY_GADGET[restore]({type: "greeter", greeting: "Howdy"});
+  await env.SOME_BINDING.registerGreeter(greeter);
+}
+\`\`\`
+
+The call to \`env.MY_GADGET[restore](params)\` is equivalent to calling \`this.ctx.restore(params)\` from within the Gadget itself. This returns a persistent stub which you can then use as a hook callback.
 `.trim();
 
 let SPAWNER_SYSTEM_PROMPT = `
