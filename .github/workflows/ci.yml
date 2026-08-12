@@ -13,9 +13,7 @@ env:
   NODE_VERSION: "24.19.0"
 
 jobs:
-  # Deliberately parallel to `test`, so a lint failure and a test failure surface on the same run
-  # rather than one hiding the other. This runs `lint:check` (oxlint) and not `pnpm lint`, which
-  # also runs `types:check`
+  # Parallel to `test` so lint and test failures surface on the same run; type checking lives in Build.
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -63,8 +61,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Codegen, type check and the frontend/SPA bundles. `pnpm types:check` is an alias for this,
-      # so the type check runs here and only here.
+      # Codegen, the frontend/SPA bundles, and the repo's single type check (`types:check` aliases this).
       - name: Build
         run: pnpm build
 
