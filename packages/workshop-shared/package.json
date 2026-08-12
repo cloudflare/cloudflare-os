@@ -39,7 +39,7 @@
   },
   "dependencies": {
     "@cloudflare/workers-types": "^5.20260722.1",
-    "capnweb": "^0.8.0"
+    "capnweb": "^0.11.1"
   },
   "devDependencies": {
     "typescript": "catalog:"

@@ -9,6 +9,8 @@ import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
 // content.
 import CAPNWEB_BUNDLE from 'capnweb?raw'
 
+// btoa() below requires this to stay ASCII; capnweb's build enforces ASCII-only dist bundles
+// since 0.11.1.
 let CAPNWEB_BUNDLE_ANNOTATED = `//# sourceURL=jsrpc.js\n${CAPNWEB_BUNDLE}`
 
 // Unfortunately, we will have to embed the code as a data: URL, because our iframe is totally
