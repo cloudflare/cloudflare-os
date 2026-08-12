@@ -18,8 +18,8 @@
     "@gadgets/error-reporting": "workspace:*",
     "@gadgets/typed-storage": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
-    "capnweb": "^0.11.1",
-    "capnweb-validate": "0.2.1",
+    "capnweb": "catalog:",
+    "capnweb-validate": "catalog:",
     "isomorphic-git": "^1.40.0",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"

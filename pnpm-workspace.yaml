@@ -5,6 +5,9 @@ packages:
 # needing to hand edit a bunch of different package.json files.
 catalog:
   '@cloudflare/vitest-pool-workers': ^0.18.8
+  capnweb: ^0.11.1
+  # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
+  capnweb-validate: 0.2.4
   typescript: ^5.9.3
   # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
