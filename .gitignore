@@ -1,7 +1,5 @@
 # Dependencies
 node_modules/
-# pnpm store, only ever created in GitLab CI (which can only cache paths inside the project).
-.pnpm-store/
 
 # Build outputs
 dist/
