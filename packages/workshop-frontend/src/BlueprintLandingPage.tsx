@@ -156,7 +156,6 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     }
     let cancelled = false
     const accountMap = new Map<number, AccountOption>()
-    let subStub: { [Symbol.dispose](): void } | null = null
 
     const subscriber = new AccountsSubscriberAdapter({
       add({ id: accountId, description, vendor, supportedResources, credentialsValid, vendorId }) {
@@ -177,21 +176,15 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       },
     })
 
-    authenticatedApi.subscribeConnectedAccounts(subscriber)
-      .then(stub => {
-        if (cancelled) {
-          stub[Symbol.dispose]()
-        } else {
-          subStub = stub
-        }
-      })
-      .catch(err => {
-        logRpcFailure('Failed to subscribe to connected accounts:', err)
-      })
+    const subscription = authenticatedApi.subscribeConnectedAccounts(subscriber)
+    subscription.catch(err => {
+      if (cancelled) return
+      logRpcFailure('Failed to subscribe to connected accounts:', err)
+    })
 
     return () => {
       cancelled = true
-      subStub?.[Symbol.dispose]()
+      subscription[Symbol.dispose]()
     }
   }, [isAuthenticated, authenticatedApi])
 

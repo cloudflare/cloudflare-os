@@ -216,7 +216,6 @@ export default function GatekeeperModal({
   const spawnerEnvCandidatesRef = useRef(spawnerEnvCandidates)
   spawnerEnvCandidatesRef.current = spawnerEnvCandidates
 
-  const accountSubscriptionRef = useRef<{ [Symbol.dispose](): void } | null>(null)
   const configuratorFrameRef = useRef<ConfiguratorFrameState | null>(null)
   const configuratorCollectResourceUrlRef = useRef<(() => Promise<string>) | null>(null)
   const nextConfiguratorFrameKeyRef = useRef(0)
@@ -420,22 +419,15 @@ export default function GatekeeperModal({
         setAccounts(Array.from(accountMap.values()))
       },
     })
-    authenticatedApi.subscribeConnectedAccounts(subscriber)
-      .then(stub => {
-        if (cancelled) {
-          stub[Symbol.dispose]()
-        } else {
-          accountSubscriptionRef.current = stub
-        }
-      })
-      .catch(error => {
-        logRpcFailure('Failed to subscribe to connected accounts:', error)
-      })
+    const subscription = authenticatedApi.subscribeConnectedAccounts(subscriber)
+    subscription.catch(error => {
+      if (cancelled) return
+      logRpcFailure('Failed to subscribe to connected accounts:', error)
+    })
 
     return () => {
       cancelled = true
-      accountSubscriptionRef.current?.[Symbol.dispose]()
-      accountSubscriptionRef.current = null
+      subscription[Symbol.dispose]()
     }
   }, [open, authenticatedApi])
 

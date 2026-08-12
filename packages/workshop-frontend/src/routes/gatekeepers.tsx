@@ -1,6 +1,6 @@
 import { logRpcFailure } from '../rpcErrors'
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import {
   MagnifyingGlass,
@@ -474,8 +474,6 @@ function ConnectorsPage() {
     localStorage.setItem('gatekeepers-view', view)
   }, [view])
 
-  const subscriptionRef = useRef<{ [Symbol.dispose](): void } | null>(null)
-
   useEffect(() => {
     let cancelled = false
     const accountMap = new Map<number, AccountEntry>()
@@ -539,23 +537,16 @@ function ConnectorsPage() {
       },
     })
 
-    authenticatedApi.subscribeConnectedAccounts(subscriber)
-      .then((stub) => {
-        if (cancelled) {
-          stub[Symbol.dispose]()
-        } else {
-          subscriptionRef.current = stub
-        }
-      })
-      .catch((err) => {
-        logRpcFailure('Failed to subscribe to connected accounts:', err)
-        if (!cancelled) setLoadError(true)
-      })
+    const subscription = authenticatedApi.subscribeConnectedAccounts(subscriber)
+    subscription.catch((err) => {
+      if (cancelled) return
+      logRpcFailure('Failed to subscribe to connected accounts:', err)
+      setLoadError(true)
+    })
 
     return () => {
       cancelled = true
-      subscriptionRef.current?.[Symbol.dispose]()
-      subscriptionRef.current = null
+      subscription[Symbol.dispose]()
     }
   }, [authenticatedApi])
 

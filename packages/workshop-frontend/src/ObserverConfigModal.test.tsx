@@ -79,6 +79,9 @@ function account(id: number, uniqueName: string, grantedResourceUrlPatterns?: st
 }
 
 type ApiOverrides = {
+  subscribeConnectedAccounts?: Mock<(
+    subscriber: ConnectedAccountsSubscriber,
+  ) => Promise<{ [Symbol.dispose](): void }>>
   connectAccount?: Mock<(vendorId: string, resourceUrlPatterns?: string[]) => Promise<{ url: string }>>
   ensureAccountResources?: Mock<(
     accountId: number,
@@ -92,13 +95,15 @@ function fakeApi(
   overrides: ApiOverrides = {},
 ): RpcStub<AuthenticatedApi> {
   return {
-    subscribeConnectedAccounts: async (subscriber: ConnectedAccountsSubscriber) => {
+    subscribeConnectedAccounts: overrides.subscribeConnectedAccounts ?? ((subscriber: ConnectedAccountsSubscriber) => {
       for (const entry of accountEntries) {
         subscriber.add(entry.id, entry.description, VENDOR, [DOC_RESOURCE], true, 'google')
       }
       subscriber.ready()
-      return { [Symbol.dispose]() {} }
-    },
+      return Object.assign(Promise.resolve({ [Symbol.dispose]() {} }), {
+        [Symbol.dispose]() {},
+      })
+    }),
     listGatekeeperVendors: async () => [{
       id: 'google',
       description: VENDOR,
@@ -155,6 +160,22 @@ describe('ObserverConfigModal account selection', () => {
 
     expect(rendered.textContent).toContain('dan@cloudflare.com')
     expect(rendered.querySelector('[data-testid="account-select"]')).toBeNull()
+  })
+
+  it('disposes a pending account subscription on unmount', async () => {
+    const dispose = vi.fn<() => void>()
+    const pendingSubscription = Object.assign(new Promise<{ [Symbol.dispose](): void }>(() => {}), {
+      [Symbol.dispose]: dispose,
+    })
+    const subscribeConnectedAccounts = vi.fn<
+      (subscriber: ConnectedAccountsSubscriber) => Promise<{ [Symbol.dispose](): void }>
+    >().mockReturnValue(pendingSubscription)
+    await render([], { api: fakeApi([], { subscribeConnectedAccounts }) })
+
+    act(() => root!.unmount())
+    root = undefined
+
+    expect(dispose).toHaveBeenCalledOnce()
   })
 
   it('keeps the account dropdown when multiple accounts match', async () => {

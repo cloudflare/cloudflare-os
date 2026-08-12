@@ -100,11 +100,11 @@ export default function ObserverConfigModal({
 
   // ── subscribe to the user's connected accounts ────────────────────────────────
   useEffect(() => {
-    let subStub: { [Symbol.dispose](): void } | null = null
     let cancelled = false
 
     const subscriber = new AccountsSubscriberAdapter({
       add({ id, description, vendor, supportedResources, credentialsValid, vendorId }) {
+        if (cancelled) return
         setAccounts(prev => {
           const next = new Map(prev)
           next.set(id, { id, description, vendor, vendorId, supportedResources, credentialsValid })
@@ -121,6 +121,7 @@ export default function ObserverConfigModal({
         }
       },
       remove(id) {
+        if (cancelled) return
         setAccounts(prev => {
           if (!prev.has(id)) return prev
           const next = new Map(prev)
@@ -129,26 +130,24 @@ export default function ObserverConfigModal({
         })
       },
       ready() {
+        if (cancelled) return
         setReady(true)
       },
     })
 
-    authenticatedApi
-      .subscribeConnectedAccounts(subscriber, { includeForcedAutoProvisionedAccounts: true })
-      .then(stub => {
-        if (cancelled) { stub[Symbol.dispose](); return }
-        subStub = stub
-      })
-      .catch(err => {
-        // Loud on purpose: the modal has no retry path, so a quieted transient failure would
-        // strand the user on a permanent loader.
-        console.error('Failed to subscribe to connected accounts:', err)
-        toasts.add({ title: 'Failed to load your connected accounts', variant: 'error' })
-      })
+    const subscription = authenticatedApi.subscribeConnectedAccounts(
+      subscriber, { includeForcedAutoProvisionedAccounts: true })
+    subscription.catch(err => {
+      if (cancelled) return
+      // Loud on purpose: the modal has no retry path, so a quieted transient failure would
+      // strand the user on a permanent loader.
+      console.error('Failed to subscribe to connected accounts:', err)
+      toasts.add({ title: 'Failed to load your connected accounts', variant: 'error' })
+    })
 
     return () => {
       cancelled = true
-      subStub?.[Symbol.dispose]()
+      subscription[Symbol.dispose]()
     }
   }, [authenticatedApi])
 

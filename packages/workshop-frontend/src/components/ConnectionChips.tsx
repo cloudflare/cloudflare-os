@@ -20,7 +20,6 @@ export default function ConnectionChips() {
 
   useEffect(() => {
     let cancelled = false
-    let subscriptionStub: { [Symbol.dispose](): void } | null = null
 
     const accountMap = new Map<number, ConnectedAccount>()
 
@@ -39,18 +38,12 @@ export default function ConnectionChips() {
         if (!cancelled) setAccounts(Array.from(accountMap.values()))
       },
     })
-    const subPromise = authenticatedApi.subscribeConnectedAccounts(subscriber)
-    subPromise.then((stub) => {
-      if (cancelled) {
-        stub[Symbol.dispose]()
-      } else {
-        subscriptionStub = stub
-      }
-    }).catch(() => {})
+    const subscription = authenticatedApi.subscribeConnectedAccounts(subscriber)
+    subscription.catch(() => {})
 
     return () => {
       cancelled = true
-      subscriptionStub?.[Symbol.dispose]()
+      subscription[Symbol.dispose]()
     }
   }, [authenticatedApi])
 

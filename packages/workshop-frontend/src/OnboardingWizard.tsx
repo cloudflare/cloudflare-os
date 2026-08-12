@@ -206,23 +206,16 @@ export default function OnboardingWizard({
         }
       },
     })
-    let subscriptionStub: { [Symbol.dispose](): void } | null = null
 
-    authenticatedApi.subscribeConnectedAccounts(subscriber)
-      .then((stub) => {
-        if (cancelled) {
-          stub[Symbol.dispose]()
-        } else {
-          subscriptionStub = stub
-        }
-      })
-      .catch((err) => {
-        logRpcFailure('Failed to subscribe to connected accounts:', err)
-      })
+    const subscription = authenticatedApi.subscribeConnectedAccounts(subscriber)
+    subscription.catch((err) => {
+      if (cancelled) return
+      logRpcFailure('Failed to subscribe to connected accounts:', err)
+    })
 
     return () => {
       cancelled = true
-      subscriptionStub?.[Symbol.dispose]()
+      subscription[Symbol.dispose]()
     }
   }, [authenticatedApi])
 
