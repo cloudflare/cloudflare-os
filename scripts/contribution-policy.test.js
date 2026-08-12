@@ -21,6 +21,7 @@ function makePullRequest(overrides = {}) {
     deletions: 5,
     draft: false,
     labels: [],
+    state: "open",
     user: { login: "external-contributor" },
     ...overrides,
   };
@@ -118,6 +119,19 @@ describe("getContributionPolicyViolations", () => {
     assert.deepEqual(violations, []);
   });
 
+  for (const [description, pullRequest] of [
+    ["closed", { state: "closed" }],
+    ["merged", { merged: true, state: "closed" }],
+  ]) {
+    it(`exempts ${description} pull requests`, () => {
+      const violations = getContributionPolicyViolations(
+        makePullRequest({ additions: 100, body: "", ...pullRequest }),
+      );
+
+      assert.deepEqual(violations, []);
+    });
+  }
+
   it("exempts Dependabot", () => {
     const violations = getContributionPolicyViolations(
       makePullRequest({
@@ -205,6 +219,22 @@ describe("enforceContributionPolicy", () => {
     const calls = [];
     const github = makeGitHub(
       [makePullRequest({ body: "" }), makePullRequest()],
+      [],
+      calls,
+    );
+
+    await enforceContributionPolicy({ github, context, core });
+
+    assert.deepEqual(calls, []);
+  });
+
+  it("does not comment on a pull request closed during evaluation", async () => {
+    const calls = [];
+    const github = makeGitHub(
+      [
+        makePullRequest({ body: "" }),
+        makePullRequest({ body: "", state: "closed" }),
+      ],
       [],
       calls,
     );
