@@ -59,15 +59,20 @@ let lastConnectTime: number = 0;
 
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 10000;
-// The probe is getServerConfig — the same call the app needs to boot anyway. A generous
-// deadline lets a slow-but-alive backend settle instead of connect/dispose looping.
+// The probe is getServerConfig — the same call the app needs to boot anyway. Generous deadlines
+// let a slow-but-alive backend settle instead of connect/dispose looping (or, on wake, tearing
+// down a healthy socket under load).
 const RECONNECT_PROBE_TIMEOUT_MS = 20000;
+const WAKE_PROBE_TIMEOUT_MS = 10000;
+const WAKE_PROBE_MIN_IDLE_MS = 15000;
 
 // Callbacks to call whenever `currentStub` or connection state is updated.
 const subscribers = new Set<() => void>();
 const notifySubscribers = () => subscribers.forEach(cb => cb());
 let isConnectionLost = false;
 let reconnecting = false;
+let probing = false;
+let lastProvenAt = Date.now();
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -127,6 +132,7 @@ async function handleBroken(error: unknown) {
 
     candidate.onRpcBroken(handleBroken);
     currentStub = candidate;
+    lastProvenAt = Date.now();
     reconnecting = false;
     isConnectionLost = false;
     console.warn('RPC connection restored.');
@@ -134,6 +140,32 @@ async function handleBroken(error: unknown) {
     return;
   }
 }
+
+// Passive close detection misses sockets killed during laptop sleep or tab throttling, so on
+// tab-visible / network-online signals probe the connection instead of letting the user's next
+// action hang on a zombie socket.
+async function probeOnWake() {
+  if (reconnecting || probing || Date.now() - lastProvenAt < WAKE_PROBE_MIN_IDLE_MS) return;
+  probing = true;
+  const suspect = currentStub;
+  try {
+    await withTimeout(suspect.getServerConfig(), WAKE_PROBE_TIMEOUT_MS);
+    lastProvenAt = Date.now();
+  } catch (error) {
+    if (currentStub !== suspect || reconnecting) return;  // a real broken event won the race
+    console.warn('Connection unresponsive after wake:', error);
+    // Disposal fires onRpcBroken → handleBroken recovers. Its skip-first-backoff path retries
+    // immediately — right for "the network just came back".
+    disposeQuietly(suspect);
+  } finally {
+    probing = false;
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') void probeOnWake();
+});
+window.addEventListener('online', () => void probeOnWake());
 
 // Current stub. handleBroken() will replace this on disconnect.
 installWorkshopErrorReporting()
