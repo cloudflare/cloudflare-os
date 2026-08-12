@@ -56,7 +56,23 @@ async function devAutoLogin(stub: RpcStub<PublicApi>): Promise<void> {
 //
 // Anyway, I pulled the connection management out into these globals instead.
 let lastConnectTime: number = 0;
-let backoff: number = 1000;
+
+const INITIAL_BACKOFF_MS = 1000;
+const MAX_BACKOFF_MS = 10000;
+// The probe is getServerConfig — the same call the app needs to boot anyway. A generous
+// deadline lets a slow-but-alive backend settle instead of connect/dispose looping.
+const RECONNECT_PROBE_TIMEOUT_MS = 20000;
+
+// Callbacks to call whenever `currentStub` or connection state is updated.
+const subscribers = new Set<() => void>();
+const notifySubscribers = () => subscribers.forEach(cb => cb());
+let isConnectionLost = false;
+let reconnecting = false;
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> =>
+  Promise.race([promise, sleep(ms).then((): never => { throw new Error(`timed out after ${ms}ms`); })]);
 
 function getBackendHost(): string {
   // Only the Vite dev server is hosted separately from the backend. Built assets are served from
@@ -74,43 +90,49 @@ function startConnection(): RpcStub<PublicApi> {
   return newWebSocketRpcSession<PublicApi>(wsUrl);
 }
 
-async function handleBroken(error: any) {
+const disposeQuietly = (stub: RpcStub<PublicApi>) => {
+  try { stub[Symbol.dispose](); } catch { /* already broken */ }
+};
+
+// A reconnect attempt only becomes `currentStub` after a probe RPC round-trips: capnweb queues
+// sends while the socket is still CONNECTING, so an unproven stub looks fine until everything
+// pipelined onto it fails at once. Proving first means subscribers hear exactly twice per
+// outage — lost, then restored — instead of once per failed attempt.
+async function handleBroken(error: unknown) {
+  if (reconnecting) return;  // stale/disposed stub, or recovery already underway
+  reconnecting = true;
+
   console.warn('RPC connection lost:', error);
-
   isConnectionLost = true;
-  for (let cb of notifyCurrentStubUpdated) { cb(); }
+  notifySubscribers();  // `currentStub` stays the dead one, so stub-keyed effects don't re-fire
 
-  let timeSinceConnect = Date.now() - lastConnectTime;
-  if (timeSinceConnect < backoff) {
-    let waitTime = backoff - timeSinceConnect;
-    console.warn(`Will try again in ${Math.round(waitTime / 1000)} seconds...`)
-    await new Promise(resolve => setTimeout(resolve, waitTime));
-    console.warn(`Retrying connection...`);
-    backoff = Math.min(backoff * 2, 10000);
-  } else {
-    backoff = 1000;
+  // Fast recovery from one-off blips: skip the first backoff if the dying connection was up a while.
+  let skipSleep = Date.now() - lastConnectTime >= INITIAL_BACKOFF_MS;
+  let backoff = INITIAL_BACKOFF_MS;
+  for (;;) {
+    if (!skipSleep) {
+      await sleep(backoff * (0.85 + 0.3 * Math.random()));  // jittered against stampedes
+      backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+    }
+    skipSleep = false;
+
+    const candidate = startConnection();
+    try {
+      await withTimeout(candidate.getServerConfig(), RECONNECT_PROBE_TIMEOUT_MS);
+    } catch (probeError) {
+      console.debug('Reconnect attempt failed:', probeError);
+      disposeQuietly(candidate);
+      continue;
+    }
+
+    candidate.onRpcBroken(handleBroken);
+    currentStub = candidate;
+    reconnecting = false;
+    isConnectionLost = false;
+    console.warn('RPC connection restored.');
+    notifySubscribers();
+    return;
   }
-
-  currentStub = startConnection();
-  currentStub.onRpcBroken(handleBroken);
-
-  // Don't clear isConnectionLost here — the new connection hasn't proven
-  // it works yet. It gets cleared by markConnectionRestored() once the
-  // app successfully communicates with the backend.
-  for (let cb of notifyCurrentStubUpdated) {
-    cb();
-  }
-}
-
-// Callbacks to call whenever `currentStub` or connection state is updated.
-let notifyCurrentStubUpdated: Set<() => void> = new Set();
-let isConnectionLost = false;
-
-/** Called externally (e.g., by auth) to indicate the connection is alive. */
-export function markConnectionRestored() {
-  if (!isConnectionLost) return;
-  isConnectionLost = false;
-  for (let cb of notifyCurrentStubUpdated) { cb(); }
 }
 
 // Current stub. handleBroken() will replace this on disconnect.
@@ -153,9 +175,9 @@ function AppWithConnection() {
   }, []);
 
   useEffect(() => {
-    let cb = () => setRpcState({ stub: currentStub, connectionLost: isConnectionLost });
-    notifyCurrentStubUpdated.add(cb);
-    return () => { notifyCurrentStubUpdated.delete(cb); };
+    const cb = () => setRpcState({ stub: currentStub, connectionLost: isConnectionLost });
+    subscribers.add(cb);
+    return () => { subscribers.delete(cb); };
   }, []);
 
   // Fetch deployment config once the (re)connected stub is available. Re-fetch on reconnect so a

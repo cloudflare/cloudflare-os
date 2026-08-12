@@ -16,6 +16,7 @@ import {
 } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget } from 'capnweb'
 import { useAuthenticatedApi } from './AuthContext'
+import { useConnectionLost } from './RpcContext'
 import UserMenu from './components/UserMenu'
 import SiteLogo from './components/SiteLogo'
 
@@ -449,6 +450,7 @@ export default function GadgetEditor() {
   isEditingTitleRef.current = isEditingTitle
   const [titleInput, setTitleInput] = useState('')
 
+  const rpcConnectionLost = useConnectionLost()
   const {
     overseer,
     metadata,
@@ -472,6 +474,10 @@ export default function GadgetEditor() {
     },
   })
   const [userInfo, setUserInfo] = useState<AiChatAuthorInfo | null>(null)
+
+  // The workspace-level flag covers reopen failures; the socket-level flag covers the outage
+  // window itself, during which the dead stub stays published and no reopen is attempted yet.
+  const showReconnecting = connectionLost || rpcConnectionLost
 
   // ── role gating ────────────────────────────────────────────────────────────────
   // "use"-role collaborators receive a restricted overseer that only permits rendering and
@@ -1434,7 +1440,7 @@ export default function GadgetEditor() {
             onViewActivity={openActivity}
           />
 
-          {connectionLost && <ReconnectingChip />}
+          {showReconnecting && <ReconnectingChip />}
 
           <WorkshopIconButton
             onClick={() => setShareModalOpen(true)}
@@ -1466,7 +1472,7 @@ export default function GadgetEditor() {
 
         </div>
         <div className="ml-1 flex shrink-0 items-center gap-2">
-          <span className="md:hidden">{connectionLost && <ReconnectingChip />}</span>
+          <span className="md:hidden">{showReconnecting && <ReconnectingChip />}</span>
           {/* Desktop reaches Export from the gadget pane's tab bar, which is hidden on phones. */}
           <span className="md:hidden">
             <GadgetExportMenu
