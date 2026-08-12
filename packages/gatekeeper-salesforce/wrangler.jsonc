@@ -1,0 +1,62 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "gatekeeper-salesforce",
+  "main": ".wrangler/validate/src/index.ts",
+  "build": {
+    "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
+    "watch_dir": "src"
+  },
+  "compatibility_date": "2026-02-02",
+  "compatibility_flags": ["nodejs_compat", "allow_irrevocable_stub_storage"],
+
+  // The Salesforce gatekeeper reaches its Durable Object gatekeeper class via ctx.exports;
+  // no durable_objects binding is needed.
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SalesforceGatekeeper"]
+    }
+  ],
+
+  // Full record content for Salesforce objects, keyed by record ID, plus sync bookkeeping. The
+  // deployed D1 database is provisioned at deploy time (see scripts/release/manifest-lib.mjs and
+  // the gatekeeper's deploy-inputs.json). Local dev resolves it via `d1_databases.preview_database_id`.
+  "d1_databases": [
+    {
+      "binding": "SF_DB",
+      "database_name": "salesforce-vector-store",
+      "database_id": "$D1_SF_DB_ID",
+      "preview_database_id": "salesforce-vector-store"
+    }
+  ],
+
+  // Semantic search index: 1024 dims matching @cf/qwen/qwen3-embedding-0.6b.
+  "vectorize": [
+    {
+      "binding": "SF_INDEX",
+      "index_name": "salesforce-index"
+    }
+  ],
+
+  // Embedding model used for both indexing and queries.
+  "ai": {
+    "binding": "AI"
+  },
+
+  // Durable sync pipeline. Runs on the cron schedule below; also triggered on demand via the
+  // read session's resync() RPC.
+  "workflows": [
+    {
+      "name": "sf-sync",
+      "binding": "SF_SYNC",
+      "class_name": "SalesforceSyncWorkflow",
+      "schedules": ["0 */2 * * *"]
+    }
+  ],
+
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": false }
+  }
+}

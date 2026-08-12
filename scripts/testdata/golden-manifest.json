@@ -663,6 +663,111 @@
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/notion"
       }
     },
+    "gatekeeper-salesforce": {
+      "bindings": [
+        {
+          "database_id": "$D1_SF_DB_ID",
+          "name": "SF_DB",
+          "type": "d1"
+        },
+        {
+          "index_name": "$VECTORIZE_SF_INDEX_NAME",
+          "name": "SF_INDEX",
+          "type": "vectorize"
+        },
+        {
+          "name": "AI",
+          "type": "ai"
+        },
+        {
+          "class_name": "SalesforceSyncWorkflow",
+          "name": "SF_SYNC",
+          "schedules": [
+            "0 */2 * * *"
+          ],
+          "type": "workflow"
+        },
+        {
+          "name": "SF_CLIENT_ID",
+          "text": "$SECRET(SF_CLIENT_ID)",
+          "type": "secret_text"
+        },
+        {
+          "name": "SF_USERNAME",
+          "text": "$SECRET(SF_USERNAME)",
+          "type": "secret_text"
+        },
+        {
+          "name": "SF_PRIVATE_KEY",
+          "text": "$SECRET(SF_PRIVATE_KEY)",
+          "type": "secret_text"
+        }
+      ],
+      "compatibilityDate": "2026-02-02",
+      "compatibilityFlags": [
+        "nodejs_compat",
+        "allow_irrevocable_stub_storage"
+      ],
+      "inputs": [
+        {
+          "kind": "secret",
+          "label": "Salesforce client ID",
+          "name": "SF_CLIENT_ID",
+          "setupSteps": [
+            "Create or reuse an External Client App in your Salesforce org for JWT bearer auth (each environment needs its own consumer key).",
+            "Copy the Consumer Key from the app and provide it here."
+          ]
+        },
+        {
+          "kind": "secret",
+          "label": "Salesforce username",
+          "name": "SF_USERNAME",
+          "setupSteps": [
+            "The integration user principal, e.g. remi@touchless.io. Must be allowed to authenticate via the client app's OAuth scopes."
+          ]
+        },
+        {
+          "kind": "secret",
+          "label": "Salesforce private key (PEM)",
+          "name": "SF_PRIVATE_KEY",
+          "setupSteps": [
+            "The RSA PKCS#8 private key whose public key / certificate is registered on the External Client App.",
+            "Paste the full PEM text including BEGIN/END PRIVATE KEY lines."
+          ]
+        }
+      ],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "index.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "SalesforceGatekeeper"
+          ],
+          "tag": "v1"
+        }
+      ],
+      "modules": [
+        {
+          "name": "index.js",
+          "r2Key": "blobs/modules/0ca63938908987fbda90c364cfcbf8fe7aafbe666735e08c7ec972808b3e6740",
+          "sha256": "0ca63938908987fbda90c364cfcbf8fe7aafbe666735e08c7ec972808b3e6740",
+          "size": 63,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "salesforce",
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/salesforce"
+      }
+    },
     "gatekeeper-scheduler": {
       "bindings": [],
       "compatibilityDate": "2026-02-02",
