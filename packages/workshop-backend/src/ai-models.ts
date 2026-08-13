@@ -115,6 +115,21 @@ const API_STREAMS: Record<string, StreamFunction<Api, SimpleStreamOptions>> = {
 
 const ZERO_COST: ModelCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
+// Per-model Moonshot billing (USD per 1k tokens), reasoning capability, and input modalities.
+// Source: https://platform.moonshot.ai/docs/pricing/chat — verify against live page before shipping.
+// Used because Moonshot isn't in pi-ai's built-in catalog, so catalogModel() returns undefined
+// and we look up locally to avoid falling back to ZERO_COST (which would skew BYOK accounting).
+const MOONSHOT_MODEL_COSTS: Record<string, {
+  cost: ModelCost,
+  reasoning: boolean,
+  input: ("text" | "image")[],
+}> = {
+  "kimi-k3":                  { cost: { input: 0.002,  output: 0.008,  cacheRead: 0, cacheWrite: 0 }, reasoning: true,  input: ["text"] },
+  "kimi-k2.7-code":           { cost: { input: 0.0015, output: 0.006,  cacheRead: 0, cacheWrite: 0 }, reasoning: true,  input: ["text"] },
+  "kimi-k2.7-code-highspeed": { cost: { input: 0.0015, output: 0.006,  cacheRead: 0, cacheWrite: 0 }, reasoning: true,  input: ["text"] },
+  "kimi-k2.6":                { cost: { input: 0.0006, output: 0.002,  cacheRead: 0, cacheWrite: 0 }, reasoning: false, input: ["text"] },
+};
+
 // Consult pi's builtin catalog for cost/compat metadata of a known model id. Unknown models are
 // fine (synthesized with zero cost). Import per-provider, not providers/all.
 function catalogModel(provider: AiModelConfig["provider"], modelId: string): Model<Api> | undefined {
@@ -124,6 +139,7 @@ function catalogModel(provider: AiModelConfig["provider"], modelId: string): Mod
     case "google": return (GOOGLE_MODELS as Record<string, Model<Api>>)[modelId];
     case "cloudflare": return (CLOUDFLARE_WORKERS_AI_MODELS as Record<string, Model<Api>>)[modelId];
     case "ollama": return undefined;
+    case "moonshot": return undefined;  // Moonshot is OpenAI-compatible; pi doesn't ship a catalog.
     default: return undefined;
   }
 }
@@ -230,6 +246,22 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
         cost: catalog?.cost ?? ZERO_COST,
         ...window,
         compat: workersAiCompat(catalog),
+      };
+    case "moonshot":
+      // Moonshot is OpenAI-compatible; route through the gateway's /compat layer when the
+      // gateway is configured. Currently inactive for this workshop (no moonshot provider in
+      // the AI Gateway catalog), but kept symmetrical with `getModelDirect` so the direct
+      // path mirrors the gateway-routed one.
+      return {
+        id: config.model,
+        name: catalog?.name ?? config.model,
+        api: "openai-completions",
+        provider: "moonshot",
+        baseUrl: `${gatewayUrl}/compat`,
+        reasoning: true,
+        input: ["text"],
+        cost: catalog?.cost ?? ZERO_COST,
+        ...window,
       };
     default:
       return undefined;
@@ -610,6 +642,28 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
         apiKey: config.apiToken,
         sessionAffinity,
       });
+    case "moonshot": {
+      // Direct Moonshot hit (no AI Gateway). Moonshot exposes an OpenAI-compatible
+      // /v1/chat/completions endpoint, so we route through pi's openai-completions API impl.
+      // Cost / reasoning / input are per-model: lookup locally so pi-ai's missing catalog
+      // (catalogModel returns undefined) doesn't fall back to ZERO_COST.
+      const spec = MOONSHOT_MODEL_COSTS[config.model];
+      return makeHandle({
+        model: {
+          id: config.model,
+          name: catalog?.name ?? config.model,
+          api: "openai-completions",
+          provider: "moonshot",
+          baseUrl: config.apiUrl ?? "https://api.moonshot.ai/v1",
+          reasoning: spec?.reasoning ?? true,
+          input: spec?.input ?? ["text"],
+          cost: spec?.cost ?? ZERO_COST,
+          ...window,
+        },
+        apiKey: config.apiToken,
+        sessionAffinity,
+      });
+    }
     default:
       config.provider satisfies never;
       throw new Error(`Unknown provider "${config.provider}".`);

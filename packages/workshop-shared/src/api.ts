@@ -944,7 +944,7 @@ export type CloudflareAccountOption = {
 };
 
 // Supported AI providers.
-export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" | "ollama";
+export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" | "ollama" | "moonshot";
 
 // Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`.
 export type AiGatewayInfo = {
@@ -1011,6 +1011,17 @@ export const SUGGESTED_MODELS: Record<
     "gemini-3.6-flash": {name: "Gemini 3.6 Flash", contextWindow: 1048576},
   },
   "ollama": {
+  },
+  "moonshot": {
+    // Moonshot AI — Kimi models. Hosted at api.moonshot.ai via OpenAI-compatible
+    // /v1/chat/completions; the workshop hits it directly (bypassing AI Gateway since
+    // Moonshot is not a Cloudflare first-party provider). contextWindow values per
+    // https://platform.moonshot.ai/docs/pricing/chat (K3: 262144, K2.7-code: 262144,
+    // K2.6: 131072).
+    "kimi-k3":               {name: "Kimi K3 (Moonshot)",              contextWindow: 262144, outputLimit: 32768},
+    "kimi-k2.7-code":        {name: "Kimi K2.7 Code (Moonshot)",       contextWindow: 262144, outputLimit: 32768},
+    "kimi-k2.7-code-highspeed": {name: "Kimi K2.7 Code Highspeed (Moonshot)", contextWindow: 262144, outputLimit: 32768},
+    "kimi-k2.6":             {name: "Kimi K2.6 (Moonshot)",            contextWindow: 131072, outputLimit: 8192},
   },
 };
 
