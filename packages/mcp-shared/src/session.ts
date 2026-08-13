@@ -156,8 +156,9 @@ export class McpSessionBase extends RpcTarget {
       status: "pending",
       actionId: staged.id,
       message:
-        `Calling "${name}" on ${host.serverName} needs approval. Poll getActionResult(` +
-        `${staged.id}) for the outcome.`,
+        `Calling "${name}" on ${host.serverName} needs approval. If this is running in an ` +
+        `agent's executeCode call, return from this executeCode call now so the approval can ` +
+        `appear in chat. After approval, call getActionResult(${staged.id}) for the outcome.`,
     };
   }
 

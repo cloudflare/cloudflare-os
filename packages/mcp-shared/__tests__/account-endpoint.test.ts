@@ -190,11 +190,30 @@ describe("connect initiation nonce", () => {
     const repoint = account.beginConnect(nonce, {
       ...server("https://new.example/mcp"), provenance: "deployment",
     });
-    await account.setMcpSessionId(old.endpoint, connection.generation, "old-session");
+    await account.setMcpSessionId(
+      old.endpoint, connection.generation, connection.sessionId, "old-session");
     expect(context.storage.kv.get("mcpSessionId")).toBeUndefined();
 
     account.failProbe();
     await expect(repoint).rejects.toThrow("stop test probe");
+  });
+
+  it("does not let concurrent initialization overwrite the first stored session", async () => {
+    const context = fakeContext();
+    const connected = { ...server("https://mcp.example/mcp"), auth: "none" as const };
+    context.storage.kv.put("server", connected);
+    const account = new InterleavingAccount(context as never, {});
+    const first = await account.getConnection(connected.endpoint);
+    const second = await account.getConnection(connected.endpoint);
+
+    await expect(account.setMcpSessionId(
+      connected.endpoint, first.generation, null, "first-session")).resolves.toBe(true);
+    await expect(account.setMcpSessionId(
+      connected.endpoint, second.generation, null, "first-session")).resolves.toBe(true);
+    await expect(account.setMcpSessionId(
+      connected.endpoint, second.generation, null, "second-session")).resolves.toBe(false);
+
+    expect(context.storage.kv.get("mcpSessionId")).toBe("first-session");
   });
 
   it("does not let an old in-flight refresh restore tokens after repoint", async () => {

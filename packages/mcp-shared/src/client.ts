@@ -14,6 +14,7 @@
 // 401/403/404 classification below are the SSRF and response-size boundary for this connector.
 
 import {
+  FetchNotStartedError,
   guardedFetch,
   MAX_RESPONSE_BYTES,
   readTextCapped,
@@ -129,6 +130,14 @@ export class McpSessionExpiredError extends Error {
   }
 }
 
+/** A connector-side failure that happened before the requested MCP tool was dispatched. */
+export class McpCallNotDispatchedError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "McpCallNotDispatchedError";
+  }
+}
+
 /**
  * What a failed call is known to have done to the server.
  *
@@ -164,6 +173,7 @@ export class McpProtocolError extends Error {
  * the other way is a duplicated write that MCP offers no way to undo.
  */
 export function callMayHaveTakenEffect(err: unknown): boolean {
+  if (err instanceof McpCallNotDispatchedError) return false;
   // The server demanded authorization, so it never reached the tool.
   if (err instanceof McpAuthRequiredError) return false;
   // A genuine MCP session-expiry response means the server rejected the request before dispatch,
@@ -294,8 +304,8 @@ function clampTool(tool: McpWireTool): McpTool {
   };
 }
 
-/** Bearer token supplier; returns null for servers that need no authorization. */
-export type AuthorizationProvider = () => Promise<string | null>;
+/** Supplies a bearer token for an MCP method, or null for a public server. */
+export type AuthorizationProvider = (method: string) => Promise<string | null>;
 
 /**
  * A stateless-per-instance MCP client. Construct one per operation; the only state worth keeping
@@ -326,13 +336,13 @@ export class McpClient {
   // `#quoteServerText`.
   #lastCredential: string | null = null;
 
-  async #headers(): Promise<Headers> {
+  async #headers(method: string): Promise<Headers> {
     const headers = new Headers({
       "Content-Type": "application/json",
       "Accept": "application/json, text/event-stream",
       "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
     });
-    const authorization = await this.#getAuthorization();
+    const authorization = await this.#getAuthorization(method);
     this.#lastCredential = authorization;
     if (authorization) headers.set("Authorization", `Bearer ${authorization}`);
     if (this.sessionId) headers.set("Mcp-Session-Id", this.sessionId);
@@ -340,26 +350,49 @@ export class McpClient {
   }
 
   async #post(body: unknown): Promise<Response> {
-    const response = await guardedFetch(this.#endpoint, {
-      method: "POST",
-      headers: await this.#headers(),
-      body: JSON.stringify(body),
-    }, this.#fetchOptions);
+    let headers: Headers;
+    try {
+      const method = typeof body === "object" && body !== null && "method" in body
+        ? String((body as { method: unknown }).method)
+        : "unknown";
+      headers = await this.#headers(method);
+    } catch (err) {
+      throw new McpCallNotDispatchedError(
+        err instanceof Error ? err.message : String(err), err);
+    }
+    let response: Response;
+    try {
+      response = await guardedFetch(this.#endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      }, this.#fetchOptions);
+    } catch (err) {
+      if (err instanceof FetchNotStartedError) {
+        throw new McpCallNotDispatchedError(err.message, err);
+      }
+      throw err;
+    }
 
     // Only 401 means the credentials are the problem. A 403 is an authenticated caller refused this
     // particular tool; treating it as an auth failure would mark the account expired and prompt a
     // reconnect that cannot help.
     if (response.status === 401) {
+      await response.body?.cancel().catch(() => undefined);
       throw new McpAuthRequiredError(
         "The MCP server requires authorization.",
         parseResourceMetadataUrl(response.headers.get("WWW-Authenticate")));
     }
     if (response.status === 403) {
+      await response.body?.cancel().catch(() => undefined);
       throw new McpProtocolError(
         "The MCP server refused this request. The connected account may not have access to it.",
         undefined, "declined");
     }
-    if (response.status === 404 && this.sessionId) throw new McpSessionExpiredError();
+    if (response.status === 404 && this.sessionId) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new McpSessionExpiredError();
+    }
     return response;
   }
 
@@ -368,6 +401,7 @@ export class McpClient {
     const response = await this.#post({ jsonrpc: "2.0", id, method, params });
 
     if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
       throw new McpProtocolError(
         `MCP server returned HTTP ${response.status} for "${method}".`);
     }
@@ -432,6 +466,17 @@ export class McpClient {
     });
     await this.#notify("notifications/initialized");
     return info;
+  }
+
+  /** Best-effort termination for a transport session this client no longer owns. */
+  async closeSession(): Promise<void> {
+    if (!this.sessionId) return;
+    const response = await guardedFetch(this.#endpoint, {
+      method: "DELETE",
+      headers: await this.#headers("DELETE"),
+    }, this.#fetchOptions);
+    await response.body?.cancel();
+    this.sessionId = null;
   }
 
   /**

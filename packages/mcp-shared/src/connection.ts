@@ -7,7 +7,13 @@
 // landed. A write is left to fail as outcome-unknown; its approved action is closed, and a person
 // must deliberately stage a new one after checking whether the first took effect.
 
-import { McpAuthRequiredError, McpClient, McpSessionExpiredError, type ToolCatalog }
+import {
+  McpAuthRequiredError,
+  McpCallNotDispatchedError,
+  McpClient,
+  McpSessionExpiredError,
+  type ToolCatalog,
+}
   from "./client.js";
 import { fetchOptions, type InsecureEnv } from "./fetch.js";
 import { MAX_TOOLS_PER_SERVER } from "./tools.js";
@@ -51,13 +57,27 @@ export type ConnectionAccount = {
    * send the new server's bearer token to the old server.
    */
   getConnection(endpoint: string): Promise<McpConnection>;
-  setMcpSessionId(endpoint: string, generation: number, sessionId: string | null): Promise<void>;
+  assertConnectionCurrent(endpoint: string, generation: number): Promise<void>;
+  setMcpSessionId(
+    endpoint: string,
+    generation: number,
+    previousSessionId: string | null,
+    sessionId: string | null,
+  ): Promise<boolean>;
   noteCredentialsExpired(endpoint: string, generation: number): Promise<void>;
 };
 
 /** The name this deployment gives when introducing itself to an MCP server. */
 export function clientName(env: ConnectionEnv): string {
   return env.MCP_CLIENT_NAME ?? "Gadgets";
+}
+
+function notDispatched(err: unknown): McpCallNotDispatchedError {
+  if (err instanceof McpCallNotDispatchedError) return err;
+  return new McpCallNotDispatchedError(
+    err instanceof Error ? err.message : String(err),
+    err,
+  );
 }
 
 /** Runs `fn` against an initialized client for `endpoint`, using the account's credentials. */
@@ -70,39 +90,92 @@ export async function withClient<T>(
 ): Promise<T> {
   // Read once for the whole operation. The account refreshes a token a minute before expiry, so one
   // valid here stays valid for the handful of requests a single `withClient` makes.
-  const { authorization, sessionId, generation } = await account.getConnection(endpoint);
+  let connection: McpConnection;
+  try {
+    connection = await account.getConnection(endpoint);
+  } catch (err) {
+    throw notDispatched(err);
+  }
+  const { authorization, sessionId, generation } = connection;
   const client = new McpClient(
-    endpoint, async () => authorization, sessionId, fetchOptions(env));
+    endpoint, async method => {
+      if (method === "tools/call") {
+        await account.assertConnectionCurrent(endpoint, generation);
+      }
+      return authorization;
+    }, sessionId, fetchOptions(env));
+  let persistedSessionId = sessionId;
 
-  const run = async (): Promise<T> => {
-    const result = await fn(client);
-    if (client.sessionId !== sessionId) {
-      await account.setMcpSessionId(endpoint, generation, client.sessionId);
+  const persistSession = async (): Promise<void> => {
+    if (client.sessionId === persistedSessionId) return;
+    const accepted = await account.setMcpSessionId(
+      endpoint, generation, persistedSessionId, client.sessionId);
+    if (!accepted) {
+      await client.closeSession().catch(() => undefined);
+      throw new McpCallNotDispatchedError(
+        "Another request replaced this MCP transport session. Try again.");
     }
-    return result;
+    persistedSessionId = client.sessionId;
+  };
+
+  const initialize = async (): Promise<void> => {
+    await client.initialize(clientName(env));
+    await persistSession();
+  };
+
+  const rejectCredentials = async (err: McpAuthRequiredError): Promise<never> => {
+    const rejected = new Error(
+      "The MCP server rejected this connection's credentials. Please reconnect the account.",
+      { cause: err });
+    let cause: unknown = rejected;
+    try {
+      await account.noteCredentialsExpired(endpoint, generation);
+    } catch (notificationError) {
+      cause = new AggregateError(
+        [rejected, notificationError],
+        "The credentials were rejected and their expiry notification failed.",
+      );
+    }
+    throw new McpCallNotDispatchedError(rejected.message, cause);
   };
 
   try {
-    if (!sessionId) await client.initialize(clientName(env));
-    return await run();
-  } catch (err) {
-    if (err instanceof McpSessionExpiredError) {
+    if (!sessionId) {
+      try {
+        await initialize();
+      } catch (err) {
+        // Let the outer handler record credential rejection. Every other initialization failure is
+        // known to precede the requested tool call.
+        if (err instanceof McpAuthRequiredError) throw err;
+        throw notDispatched(err);
+      }
+    }
+    try {
+      return await fn(client);
+    } catch (err) {
+      if (!(err instanceof McpSessionExpiredError)) throw err;
       if (options.retryOnExpiry !== false) {
         client.sessionId = null;
-        await client.initialize(clientName(env));
-        return await run();
+        try {
+          await initialize();
+        } catch (initializeError) {
+          if (initializeError instanceof McpAuthRequiredError) throw initializeError;
+          throw notDispatched(initializeError);
+        }
+        return await fn(client);
       }
       // This call is not retried, since it may already have taken effect. The session is gone all
       // the same, so the cached id is dead: left in place it would fail every later call for a
       // reason already known, including the retry the Workshop offers the user. Clearing it makes
       // the next call re-initialize.
-      if (sessionId) await account.setMcpSessionId(endpoint, generation, null);
+      if (persistedSessionId) {
+        await account.setMcpSessionId(endpoint, generation, persistedSessionId, null);
+      }
+      throw err;
     }
+  } catch (err) {
     if (err instanceof McpAuthRequiredError) {
-      await account.noteCredentialsExpired(endpoint, generation);
-      throw new Error(
-        "The MCP server rejected this connection's credentials. Please reconnect the account.",
-        { cause: err });
+      return rejectCredentials(err);
     }
     throw err;
   }
