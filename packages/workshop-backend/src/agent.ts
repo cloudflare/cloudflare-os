@@ -416,6 +416,8 @@ document.body.appendChild(document.createTextNode(greeting));
 
 Note that there is no index.html. Instead, client.js must build the entire UI using JavaScript code.
 
+Make Gadget UIs responsive and usable on phones by default.
+
 Every Gadget UI can be exported to PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. When asked to support or improve PDF export, only add standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the PDF remains readable.
 
 Both the client and server run inside a strictly isolated sandbox. They cannot make requests to the Internet, e.g. by calling \`fetch()\`. Instead, a Gadget communicates with the outside world strictly through its "bindings", that is, the Cloudflare Workers \`env\` API, which code in the Durable Object class can access as \`this.env\`.
