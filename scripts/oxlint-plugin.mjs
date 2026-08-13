@@ -142,22 +142,15 @@ export const preferJsdoc = {
       if (isExportedApiMember(node)) checkComments(node);
     }
 
+    const apiMemberSelector =
+      ":matches(AccessorProperty, MethodDefinition, PropertyDefinition, " +
+      "TSAbstractAccessorProperty, TSAbstractMethodDefinition, TSAbstractPropertyDefinition, " +
+      "TSCallSignatureDeclaration, TSConstructSignatureDeclaration, TSEnumMember, " +
+      "TSIndexSignature, TSMethodSignature, TSParameterProperty, TSPropertySignature)";
+
     return {
-      ExportDefaultDeclaration: checkExport,
-      ExportNamedDeclaration: checkExport,
-      AccessorProperty: checkApiMember,
-      MethodDefinition: checkApiMember,
-      PropertyDefinition: checkApiMember,
-      TSAbstractAccessorProperty: checkApiMember,
-      TSAbstractMethodDefinition: checkApiMember,
-      TSAbstractPropertyDefinition: checkApiMember,
-      TSCallSignatureDeclaration: checkApiMember,
-      TSConstructSignatureDeclaration: checkApiMember,
-      TSEnumMember: checkApiMember,
-      TSIndexSignature: checkApiMember,
-      TSMethodSignature: checkApiMember,
-      TSParameterProperty: checkApiMember,
-      TSPropertySignature: checkApiMember,
+      ":matches(ExportDefaultDeclaration, ExportNamedDeclaration)": checkExport,
+      [apiMemberSelector]: checkApiMember,
     };
   },
 };
