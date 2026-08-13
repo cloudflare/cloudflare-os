@@ -2566,9 +2566,9 @@ class OverseerImpl implements AgentHooks {
     if (format.mode === "server") {
       if (!handler) throw new Error("The Gadget export handler is unavailable.");
       using gadget = await this.getGadgetFacet(gadgetId, chatId);
-      // The facet is a native RpcStub at runtime, despite its Cap'n Web type for browser callers.
+      // Cap'n Web and native RPC stubs interoperate at runtime, but their types do not yet.
       return await exportServerFormat(() =>
-        handler.export(gadget as NativeRpcStub<any>, format.id));
+        handler.export(gadget as unknown as NativeRpcStub<any>, format.id));
     }
 
     let browser = this.env.BROWSER;
@@ -2594,8 +2594,9 @@ class OverseerImpl implements AgentHooks {
     let handler = this.loadGadgetWorker(gadgetId, chatId)
       .getEntrypoint<GadgetExportEntrypoint>(GADGET_EXPORT_ENTRYPOINT);
     using gadget = await this.getGadgetFacet(gadgetId, chatId);
-    // The facet is a native RpcStub at runtime, despite its Cap'n Web type for browser callers.
-    let formats = await readCustomExportFormats(handler, gadget as NativeRpcStub<any>);
+    // Cap'n Web and native RPC stubs interoperate at runtime, but their types do not yet.
+    let formats = await readCustomExportFormats(
+        handler, gadget as unknown as NativeRpcStub<any>);
     return formats === null
       ? {formats: defaultExportFormats(), handler: null}
       : {formats, handler};

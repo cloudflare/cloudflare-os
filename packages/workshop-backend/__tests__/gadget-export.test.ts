@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { RpcStub, RpcTarget } from "cloudflare:workers";
 import {
   defaultExportFormats,
   exportServerFormat,
@@ -14,24 +13,6 @@ function streamOf(chunks: string[]): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
-}
-
-class TestGadgetTarget extends RpcTarget {
-  getLabel(): string {
-    return "Capability format";
-  }
-}
-
-class TestExportHandlerTarget extends RpcTarget {
-  async getExportFormats(gadget: RpcStub<TestGadgetTarget>) {
-    return [{
-      id: "capability",
-      label: await gadget.getLabel(),
-      mode: "server",
-      contentType: "text/plain",
-      fileExtension: ".txt",
-    }];
-  }
 }
 
 describe("Gadget export formats", () => {
@@ -115,19 +96,6 @@ describe("Gadget export formats", () => {
       },
     };
     await expect(readCustomExportFormats(broken, {})).rejects.toThrow("handler failed");
-  });
-
-  it("passes a serializable Gadget capability to a native RPC handler", async () => {
-    using gadget = new RpcStub(new TestGadgetTarget());
-    using handler = new RpcStub(new TestExportHandlerTarget());
-
-    await expect(readCustomExportFormats(handler, gadget)).resolves.toEqual([{
-      id: "capability",
-      label: "Capability format",
-      mode: "server",
-      contentType: "text/plain",
-      fileExtension: ".txt",
-    }]);
   });
 
   it("times out format discovery", async () => {

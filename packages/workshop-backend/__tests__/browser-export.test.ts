@@ -290,8 +290,7 @@ describe("renderGadgetInBrowser", () => {
     expect(harness.exportDocument()).toContain(
       'globalThis.gadgetExportFormatId%20%3D%20%22test-format%22',
     );
-    expect(harness.exportDocumentCsp()).toContain("img-src data:");
-    expect(harness.exportDocumentCsp()).not.toContain("blob:");
+    expect(harness.exportDocumentCsp()).toContain("img-src data: blob:");
     expect(harness.blobRequestAborted()).toBe(true);
   });
 

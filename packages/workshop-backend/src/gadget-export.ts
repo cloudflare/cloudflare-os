@@ -15,7 +15,7 @@ export interface GadgetExportEntrypoint<Gadget extends DurableObject = DurableOb
   /** Lists all export formats supported by the Gadget. */
   getExportFormats(gadget: GadgetExportCapability<Gadget>): Promise<GadgetExportFormat[]>;
 
-  /** Produces the content for a server-mode export format. */
+  /** Produces a server-mode export without retaining `gadget` after this call returns. */
   export(gadget: GadgetExportCapability<Gadget>, id: string): Promise<ReadableStream<Uint8Array>>;
 }
 

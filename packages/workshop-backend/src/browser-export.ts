@@ -35,7 +35,7 @@ const EXPORT_DOCUMENT_URL = "https://gadget-export.invalid/";
 // running inside an iframe in the user's browser. We should close the gap in both places. For now,
 // extending the same gap to remotely-rendered gadgets is acceptable.
 const EXPORT_DOCUMENT_CSP = "default-src 'none'; frame-src 'none'; script-src data:; " +
-  "style-src data: 'unsafe-inline'; img-src data:; media-src data:; " +
+  "style-src data: 'unsafe-inline'; img-src data: blob:; media-src data:; " +
   "font-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; " +
   "connect-src 'none'; sandbox allow-scripts;";
 const STATIC_HTML_CSP = "default-src 'none'; frame-src 'none'; script-src 'none'; " +
