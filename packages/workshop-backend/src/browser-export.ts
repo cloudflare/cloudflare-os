@@ -6,7 +6,7 @@ import BROWSER_EXPORT_RUNTIME from "./generated/browser-export-runtime.txt";
 import HTML_SANITIZER_RUNTIME from "./generated/html-sanitizer-runtime.txt";
 import {
   createStaticHtmlSnapshot,
-  getDocumentPixelArea,
+  getValidatedScreenshotClip,
   receiveFromBrowser,
   sendToBrowser,
   setDocumentTitle,
@@ -252,12 +252,28 @@ export async function renderGadgetInBrowser(
           );
           return streamBytes(new TextEncoder().encode(html));
         }
-        case "image/png":
-          await rejectOversizedScreenshot(isolatedRealm);
-          return streamBytes(await page.screenshot({type: "png", fullPage: true}));
-        case "image/jpeg":
-          await rejectOversizedScreenshot(isolatedRealm);
-          return streamBytes(await page.screenshot({type: "jpeg", fullPage: true}));
+        case "image/png": {
+          const clip = await isolatedRealm.evaluate(
+            getValidatedScreenshotClip,
+            MAX_SCREENSHOT_PIXELS,
+          );
+          return streamBytes(await page.screenshot({
+            type: "png",
+            clip,
+            captureBeyondViewport: true,
+          }));
+        }
+        case "image/jpeg": {
+          const clip = await isolatedRealm.evaluate(
+            getValidatedScreenshotClip,
+            MAX_SCREENSHOT_PIXELS,
+          );
+          return streamBytes(await page.screenshot({
+            type: "jpeg",
+            clip,
+            captureBeyondViewport: true,
+          }));
+        }
         default:
           throw new Error(`Unsupported browser export content type: ${format.contentType}`);
       }
@@ -273,13 +289,6 @@ export async function renderGadgetInBrowser(
       await release();
     }
     throw error;
-  }
-}
-
-async function rejectOversizedScreenshot(isolatedRealm: Pick<Page, "evaluate">): Promise<void> {
-  const pixelArea = await isolatedRealm.evaluate(getDocumentPixelArea);
-  if (!Number.isSafeInteger(pixelArea) || pixelArea > MAX_SCREENSHOT_PIXELS) {
-    throw new Error(`Gadget screenshots may not exceed ${MAX_SCREENSHOT_PIXELS} pixels.`);
   }
 }
 

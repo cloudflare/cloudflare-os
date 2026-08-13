@@ -85,8 +85,14 @@ export function createStaticHtmlSnapshot(csp: string, maxBytes: number): string 
   return html;
 }
 
-/** Returns the full document's rendered pixel area. */
-export function getDocumentPixelArea(): number {
+/** Returns fixed full-document dimensions after validating their pixel area. */
+export function getValidatedScreenshotClip(maxPixels: number) {
   const root = document.documentElement;
-  return root.scrollWidth * root.scrollHeight;
+  const width = root.scrollWidth;
+  const height = root.scrollHeight;
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
+      width <= 0 || height <= 0 || width > Math.floor(maxPixels / height)) {
+    throw new Error(`Gadget screenshots may not exceed ${maxPixels} pixels.`);
+  }
+  return {x: 0, y: 0, width, height};
 }

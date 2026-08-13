@@ -22,8 +22,9 @@ type Harness = {
   sanitizedInIsolatedRealm: () => boolean;
   mediaType: () => string | undefined;
   screenshotType: () => string | undefined;
-  screenshotFullPage: () => boolean | undefined;
-  setDocumentPixelArea: (value: number) => void;
+  screenshotClip: () => {x: number; y: number; width: number; height: number} | undefined;
+  screenshotCaptureBeyondViewport: () => boolean | undefined;
+  setDocumentDimensions: (width: number, height: number) => void;
   setSnapshot: (value: string) => void;
 };
 
@@ -42,8 +43,9 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
   let sanitizedInIsolatedRealm = false;
   let mediaType: string | undefined;
   let screenshotType: string | undefined;
-  let screenshotFullPage: boolean | undefined;
-  let documentPixelArea = 1_000_000;
+  let screenshotClip: {x: number; y: number; width: number; height: number} | undefined;
+  let screenshotCaptureBeyondViewport: boolean | undefined;
+  let documentDimensions = {width: 1000, height: 1000};
   let snapshot = "<!DOCTYPE html>\n<html><head></head><body>Snapshot</body></html>";
   let navigated = false;
   let requestHandler: ((request: unknown) => void) | undefined;
@@ -89,7 +91,15 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
     }
     if (fn.toString().includes("scrollWidth")) {
       if (!isolated) throw new Error("Document dimensions were measured in the main world.");
-      return Promise.resolve(documentPixelArea);
+      const maxPixels = Number(args[0]);
+      const {width, height} = documentDimensions;
+      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
+          width <= 0 || height <= 0 || width > Math.floor(maxPixels / height)) {
+        return Promise.reject(new Error(
+          `Gadget screenshots may not exceed ${maxPixels} pixels.`,
+        ));
+      }
+      return Promise.resolve({x: 0, y: 0, width, height});
     }
     // The RPC transport polls this; the fake page never has a message to deliver.
     return new Promise(() => {});
@@ -143,9 +153,14 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
         },
       });
     },
-    screenshot: async ({type, fullPage}: {type: string, fullPage?: boolean}) => {
+    screenshot: async ({type, clip, captureBeyondViewport}: {
+      type: string;
+      clip?: {x: number; y: number; width: number; height: number};
+      captureBeyondViewport?: boolean;
+    }) => {
       screenshotType = type;
-      screenshotFullPage = fullPage;
+      screenshotClip = clip;
+      screenshotCaptureBeyondViewport = captureBeyondViewport;
       return new TextEncoder().encode(type);
     },
   };
@@ -177,8 +192,9 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
     sanitizedInIsolatedRealm: () => sanitizedInIsolatedRealm,
     mediaType: () => mediaType,
     screenshotType: () => screenshotType,
-    screenshotFullPage: () => screenshotFullPage,
-    setDocumentPixelArea: value => { documentPixelArea = value; },
+    screenshotClip: () => screenshotClip,
+    screenshotCaptureBeyondViewport: () => screenshotCaptureBeyondViewport,
+    setDocumentDimensions: (width, height) => { documentDimensions = {width, height}; },
     setSnapshot: value => { snapshot = value; },
   };
   return { gadget, harness };
@@ -343,18 +359,19 @@ describe("renderGadgetInBrowser", () => {
   it.each([
     ["image/png", "png"],
     ["image/jpeg", "jpeg"],
-  ])("captures full-page %s screenshots", async (contentType, screenshotType) => {
+  ])("captures bounded full-page %s screenshots", async (contentType, screenshotType) => {
     let { stream, harness } = render(undefined, true, contentType);
 
     expect(await collect(await stream)).toBe(screenshotType);
     expect(harness.screenshotType()).toBe(screenshotType);
-    expect(harness.screenshotFullPage()).toBe(true);
+    expect(harness.screenshotClip()).toEqual({x: 0, y: 0, width: 1000, height: 1000});
+    expect(harness.screenshotCaptureBeyondViewport()).toBe(true);
     expect(harness.browserClosed()).toBe(true);
   });
 
   it("rejects oversized screenshots before capture", async () => {
     let { gadget, harness } = makeHarness();
-    harness.setDocumentPixelArea(25_000_001);
+    harness.setDocumentDimensions(5001, 5000);
 
     let stream = renderGadgetInBrowser(
       {} as BrowserRun,
