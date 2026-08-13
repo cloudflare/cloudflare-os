@@ -403,13 +403,20 @@ export class SlackApi {
     return user;
   }
 
-  async getAccountDescription(userId: string): Promise<AccountDescription> {
+  // `teamId` qualifies the account when the workspace host is unavailable; see uniqueName below.
+  async getAccountDescription(userId: string, teamId: string): Promise<AccountDescription> {
+    let hostPromise = this.#getWorkspaceHost();
     let data = await this.#call<SlackApiEnvelope & { user?: RawUser }>(
         "users.info", { user: userId });
     let profile = data.user?.profile;
+    let handle = data.user?.name;
+    // A Slack handle is unique only within a workspace, but the Workshop dedupes connected accounts
+    // by uniqueName — so an unqualified handle would collapse two workspaces the same person
+    // connected into one account. Qualify it with the workspace, which is globally unique.
+    let workspace = (await hostPromise) || teamId;
     return {
-      displayName: profile?.real_name || profile?.display_name || data.user?.name,
-      uniqueName: data.user?.name,
+      displayName: profile?.real_name || profile?.display_name || handle,
+      uniqueName: handle && workspace ? `${handle}@${workspace}` : handle,
       avatar: { url: profile?.image_192 || profile?.image_72 || profile?.image_48 || "" },
     };
   }

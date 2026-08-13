@@ -538,8 +538,10 @@ export class SlackUserImpl extends WorkerEntrypoint<Env, SlackUserImplProps>
   async describe(): Promise<AccountDescription> {
     let account = this.#account();
     let userIdPromise = account.getUserId();
+    let teamIdPromise = account.getTeamId();
     let grantedPromise = account.getGrantedResourceUrlPatterns();
-    let description = await this.#api().getAccountDescription(await userIdPromise);
+    let description = await this.#api().getAccountDescription(
+        await userIdPromise, await teamIdPromise);
     description.grantedResourceUrlPatterns = await grantedPromise;
     return description;
   }
