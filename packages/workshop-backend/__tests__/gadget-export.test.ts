@@ -78,6 +78,14 @@ describe("Gadget export formats", () => {
     }])).toThrow("invalid file extension");
     expect(() => validateExportFormats([{
       ...format,
+      fileExtension: ".1234567890123456",
+    }])).toThrow("between 1 and 16 characters");
+    expect(() => validateExportFormats([{
+      ...format,
+      fileExtension: ".csv.",
+    }])).toThrow("invalid file extension");
+    expect(() => validateExportFormats([{
+      ...format,
       contentType: "not a media type",
     }])).toThrow("invalid content type");
   });

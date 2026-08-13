@@ -23,7 +23,7 @@ const MAX_EXPORT_FORMATS = 32;
 const MAX_EXPORT_ID_LENGTH = 128;
 const MAX_EXPORT_LABEL_LENGTH = 128;
 const MAX_CONTENT_TYPE_LENGTH = 255;
-const MAX_FILE_EXTENSION_LENGTH = 32;
+const MAX_FILE_EXTENSION_LENGTH = 16;
 
 const BROWSER_CONTENT_TYPES = new Set([
   "text/html",
@@ -47,7 +47,7 @@ const EXPORT_FORMAT_SCHEMA: z.ZodType<GadgetExportFormat> = z.object({
     .regex(/^[-!#$%&'*+.^_`|~0-9A-Za-z]+\/[-!#$%&'*+.^_`|~0-9A-Za-z]+$/,
       "Gadget export format has an invalid content type."),
   fileExtension: boundedString("fileExtension", MAX_FILE_EXTENSION_LENGTH)
-    .regex(/^\.[A-Za-z0-9][A-Za-z0-9._-]*$/,
+    .regex(/^\.[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/,
       "Gadget export format has an invalid file extension."),
 }).superRefine((format, context) => {
   if (format.mode === "browser" && !BROWSER_CONTENT_TYPES.has(format.contentType)) {
