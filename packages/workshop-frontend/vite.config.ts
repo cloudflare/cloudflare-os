@@ -9,6 +9,12 @@ export default defineConfig(({ mode }) => {
   const backendHost = env.VITE_BACKEND_HOST?.trim() || 'localhost:8787'
   const frontendErrorReporting = env.VITE_FRONTEND_ERROR_REPORTING === 'true'
   return {
+    resolve: {
+      // Remove when y-monaco supports Monaco 0.56: https://github.com/yjs/y-monaco/pull/31
+      alias: {
+        'monaco-editor/esm/vs/editor/editor.api.js': 'monaco-editor/editor',
+      },
+    },
     plugins: [
       TanStackRouterVite({ target: 'react', autoCodeSplitting: true }),
       react(),
