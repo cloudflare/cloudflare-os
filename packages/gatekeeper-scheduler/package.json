@@ -22,13 +22,13 @@
     "temporal-polyfill": "1.0.2"
   },
   "devDependencies": {
-    "@cloudflare/kumo": "^2.9.0",
+    "@cloudflare/kumo": "^2.9.2",
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@phosphor-icons/react": "^2.1.10",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.1.0",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^5.2.0",
     "jsdom": "^26.1.0",
     "miniflare": "5.20260801.0-alpha",

@@ -10,16 +10,16 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@cloudflare/kumo": "^2.9.0",
+    "@cloudflare/kumo": "^2.9.2",
     "@gadgets/error-reporting": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "@monaco-editor/react": "^4.7.0",
     "@phosphor-icons/react": "^2.1.10",
     "@tailwindcss/vite": "^4.3.3",
-    "@tanstack/react-router": "^1.170.18",
+    "@tanstack/react-router": "^1.170.21",
     "capnweb": "catalog:",
     "hash-wasm": "^4.12.0",
-    "monaco-editor": "^0.52.2",
+    "monaco-editor": "^0.56.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
@@ -31,9 +31,9 @@
     "yjs": "^13.6.31"
   },
   "devDependencies": {
-    "@tanstack/router-plugin": "^1.168.23",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
+    "@tanstack/router-plugin": "^1.168.26",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^5.2.0",
     "jsdom": "^26.1.0",
     "typescript": "catalog:",
