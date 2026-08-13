@@ -52,7 +52,7 @@ CLOUDFLARE_OAUTH_CLIENT_SECRET=...
 
 # Platform AI Gateway used for the free tier (see existing AI Gateway docs):
 CF_AI_GATEWAY=your-gateway
-CF_AI_GATEWAY_PROVIDERS=anthropic,openai,google
+CF_AI_GATEWAY_PROVIDERS=anthropic,openai,google,openrouter
 
 # Required whenever CF_AI_GATEWAY is set (all inference goes over HTTPS with tokens):
 CF_AI_GATEWAY_ACCOUNT_ID=...

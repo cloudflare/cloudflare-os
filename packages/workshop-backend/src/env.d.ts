@@ -17,7 +17,7 @@ declare global {
       // Inference goes over HTTPS with tokens (there is no Workers-binding transport), so the
       // ACCOUNT_ID/API_TOKEN pair is REQUIRED whenever CF_AI_GATEWAY is set.
       CF_AI_GATEWAY?: string;            // Gateway name (enables gateway mode)
-      CF_AI_GATEWAY_PROVIDERS?: string;   // Comma-separated list: "anthropic,openai,google,cloudflare"
+      CF_AI_GATEWAY_PROVIDERS?: string;   // Comma-separated: "anthropic,openai,google,cloudflare,openrouter"
       CF_AI_GATEWAY_ACCOUNT_ID?: string;  // Gateway owner account ID (required with CF_AI_GATEWAY)
       CF_AI_GATEWAY_API_TOKEN?: string;   // Run + Read token for inference and cost-log reads
       CF_AI_GATEWAY_WAI?: string;         // Optional Workers AI gateway override

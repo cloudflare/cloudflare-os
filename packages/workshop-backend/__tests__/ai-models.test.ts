@@ -32,6 +32,12 @@ const WORKERS_AI_CONFIG: AiModelConfig = {
   apiToken: "ignored-in-gateway-mode",
 };
 
+const OPENROUTER_CONFIG: AiModelConfig = {
+  provider: "openrouter",
+  model: "openai/gpt-5.2",
+  apiToken: "ignored-in-gateway-mode",
+};
+
 function env(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
   return {
     CF_AI_GATEWAY: "platform-gateway",
@@ -122,6 +128,37 @@ describe("getModel AI Gateway routing", () => {
       accountId: "gateway-account-id",
       apiToken: "gateway-token",
     });
+  });
+
+  it("routes OpenRouter through its provider-native gateway endpoint", async () => {
+    const handle = getModel(env({
+      CF_AI_GATEWAY_PROVIDERS: "anthropic,openrouter",
+    }), OPENROUTER_CONFIG, INITIATOR);
+
+    expect(handle.model.api).toBe("openai-completions");
+    expect(handle.model.baseUrl).toBe(
+        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/openrouter");
+    expect(handle.model.contextWindow).toBe(400000);
+    expect(handle.model.maxTokens).toBe(128000);
+    expect(handle.model.compat?.thinkingFormat).toBe("openrouter");
+
+    const request = await captureRequest(handle);
+    expect(request.url).toBe(
+        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/openrouter/" +
+        "chat/completions");
+    expect(request.headers.get("cf-aig-authorization")).toBe("Bearer gateway-token");
+    expect(request.headers.get("authorization")).toBeNull();
+  }, 15000);
+
+  it("keeps OpenRouter on the deployment gateway when user billing is connected", () => {
+    const handle = getModel(env({
+      CF_AI_GATEWAY_PROVIDERS: "openrouter",
+    }), OPENROUTER_CONFIG, INITIATOR, {
+      userGateway: { accountId: "user-account-id", apiKey: "user-token" },
+    });
+
+    expect(handle.model.baseUrl).toBe(
+        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/openrouter");
   });
 
   it("preserves gadget automation metadata", async () => {
@@ -265,6 +302,33 @@ describe("getModel direct routing (no gateway)", () => {
   beforeEach(() => {
     capturedRequests.length = 0;
   });
+
+  it("uses OpenRouter's OpenAI-compatible endpoint with direct credentials", async () => {
+    const handle = getModel({} as Cloudflare.Env, {
+      ...OPENROUTER_CONFIG,
+      apiToken: "openrouter-token",
+    }, INITIATOR);
+
+    expect(handle.model.baseUrl).toBe("https://openrouter.ai/api/v1");
+    const request = await captureRequest(handle);
+    expect(request.url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(request.headers.get("authorization")).toBe("Bearer openrouter-token");
+  }, 15000);
+
+  it("uses OpenRouter direct credentials instead of a connected user gateway", async () => {
+    const handle = getModel({} as Cloudflare.Env, {
+      ...OPENROUTER_CONFIG,
+      apiToken: "openrouter-token",
+    }, INITIATOR, {
+      userGateway: { accountId: "user-account-id", apiKey: "user-token" },
+    });
+
+    expect(handle.model.baseUrl).toBe("https://openrouter.ai/api/v1");
+    expect(handle.aiGatewayLogRoute).toBeUndefined();
+    const request = await captureRequest(handle);
+    expect(request.headers.get("authorization")).toBe("Bearer openrouter-token");
+    expect(request.headers.get("cf-aig-authorization")).toBeNull();
+  }, 15000);
 
   it("uses the provider defaults and the config's own credentials", async () => {
     const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {

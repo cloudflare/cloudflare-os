@@ -21,6 +21,7 @@ const PROVIDER_LABELS: Record<AiModelProvider, string> = {
   openai: 'OpenAI',
   google: 'Google',
   cloudflare: 'Cloudflare Workers AI',
+  openrouter: 'OpenRouter',
   ollama: 'Ollama',
 }
 
@@ -30,17 +31,25 @@ const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
   openai: 'sk-...',
   google: 'AIza...',
   cloudflare: 'Cloudflare API token',
+  openrouter: 'sk-or-v1-...',
   ollama: '(optional)',
 }
 
-// Example used in the custom-model placeholders for providers that have no suggested models
-// (currently Ollama, which serves whatever the user has pulled locally).
-const FALLBACK_EXAMPLE_MODEL = { modelId: 'gemma4:31b', name: 'Gemma 4 31B' }
+// Examples used in custom-model placeholders for providers without suggested models.
+const FALLBACK_EXAMPLE_MODELS: Partial<Record<AiModelProvider, {
+  modelId: string,
+  name: string,
+}>> = {
+  openrouter: { modelId: 'openai/gpt-5.2', name: 'GPT-5.2 via OpenRouter' },
+  ollama: { modelId: 'gemma4:31b', name: 'Gemma 4 31B' },
+}
 
 // Pick an example model to show in the custom-model placeholders for the given provider.
 function exampleModel(provider: AiModelProvider): { modelId: string, name: string } {
   const first = Object.entries(SUGGESTED_MODELS[provider])[0]
-  return first ? { modelId: first[0], name: first[1].name } : FALLBACK_EXAMPLE_MODEL
+  return first
+    ? { modelId: first[0], name: first[1].name }
+    : FALLBACK_EXAMPLE_MODELS[provider] ?? { modelId: 'provider/model', name: 'Custom model' }
 }
 
 // Encode a selection into a string value for the Select component.

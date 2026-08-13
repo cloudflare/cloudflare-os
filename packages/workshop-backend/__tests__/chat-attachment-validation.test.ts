@@ -31,6 +31,10 @@ describe("assertChatAttachmentSupportedByProvider", () => {
       .toThrow("Unsupported file type");
     expect(() => assertChatAttachmentSupportedByProvider("cloudflare", "application/pdf", 1))
       .toThrow("Unsupported file type");
+    expect(() => assertChatAttachmentSupportedByProvider("openrouter", "image/png", 1))
+      .not.toThrow();
+    expect(() => assertChatAttachmentSupportedByProvider("openrouter", "application/pdf", 1))
+      .toThrow("Unsupported file type");
     expect(() => assertChatAttachmentSupportedByProvider("ollama", "application/zip", 1))
       .toThrow("Unsupported file type");
   });
