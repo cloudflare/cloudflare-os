@@ -110,7 +110,7 @@ jobs:
 
       - name: Checkout repository
         if: ${{ !contains(github.event.pull_request.labels.*.name, 'bonk-break-glass') }}
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Run Bonk
         if: ${{ !contains(github.event.pull_request.labels.*.name, 'bonk-break-glass') }}
