@@ -403,7 +403,7 @@ export class SlackApi {
     return user;
   }
 
-  // `teamId` qualifies the account when the workspace host is unavailable; see uniqueName below.
+  /** `teamId` qualifies the account when the workspace host is unavailable; see uniqueName below. */
   async getAccountDescription(userId: string, teamId: string): Promise<AccountDescription> {
     let hostPromise = this.#getWorkspaceHost();
     let data = await this.#call<SlackApiEnvelope & { user?: RawUser }>(

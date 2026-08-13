@@ -1,8 +1,10 @@
 import { defineConfig } from 'vite-plus'
 
-// Repo-wide toolchain config. Today this is the lint ruleset, moved here from `.oxlintrc.json` so
-// there is one place to look: `vp lint` reads it, and `vp check` runs lint without the format step
-// because the tree is not oxfmt-clean.
+/**
+ * Repo-wide toolchain config. Today this is the lint ruleset, moved here from `.oxlintrc.json` so
+ * there is one place to look: `vp lint` reads it, and `vp check` runs lint without the format step
+ * because the tree is not oxfmt-clean.
+ */
 export default defineConfig({
   check: {
     // The repo has never been formatted with oxfmt, so `vp check` would report every file. Left off
