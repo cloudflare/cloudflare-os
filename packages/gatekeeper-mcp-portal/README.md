@@ -28,7 +28,7 @@ every system the organization has connected in one click.
 pinning different tools of one upstream server share both the name and the endpoint, so the scope is
 the only thing that distinguishes them.
 
-The session API — a typed method per tool, plus `callTool`, `getActionResult`, and `listTools` — is
+The session API — a typed method per described tool, plus `callTool`, `getActionResult`, and `listTools` — is
 the same as [`gatekeeper-mcp`](../gatekeeper-mcp/README.md#what-it-provides).
 
 Scoping to one server also shrinks what the agent reads: a 57-tool portal generates 57 tool

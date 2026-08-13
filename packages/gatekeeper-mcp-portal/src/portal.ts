@@ -26,6 +26,7 @@ import {
 import type { ToolCatalog } from "@gadgets/mcp-shared/client";
 import {
   classifyTool,
+  MAX_TOOLS_PER_SERVER,
   type ServerTrust,
 } from "@gadgets/mcp-shared/tools";
 import { bindingNameFragment, hostOf } from "@gadgets/mcp-shared/util";
@@ -397,7 +398,7 @@ class McpServerConfiguratorUI extends RpcTarget implements McpServerConfigurator
   // form treats both as having nothing to grant rather than telling them apart.
   async listServerOptions(): Promise<ConfiguratorUIOption[]> {
     const { tools, truncated } = await this.#tools();
-    if (!looksLikePortal(tools, truncated)) return [];
+    if (!looksLikePortal(tools, { truncated, cap: MAX_TOOLS_PER_SERVER })) return [];
 
     const servers = reconcilePortalServers(
       await this.#fetchPortalServers(), tools, truncated);
@@ -437,7 +438,7 @@ class McpServerConfiguratorUI extends RpcTarget implements McpServerConfigurator
     const { tools, truncated } = await this.#tools();
     requireCompleteCatalogForToolSelection(truncated);
     const scope: ToolScope = serverId ? { serverId } : {};
-    const isPortal = looksLikePortal(tools, truncated);
+    const isPortal = looksLikePortal(tools, { truncated, cap: MAX_TOOLS_PER_SERVER });
 
     return tools
       .filter(tool => scopeAllows(scope, tool.name, isPortal))
@@ -517,9 +518,9 @@ export class McpGatekeeperImpl
       ? `${scope.tools.length} named MCP tool${scope.tools.length === 1 ? "" : "s"} on ` +
         `${label} \u2014 ${counts}. Other tools are refused.`
       : scope.serverId
-      ? `All ${tools.length} MCP tool${plural} of the ` +
-        `${this.ctx.props.scopeServerName ?? scope.serverId} server on ` +
-        `${this.ctx.props.serverName} \u2014 ${counts}. Other servers on it are refused.`
+      ? `All tools of the ${this.ctx.props.scopeServerName ?? scope.serverId} server on ` +
+        `${this.ctx.props.serverName}; ${tools.length} definition${plural} shown here ` +
+        `(${counts}). Other servers on it are refused.`
       : `All ${tools.length} MCP tool${plural} on ${label} \u2014 ${counts}.`;
 
     return {

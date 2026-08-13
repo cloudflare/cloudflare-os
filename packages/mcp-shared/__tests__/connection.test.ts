@@ -185,3 +185,53 @@ it("reports credentials expired when session recovery is rejected", async () => 
   expect(error).toBeInstanceOf(McpCallNotDispatchedError);
   expect(expired).toBe(1);
 });
+
+it("gives a retried listing a fresh discovery budget after session recovery", async () => {
+  let initialPages = 0;
+  let retryPages = 0;
+  let recovered = false;
+  vi.stubGlobal("fetch", async (_input: unknown, init?: RequestInit) => {
+    const request = JSON.parse(String(init?.body));
+    if (request.method === "initialize") {
+      recovered = true;
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }), {
+        headers: { "Content-Type": "application/json", "Mcp-Session-Id": "new-session" },
+      });
+    }
+    if (request.method === "notifications/initialized") {
+      return new Response(null, { status: 202 });
+    }
+    if (!recovered) {
+      initialPages++;
+      if (initialPages === 50) return new Response(null, { status: 404 });
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: { tools: [], nextCursor: String(initialPages) },
+      }), { headers: { "Content-Type": "application/json" } });
+    }
+    retryPages++;
+    return new Response(JSON.stringify({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: retryPages === 1
+        ? { tools: [{ name: "first" }], nextCursor: "more" }
+        : { tools: [{ name: "second" }] },
+    }), { headers: { "Content-Type": "application/json" } });
+  });
+  const account: ConnectionAccount = {
+    async getConnection() {
+      return { authorization: null, sessionId: "expired-session", generation: 1 };
+    },
+    async assertConnectionCurrent() {},
+    async setMcpSessionId() { return true; },
+    async noteCredentialsExpired() {},
+  };
+
+  const catalog = await withClient({}, account, "https://mcp.example.com", client =>
+    client.listTools(10));
+  expect(catalog.tools.map(tool => tool.name)).toEqual(["first", "second"]);
+  expect(catalog.truncated).toBe(false);
+  expect(initialPages).toBe(50);
+  expect(retryPages).toBe(2);
+});

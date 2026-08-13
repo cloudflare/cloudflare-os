@@ -8,7 +8,6 @@
 // portal. See the MCP Server Portals connector's README.
 
 import type { McpTool } from "./client.js";
-import { MAX_TOOLS_PER_SERVER } from "./tools.js";
 
 /**
  * The portal's built-in server-listing tool. Its presence in `tools/list` is what identifies an
@@ -46,16 +45,20 @@ export function isPortalNativeTool(name: string): boolean {
 /**
  * True when this tool list came from a portal.
  *
- * A truncated catalog counts as a portal regardless of what is in it: `tools/list` is unordered, so
+ * A truncated listing counts as a portal regardless of what is in it: `tools/list` is unordered, so
  * answering "not a portal" because the evidence fell past the cut would fail open on the `portal_*`
  * exclusion above -- a real portal would be granted at its bare endpoint, and a Gadget holding that
- * grant could call `portal_toggle_servers` to widen its own reach. `truncated` covers the byte
- * budget as well as the tool count, which stops the listing without leaving a short array behind.
+ * grant could call `portal_toggle_servers` to widen its own reach.
+ *
+ * The explicit bounds form avoids guessing. `truncated` covers the byte budget, while `cap` is the
+ * tool count the caller requested. Callers use different caps for ordinary catalogs and wide portal
+ * indexes, so each must supply the bound it actually used.
  */
 export function looksLikePortal(
-  tools: Pick<McpTool, "name">[], truncated = false,
+  tools: readonly Pick<McpTool, "name">[],
+  bounds: { truncated: boolean; cap: number },
 ): boolean {
-  if (truncated || tools.length >= MAX_TOOLS_PER_SERVER) return true;
+  if (bounds.truncated || tools.length >= bounds.cap) return true;
   return tools.some(tool => tool.name === PORTAL_LIST_SERVERS_TOOL);
 }
 

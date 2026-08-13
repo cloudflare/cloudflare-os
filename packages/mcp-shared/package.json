@@ -25,6 +25,7 @@
     "./session": "./src/session.ts",
     "./session-methods": "./src/session-methods.ts",
     "./sharing-policy": "./src/sharing-policy.ts",
+    "./tool-search": "./src/tool-search.ts",
     "./tools": "./src/tools.ts",
     "./types": "./src/types.d.ts",
     "./user": "./src/user.ts",

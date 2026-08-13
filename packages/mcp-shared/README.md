@@ -21,15 +21,16 @@ does so through a named hook (`staticToken`, `mintAccount`), not a private copy.
 | `client` | Bounded Streamable HTTP transport (`initialize`, `tools/list`, `tools/call`) using official MCP wire types |
 | `oauth` | Small adapter around the official MCP client's OAuth errors and token revocation gap |
 | `tools` | The trust boundary: read/action classification, auto-approval eligibility, approval prompts, catalog fingerprinting |
-| `schema-to-ts` | JSON Schema to TypeScript, one typed method per tool plus `callTool` overloads |
+| `schema-to-ts` | JSON Schema to TypeScript, strict `callTool` overloads plus progressive discovery |
 | `session-methods` | Installs those methods at runtime, so the generated types are not a fiction |
+| `tool-search` | The one query matcher every catalog search uses, so a query cannot mean two things |
 | `portal` | Gateway detection, tool-name to upstream-server mapping, server listing |
 | `scope` | The resource-URL scope grammar, and the check every call passes through |
 | `endpoint` | Validation and host blocklist for a user-supplied endpoint |
 | `fetch` | Every outbound request; redirects are followed by hand and each hop re-checked, including SDK OAuth fetches |
 | `account` | Durable Object base and persisted SDK OAuth state: connect, refresh, revocation |
 | `facet` | Common session, catalog, action, and sharing behavior for connector-owned Durable Object facets |
-| `catalog` | One binding's tool list: fetched, cached, scoped to the grant, classified |
+| `catalog` | One binding's tool list: fetched, cached, scoped to the grant, classified; plus the cache for tools hydrated past that list |
 | `connection` | `withClient` — transport sessions, retries, credential-expiry reporting |
 | `action-store` | Staged to applied/rejected/failed, with a bound on what is retained and a claim so one approval is never sent twice |
 | `session` | The Gadget-facing capability, and the one path every tool call takes |
@@ -109,12 +110,16 @@ Fixed rather than configurable.
 
 | Limit | Value | Where | Why |
 | --- | --- | --- | --- |
-| Tools per server | 200 | `tools.ts` | A grant a person can review, and a `.d.ts` an agent can read |
+| Described or individually granted tools per server | 200 | `tools.ts` | Bounds the picker and generated `.d.ts`; a server-wide grant can discover additional tools later |
 | Catalog size | 96 KiB UTF-8 | `client.ts` | Leaves room below Durable Object's 128 KiB per-value limit for the cache wrapper and serialization overhead |
+| Filtered discovery scan | 5,000 tools / 4 MiB | `client.ts` | Bounds work spent skipping unrelated tools while searching a large endpoint |
+| Search query / results | 200 chars / 20 tools | `tool-search.ts` | Bounds agent-supplied matching work and the summaries returned to it |
+| Hydrated definitions per facet | 200 tools / 1 MiB | `catalog.ts` | Bounds definitions fetched individually beyond the described catalog |
 | Tool description | 4 KB | `client.ts` | As above, per tool, before it reaches storage |
 | Tool input schema | 20 KB | `client.ts` | Dropped rather than clipped; half a schema is not a schema |
-| `tools/list` pages | 50 | `client.ts` | A cursor that never ends would loop until the Worker is killed |
+| `tools/list` pages | 50 | `client.ts` | Stops a cursor that never ends; exhaustion truncates catalogs and fails exact/search discovery as a scan limit |
 | Response body | 1 MiB | `fetch.ts` | Every response is buffered whole before it can be parsed, and a `tools/call` result is otherwise unbounded |
+| Bounded outbound operation | 30 seconds | `fetch.ts` | OAuth and discovery callers opt into one deadline covering redirects, pagination, body streaming, and session retry |
 | Retained result | 128 KB | `action-store.ts` | Held until the Gadget collects it; oversized ones are replaced by a note |
 | Retained actions | 100 | `action-store.ts` | Records are for collecting a result, not an audit log |
 | Actions awaiting a decision | 50 | `action-store.ts` | These cannot be pruned, so uncapped they are an unbounded write |

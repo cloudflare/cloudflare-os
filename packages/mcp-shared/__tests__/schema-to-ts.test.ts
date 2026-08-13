@@ -48,6 +48,23 @@ function expectTypeScriptToCompile(source: string): void {
   expect(errors).toEqual([]);
 }
 
+function expectTypeScriptProgramToCompile(source: string): void {
+  const fileName = "generated.ts";
+  const options: ts.CompilerOptions = { noEmit: true, strict: true };
+  const host = ts.createCompilerHost(options);
+  const getSourceFile = host.getSourceFile.bind(host);
+  host.getSourceFile = (name, languageVersion, onError, shouldCreateNewSourceFile) =>
+    name === fileName
+      ? ts.createSourceFile(name, source, languageVersion, true, ts.ScriptKind.TS)
+      : getSourceFile(name, languageVersion, onError, shouldCreateNewSourceFile);
+  host.fileExists = name => name === fileName || ts.sys.fileExists(name);
+  host.readFile = name => name === fileName ? source : ts.sys.readFile(name);
+  const errors = ts.getPreEmitDiagnostics(ts.createProgram([fileName], options, host))
+    .filter(diagnostic => diagnostic.file?.fileName === fileName)
+    .map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"));
+  expect(errors).toEqual([]);
+}
+
 describe("sessionTypeName", () => {
   const url = "https://acme.example/mcp";
 
@@ -101,6 +118,34 @@ describe("generateSessionTypes", { timeout: 15_000 }, () => {
     expect(output).toContain(
       `callTool(name: "create_contact", args: ${name}_CreateContactArgs)`);
     expect(output).toContain(`export interface ${name} {`);
+  });
+
+  it("keeps known tool overloads strict while accepting dynamic names", () => {
+    const output = generate([tool({
+      name: "search",
+      inputSchema: {
+        type: "object",
+        properties: { q: { type: "string" } },
+        required: ["q"],
+      },
+    })], MCP_BASE_TYPES);
+    const name = sessionTypeName("acme-crm", "https://acme.example/mcp");
+    expectTypeScriptProgramToCompile(`${output}
+declare const session: ${name};
+// @ts-expect-error known tool requires its arguments
+session.callTool("search");
+// @ts-expect-error known tool keeps its generated schema
+session.callTool("search", { q: 123 });
+declare const discovered: string;
+session.callTool(discovered, { anything: true });
+declare const options: McpToolListOptions;
+session.listTools(options);
+// @ts-expect-error search and name are mutually exclusive
+session.listTools({ search: "issues", name: "search" });
+declare const ambiguousOptions: { search: string; name: string };
+// @ts-expect-error variables containing both selectors are also rejected
+session.listTools(ambiguousOptions);
+`);
   });
 
   it("prepends the base types verbatim so the file is self-contained", () => {
@@ -399,10 +444,22 @@ describe("generateSessionTypes", { timeout: 15_000 }, () => {
     expect(output).toContain('callTool(name: "ping", args?: Record<string, never>)');
   });
 
-  it("always exposes listTools and getActionResult", () => {
+  it("always exposes discovery, generic calls, and action results", () => {
     const output = generate([]);
     expect(output).toContain("listTools(): Promise<McpToolInfo[]>;");
+    expect(output).toContain(
+      "listTools(options: { search: string; name?: never }): Promise<McpToolSummary[]>;");
+    expect(output).toContain(
+      "listTools(options: { name: string; search?: never }): Promise<McpToolInfo[]>;");
+    expect(output).toContain("callTool<Name extends string>(");
     expect(output).toContain("getActionResult(actionId: number): Promise<McpCallResult>;");
+  });
+
+  it("keeps discovery stable when an upstream tool collides with its method name", () => {
+    const output = generate([tool({ name: "search_tools" })]);
+    expect(output).toContain("searchTools(): Promise<McpCallResult>;");
+    expect(output).toContain("listTools(options: { search: string; name?: never })");
+    expect(output).toContain('callTool(name: "search_tools"');
   });
 });
 

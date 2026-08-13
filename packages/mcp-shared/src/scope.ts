@@ -15,6 +15,7 @@ import {
   toolBelongsToServer,
   type PortalServer,
 } from "./portal.js";
+import { MAX_TOOLS_PER_SERVER } from "./tools.js";
 
 /** The breadth of one binding's grant over its endpoint. */
 export type ToolScope = {
@@ -90,12 +91,16 @@ export function parseToolScope(resourceUrl: string | URL): ToolScope {
   } catch {
     return {};
   }
+  const rawTools = params.getAll("tool");
+  if (rawTools.length > MAX_TOOLS_PER_SERVER) {
+    throw new Error(`A grant can name at most ${MAX_TOOLS_PER_SERVER} MCP tools.`);
+  }
   return {
     serverId: params.has("server") ? params.get("server")!.trim() : undefined,
     tools: params.has("tools")
       ? []
       : params.has("tool")
-      ? params.getAll("tool").map(name => name.trim()).filter(Boolean)
+      ? rawTools.map(name => name.trim()).filter(Boolean)
       : undefined,
   };
 }
@@ -106,6 +111,9 @@ export function parseToolScope(resourceUrl: string | URL): ToolScope {
  * it would undo the fail-closed parse above on the round trip.
  */
 export function formatToolScope(endpoint: string, scope: ToolScope): string {
+  if ((scope.tools?.length ?? 0) > MAX_TOOLS_PER_SERVER) {
+    throw new Error(`A grant can name at most ${MAX_TOOLS_PER_SERVER} MCP tools.`);
+  }
   const params = new URLSearchParams();
   if (scope.serverId !== undefined) params.set("server", scope.serverId);
   for (const tool of scope.tools ?? []) params.append("tool", tool);
@@ -144,10 +152,6 @@ export function validateToolScopeAgainstCatalog(
   catalog: ToolCatalog,
   reportedServers: PortalServer[] = [],
 ): PortalServer | undefined {
-  if (catalog.truncated && scope.tools !== undefined) {
-    throw new Error("The current tool catalog is truncated, so this grant cannot be validated.");
-  }
-
   let server: PortalServer | undefined;
   const serverId = scope.serverId;
   if (serverId !== undefined) {
@@ -166,6 +170,9 @@ export function validateToolScopeAgainstCatalog(
       throw new Error(`Tool "${name}" does not belong to portal server "${serverId}".`);
     }
     if (!names.has(name)) {
+      if (catalog.truncated) {
+        throw new Error("The current tool catalog is truncated, so this grant cannot be validated.");
+      }
       throw new Error(`Tool "${name}" is absent from the current tool catalog.`);
     }
   }

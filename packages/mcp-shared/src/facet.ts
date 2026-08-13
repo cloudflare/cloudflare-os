@@ -11,7 +11,12 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 
 import { ActionStore, REVERT_UNSUPPORTED_MESSAGE } from "./action-store.js";
-import { CATALOG_TTL_MS, scopedTools } from "./catalog.js";
+import {
+  CATALOG_TTL_MS,
+  HydratedTools,
+  scopedCatalog,
+  type ScopedCatalog,
+} from "./catalog.js";
 import type { McpClient } from "./client.js";
 import {
   withClient,
@@ -20,11 +25,18 @@ import {
   type WithClientOptions,
 } from "./connection.js";
 import type { McpLog } from "./log.js";
-import { formatToolScope, type ToolScope } from "./scope.js";
+import { DEFAULT_REQUEST_TIMEOUT_MS } from "./fetch.js";
+import { formatToolScope, scopeAllows, type ToolScope } from "./scope.js";
+import { matchesToolQuery, toolQueryTerms, MAX_SEARCH_RESULTS } from "./tool-search.js";
 import { McpSessionBase, type McpSessionHost, type StoredAction } from "./session.js";
 import { installToolMethods } from "./session-methods.js";
 import { observerRefusalMessage } from "./sharing-policy.js";
-import { actionKindFor, type ClassifiedTool, type ServerTrust } from "./tools.js";
+import {
+  actionKindFor,
+  classifyTool,
+  type ClassifiedTool,
+  type ServerTrust,
+} from "./tools.js";
 
 type FacetProps = {
   endpoint: string;
@@ -36,16 +48,22 @@ type SessionConstructor<Session extends McpSessionBase> = new (
   queue: RpcStub<ApprovalQueue>,
 ) => Session;
 
+const MAX_CONCURRENT_DISCOVERIES = 4;
+const MAX_QUEUED_DISCOVERIES = 32;
+
 /** Common session, catalog, action, and sharing behavior for connector-owned MCP facets. */
 export abstract class McpFacetBase<
   Env extends ConnectionEnv,
   Props extends FacetProps,
   Session extends McpSessionBase,
 > extends DurableObject<Env, Props> implements Gatekeeper<Session>, McpSessionHost {
-  #toolsPromise: Promise<ClassifiedTool[]> | undefined;
+  #catalogPromise: Promise<ScopedCatalog> | undefined;
   #toolsFetchedAt = 0;
   #toolsTrust: ServerTrust | undefined;
   #actionStore: ActionStore | undefined;
+  #hydrated = new HydratedTools();
+  #activeDiscoveries = 0;
+  #waitingDiscoveries: Array<() => void> = [];
 
   #actions(): ActionStore {
     return this.#actionStore ??= new ActionStore(this.ctx.storage.sql);
@@ -93,14 +111,14 @@ export abstract class McpFacetBase<
     return formatToolScope(this.endpoint, this.scope);
   }
 
-  /** Returns this facet's scoped and classified tool catalog. */
-  tools(): Promise<ClassifiedTool[]> {
+  /** Returns this facet's scoped catalog and endpoint kind. */
+  protected catalog(deadline?: number): Promise<ScopedCatalog> {
     const trust = this.trust;
-    if (!this.#toolsPromise || this.#toolsTrust !== trust
+    if (!this.#catalogPromise || this.#toolsTrust !== trust
         || Date.now() - this.#toolsFetchedAt > CATALOG_TTL_MS) {
       this.#toolsFetchedAt = Date.now();
       this.#toolsTrust = trust;
-      this.#toolsPromise = scopedTools({
+      const load = (operationDeadline: number) => scopedCatalog({
         store: this.ctx.storage.kv,
         log: this.log,
         env: this.env,
@@ -108,12 +126,93 @@ export abstract class McpFacetBase<
         endpoint: this.endpoint,
         scope: this.scope,
         trust,
-      }).catch(err => {
-        this.#toolsPromise = undefined;
+        deadline: operationDeadline,
+      });
+      const loading = deadline === undefined ? this.runDiscovery(load) : load(deadline);
+      this.#catalogPromise = loading.catch(err => {
+        this.#catalogPromise = undefined;
         throw err;
       });
     }
-    return this.#toolsPromise;
+    return this.#catalogPromise;
+  }
+
+  /** Returns this facet's scoped and classified tool definitions. */
+  async tools(): Promise<ClassifiedTool[]> {
+    return (await this.catalog()).tools;
+  }
+
+  /** Runs Gadget-triggered catalog I/O within one facet-wide concurrency bound. */
+  protected async runDiscovery<T>(operation: (deadline: number) => Promise<T>): Promise<T> {
+    const deadline = Date.now() + DEFAULT_REQUEST_TIMEOUT_MS;
+    if (this.#activeDiscoveries >= MAX_CONCURRENT_DISCOVERIES) {
+      if (this.#waitingDiscoveries.length >= MAX_QUEUED_DISCOVERIES) {
+        throw new Error("Too many MCP discovery requests are already in progress.");
+      }
+      await new Promise<void>((resolve, reject) => {
+        const resume = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          const index = this.#waitingDiscoveries.indexOf(resume);
+          if (index >= 0) this.#waitingDiscoveries.splice(index, 1);
+          reject(new Error("Timed out waiting to discover MCP tools."));
+        }, Math.max(0, deadline - Date.now()));
+        this.#waitingDiscoveries.push(resume);
+      });
+    } else {
+      this.#activeDiscoveries++;
+    }
+
+    try {
+      return await operation(deadline);
+    } finally {
+      const next = this.#waitingDiscoveries.shift();
+      if (next) next();
+      else this.#activeDiscoveries--;
+    }
+  }
+
+  /** Searches the endpoint for granted tools by name, title, and description. */
+  async searchTools(query: string): Promise<ClassifiedTool[]> {
+    const terms = toolQueryTerms(query);
+    return this.runDiscovery(async deadline => {
+      const catalog = await this.catalog(deadline);
+      if (!catalog.truncated) {
+        return catalog.tools.filter(entry => matchesToolQuery(entry.tool, terms))
+          .slice(0, MAX_SEARCH_RESULTS);
+      }
+      const { isPortal } = catalog;
+      const tools = await this.call(
+        client => client.listMatchingToolSummaries(
+          MAX_SEARCH_RESULTS,
+          tool => scopeAllows(this.scope, tool.name, isPortal) && matchesToolQuery(tool, terms),
+        ),
+        { deadline },
+      );
+      return tools.map(tool => classifyTool(tool, this.trust));
+    });
+  }
+
+  /** Resolves one granted tool, fetching it when the described catalog omitted it. */
+  async findTool(name: string): Promise<ClassifiedTool | undefined> {
+    // Grant restrictions can be enforced without loading anything. A portal-native exclusion needs
+    // the endpoint kind below, except for a server scope, which by definition belongs to a portal.
+    if (!scopeAllows(this.scope, name, this.scope.serverId !== undefined)) return undefined;
+
+    return this.runDiscovery(async deadline => {
+      const catalog = await this.catalog(deadline);
+      if (!scopeAllows(this.scope, name, catalog.isPortal)) return undefined;
+      const described = catalog.tools.find(entry => entry.tool.name === name);
+      if (described) return described;
+      if (!catalog.truncated) return undefined;
+
+      const load = (candidate: string) =>
+        this.call(client => client.findTool(candidate), { deadline });
+      const tool = await this.#hydrated.resolve(name, load);
+      return tool && classifyTool(tool, this.trust);
+    });
   }
 
   /** Returns action kinds that this facet's current catalog permits auto-approving. */
@@ -176,7 +275,10 @@ export abstract class McpFacetBase<
   }
 
   /** Runs a call against this facet's endpoint and account. */
-  call<T>(fn: (client: McpClient) => Promise<T>, options?: WithClientOptions): Promise<T> {
+  call<T>(
+    fn: (client: McpClient) => Promise<T>,
+    options?: WithClientOptions,
+  ): Promise<T> {
     return withClient(this.env, this.account(), this.endpoint, fn, options);
   }
 

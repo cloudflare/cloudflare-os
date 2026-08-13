@@ -8,11 +8,12 @@
 // `toMethodName` rather than each spelling the rule out: a type advertising a method that does not
 // exist is worse than no type at all.
 //
-// `callTool` is still generated as an overload set. It is the escape hatch for tools whose names
-// cannot become methods, and the stable way to call a tool whose name a server later changes.
+// `callTool` generates precise overloads for described tools plus a generic overload for names
+// discovered later through `listTools`.
 
 import type { JsonSchema } from "./client.js";
 import { toMethodName, toolMethodNames } from "./session-methods.js";
+import { MAX_SEARCH_RESULTS } from "./tool-search.js";
 import type { ClassifiedTool, ServerTrust } from "./tools.js";
 
 // Depth limit for recursive/self-referential schemas; deeper nodes degrade to `unknown`.
@@ -339,8 +340,9 @@ export function generateSessionTypes(args: {
   lines.push("/**");
   lines.push(` * Session for the "${serverName}" MCP server.`);
   lines.push(" *");
-  lines.push(` * ${readTools.length} tool(s) are read-only and return results immediately, recorded`);
-  lines.push(" * as observations. The remaining " + actionTools.length + " tool(s) are treated as actions:");
+  lines.push(` * Of the ${args.tools.length} currently described tool(s), ${readTools.length} are read-only`);
+  lines.push(" * and return results immediately as observations. The remaining " + actionTools.length);
+  lines.push(" * described tool(s) are treated as actions:");
   lines.push(" * `callTool` queues them for approval and returns `{ status: \"pending\" }`; the result");
   lines.push(" * becomes available through `getActionResult` once a human approves.");
   lines.push(" * When using this session from `executeCode`, return from that executeCode call as soon as");
@@ -356,8 +358,13 @@ export function generateSessionTypes(args: {
   lines.push(" * publish it as a blueprint so they connect their own account.");
   lines.push(" */");
   lines.push(`export interface ${typeName} {`);
-  lines.push("  /** Lists the tools this session exposes, including their read/action classification. */");
+  lines.push("  /** Lists currently described tools. */");
   lines.push("  listTools(): Promise<McpToolInfo[]>;");
+  lines.push(`  /** Searches for up to ${MAX_SEARCH_RESULTS} matching tool summaries. */`);
+  lines.push("  listTools(options: { search: string; name?: never }): Promise<McpToolSummary[]>;");
+  lines.push("  /** Returns zero or one exact granted tool definition by wire name. */");
+  lines.push("  listTools(options: { name: string; search?: never }): Promise<McpToolInfo[]>;");
+  lines.push("  listTools(options: McpToolListOptions): Promise<McpToolInfo[] | McpToolSummary[]>;");
   lines.push("");
 
   // One named method per tool, which is how a Gadget is expected to call them.
@@ -382,8 +389,8 @@ export function generateSessionTypes(args: {
   lines.push("  /**");
   lines.push("   * Calls a tool by its exact name, as the server publishes it.");
   lines.push("   *");
-  lines.push("   * Equivalent to the named methods above, and the only way to reach a tool that has");
-  lines.push("   * none. Prefer it when a tool name must survive the server renaming its tools.");
+  lines.push("   * Equivalent to the named methods above, with static argument checking for tools that");
+  lines.push("   * cannot have a named method.");
   lines.push("   */");
   for (const { tool } of args.tools) {
     switch (argumentStyle(tool.inputSchema)) {
@@ -399,6 +406,14 @@ export function generateSessionTypes(args: {
       }
     }
   }
+  lines.push("  /** Calls a dynamically discovered tool by exact wire name. */");
+  const knownToolNames = args.tools.map(({ tool }) => quote(tool.name)).join(" | ") || "never";
+  lines.push("  callTool<Name extends string>(");
+  lines.push("    name: Name,");
+  lines.push(`    ...args: Name extends ${knownToolNames}`);
+  lines.push("      ? [args: never]");
+  lines.push("      : [args?: Record<string, unknown>]");
+  lines.push("  ): Promise<McpCallResult>;");
   lines.push("");
 
   lines.push("  /**");

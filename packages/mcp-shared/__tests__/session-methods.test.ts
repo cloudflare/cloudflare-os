@@ -67,6 +67,16 @@ describe("toolMethodNames", () => {
     }
   });
 
+  it("preserves delegates that predate progressive discovery", () => {
+    expect([...toolMethodNames([
+      tool("search_tools"), tool("describe_tool"), tool("call_discovered_tool"),
+    ])]).toEqual([
+      ["searchTools", "search_tools"],
+      ["describeTool", "describe_tool"],
+      ["callDiscoveredTool", "call_discovered_tool"],
+    ]);
+  });
+
   it("drops both sides of a collision rather than shadowing one", () => {
     const names = toolMethodNames([tool("list_issues"), tool("listIssues"), tool("search")]);
     expect([...names]).toEqual([["search", "search"]]);

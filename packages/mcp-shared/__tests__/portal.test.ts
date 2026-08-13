@@ -11,16 +11,22 @@ import { scopeAllows } from "../src/scope.js";
 import { MAX_TOOLS_PER_SERVER } from "../src/tools.js";
 import type { McpTool } from "../src/client.js";
 
+// What a caller passes when it fetched with the ordinary catalog cap and the listing completed.
+const COMPLETE = { truncated: false, cap: MAX_TOOLS_PER_SERVER };
+
 describe("portal detection", () => {
   it("recognizes a portal by its built-in server listing", () => {
-    expect(looksLikePortal([{ name: "portal_list_servers" }, { name: "gh_list_issues" }]))
+    expect(looksLikePortal([{ name: "ordinary_tool" }], COMPLETE)).toBe(false);
+    expect(looksLikePortal(
+      [{ name: "portal_list_servers" }, { name: "gh_list_issues" }], COMPLETE))
       .toBe(true);
   });
 
   it("does not infer a portal from prefixed-looking names alone", () => {
     // Plenty of ordinary servers name tools `verb_noun`. Only the portal's own tool is evidence.
-    expect(looksLikePortal([{ name: "search" }, { name: "create_issue" }])).toBe(false);
-    expect(looksLikePortal([{ name: "list_issues" }, { name: "create_issue" }])).toBe(false);
+    expect(looksLikePortal([{ name: "search" }, { name: "create_issue" }], COMPLETE)).toBe(false);
+    expect(looksLikePortal([{ name: "list_issues" }, { name: "create_issue" }], COMPLETE))
+      .toBe(false);
   });
 
   it("assumes a portal when the catalog was truncated", () => {
@@ -29,8 +35,8 @@ describe("portal detection", () => {
     // from evidence we could not have seen would fail open; the next test shows what it costs.
     const truncated = Array.from(
       { length: MAX_TOOLS_PER_SERVER }, (_unused, index) => ({ name: `gh_tool_${index}` }));
-    expect(looksLikePortal(truncated)).toBe(true);
-    expect(looksLikePortal(truncated.slice(0, -1))).toBe(false);
+    expect(looksLikePortal(truncated, COMPLETE)).toBe(true);
+    expect(looksLikePortal(truncated.slice(0, -1), COMPLETE)).toBe(false);
   });
 
   it("assumes a portal when the byte budget cut the catalog short", () => {
@@ -39,8 +45,8 @@ describe("portal detection", () => {
     // would then be granted at its bare endpoint, leaving `portal_toggle_servers` callable by a
     // Gadget that could widen its own reach with it.
     const short = [{ name: "gh_list_issues" }, { name: "gh_create_issue" }];
-    expect(looksLikePortal(short, true)).toBe(true);
-    expect(looksLikePortal(short, false)).toBe(false);
+    expect(looksLikePortal(short, { truncated: true, cap: MAX_TOOLS_PER_SERVER })).toBe(true);
+    expect(looksLikePortal(short, COMPLETE)).toBe(false);
   });
 
   it("keeps refusing portal-native tools when the listing tool falls outside the cap", () => {
@@ -51,7 +57,8 @@ describe("portal detection", () => {
       ...Array.from(
         { length: MAX_TOOLS_PER_SERVER - 1 }, (_unused, index) => ({ name: `gh_tool_${index}` })),
     ];
-    expect(scopeAllows({}, "portal_toggle_single_server", looksLikePortal(truncated))).toBe(false);
+    expect(scopeAllows({}, "portal_toggle_single_server", looksLikePortal(truncated, COMPLETE)))
+      .toBe(false);
   });
 });
 

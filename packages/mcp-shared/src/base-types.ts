@@ -11,8 +11,8 @@
 export const MCP_BASE_TYPES = `// Base types for MCP-server sessions.
 //
 // These are prepended to every generated per-server \`.d.ts\` (see \`schema-to-ts.ts\`), so a workspace's
-// coding agent always has them in scope. One method per tool, plus \`callTool\` overloads, is
-// generated from the server's own tool catalog and appended below this file's contents.
+// coding agent always has them in scope. One method per tool and \`callTool\` overloads are generated
+// from the server's own tool catalog and appended below this file's contents.
 
 /** A block of content returned by an MCP tool. */
 export type McpContent =
@@ -81,7 +81,15 @@ export type McpToolInfo = {
    * action. Recorded so an audit can find every call that was trusted on the server's word.
    */
   classifiedBy: "server-annotation" | "default";
-  /** JSON Schema for the tool's arguments, exactly as the server published it. */
+  /** JSON Schema for the tool's arguments when it fits the connector's definition budget. */
   inputSchema?: unknown;
 };
+
+/** Bounded search result. Request the exact name through \`listTools({ name })\` for its schema. */
+export type McpToolSummary = Omit<McpToolInfo, "inputSchema">;
+
+/** Progressive catalog lookup through the existing \`listTools\` session method. */
+export type McpToolListOptions =
+  | { search: string; name?: never }
+  | { name: string; search?: never };
 `;

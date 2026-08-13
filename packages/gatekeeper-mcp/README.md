@@ -52,12 +52,18 @@ await env.MCP_LINEAR.callTool("search_issues", { query: "state:open" });
 
 Each generated method is a one-line delegate to `callTool`, so the scope check, approval queue, and
 observation record stay in one place. Tools whose names the RPC layer cannot deliver (`then`, `map`,
-`dup`), names that are not identifiers (`2fa`), and both sides of a case collision (`list_issues`
-and `listIssues`) get no method and remain callable through `callTool`.
+`dup`), names that collide with session methods (`listTools`, `callTool`, `getActionResult`), names
+that are not identifiers (`2fa`), and both
+sides of a case collision (`list_issues` and `listIssues`) get no method and remain callable through
+`callTool`.
 
-The agent discovers tools statically: `describeGatekeeper()` sends it the binding name and the full
-generated `.d.ts`, where each method carries the tool's own description as JSDoc and states whether
-calling it needs approval. `listTools()` exists for runtime enumeration but is rarely needed.
+The agent normally discovers tools statically: `describeGatekeeper()` sends it the binding name and
+the bounded generated `.d.ts`, where each method carries the tool's own description as JSDoc and
+states whether calling it needs approval. A server can publish more definitions than that bounded
+catalog holds: `listTools({ search })` returns up to 20 compact summaries from a bounded scan of the
+grant, limited to 5,000 tools / 4 MiB; `listTools({ name })` fetches one exact granted definition and
+schema under the same bound, and `callTool()` invokes it by wire name.
+`listTools()` remains the list of definitions currently described in the generated surface.
 
 See `src/types.d.ts` in `@gadgets/mcp-shared` for the base session API.
 

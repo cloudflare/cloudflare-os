@@ -2,8 +2,13 @@
 // Nothing outside this file reads a tool's `annotations`.
 
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
-import type { McpContentBlock, McpTool, McpToolCallResult } from "./client.js";
-import type { McpCallResult, McpToolInfo } from "./types";
+import {
+  clampToolSummary,
+  type McpContentBlock,
+  type McpTool,
+  type McpToolCallResult,
+} from "./client.js";
+import type { McpCallResult, McpToolInfo, McpToolSummary } from "./types";
 import { hexEncode } from "./util.js";
 
 /**
@@ -82,10 +87,7 @@ export function classifyTool(tool: McpTool, trust: ServerTrust): ClassifiedTool 
   };
 }
 
-/**
- * The tool as a Gadget sees it. `classifiedBy` is carried through so an audit can find every call
- * that was trusted on the server's word.
- */
+/** The tool as a Gadget sees it, retaining the source of its read/action classification. */
 export function toolInfo(entry: ClassifiedTool): McpToolInfo {
   return {
     name: entry.tool.name,
@@ -97,9 +99,21 @@ export function toolInfo(entry: ClassifiedTool): McpToolInfo {
   };
 }
 
+/** The bounded, schema-free form returned by catalog search. */
+export function toolSummary(entry: ClassifiedTool): McpToolSummary {
+  const tool = clampToolSummary(entry.tool);
+  return {
+    name: tool.name,
+    title: tool.title,
+    description: tool.description,
+    mode: entry.mode,
+    classifiedBy: entry.classifiedBy,
+  };
+}
+
 /**
- * The approval-policy identity of one tool on one binding. `scopeTag` is caller-supplied so that two
- * connectors using the same binding id cannot share pre-approvals.
+ * Returns the approval-policy identity of one tool on one binding. `scopeTag` prevents two
+ * connectors using the same binding id from sharing pre-approvals.
  */
 export function actionKindFor(scopeTag: string, toolName: string): ActionKind {
   return { tag: `${encodeURIComponent(scopeTag)}:${encodeURIComponent(toolName)}`, label: toolName };
@@ -179,13 +193,12 @@ function quoteUntrusted(text: string, max: number): string {
   return clipped.split("\n").map(line => `> ${line}`).join("\n");
 }
 
-// Renders server-chosen text inside a Markdown code span.
-//
-// Tool names and endpoints are placed in backticks so the approver can see them exactly as sent, but
-// a name is as server-controlled as a description: one containing a backtick closes the span and
-// everything after it becomes prose the server wrote in the prompt's own voice. Backticks are
-// dropped and the text is flattened, so what is shown cannot be more than one inline span.
-function codeSpan(text: string, max = MAX_INLINE_TEXT): string {
+/**
+ * Renders server-chosen text inside a bounded Markdown code span.
+ *
+ * Backticks are dropped and whitespace is flattened so the value cannot escape into prompt prose.
+ */
+export function codeSpan(text: string, max = MAX_INLINE_TEXT): string {
   const cleaned = text.replace(/`/g, "").replace(/\s+/g, " ").trim();
   const clipped = cleaned.length > max ? `${cleaned.slice(0, max)}\u2026` : cleaned;
   return `\`${clipped || "(unnamed)"}\``;
@@ -194,10 +207,11 @@ function codeSpan(text: string, max = MAX_INLINE_TEXT): string {
 // Longest server-chosen name or endpoint shown inline in a prompt.
 const MAX_INLINE_TEXT = 120;
 
-// Renders server-chosen text as inline prose, with the characters that would let it forge structure
-// removed. `account.ts` already does this to a server's reported name before storing it; this is the
-// same guard at the point of use, for the callers that pass a name from somewhere else.
-function plainInline(text: string, max = MAX_INLINE_TEXT): string {
+/**
+ * Renders untrusted text as inline prose, removing characters that could forge Markdown structure.
+ * Exported for observation records quoting agent-chosen text such as search queries.
+ */
+export function plainInline(text: string, max = MAX_INLINE_TEXT): string {
   const cleaned = text.replace(/[`*_[\]()#>|]/g, "").replace(/\s+/g, " ").trim();
   const clipped = cleaned.length > max ? `${cleaned.slice(0, max)}\u2026` : cleaned;
   return clipped || "(unnamed)";

@@ -12,6 +12,7 @@ import {
   McpCallNotDispatchedError,
   McpClient,
   McpSessionExpiredError,
+  type McpToolFilter,
   type ToolCatalog,
 }
   from "./client.js";
@@ -27,6 +28,8 @@ export type ConnectionEnv = InsecureEnv & {
 export type WithClientOptions = {
   /** False for a call that may have taken effect, so a dropped session is not retried. See above. */
   retryOnExpiry?: boolean;
+  /** Absolute deadline shared with time spent waiting for a discovery slot. */
+  deadline?: number;
 };
 
 /**
@@ -103,7 +106,10 @@ export async function withClient<T>(
         await account.assertConnectionCurrent(endpoint, generation);
       }
       return authorization;
-    }, sessionId, fetchOptions(env));
+    }, sessionId, {
+      ...fetchOptions(env),
+      deadline: options.deadline,
+    });
   let persistedSessionId = sessionId;
 
   const persistSession = async (): Promise<void> => {
@@ -186,8 +192,12 @@ export async function withClient<T>(
  * listing short, since callers infer what the endpoint is from what it does and does not offer.
  */
 export async function fetchTools(
-  env: ConnectionEnv, account: ConnectionAccount, endpoint: string,
+  env: ConnectionEnv,
+  account: ConnectionAccount,
+  endpoint: string,
+  include?: McpToolFilter,
+  options?: WithClientOptions,
 ): Promise<ToolCatalog> {
   return withClient(env, account, endpoint,
-    client => client.listTools(MAX_TOOLS_PER_SERVER));
+    client => client.listTools(MAX_TOOLS_PER_SERVER, include), options);
 }
