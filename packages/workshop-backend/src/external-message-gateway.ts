@@ -1,6 +1,8 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
+import type { CollaboratorInfo } from "@gadgets/workshop-shared/api";
 import {
+  type AddExternalCollaboratorInput,
   type ExternalMessageGateway as ExternalMessageGatewayContract,
   type SubmitExternalMessageInput,
   type SubmitExternalMessageResult,
@@ -34,6 +36,20 @@ export class ExternalMessageGateway extends WorkerEntrypoint<Cloudflare.Env, Ext
       prompt: input.prompt,
       chatGatewayRpcTarget: input.chatGatewayRpcTarget,
       title: input.gadgetTitle,
+    });
+  }
+
+  async addCollaborator(input: AddExternalCollaboratorInput): Promise<CollaboratorInfo | null> {
+    let source = this.ctx.props.source;
+    if (!source) throw new Error("ExternalMessageGateway source prop is required.");
+
+    // Same DO name as submitExternalMessage — gadgetKey is gateway-namespaced.
+    let overseer = this.ctx.exports.OverseerDurableObject.getByName(`${source}:${input.gadgetKey}`);
+
+    return await overseer.addExternalCollaborator({
+      username: input.username,
+      role: input.role,
+      note: input.note,
     });
   }
 }

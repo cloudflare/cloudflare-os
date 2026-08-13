@@ -6613,6 +6613,43 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return { accepted: true, chatPath: `/workspace/${this.ctx.id.toString()}?chat=${chatId}` };
   }
 
+  /**
+   * Grant Build (or another role) to an existing account on behalf of the workspace owner.
+   *
+   * Used by ExternalMessageGateway when a Teams (or other) gateway has already authenticated the
+   * username. This is not the session-bound Overseer.addCollaborator path — there is no browser
+   * client here — so the share is attributed to the owner. Returns null when the username has no
+   * account (same contract as Overseer.addCollaborator). Throws when sharing is prohibited.
+   */
+  async addExternalCollaborator(input: {
+    username: string;
+    role: CollaboratorRole;
+    note?: string;
+  }): Promise<CollaboratorInfo | null> {
+    let ownerProfileId = this.impl.ownerProfileId;
+    if (!ownerProfileId) {
+      // Workspace has not been claimed yet; there is nothing to share into.
+      return null;
+    }
+
+    let userDo = this.impl.users.get(this.impl.users.idFromName(input.username));
+    let profile = await userDo.whoamiIfExists();
+    if (!profile) return null;
+
+    if (this.impl.storage.prohibitAllSharing.get()) {
+      throw new Error(
+          "This workspace has observed sensitive data. To prevent leaks, the workspace cannot be " +
+          "shared.");
+    }
+
+    return (await this.impl.getSharingManager()).addCollaborator({
+      caller: { profileId: ownerProfileId, isOwner: true },
+      profile,
+      role: input.role,
+      note: input.note,
+    });
+  }
+
   // Initialize this workspace's default gadget from a blueprint's code snapshot. Called by
   // AuthenticatedApi.newGadgetFromBlueprint() after creating (and opening) the DO.
   async initializeFromBlueprint(code: Uint8Array, title: string, output?: BlueprintOutput)

@@ -1,4 +1,5 @@
 import type { RpcStub, RpcTarget } from "cloudflare:workers";
+import type { CollaboratorInfo, CollaboratorRole } from "./api.ts";
 
 /** A completed Gadget response that should be delivered back to the chat gateway. */
 export type GadgetResponse = {
@@ -45,8 +46,27 @@ export type SubmitExternalMessageResult =
       message: string;
     };
 
+/** Grant a role to an existing account on a gateway-owned workspace. */
+export type AddExternalCollaboratorInput = {
+  // Selects the workspace (same gadgetKey namespace as submitExternalMessage).
+  gadgetKey: string;
+  // Username/email the gateway has already authenticated. Never accept a model- or
+  // client-supplied identity here — the gateway is the trusted boundary.
+  username: string;
+  role: CollaboratorRole;
+  note?: string;
+};
+
 /** Service binding RPC interface used by chat gateway workers. */
 export interface ExternalMessageGateway {
   /** Submit an external chat message for Gadget routing and execution. */
   submitExternalMessage(input: SubmitExternalMessageInput): Promise<SubmitExternalMessageResult>;
+
+  /**
+   * Add a collaborator to a gateway-owned workspace, acting as the workspace owner.
+   *
+   * Returns null when `username` has no account. Gateways must only pass usernames they have
+   * authenticated (e.g. Teams roster → Graph email). Throws when sharing is prohibited.
+   */
+  addCollaborator(input: AddExternalCollaboratorInput): Promise<CollaboratorInfo | null>;
 }
