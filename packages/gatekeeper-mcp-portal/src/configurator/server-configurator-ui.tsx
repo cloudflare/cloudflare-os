@@ -47,7 +47,7 @@ export default {
   },
 
   isReady({ values }) {
-    if (values.endpointKind === "unavailable" || !values.server) return false;
+    if (values.endpointKind !== "portal" || !values.server) return false;
     return values.mode === "all"
       || (values.tools ?? "").split(",").some(name => name.trim().length > 0);
   },
@@ -69,7 +69,7 @@ export default {
     if (values.endpointKind === "unknown") {
       void serverOptions(ui).then(
         servers => setValues({
-          endpointKind: "portal",
+          endpointKind: servers.length > 0 ? "portal" : "empty",
           server: servers.length === 1 ? servers[0].value : values.server,
         }),
         () => setValues({ endpointKind: "unavailable" }),
@@ -83,7 +83,20 @@ export default {
           description={
             "Could not reach the portal to list the servers behind it, so there is nothing to " +
             "grant yet. Close this and try again; if it keeps happening, ask an administrator to " +
-            "check the portal configuration."
+            "check the portal configuration and any context-optimization setting."
+          }
+        />
+      </Section>;
+    }
+
+    if (values.endpointKind === "empty") {
+      return <Section>
+        <Field
+          label="Server"
+          description={
+            "The portal returned no direct upstream tools. If servers are expected, connect with " +
+            "Code Mode disabled (`?codemode=off`) and remove any `optimize_context` parameter; " +
+            "otherwise enable a server in the portal and try again."
           }
         />
       </Section>;
@@ -126,7 +139,8 @@ export default {
               value: "choose",
               title: "Choose tools",
               description:
-                "Only the tools you tick. Anything else is refused, including tools added later.",
+                "Only the tools you tick, from up to 200 shown. Anything else is refused, " +
+                "including tools added later.",
             },
           ]}
           onChange={next => setValues({ mode: next })}
@@ -145,7 +159,7 @@ export default {
         <CheckboxList
           name={`tools:${serverKey}`}
           value={values.tools}
-          loadOptions={async () => (await ui.listToolOptions(values.server ?? undefined))
+          loadOptions={async () => (await ui.listToolOptions(serverKey))
             .map(option => ({ ...option, value: encodeURIComponent(option.value) }))}
           allSelected={mode === "all"}
           disabled={mode === "all"}

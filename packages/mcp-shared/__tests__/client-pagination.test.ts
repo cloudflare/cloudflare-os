@@ -234,7 +234,8 @@ describe("McpClient.listTools", () => {
   });
 
   it("can index far more tools than a catalog holds by retaining only names", async () => {
-    // A catalog of these would exhaust the byte budget long before 400 tools. The index keeps the
+    // A catalog of these would exhaust the byte budget long before 400 tools. The index drops
+    // descriptions, schemas, and annotations.
     stubPages([{ tools: Array.from({ length: 400 }, (_, i) => ({
       name: `server_tool_${i}`,
       description: "x".repeat(1000),
@@ -242,11 +243,12 @@ describe("McpClient.listTools", () => {
       annotations: { readOnlyHint: i % 2 === 0 },
     })) }]);
     const client = new McpClient("https://mcp.example.com/mcp", async () => null);
-    const { tools, truncated } = await client.listMatchingToolIndex(500, () => true);
+    const { tools, truncated } = await client.listToolIndex(500);
     expect(tools).toHaveLength(400);
     expect(truncated).toBe(false);
     expect(tools[399]).toEqual({ name: "server_tool_399" });
-    // The point of the index: no description or schema survives to be stored or shown.
+    // The point of the index: no policy or display metadata survives to consume the survey budget.
+    expect(tools[0]).not.toHaveProperty("annotations");
     expect(tools[0]).not.toHaveProperty("description");
     expect(tools[0]).not.toHaveProperty("inputSchema");
   });
@@ -391,9 +393,17 @@ describe("McpClient.listTools", () => {
     });
     const client = new McpClient("https://mcp.example.com/mcp", async () => null);
 
-    await expect(client.listMatchingToolIndex(1000, () => true))
-      .resolves.toEqual({ tools: [], truncated: true });
+    await expect(client.listToolIndex(1000)).resolves.toEqual({ tools: [], truncated: true });
     expect(calls).toBe(5);
+  });
+
+  it("returns a truncated index when pagination reaches the page limit", async () => {
+    const calls = stubPages([{ tools: [], nextCursor: "more" }]);
+    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+
+    await expect(client.listToolIndex(1000))
+      .resolves.toEqual({ tools: [], truncated: true });
+    expect(calls()).toBe(50);
   });
 
   it("returns collected catalog matches when later pages exceed the scan budget", async () => {

@@ -28,11 +28,21 @@ every system the organization has connected in one click.
 pinning different tools of one upstream server share both the name and the endpoint, so the scope is
 the only thing that distinguishes them.
 
-The session API — a typed method per described tool, plus `callTool`, `getActionResult`, and `listTools` — is
-the same as [`gatekeeper-mcp`](../gatekeeper-mcp/README.md#what-it-provides).
+The session API — a typed method per described tool, plus `callTool`, `getActionResult`, and
+`listTools` with progressive search/name options — is the same as
+[`gatekeeper-mcp`](../gatekeeper-mcp/README.md#what-it-provides).
 
-Scoping to one server also shrinks what the agent reads: a 57-tool portal generates 57 tool
-signatures unscoped, and 12 when scoped to one server.
+A server-wide grant can cover more tools than one catalog describes, so its authority is not limited
+to the ones with generated signatures. `listTools({ search })` searches beyond the bounded preview
+and returns up to 20 compact matches within the shared 5,000-tool / 4 MiB discovery scan;
+`listTools({ name })` loads one exact bounded definition, and `callTool` resolves that name under the
+same bound before dispatch. Every path rejects names outside the
+binding's scope before loading the catalog or contacting the endpoint. Discovery and read results are
+recorded as observations; writes retain the ordinary approval flow.
+
+Scoping to one server also shrinks what the agent reads: only that server's tools are rendered as
+signatures, and only as many as the budget describes. Additional tools are discovered on demand
+within the explicit scan limits above; exceeding a limit fails rather than pretending a tool is absent.
 
 ## Configuration
 
@@ -44,6 +54,10 @@ signatures unscoped, and 12 when scoped to one server.
 | `MCP_PORTAL_TOKEN` | Secret bearer token, for `MCP_PORTAL_AUTH: "token"`. |
 | `MCP_PORTAL_TRUST_ANNOTATIONS` | `true` to let upstream tool annotations drive auto-approval. Off by default; see below. |
 | `MCP_ALLOW_INSECURE` | `"true"` to disable the endpoint checks entirely: permits `http://` **and** private, loopback, link-local, and cloud-metadata hosts, for the portal and every OAuth URL discovered from it. Local dev only. |
+
+The portal must expose upstream tools directly. Use a portal where Code Mode is off or opt-in, or
+append `?codemode=off` when its policy is default-on. Enforced Code Mode is unsupported. Do not add
+an `optimize_context` parameter or opt in to Code Mode on `MCP_PORTAL_URL`.
 
 Only `MCP_ALLOW_INSECURE` is set in the repo's `wrangler.jsonc`, pinned to `"false"` so the default
 is explicit rather than merely absent. None of the others is, and a portal URL committed there would
@@ -91,10 +105,10 @@ pinned — which tools:
 
 ```
 Server · Which server behind this portal to grant. Its tools appear next.
-[ 🔍 GitHub ]                                    12 tools · 8 read-only, 4 need approval
+[ 🔍 GitHub ]
 
 Tools · Choose how much of this server the Gadget may call.
-(•) All tools      Every tool this server offers (12 today), including ones it adds later.
+(•) All tools      Every tool this server offers, including ones it adds later.
 ( ) Choose tools   Only the tools you tick. Anything else is refused, including tools added later.
 
 Allowed tools · Read-only tools return data straight away. The rest queue for your approval.
@@ -130,17 +144,37 @@ recovered from two facts in the portal's documented contract:
 
 Detection is a capability probe — does the endpoint offer `portal_list_servers`? — not a hostname
 match, so it works for a custom portal hostname and for any other aggregator adopting the
-convention. A *truncated* catalog counts as a portal whether or not the probe tool is in it:
+convention. A *truncated* listing counts as a portal whether or not the probe tool is in it:
 `tools/list` is unordered, so concluding "not a portal" because the evidence fell past the cut would
-fail open on the `portal_*` exclusion below. Truncation is reported by `listTools` rather than
-inferred from the tool count, because either cap can stop it — `MAX_TOOLS_PER_SERVER` (200) or the
-96 KiB UTF-8 catalog budget, and the latter can cut a catalog of verbose tools short while leaving an
+fail open on the `portal_*` exclusion below. Truncation is reported by the client rather than
+inferred from the tool count, because either cap can stop a listing — the count the caller asked for,
+or the 96 KiB UTF-8 budget, and the latter can cut a listing of verbose tools short while leaving an
 array that looks complete. The byte budget leaves 32 KiB below Durable Object's per-value limit for
 the cache wrapper and serialization overhead; if storage nevertheless rejects the cache value, the
 fresh catalog is still used for that operation rather than turning a cache miss into a failure.
 
+### Surveying a portal too large for one catalog
+
+The configurator normally gets server names directly from `portal_list_servers`, without surveying
+every upstream tool. If that response is unavailable or only partly understood, it falls back to a
+**name-only tool index** of up to 1,000 entries. The index detects the portal and recovers server
+membership from tool-name prefixes; it carries no descriptions, schemas, or policy claims, so the
+96 KiB result budget covers as many names as possible. A truncated fallback cannot establish the
+complete server list and blocks the form rather than presenting a partial list as complete.
+
+After a server is selected, a separate filtered scan returns up to 200 compact summaries from that
+server. Each summary carries its bounded title, description, and annotations, and is classified
+through the shared `tools.ts` trust boundary before it becomes a read-versus-approval label. The
+filter is applied before result budgets, so unrelated servers cannot crowd the selected one out.
+Only the returned prefix is offered for an individual-tool grant; additional tools require the
+server-wide grant, and a call resolves the full definition before approval or dispatch.
+
+Index entries are typed separately (`IndexedTool`) to distinguish name-only survey results from tool
+definitions rendered into approval prompts or handed to an agent.
+
 The server list is advisory: it supplies display names and ordering while tool-name prefixes remain
-the authority on membership, and a failed call degrades to bare ids. The gatekeeper makes that call
+the authority on membership, and a failed call degrades to bare ids recovered from tool prefixes.
+The gatekeeper makes that call
 while building a form, so it does not pass through the approval queue. Failing to reach the portal
 at all is different, and blocks the grant rather than falling back to the bare endpoint — the
 configurator reports it and stays unsubmittable.

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  isPortalToolGrantable,
+  portalCatalogValidationMode,
   portalResource,
   portalAuthRequiresReconnect,
   portalServer,
@@ -7,6 +9,7 @@ import {
   portalTrust,
   readPortalConfig,
   requirePortalServerScope,
+  toolGrantOptions,
 } from "../src/config.js";
 
 function env(overrides: Record<string, string> = {}): Env {
@@ -168,6 +171,38 @@ describe("requirePortalServerScope", () => {
     // Pinned-and-empty denies everything, which is fail-closed and fine to mint.
     expect(() => requirePortalServerScope({ serverId: "github", tools: [] })).not.toThrow();
   });
+
+  it("rejects invalid names and cross-server tools before endpoint discovery", () => {
+    expect(() => requirePortalServerScope({ serverId: "" })).toThrow(/server id/i);
+    expect(() => requirePortalServerScope({ serverId: "x".repeat(600) })).toThrow(/server id/i);
+    expect(() => requirePortalServerScope({ serverId: "github", tools: [""] }))
+      .toThrow(/tool name/i);
+    expect(() => requirePortalServerScope({ serverId: "github", tools: ["jira_search"] }))
+      .toThrow(/does not belong/i);
+    expect(() => requirePortalServerScope({
+      serverId: "portal", tools: ["portal_toggle_servers"],
+    })).toThrow(/portal management tool/i);
+  });
+});
+
+describe("portal catalog validation", () => {
+  it("selects exact-tool validation for a non-empty pinned grant", () => {
+    expect(portalCatalogValidationMode(
+      { serverId: "github", tools: ["github_search"] }, [])).toBe("named-tools");
+  });
+
+  it("uses the same server evidence for empty pinned and server-wide grants", () => {
+    for (const scope of [{ serverId: "github", tools: [] }, { serverId: "github" }]) {
+      expect(portalCatalogValidationMode(scope, [])).toBe("server-evidence");
+      expect(portalCatalogValidationMode(scope, [{ id: "github" }])).toBe("reported-server");
+    }
+  });
+
+  it("excludes portal-native and cross-server tools from portal grants", () => {
+    expect(isPortalToolGrantable("github_search", "github")).toBe(true);
+    expect(isPortalToolGrantable("linear_search", "github")).toBe(false);
+    expect(isPortalToolGrantable("portal_toggle_servers", "portal")).toBe(false);
+  });
 });
 
 describe("portalTokenFor", () => {
@@ -222,4 +257,56 @@ describe("portalTokenFor", () => {
     });
     expect(portalTokenFor(configured, "https://gw.example.com/mcp")).toBeNull();
   });
+});
+
+describe("toolGrantOptions", () => {
+  const tools = [
+    { name: "google_list_events", annotations: { readOnlyHint: true } },
+    { name: "google_delete_event", annotations: { readOnlyHint: false } },
+    { name: "google_send_mail" },
+  ];
+
+  it("classifies each bounded summary from the annotation runtime policy uses", () => {
+    const options = toolGrantOptions({
+      serverId: "google",
+      tools,
+      trust: "byo",
+    });
+    expect(options.map(option => [option.value, option.meta])).toEqual([
+      ["google_list_events", "read-only"],
+      ["google_delete_event", "needs approval"],
+      ["google_send_mail", "needs approval"],
+    ]);
+  });
+
+  it("uses summary text and degrades to the bare name without it", () => {
+    const options = toolGrantOptions({
+      serverId: "google",
+      tools: [{
+        name: "google_list_events", title: "List events",
+        description: "Lists calendar events.\nSecond line ignored.",
+        annotations: { readOnlyHint: true },
+      }, ...tools.slice(1)],
+      trust: "byo",
+    });
+    expect(options[0]).toEqual({
+      value: "google_list_events",
+      title: "List events",
+      subtitle: "Lists calendar events.",
+      meta: "read-only",
+    });
+    // No detail for this one: the prefix is still stripped, and no description is invented.
+    expect(options[1]).toMatchObject({ title: "delete_event", subtitle: undefined });
+  });
+
+  it("does not let a portal's annotations drive auto-approval labels on an unvetted portal", () => {
+    // `meta` reports only read-versus-action, which is the distinction the person granting acts on.
+    // Auto-approval needs a vetted deployment as well, and is not something this form claims.
+    for (const trust of ["vetted", "byo"] as const) {
+      const options = toolGrantOptions({ serverId: "google", tools, trust });
+      expect(options.map(option => option.meta))
+        .toEqual(["read-only", "needs approval", "needs approval"]);
+    }
+  });
+
 });

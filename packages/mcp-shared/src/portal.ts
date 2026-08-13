@@ -78,22 +78,6 @@ export function toolBelongsToServer(toolName: string, serverId: string): boolean
   return serverIdOfTool(toolName) === serverId;
 }
 
-/** Groups a portal's tools by upstream server id, dropping the portal's own tools. */
-export function groupToolsByServer<T extends Pick<McpTool, "name">>(
-  tools: T[],
-): Map<string, T[]> {
-  const groups = new Map<string, T[]>();
-  for (const tool of tools) {
-    if (isPortalNativeTool(tool.name)) continue;
-    const serverId = serverIdOfTool(tool.name);
-    if (!serverId) continue;
-    const existing = groups.get(serverId);
-    if (existing) existing.push(tool);
-    else groups.set(serverId, [tool]);
-  }
-  return groups;
-}
-
 // `portal_list_servers` answers in prose, not JSON. A Cloudflare portal replies with bullet lines of
 // the form `- {display name} ({server id}): {status}`:
 //
@@ -102,8 +86,9 @@ export function groupToolsByServer<T extends Pick<McpTool, "name">>(
 //   - Cloudflare documentation (test): \u2713 enabled
 //   - Linear (linear): \u2713 enabled
 //
-// Display metadata only, so an unrecognized line is skipped rather than raised;
-// `reconcilePortalServers` recovers any server the prose failed to describe.
+// Display metadata only, so an unrecognized line is skipped rather than raised, but the enclosing
+// listing is marked incomplete so a truncated tool index cannot mistake the partial result for all
+// servers. A complete index can still recover the skipped id from tool-name prefixes.
 function parseServerLine(line: string): PortalServer | null {
   const bulletLine = line.trimStart();
   if (bulletLine[0] !== "-" && bulletLine[0] !== "*" && bulletLine[0] !== "\u2022") return null;
@@ -148,72 +133,110 @@ function parseServerLine(line: string): PortalServer | null {
   return null;
 }
 
-function parseServerLines(text: string): PortalServer[] {
+function parseServerLines(text: string): {
+  servers: PortalServer[];
+  complete: boolean;
+  recognized: boolean;
+} {
   const servers: PortalServer[] = [];
   const seen = new Set<string>();
+  let recognized = /available mcp servers\s*:/i.test(text);
+  let complete = true;
   for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trimStart();
+    const first = trimmed[0];
+    const entryLike = first === "-" || first === "*" || first === "+" || first === "\u2022" ||
+      /^\d+[.)]\s/.test(trimmed);
     const server = parseServerLine(line);
-    if (!server || seen.has(server.id)) continue;
+    if (!server) {
+      if (entryLike) complete = false;
+      continue;
+    }
+    recognized = true;
+    if (seen.has(server.id)) continue;
     seen.add(server.id);
     servers.push(server);
   }
-  return servers;
+  return { servers, complete: recognized && complete, recognized };
 }
 
 // A `structuredContent` payload, if a future portal version supplies one. Read literally as an array
 // of `{ id, name, enabled }`, with no guessing at alternative spellings.
-function parseStructured(value: unknown): PortalServer[] {
-  if (!Array.isArray(value)) return [];
+function parseStructured(value: unknown): { servers: PortalServer[]; complete: boolean } | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value)) return null;
   const servers: PortalServer[] = [];
+  let complete = true;
   for (const entry of value) {
-    if (typeof entry !== "object" || entry === null) continue;
+    if (typeof entry !== "object" || entry === null) {
+      complete = false;
+      continue;
+    }
     const record = entry as Record<string, unknown>;
     const id = typeof record.id === "string" ? record.id.trim() : "";
-    if (!id) continue;
+    if (!id) {
+      complete = false;
+      continue;
+    }
     servers.push({
       id,
       name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : id,
       enabled: record.enabled !== false,
     });
   }
-  return servers;
+  return { servers, complete };
 }
 
+/** A parsed portal server list and whether every advertised entry was understood. */
+export type PortalServerListing = {
+  /** Valid upstream server entries recovered from the response. */
+  servers: PortalServer[];
+  /** Whether the complete response was recognized without dropping malformed entries. */
+  complete: boolean;
+};
+
 /**
- * Parses the upstream server list out of a `portal_list_servers` result. Empty when nothing
- * parseable is present; callers fall back to the ids recovered from tool-name prefixes.
+ * Parses the upstream server list out of a `portal_list_servers` result.
+ *
+ * `complete` is false when the response was absent, unrecognized, or only partly understood; a
+ * truncated tool index cannot safely use such a response as its authoritative list.
  * Typed by what it reads rather than as `McpToolCallResult`, which a result satisfies: this is an
  * untrusted reply and every field is re-checked here, so the loose type is the honest one.
  */
 export function parsePortalServers(
   result: { structuredContent?: unknown; content?: unknown },
-): PortalServer[] {
+): PortalServerListing {
   const structured = parseStructured(result.structuredContent);
-  if (structured.length > 0) return structured;
+  if (structured?.complete) return structured;
 
-  for (const block of Array.isArray(result.content) ? result.content : []) {
-    const { type, text } = (block ?? {}) as { type?: unknown; text?: unknown };
-    if (type !== "text" || typeof text !== "string") continue;
-    const servers = parseServerLines(text);
-    if (servers.length > 0) return servers;
+  const combinedText = (Array.isArray(result.content) ? result.content : [])
+    .flatMap(block => {
+      const { type, text: blockText } = (block ?? {}) as { type?: unknown; text?: unknown };
+      return type === "text" && typeof blockText === "string" ? [blockText] : [];
+    })
+    .join("\n");
+  if (combinedText) {
+    const listing = parseServerLines(combinedText);
+    if (listing.recognized) return { servers: listing.servers, complete: listing.complete };
   }
-  return [];
+  return structured ?? { servers: [], complete: false };
 }
 
 /**
- * Merges the portal's reported servers with the ids present in the tool list. With a complete
- * catalog, tool names are the authority and reported empty servers are dropped. With a truncated
- * catalog, absence is not evidence, so reported servers are retained for server-wide grants.
+ * Merges the portal's reported servers with the ids present in a complete tool index. Tool names
+ * are the authority, so reported empty servers are dropped.
  */
 export function reconcilePortalServers(
-  reported: PortalServer[], tools: Pick<McpTool, "name">[], truncated = false,
+  reported: PortalServer[], tools: Pick<McpTool, "name">[],
 ): PortalServer[] {
-  const grouped = groupToolsByServer(tools);
   const byId = new Map(reported.map(server => [server.id, server]));
+  const ids = new Set<string>();
+  for (const tool of tools) {
+    if (isPortalNativeTool(tool.name)) continue;
+    const id = serverIdOfTool(tool.name);
+    if (id) ids.add(id);
+  }
   const servers: PortalServer[] = [];
-  const ids = truncated
-    ? new Set([...reported.map(server => server.id), ...grouped.keys()])
-    : grouped.keys();
   for (const id of ids) {
     servers.push(byId.get(id) ?? { id, name: id, enabled: true });
   }

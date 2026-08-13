@@ -219,6 +219,15 @@ describe("validateToolScopeAgainstCatalog", () => {
     });
   });
 
+  it("uses current tool evidence to validate a pinned-empty grant", () => {
+    expect(validateToolScopeAgainstCatalog(
+      { serverId: "gh", tools: [] }, catalog, [])).toEqual({
+      id: "gh",
+      name: "gh",
+      enabled: true,
+    });
+  });
+
   it("rejects named tools outside or absent from the selected portal server", () => {
     expect(() => validateToolScopeAgainstCatalog(
       { serverId: "gh", tools: ["linear_list_comments"] }, catalog))

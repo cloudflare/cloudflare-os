@@ -45,13 +45,13 @@ export type ToolCatalog = {
   truncated: boolean;
 };
 
-/** One tool identity retained to validate an exact name against a large endpoint. */
+/** One tool identity retained to validate names or recover portal membership. */
 export type IndexedTool = {
   /** Exact wire name advertised by the endpoint. */
   name: string;
 };
 
-/** A bounded survey of endpoint tool identities without schemas or descriptions. */
+/** A bounded survey of endpoint tool identities without schemas, descriptions, or policy claims. */
 export type ToolIndex = {
   /** Retained tool identities. */
   tools: IndexedTool[];
@@ -318,8 +318,8 @@ function clampText(value: unknown, max: number): string | undefined {
 // large to render is dropped rather than clipped, so the generated method degrades to
 // `Record<string, unknown>`.
 // Keeps only the hints this gatekeeper understands, so a server cannot attach unbounded text to a
-// tool under `annotations` and have it stored, indexed, or rendered. Each retained field is a
-// boolean or absent, which is what makes an index entry's size predictable.
+// tool under `annotations` and have it stored or rendered. Each retained field is a boolean or
+// absent.
 function clampAnnotations(
   annotations: McpToolAnnotations | undefined,
 ): McpToolAnnotations | undefined {
@@ -568,6 +568,14 @@ export class McpClient {
    */
   async listTools(maxTools: number, include?: McpToolFilter): Promise<ToolCatalog> {
     return this.#list(maxTools, include, clampToolDefinition);
+  }
+
+  /**
+   * Surveys names without retaining descriptions, schemas, or policy annotations. Resolve a full
+   * definition with `findTool` before use.
+   */
+  async listToolIndex(maxTools: number): Promise<ToolIndex> {
+    return this.#list(maxTools, undefined, indexTool);
   }
 
   /** Collects at most `maxTools` matching index entries without scanning later pages. */

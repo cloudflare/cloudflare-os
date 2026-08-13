@@ -19,7 +19,7 @@ vi.mock("@gadgets/configurator-ui", () => ({
 
 type Values = McpServerConfiguratorValues;
 
-// The module caches tool lists at module scope, which is safe only because the host hands it a fresh
+// The module caches the server list at module scope, which is safe only because the host hands it a fresh
 // iframe -- and so a fresh realm -- for every account and resource pattern. Re-importing per test
 // reproduces that; without it one test's cached list is served to the next.
 async function loadSpec() {
@@ -88,7 +88,7 @@ describe("portal configurator", () => {
     expect(rendered).not.toContain("CheckboxList");
   });
 
-  it("keeps an empty portal ungrantable instead of serializing its future servers", async () => {
+  it("shows corrective guidance when the endpoint exposes no direct upstream tools", async () => {
     const ui = {
       getEndpoint: async () => "https://gw.example.com/mcp",
       listServerOptions: async () => [],
@@ -99,11 +99,12 @@ describe("portal configurator", () => {
     }, ui);
 
     app.render();
-    await vi.waitFor(() => expect(app.values.endpointKind).toBe("portal"));
+    await vi.waitFor(() => expect(app.values.endpointKind).toBe("empty"));
     expect(app.values.server).toBeNull();
     expect(spec.isReady({ values: app.values })).toBe(false);
-    await expect(spec.resourceUrl({ values: app.values, ui } as never))
-      .rejects.toThrow(/Choose a server/);
+    const rendered = JSON.stringify(app.render());
+    expect(rendered).toContain("codemode=off");
+    expect(rendered).not.toContain("Could not reach the portal");
   });
 
   it("shows every tool as a disabled preview for an all-tools grant", () => {
