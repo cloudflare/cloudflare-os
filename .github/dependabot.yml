@@ -1,0 +1,168 @@
+# Dependency updates land on the 1st and 15th, grouped so each pull request is one thing to
+# reason about ("the Cloudflare toolchain moved") rather than forty single-dependency bumps.
+#
+# Two rules govern the groups below:
+#   1. Routine bumps travel by family: each family group is scoped to minor + patch.
+#   2. Majors arrive alone. Because no family group accepts `major`, a major bump matches no
+#      group and Dependabot opens it as its own pull request. The exceptions are the families
+#      that are unbuildable unless they move together, which get an explicit major-only group.
+#
+# Group order matters -- a dependency joins the first group it matches -- so the catch-all is
+# last. Group identifiers may contain only letters, `|`, `_` and `-`; no digits or dots.
+#
+# Grouping by `dependency-type` is deliberately not used: Dependabot reports every
+# pnpm catalog entry as a production dependency (dependabot-core#14824), which would drag the
+# whole toolchain into the production pull request. The groups match on name patterns only.
+version: 2
+
+updates:
+  # ── npm, via pnpm ─────────────────────────────────────────────────────────────────────────
+  # One entry at "/": the workspace has a single root lockfile, and Dependabot discovers every
+  # packages/* manifest plus the pnpm-workspace.yaml catalog from there. Don't add
+  # `directories: ["/packages/*"]` -- the sub-packages have no lockfile of their own, and
+  # entries for one ecosystem may not overlap.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "cron"
+      cronjob: "0 9 1,15 * *" # the 1st and 15th, i.e. roughly every other week
+      timezone: "Etc/UTC" # must be its own key; a cron string may not carry a zone
+    open-pull-requests-limit: 10
+    versioning-strategy: "increase"
+    # Keep this above `minimumReleaseAge` in pnpm-workspace.yaml (1440 minutes). pnpm refuses to
+    # resolve a version younger than that gate, and Dependabot's update then fails outright with
+    # ERR_PNPM_NO_MATCHING_VERSION rather than degrading (dependabot-core#13165).
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    # Rebasing ten branches on every push to main re-runs the whole workspace build. Ask for it
+    # per pull request with `@dependabot rebase`.
+    rebase-strategy: "disabled"
+    ignore:
+      # Pinned exact and pinned to esbuild: oxc does not lower the Stage-3 decorators that
+      # capnweb-validate's `@validateRpc()` relies on. `overrides.vite` must also keep pointing
+      # at the catalog rather than a literal version.
+      - dependency-name: "vite"
+      # capnweb-validate is pinned in lockstep with capnweb, so neither moves without the other.
+      - dependency-name: "capnweb"
+      - dependency-name: "capnweb-validate"
+      # Pinned in pnpm `overrides` for release-age maturity, since minimumReleaseAge does not
+      # gate them. Dependabot would bump the manifests and leave the override behind, so the
+      # pin has to be lifted by hand. `@types/node` is declared directly by four packages;
+      # `@lezer/markdown` is a deep transitive of `@codemirror/lang-markdown`, so its entry only
+      # bites on security updates -- drop it if we'd rather see those.
+      - dependency-name: "@types/node"
+      - dependency-name: "@lezer/markdown"
+      # Deliberate alpha pin.
+      - dependency-name: "miniflare"
+      # Exact, and the two must move together.
+      - dependency-name: "@earendil-works/pi-agent-core"
+      - dependency-name: "@earendil-works/pi-ai"
+      # Exact pins.
+      - dependency-name: "temporal-polyfill"
+      - dependency-name: "@modelcontextprotocol/client"
+    groups:
+      # Families whose majors have to land as a single pull request.
+      cloudflare-toolchain-major:
+        update-types: ["major"]
+        patterns:
+          - "wrangler"
+          - "@cloudflare/*"
+          - "workerd"
+          - "@cloudflare/workerd-*"
+        exclude-patterns:
+          - "@cloudflare/kumo" # a UI library, not part of the Workers toolchain
+      react-major:
+        update-types: ["major"]
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+          - "@vitejs/plugin-react"
+      codemirror-major:
+        update-types: ["major"]
+        patterns:
+          - "@codemirror/*"
+          - "@lezer/*"
+      collab-yjs-major:
+        update-types: ["major"]
+        patterns:
+          - "yjs"
+          - "y-monaco"
+          - "y-protocols"
+
+      # Routine bumps. Every major not named above falls through to its own pull request.
+      cloudflare-toolchain:
+        update-types: ["minor", "patch"]
+        patterns:
+          - "wrangler"
+          - "@cloudflare/*"
+          - "workerd"
+          - "@cloudflare/workerd-*"
+        exclude-patterns:
+          - "@cloudflare/kumo"
+      build-toolchain:
+        update-types: ["minor", "patch"]
+        patterns:
+          - "typescript"
+          - "vite-plus"
+          - "vitest"
+          - "esbuild"
+          - "terser"
+          - "vite-plugin-*"
+          - "vite-tsconfig-paths"
+          - "jsdom"
+      react-and-ui:
+        update-types: ["minor", "patch"]
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+          - "@vitejs/plugin-react"
+          - "@cloudflare/kumo"
+          - "@phosphor-icons/*"
+          - "@tanstack/*"
+          - "monaco-editor"
+          - "@monaco-editor/*"
+          - "tailwindcss"
+          - "@tailwindcss/*"
+          - "react-markdown"
+          - "remark-gfm"
+          - "emoji-mart"
+          - "@emoji-mart/*"
+      editor-codemirror:
+        update-types: ["minor", "patch"]
+        patterns:
+          - "@codemirror/*"
+          - "@lezer/*"
+      collab-yjs:
+        update-types: ["minor", "patch"]
+        patterns:
+          - "yjs"
+          - "y-monaco"
+          - "y-protocols"
+      remaining-npm:
+        update-types: ["minor", "patch"]
+        patterns:
+          - "*"
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────────────────────
+  # "/" covers .github/workflows. SHA pins and their trailing `# v4` comments are both updated.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "cron"
+      cronjob: "0 9 1,15 * *"
+      timezone: "Etc/UTC"
+    cooldown:
+      default-days: 7 # github-actions supports default-days only
+    rebase-strategy: "disabled"
+    ignore:
+      # Pinned to known / tested release.
+      - dependency-name: "ask-bonk/ask-bonk"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
