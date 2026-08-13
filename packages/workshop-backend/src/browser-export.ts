@@ -6,13 +6,14 @@ import BROWSER_EXPORT_RUNTIME from "./generated/browser-export-runtime.txt";
 import HTML_SANITIZER_RUNTIME from "./generated/html-sanitizer-runtime.txt";
 import {
   createStaticHtmlSnapshot,
+  getDocumentPixelArea,
   receiveFromBrowser,
   sendToBrowser,
   setDocumentTitle,
   waitForClientModule,
   waitForDomSettled,
 } from "./generated/browser-export-page.js";
-import { createExportDeadline, limitExportStream } from "./export-limits";
+import { createExportDeadline, limitExportStream, MAX_EXPORT_BYTES } from "./export-limits";
 
 type BrowserExportLogFields = {
   event?: string;
@@ -29,13 +30,15 @@ const BROWSER_CLOSE_TIMEOUT_MS = 10_000;
 const MAX_PENDING_RPC_SENDS = 1024;
 /** Maximum total string length across all pending Worker-to-browser RPC messages. */
 const MAX_PENDING_RPC_SEND_CHARS = 32 * 1024 * 1024;
+/** Largest full-page screenshot capture, before image compression. */
+const MAX_SCREENSHOT_PIXELS = 25_000_000;
 /** CSP ignores `sandbox` in a meta tag, so serve the document through interception with a header. */
 const EXPORT_DOCUMENT_URL = "https://gadget-export.invalid/";
 // TODO: CSP and request interception do not cover WebRTC/STUN. The same gap exists for Gadgets
 // running inside an iframe in the user's browser. We should close the gap in both places. For now,
 // extending the same gap to remotely-rendered gadgets is acceptable.
 const EXPORT_DOCUMENT_CSP = "default-src 'none'; frame-src 'none'; script-src data:; " +
-  "style-src data: 'unsafe-inline'; img-src data: blob:; media-src data:; " +
+  "style-src data: 'unsafe-inline'; img-src data: blob:; media-src data: blob:; " +
   "font-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; " +
   "connect-src 'none'; sandbox allow-scripts;";
 const STATIC_HTML_CSP = "default-src 'none'; frame-src 'none'; script-src 'none'; " +
@@ -206,15 +209,18 @@ export async function renderGadgetInBrowser(
       await page.setRequestInterception(true);
       page.on("request", (request) => {
         let url = request.url();
-        if (url === EXPORT_DOCUMENT_URL && request.isNavigationRequest() &&
-            request.frame() === page.mainFrame()) {
-          void request.respond({
-            status: 200,
-            contentType: "text/html",
-            headers: {"Content-Security-Policy": EXPORT_DOCUMENT_CSP},
-            body: makeExportHtml(clientCode, format.id),
-          });
-        } else if (url === "about:blank" || url.startsWith("data:")) {
+        if (request.isNavigationRequest()) {
+          if (url === EXPORT_DOCUMENT_URL && request.frame() === page.mainFrame()) {
+            void request.respond({
+              status: 200,
+              contentType: "text/html",
+              headers: {"Content-Security-Policy": EXPORT_DOCUMENT_CSP},
+              body: makeExportHtml(clientCode, format.id),
+            });
+          } else {
+            void request.abort();
+          }
+        } else if (url.startsWith("data:") || url.startsWith("blob:")) {
           void request.continue();
         } else {
           void request.abort();
@@ -239,12 +245,18 @@ export async function renderGadgetInBrowser(
           });
         case "text/html": {
           await isolatedRealm.evaluate(HTML_SANITIZER_RUNTIME);
-          const html = await isolatedRealm.evaluate(createStaticHtmlSnapshot, STATIC_HTML_CSP);
+          const html = await isolatedRealm.evaluate(
+            createStaticHtmlSnapshot,
+            STATIC_HTML_CSP,
+            MAX_EXPORT_BYTES,
+          );
           return streamBytes(new TextEncoder().encode(html));
         }
         case "image/png":
+          await rejectOversizedScreenshot(isolatedRealm);
           return streamBytes(await page.screenshot({type: "png", fullPage: true}));
         case "image/jpeg":
+          await rejectOversizedScreenshot(isolatedRealm);
           return streamBytes(await page.screenshot({type: "jpeg", fullPage: true}));
         default:
           throw new Error(`Unsupported browser export content type: ${format.contentType}`);
@@ -261,6 +273,13 @@ export async function renderGadgetInBrowser(
       await release();
     }
     throw error;
+  }
+}
+
+async function rejectOversizedScreenshot(isolatedRealm: Pick<Page, "evaluate">): Promise<void> {
+  const pixelArea = await isolatedRealm.evaluate(getDocumentPixelArea);
+  if (!Number.isSafeInteger(pixelArea) || pixelArea > MAX_SCREENSHOT_PIXELS) {
+    throw new Error(`Gadget screenshots may not exceed ${MAX_SCREENSHOT_PIXELS} pixels.`);
   }
 }
 

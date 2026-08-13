@@ -16,13 +16,15 @@ type Harness = {
   renderSettled: () => boolean;
   exportDocument: () => string;
   exportDocumentCsp: () => string | undefined;
-  blobRequestAborted: () => boolean;
+  blobRequestContinued: () => boolean;
   htmlSanitized: () => boolean;
   sanitizerInstalled: () => boolean;
   sanitizedInIsolatedRealm: () => boolean;
   mediaType: () => string | undefined;
   screenshotType: () => string | undefined;
   screenshotFullPage: () => boolean | undefined;
+  setDocumentPixelArea: (value: number) => void;
+  setSnapshot: (value: string) => void;
 };
 
 function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
@@ -34,13 +36,15 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
   let renderSettled = false;
   let exportDocument = "";
   let exportDocumentCsp: string | undefined;
-  let blobRequestAborted = false;
+  let blobRequestContinued = false;
   let htmlSanitized = false;
   let sanitizerInstalled = false;
   let sanitizedInIsolatedRealm = false;
   let mediaType: string | undefined;
   let screenshotType: string | undefined;
   let screenshotFullPage: boolean | undefined;
+  let documentPixelArea = 1_000_000;
+  let snapshot = "<!DOCTYPE html>\n<html><head></head><body>Snapshot</body></html>";
   let navigated = false;
   let requestHandler: ((request: unknown) => void) | undefined;
   const evaluate = (
@@ -78,7 +82,14 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
         fn.toString().includes("ownerDocument") &&
         !fn.toString().includes("DOMParser") &&
         fn.toString().includes("charset");
-      return Promise.resolve("<!DOCTYPE html>\n<html><head></head><body>Snapshot</body></html>");
+      if (new TextEncoder().encode(snapshot).byteLength > Number(args[1])) {
+        return Promise.reject(new Error(`Gadget exports may not exceed ${args[1]} bytes.`));
+      }
+      return Promise.resolve(snapshot);
+    }
+    if (fn.toString().includes("scrollWidth")) {
+      if (!isolated) throw new Error("Document dimensions were measured in the main world.");
+      return Promise.resolve(documentPixelArea);
     }
     // The RPC transport polls this; the fake page never has a message to deliver.
     return new Promise(() => {});
@@ -110,7 +121,7 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
         url: () => "blob:https://gadget-export.invalid/test",
         isNavigationRequest: () => false,
         frame: () => mainFrame,
-        abort: async () => { blobRequestAborted = true; },
+        continue: async () => { blobRequestContinued = true; },
       });
     },
     mainFrame: () => mainFrame,
@@ -160,13 +171,15 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
     renderSettled: () => renderSettled,
     exportDocument: () => exportDocument,
     exportDocumentCsp: () => exportDocumentCsp,
-    blobRequestAborted: () => blobRequestAborted,
+    blobRequestContinued: () => blobRequestContinued,
     htmlSanitized: () => htmlSanitized,
     sanitizerInstalled: () => sanitizerInstalled,
     sanitizedInIsolatedRealm: () => sanitizedInIsolatedRealm,
     mediaType: () => mediaType,
     screenshotType: () => screenshotType,
     screenshotFullPage: () => screenshotFullPage,
+    setDocumentPixelArea: value => { documentPixelArea = value; },
+    setSnapshot: value => { snapshot = value; },
   };
   return { gadget, harness };
 }
@@ -291,7 +304,8 @@ describe("renderGadgetInBrowser", () => {
       'globalThis.gadgetExportFormatId%20%3D%20%22test-format%22',
     );
     expect(harness.exportDocumentCsp()).toContain("img-src data: blob:");
-    expect(harness.blobRequestAborted()).toBe(true);
+    expect(harness.exportDocumentCsp()).toContain("media-src data: blob:");
+    expect(harness.blobRequestContinued()).toBe(true);
   });
 
   it("exports an inert snapshot with locally bundled DOMPurify", async () => {
@@ -304,6 +318,28 @@ describe("renderGadgetInBrowser", () => {
     expect(harness.browserClosed()).toBe(true);
   });
 
+  it("rejects oversized HTML before transferring it from the browser", async () => {
+    let { gadget, harness } = makeHarness();
+    harness.setSnapshot("x".repeat(100 * 1024 * 1024 + 1));
+
+    let stream = renderGadgetInBrowser(
+      {} as BrowserRun,
+      "export default {}",
+      "Test Gadget",
+      gadget as never,
+      {
+        id: "html",
+        label: "HTML",
+        mode: "browser",
+        contentType: "text/html",
+        fileExtension: ".html",
+      },
+    );
+
+    await expect(stream).rejects.toThrow("may not exceed 104857600 bytes");
+    expect(harness.browserClosed()).toBe(true);
+  });
+
   it.each([
     ["image/png", "png"],
     ["image/jpeg", "jpeg"],
@@ -313,6 +349,29 @@ describe("renderGadgetInBrowser", () => {
     expect(await collect(await stream)).toBe(screenshotType);
     expect(harness.screenshotType()).toBe(screenshotType);
     expect(harness.screenshotFullPage()).toBe(true);
+    expect(harness.browserClosed()).toBe(true);
+  });
+
+  it("rejects oversized screenshots before capture", async () => {
+    let { gadget, harness } = makeHarness();
+    harness.setDocumentPixelArea(25_000_001);
+
+    let stream = renderGadgetInBrowser(
+      {} as BrowserRun,
+      "export default {}",
+      "Test Gadget",
+      gadget as never,
+      {
+        id: "png",
+        label: "PNG",
+        mode: "browser",
+        contentType: "image/png",
+        fileExtension: ".png",
+      },
+    );
+
+    await expect(stream).rejects.toThrow("may not exceed 25000000 pixels");
+    expect(harness.screenshotType()).toBeUndefined();
     expect(harness.browserClosed()).toBe(true);
   });
 

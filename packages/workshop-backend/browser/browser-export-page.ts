@@ -66,8 +66,8 @@ export function setDocumentTitle(title: string): void {
   document.title = title;
 }
 
-/** Creates an inert, self-contained HTML snapshot of the rendered Gadget. */
-export function createStaticHtmlSnapshot(csp: string): string {
+/** Creates an inert, self-contained HTML snapshot unless it exceeds the byte limit. */
+export function createStaticHtmlSnapshot(csp: string, maxBytes: number): string {
   const sanitized = globalThis.__workshopExportSanitizeHtml(
     `<!DOCTYPE html>\n${document.documentElement.outerHTML}`,
   );
@@ -78,5 +78,15 @@ export function createStaticHtmlSnapshot(csp: string): string {
   const charset = ownerDocument.createElement("meta");
   charset.setAttribute("charset", "utf-8");
   ownerDocument.head!.prepend(charset, policy);
-  return `<!DOCTYPE html>\n${sanitized.outerHTML}`;
+  const html = `<!DOCTYPE html>\n${sanitized.outerHTML}`;
+  if (new TextEncoder().encode(html).byteLength > maxBytes) {
+    throw new Error(`Gadget exports may not exceed ${maxBytes} bytes.`);
+  }
+  return html;
+}
+
+/** Returns the full document's rendered pixel area. */
+export function getDocumentPixelArea(): number {
+  const root = document.documentElement;
+  return root.scrollWidth * root.scrollHeight;
 }
