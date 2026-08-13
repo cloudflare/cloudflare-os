@@ -51,12 +51,12 @@ const logger = createWorkshopLogger("workshop.overseer");
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
 
 let CODE_MODE_HARNESS =
-`import { WorkerEntrypoint, restore, RpcStub, RpcTarget } from "cloudflare:workers";
+`import { WorkerEntrypoint, restore } from "cloudflare:workers";
 import agent from "agent.js";
 
 export default class extends WorkerEntrypoint {
   verify() {}
-  async run(self, callbackResolvers) {
+  async run(self, callbackResolvers, restoreForger) {
     let env = this.env;
     if (callbackResolvers) {
       for (let [index, {resolve, reject}] of Object.entries(callbackResolvers)) {
@@ -67,7 +67,39 @@ export default class extends WorkerEntrypoint {
         };
       }
     }
+    if (restoreForger) {
+      // Graft the well-known \`restore\` symbol onto each service-binding stub in env, so the
+      // executed code can call \`env.SOME_GADGET[restore](params)\` to forge a persistent stub
+      // targeting that gadget's [restore]() method. The symbol property is defined per-instance
+      // (not on the shared prototype) so only this execution's own bindings offer it, and it is
+      // invisible to RPC serialization, so passing a binding over RPC is unaffected. The
+      // capability itself is \`restoreForger\`, a transient stub scoped to this run() call; the
+      // overseer resolves the binding name back to the target gadget (and rejects non-gadget
+      // bindings with an instructive error).
+      for (let [name, value] of Object.entries(env)) {
+        if (value?.constructor?.name === "Fetcher") {
+          Object.defineProperty(value, restore, {
+            value: params => restoreForger.forge(name, params),
+          });
+        }
+      }
+    }
     await agent(self, env, this.ctx);
+  }
+}
+`;
+
+// A one-off dynamic worker whose only purpose is to call ctx.restore() while pretending to be a
+// particular gadget's facet. forgeRestoreStubForBinding() loads it through the overseer's own
+// ctx.restore() (see OverseerRestoreParams.codeId), so this worker's self-token names the target
+// gadget; the persistent stubs its forge() method creates therefore restore through that gadget's
+// [restore]() method.
+let RESTORE_FORGER_HARNESS =
+`import { WorkerEntrypoint, restore, RpcStub, RpcTarget } from "cloudflare:workers";
+
+export default class extends WorkerEntrypoint {
+  forge(params) {
+    return this.ctx.restore(params);
   }
 
   [restore](params) {
@@ -106,13 +138,60 @@ class PlaceholderRpcTarget extends RpcTarget {
 }
 `;
 
+let RESTORE_FORGER_WORKER: WorkerLoaderWorkerCode = {
+  compatibilityDate: "2026-02-01",
+  compatibilityFlags: [
+    // The forger holds no bindings, but lock it down like the code-mode worker anyway.
+    "disallow_importable_env",
+
+    // Make ctx.restore() available.
+    "allow_irrevocable_stub_storage",
+  ],
+  mainModule: "forger.js",
+  modules: {
+    "forger.js": RESTORE_FORGER_HARNESS,
+  },
+  globalOutbound: null,
+};
+
 interface CodeModeEntrypoint extends WorkerEntrypoint {
   verify(): void;
   run(self?: unknown,
       callbackResolvers?: Record<string, {
         resolve: NativeRpcStub<(v: unknown) => void>,
         reject: NativeRpcStub<(e: unknown) => void>
-      }>): Promise<void>;
+      }>,
+      restoreForger?: NativeRpcStub<RestoreForgerImpl>): Promise<void>;
+}
+
+interface RestoreForgerEntrypoint extends WorkerEntrypoint {
+  forge(params: unknown): Promise<unknown>;
+}
+
+// The capability handed to CODE_MODE_HARNESS's run() that lets executed code invoke
+// `env.<name>[restore](params)`. Only executeCode receives this capability -- gadget workers
+// never do -- and it's passed as a transient stub argument to run(), so it lives exactly as
+// long as the execution. The binding name is resolved against the execution's own binding map
+// on the overseer side, so the capability conveys no authority beyond the env it accompanies.
+class RestoreForgerImpl extends NativeRpcTarget {
+  // Real private fields: RPC exposes an RpcTarget's properties as well as its methods, so
+  // TypeScript-only privacy would leak these to the executed code.
+  #impl: OverseerImpl;
+  #chatId: number;
+  #bindings: Record<string, ChatBindingEntry>;
+
+  constructor(impl: OverseerImpl, chatId: number,
+              bindings: Record<string, ChatBindingEntry>) {
+    super();
+    this.#impl = impl;
+    this.#chatId = chatId;
+    this.#bindings = bindings;
+  }
+
+  forge(bindingName: string, params: unknown): Promise<unknown> {
+    return this.#impl.forgeRestoreStubForBinding(
+        this.#chatId, this.#bindings, bindingName, params);
+  }
 }
 
 // =======================================================================================
@@ -1700,14 +1779,11 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  // Which gadget do persistent stubs sealed inside executeCode restore to? Letting executed code
-  // choose an owner per callback is a follow-up change; for now restore targets the workspace's
-  // first gadget: the default gadget when it exists, else the lowest-numbered gadget (including a
-  // provisional one — hooks recorded against it are torn down by removeGadget() if the provisional
-  // gadget is later rejected), else undefined (in which case restoration of such a stub fails with
-  // an explicit error).
-  // TODO(multi-gadget): Figure out how to allow ctx.restore() to work with multiple gadgets; may
-  // require runtime changes.
+  // Fallback bookkeeping target for hooks bound from executeCode when we can't tell which gadget
+  // the callback stub restores to (see bindHook): the workspace's first gadget, i.e. the default
+  // gadget when it exists, else the lowest-numbered gadget (including a provisional one — hooks
+  // recorded against it are torn down by removeGadget() if the provisional gadget is later
+  // rejected), else undefined.
   executeCodeRestoreTarget(): WorkpieceId | undefined {
     let def = this.defaultGadgetId;
     if (def !== undefined && this.storage.gadgets.get(def) !== undefined) return def;
@@ -2939,11 +3015,19 @@ class OverseerImpl implements AgentHooks {
     let enabled = false;
 
     // Which gadget does this hook wake (for bookkeeping; the callback itself already
-    // encapsulates the correct restore target)? A gadget caller names itself; hooks bound from
-    // executeCode restore to the workspace's first gadget for now, so record the same target.
-    let gadgetId = caller.from === "gadget" && caller.gadgetId !== undefined
-        ? caller.gadgetId
-        : this.executeCodeRestoreTarget();
+    // encapsulates the correct restore target)? A gadget caller names itself. An agent caller
+    // forged the callback via `env.<GADGET>[restore]` during the currently-running executeCode
+    // invocation, so when exactly one gadget had a stub forged there, attribute the hook to it;
+    // otherwise (or for other callers) fall back to the workspace's first gadget.
+    // TODO: Replace this heuristic with introspection of the callback stub's actual restore
+    //   target once the runtime offers an API for that.
+    let gadgetId: WorkpieceId | undefined;
+    if (caller.from === "gadget" && caller.gadgetId !== undefined) {
+      gadgetId = caller.gadgetId;
+    } else {
+      gadgetId = (caller.from === "agent" ? this.#soleForgedRestoreTarget(caller.chatId) : undefined)
+          ?? this.executeCodeRestoreTarget();
+    }
 
     let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
 
@@ -5435,30 +5519,7 @@ class OverseerImpl implements AgentHooks {
         globalOutbound: null,
       };
 
-      let entrypoint: Fetcher<CodeModeEntrypoint>;
-      let restoreGadgetId = this.executeCodeRestoreTarget();
-      if (restoreGadgetId === undefined) {
-        // With no gadget to own persistent callbacks, load the worker directly. ctx.restore()
-        // inside it will fail immediately rather than producing a stub that cannot restore later.
-        entrypoint = this.env.LOADER.load(workerDef).getEntrypoint<CodeModeEntrypoint>();
-      } else {
-        // Wacky hack: Load the code mode dynamic worker through `ctx.restore()`, so that it gets
-        // imbued with a self-token encoding its restore params as `{ type: "gadget", codeId }`.
-        // However, as soon as we remove `codeId` from the table, these params will redirect to
-        // point at the gadget instead. Hence, ctx.restore() inside the code mode worker will
-        // actually create RpcStubs that point at the gadget's `[restore]()` method. Whoa!
-        let codeId = crypto.randomUUID();
-        try {
-          this.#codeIdMap.set(codeId, workerDef);
-          entrypoint = await this.ctx.restore({
-            type: "gadget",
-            gadgetId: restoreGadgetId,
-            codeId,
-          });
-        } finally {
-          this.#codeIdMap.delete(codeId);
-        }
-      }
+      let entrypoint = this.env.LOADER.load(workerDef).getEntrypoint<CodeModeEntrypoint>();
 
       // First check the code actually starts up. Treat startup errors as total failures.
       await entrypoint.verify();
@@ -5494,7 +5555,10 @@ class OverseerImpl implements AgentHooks {
 
       let error: string | undefined;
       try {
-        await entrypoint.run(selfStub, callbackResolvers);
+        // The forger is a transient stub argument, so the capability to forge persistent
+        // gadget-restore stubs lives exactly as long as this run() call.
+        await entrypoint.run(selfStub, callbackResolvers,
+            new RestoreForgerImpl(this, chatId, bindings));
       } catch (err) {
         if (err instanceof Error && err.stack) {
           error = err.stack;
@@ -5527,6 +5591,7 @@ class OverseerImpl implements AgentHooks {
     } finally {
       this.#codeModeOutputSubscribers.delete(executionId);
       this.#codeModeResolvers.delete(executionId);
+      this.#forgedRestoreTargets.delete(chatId);
     }
   }
 
@@ -6271,15 +6336,73 @@ class OverseerImpl implements AgentHooks {
 
   #codeIdMap = new Map<string, WorkerLoaderWorkerCode>;
 
-  restore(params: OverseerRestoreParams): Fetcher<DurableObject> | Fetcher<CodeModeEntrypoint> {
+  // Gadgets that had persistent restore stubs forged during each chat's currently-running
+  // executeCode invocation. Used only for bindHook()'s best-effort bookkeeping (see there);
+  // cleared when the invocation finishes. A forged stub can't outlive its execution without
+  // being bound, and executions within a chat are serialized, so execution scope suffices.
+  #forgedRestoreTargets = new Map<number, Set<WorkpieceId>>();
+
+  // Forge a persistent stub that restores through the gadget's [restore](params) method. The
+  // executeCode harness routes `env.<bindingName>[restore](params)` here (via RestoreForgerImpl);
+  // `bindings` is that execution's own binding map, so the name conveys exactly the env the
+  // executed code already holds.
+  async forgeRestoreStubForBinding(
+      chatId: number, bindings: Record<string, ChatBindingEntry>,
+      bindingName: string, params: unknown): Promise<unknown> {
+    let entry = bindings[bindingName];
+    if (!entry) {
+      throw new Error(`No such binding: ${bindingName}`);
+    }
+    if (entry.type !== "workpiece" || !this.storage.gadgets.get(entry.id)) {
+      throw new Error(
+          `[restore] is only available on Gadget bindings; "${bindingName}" is not a Gadget.`);
+    }
+    let gadgetId = entry.id;
+
+    // Wacky hack: Load the one-off "forger" worker through `ctx.restore()`, so that it gets
+    // imbued with a self-token encoding its restore params as `{ type: "gadget", gadgetId,
+    // codeId }`. However, as soon as we remove `codeId` from the table, these params will
+    // redirect to point at the gadget instead. Hence, ctx.restore() inside the forger worker
+    // actually creates RpcStubs that point at the gadget's `[restore]()` method. Whoa!
+    let codeId = crypto.randomUUID();
+    let forger: Fetcher<RestoreForgerEntrypoint>;
+    try {
+      this.#codeIdMap.set(codeId, RESTORE_FORGER_WORKER);
+      forger = await this.ctx.restore({type: "gadget", gadgetId, codeId});
+    } finally {
+      this.#codeIdMap.delete(codeId);
+    }
+
+    let stub = await forger.forge(params);
+
+    let targets = this.#forgedRestoreTargets.get(chatId);
+    if (!targets) {
+      targets = new Set();
+      this.#forgedRestoreTargets.set(chatId, targets);
+    }
+    targets.add(gadgetId);
+
+    return stub;
+  }
+
+  // If exactly one gadget has had a restore stub forged in the chat's current executeCode
+  // invocation, return it. Used by bindHook() to attribute the hook to the gadget its callback
+  // (probably) restores to.
+  #soleForgedRestoreTarget(chatId: number): WorkpieceId | undefined {
+    let targets = this.#forgedRestoreTargets.get(chatId);
+    return targets?.size === 1 ? targets.values().next().value : undefined;
+  }
+
+  restore(params: OverseerRestoreParams): Fetcher<DurableObject> | Fetcher<RestoreForgerEntrypoint> {
     if (params.type !== "gadget") {
       throw new TypeError("Unknown restore params type: " + params.type);
     }
 
     if (params.codeId) {
+      // The forger worker being loaded through ctx.restore() by forgeRestoreStubForBinding().
       let code = this.#codeIdMap.get(params.codeId);
       if (code) {
-        return this.env.LOADER.load(code).getEntrypoint<CodeModeEntrypoint>();
+        return this.env.LOADER.load(code).getEntrypoint<RestoreForgerEntrypoint>();
       }
     }
 
@@ -6300,14 +6423,15 @@ type OverseerRestoreParams = {
   // gadget (or the default gadget was deleted), restoration fails with an explicit error.
   gadgetId?: WorkpieceId;
 
-  // A hack: If present, and if the executeCode injection table currently contains this ID, then
+  // A hack: If present, and if the code injection table currently contains this ID, then
   // instead of returning the gadget stub, [restore]() loads a dynamic worker.
   //
-  // This is a super-tricky hack: When an executeCode tool call runs, we load the dynamic worker
-  // by putting the code we want into the code table under `codeId`, then calling ctx.restore()
-  // with `codeId`, then clearing the ID from the code table. This gets us a stub pointing at the
-  // code mode dynamic worker, but if that worker itself invokes ctx.restore(), it will actually
-  // have the effect of creating an RPC stub that restores from the gadget's [restore]() method.
+  // This is a super-tricky hack used by forgeRestoreStubForBinding(): to forge a persistent stub
+  // targeting a gadget's [restore]() method, we put the tiny "forger" worker's code into the
+  // table under `codeId`, call ctx.restore() with `codeId` (loading the forger), then clear the
+  // ID from the table. When the forger then calls ctx.restore(P) on our behalf, the resulting
+  // stub is persisted with these params as its self-token -- which, `codeId` no longer matching,
+  // now restores through the gadget's [restore]() method.
   codeId?: string;
 };
 
