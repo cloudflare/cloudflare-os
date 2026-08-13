@@ -215,6 +215,36 @@ describe("enforceContributionPolicy", () => {
     assert.deepEqual(calls, []);
   });
 
+  it("does not close a pull request whose contributor-associated author can push", async () => {
+    const calls = [];
+    const github = makeGitHub(
+      makePullRequest({ additions: 100, author_association: "CONTRIBUTOR", body: "" }),
+      [],
+      calls,
+      { authorPermission: "write" },
+    );
+
+    await enforceContributionPolicy({ github, context, core });
+
+    assert.deepEqual(calls, []);
+  });
+
+  it("still closes a pull request whose contributor-associated author cannot push", async () => {
+    const calls = [];
+    const github = makeGitHub(
+      makePullRequest({ additions: 100, author_association: "CONTRIBUTOR", body: "" }),
+      [],
+      calls,
+    );
+
+    await enforceContributionPolicy({ github, context, core });
+
+    assert.deepEqual(calls.map(({ operation }) => operation), [
+      "createComment",
+      "closePullRequest",
+    ]);
+  });
+
   it("does not close a pull request corrected during evaluation", async () => {
     const calls = [];
     const github = makeGitHub(
@@ -252,7 +282,7 @@ const context = {
 
 const core = { notice() {} };
 
-function makeGitHub(pullRequest, comments, calls) {
+function makeGitHub(pullRequest, comments, calls, { authorPermission = "read" } = {}) {
   const pullRequests = Array.isArray(pullRequest) ? pullRequest : [pullRequest];
   let pullRequestIndex = 0;
   const paginate = async () => comments;
@@ -273,6 +303,11 @@ function makeGitHub(pullRequest, comments, calls) {
           data: pullRequests[Math.min(pullRequestIndex++, pullRequests.length - 1)],
         }),
         update: async (args) => calls.push({ operation: "closePullRequest", ...args }),
+      },
+      repos: {
+        getCollaboratorPermissionLevel: async () => ({
+          data: { permission: authorPermission },
+        }),
       },
     },
   };

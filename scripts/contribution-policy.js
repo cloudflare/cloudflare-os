@@ -4,6 +4,7 @@ const MAX_COMMENT_PAGES = 5;
 const OVERRIDE_LABEL = "policy/override";
 
 const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+const TRUSTED_PERMISSIONS = new Set(["admin", "maintain", "write"]);
 const REQUIRED_CONFIRMATIONS = [
   {
     marker: "contribution-policy:concrete-change",
@@ -74,6 +75,16 @@ export async function enforceContributionPolicy({ github, context, core }) {
   let violations = getContributionPolicyViolations(pullRequest);
 
   if (violations.length === 0) return;
+
+  const username = pullRequest.user?.login;
+  if (username) {
+    const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({
+      owner,
+      repo,
+      username,
+    });
+    if (TRUSTED_PERMISSIONS.has(permission.permission)) return;
+  }
 
   const existingComment = await findAutomationComment(github, {
     owner,
