@@ -11,6 +11,10 @@ const pullRequestTemplate = readFileSync(
   new URL("../.github/pull_request_template.md", import.meta.url),
   "utf8",
 );
+const contributionPolicyWorkflow = readFileSync(
+  new URL("../.github/workflows/contribution-policy.yml", import.meta.url),
+  "utf8",
+);
 const compliantBody = pullRequestTemplate.replaceAll("- [ ]", "- [x]");
 
 function makePullRequest(overrides = {}) {
@@ -111,12 +115,14 @@ describe("getContributionPolicyViolations", () => {
     });
   }
 
-  it("exempts drafts", () => {
+  it("checks draft pull requests", () => {
     const violations = getContributionPolicyViolations(
-      makePullRequest({ additions: 100, body: "", draft: true }),
+      makePullRequest({ additions: 31, deletions: 0, draft: true }),
     );
 
-    assert.deepEqual(violations, []);
+    assert.deepEqual(violations, [
+      "The patch changes 31 lines; the automatic limit is 30.",
+    ]);
   });
 
   for (const [description, pullRequest] of [
@@ -154,6 +160,12 @@ describe("getContributionPolicyViolations", () => {
     );
 
     assert.deepEqual(violations, []);
+  });
+});
+
+describe("contribution policy workflow", () => {
+  it("runs the enforcement job for draft pull requests", () => {
+    assert.doesNotMatch(contributionPolicyWorkflow, /github\.event\.pull_request\.draft/);
   });
 });
 

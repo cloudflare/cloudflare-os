@@ -31,7 +31,6 @@ const REQUIRED_CONFIRMATIONS = [
 export function getContributionPolicyViolations(pullRequest) {
   if (
     pullRequest.state !== "open" ||
-    pullRequest.draft ||
     TRUSTED_ASSOCIATIONS.has(pullRequest.author_association) ||
     pullRequest.user?.login === "dependabot[bot]" ||
     pullRequest.labels?.some((label) => label.name === OVERRIDE_LABEL)
