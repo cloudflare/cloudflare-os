@@ -19,13 +19,15 @@ function readCollapsed(): boolean {
   }
 }
 
-// The authenticated, non-fullscreen application chrome: a persistent left rail + a thin top notice
-// strip + the routed content. Replaces the old <Header /> on these routes. Chat and Gadget editor
-// pages are still rendered fullscreen by __root.tsx without this shell.
-//
-// Mobile: below `md` the rail collapses to an overlay drawer triggered by a hamburger button in a
-// minimal top bar. We don't try to gracefully shrink the rail at narrow widths; the overlay model
-// is simpler and matches how the rest of the app handles small screens.
+/**
+ * The authenticated, non-fullscreen application chrome: a persistent left rail + a thin top notice
+ * strip + the routed content. Replaces the old <Header /> on these routes. Chat and Gadget editor
+ * pages are still rendered fullscreen by __root.tsx without this shell.
+ *
+ * Mobile: below `md` the rail collapses to an overlay drawer triggered by a hamburger button in a
+ * minimal top bar. We don't try to gracefully shrink the rail at narrow widths; the overlay model
+ * is simpler and matches how the rest of the app handles small screens.
+ */
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState<boolean>(readCollapsed)
   const [mobileOpen, setMobileOpen] = useState(false)

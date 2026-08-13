@@ -44,7 +44,7 @@ function emitAppText(frontendErrorReporting: boolean): Plugin {
   }
 }
 
-// Build the library iframe as one inlined HTML file. No router; selection is component state.
+/** Build the library iframe as one inlined HTML file. No router; selection is component state. */
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, pkgDir)
   const frontendErrorReporting = env.VITE_FRONTEND_ERROR_REPORTING === 'true'

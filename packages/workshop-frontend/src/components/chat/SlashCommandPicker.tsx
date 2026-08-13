@@ -65,8 +65,10 @@ export function useSlashCommandPicker({
   getOverseer: () => Promise<RpcStub<Overseer>> | RpcStub<Overseer>;
   onSelect: (choice: SlashCommandChoice, tokenStart: number, tokenEnd: number) => void;
 
-  // Whether the composer is attached to an existing chat. A built-in command acts on the chat it is
-  // sent to, so starting a new one with it would leave an empty thread and do nothing.
+  /**
+   * Whether the composer is attached to an existing chat. A built-in command acts on the chat it is
+   * sent to, so starting a new one with it would leave an empty thread and do nothing.
+   */
   chatExists: boolean;
 }) {
   const [choices, setChoices] = useState<SlashCommandChoice[]>([]);

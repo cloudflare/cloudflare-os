@@ -16,11 +16,13 @@ function normalizeText(value: string, maxLength: number): string {
   return value.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
-// Workshop-side re-validation of a gatekeeper's catalog (defense-in-depth — the gatekeeper output is
-// untrusted): strip control chars / collapse whitespace, drop unusable entries, sort, and re-clamp to
-// the global AGENT_CATALOG_MAX_* bounds. This intentionally overlaps the provider-side
-// boundAgentCatalog() (shared) — we don't trust the gatekeeper to have applied it. `id` keeps the full
-// bound since it's the opaque key the agent passes back; only the title/description need shortening.
+/**
+ * Workshop-side re-validation of a gatekeeper's catalog (defense-in-depth — the gatekeeper output is
+ * untrusted): strip control chars / collapse whitespace, drop unusable entries, sort, and re-clamp to
+ * the global AGENT_CATALOG_MAX_* bounds. This intentionally overlaps the provider-side
+ * boundAgentCatalog() (shared) — we don't trust the gatekeeper to have applied it. `id` keeps the full
+ * bound since it's the opaque key the agent passes back; only the title/description need shortening.
+ */
 export function normalizeAgentCatalog(catalog: AgentCatalog): AgentCatalog {
   let entries = catalog.entries
       .map(entry => ({
@@ -70,16 +72,18 @@ export async function completeAgentCatalogSnapshot(
   };
 }
 
-// The catalog as a JSON blob for inclusion in a prompt, on its own line, or "" if empty.
+/** The catalog as a JSON blob for inclusion in a prompt, on its own line, or "" if empty. */
 export function formatAgentCatalogPrompt(catalog: AgentCatalog | null): string {
   if (!catalog?.entries.length) return "";
   return `\n${JSON.stringify(catalog)}`;
 }
 
-// Build the system-prompt section that tells the agent which always-available resource bindings it
-// has (their `env.NAME` entries) plus each one's discovery catalog, and how to use them. This
-// describes the agent's environment rather than anything the user said, so it lives in the system
-// prompt alongside the bindings list rather than as a synthetic user turn.
+/**
+ * Build the system-prompt section that tells the agent which always-available resource bindings it
+ * has (their `env.NAME` entries) plus each one's discovery catalog, and how to use them. This
+ * describes the agent's environment rather than anything the user said, so it lives in the system
+ * prompt alongside the bindings list rather than as a synthetic user turn.
+ */
 export function formatAlwaysAvailableResourcesPrompt(resources: Array<{
   title: string;
   name: string;

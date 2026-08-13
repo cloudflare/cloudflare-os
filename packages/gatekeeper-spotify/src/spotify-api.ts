@@ -194,8 +194,10 @@ export type SpotifyPlaylistResponse = {
   external_urls?: { spotify?: string };
   images?: SpotifyImageResponse[];
   owner: SpotifyUserResponse;
-  // The track-count container. Feb 2026 renamed `tracks` -> `items`; we read whichever is present.
-  // For playlists the user doesn't own, this may be absent entirely (contents are withheld).
+  /**
+   * The track-count container. Feb 2026 renamed `tracks` -> `items`; we read whichever is present.
+   * For playlists the user doesn't own, this may be absent entirely (contents are withheld).
+   */
   items?: { total?: number };
   tracks?: { total?: number };
 };
@@ -203,7 +205,7 @@ export type SpotifyPlaylistResponse = {
 export type SpotifyPlaylistItemResponse = {
   added_at?: string | null;
   added_by?: SpotifyUserResponse | null;
-  // Feb 2026 renamed the per-item track field `track` -> `item`; we read whichever is present.
+  /** Feb 2026 renamed the per-item track field `track` -> `item`; we read whichever is present. */
   item?: SpotifyTrackResponse | null;
   track?: SpotifyTrackResponse | null;
 };
@@ -296,8 +298,10 @@ export class SpotifyApi {
     return this.#request<SpotifyAlbumResponse>("GET", `/v1/albums/${encodeURIComponent(albumId)}`);
   }
 
-  // The Feb 2026 dev-mode changes removed the batch /tracks and /albums endpoints, so we fetch
-  // each item individually. Unknown/unavailable ids resolve to null rather than failing the batch.
+  /**
+   * The Feb 2026 dev-mode changes removed the batch /tracks and /albums endpoints, so we fetch
+   * each item individually. Unknown/unavailable ids resolve to null rather than failing the batch.
+   */
   async getTracks(trackIds: string[]): Promise<(SpotifyTrackResponse | null)[]> {
     return Promise.all(trackIds.map(id => this.getTrack(id).then(track => track, () => null)));
   }
@@ -341,8 +345,10 @@ export class SpotifyApi {
   // single library endpoint keyed on Spotify URIs. Callers pass URIs like "spotify:track:...",
   // "spotify:album:...", "spotify:artist:...", or "spotify:playlist:..." (following a playlist).
 
-  // The /me/library write endpoints read `uris` from the query string (same as /me/library/contains).
-  // We also send it in the body as a harmless hedge in case the contract accepts either.
+  /**
+   * The /me/library write endpoints read `uris` from the query string (same as /me/library/contains).
+   * We also send it in the body as a harmless hedge in case the contract accepts either.
+   */
   async saveToLibrary(uris: string[]): Promise<void> {
     for (let i = 0; i < uris.length; i += LIBRARY_CHUNK) {
       const chunk = uris.slice(i, i + LIBRARY_CHUNK);
@@ -379,8 +385,10 @@ export class SpotifyApi {
     return this.#request("GET", `/v1/playlists/${encodeURIComponent(playlistId)}`);
   }
 
-  // GET /playlists/{id}/items only returns contents for playlists the user owns or collaborates on;
-  // for others Spotify withholds items (returns metadata only).
+  /**
+   * GET /playlists/{id}/items only returns contents for playlists the user owns or collaborates on;
+   * for others Spotify withholds items (returns metadata only).
+   */
   listPlaylistItems(playlistId: string, limit: number, offset: number): Promise<SpotifyPaging<SpotifyPlaylistItemResponse>> {
     return this.#request("GET", `/v1/playlists/${encodeURIComponent(playlistId)}/items`, {
       query: { limit, offset },

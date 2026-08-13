@@ -1,16 +1,20 @@
 import { SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
 
-// Extract a base URL from a resource pattern, e.g. "https://jira.cfdata.org/*" → "https://jira.cfdata.org/"
-// Returns null for wildcard hostnames (e.g. "https://*.example.com/*") since we can't pre-fill.
+/**
+ * Extract a base URL from a resource pattern, e.g. "https://jira.cfdata.org/*" → "https://jira.cfdata.org/"
+ * Returns null for wildcard hostnames (e.g. "https://*.example.com/*") since we can't pre-fill.
+ */
 export function extractBaseUrl(pattern: string): string | null {
   const match = pattern.match(/^(https?:\/\/[^/*:]+(?:\/[^*:]*)?)/)
   if (!match) return null
   return match[1].endsWith('/') ? match[1] : match[1] + '/'
 }
 
-// Extract the hostname from a pattern, including wildcard subdomains.
-// e.g. "https://jira.cfdata.org/*" → "jira.cfdata.org"
-// e.g. "https://*.prometheus-access.cfdata.org/*" → "*.prometheus-access.cfdata.org"
+/**
+ * Extract the hostname from a pattern, including wildcard subdomains.
+ * e.g. "https://jira.cfdata.org/*" → "jira.cfdata.org"
+ * e.g. "https://*.prometheus-access.cfdata.org/*" → "*.prometheus-access.cfdata.org"
+ */
 export function extractHostname(pattern: string): string | null {
   const match = pattern.match(/^https?:\/\/([^/:]+)/)
   if (!match) return null
@@ -20,10 +24,12 @@ export function extractHostname(pattern: string): string | null {
 
 const stripScheme = (s: string) => s.replace(/^https?:\/\//, '').toLowerCase()
 
-// Segment-based URL match: split by "/" and compare segments, treating ":name" as a
-// single-segment named parameter and "*" as a greedy wildcard that matches all remaining
-// segments. Handles partial typing (user mid-keystroke on the last segment). Also handles
-// wildcard subdomain patterns like "*.prometheus-access.cfdata.org".
+/**
+ * Segment-based URL match: split by "/" and compare segments, treating ":name" as a
+ * single-segment named parameter and "*" as a greedy wildcard that matches all remaining
+ * segments. Handles partial typing (user mid-keystroke on the last segment). Also handles
+ * wildcard subdomain patterns like "*.prometheus-access.cfdata.org".
+ */
 export function matchesResourceUrl(search: string, pattern: string): boolean {
   const s = stripScheme(search)
   const p = stripScheme(pattern)
@@ -75,15 +81,17 @@ export function matchesResourceUrl(search: string, pattern: string): boolean {
   return true
 }
 
-// Classification of how a search URL relates to a resource pattern.
+/** Classification of how a search URL relates to a resource pattern. */
 export type MatchClassification =
   | { type: 'full' }
   | { type: 'prefix'; suffix: string }  // suffix e.g. "/issues/:number"
   | { type: 'none' }
 
-// Classify a search URL against a resource pattern. Returns 'full' when the URL
-// satisfies all segments, 'prefix' when the URL is a valid prefix that could be
-// extended (with the remaining suffix), or 'none' when there's no match.
+/**
+ * Classify a search URL against a resource pattern. Returns 'full' when the URL
+ * satisfies all segments, 'prefix' when the URL is a valid prefix that could be
+ * extended (with the remaining suffix), or 'none' when there's no match.
+ */
 export function classifyMatch(search: string, pattern: string): MatchClassification {
   const s = stripScheme(search)
   const p = stripScheme(pattern)
@@ -161,8 +169,10 @@ export function classifyMatch(search: string, pattern: string): MatchClassificat
   return { type: 'full' }
 }
 
-// Find all placeholder ranges in a URL string. Placeholders are ":name" named parameters
-// and standalone "*" wildcards. Returns ranges sorted by position.
+/**
+ * Find all placeholder ranges in a URL string. Placeholders are ":name" named parameters
+ * and standalone "*" wildcards. Returns ranges sorted by position.
+ */
 export function getPlaceholderRanges(url: string): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = []
   // Named parameters: colon followed by word characters, preceded by / or start
@@ -181,22 +191,26 @@ export function getPlaceholderRanges(url: string): Array<{ start: number; end: n
   return ranges.toSorted((a, b) => a.start - b.start)
 }
 
-// Check if search text matches a resource by name/description tokens only.
+/** Check if search text matches a resource by name/description tokens only. */
 export function matchesResourceText(search: string, resource: SupportedResource): boolean {
   const corpus = `${resource.title} ${resource.description} ${resource.urlPattern}`.toLowerCase()
   const tokens = search.toLowerCase().split(/\s+/).filter(Boolean)
   return tokens.length > 0 && tokens.every(t => corpus.includes(t))
 }
 
-// Check if search text matches a resource. Tries URL prefix matching (scheme-optional),
-// then falls back to multi-word token matching against title/description/pattern.
+/**
+ * Check if search text matches a resource. Tries URL prefix matching (scheme-optional),
+ * then falls back to multi-word token matching against title/description/pattern.
+ */
 export function matchesResource(search: string, resource: SupportedResource): boolean {
   if (matchesResourceUrl(search.trim(), resource.urlPattern)) return true
   return matchesResourceText(search, resource)
 }
 
-// Normalize a resource URL for sending to the backend. Prepends https:// if no protocol
-// is present, and strips a trailing /* wildcard (which is just "everything under here").
+/**
+ * Normalize a resource URL for sending to the backend. Prepends https:// if no protocol
+ * is present, and strips a trailing /* wildcard (which is just "everything under here").
+ */
 export function normalizeResourceUrl(url: string): string {
   let normalized = url.trim()
   // Default to https:// if no protocol specified.

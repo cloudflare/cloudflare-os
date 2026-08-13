@@ -431,8 +431,10 @@ export type ActionRecord = {
   createdAt: Date;
   state: ActionState;
 
-  // OBSOLETE: May still be present in records written when there was only one gadget per
-  // workspace. Ignore; use `resourceTitle` for display instead.
+  /**
+   * OBSOLETE: May still be present in records written when there was only one gadget per
+   * workspace. Ignore; use `resourceTitle` for display instead.
+   */
   bindingName?: string;
 } & ({
   type: "action";
@@ -447,17 +449,19 @@ export type ActionRecord = {
 } | {
   type: "bindHook";
 
-  // Denormalized so that the log is coherent even after the hook itself has been deleted.
+  /** Denormalized so that the log is coherent even after the hook itself has been deleted. */
   description: HookDescription;
 
-  // Binding a hook is treated as an action in the log for the purpose of logging that the hook
-  // was created, but hooks are also independently long-lived entities that live in their own
-  // table. `hookId` is a reference into the bound hooks table.
-  //
-  // This becomes `undefined` if the hook was later deleted.
+  /**
+   * Binding a hook is treated as an action in the log for the purpose of logging that the hook
+   * was created, but hooks are also independently long-lived entities that live in their own
+   * table. `hookId` is a reference into the bound hooks table.
+   *
+   * This becomes `undefined` if the hook was later deleted.
+   */
   hookId?: number;
 
-  // Denormalized for display purposes.
+  /** Denormalized for display purposes. */
   enabled: boolean;
 });
 
@@ -486,14 +490,18 @@ type ChatDraftUpdateRecord = {
   update: Uint8Array;
 };
 
-// A user opt-in to auto-approve actions carrying a given `actionKind` on a given gatekeeper
+/** A user opt-in to auto-approve actions carrying a given `actionKind` on a given gatekeeper */
 export type AutoApproveTagRecord = {
   gatekeeperId: WorkpieceId;
-  // The action kind (stable tag + display label, from ActionDescription.actionKind), captured when
-  // the rule was enabled so the rule can be listed without showing the raw machine tag.
+  /**
+   * The action kind (stable tag + display label, from ActionDescription.actionKind), captured when
+   * the rule was enabled so the rule can be listed without showing the raw machine tag.
+   */
   actionKind: ActionKind;
-  // Who turned this rule on. Auto-approvals run under this user's authority, so each auto-applied
-  // action is attributed to them in the audit log.
+  /**
+   * Who turned this rule on. Auto-approvals run under this user's authority, so each auto-applied
+   * action is attributed to them in the audit log.
+   */
   enabledBy: AiChatAuthorInfo;
 };
 
@@ -950,8 +958,10 @@ const LISTING_REFRESH_BATCH = 16;
 // Longest noun accepted on a format reference. Denormalized display data.
 const MAX_FORMAT_REF_NOUN = 128;
 
-// Keeps `commandPosition` only if it's a real index into `args`. Anything else becomes undefined,
-// and the command renders at the front. Display-only, so a bad value isn't worth an error.
+/**
+ * Keeps `commandPosition` only if it's a real index into `args`. Anything else becomes undefined,
+ * and the command renders at the front. Display-only, so a bad value isn't worth an error.
+ */
 export function sanitizeCommandPosition(request: SlashCommandRequest): number | undefined {
   let position = request.commandPosition;
   if (position === undefined) return undefined;
@@ -961,9 +971,11 @@ export function sanitizeCommandPosition(request: SlashCommandRequest): number | 
   return position;
 }
 
-// Drops format refs the message text doesn't back up. They're display-only and come from the
-// browser, so a bad one costs a chip, not the message. But a chip *replaces* the text it covers,
-// so a ref must cover exactly the noun it names -- or it could hide what the user really wrote.
+/**
+ * Drops format refs the message text doesn't back up. They're display-only and come from the
+ * browser, so a bad one costs a chip, not the message. But a chip *replaces* the text it covers,
+ * so a ref must cover exactly the noun it names -- or it could hide what the user really wrote.
+ */
 export function sanitizeMessageFormatRefs(
     refs: MessageFormatRef[] | undefined, message: string | undefined)
     : MessageFormatRef[] | undefined {
@@ -6307,15 +6319,17 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     this.impl = new OverseerImpl(ctx, env);
   }
 
-  // The alarm handler kicks in when we've had running agents that haven't completed for at least a
-  // minute. This serves a few purposes:
-  // - If the DO is still running when this is called, but the client has closed their browser and
-  //   so isn't holding the DO alive anymore, the alarm handler will take over and hold the DO
-  //   open until it's done.
-  // - If the DO somehow died since the agents were scheduled, the alarm will wake it up (and the
-  //   DO constructor will have rescheduled the agents, before alarm() itself runs).
-  // - If the DO dies *while* the alarm is running, the system will retry the alarm, thus resuming
-  //   the agents yet again.
+  /**
+   * The alarm handler kicks in when we've had running agents that haven't completed for at least a
+   * minute. This serves a few purposes:
+   * - If the DO is still running when this is called, but the client has closed their browser and
+   *   so isn't holding the DO alive anymore, the alarm handler will take over and hold the DO
+   *   open until it's done.
+   * - If the DO somehow died since the agents were scheduled, the alarm will wake it up (and the
+   *   DO constructor will have rescheduled the agents, before alarm() itself runs).
+   * - If the DO dies *while* the alarm is running, the system will retry the alarm, thus resuming
+   *   the agents yet again.
+   */
   async alarm() {
     await this.impl.waitForAllAgentsToComplete();
     await this.impl.deliverReadyExternalMessageResponses();
@@ -6338,16 +6352,20 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     this.impl.storage.version.put(1);
   }
 
-  // This workspace's outputs, for the owner to fold into their index. Every registry change and
-  // every owner open already pushes, so this exists only to catch up workspaces that predate the
-  // index. Null unless the caller really is the owner, so nobody else can read the snapshot.
+  /**
+   * This workspace's outputs, for the owner to fold into their index. Every registry change and
+   * every owner open already pushes, so this exists only to catch up workspaces that predate the
+   * index. Null unless the caller really is the owner, so nobody else can read the snapshot.
+   */
   async getOutputsForOwnerBackfill(ownerId: string): Promise<WorkspaceOutputEntry[] | null> {
     if (this.impl.ownerId !== ownerId) return null;
     return this.impl.outputsSnapshot();
   }
 
-  // `notifyClosed` should be invoked when the return `Overseer` stub is disposed, which is used
-  // by AuthenticatedApiImpl.#openGadgetInternal() to detect Durable Object disconnects.
+  /**
+   * `notifyClosed` should be invoked when the return `Overseer` stub is disposed, which is used
+   * by AuthenticatedApiImpl.#openGadgetInternal() to detect Durable Object disconnects.
+   */
   async open(userId: string, profileId: string,
              notifyClosed: NativeRpcStub<() => void>,
              shareKey?: string,
@@ -6613,8 +6631,10 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return { accepted: true, chatPath: `/workspace/${this.ctx.id.toString()}?chat=${chatId}` };
   }
 
-  // Initialize this workspace's default gadget from a blueprint's code snapshot. Called by
-  // AuthenticatedApi.newGadgetFromBlueprint() after creating (and opening) the DO.
+  /**
+   * Initialize this workspace's default gadget from a blueprint's code snapshot. Called by
+   * AuthenticatedApi.newGadgetFromBlueprint() after creating (and opening) the DO.
+   */
   async initializeFromBlueprint(code: Uint8Array, title: string, output?: BlueprintOutput)
       : Promise<void> {
     // Set the title. The default gadget (created just below) inherits it.
@@ -6707,7 +6727,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return this.impl.deliverCodeModeText(executionId, delta);
   }
 
-  // Called by AgentSelfLoopback when any method is called on the `self` object.
+  /** Called by AgentSelfLoopback when any method is called on the `self` object. */
   deliverAgentCallback(
       chatId: number, methodName: string, args: unknown[],
       initiatorUserId: string, initiatorModelId: string): Promise<unknown> {
@@ -6715,7 +6735,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         chatId, methodName, args, initiatorUserId, initiatorModelId);
   }
 
-  // Called by TransientStubLoopback to retrieve a live transient RPC stub.
+  /** Called by TransientStubLoopback to retrieve a live transient RPC stub. */
   getTransientStub(chatId: number, sequence: number, stubIndex: number): any {
     // TODO: The workaround of wrapping in NativeRpcStub is needed because the runtime
     //   doesn't pipeline through Proxy objects properly. But here we're returning an
@@ -6838,14 +6858,16 @@ type BindingLoopbackTarget = {
   id: WorkpieceId;
 };
 
-// Horrible hack: At present the `env` of a dynamic isolate can contain ServiceStubs but cannot
-// contain RpcStubs. But if we ask the gatekeeper to open a session, we get an RpcStub. So we
-// actually initialize each binding to be a `ServiceStub` pointing at a `GatekeeperLoopback` whose
-// props identify the overseer and target workpiece, so that on each method call it can resolve the
-// target session.
-//
-// TODO(multi-gadget): Rename to BindingLoopback. Stubs to this entrypoint aren't stored anywhere,
-// so a rename should be safe.
+/**
+ * Horrible hack: At present the `env` of a dynamic isolate can contain ServiceStubs but cannot
+ * contain RpcStubs. But if we ask the gatekeeper to open a session, we get an RpcStub. So we
+ * actually initialize each binding to be a `ServiceStub` pointing at a `GatekeeperLoopback` whose
+ * props identify the overseer and target workpiece, so that on each method call it can resolve the
+ * target session.
+ *
+ * TODO(multi-gadget): Rename to BindingLoopback. Stubs to this entrypoint aren't stored anywhere,
+ * so a rename should be safe.
+ */
 export class GatekeeperLoopback extends WorkerEntrypoint<Cloudflare.Env, GatekeeperLoopbackProps> {
   constructor(ctx: ExecutionContext<GatekeeperLoopbackProps>, env: Cloudflare.Env) {
     super(ctx, env);
@@ -6870,8 +6892,10 @@ export class GatekeeperLoopback extends WorkerEntrypoint<Cloudflare.Env, Gatekee
     });
   }
 
-  // We need to declare a method otherwise the validator won't even report this class as existing
-  // and so the loopback binding won't be created.
+  /**
+   * We need to declare a method otherwise the validator won't even report this class as existing
+   * and so the loopback binding won't be created.
+   */
   dummyMethodToWorkAroundValidatorBug() {}
 }
 
@@ -6880,10 +6904,12 @@ type GatekeeperHookLoopbackProps = {
   hookId: number;
 };
 
-// When a gatekeeper's hook is connected, it receives a Fetcher to this class, which implements
-// the HookInitiator interface. When the gatekeeper wants to invoke the hook, it calls
-// startHook(), which returns both the actual hook RpcStub and an ApprovalQueue for logging
-// observations and actions.
+/**
+ * When a gatekeeper's hook is connected, it receives a Fetcher to this class, which implements
+ * the HookInitiator interface. When the gatekeeper wants to invoke the hook, it calls
+ * startHook(), which returns both the actual hook RpcStub and an ApprovalQueue for logging
+ * observations and actions.
+ */
 export class GatekeeperHookLoopback
     extends WorkerEntrypoint<Cloudflare.Env, GatekeeperHookLoopbackProps>
     implements HookInitiator<RpcTarget> {
@@ -6906,13 +6932,15 @@ type AgentSelfLoopbackProps = {
   initiatorModelId: string;
 };
 
-// The `self` magic object passed to code executed via the agent's `executeCode` tool.
-// Calling any method on it (e.g., self.foo(123)) delivers a callback message to the chat
-// thread and activates the agent to respond. This is a WorkerEntrypoint so it produces a
-// Fetcher that can be passed over RPC and stored in Durable Object KV storage.
-// TODO: Would be awesome if the agent could pass a sub-object like `self.foo`, and then be told
-//   later e.g. "foo.callback() was called". This requires that we implement RpcPromise
-//   serializability in the built-in RPC system, matching Cap'n Web.
+/**
+ * The `self` magic object passed to code executed via the agent's `executeCode` tool.
+ * Calling any method on it (e.g., self.foo(123)) delivers a callback message to the chat
+ * thread and activates the agent to respond. This is a WorkerEntrypoint so it produces a
+ * Fetcher that can be passed over RPC and stored in Durable Object KV storage.
+ * TODO: Would be awesome if the agent could pass a sub-object like `self.foo`, and then be told
+ *   later e.g. "foo.callback() was called". This requires that we implement RpcPromise
+ *   serializability in the built-in RPC system, matching Cap'n Web.
+ */
 export class AgentSelfLoopback
     extends WorkerEntrypoint<Cloudflare.Env, AgentSelfLoopbackProps> {
   constructor(ctx: ExecutionContext<AgentSelfLoopbackProps>, env: Cloudflare.Env) {
@@ -6937,8 +6965,10 @@ export class AgentSelfLoopback
     });
   }
 
-  // We need to declare a method otherwise the validator won't even report this class as existing
-  // and so the loopback binding won't be created.
+  /**
+   * We need to declare a method otherwise the validator won't even report this class as existing
+   * and so the loopback binding won't be created.
+   */
   dummyMethodToWorkAroundValidatorBug() {}
 }
 
@@ -6949,11 +6979,13 @@ type TransientStubLoopbackProps = {
   stubIndex: number;  // index into the transient stubs table for that message
 };
 
-// Loopback entrypoint that proxies to a transient RPC stub from a agent callback's arguments.
-// When the callback args are stored, each transient NativeRpcStub is replaced with one of
-// these. It forwards all method calls to the live stub (looked up from the Overseer's
-// in-memory table). If the stub has expired (the deliverAgentCallback RPC ended), calls will
-// throw.
+/**
+ * Loopback entrypoint that proxies to a transient RPC stub from a agent callback's arguments.
+ * When the callback args are stored, each transient NativeRpcStub is replaced with one of
+ * these. It forwards all method calls to the live stub (looked up from the Overseer's
+ * in-memory table). If the stub has expired (the deliverAgentCallback RPC ended), calls will
+ * throw.
+ */
 export class TransientStubLoopback
     extends WorkerEntrypoint<Cloudflare.Env, TransientStubLoopbackProps> {
   constructor(ctx: ExecutionContext<TransientStubLoopbackProps>, env: Cloudflare.Env) {
@@ -6975,8 +7007,10 @@ export class TransientStubLoopback
     });
   }
 
-  // We need to declare a method otherwise the validator won't even report this class as existing
-  // and so the loopback binding won't be created.
+  /**
+   * We need to declare a method otherwise the validator won't even report this class as existing
+   * and so the loopback binding won't be created.
+   */
   dummyMethodToWorkAroundValidatorBug() {}
 }
 
@@ -6997,8 +7031,10 @@ export class GadgetTailLoopback extends WorkerEntrypoint<Cloudflare.Env, GadgetT
     await stub.deliverGadgetLogs(this.ctx.props.chatId ?? null, logs);
   }
 
-  // New-style streaming tail worker. Delivers gadget console logs to the product UI in real time.
-  // Do not console.log the tail events here — they spam wrangler dev and are not ops logs.
+  /**
+   * New-style streaming tail worker. Delivers gadget console logs to the product UI in real time.
+   * Do not console.log the tail events here — they spam wrangler dev and are not ops logs.
+   */
   tailStream(event: TailStream.TailEvent<TailStream.Onset>)
       : TailStream.TailEventHandlerType | Promise<TailStream.TailEventHandlerType> {
     return {
@@ -7022,8 +7058,10 @@ export class GadgetTailLoopback extends WorkerEntrypoint<Cloudflare.Env, GadgetT
     };
   }
 
-  // Old-style tail worker. Logs are delayed until the end of the RPC event, which can be annoying
-  // for calls that do things like register subscriptions.
+  /**
+   * Old-style tail worker. Logs are delayed until the end of the RPC event, which can be annoying
+   * for calls that do things like register subscriptions.
+   */
   async tail(events: TraceItem[]) {
     if (events.length != 1) {
       logger.error("unexpected gadget trace size", {

@@ -14,15 +14,17 @@ export function htmlResponse(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 
-// The palette and page frame every connect page shares.
-//
-// These pages open in their own browser tab, outside the Workshop, so they cannot reach Tailwind or
-// Kumo. The tokens are copied from `workshop-frontend/src/styles.css` (both palettes) so the tab
-// still reads as the same product. Only the base palette is copied: a deployment's admin-chosen
-// accent lives in the Workshop's AdminConfig, which a gatekeeper has no business reading.
-//
-// Form controls are absent, since a gatekeeper with a form appends its own rules, which is why the
-// tokens are CSS variables rather than literals.
+/**
+ * The palette and page frame every connect page shares.
+ *
+ * These pages open in their own browser tab, outside the Workshop, so they cannot reach Tailwind or
+ * Kumo. The tokens are copied from `workshop-frontend/src/styles.css` (both palettes) so the tab
+ * still reads as the same product. Only the base palette is copied: a deployment's admin-chosen
+ * accent lives in the Workshop's AdminConfig, which a gatekeeper has no business reading.
+ *
+ * Form controls are absent, since a gatekeeper with a form appends its own rules, which is why the
+ * tokens are CSS variables rather than literals.
+ */
 export const PAGE_STYLE = `
   :root {
     color-scheme: light dark;
@@ -73,7 +75,7 @@ export const INVALID_LINK_HTML = `<!DOCTYPE html>
 <body><main><h1>This link has expired</h1>
 <p class="sub">Start the connection again.</p></main></body></html>`;
 
-// A minimal page reporting that connecting failed, with a reason the user can act on.
+/** A minimal page reporting that connecting failed, with a reason the user can act on. */
 export function errorPageHtml(title: string, detail: string): string {
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

@@ -29,8 +29,10 @@ export type SelectableItem = {
   type: 'connect'
   vendorId: string
   vendorDescription: VendorDescription
-  // If the resource being connected is independently grantable, its `urlPattern`, so a new account
-  // requests just that resource's authorization. Undefined means request everything.
+  /**
+   * If the resource being connected is independently grantable, its `urlPattern`, so a new account
+   * requests just that resource's authorization. Undefined means request everything.
+   */
   resourceUrlPatterns?: string[]
 } | {
   type: 'refine'
@@ -51,12 +53,16 @@ export interface ResourcePickerProps {
     vendorDescription: VendorDescription,
   ) => void
   onRefine?: (newUrl: string, placeholderStart: number, placeholderEnd: number) => void
-  // Fires once the vendors and the connected accounts are both known. Until then the list grows a
-  // row at a time, so a floating caller should stay hidden rather than resize under the pointer.
+  /**
+   * Fires once the vendors and the connected accounts are both known. Until then the list grows a
+   * row at a time, so a floating caller should stay hidden rather than resize under the pointer.
+   */
   onReadyChange?: (ready: boolean) => void
   compact?: boolean
-  // Room the caller has measured for the list. Applied on top of the built-in cap, never instead of
-  // it: a caller with plenty of space should still get a modestly sized panel.
+  /**
+   * Room the caller has measured for the list. Applied on top of the built-in cap, never instead of
+   * it: a caller with plenty of space should still get a modestly sized panel.
+   */
   maxHeight?: number
   style?: React.CSSProperties
   activeIndex?: number

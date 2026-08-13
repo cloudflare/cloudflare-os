@@ -6,41 +6,45 @@ import type { McpContentBlock, McpTool, McpToolCallResult } from "./client.js";
 import type { McpCallResult, McpToolInfo } from "./types";
 import { hexEncode } from "./util.js";
 
-// How far an endpoint's self-description is trusted.
-//
-// MCP's own guidance is that a client must treat tool annotations as untrusted unless they come from
-// a trusted server. This type is that distinction, made explicit and decided by the deployment
-// rather than by the server describing itself:
-//
-// vetted   an administrator asserted this endpoint's annotations are reliable; they may drive
-//          auto-approval.
-// byo      a user typed the URL in. `readOnlyHint` still classifies reads; nothing it says can
-//          auto-apply a write.
-//
-// Honouring `readOnlyHint` on `byo` is a knowing departure from treating annotations as wholly
-// untrusted, argued in `classifyTool` below and stated on the connect form the user types the URL
-// into. Every other annotation is inert until a deployment vouches for the endpoint.
-//
-// This governs trust in annotations only. Neither tier can be shared (see `sharing-policy.ts`). It
-// is deployment configuration rather than account state, so read it afresh wherever it is used and
-// withdrawing it takes effect without a reconnect.
+/**
+ * How far an endpoint's self-description is trusted.
+ *
+ * MCP's own guidance is that a client must treat tool annotations as untrusted unless they come from
+ * a trusted server. This type is that distinction, made explicit and decided by the deployment
+ * rather than by the server describing itself:
+ *
+ * vetted   an administrator asserted this endpoint's annotations are reliable; they may drive
+ *          auto-approval.
+ * byo      a user typed the URL in. `readOnlyHint` still classifies reads; nothing it says can
+ *          auto-apply a write.
+ *
+ * Honouring `readOnlyHint` on `byo` is a knowing departure from treating annotations as wholly
+ * untrusted, argued in `classifyTool` below and stated on the connect form the user types the URL
+ * into. Every other annotation is inert until a deployment vouches for the endpoint.
+ *
+ * This governs trust in annotations only. Neither tier can be shared (see `sharing-policy.ts`). It
+ * is deployment configuration rather than account state, so read it afresh wherever it is used and
+ * withdrawing it takes effect without a reconnect.
+ */
 export type ServerTrust = "vetted" | "byo";
 
-// Which side decided a tool's read/action classification.
+/** Which side decided a tool's read/action classification. */
 export type ClassificationSource = "server-annotation" | "default";
 
-// Upper bound on tools taken from one endpoint, to keep generated types and catalogs bounded.
+/** Upper bound on tools taken from one endpoint, to keep generated types and catalogs bounded. */
 export const MAX_TOOLS_PER_SERVER = 200;
 
-// A tool plus the decisions this gatekeeper has made about it.
+/** A tool plus the decisions this gatekeeper has made about it. */
 export type ClassifiedTool = {
   tool: McpTool;
-  // `read` runs immediately and is recorded as an observation; `action` goes to the queue.
+  /** `read` runs immediately and is recorded as an observation; `action` goes to the queue. */
   mode: "read" | "action";
-  // Whether the deployment may let this action through without a prompt.
+  /** Whether the deployment may let this action through without a prompt. */
   autoApprovable: boolean;
-  // Whose word `mode` rests on. Recorded rather than re-derived, so no consumer can answer it
-  // differently from the classifier that did.
+  /**
+   * Whose word `mode` rests on. Recorded rather than re-derived, so no consumer can answer it
+   * differently from the classifier that did.
+   */
   classifiedBy: ClassificationSource;
 };
 
@@ -50,15 +54,17 @@ function isDeclaredReadOnly(tool: McpTool): boolean {
   return tool.annotations?.readOnlyHint === true;
 }
 
-// The single place a server's self-description becomes a policy decision.
-//
-// `readOnlyHint` is honoured on both tiers. That is a tradeoff, not a free win: a tool the server
-// mislabels runs with no approval, where an unlabelled one would have been queued. Auto-applying a
-// write is not accepted on the same terms, and additionally requires a vetted endpoint, so the
-// deployment rather than the server casts the deciding vote. See the README.
-//
-// Every test is `=== true` or `=== false` rather than a truthiness check, so an unannotated tool
-// fails all of them and comes out as an action that can never auto-apply.
+/**
+ * The single place a server's self-description becomes a policy decision.
+ *
+ * `readOnlyHint` is honoured on both tiers. That is a tradeoff, not a free win: a tool the server
+ * mislabels runs with no approval, where an unlabelled one would have been queued. Auto-applying a
+ * write is not accepted on the same terms, and additionally requires a vetted endpoint, so the
+ * deployment rather than the server casts the deciding vote. See the README.
+ *
+ * Every test is `=== true` or `=== false` rather than a truthiness check, so an unannotated tool
+ * fails all of them and comes out as an action that can never auto-apply.
+ */
 export function classifyTool(tool: McpTool, trust: ServerTrust): ClassifiedTool {
   const annotations = tool.annotations ?? {};
   const readOnly = isDeclaredReadOnly(tool);
@@ -76,8 +82,10 @@ export function classifyTool(tool: McpTool, trust: ServerTrust): ClassifiedTool 
   };
 }
 
-// The tool as a Gadget sees it. `classifiedBy` is carried through so an audit can find every call
-// that was trusted on the server's word.
+/**
+ * The tool as a Gadget sees it. `classifiedBy` is carried through so an audit can find every call
+ * that was trusted on the server's word.
+ */
 export function toolInfo(entry: ClassifiedTool): McpToolInfo {
   return {
     name: entry.tool.name,
@@ -89,8 +97,10 @@ export function toolInfo(entry: ClassifiedTool): McpToolInfo {
   };
 }
 
-// The approval-policy identity of one tool on one binding. `scopeTag` is caller-supplied so that two
-// connectors using the same binding id cannot share pre-approvals.
+/**
+ * The approval-policy identity of one tool on one binding. `scopeTag` is caller-supplied so that two
+ * connectors using the same binding id cannot share pre-approvals.
+ */
 export function actionKindFor(scopeTag: string, toolName: string): ActionKind {
   return { tag: `${encodeURIComponent(scopeTag)}:${encodeURIComponent(toolName)}`, label: toolName };
 }
@@ -110,11 +120,13 @@ function policyClaims(tool: McpTool): string {
   ].join("");
 }
 
-// Stable fingerprint of a tool catalog, for detecting that an endpoint changed under us.
-//
-// Covers each tool's name and every claim a grant was decided against, including `destructiveHint`
-// and `idempotentHint`, which move a tool into `getAutoApprovableActions()` on a vetted endpoint.
-// Descriptions are excluded so that copy edits do not fire the signal.
+/**
+ * Stable fingerprint of a tool catalog, for detecting that an endpoint changed under us.
+ *
+ * Covers each tool's name and every claim a grant was decided against, including `destructiveHint`
+ * and `idempotentHint`, which move a tool into `getAutoApprovableActions()` on a vetted endpoint.
+ * Descriptions are excluded so that copy edits do not fire the signal.
+ */
 export async function catalogRevision(tools: McpTool[]): Promise<string> {
   const canonical = tools
     .map(tool => `${tool.name}\u0000${policyClaims(tool)}`)
@@ -124,7 +136,7 @@ export async function catalogRevision(tools: McpTool[]): Promise<string> {
   return hexEncode(new Uint8Array(digest)).slice(0, 16);
 }
 
-// Flattens tool content into the shape a Gadget sees.
+/** Flattens tool content into the shape a Gadget sees. */
 export function toCallResult(
   result: McpToolCallResult,
 ): Extract<McpCallResult, { status: "ok" }> {
@@ -191,7 +203,7 @@ function plainInline(text: string, max = MAX_INLINE_TEXT): string {
   return clipped || "(unnamed)";
 }
 
-// Renders a tool call as the Markdown an approver reads before deciding.
+/** Renders a tool call as the Markdown an approver reads before deciding. */
 export function describeCall(args: {
   serverName: string;
   endpoint: string;

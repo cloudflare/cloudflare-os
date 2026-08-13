@@ -14,9 +14,11 @@ function formatRemaining(ms: number): string {
   return parts.join(' ')
 }
 
-// Live-ticking countdown to a reset time (ISO timestamp). Updates once per second. Calls
-// `onElapsed` once when the countdown reaches zero (e.g. to refresh usage). Renders nothing if no
-// valid `resetAt` is provided.
+/**
+ * Live-ticking countdown to a reset time (ISO timestamp). Updates once per second. Calls
+ * `onElapsed` once when the countdown reaches zero (e.g. to refresh usage). Renders nothing if no
+ * valid `resetAt` is provided.
+ */
 export default function ResetCountdown({
   resetAt,
   onElapsed,

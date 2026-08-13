@@ -14,9 +14,9 @@ type EmailEntrypoint = CloudflareWorkersModule.WorkerEntrypoint &
 
 export interface Env {
   WORKSHOP_BACKEND: Fetcher;
-  // Present in production (wrangler.jsonc assets stanza); absent in dev.
+  /** Present in production (wrangler.jsonc assets stanza); absent in dev. */
   ASSETS?: Fetcher;
-  // Dormant until custom domains + Email Routing exist; the handler ships anyway.
+  /** Dormant until custom domains + Email Routing exist; the handler ships anyway. */
   GATEKEEPER_EMAIL?: Service<EmailEntrypoint>;
   [key: string]: unknown;
 }

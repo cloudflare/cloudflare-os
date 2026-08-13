@@ -13,7 +13,7 @@ import type { McpLog } from "./log.js";
 import { catalogRevision, classifyTool, type ClassifiedTool, type ServerTrust }
   from "./tools.js";
 
-// How long a fetched tool catalog is reused before the server is asked again.
+/** How long a fetched tool catalog is reused before the server is asked again. */
 export const CATALOG_TTL_MS = 5 * 60 * 1000;
 
 // Cached tool catalog plus the revision it was fetched at.
@@ -27,32 +27,38 @@ type CachedCatalog = {
   truncated?: boolean;
 };
 
-// The key-value storage a facet lends this module. Structural so it does not depend on either
-// connector's Durable Object type; `ctx.storage.kv` satisfies it.
+/**
+ * The key-value storage a facet lends this module. Structural so it does not depend on either
+ * connector's Durable Object type; `ctx.storage.kv` satisfies it.
+ */
 export interface CatalogStore {
   get<T>(key: string): T | undefined;
   put<T>(key: string, value: T): void;
 }
 
-// What resolving a catalog needs. Everything here is owned by the calling facet.
+/** What resolving a catalog needs. Everything here is owned by the calling facet. */
 export type CatalogRequest = {
   store: CatalogStore;
   log: McpLog;
   env: ConnectionEnv;
   account: ConnectionAccount;
   endpoint: string;
-  // How much of the endpoint this binding may call.
+  /** How much of the endpoint this binding may call. */
   scope: ToolScope;
-  // Read from the deployment's current configuration on every call, never from stored account
-  // state, so withdrawing the tier takes effect without a reconnect. See `ServerTrust`.
+  /**
+   * Read from the deployment's current configuration on every call, never from stored account
+   * state, so withdrawing the tier takes effect without a reconnect. See `ServerTrust`.
+   */
   trust: ServerTrust;
 };
 
-// Returns the tools this binding may call, refreshing from the server when the cache is stale.
-//
-// A changed catalog is adopted rather than pinned, since refusing to see new tools would break
-// working Gadgets, but the change is logged and a scoped binding cannot widen: a tool list is a set
-// of names and a server scope is a name prefix.
+/**
+ * Returns the tools this binding may call, refreshing from the server when the cache is stale.
+ *
+ * A changed catalog is adopted rather than pinned, since refusing to see new tools would break
+ * working Gadgets, but the change is logged and a scoped binding cannot widen: a tool list is a set
+ * of names and a server scope is a name prefix.
+ */
 export async function scopedTools(request: CatalogRequest): Promise<ClassifiedTool[]> {
   const cached = request.store.get<CachedCatalog>("catalog");
   let tools = cached?.tools;

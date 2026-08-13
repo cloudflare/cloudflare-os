@@ -14,7 +14,7 @@ import {
   type GatekeeperAppTheme,
 } from "@gadgets/workshop-shared/theme";
 
-// The two concrete modes the host resolves `light`/`dark`/`system` down to before pushing it here.
+/** The two concrete modes the host resolves `light`/`dark`/`system` down to before pushing it here. */
 export type ResolvedThemeMode = "light" | "dark";
 
 // Seed from the pre-paint `data-mode` the bootstrap script in index.html set from the OS preference,
@@ -27,7 +27,7 @@ export function getThemeMode(): ResolvedThemeMode {
   return current;
 }
 
-// Apply a resolved mode to <html> and notify subscribers. Idempotent per value.
+/** Apply a resolved mode to <html> and notify subscribers. Idempotent per value. */
 export function applyThemeMode(mode: ResolvedThemeMode): void {
   const root = document.documentElement;
   root.setAttribute("data-mode", mode);
@@ -42,7 +42,7 @@ export function applyAppTheme(theme: GatekeeperAppTheme): void {
   applyAccentColor(document.documentElement.style, theme.accentColor);
 }
 
-// Subscribe to mode changes. Returns an unsubscribe function.
+/** Subscribe to mode changes. Returns an unsubscribe function. */
 export function subscribeThemeMode(
   listener: (mode: ResolvedThemeMode) => void,
 ): () => void {

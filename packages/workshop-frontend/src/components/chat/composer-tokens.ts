@@ -15,8 +15,10 @@ type TokenSplice = {
   delta: number;
 };
 
-// Replaces `[start, end)` with `token`, adding single spaces so it never abuts a neighboring word.
-// The separators stay outside the returned range, so the highlight hugs the token's own text.
+/**
+ * Replaces `[start, end)` with `token`, adding single spaces so it never abuts a neighboring word.
+ * The separators stay outside the returned range, so the highlight hugs the token's own text.
+ */
 export function spliceComposerToken(
     value: string, start: number, end: number, token: string): TokenSplice {
   let before = value.slice(0, start);
@@ -42,7 +44,7 @@ type TokenRemoval = {
   delta: number;
 };
 
-// Removes a token whole, closing the gap so deletion can't strand a doubled or leading space.
+/** Removes a token whole, closing the gap so deletion can't strand a doubled or leading space. */
 export function removeComposerToken(value: string, range: ComposerRange): TokenRemoval {
   let before = value.slice(0, range.start);
   let after = value.slice(range.start + range.length);
@@ -56,9 +58,11 @@ export function removeComposerToken(value: string, range: ComposerRange): TokenR
 
 type CaretBias = "left" | "right" | "nearest";
 
-// Moves a caret that landed inside a token out to one of its edges. Arrow keys pass their
-// direction of travel; clicks and other jumps pass `nearest`. Positions outside a token, or on
-// its edges, are returned unchanged.
+/**
+ * Moves a caret that landed inside a token out to one of its edges. Arrow keys pass their
+ * direction of travel; clicks and other jumps pass `nearest`. Positions outside a token, or on
+ * its edges, are returned unchanged.
+ */
 export function snapCaretOutOfRanges(
     position: number, ranges: readonly ComposerRange[], bias: CaretBias): number {
   for (let range of ranges) {

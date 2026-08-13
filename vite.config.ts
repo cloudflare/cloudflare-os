@@ -15,6 +15,7 @@ export default defineConfig({
       suspicious: 'error',
     },
     plugins: ['typescript', 'unicorn', 'oxc', 'import'],
+    jsPlugins: ['./scripts/oxlint-plugin.mjs'],
     options: {
       // Note: type-aware linting is intentionally not enabled. The type-aware engine
       // uses tsgo (TypeScript 7), and three packages do not type-check under it:
@@ -27,6 +28,10 @@ export default defineConfig({
       es2024: true,
     },
     rules: {
+      // Exported API declaration documentation is surfaced by TypeScript in IDE
+      // hovers only when it uses JSDoc syntax. Ordinary implementation comments stay `//`.
+      'gadgets/prefer-jsdoc': 'error',
+
       // False positives: gatekeepers import `.txt` files as bundled text assets,
       // which the import resolver reports as "no default export".
       'import/default': 'off',

@@ -1,7 +1,9 @@
 import type { GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
 
-// The non-standard method Context gatekeepers call on their own verifier. The overseer only passes
-// a verifier back to the vendor that minted it, so the gatekeeper may trust this result.
+/**
+ * The non-standard method Context gatekeepers call on their own verifier. The overseer only passes
+ * a verifier back to the vendor that minted it, so the gatekeeper may trust this result.
+ */
 export interface ContextVerifierApi extends GatekeeperUserVerifier {
   hasCollectionAccess(sharingDomain: string, collectionId: string): Promise<boolean>;
 }
@@ -16,8 +18,10 @@ export type ContextObservationCheck = {
 
 type ObservedCollectionState = true | "pending" | "observed";
 
-// Strategy C observer state for the broad Context Library singleton. Collections are the data sets:
-// public collections are domain-wide, while each private collection belongs to one account.
+/**
+ * Strategy C observer state for the broad Context Library singleton. Collections are the data sets:
+ * public collections are domain-wide, while each private collection belongs to one account.
+ */
 export class ContextObserverTracker {
   constructor(private kv: ObserverKv, private sharingDomain: string) {}
 

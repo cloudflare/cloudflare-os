@@ -1,12 +1,12 @@
 // Small helpers with no policy in them. Kept apart from `tools.ts` so that file stays only the trust
 // boundary.
 
-// Lowercase hex for a byte string. Used for nonces and catalog fingerprints.
+/** Lowercase hex for a byte string. Used for nonces and catalog fingerprints. */
 export function hexEncode(bytes: Uint8Array): string {
   return [...bytes].map(byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
-// Upper-snake-cases an id for use in a suggested binding name (e.g. `my-portal` -> `MY_PORTAL`).
+/** Upper-snake-cases an id for use in a suggested binding name (e.g. `my-portal` -> `MY_PORTAL`). */
 export function bindingNameFragment(id: string): string {
   return id.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
 }
@@ -28,16 +28,18 @@ function secretSpellings(secret: string): string[] {
   return [...new Set([secret, encodeURIComponent(secret), formEncoded])];
 }
 
-// Removes every known secret from text written by the far side.
-//
-// One implementation on purpose. This used to be written out separately at each place a credential
-// could be echoed back, and the copies drifted: one was fixed to redact before capping while the
-// other still capped first, so the same bug survived in the site nobody re-read. Callers pass what
-// they sent; this decides how thoroughly to look for it.
-//
-// Always run this *before* `safeServerText`. Capping first can slice a secret across the boundary,
-// and the surviving head no longer matches anything to redact -- leaving a usable prefix in text
-// that looks sanitized.
+/**
+ * Removes every known secret from text written by the far side.
+ *
+ * One implementation on purpose. This used to be written out separately at each place a credential
+ * could be echoed back, and the copies drifted: one was fixed to redact before capping while the
+ * other still capped first, so the same bug survived in the site nobody re-read. Callers pass what
+ * they sent; this decides how thoroughly to look for it.
+ *
+ * Always run this *before* `safeServerText`. Capping first can slice a secret across the boundary,
+ * and the surviving head no longer matches anything to redact -- leaving a usable prefix in text
+ * that looks sanitized.
+ */
 export function redactSecrets(
   text: string, secrets: readonly (string | null | undefined)[],
 ): string {
@@ -55,13 +57,15 @@ export function redactSecrets(
   return scrubbed;
 }
 
-// Prepares text written by a remote server for inclusion in an error message.
-//
-// Error messages here are logged and dispatched to the issue reporter, so text from the far side is
-// capped and flattened before it is quoted: an unbounded string pushes real context out of a
-// report, and an embedded newline lets a server forge a second entry inside a log line. Returns
-// undefined when nothing usable survives, so callers fall back to their own wording rather than
-// quoting an empty string.
+/**
+ * Prepares text written by a remote server for inclusion in an error message.
+ *
+ * Error messages here are logged and dispatched to the issue reporter, so text from the far side is
+ * capped and flattened before it is quoted: an unbounded string pushes real context out of a
+ * report, and an embedded newline lets a server forge a second entry inside a log line. Returns
+ * undefined when nothing usable survives, so callers fall back to their own wording rather than
+ * quoting an empty string.
+ */
 export function safeServerText(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   // Control characters go entirely; the rest collapses to single spaces.
@@ -73,7 +77,7 @@ export function safeServerText(value: unknown): string | undefined {
     : cleaned;
 }
 
-// The host of an endpoint URL, for log fields and human-facing messages.
+/** The host of an endpoint URL, for log fields and human-facing messages. */
 export function hostOf(endpoint: string): string {
   try {
     return new URL(endpoint).host;

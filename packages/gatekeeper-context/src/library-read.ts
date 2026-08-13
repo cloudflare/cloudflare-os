@@ -46,7 +46,7 @@ export class LibraryReadSession extends RpcTarget {
     super();
   }
 
-  // Release the authorizer owned by this read session.
+  /** Release the authorizer owned by this read session. */
   [Symbol.dispose](): void {
     this.authorizer[Symbol.dispose]?.();
   }

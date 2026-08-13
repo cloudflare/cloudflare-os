@@ -3,26 +3,30 @@ import { AiChatAuthorInfo, WorkpieceId, validateBindingName } from '@gadgets/wor
 import { WorkshopInput } from '../components/WorkshopControls'
 import { ConnectionConfigField } from './ConnectionConfigField'
 
-// One prospective entry of AgentSpawnerConfig.env: a workpiece the spawned agents may use, and
-// the name they see it under. Candidates are prefilled from the gadget the spawner is being
-// created for (its own bindings, plus the gadget itself); the user toggles them on or off and may
-// rename them. Choosing targets the gadget doesn't already hold isn't supported here yet.
+/**
+ * One prospective entry of AgentSpawnerConfig.env: a workpiece the spawned agents may use, and
+ * the name they see it under. Candidates are prefilled from the gadget the spawner is being
+ * created for (its own bindings, plus the gadget itself); the user toggles them on or off and may
+ * rename them. Choosing targets the gadget doesn't already hold isn't supported here yet.
+ */
 export interface SpawnerEnvRow {
-  // The workpiece the entry points at.
+  /** The workpiece the entry points at. */
   target: WorkpieceId
 
-  // Display name of the target, e.g. the connected resource's title.
+  /** Display name of the target, e.g. the connected resource's title. */
   targetTitle: string
 
-  // Name the spawned agents will see the target under (`env.NAME`).
+  /** Name the spawned agents will see the target under (`env.NAME`). */
   name: string
 
-  // Whether the entry is included in the spawner's env at all.
+  /** Whether the entry is included in the spawner's env at all. */
   enabled: boolean
 }
 
-// Returns a human-readable complaint about the env rows, or null if they're acceptable. Only
-// enabled rows matter: a disabled row is simply not part of the env.
+/**
+ * Returns a human-readable complaint about the env rows, or null if they're acceptable. Only
+ * enabled rows matter: a disabled row is simply not part of the env.
+ */
 export function validateSpawnerEnv(rows: SpawnerEnvRow[]): string | null {
   const seen = new Set<string>()
   for (const row of rows) {
@@ -40,7 +44,7 @@ export function validateSpawnerEnv(rows: SpawnerEnvRow[]): string | null {
   return null
 }
 
-// Converts the rows into the AgentSpawnerConfig.env map. Assumes validateSpawnerEnv() passed.
+/** Converts the rows into the AgentSpawnerConfig.env map. Assumes validateSpawnerEnv() passed. */
 export function spawnerEnvFromRows(rows: SpawnerEnvRow[]): Record<string, WorkpieceId> {
   const env: Record<string, WorkpieceId> = {}
   for (const row of rows) {

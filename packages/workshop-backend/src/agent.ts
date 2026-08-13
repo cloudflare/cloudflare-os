@@ -27,135 +27,161 @@ import {
 
 const logger = createWorkshopLogger("workshop.agent");
 
-// Additional per-chat-thread info needed by the AI agent but not by the client.
+/** Additional per-chat-thread info needed by the AI agent but not by the client. */
 export type AiChatAgentContext = {
-  // Chat ID, corresponds to `chatMeta`.
+  /** Chat ID, corresponds to `chatMeta`. */
   chatId: number;
 
-  // If present, this chat was spawned using a spawner, and this was the spawner config at the
-  // time.
+  /**
+   * If present, this chat was spawned using a spawner, and this was the spawner config at the
+   * time.
+   */
   spawnerConfig?: AgentSpawnerConfig;
 
-  // Initial `env` binding set gathered when this chat was started, typically including all gadgets
-  // and all gatekeepers which those gadgets bind to, but the contents may be different depending
-  // on how the chat thread was started (e.g. agent spawners initialize env in a specific way).
-  //
-  // This map is frozen after the chat starts. "changes" messages in the chat log may introduce
-  // new bindings, but they aren't added here; instead, the chat log must be replayed to find out
-  // the current binding set.
-  //
-  // This is absent for chats created before named chat bindings existed; such chats are seeded
-  // lazily at their next turn start.
-  //
-  // If any workpieces referenced here are deleted, this will be detected when the env is
-  // materialized for a particular execution, and the corresponding bindings will be dropped.
+  /**
+   * Initial `env` binding set gathered when this chat was started, typically including all gadgets
+   * and all gatekeepers which those gadgets bind to, but the contents may be different depending
+   * on how the chat thread was started (e.g. agent spawners initialize env in a specific way).
+   *
+   * This map is frozen after the chat starts. "changes" messages in the chat log may introduce
+   * new bindings, but they aren't added here; instead, the chat log must be replayed to find out
+   * the current binding set.
+   *
+   * This is absent for chats created before named chat bindings existed; such chats are seeded
+   * lazily at their next turn start.
+   *
+   * If any workpieces referenced here are deleted, this will be detected when the env is
+   * materialized for a particular execution, and the corresponding bindings will be dropped.
+   */
   bindings?: Record<string, WorkpieceId>;
 
-  // Gatekeeper IDs for ambient capsules which were instantiated into this chat when it started.
-  // This array predates the creation of per-chat named bindings; back then, ambient gatekeepers
-  // were delivered as numbered "capsules", occupying the lowest numbers in the capsules array, and
-  // this array specified their order. But with the advent of per-chat named bindings, these are now
-  // folded into `bindings`, above. This array continues to exist to support migrations from old
-  // chats (`bindings` will be initialized on next use), and as a record of which bindings came
-  // from ambient gatekeepers (though arguably some other data structure might make more sense for
-  // that).
+  /**
+   * Gatekeeper IDs for ambient capsules which were instantiated into this chat when it started.
+   * This array predates the creation of per-chat named bindings; back then, ambient gatekeepers
+   * were delivered as numbered "capsules", occupying the lowest numbers in the capsules array, and
+   * this array specified their order. But with the advent of per-chat named bindings, these are now
+   * folded into `bindings`, above. This array continues to exist to support migrations from old
+   * chats (`bindings` will be initialized on next use), and as a record of which bindings came
+   * from ambient gatekeepers (though arguably some other data structure might make more sense for
+   * that).
+   */
   alwaysAvailableCapsuleIds?: WorkpieceId[];
 
-  // Cached discovery catalogs for the always-available resources, keyed per gatekeeper.
-  // Regenerable: re-fetched when missing/stale (see prepareChatBindings).
+  /**
+   * Cached discovery catalogs for the always-available resources, keyed per gatekeeper.
+   * Regenerable: re-fetched when missing/stale (see prepareChatBindings).
+   */
   alwaysAvailableCatalogs?: AgentCatalogSnapshot[];
 };
 
-// One entry of the chat's seed binding layer, as returned by AgentHooks.prepareChatBindings():
-// a name in the chat's env, its target workpiece, and display info for the system prompt.
+/**
+ * One entry of the chat's seed binding layer, as returned by AgentHooks.prepareChatBindings():
+ * a name in the chat's env, its target workpiece, and display info for the system prompt.
+ */
 export type SeedBindingInfo = {
   name: string;
   target: WorkpieceId;
 
-  // Human title of the target (a gadget's title, or a gatekeeper's resource title).
+  /** Human title of the target (a gadget's title, or a gatekeeper's resource title). */
   title: string;
 
-  // Whether the target is a gadget (vs. an external resource gatekeeper).
+  /** Whether the target is a gadget (vs. an external resource gatekeeper). */
   isGadget: boolean;
 
-  // Present when this entry is an always-available (ambient) resource, e.g. the read session of a
-  // connected account that provides a singleton; carries its progressive-discovery catalog (null
-  // when the gatekeeper provides none). Such entries get their own system-prompt section.
+  /**
+   * Present when this entry is an always-available (ambient) resource, e.g. the read session of a
+   * connected account that provides a singleton; carries its progressive-discovery catalog (null
+   * when the gatekeeper provides none). Such entries get their own system-prompt section.
+   */
   catalog?: AgentCatalog | null;
 };
 
-// One entry of the chat's binding map: what a name in the agent's executeCode `env` resolves to.
-// Either a workpiece (a gadget or gatekeeper -- the overseer distinguishes at env-build time) or
-// the value arguments of an agent callback.
+/**
+ * One entry of the chat's binding map: what a name in the agent's executeCode `env` resolves to.
+ * Either a workpiece (a gadget or gatekeeper -- the overseer distinguishes at env-build time) or
+ * the value arguments of an agent callback.
+ */
 export type ChatBindingEntry =
   | { type: "workpiece"; id: WorkpieceId }
   | { type: "value"; messageSequence: number };
 
-// Stores replay state for one compacted chat prefix. Checkpoints are immutable, and a chat keeps
-// every one it has published, so reading history or reverting can select the newest checkpoint below
-// any sequence.
+/**
+ * Stores replay state for one compacted chat prefix. Checkpoints are immutable, and a chat keeps
+ * every one it has published, so reading history or reverting can select the newest checkpoint below
+ * any sequence.
+ */
 export type CompactionCheckpoint = {
-  // Chat this checkpoint belongs to.
+  /** Chat this checkpoint belongs to. */
   chatId: number;
 
-  // First sequence replay starts at. Messages before this are represented by the checkpoint.
+  /** First sequence replay starts at. Messages before this are represented by the checkpoint. */
   compactedTo: number;
 
-  // The summary the model wrote. We send it as one user message before the retained messages.
+  /** The summary the model wrote. We send it as one user message before the retained messages. */
   summary: string;
 
-  // The chat's named bindings. Retained messages and the summary refer to these names as
-  // `env.NAME`.
+  /**
+   * The chat's named bindings. Retained messages and the summary refer to these names as
+   * `env.NAME`.
+   */
   chatBindings: [string, ChatBindingEntry][];
 
-  // The next change ID for replayed tool results. Change IDs remain sequential across boundaries.
+  /** The next change ID for replayed tool results. Change IDs remain sequential across boundaries. */
   nextChangeId: number;
 
-  // The code version used as the replay base. Tool calls and changes batches can establish it.
+  /** The code version used as the replay base. Tool calls and changes batches can establish it. */
   observedCodeVersion?: number;
 
-  // Accepted Y.Doc updates from before the boundary, merged into one update. The chat stays pinned
-  // to `observedCodeVersion`, so accepted updates are still part of the replay base rather than of
-  // the version replay starts from.
+  /**
+   * Accepted Y.Doc updates from before the boundary, merged into one update. The chat stays pinned
+   * to `observedCodeVersion`, so accepted updates are still part of the replay base rather than of
+   * the version replay starts from.
+   */
   acceptedChanges?: Uint8Array;
 
-  // Still-proposed Y.Doc updates from before the boundary, merged into one update. Disjoint from
-  // `acceptedChanges`; replay applies both. Individual batches remain addressable through the chat
-  // log, so reverting to a point before the boundary is still possible.
-  //
-  // Provisional gadget creations and binding additions from before the boundary are deliberately
-  // absent: they carry no Y.Doc update, and the registry rows they created (`GadgetRecord.pending`,
-  // `BindingRecord.pending`) already record them with the sequence that did, untouched by
-  // compaction. Merge and revert promote and delete from there rather than from the log, so
-  // duplicating them here would be a second source of truth. See getProposedChanges(), which
-  // reports the compacted prefix as pending when either this or such a row exists.
+  /**
+   * Still-proposed Y.Doc updates from before the boundary, merged into one update. Disjoint from
+   * `acceptedChanges`; replay applies both. Individual batches remain addressable through the chat
+   * log, so reverting to a point before the boundary is still possible.
+   *
+   * Provisional gadget creations and binding additions from before the boundary are deliberately
+   * absent: they carry no Y.Doc update, and the registry rows they created (`GadgetRecord.pending`,
+   * `BindingRecord.pending`) already record them with the sequence that did, untouched by
+   * compaction. Merge and revert promote and delete from there rather than from the log, so
+   * duplicating them here would be a second source of truth. See getProposedChanges(), which
+   * reports the compacted prefix as pending when either this or such a row exists.
+   */
   proposedChanges?: Uint8Array;
 };
 
-// The compaction state and policy for one call to `runAgent`.
+/** The compaction state and policy for one call to `runAgent`. */
 export type CompactionContext = {
-  // The checkpoint to replay from, if the thread has one.
+  /** The checkpoint to replay from, if the thread has one. */
   checkpoint?: CompactionCheckpoint;
 
-  // The chosen model, whose window and reserved response capacity size the prompt budget.
+  /** The chosen model, whose window and reserved response capacity size the prompt budget. */
   modelConfig: AiModelConfig;
 
-  // The total tokens reported for the last measured model step, or zero if none are available.
+  /** The total tokens reported for the last measured model step, or zero if none are available. */
   measuredTokens: number;
 };
 
-// Summary of one of the workspace's gadgets, as needed by the agent: identity, the name of the
-// Y.Doc root map holding its files, and its named bindings. See AgentHooks.listGadgetInfo().
+/**
+ * Summary of one of the workspace's gadgets, as needed by the agent: identity, the name of the
+ * Y.Doc root map holding its files, and its named bindings. See AgentHooks.listGadgetInfo().
+ */
 export type AgentGadgetInfo = {
   id: WorkpieceId;
   title: string;
   rootName: string;
-  // Whether this is the workspace's default gadget: the gadget that tools operate on when their
-  // gadget-name parameter is omitted. Only workspaces migrated from single-gadget days
-  // (or created from a blueprint) have one.
+  /**
+   * Whether this is the workspace's default gadget: the gadget that tools operate on when their
+   * gadget-name parameter is omitted. Only workspaces migrated from single-gadget days
+   * (or created from a blueprint) have one.
+   */
   isDefault: boolean;
   bindings: {name: string, title: string, target: WorkpieceId}[];
-  // What instantiating this gadget's blueprint produces, when it came from one that declares it.
+  /** What instantiating this gadget's blueprint produces, when it came from one that declares it. */
   output?: BlueprintOutput;
 };
 
@@ -182,35 +208,43 @@ async function resolveBindingDescription(
   }
 }
 
-// A tool-call block as persisted in a StoredAssistantMessage: everything pi produced except the
-// arguments, which the step's AiToolCall record already stores (as `input`) and which replay
-// rehydrates by id (see rehydrateStoredAssistantMessage). Tool arguments are the one genuinely
-// large duplicate (writeFile/executeCode payloads are whole files); everything else is kept.
+/**
+ * A tool-call block as persisted in a StoredAssistantMessage: everything pi produced except the
+ * arguments, which the step's AiToolCall record already stores (as `input`) and which replay
+ * rehydrates by id (see rehydrateStoredAssistantMessage). Tool arguments are the one genuinely
+ * large duplicate (writeFile/executeCode payloads are whole files); everything else is kept.
+ */
 export type StoredToolCall = Omit<ToolCall, "arguments">;
 
-// The AssistantMessage for one agent step, persisted exactly as pi produced it (except for
-// StoredToolCall's deliberate subtraction) so later turns can replay the step verbatim. This is
-// what preserves reasoning across turns and restarts: thinking blocks keep their provider
-// signatures (including encrypted/redacted payloads), and the message keeps its true
-// api/provider/model provenance, so pi's transformMessages can reflect same-model reasoning back
-// to the provider and apply its cross-model conversions when the user switches models. The
-// snapshot is subtractive on purpose -- copy everything, delete only what's provably redundant --
-// so fields pi adds in the future are retained by default (dropping them would silently reduce
-// fidelity and break prompt caching). Stored server-side only (see `chatModelData` in
-// overseer.ts); clients never receive these.
+/**
+ * The AssistantMessage for one agent step, persisted exactly as pi produced it (except for
+ * StoredToolCall's deliberate subtraction) so later turns can replay the step verbatim. This is
+ * what preserves reasoning across turns and restarts: thinking blocks keep their provider
+ * signatures (including encrypted/redacted payloads), and the message keeps its true
+ * api/provider/model provenance, so pi's transformMessages can reflect same-model reasoning back
+ * to the provider and apply its cross-model conversions when the user switches models. The
+ * snapshot is subtractive on purpose -- copy everything, delete only what's provably redundant --
+ * so fields pi adds in the future are retained by default (dropping them would silently reduce
+ * fidelity and break prompt caching). Stored server-side only (see `chatModelData` in
+ * overseer.ts); clients never receive these.
+ */
 export type StoredAssistantMessage = Omit<AssistantMessage, "content"> & {
   content: (TextContent | ThinkingContent | StoredToolCall)[];
 };
 
-// A chat message body as the agent loop hands it to AgentHooks.addChatMessages: the client-visible
-// body, plus (for agent steps) the model-facing snapshot to persist alongside it. The overseer
-// strips `modelData` into separate storage; it must never reach clients.
+/**
+ * A chat message body as the agent loop hands it to AgentHooks.addChatMessages: the client-visible
+ * body, plus (for agent steps) the model-facing snapshot to persist alongside it. The overseer
+ * strips `modelData` into separate storage; it must never reach clients.
+ */
 export type AiChatMessageBodyWithModelData = AiChatMessageBody & {
   modelData?: StoredAssistantMessage;
 };
 
-// Snapshots a completed step's AssistantMessage for persistence. See StoredAssistantMessage for
-// why this copies everything and subtracts rather than picking fields. (Exported for tests.)
+/**
+ * Snapshots a completed step's AssistantMessage for persistence. See StoredAssistantMessage for
+ * why this copies everything and subtracts rather than picking fields. (Exported for tests.)
+ */
 export function makeStoredAssistantMessage(message: AssistantMessage): StoredAssistantMessage {
   return {
     ...message,
@@ -223,55 +257,69 @@ export function makeStoredAssistantMessage(message: AssistantMessage): StoredAss
   };
 }
 
-// Methods of OverseerImpl that runAgent() needs to call, extracted as an interface to avoid cyclic
-// dependencies.
-// TODO(cleanup): This is getting a bit large, and there's a lot of state that is passed into the
-//   agent just so that it can be passed back to these hooks, like `chatId`. We could probably
-//   factor out some sort of chat context object here -- maybe merge with LiveChatContext in
-//   overseer.ts?
+/**
+ * Methods of OverseerImpl that runAgent() needs to call, extracted as an interface to avoid cyclic
+ * dependencies.
+ * TODO(cleanup): This is getting a bit large, and there's a lot of state that is passed into the
+ *   agent just so that it can be passed back to these hooks, like `chatId`. We could probably
+ *   factor out some sort of chat context object here -- maybe merge with LiveChatContext in
+ *   overseer.ts?
+ */
 export interface AgentHooks {
   getChatAgentContext(chatId: number): AiChatAgentContext;
   buildYDoc(version: number | "current"): {ydoc: Y.Doc, version: number};
 
-  // Summarize the workspace's gadgets for the system prompt (see AgentGadgetInfo). Gadgets still
-  // provisional to a chat other than `forChatId` are omitted.
+  /**
+   * Summarize the workspace's gadgets for the system prompt (see AgentGadgetInfo). Gadgets still
+   * provisional to a chat other than `forChatId` are omitted.
+   */
   listGadgetInfo(forChatId: number): AgentGadgetInfo[];
 
-  // Resolve an agent tool's optional workpiece reference to the workpiece's files root. Absent
-  // means the workspace's default gadget; throws an agent-readable error if there is none. When
-  // `mustExist` is set, additionally throws if the gadget isn't currently registered -- or is
-  // provisional to a chat other than `forChatId` -- (used by live file tools; history replay
-  // omits it so old edits to since-deleted gadgets still resolve).
+  /**
+   * Resolve an agent tool's optional workpiece reference to the workpiece's files root. Absent
+   * means the workspace's default gadget; throws an agent-readable error if there is none. When
+   * `mustExist` is set, additionally throws if the gadget isn't currently registered -- or is
+   * provisional to a chat other than `forChatId` -- (used by live file tools; history replay
+   * omits it so old edits to since-deleted gadgets still resolve).
+   */
   resolveWorkpieceRoot(workpieceId?: WorkpieceId, mustExist?: boolean, forChatId?: number)
       : {workpieceId: WorkpieceId, rootName: string};
 
-  // Create a new, empty gadget workpiece with the given title and binding name, provisional to
-  // the given chat: it becomes permanent only when the user accepts the chat's changes through
-  // the "changes" message that records the creation (see GadgetRecord.pending in overseer.ts).
-  // Throws if the binding name is invalid or already claimed by another gadget (including one
-  // still pending in another chat). Returns the id and the (trimmed) title as created. `output`
-  // is the format declared by the blueprint being instantiated, if any (see fetchBlueprint).
+  /**
+   * Create a new, empty gadget workpiece with the given title and binding name, provisional to
+   * the given chat: it becomes permanent only when the user accepts the chat's changes through
+   * the "changes" message that records the creation (see GadgetRecord.pending in overseer.ts).
+   * Throws if the binding name is invalid or already claimed by another gadget (including one
+   * still pending in another chat). Returns the id and the (trimmed) title as created. `output`
+   * is the format declared by the blueprint being instantiated, if any (see fetchBlueprint).
+   */
   createGadget(title: string, bindingName: string, chatId: number, output?: BlueprintOutput)
       : {id: WorkpieceId, title: string};
 
-  // Describe a workpiece (a gadget or a gatekeeper) reachable as `envName` in the chat's env,
-  // for the agent's describeBinding tool. (`envName` is provided here only so that it can be
-  // incorporated into the returned description.)
+  /**
+   * Describe a workpiece (a gadget or a gatekeeper) reachable as `envName` in the chat's env,
+   * for the agent's describeBinding tool. (`envName` is provided here only so that it can be
+   * incorporated into the returned description.)
+   */
   describeBinding(envName: string, id: WorkpieceId): Promise<string>;
 
-  // Add a binding to the given gadget, pointing at the given workpiece. The binding is provisional
-  // to the chat. The caller is responsible for getting the addition recorded in the chat log (see
-  // `addedBindings` on the "changes" message) so the pending edge gets sequence-stamped.
+  /**
+   * Add a binding to the given gadget, pointing at the given workpiece. The binding is provisional
+   * to the chat. The caller is responsible for getting the addition recorded in the chat log (see
+   * `addedBindings` on the "changes" message) so the pending edge gets sequence-stamped.
+   */
   addGadgetBinding(gadgetId: WorkpieceId, name: string, target: WorkpieceId, chatId: number): void;
 
-  // Prepare (seeding/naming lazily as needed) and return the chat's seed binding layer, including
-  // the always-available (ambient) resources with their discovery catalogs. Called at turn start,
-  // before history replay; this is also the chokepoint that stamps binding names onto any
-  // persisted messages that introduced resources but don't carry a name yet (pasted resources,
-  // plus connection requests from before agents named their own). `chatMessages` is the caller's
-  // in-memory copy of the chat log, which is both scanned and stamped in place -- storage reads
-  // return fresh deserialized objects, so stamping a separately-listed copy would leave the
-  // caller's replay blind to the new names until the next turn.
+  /**
+   * Prepare (seeding/naming lazily as needed) and return the chat's seed binding layer, including
+   * the always-available (ambient) resources with their discovery catalogs. Called at turn start,
+   * before history replay; this is also the chokepoint that stamps binding names onto any
+   * persisted messages that introduced resources but don't carry a name yet (pasted resources,
+   * plus connection requests from before agents named their own). `chatMessages` is the caller's
+   * in-memory copy of the chat log, which is both scanned and stamped in place -- storage reads
+   * return fresh deserialized objects, so stamping a separately-listed copy would leave the
+   * caller's replay blind to the new names until the next turn.
+   */
   prepareChatBindings(chatId: number, chatMessages: AiChatMessage[]): Promise<SeedBindingInfo[]>;
 
   executeCodeMode(chatId: number, code: string,
@@ -282,61 +330,77 @@ export interface AgentHooks {
   rejectAllAgentCallbacks(chatId: number, error: string): void;
   consumeCapturedActions(chatId: number)
       : {actions: number[], accessedGadget: boolean, awaitDecision: boolean} | undefined;
-  // Appends messages to the chat log and updates cost/token accounting. When both
-  // `aiGatewayLogId` and `aiGatewayLogRoute` are present, the authoritative cost is fetched
-  // asynchronously from the AI Gateway log, with `estimatedCost` (pi's catalog-priced estimate
-  // from the turn's token usage, in dollars) as the fallback if the gateway can't produce a
-  // cost; otherwise the estimate is applied directly, so direct-provider routes still get cost
-  // accounting.
+  /**
+   * Appends messages to the chat log and updates cost/token accounting. When both
+   * `aiGatewayLogId` and `aiGatewayLogRoute` are present, the authoritative cost is fetched
+   * asynchronously from the AI Gateway log, with `estimatedCost` (pi's catalog-priced estimate
+   * from the turn's token usage, in dollars) as the fallback if the gateway can't produce a
+   * cost; otherwise the estimate is applied directly, so direct-provider routes still get cost
+   * accounting.
+   */
   addChatMessages(chatId: number, author: AiChatAuthorInfo,
       msgs: AiChatMessageBodyWithModelData[],
       totalTokens?: number, aiGatewayLogId?: string, aiGatewayLogRoute?: AiGatewayLogRoute,
       estimatedCost?: number): void;
   emitChatStreamEvent(chatId: number, event: AiChatStreamEvent): void;
 
-  // Fetch the model-facing snapshot persisted for an agent step's "message" record, if any (see
-  // StoredAssistantMessage). Absent for messages persisted before snapshots existed; replay then
-  // falls back to reconstructing the message from the client-visible record.
+  /**
+   * Fetch the model-facing snapshot persisted for an agent step's "message" record, if any (see
+   * StoredAssistantMessage). Absent for messages persisted before snapshots existed; replay then
+   * falls back to reconstructing the message from the client-visible record.
+   */
   getChatModelData(chatId: number, sequence: number): StoredAssistantMessage | undefined;
 
-  // Record an observation in the Overseer audit log on behalf of a built-in agent tool
-  // (i.e. one that isn't backed by a gatekeeper, like `webFetch`). Used to track which
-  // external influencers may have tainted the agent's session.
+  /**
+   * Record an observation in the Overseer audit log on behalf of a built-in agent tool
+   * (i.e. one that isn't backed by a gatekeeper, like `webFetch`). Used to track which
+   * external influencers may have tainted the agent's session.
+   */
   recordAgentObservation(
       chatId: number,
       resourceTitle: string,
       resourceUrl: string | undefined,
       description: ObservationDescription): Promise<void>;
 
-  // Returns the bytes of a committed attachment owned by this chat for inclusion in model input.
+  /** Returns the bytes of a committed attachment owned by this chat for inclusion in model input. */
   getChatAttachmentData(chatId: number, id: string): Promise<Uint8Array>;
 
-  // Returns the resources needed by `webFetch` to delegate document-to-Markdown conversion
-  // to Workers AI. Exposed as a narrow interface (rather than handing over the whole `env`)
-  // so the dependency surface stays explicit.
+  /**
+   * Returns the resources needed by `webFetch` to delegate document-to-Markdown conversion
+   * to Workers AI. Exposed as a narrow interface (rather than handing over the whole `env`)
+   * so the dependency surface stays explicit.
+   */
   getWebFetchEnv(): WebFetchEnv;
 
-  // Deployment-wide, admin-authored instructions to append to the agent's system prompt. Returns
-  // "" when none are set. Read on each turn so admin edits take effect promptly.
+  /**
+   * Deployment-wide, admin-authored instructions to append to the agent's system prompt. Returns
+   * "" when none are set. Read on each turn so admin edits take effect promptly.
+   */
   getInstanceInstructions(): Promise<string>;
 
-  // Connection-request hooks for the agent.
-  //
-  // List the gatekeeper vendors the user could connect (id + display name). Used to populate the
-  // system prompt so the agent knows what it can request; resource patterns are fetched on demand
-  // via listConnectableResources().
+  /**
+   * Connection-request hooks for the agent.
+   *
+   * List the gatekeeper vendors the user could connect (id + display name). Used to populate the
+   * system prompt so the agent knows what it can request; resource patterns are fetched on demand
+   * via listConnectableResources().
+   */
   listConnectableVendors(): Promise<{id: string, displayName: string}[]>;
 
-  // Describe the resource types a given vendor offers (urlPattern + title + description), so the
-  // agent can construct a resourceUrl for requestConnection. Returns formatted text.
+  /**
+   * Describe the resource types a given vendor offers (urlPattern + title + description), so the
+   * agent can construct a resourceUrl for requestConnection. Returns formatted text.
+   */
   listConnectableResources(vendorId: string): Promise<string>;
 
-  // Record a pending connection request for the given chat. `message` is the tool output text; when
-  // `requested` is true a request was created (captured and spliced into the chat as a
-  // "connectionRequest" message by the agent loop, see consumeCapturedConnectionRequests) and the
-  // turn should end so the agent waits for the user. When `requested` is false the request was
-  // rejected (e.g. it wouldn't resolve to a connectable resource); `message` explains what to fix
-  // and the agent should be allowed to retry within the same turn.
+  /**
+   * Record a pending connection request for the given chat. `message` is the tool output text; when
+   * `requested` is true a request was created (captured and spliced into the chat as a
+   * "connectionRequest" message by the agent loop, see consumeCapturedConnectionRequests) and the
+   * turn should end so the agent waits for the user. When `requested` is false the request was
+   * rejected (e.g. it wouldn't resolve to a connectable resource); `message` explains what to fix
+   * and the agent should be allowed to retry within the same turn.
+   */
   requestConnection(chatId: number, input: {
     vendorId: string;
     resourceUrl?: string;
@@ -344,29 +408,37 @@ export interface AgentHooks {
     bindingName: string;
   }): Promise<{ requested: boolean; message: string }>;
 
-  // Drain connection requests captured during the current step so they can be appended to the chat
-  // (analogous to consumeCapturedActions).
+  /**
+   * Drain connection requests captured during the current step so they can be appended to the chat
+   * (analogous to consumeCapturedActions).
+   */
   consumeCapturedConnectionRequests(chatId: number): AiChatMessageBody[];
 
-  // Blueprint hooks for the agent.
-  //
-  // List the blueprints available to the turn's initiator (their own published blueprints, their
-  // library, and the deployment's featured set) as formatted text. The initiator -- not the
-  // workspace owner -- because blueprint libraries are per-user: a collaborator driving the agent
-  // should see their own. There is no search index; the corpora are small enough for the model to
-  // scan directly.
+  /**
+   * Blueprint hooks for the agent.
+   *
+   * List the blueprints available to the turn's initiator (their own published blueprints, their
+   * library, and the deployment's featured set) as formatted text. The initiator -- not the
+   * workspace owner -- because blueprint libraries are per-user: a collaborator driving the agent
+   * should see their own. There is no search index; the corpora are small enough for the model to
+   * scan directly.
+   */
   listAvailableBlueprints(initiator: AiChatAuthorInfo): Promise<string>;
 
-  // A short standing note naming the deployment's standard output formats, or "" if it has none.
-  // Carried in the system prompt rather than left to `listBlueprints`, because a request phrased as
-  // "make me a doc" may not prompt an agent to go looking for blueprints at all.
+  /**
+   * A short standing note naming the deployment's standard output formats, or "" if it has none.
+   * Carried in the system prompt rather than left to `listBlueprints`, because a request phrased as
+   * "make me a doc" may not prompt an agent to go looking for blueprints at all.
+   */
   describeStandardFormats(): Promise<string>;
 
-  // Fetch a blueprint's decoded files, plus formatted notes describing the copied files and the
-  // bindings the blueprint's code expects the agent to wire up. Used by the createGadget tool to
-  // instantiate the blueprint as a new gadget, along with the output format the blueprint declares
-  // (if any), which the created gadget inherits. Throws an agent-readable error if the blueprint
-  // doesn't exist.
+  /**
+   * Fetch a blueprint's decoded files, plus formatted notes describing the copied files and the
+   * bindings the blueprint's code expects the agent to wire up. Used by the createGadget tool to
+   * instantiate the blueprint as a new gadget, along with the output format the blueprint declares
+   * (if any), which the created gadget inherits. Throws an agent-readable error if the blueprint
+   * doesn't exist.
+   */
   fetchBlueprint(blueprintId: string)
       : Promise<{files: Record<string, string>, notes: string, output?: BlueprintOutput}>;
 }
@@ -1005,12 +1077,14 @@ function jsonToolResultText(value: unknown): string {
   return JSON.stringify(value);
 }
 
-// Rebuilds the model-facing assistant message for one agent step from its persisted snapshot,
-// verbatim except that each tool-call block's arguments are rehydrated from the step's AiToolCall
-// record (see StoredToolCall). Returns undefined -- the caller then falls back to reconstructing
-// the message from the display record -- if a block references a tool call the display record
-// doesn't have, which indicates a bug (the two are written together) or corrupted storage.
-// (Exported for tests.)
+/**
+ * Rebuilds the model-facing assistant message for one agent step from its persisted snapshot,
+ * verbatim except that each tool-call block's arguments are rehydrated from the step's AiToolCall
+ * record (see StoredToolCall). Returns undefined -- the caller then falls back to reconstructing
+ * the message from the display record -- if a block references a tool call the display record
+ * doesn't have, which indicates a bug (the two are written together) or corrupted storage.
+ * (Exported for tests.)
+ */
 export function rehydrateStoredAssistantMessage(
     stored: StoredAssistantMessage, toolCalls: AiToolCall[] | undefined,
     chatId: number, sequence: number): AssistantMessage | undefined {
@@ -1058,9 +1132,11 @@ function defineTool<TParameters extends TSchema>(def: AgentTool<TParameters>): A
   return def as unknown as AgentTool;
 }
 
-// Runs one agent turn against the chat's history. Returns a checkpoint when the turn compacted
-// instead of prompting the model: the caller commits it, then reruns for a normal turn or stops for
-// `/compact`. Returns undefined when the turn ran.
+/**
+ * Runs one agent turn against the chat's history. Returns a checkpoint when the turn compacted
+ * instead of prompting the model: the caller commits it, then reruns for a normal turn or stops for
+ * `/compact`. Returns undefined when the turn ran.
+ */
 export async function runAgent(
     hooks: AgentHooks,
     handle: ModelHandle,
@@ -3106,13 +3182,15 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
-// Produces the storable version of callback args: deep copy where NativeRpcStub instances
-// are replaced with TransientStubLoopback Fetchers. ServiceStub/Fetcher instances and other
-// native types are kept as-is. Throws if depth exceeds 64.
-//
-// Each transient RpcStub found is collected into `transientStubs` (side output). The
-// `replaceTransientStub` callback creates a TransientStubLoopback Fetcher for the given
-// stub index.
+/**
+ * Produces the storable version of callback args: deep copy where NativeRpcStub instances
+ * are replaced with TransientStubLoopback Fetchers. ServiceStub/Fetcher instances and other
+ * native types are kept as-is. Throws if depth exceeds 64.
+ *
+ * Each transient RpcStub found is collected into `transientStubs` (side output). The
+ * `replaceTransientStub` callback creates a TransientStubLoopback Fetcher for the given
+ * stub index.
+ */
 export function makeStorableArgs(
     value: unknown,
     replaceTransientStub: (stubIndex: number) => unknown,
@@ -3151,8 +3229,10 @@ export function makeStorableArgs(
   return value;
 }
 
-// Produces a depth-limited summary string for callback args. Stubs and large content are
-// replaced with placeholders.
+/**
+ * Produces a depth-limited summary string for callback args. Stubs and large content are
+ * replaced with placeholders.
+ */
 export function summarizeArgs(args: unknown[]): string {
   return args.map((arg, i) => `[${i}]: ${summarizeValue(arg, 0)}`).join("\n");
 }

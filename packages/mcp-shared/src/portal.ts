@@ -10,42 +10,48 @@
 import type { McpTool } from "./client.js";
 import { MAX_TOOLS_PER_SERVER } from "./tools.js";
 
-// The portal's built-in server-listing tool. Its presence in `tools/list` is what identifies an
-// endpoint as a portal.
-//
-// Calling it yields display names, ordering and enabled state, but not authority: membership is
-// decided by the `{server_id}_` prefix on each tool name, which is what `scopeAllows` enforces. A
-// server the listing omits still owns its prefixed tools, and one it invents owns nothing. See
-// `reconcilePortalServers`.
+/**
+ * The portal's built-in server-listing tool. Its presence in `tools/list` is what identifies an
+ * endpoint as a portal.
+ *
+ * Calling it yields display names, ordering and enabled state, but not authority: membership is
+ * decided by the `{server_id}_` prefix on each tool name, which is what `scopeAllows` enforces. A
+ * server the listing omits still owns its prefixed tools, and one it invents owns nothing. See
+ * `reconcilePortalServers`.
+ */
 export const PORTAL_LIST_SERVERS_TOOL = "portal_list_servers";
 
 // Prefix the portal reserves for its own session-management tools.
 const PORTAL_NATIVE_PREFIX = "portal_";
 
-// One upstream server behind a portal, as the portal itself reports it.
+/** One upstream server behind a portal, as the portal itself reports it. */
 export type PortalServer = {
-  // The server id that prefixes every one of its tool names.
+  /** The server id that prefixes every one of its tool names. */
   id: string;
-  // Display name, falling back to the id.
+  /** Display name, falling back to the id. */
   name: string;
-  // Whether the server is currently enabled in this portal session.
+  /** Whether the server is currently enabled in this portal session. */
   enabled: boolean;
 };
 
-// True for the portal's own tools, which are excluded from every grant: `portal_toggle_servers` and
-// friends change which upstream servers the session can reach, so granting one would let a Gadget
-// widen its own authority.
+/**
+ * True for the portal's own tools, which are excluded from every grant: `portal_toggle_servers` and
+ * friends change which upstream servers the session can reach, so granting one would let a Gadget
+ * widen its own authority.
+ */
 export function isPortalNativeTool(name: string): boolean {
   return name.startsWith(PORTAL_NATIVE_PREFIX);
 }
 
-// True when this tool list came from a portal.
-//
-// A truncated catalog counts as a portal regardless of what is in it: `tools/list` is unordered, so
-// answering "not a portal" because the evidence fell past the cut would fail open on the `portal_*`
-// exclusion above -- a real portal would be granted at its bare endpoint, and a Gadget holding that
-// grant could call `portal_toggle_servers` to widen its own reach. `truncated` covers the byte
-// budget as well as the tool count, which stops the listing without leaving a short array behind.
+/**
+ * True when this tool list came from a portal.
+ *
+ * A truncated catalog counts as a portal regardless of what is in it: `tools/list` is unordered, so
+ * answering "not a portal" because the evidence fell past the cut would fail open on the `portal_*`
+ * exclusion above -- a real portal would be granted at its bare endpoint, and a Gadget holding that
+ * grant could call `portal_toggle_servers` to widen its own reach. `truncated` covers the byte
+ * budget as well as the tool count, which stops the listing without leaving a short array behind.
+ */
 export function looksLikePortal(
   tools: Pick<McpTool, "name">[], truncated = false,
 ): boolean {
@@ -61,13 +67,15 @@ function serverIdOfTool(name: string): string | null {
   return name.slice(0, separator);
 }
 
-// Whether `toolName` belongs to upstream server `serverId`. Syntactic, so enforcing a server scope
-// never depends on reaching the portal.
+/**
+ * Whether `toolName` belongs to upstream server `serverId`. Syntactic, so enforcing a server scope
+ * never depends on reaching the portal.
+ */
 export function toolBelongsToServer(toolName: string, serverId: string): boolean {
   return serverIdOfTool(toolName) === serverId;
 }
 
-// Groups a portal's tools by upstream server id, dropping the portal's own tools.
+/** Groups a portal's tools by upstream server id, dropping the portal's own tools. */
 export function groupToolsByServer<T extends Pick<McpTool, "name">>(
   tools: T[],
 ): Map<string, T[]> {
@@ -168,10 +176,12 @@ function parseStructured(value: unknown): PortalServer[] {
   return servers;
 }
 
-// Parses the upstream server list out of a `portal_list_servers` result. Empty when nothing
-// parseable is present; callers fall back to the ids recovered from tool-name prefixes.
-// Typed by what it reads rather than as `McpToolCallResult`, which a result satisfies: this is an
-// untrusted reply and every field is re-checked here, so the loose type is the honest one.
+/**
+ * Parses the upstream server list out of a `portal_list_servers` result. Empty when nothing
+ * parseable is present; callers fall back to the ids recovered from tool-name prefixes.
+ * Typed by what it reads rather than as `McpToolCallResult`, which a result satisfies: this is an
+ * untrusted reply and every field is re-checked here, so the loose type is the honest one.
+ */
 export function parsePortalServers(
   result: { structuredContent?: unknown; content?: unknown },
 ): PortalServer[] {
@@ -187,9 +197,11 @@ export function parsePortalServers(
   return [];
 }
 
-// Merges the portal's reported servers with the ids present in the tool list. With a complete
-// catalog, tool names are the authority and reported empty servers are dropped. With a truncated
-// catalog, absence is not evidence, so reported servers are retained for server-wide grants.
+/**
+ * Merges the portal's reported servers with the ids present in the tool list. With a complete
+ * catalog, tool names are the authority and reported empty servers are dropped. With a truncated
+ * catalog, absence is not evidence, so reported servers are retained for server-wide grants.
+ */
 export function reconcilePortalServers(
   reported: PortalServer[], tools: Pick<McpTool, "name">[], truncated = false,
 ): PortalServer[] {

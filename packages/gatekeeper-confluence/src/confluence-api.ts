@@ -370,8 +370,10 @@ const publicUrl = (webui: string | undefined, webBase: string): string => {
   return `${webBase}${webui.startsWith("/") ? "" : "/"}${webui}`;
 };
 
-// v2 webui links look like "/spaces/ENG/pages/123/Title"; derive the space key from them so we
-// don't need an extra lookup (v2 content carries spaceId, not the human key).
+/**
+ * v2 webui links look like "/spaces/ENG/pages/123/Title"; derive the space key from them so we
+ * don't need an extra lookup (v2 content carries spaceId, not the human key).
+ */
 export function spaceKeyFromWebui(webui: string | undefined): string | undefined {
   if (!webui) return undefined;
   const m = webui.match(/\/spaces\/([^/]+)/);
@@ -409,7 +411,7 @@ export function contentToMetadata(c: ContentResponse, webBase: string): ContentM
   };
 }
 
-// A child page (minimal shape) summarized using the parent's space key for the URL.
+/** A child page (minimal shape) summarized using the parent's space key for the URL. */
 export function childPageToSummary(child: ChildPageResponse, webBase: string, spaceKey: string | undefined): ContentSummary {
   return {
     id: child.id,
@@ -484,7 +486,7 @@ function searchResultToSummary(content: NonNullable<V1SearchResult["content"]>, 
   return summary;
 }
 
-// Extract the opaque `cursor` query param from a v2 `_links.next` relative URL.
+/** Extract the opaque `cursor` query param from a v2 `_links.next` relative URL. */
 export function cursorFromNext(next: string | undefined): string | undefined {
   if (!next) return undefined;
   try {
@@ -583,7 +585,7 @@ export class ConfluenceApi {
     return space;
   }
 
-  // GET /spaces/{id} returns a single space (same shape as a getSpaceByKey result).
+  /** GET /spaces/{id} returns a single space (same shape as a getSpaceByKey result). */
   getSpaceById(id: string): Promise<SpaceResponse> {
     return this.#request<SpaceResponse>("GET", `${V2}/spaces/${encodeURIComponent(id)}`);
   }
@@ -602,7 +604,7 @@ export class ConfluenceApi {
     return c;
   }
 
-  // A content ID may be a page or a blog post (distinct v2 resources); try page, then blog post.
+  /** A content ID may be a page or a blog post (distinct v2 resources); try page, then blog post. */
   async getContentById(id: string): Promise<ContentResponse> {
     try {
       return await this.getPage(id);
@@ -639,8 +641,10 @@ export class ConfluenceApi {
     });
   }
 
-  // CQL search — no v2 equivalent, so this uses the v1 search endpoint (start/limit paged; we
-  // encode the next start offset as the opaque cursor). Degrades clearly if v1 search is removed.
+  /**
+   * CQL search — no v2 equivalent, so this uses the v1 search endpoint (start/limit paged; we
+   * encode the next start offset as the opaque cursor). Degrades clearly if v1 search is removed.
+   */
   async search(cql: string, params: { cursor?: string; limit?: number }): Promise<Paged<ContentSummary>> {
     const start = params.cursor ? Number(params.cursor) : 0;
     const limit = params.limit ?? 25;
@@ -702,7 +706,7 @@ export class ConfluenceApi {
     await this.#request("DELETE", `${V2}/${path}/${encodeURIComponent(id)}`);
   }
 
-  // Restore from trash has no v2 endpoint; fall back to v1 and degrade if it's gone.
+  /** Restore from trash has no v2 endpoint; fall back to v1 and degrade if it's gone. */
   async restoreContent(id: string): Promise<void> {
     try {
       await this.#json("PUT", `${V1}/content/${encodeURIComponent(id)}?status=trashed`, { status: "current" });
@@ -742,7 +746,7 @@ export class ConfluenceApi {
     return res.results.map(l => l.name);
   }
 
-  // Label writes have no v2 endpoint; use v1 and degrade if it's gone.
+  /** Label writes have no v2 endpoint; use v1 and degrade if it's gone. */
   async addLabel(id: string, name: string): Promise<void> {
     try {
       await this.#json("POST", `${V1}/content/${encodeURIComponent(id)}/label`, [{ prefix: "global", name }]);
@@ -777,7 +781,7 @@ export class ConfluenceApi {
     await this.#request("DELETE", `${V2}/attachments/${encodeURIComponent(id)}`);
   }
 
-  // Attachment upload has no v2 endpoint; use v1 and degrade if it's gone.
+  /** Attachment upload has no v2 endpoint; use v1 and degrade if it's gone. */
   async uploadAttachment(id: string, file: {
     filename: string; mediaType: string; data: Uint8Array; comment?: string;
   }): Promise<AttachmentResponse> {
@@ -796,7 +800,7 @@ export class ConfluenceApi {
     }
   }
 
-  // Downloads attachment bytes via its `downloadLink` (relative to the site /wiki base).
+  /** Downloads attachment bytes via its `downloadLink` (relative to the site /wiki base). */
   async downloadAttachment(downloadLink: string): Promise<{ data: Uint8Array; mediaType: string }> {
     const url = `${this.#base()}/wiki${downloadLink}`;
     let token = await this.#getToken();

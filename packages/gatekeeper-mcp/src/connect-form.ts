@@ -22,7 +22,7 @@ const FORM_STYLE = `
   button:hover { opacity: .9; }
 `;
 
-// Renders the endpoint prompt shown when the user starts connecting.
+/** Renders the endpoint prompt shown when the user starts connecting. */
 export function connectFormHtml(path: string, error?: string): string {
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">

@@ -2,7 +2,7 @@ import { tracing } from "cloudflare:workers";
 
 type Attribute = boolean | number | string;
 
-// The span surface exposed to callbacks. Lifetime is managed by `traced`, so no `end()`.
+/** The span surface exposed to callbacks. Lifetime is managed by `traced`, so no `end()`. */
 export interface TraceSpan {
   readonly isTraced: boolean;
   setAttribute(key: string, value?: Attribute): void;

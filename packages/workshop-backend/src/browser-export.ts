@@ -112,8 +112,10 @@ export class BrowserRpcTransport implements RpcTransport {
     return message;
   }
 
-  // Rejects in-flight and queued operations rather than only marking a flag, so a stalled page
-  // cannot keep the RPC session alive after the export has settled.
+  /**
+   * Rejects in-flight and queued operations rather than only marking a flag, so a stalled page
+   * cannot keep the RPC session alive after the export has settled.
+   */
   abort(reason: unknown): void {
     this.#abortReason.resolve(reason instanceof Error ? reason : new Error(String(reason)));
   }

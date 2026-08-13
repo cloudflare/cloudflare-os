@@ -4,27 +4,31 @@ import {
 import type { ComposerRange } from "./composer-tokens";
 import styles from "./ComposerMirror.module.css";
 
-// Makes the textarea's own text transparent so the mirror below it shows through.
+/** Makes the textarea's own text transparent so the mirror below it shows through. */
 export const composerTextareaClass = styles.textarea;
 
-// A range the mirror paints as one object rather than as text.
+/** A range the mirror paints as one object rather than as text. */
 export type MirrorToken = ComposerRange & {
   kind: "capsule" | "command";
-  // `url("...")`, ready for `background-image`. Only capsules with a vendor logo have one.
+  /** `url("...")`, ready for `background-image`. Only capsules with a vendor logo have one. */
   logo?: string;
 };
 
 export type ComposerMirrorHandle = {
-  // The element whose geometry mirrors the textarea's, for size syncing and pointer hit-testing.
+  /** The element whose geometry mirrors the textarea's, for size syncing and pointer hit-testing. */
   readonly node: HTMLDivElement | null;
-  // Start offset of the token under the pointer, or null. Kept here rather than in the composer so
-  // that moving the pointer repaints one span instead of re-rendering the whole composer.
+  /**
+   * Start offset of the token under the pointer, or null. Kept here rather than in the composer so
+   * that moving the pointer repaints one span instead of re-rendering the whole composer.
+   */
   setHoveredToken(start: number | null): void;
 };
 
-// Paints the composer's text behind the textarea, whose own text is transparent: prose in the
-// ordinary color, tokens in brand color with their logo and hover fill. The textarea keeps the
-// caret, the selection and the spell checker.
+/**
+ * Paints the composer's text behind the textarea, whose own text is transparent: prose in the
+ * ordinary color, tokens in brand color with their logo and hover fill. The textarea keeps the
+ * caret, the selection and the spell checker.
+ */
 export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
   value: string;
   tokens: readonly MirrorToken[];

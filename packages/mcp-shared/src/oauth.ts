@@ -8,7 +8,7 @@ import {
 
 import { redactSecrets, safeServerText } from "./util.js";
 
-// SDK tokens plus the absolute expiry used by the account's hot path.
+/** SDK tokens plus the absolute expiry used by the account's hot path. */
 export type OAuthTokens = StoredOAuthTokens & { expiresAt?: number };
 
 const CREDENTIAL_REJECTIONS = new Set([
@@ -18,12 +18,12 @@ const CREDENTIAL_REJECTIONS = new Set([
   "invalid_scope",
 ]);
 
-// Only an authorization-server verdict retires a credential; transport failures remain retryable.
+/** Only an authorization-server verdict retires a credential; transport failures remain retryable. */
 export function isCredentialRejection(err: unknown): boolean {
   return OAuthError.isInstance(err) && CREDENTIAL_REJECTIONS.has(String(err.code));
 }
 
-// SDK errors may quote a rejected request. Scrub submitted credentials before logging or display.
+/** SDK errors may quote a rejected request. Scrub submitted credentials before logging or display. */
 export function safeOAuthError(
   err: unknown,
   secrets: readonly (string | null | undefined)[] = [],
@@ -41,7 +41,7 @@ export function safeOAuthError(
   return new Error(detail ?? "The authorization server refused the request.");
 }
 
-// Best-effort RFC 7009 revocation; the SDK does not expose a revocation helper.
+/** Best-effort RFC 7009 revocation; the SDK does not expose a revocation helper. */
 export async function revokeToken(
   discovery: OAuthDiscoveryState,
   client: StoredOAuthClientInformation,

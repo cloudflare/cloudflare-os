@@ -7,14 +7,14 @@ export const PICKER_CAPTION =
 export const PICKER_ROW =
   'flex cursor-pointer items-center gap-2.5 px-3.5 py-1.5 transition-colors hover:bg-kumo-tint'
 
-// The keyboard selection has to outrank hover, since Tab acts on it rather than on the pointer.
+/** The keyboard selection has to outrank hover, since Tab acts on it rather than on the pointer. */
 export const PICKER_ROW_ACTIVE = 'bg-kumo-fill hover:bg-kumo-fill'
 
-// Loading, empty and error states, aligned to read as the list's first row.
+/** Loading, empty and error states, aligned to read as the list's first row. */
 export const PICKER_EMPTY =
   'm-0 px-3.5 py-3 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle'
 
-// Names the key that acts on the selected row. Visual only: the row itself carries the semantics.
+/** Names the key that acts on the selected row. Visual only: the row itself carries the semantics. */
 export function TabHint() {
   return (
     <kbd

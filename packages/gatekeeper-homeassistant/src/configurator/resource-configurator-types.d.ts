@@ -1,4 +1,4 @@
-// Shared option shape for autocomplete dropdowns in the resource configurators.
+/** Shared option shape for autocomplete dropdowns in the resource configurators. */
 export type HomeAssistantConfiguratorOption = {
   value: string;
   title: string;

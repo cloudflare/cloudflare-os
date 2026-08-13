@@ -215,9 +215,11 @@ export type RawProject = {
   startDate?: string | null;
   targetDate?: string | null;
   lead?: RawUser | null;
-  // Only populated by the workspace-wide listProjects() query (via PROJECT_LIST_FIELDS), so the
-  // workspace-binding observer tracking can attribute each project to the team(s) that gate access
-  // to it. Omitted everywhere a project is embedded (e.g. on an issue), where it is not needed.
+  /**
+   * Only populated by the workspace-wide listProjects() query (via PROJECT_LIST_FIELDS), so the
+   * workspace-binding observer tracking can attribute each project to the team(s) that gate access
+   * to it. Omitted everywhere a project is embedded (e.g. on an issue), where it is not needed.
+   */
   teams?: RawConnection<{ id: string }> | null;
 };
 
@@ -297,7 +299,7 @@ const ISSUE_DETAIL_FIELDS = `
 
 const COMMENT_FIELDS = `id body url createdAt updatedAt user { ${USER_FIELDS} }`;
 
-// Linear input types
+/** Linear input types */
 export type IssueCreateInput = {
   teamId: string;
   title: string;

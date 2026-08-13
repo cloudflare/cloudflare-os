@@ -2,20 +2,22 @@ import type {SlashCommandChoice} from "@gadgets/workshop-shared/api";
 import type {ComposerRange} from "./composer-tokens";
 
 export type ParsedSlashCommandInput = {
-  // Text between `/` and the first whitespace, lowercased for matching.
+  /** Text between `/` and the first whitespace, lowercased for matching. */
   query: string;
-  // Range occupied by the command token.
+  /** Range occupied by the command token. */
   tokenStart: number;
   tokenEnd: number;
-  // Index where text following the command begins (after whitespace).
+  /** Index where text following the command begins (after whitespace). */
   tailStart: number;
-  // Text following the command token.
+  /** Text following the command token. */
   tail: string;
 };
 
-// Parses the `/command` token at the cursor. A command may appear anywhere at a word boundary;
-// `//` is treated as a literal slash, not a command. Whitespace immediately before the cursor is
-// skipped back over, so typing `/command ` still resolves the command.
+/**
+ * Parses the `/command` token at the cursor. A command may appear anywhere at a word boundary;
+ * `//` is treated as a literal slash, not a command. Whitespace immediately before the cursor is
+ * skipped back over, so typing `/command ` still resolves the command.
+ */
 export function parseSlashCommandInput(
     input: string, cursorPosition: number): ParsedSlashCommandInput | null {
   let probe = Math.max(0, Math.min(cursorPosition, input.length));
@@ -39,14 +41,16 @@ export function parseSlashCommandInput(
   };
 }
 
-// Identifies the command token at the cursor, or null if the cursor isn't on one. Two positions
-// with the same key parse the same way, so callers can treat them as interchangeable.
+/**
+ * Identifies the command token at the cursor, or null if the cursor isn't on one. Two positions
+ * with the same key parse the same way, so callers can treat them as interchangeable.
+ */
 export function slashCommandTokenKey(input: string, cursorPosition: number): string | null {
   let parsed = parseSlashCommandInput(input, cursorPosition);
   return parsed && `${parsed.tokenStart}:${input.slice(parsed.tokenStart, parsed.tokenEnd)}`;
 }
 
-// Removes the command token from the text sent as the command's arguments.
+/** Removes the command token from the text sent as the command's arguments. */
 export function stripSlashCommandToken(input: string, token: ComposerRange)
     : { args: string; commandPosition: number } {
   let before = input.slice(0, token.start);
@@ -65,13 +69,13 @@ export function stripSlashCommandToken(input: string, token: ComposerRange)
   };
 }
 
-// Entries whose name exactly equals the parsed token.
+/** Entries whose name exactly equals the parsed token. */
 export function exactSlashCommandMatches(
     commands: SlashCommandChoice[], parsed: ParsedSlashCommandInput): SlashCommandChoice[] {
   return commands.filter(command => command.name.toLowerCase() === parsed.query);
 }
 
-// Filters a loaded catalog for display in the picker.
+/** Filters a loaded catalog for display in the picker. */
 export function filterSlashCommandCatalog(
     catalog: SlashCommandChoice[], query: string): SlashCommandChoice[] {
   query = query.toLowerCase();

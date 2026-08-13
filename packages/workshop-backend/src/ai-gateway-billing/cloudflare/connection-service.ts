@@ -16,33 +16,39 @@ const CREDITS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 type UserStub = DurableObjectStub<UserDurableObject>;
 
-// Public-safe connection status for display and for the usage decision.
+/** Public-safe connection status for display and for the usage decision. */
 export interface CloudflareConnectionStatus {
   connected: boolean;
   accountId?: string;
   accountName?: string;
   balance: number | null;
-  // True when connected but the grant sees multiple Cloudflare accounts and none is chosen yet.
-  // The client must prompt the user to select one via selectAccount().
+  /**
+   * True when connected but the grant sees multiple Cloudflare accounts and none is chosen yet.
+   * The client must prompt the user to select one via selectAccount().
+   */
   needsAccountSelection?: boolean;
 }
 
-// A Cloudflare account the connected grant can access.
+/** A Cloudflare account the connected grant can access. */
 export interface CloudflareAccountOption {
   accountId: string;
   accountName: string;
 }
 
-// Routing details to bill a user's own Cloudflare account for inference (BYOK path once the free
-// tier is spent). Inference is routed through the account's "default" AI Gateway.
+/**
+ * Routing details to bill a user's own Cloudflare account for inference (BYOK path once the free
+ * tier is spent). Inference is routed through the account's "default" AI Gateway.
+ */
 export interface ByokGatewayRouting {
   accountId: string;
-  // The user's Cloudflare access token, used as the authorization.
+  /** The user's Cloudflare access token, used as the authorization. */
   apiKey: string;
 }
 
-// Connection resolution result. `accessToken`/`accountId` are present only when connected with a
-// resolved account; `accessToken` is sensitive (never send it to the client).
+/**
+ * Connection resolution result. `accessToken`/`accountId` are present only when connected with a
+ * resolved account; `accessToken` is sensitive (never send it to the client).
+ */
 export interface ResolvedConnection {
   status: CloudflareConnectionStatus;
   accessToken?: string;
@@ -59,9 +65,11 @@ async function getUsableAccessToken(userStub: UserStub): Promise<string | null> 
   return await account.getUsableAccessToken();
 }
 
-// Resolve connection status + balance (cached when fresh), auto-selecting the account when exactly
-// one is accessible. Also surfaces the usable access token + resolved account id so a hot-path
-// caller can derive BYOK routing without re-reading. Never throws; returns a safe default.
+/**
+ * Resolve connection status + balance (cached when fresh), auto-selecting the account when exactly
+ * one is accessible. Also surfaces the usable access token + resolved account id so a hot-path
+ * caller can derive BYOK routing without re-reading. Never throws; returns a safe default.
+ */
 export async function resolveConnection(
   _env: Cloudflare.Env, userStub: UserStub,
 ): Promise<ResolvedConnection> {
@@ -115,15 +123,17 @@ export async function resolveConnection(
   }
 }
 
-// Public-safe connection status for display and the usage decision (drops the access token).
+/** Public-safe connection status for display and the usage decision (drops the access token). */
 export async function getConnectionStatus(
   env: Cloudflare.Env, userStub: UserStub,
 ): Promise<CloudflareConnectionStatus> {
   return (await resolveConnection(env, userStub)).status;
 }
 
-// Force-refresh the cached credit balance from Cloudflare, bypassing the TTL. Best effort. Call
-// after a BYOK inference so the next billing decision reflects the spend just incurred.
+/**
+ * Force-refresh the cached credit balance from Cloudflare, bypassing the TTL. Best effort. Call
+ * after a BYOK inference so the next billing decision reflects the spend just incurred.
+ */
 export async function refreshCachedBalance(_env: Cloudflare.Env, userStub: UserStub): Promise<void> {
   try {
     const token = await getUsableAccessToken(userStub);
@@ -138,7 +148,7 @@ export async function refreshCachedBalance(_env: Cloudflare.Env, userStub: UserS
   }
 }
 
-// List the Cloudflare accounts the connected grant can access. Empty if not connected/usable.
+/** List the Cloudflare accounts the connected grant can access. Empty if not connected/usable. */
 export async function listConnectedAccounts(
   _env: Cloudflare.Env, userStub: UserStub,
 ): Promise<CloudflareAccountOption[]> {
@@ -151,7 +161,7 @@ export async function listConnectedAccounts(
   }
 }
 
-// Select which Cloudflare account to bill. Validates it's accessible by the connected grant.
+/** Select which Cloudflare account to bill. Validates it's accessible by the connected grant. */
 export async function selectAccount(
   _env: Cloudflare.Env, userStub: UserStub, accountId: string,
 ): Promise<void> {

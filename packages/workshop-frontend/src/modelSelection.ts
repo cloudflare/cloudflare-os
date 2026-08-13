@@ -2,7 +2,7 @@ import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 
 const LAST_SELECTED_MODEL_KEY = "lastSelectedModel";
 
-// Sentinel used for UI values and localStorage so an explicit null choice can persist.
+/** Sentinel used for UI values and localStorage so an explicit null choice can persist. */
 export const NO_AGENT_OPTION_VALUE = "__gadgets_no_agent__";
 
 export function getStoredSelectedModel(

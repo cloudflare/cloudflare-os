@@ -3,6 +3,6 @@ export type ThreadConfiguratorValues = {
 };
 
 export interface ThreadConfiguratorRpc {
-  // Placeholder required by the configurator UI capability contract.
+  /** Placeholder required by the configurator UI capability contract. */
   ping(): Promise<void>;
 }

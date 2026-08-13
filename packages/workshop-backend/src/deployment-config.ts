@@ -12,9 +12,11 @@ import { siteLogoImage } from "./site-logo.js";
 
 const logger = createWorkshopLogger("workshop.deployment.config");
 
-// Resolve the auth-capable, allowlisted gatekeeper vendors offered as sign-in methods, querying
-// each gatekeeper's describe() for display info. Skips vendors with no binding, that don't advertise
-// providesAuth, or that error.
+/**
+ * Resolve the auth-capable, allowlisted gatekeeper vendors offered as sign-in methods, querying
+ * each gatekeeper's describe() for display info. Skips vendors with no binding, that don't advertise
+ * providesAuth, or that error.
+ */
 export async function getAuthVendors(env: Cloudflare.Env): Promise<AuthVendorInfo[]> {
   // describe() is a cross-Worker RPC and getServerConfig() runs on every (re)connect, so query the
   // allowlisted vendors in parallel rather than serially. Order is preserved (Promise.all), so the

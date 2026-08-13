@@ -128,7 +128,7 @@ export class ConfluenceStore {
     return this.allActions().filter(r => r.state === "pending");
   }
 
-  // Pending actions targeting a piece of content (addressed by either provisional or real ID).
+  /** Pending actions targeting a piece of content (addressed by either provisional or real ID). */
   pendingForContent(contentId: string): StoredActionRecord[] {
     const target = this.resolveId(contentId);
     return this.pendingActions().filter(r => {
@@ -175,12 +175,12 @@ export class ConfluenceStore {
     return content;
   }
 
-  // The kind (page vs blog post) of a piece of content, resolved (and cached) via its response.
+  /** The kind (page vs blog post) of a piece of content, resolved (and cached) via its response. */
   async getContentKind(id: string): Promise<ContentType> {
     return contentKindOf(await this.getContentResponse(id));
   }
 
-  // Resolve a space key to its numeric v2 space ID (cached).
+  /** Resolve a space key to its numeric v2 space ID (cached). */
   async getSpaceId(key: string): Promise<string> {
     const cached = this.#kv.get<string>(`space:${key}`);
     if (cached) return cached;

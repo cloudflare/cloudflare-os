@@ -46,12 +46,14 @@ function makeAdminSettingsStorage(storage: DurableObjectStorage) {
 
 type AdminSettingsStorage = ReturnType<typeof makeAdminSettingsStorage>;
 
-// Deployment-wide admin settings singleton.
-//
-// This durable object is always addressed as `getByName("")`. It contains settings that only
-// admins may modify. Settings modified through this DO are published to KV so that user requests
-// do not have to access the AdminSettings DO directly (which they could otherwise overload), but
-// having a singleton DO writing to KV avoids race conditions when updating KV.
+/**
+ * Deployment-wide admin settings singleton.
+ *
+ * This durable object is always addressed as `getByName("")`. It contains settings that only
+ * admins may modify. Settings modified through this DO are published to KV so that user requests
+ * do not have to access the AdminSettings DO directly (which they could otherwise overload), but
+ * having a singleton DO writing to KV avoids race conditions when updating KV.
+ */
 export class AdminSettings extends DurableObject<Cloudflare.Env> {
   private storage: AdminSettingsStorage;
   private users: DurableObjectNamespace<UserDurableObject>;
@@ -73,15 +75,17 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     this.vendors = buildGatekeeperVendorMap(env);
   }
 
-  // Install the format blueprints bundled with this deployment, if that hasn't already happened
-  // for this exact manifest. Idempotent and cheap: an up-to-date deployment does one string
-  // comparison and returns.
-  //
-  // Written straight into the featured mirror rather than through setBlueprintFeatured(), whose
-  // authoritative bit lives in the publishing user's DO -- these have no owning user.
-  //
-  // Callers are coalesced onto one run, or two isolates racing on a fresh deployment both promote
-  // the same blueprints, and a duplicated id makes setFormatOrder() reject every reordering.
+  /**
+   * Install the format blueprints bundled with this deployment, if that hasn't already happened
+   * for this exact manifest. Idempotent and cheap: an up-to-date deployment does one string
+   * comparison and returns.
+   *
+   * Written straight into the featured mirror rather than through setBlueprintFeatured(), whose
+   * authoritative bit lives in the publishing user's DO -- these have no owning user.
+   *
+   * Callers are coalesced onto one run, or two isolates racing on a fresh deployment both promote
+   * the same blueprints, and a duplicated id makes setFormatOrder() reject every reordering.
+   */
   ensureFormatBlueprintsInstalled(): Promise<boolean> {
     return this.#installInFlight ??= this.#installFormatBlueprints()
         .finally(() => { this.#installInFlight = undefined; });
@@ -286,19 +290,23 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  // Merge a partial update into the admin config and mirror it to KV. Callers (AdminApiImpl) validate
-  // scalar values; this just persists atomically.
+  /**
+   * Merge a partial update into the admin config and mirror it to KV. Callers (AdminApiImpl) validate
+   * scalar values; this just persists atomically.
+   */
   updateAdminConfig(patch: Partial<AdminConfig>): Promise<void> {
     return this.#mutateAdminConfig(config => ({ ...config, ...patch }));
   }
 
-  // Read all admin-managed settings for the admin UI in one call: the stored config plus the live
-  // resource catalog (every bound gatekeeper's resource types annotated with their enabled state).
-  //
-  // `adminUserId` is the requesting admin's user id (email/username), forwarded to each gatekeeper's
-  // getSupportedResources(). Most gatekeepers ignore it, but RBAC-gated ones (e.g. the internal GTM
-  // Data gatekeeper) only reveal their resources to users with the right permission — so without it
-  // they'd be hidden from the admin Gatekeepers tab.
+  /**
+   * Read all admin-managed settings for the admin UI in one call: the stored config plus the live
+   * resource catalog (every bound gatekeeper's resource types annotated with their enabled state).
+   *
+   * `adminUserId` is the requesting admin's user id (email/username), forwarded to each gatekeeper's
+   * getSupportedResources(). Most gatekeepers ignore it, but RBAC-gated ones (e.g. the internal GTM
+   * Data gatekeeper) only reveal their resources to users with the right permission — so without it
+   * they'd be hidden from the admin Gatekeepers tab.
+   */
   async getSettings(adminUserId: string): Promise<AdminSettingsView> {
     let config = this.#config();
     return {
@@ -413,7 +421,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     await this.#mutateFormats(formats => reorderFormats(formats, blueprintIds));
   }
 
-  // Enable/disable a single gatekeeper resource type atomically (read-modify-write within the DO).
+  /** Enable/disable a single gatekeeper resource type atomically (read-modify-write within the DO). */
   async setResourceEnabled(vendorId: string, urlPattern: string, enabled: boolean): Promise<void> {
     vendorId = vendorId.toLowerCase();
     await this.#mutateAdminConfig(config => {
@@ -456,10 +464,12 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  // Set a gatekeeper's availability atomically (read-modify-write within the DO). Routes by kind: an
-  // auto-provisioning ("ambient") gatekeeper stores its three-state mode in ambientGatekeeperModes
-  // (default stored as absence); an ordinary gatekeeper stores a binary enabled/disabled in
-  // disabledGatekeepers and rejects the ambient-only 'optional'.
+  /**
+   * Set a gatekeeper's availability atomically (read-modify-write within the DO). Routes by kind: an
+   * auto-provisioning ("ambient") gatekeeper stores its three-state mode in ambientGatekeeperModes
+   * (default stored as absence); an ordinary gatekeeper stores a binary enabled/disabled in
+   * disabledGatekeepers and rejects the ambient-only 'optional'.
+   */
   async setGatekeeperMode(vendorId: string, mode: AmbientGatekeeperMode): Promise<void> {
     vendorId = vendorId.toLowerCase();
     let vendor = this.vendors.get(vendorId);
@@ -552,8 +562,10 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 // connector/resource availability; authentication config stays env-var driven.
 @validateRpc()
 export class AdminApiImpl extends RpcTarget implements AdminApi {
-  // `adminUserId` is the requesting admin's identity, forwarded to gatekeepers when listing the
-  // resource catalog (some are RBAC-gated per user). It's plain data — not a user-DO dependency.
+  /**
+   * `adminUserId` is the requesting admin's identity, forwarded to gatekeepers when listing the
+   * resource catalog (some are RBAC-gated per user). It's plain data — not a user-DO dependency.
+   */
   constructor(private admin: DurableObjectStub<AdminSettings>, private adminUserId: string) {
     super();
   }

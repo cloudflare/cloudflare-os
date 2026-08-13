@@ -1,9 +1,11 @@
 import { defineConfig } from 'vitest/config'
 import { cloudflareTest } from '@cloudflare/vitest-pool-workers'
 
-// Tests run inside workerd (via vitest-pool-workers) so they exercise the same runtime as
-// production. A minimal inline Miniflare config is used since the tests mock DurableObjectStorage
-// and don't need any real bindings.
+/**
+ * Tests run inside workerd (via vitest-pool-workers) so they exercise the same runtime as
+ * production. A minimal inline Miniflare config is used since the tests mock DurableObjectStorage
+ * and don't need any real bindings.
+ */
 export default defineConfig({
   plugins: [
     cloudflareTest({

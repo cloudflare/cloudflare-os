@@ -10,7 +10,7 @@ export interface AutoApprovalEntry {
   vendorId?: string
   actionKind: ActionKind
   enabled: boolean
-  // Keep orphaned rules visible so a standing grant never becomes impossible to revoke.
+  /** Keep orphaned rules visible so a standing grant never becomes impossible to revoke. */
   orphaned: boolean
 }
 

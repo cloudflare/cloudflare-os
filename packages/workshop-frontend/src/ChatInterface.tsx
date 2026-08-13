@@ -197,8 +197,10 @@ function CreatedGadgetChatCard({
   );
 }
 
-// The file an agent is currently streaming edits into. Files are identified by (workpiece,
-// filename) pairs since a chat can edit multiple gadgets.
+/**
+ * The file an agent is currently streaming edits into. Files are identified by (workpiece,
+ * filename) pairs since a chat can edit multiple gadgets.
+ */
 export type ActiveFileTarget = {
   workpieceId: WorkpieceId;
   filename: string;
@@ -1206,9 +1208,11 @@ function getMarkdownComponents(
 const REMARK_PLUGINS_NO_CAPSULES = [remarkGfm];
 const MARKDOWN_COMPONENTS_NO_CAPSULES = getMarkdownComponents();
 
-// Exported for unit testing (see ChatInterface.markdown.test.tsx), which verifies that a
-// single newline in a user message survives to the DOM as a literal "\n" so the
-// `whitespace-pre-wrap` wrapper at the user-message render site renders it as a hard break.
+/**
+ * Exported for unit testing (see ChatInterface.markdown.test.tsx), which verifies that a
+ * single newline in a user message survives to the DOM as a literal "\n" so the
+ * `whitespace-pre-wrap` wrapper at the user-message render site renders it as a hard break.
+ */
 export const MarkdownMessage = memo(function MarkdownMessage(
   { message, capsules, formats }: {
     message: string;
@@ -1817,8 +1821,10 @@ export const ChatInput = ({
     accountId: number,
     url: string,
   ) => Promise<RpcStub<GatekeeperClient<any>> | null>;
-  // Returns an overseer stub, used by the attach modal to create gatekeepers. Can be async
-  // to support lazy provisional-gadget creation on the Home page.
+  /**
+   * Returns an overseer stub, used by the attach modal to create gatekeepers. Can be async
+   * to support lazy provisional-gadget creation on the Home page.
+   */
   getOverseer: () => Promise<RpcStub<Overseer>> | RpcStub<Overseer>;
   onSend: (
     message: string | SlashCommandRequest,
@@ -1837,9 +1843,11 @@ export const ChatInput = ({
   onConsumeConsoleLogs?: () => string;
   onDiscardConsoleLogs?: () => void;
   newChat?: boolean;
-  // Whether the composer offers the deployment's standard formats. A chosen format rides along as
-  // an instruction on the message; it does not change which workspace is created. Only meaningful
-  // with `newChat`, since a format names something to build rather than something to say.
+  /**
+   * Whether the composer offers the deployment's standard formats. A chosen format rides along as
+   * an instruction on the message; it does not change which workspace is created. Only meaningful
+   * with `newChat`, since a format names something to build rather than something to say.
+   */
   offerFormats?: boolean;
   autoFocus?: boolean;
   /** Minimum number of textarea rows at rest. Defaults to 2. */
@@ -4326,7 +4334,7 @@ function formatChatRowTime(date: Date, bucket: ChatTimeBucket, now: Date): strin
   );
 }
 
-// A compaction checkpoint reported with a history page.
+/** A compaction checkpoint reported with a history page. */
 export type CompactionBoundary = NonNullable<AiChatHistoryPage["compacted"]>;
 
 // Client-side cache for chats and messages (survives reconnects)

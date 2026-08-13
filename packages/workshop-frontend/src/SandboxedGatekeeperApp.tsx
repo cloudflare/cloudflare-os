@@ -208,9 +208,11 @@ class GatekeeperAppHostImpl extends RpcTarget {
   }
 }
 
-// Hosts a gatekeeper's full-page management SPA in a sandboxed, network-isolated iframe. The app
-// talks to the gatekeeper only through the `ui` capability carried over the MessagePort RPC session.
-// The iframe fills its parent container.
+/**
+ * Hosts a gatekeeper's full-page management SPA in a sandboxed, network-isolated iframe. The app
+ * talks to the gatekeeper only through the `ui` capability carried over the MessagePort RPC session.
+ * The iframe fills its parent container.
+ */
 export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
   frame: GatekeeperUiFrame,
   gatekeeperVendorId: string,

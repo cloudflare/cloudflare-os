@@ -12,9 +12,11 @@ function initials(title: string | undefined): string {
   return parts.map((p) => p[0]?.toUpperCase() ?? '').join('') || t.slice(0, 2).toUpperCase()
 }
 
-// One row in the sidebar's Favorites / Recent list. Compact, with a monogram avatar, a truncated
-// title, and an overflow menu (favorite, rename, share, delete). Favorite/rename/share/delete
-// callbacks are passed in by the parent so this row stays a pure presentational component.
+/**
+ * One row in the sidebar's Favorites / Recent list. Compact, with a monogram avatar, a truncated
+ * title, and an overflow menu (favorite, rename, share, delete). Favorite/rename/share/delete
+ * callbacks are passed in by the parent so this row stays a pure presentational component.
+ */
 export default function SidebarGadgetRow({
   gadget,
   collapsed = false,

@@ -106,7 +106,7 @@ async function handleBroken(error: any) {
 let notifyCurrentStubUpdated: Set<() => void> = new Set();
 let isConnectionLost = false;
 
-// Called externally (e.g., by auth) to indicate the connection is alive.
+/** Called externally (e.g., by auth) to indicate the connection is alive. */
 export function markConnectionRestored() {
   if (!isConnectionLost) return;
   isConnectionLost = false;

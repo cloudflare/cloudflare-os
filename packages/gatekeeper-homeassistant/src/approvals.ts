@@ -428,7 +428,7 @@ export async function executeAction(
   });
 }
 
-// Fetch the current dashboard config so we can store it as revert info.
+/** Fetch the current dashboard config so we can store it as revert info. */
 export async function fetchDashboardConfig(
   urlPath: string | null,
   creds: HomeAssistantCredentials,

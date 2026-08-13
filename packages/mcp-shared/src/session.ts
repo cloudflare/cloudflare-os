@@ -14,43 +14,51 @@ import { isWholeEndpoint, type ToolScope } from "./scope.js";
 import { describeCall, toCallResult, toolInfo, type ClassifiedTool } from "./tools.js";
 import type { McpCallResult, McpToolInfo } from "./types";
 
-// A queued tool call, awaiting a decision. Persisted by the host in its own storage; the session
-// only ever reads one back by id.
+/**
+ * A queued tool call, awaiting a decision. Persisted by the host in its own storage; the session
+ * only ever reads one back by id.
+ */
 export type StoredAction = {
   id: number;
   toolName: string;
   args: Record<string, unknown>;
-  // `applying` is the window between an approval arriving and the call returning. It exists so a
-  // second `applyAction` for the same id cannot find the record still `pending` and call the tool a
-  // second time; see `ActionStore.apply`.
+  /**
+   * `applying` is the window between an approval arriving and the call returning. It exists so a
+   * second `applyAction` for the same id cannot find the record still `pending` and call the tool a
+   * second time; see `ActionStore.apply`.
+   */
   state: "pending" | "applying" | "applied" | "rejected" | "failed";
   submittedAt: number;
-  // When the in-flight apply was claimed, for recovering a claim whose Durable Object died mid-call.
+  /** When the in-flight apply was claimed, for recovering a claim whose Durable Object died mid-call. */
   claimedAt?: number;
-  // Whether a `failed` record may be sent again. Absent means yes, which is the reading for records
-  // written before this field existed. False marks a failure that left the outcome unknown: the
-  // request may already have been carried out, so another attempt could duplicate a write that MCP
-  // gives no way to undo. See `ActionStore.apply`.
+  /**
+   * Whether a `failed` record may be sent again. Absent means yes, which is the reading for records
+   * written before this field existed. False marks a failure that left the outcome unknown: the
+   * request may already have been carried out, so another attempt could duplicate a write that MCP
+   * gives no way to undo. See `ActionStore.apply`.
+   */
   retryable?: boolean;
-  // Populated once applied; delivered to the Gadget as an observation.
+  /** Populated once applied; delivered to the Gadget as an observation. */
   result?: Extract<McpCallResult, { status: "ok" }>;
   error?: string;
 };
 
-// What a session needs from the gatekeeper facet that owns it. Narrow: the session is handed to a
-// Gadget, so anything reachable from here is one `followPath` away from untrusted code.
+/**
+ * What a session needs from the gatekeeper facet that owns it. Narrow: the session is handed to a
+ * Gadget, so anything reachable from here is one `followPath` away from untrusted code.
+ */
 export interface McpSessionHost {
   readonly serverName: string;
   readonly endpoint: string;
-  // How much of the endpoint this binding may call. Only used to word the "no such tool" error.
+  /** How much of the endpoint this binding may call. Only used to word the "no such tool" error. */
   readonly scope: ToolScope;
 
   tools(): Promise<ClassifiedTool[]>;
 
-  // Runs `fn` against an initialized client for this binding's endpoint.
+  /** Runs `fn` against an initialized client for this binding's endpoint. */
   call<T>(fn: (client: McpClient) => Promise<T>, options?: WithClientOptions): Promise<T>;
 
-  // The approval-kind tag for one tool, namespaced so pre-approvals cannot cross servers.
+  /** The approval-kind tag for one tool, namespaced so pre-approvals cannot cross servers. */
   actionKindFor(toolName: string): ActionKind;
 
   stageAction(toolName: string, args: Record<string, unknown>): StoredAction;
@@ -58,9 +66,11 @@ export interface McpSessionHost {
   lookupAction(id: number): StoredAction | undefined;
 }
 
-// The Gadget-facing session. A named method per tool is installed on a per-grant subclass (see
-// `session-methods.ts`), each a one-line delegate to `callTool`. Connectors subclass this and apply
-// `@validateRpc()` there, so the decorator is visible in the file that hands it to a Gadget.
+/**
+ * The Gadget-facing session. A named method per tool is installed on a per-grant subclass (see
+ * `session-methods.ts`), each a one-line delegate to `callTool`. Connectors subclass this and apply
+ * `@validateRpc()` there, so the decorator is visible in the file that hands it to a Gadget.
+ */
 export class McpSessionBase extends RpcTarget {
   #host: McpSessionHost;
   #queue: RpcStub<ApprovalQueue>;

@@ -45,48 +45,56 @@ import type { McpLog } from "./log.js";
 import { sameEndpoint } from "./scope.js";
 import { hostOf } from "./util.js";
 
-// How a connected endpoint proves who we are. Discovered for a user-supplied endpoint (the probe in
-// `beginConnect` answers `none` or `oauth`); configured for a deployment's gateway, which may
-// additionally hold a preissued `token`.
+/**
+ * How a connected endpoint proves who we are. Discovered for a user-supplied endpoint (the probe in
+ * `beginConnect` answers `none` or `oauth`); configured for a deployment's gateway, which may
+ * additionally hold a preissued `token`.
+ */
 export type ServerAuthKind = "none" | "oauth" | "token";
 
-// The endpoint this account is connected to, once chosen.
+/** The endpoint this account is connected to, once chosen. */
 export type ConnectedServer = {
   endpoint: string;
-  // A slug naming this server, for the suggested binding name and the generated session type.
-  // Naming only, and not unique: two hosts can yield the same slug, which is why action-kind tags
-  // are built from the whole endpoint instead, via `endpointTag`.
+  /**
+   * A slug naming this server, for the suggested binding name and the generated session type.
+   * Naming only, and not unique: two hosts can yield the same slug, which is why action-kind tags
+   * are built from the whole endpoint instead, via `endpointTag`.
+   */
   serverId: string;
-  // The server's own reported name once known, else the endpoint host.
+  /** The server's own reported name once known, else the endpoint host. */
   serverName: string;
-  // Who chose this endpoint. Settled at connect time and true forever after, unlike `ServerTrust`,
-  // which is current deployment configuration and must not be frozen onto an account.
+  /**
+   * Who chose this endpoint. Settled at connect time and true forever after, unlike `ServerTrust`,
+   * which is current deployment configuration and must not be frozen onto an account.
+   */
   provenance: "user" | "deployment";
-  // How to authenticate to it.
+  /** How to authenticate to it. */
   auth: ServerAuthKind;
 };
 
-// Which server record a `beginConnect` should proceed with, or null to refuse the attempt.
-//
-// The endpoint is immutable after the first connect: a reconnect re-authorizes the server this
-// account already holds credentials for and cannot name a different one. A gatekeeper facet carries
-// the endpoint frozen in its props while `getAuthorization()` answers for whatever the account
-// currently points at, so moving the account would send a token minted for the new server to the
-// old one.
-//
-// Only the endpoint is pinned, though. Everything else on the record is the caller's to restate: a
-// deployment's portal supplies its name and auth kind from current configuration, so preferring the
-// stored copy meant a reconnect could not adopt a renamed portal, a rotated preissued token, or a
-// switch between `token` and `oauth` -- the reconnect would appear to succeed and keep using the
-// configuration it was meant to replace. A user-supplied reconnect passes no target and still falls
-// back to what is stored.
-//
-// The one endpoint change that is allowed is a deployment repointing its own gateway. That target
-// comes from this Worker's configuration rather than from anything a user typed, and bindings minted
-// against the old endpoint already fail closed, since each connector checks its props against
-// current configuration before handing out a capability. Refusing it outright left the repoint
-// unrecoverable: every existing binding told the user to reconnect and reconnecting was the one
-// thing the account would not do. Credentials do not survive the move -- see `beginConnect`.
+/**
+ * Which server record a `beginConnect` should proceed with, or null to refuse the attempt.
+ *
+ * The endpoint is immutable after the first connect: a reconnect re-authorizes the server this
+ * account already holds credentials for and cannot name a different one. A gatekeeper facet carries
+ * the endpoint frozen in its props while `getAuthorization()` answers for whatever the account
+ * currently points at, so moving the account would send a token minted for the new server to the
+ * old one.
+ *
+ * Only the endpoint is pinned, though. Everything else on the record is the caller's to restate: a
+ * deployment's portal supplies its name and auth kind from current configuration, so preferring the
+ * stored copy meant a reconnect could not adopt a renamed portal, a rotated preissued token, or a
+ * switch between `token` and `oauth` -- the reconnect would appear to succeed and keep using the
+ * configuration it was meant to replace. A user-supplied reconnect passes no target and still falls
+ * back to what is stored.
+ *
+ * The one endpoint change that is allowed is a deployment repointing its own gateway. That target
+ * comes from this Worker's configuration rather than from anything a user typed, and bindings minted
+ * against the old endpoint already fail closed, since each connector checks its props against
+ * current configuration before handing out a capability. Refusing it outright left the repoint
+ * unrecoverable: every existing binding told the user to reconnect and reconnecting was the one
+ * thing the account would not do. Credentials do not survive the move -- see `beginConnect`.
+ */
 export function resolveConnectTarget(
   existing: ConnectedServer | undefined, target: ConnectedServer | null,
 ): ConnectedServer | null {
@@ -97,7 +105,7 @@ export function resolveConnectTarget(
   return target ?? existing ?? null;
 }
 
-// What `beginConnect` tells the HTTP handler to do next.
+/** What `beginConnect` tells the HTTP handler to do next. */
 export type ConnectOutcome =
   | { kind: "done" }
   | { kind: "redirect"; url: string }
@@ -117,9 +125,9 @@ type PendingAuthorization = {
   generation: number;
 };
 
-// The environment an account reads. Each Worker's own `Env` satisfies it structurally.
+/** The environment an account reads. Each Worker's own `Env` satisfies it structurally. */
 export type AccountEnv = ConnectionEnv & {
-  // Public base URL of this gatekeeper Worker, used to build the OAuth redirect URI.
+  /** Public base URL of this gatekeeper Worker, used to build the OAuth redirect URI. */
   BASE_URL?: string;
 };
 
@@ -134,39 +142,45 @@ function displayName(reported: string | undefined): string | undefined {
   return cleaned.length > MAX_SERVER_NAME ? `${cleaned.slice(0, MAX_SERVER_NAME)}\u2026` : cleaned;
 }
 
-// Base for a connector's account Durable Object. Subclasses supply where this Worker lives
-// (`baseUrl`), how to hand the finished account back to the Workshop (`mintAccount`), and, only for
-// a deployment-configured endpoint, a preissued bearer token (`staticToken`).
+/**
+ * Base for a connector's account Durable Object. Subclasses supply where this Worker lives
+ * (`baseUrl`), how to hand the finished account back to the Workshop (`mintAccount`), and, only for
+ * a deployment-configured endpoint, a preissued bearer token (`staticToken`).
+ */
 export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
   extends DurableObject<E, P> {
 
 
-  // This Worker's public base URL, with no trailing slash. The OAuth redirect is `${it}/oauth`.
+  /** This Worker's public base URL, with no trailing slash. The OAuth redirect is `${it}/oauth`. */
   protected abstract baseUrl(): string;
 
-  // Logger for connect-flow events, already carrying the connector's component field.
+  /** Logger for connect-flow events, already carrying the connector's component field. */
   protected abstract log(): McpLog;
 
-  // Mints the account capability handed to the Workshop on a successful connect. Per-connector
-  // because a Durable Object can only reach its own Worker's exports.
+  /**
+   * Mints the account capability handed to the Workshop on a successful connect. Per-connector
+   * because a Durable Object can only reach its own Worker's exports.
+   */
   protected abstract mintAccount(): Fetcher<GatekeeperUser>;
 
-  // A bearer token this deployment was configured with, for an endpoint whose `auth` is `"token"`.
-  // Null when there is none, which for such an endpoint is reported as a misconfiguration. Never
-  // called for `"none"` or `"oauth"`.
-  //
-  // `server` is supplied because this is the one credential read from *live deployment
-  // configuration* rather than from this account's storage. Everything else handed out here was
-  // minted for the endpoint the account stores, so it is safe to send there by construction; a
-  // configured token is not. An administrator repointing the gateway changes the URL and its token
-  // together and touches no account, so between that edit and the user's reconnect the account
-  // still names the old endpoint while this method would answer with the new deployment's secret.
-  // Implementations must therefore return null unless current configuration still names `server`.
+  /**
+   * A bearer token this deployment was configured with, for an endpoint whose `auth` is `"token"`.
+   * Null when there is none, which for such an endpoint is reported as a misconfiguration. Never
+   * called for `"none"` or `"oauth"`.
+   *
+   * `server` is supplied because this is the one credential read from *live deployment
+   * configuration* rather than from this account's storage. Everything else handed out here was
+   * minted for the endpoint the account stores, so it is safe to send there by construction; a
+   * configured token is not. An administrator repointing the gateway changes the URL and its token
+   * together and touches no account, so between that edit and the user's reconnect the account
+   * still names the old endpoint while this method would answer with the new deployment's secret.
+   * Implementations must therefore return null unless current configuration still names `server`.
+   */
   protected staticToken(_server: ConnectedServer): string | null {
     return null;
   }
 
-  // Relaxes host and scheme checks for local development against an MCP server on localhost.
+  /** Relaxes host and scheme checks for local development against an MCP server on localhost. */
   protected fetchOptions(): FetchOptions {
     return fetchOptions(this.env);
   }
@@ -201,13 +215,15 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     return server;
   }
 
-  // True once a server has been chosen, so a reconnect can skip the picker. A connector that needs
-  // this over RPC re-exposes it.
+  /**
+   * True once a server has been chosen, so a reconnect can skip the picker. A connector that needs
+   * this over RPC re-exposes it.
+   */
   protected hasConnectedServer(): boolean {
     return this.server() !== undefined;
   }
 
-  // The connected endpoint and its name, for gatekeeper facets and the configurator.
+  /** The connected endpoint and its name, for gatekeeper facets and the configurator. */
   async getServer(): Promise<ConnectedServer> {
     return this.requireServer();
   }
@@ -226,18 +242,22 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     });
   }
 
-  // True when this account is waiting to be connected with this nonce. Exposed by the connector so
-  // its connect handler can reject a stale link before rendering the endpoint form.
+  /**
+   * True when this account is waiting to be connected with this nonce. Exposed by the connector so
+   * its connect handler can reject a stale link before rendering the endpoint form.
+   */
   protected awaitingSelection(initiationNonce: string): boolean {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     return stored !== undefined && stored.stage === "initiation" &&
       Date.now() < stored.expiresAt && constantTimeEqual(stored.value, initiationNonce);
   }
 
-  // Claims an initiation nonce synchronously, before connecting reaches its first await. Durable
-  // Object requests can interleave at an await, so merely validating here would let two completion
-  // requests both pass and independently probe, start OAuth, or hand an account to the Workshop.
-  // The intermediate stage preserves the value and expiry for diagnosis without leaving it usable.
+  /**
+   * Claims an initiation nonce synchronously, before connecting reaches its first await. Durable
+   * Object requests can interleave at an await, so merely validating here would let two completion
+   * requests both pass and independently probe, start OAuth, or hand an account to the Workshop.
+   * The intermediate stage preserves the value and expiry for diagnosis without leaving it usable.
+   */
   protected claimSelection(initiationNonce: string): boolean {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || !this.awaitingSelection(initiationNonce)) return false;
@@ -268,10 +288,12 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     });
   }
 
-  // Connects to `target`, or to the already-chosen server on reconnect.
-  //
-  // Probes unauthenticated first, since a 401 is how a server tells us both that it needs OAuth and
-  // where its authorization server is.
+  /**
+   * Connects to `target`, or to the already-chosen server on reconnect.
+   *
+   * Probes unauthenticated first, since a 401 is how a server tells us both that it needs OAuth and
+   * where its authorization server is.
+   */
   async beginConnect(
     initiationNonce: string, target: ConnectedServer | null,
   ): Promise<ConnectOutcome> {
@@ -366,7 +388,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     }
   }
 
-  // Opens a client and performs `initialize`, caching the transport session id it returns.
+  /** Opens a client and performs `initialize`, caching the transport session id it returns. */
   protected async probe(
     server: ConnectedServer, accessToken: string | null, generation: number,
   ): Promise<McpServerInfo> {
@@ -544,7 +566,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     }
   }
 
-  // Completes the OAuth code exchange. Returns false when the callback's nonce doesn't match.
+  /** Completes the OAuth code exchange. Returns false when the callback's nonce doesn't match. */
   async acceptAuthCode(code: string, oauthNonce: string, issuer?: string): Promise<boolean> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "oauth" || Date.now() >= stored.expiresAt ||
@@ -628,9 +650,11 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
   }
 
 
-  // Everything one operation against the endpoint needs, in a single round trip. Every MCP request
-  // needs both the credentials and the cached transport session, and reading them separately costs
-  // two serialized RPCs to this Durable Object on the hot path.
+  /**
+   * Everything one operation against the endpoint needs, in a single round trip. Every MCP request
+   * needs both the credentials and the cached transport session, and reading them separately costs
+   * two serialized RPCs to this Durable Object on the hot path.
+   */
   async getConnection(endpoint: string): Promise<McpConnection> {
     const server = this.requireServer();
     const generation = this.connectionGeneration();
@@ -776,8 +800,10 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     }
   }
 
-  // Records the transport session id, so repeat calls skip the `initialize` handshake. An MCP call
-  // can finish after reconnecting; endpoint plus generation keep its old session out of new state.
+  /**
+   * Records the transport session id, so repeat calls skip the `initialize` handshake. An MCP call
+   * can finish after reconnecting; endpoint plus generation keep its old session out of new state.
+   */
   async setMcpSessionId(
     endpoint: string, generation: number, sessionId: string | null,
   ): Promise<void> {
@@ -788,8 +814,10 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     else this.ctx.storage.kv.delete("mcpSessionId");
   }
 
-  // Tells the Workshop the credentials need attention, at most once per expiry. A rejection can
-  // arrive after reconnecting, where it belongs to the old generation and must not poison the new.
+  /**
+   * Tells the Workshop the credentials need attention, at most once per expiry. A rejection can
+   * arrive after reconnecting, where it belongs to the old generation and must not poison the new.
+   */
   async noteCredentialsExpired(endpoint: string, generation: number): Promise<void> {
     const server = this.server();
     if (!server || !sameEndpoint(endpoint, server.endpoint)

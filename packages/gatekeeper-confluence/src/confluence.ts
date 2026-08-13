@@ -350,7 +350,7 @@ export class UserAccount extends DurableObject<Env> {
     if (identity) this.ctx.storage.kv.put<AtlassianIdentity>("identity", identity);
   }
 
-  // Returns a usable access token, refreshing proactively if it is near expiry.
+  /** Returns a usable access token, refreshing proactively if it is near expiry. */
   async getAccessToken(): Promise<string> {
     const grant = this.ctx.storage.kv.get<StoredGrant>("grant");
     if (!grant) throw new ConfluenceApiError(401, "No Confluence credentials set.");
@@ -595,8 +595,10 @@ export class ConfluenceSiteGatekeeperImpl extends DurableObject<Env, SiteGatekee
       sets => this.#tracker().prepareObservation(sets));
   }
 
-  // Site membership is the baseline for site metadata/current-user reads. The tracker separately
-  // verifies every restricted space and content item revealed through this broad binding.
+  /**
+   * Site membership is the baseline for site metadata/current-user reads. The tracker separately
+   * verifies every restricted space and content item revealed through this broad binding.
+   */
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     const verifier = user as unknown as Fetcher<ConfluenceVerifierApi>;
     if (!(await verifier.hasSiteAccess(this.ctx.props.cloudId))) {
@@ -639,8 +641,10 @@ export class ConfluenceSpaceGatekeeperImpl extends DurableObject<Env, SpaceGatek
       sets => this.#tracker().prepareObservation(sets));
   }
 
-  // Space access is the baseline; pages and blog posts are tracked independently because
-  // Confluence content restrictions may be narrower than the containing space.
+  /**
+   * Space access is the baseline; pages and blog posts are tracked independently because
+   * Confluence content restrictions may be narrower than the containing space.
+   */
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     const verifier = user as unknown as Fetcher<ConfluenceVerifierApi>;
     if (!(await verifier.hasSpaceAccess(this.ctx.props.cloudId, this.ctx.props.spaceKey))) {
@@ -684,8 +688,10 @@ export class ConfluenceContentGatekeeperImpl extends DurableObject<Env, ContentG
       sets => this.#tracker().prepareObservation(sets));
   }
 
-  // Access to the bound page/blog post is the baseline. Child pages remain tracked sets because a
-  // descendant can have stricter restrictions than its parent.
+  /**
+   * Access to the bound page/blog post is the baseline. Child pages remain tracked sets because a
+   * descendant can have stricter restrictions than its parent.
+   */
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     const verifier = user as unknown as Fetcher<ConfluenceVerifierApi>;
     if (!(await verifier.hasContentAccess(this.ctx.props.cloudId, this.ctx.props.contentId))) {

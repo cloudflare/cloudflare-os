@@ -8,8 +8,10 @@ import { BlueprintMetadata, BlueprintOutput, BlueprintPublicInfo, isOutputIcon }
 
 export const FEATURED_BLUEPRINTS_KEY = '.featured';
 
-// Reserved key in the BLUEPRINTS KV namespace holding the deployment-wide admin config (a single
-// JSON object). AdminSettings already owns this namespace; see admin-config.ts.
+/**
+ * Reserved key in the BLUEPRINTS KV namespace holding the deployment-wide admin config (a single
+ * JSON object). AdminSettings already owns this namespace; see admin-config.ts.
+ */
 export const ADMIN_CONFIG_KEY = '.adminConfig';
 
 const BLUEPRINT_ARCHIVE_MAGIC = 0xec2e2d3a2300e317n;
@@ -23,9 +25,11 @@ const textDecoder = new TextDecoder();
 
 export type BlueprintKvRecord = {
   metadata: BlueprintMetadata;
-  // The User DO that published or uploaded this blueprint, and which owns the authoritative
-  // "featured" bit for it. Undefined for a blueprint the deployment installed itself, which
-  // has no owning user.
+  /**
+   * The User DO that published or uploaded this blueprint, and which owns the authoritative
+   * "featured" bit for it. Undefined for a blueprint the deployment installed itself, which
+   * has no owning user.
+   */
   ownerId?: string;
   gadgetId?: string;  // undefined = uploaded, not published from a gadget on this instance
 };
@@ -51,10 +55,12 @@ function outputString(value: unknown): string | undefined {
   return trimmed;
 }
 
-// Accept a blueprint's declared output format only if it is completely well-formed, otherwise
-// treat the blueprint as declaring nothing (a generic app). Blueprint metadata arrives from
-// uploaded archives, so an unknown icon key or an overlong noun must degrade rather than reach
-// the UI.
+/**
+ * Accept a blueprint's declared output format only if it is completely well-formed, otherwise
+ * treat the blueprint as declaring nothing (a generic app). Blueprint metadata arrives from
+ * uploaded archives, so an unknown icon key or an overlong noun must degrade rather than reach
+ * the UI.
+ */
 export function sanitizeBlueprintOutput(output: unknown): BlueprintOutput | undefined {
   if (!output || typeof output !== "object") return undefined;
   let {id, noun, plural, icon} = output as Partial<BlueprintOutput>;
@@ -83,8 +89,10 @@ export function serializeFeaturedBlueprints(featured: BlueprintPublicInfo[]): st
   return JSON.stringify(featured);
 }
 
-// The env a blueprint KV read needs. Narrowed to the one binding so helpers that only read
-// blueprints can be called from anywhere holding it, without passing a whole env around.
+/**
+ * The env a blueprint KV read needs. Narrowed to the one binding so helpers that only read
+ * blueprints can be called from anywhere holding it, without passing a whole env around.
+ */
 export type BlueprintKvEnv = Pick<Cloudflare.Env, 'BLUEPRINTS'>;
 
 export async function readBlueprintKvRecord(
@@ -114,8 +122,10 @@ export async function listFeaturedBlueprintsFromKv(
   return parseFeaturedBlueprints(raw);
 }
 
-// Read a blueprint's code snapshot (an uncompressed Yjs V2 state update of a doc whose unnamed
-// root map is filename -> Y.Text) from R2, or null if the content object doesn't exist.
+/**
+ * Read a blueprint's code snapshot (an uncompressed Yjs V2 state update of a doc whose unnamed
+ * root map is filename -> Y.Text) from R2, or null if the content object doesn't exist.
+ */
 export async function readBlueprintContent(
   env: Pick<Cloudflare.Env, 'BLUEPRINT_CONTENT'>,
   blueprintId: string,

@@ -38,7 +38,7 @@ export class UserLibraryDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.ownedCollections.put({ id, title, description, icon, lastUpdated: new Date() });
   }
 
-  // Refresh the denormalized owned record.
+  /** Refresh the denormalized owned record. */
   updateOwnedCollection(id: string, summary: ContextCollectionSummary): void {
     let record = this.storage.ownedCollections.get(id);
     if (record) {
@@ -54,7 +54,7 @@ export class UserLibraryDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.ownedCollections.delete(id);
   }
 
-  // Wipe this library after the caller deletes owned collection content.
+  /** Wipe this library after the caller deletes owned collection content. */
   async deleteAll(): Promise<void> {
     await this.ctx.storage.deleteAll();
   }
@@ -77,8 +77,10 @@ export class UserLibraryDurableObject extends DurableObject<Cloudflare.Env> {
 
   // --- Enabled set (own private + every public collection) ---
 
-  // Enabled collection visibility for the agent read path. Owned wins on overlap so private is never
-  // downgraded to public.
+  /**
+   * Enabled collection visibility for the agent read path. Owned wins on overlap so private is never
+   * downgraded to public.
+   */
   async getEnabledCollections(domain: string): Promise<Map<string, ContextCollectionVisibility>> {
     let result = new Map<string, ContextCollectionVisibility>();
     for (let record of this.storage.ownedCollections.list()) result.set(record.id, "private");

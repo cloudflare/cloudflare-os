@@ -74,9 +74,11 @@ export default function SandboxedResourceConfigurator({
   topOffset?: number,
   onCollectResourceUrlChange?: (collect: (() => Promise<string>) | null) => void,
   onSelectionReadyChange?: (ready: boolean | null) => void,
-  // When set, the configurator opens pre-filled to this concrete resource URL (e.g. supplied by an
-  // AI agent's connection request). `resourceUrlPattern` is this resource's pattern, used by the
-  // iframe runtime's fallback URL->values extraction.
+  /**
+   * When set, the configurator opens pre-filled to this concrete resource URL (e.g. supplied by an
+   * AI agent's connection request). `resourceUrlPattern` is this resource's pattern, used by the
+   * iframe runtime's fallback URL->values extraction.
+   */
   initialResourceUrl?: string,
   resourceUrlPattern?: string,
 }) {

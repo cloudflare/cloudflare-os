@@ -4,9 +4,11 @@ import { useDocumentTitle } from '../useDocumentTitle'
 import ComingSoonPreview from '../components/ComingSoonPreview'
 import { useSiteName } from '../ServerConfigContext'
 
-// Context & Skills. The knowledge/skills surface isn't built into the rail yet — agents read
-// curated collections of documents (context) and reusable skills. Until then this page shows a
-// frosted design mock so the nav entry has a stable, on-language target.
+/**
+ * Context & Skills. The knowledge/skills surface isn't built into the rail yet — agents read
+ * curated collections of documents (context) and reusable skills. Until then this page shows a
+ * frosted design mock so the nav entry has a stable, on-language target.
+ */
 export const Route = createFileRoute('/context')({
   component: ContextPage,
 })

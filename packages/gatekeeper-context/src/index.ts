@@ -8,7 +8,7 @@ export {
   GatekeeperVendor, ContextAccount, ContextVerifier, ContextGatekeeper,
 } from "./library-gatekeeper.js";
 
-// Keep ES Module worker format; this worker is used over RPC/DOs, not HTTP.
+/** Keep ES Module worker format; this worker is used over RPC/DOs, not HTTP. */
 export default {
   async fetch(): Promise<Response> {
     return new Response("Context Library worker is running.", {

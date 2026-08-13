@@ -559,7 +559,7 @@ export class HomeAssistantUserImpl
     };
   }
 
-  // This gatekeeper does not provide sign-in.
+  /** This gatekeeper does not provide sign-in. */
   async getAuthenticatedEmail(): Promise<string | null> {
     return null;
   }
@@ -686,12 +686,14 @@ export class HomeAssistantUserImpl
     return {};
   }
 
-  // Mint a verifier representing this account. Home Assistant uses the "low-stakes" observer
-  // strategy (see HomeAssistantGatekeeperImpl.addObserver): it is a self-hosted personal system,
-  // and its long-lived access token is all-or-nothing (HA exposes no per-user/per-entity ACL we
-  // could verify an observer against), so there is nothing meaningful to check. The verifier
-  // carries no identity and is never consulted — but the overseer mints one on every open, so it
-  // must exist and not throw.
+  /**
+   * Mint a verifier representing this account. Home Assistant uses the "low-stakes" observer
+   * strategy (see HomeAssistantGatekeeperImpl.addObserver): it is a self-hosted personal system,
+   * and its long-lived access token is all-or-nothing (HA exposes no per-user/per-entity ACL we
+   * could verify an observer against), so there is nothing meaningful to check. The verifier
+   * carries no identity and is never consulted — but the overseer mints one on every open, so it
+   * must exist and not throw.
+   */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     return this.ctx.exports.HomeAssistantVerifier({});
@@ -951,7 +953,7 @@ type HomeAssistantGatekeeperImplProps = {
   resourceId?: string;
 };
 
-// HA service-call target as accepted by HA itself (snake_case fields).
+/** HA service-call target as accepted by HA itself (snake_case fields). */
 export type HATarget = {
   entity_id?: string | string[];
   device_id?: string | string[];
@@ -960,8 +962,10 @@ export type HATarget = {
   floor_id?: string | string[];
 };
 
-// "Where the write came from" — used to author meaningful action descriptions and (later)
-// to drive simulation overlays. The receiving session may be whole-instance or scoped.
+/**
+ * "Where the write came from" — used to author meaningful action descriptions and (later)
+ * to drive simulation overlays. The receiving session may be whole-instance or scoped.
+ */
 export type ActionOrigin =
   | { kind: "session" }
   | { kind: "entity"; entityId: string }
@@ -970,7 +974,7 @@ export type ActionOrigin =
   | { kind: "device"; deviceId: string }
   | { kind: "dashboard"; urlPath: string };
 
-// All side-effecting actions go through the approval queue as one of these.
+/** All side-effecting actions go through the approval queue as one of these. */
 export type HomeAssistantAction =
   | {
       id: number;
@@ -997,7 +1001,7 @@ export type HomeAssistantAction =
       origin: ActionOrigin;
     };
 
-// Captured at apply time so we can later restore the prior state via revertAction().
+/** Captured at apply time so we can later restore the prior state via revertAction(). */
 export type HomeAssistantRevertInfo =
   | {
       type: "stateSnapshot";
@@ -1233,11 +1237,13 @@ export class HomeAssistantGatekeeperImpl
     }
   }
 
-  // Observer tracking: Home Assistant uses the "low-stakes" strategy. It is a self-hosted personal
-  // system, and the connection is a long-lived access token that grants the same all-or-nothing
-  // access as the HA user who created it — HA has no per-user/per-entity ACL oracle we could verify
-  // an observer against. So any collaborator may observe: addObserver/removeObserver are no-ops and
-  // we never set excludeObservers on observations.
+  /**
+   * Observer tracking: Home Assistant uses the "low-stakes" strategy. It is a self-hosted personal
+   * system, and the connection is a long-lived access token that grants the same all-or-nothing
+   * access as the HA user who created it — HA has no per-user/per-entity ACL oracle we could verify
+   * an observer against. So any collaborator may observe: addObserver/removeObserver are no-ops and
+   * we never set excludeObservers on observations.
+   */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
   async removeObserver(_id: string): Promise<void> {}
 

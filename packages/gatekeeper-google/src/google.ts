@@ -346,7 +346,7 @@ function grantedResourcesFromScopes(grantedOAuthScopes: string[]): string[] {
 
 const GOOGLE_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(GOOGLE_LOGO_SVG)}`;
 
-// Main HTTP UI entrypoint. We only use this to initiate and complete OAuth requests to Google.
+/** Main HTTP UI entrypoint. We only use this to initiate and complete OAuth requests to Google. */
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     let url = new URL(req.url);
@@ -528,12 +528,14 @@ export class UserAccount extends DurableObject<Env> {
     });
   }
 
-  // Prepare this account for a reconnect flow. The next acceptAuthCode() call will replace the
-  // existing refresh token and notify via credentialsRestored() instead of complete().
-  //
-  // `requestedScopes` is the full set of OAuth scopes to request on the reauthorization. For a
-  // plain reconnect this is the previously-granted set; for a scope expansion it's the union of
-  // the granted scopes and the newly-needed ones.
+  /**
+   * Prepare this account for a reconnect flow. The next acceptAuthCode() call will replace the
+   * existing refresh token and notify via credentialsRestored() instead of complete().
+   *
+   * `requestedScopes` is the full set of OAuth scopes to request on the reauthorization. For a
+   * plain reconnect this is the previously-granted set; for a scope expansion it's the union of
+   * the granted scopes and the newly-needed ones.
+   */
   async prepareReconnect(initiationNonce: string, requestedScopes: string[]) {
     this.ctx.storage.kv.put<boolean>("reconnecting", true);
     this.ctx.storage.kv.put<string[]>("requestedScopes", requestedScopes);
@@ -544,12 +546,14 @@ export class UserAccount extends DurableObject<Env> {
     });
   }
 
-  // The grantable resource `urlPattern`s currently granted on this account. Used to decide
-  // whether ensureResources() needs to expand.
-  //
-  // Legacy accounts connected before granular scope tracking have no recorded granted scopes.
-  // Report only the resources included in that historical grant, so newer resources correctly
-  // trigger OAuth scope expansion.
+  /**
+   * The grantable resource `urlPattern`s currently granted on this account. Used to decide
+   * whether ensureResources() needs to expand.
+   *
+   * Legacy accounts connected before granular scope tracking have no recorded granted scopes.
+   * Report only the resources included in that historical grant, so newer resources correctly
+   * trigger OAuth scope expansion.
+   */
   async getGrantedResourceUrlPatterns(): Promise<string[]> {
     let granted = this.ctx.storage.kv.get<string[]>("grantedScopes");
     if (granted === undefined) {
@@ -558,9 +562,11 @@ export class UserAccount extends DurableObject<Env> {
     return grantedResourcesFromScopes(granted);
   }
 
-  // Called by the fetch handler when the user visits the initiation URL. Verifies the initiation
-  // nonce, consumes it, and returns a fresh OAuth nonce plus the scopes to request. Returns null if
-  // the nonce is invalid or expired.
+  /**
+   * Called by the fetch handler when the user visits the initiation URL. Verifies the initiation
+   * nonce, consumes it, and returns a fresh OAuth nonce plus the scopes to request. Returns null if
+   * the nonce is invalid or expired.
+   */
   async beginOAuthFlow(initiationNonce: string): Promise<{oauthNonce: string, scopes: string[]} | null> {
     let stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "initiation" ||
@@ -581,7 +587,7 @@ export class UserAccount extends DurableObject<Env> {
     return {oauthNonce, scopes};
   }
 
-  // Returns false if the OAuth nonce is invalid or expired.
+  /** Returns false if the OAuth nonce is invalid or expired. */
   async acceptAuthCode(code: string, oauthNonce: string): Promise<boolean> {
     // Verify and consume the OAuth nonce.
     let stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
@@ -1034,11 +1040,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
-  // Mint a verifier representing this account, used by the Google gatekeepers' addObserver to confirm
-  // a prospective observer may read a bound resource. The verifier carries this user's own account
-  // id, so the access checks run against the observer's *own* Google token. (The Gmail gatekeeper
-  // uses strategy A — it never consults the verifier — but getVerifier must still exist because the
-  // overseer mints one on every open.)
+  /**
+   * Mint a verifier representing this account, used by the Google gatekeepers' addObserver to confirm
+   * a prospective observer may read a bound resource. The verifier carries this user's own account
+   * id, so the access checks run against the observer's *own* Google token. (The Gmail gatekeeper
+   * uses strategy A — it never consults the verifier — but getVerifier must still exist because the
+   * overseer mints one on every open.)
+   */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     let props: GoogleVerifierProps = { userObjectId: this.ctx.props.userObjectId };
@@ -1081,8 +1089,10 @@ function isNoAccessStatus(status: number | undefined): boolean {
   return status === 401 || status === 403 || status === 404;
 }
 
-// The non-standard methods the Google gatekeepers call on their own verifier (see addObserver). Not
-// part of the generic GatekeeperUserVerifier contract.
+/**
+ * The non-standard methods the Google gatekeepers call on their own verifier (see addObserver). Not
+ * part of the generic GatekeeperUserVerifier contract.
+ */
 export interface GoogleVerifierApi extends GatekeeperUserVerifier {
   hasDocAccess(documentId: string): Promise<boolean>;
   hasSpreadsheetAccess(spreadsheetId: string): Promise<boolean>;
@@ -1887,7 +1897,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     return new GmailSessionImpl(ctx);
   }
 
-  // ---------------------------------------------------------------------------
+  /** --------------------------------------------------------------------------- */
   async applyAction(actionId: number): Promise<void> {
     const pendingActions = new PendingActionStore<GmailAction>(this.ctx.storage.kv);
     const action = pendingActions.get(actionId);
@@ -1948,12 +1958,14 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     throw new Error("revert is not implemented");
   }
 
-  // Observer tracking — strategy A (private-only). Full access to a mailbox/label/search is too
-  // personal to extend to any non-owner observer (a Gmail mailbox has no per-recipient ACL we could
-  // verify an observer against — the mailing-list decomposition discussed in the plan is explicitly
-  // out of scope). So no non-owner observer may ever observe Gmail data: addObserver always throws.
-  // (This is enforced here in addition to any prohibitAllSharing usage, so the lockdown holds even
-  // when sharing is otherwise permitted.) removeObserver is a no-op since none is ever recorded.
+  /**
+   * Observer tracking — strategy A (private-only). Full access to a mailbox/label/search is too
+   * personal to extend to any non-owner observer (a Gmail mailbox has no per-recipient ACL we could
+   * verify an observer against — the mailing-list decomposition discussed in the plan is explicitly
+   * out of scope). So no non-owner observer may ever observe Gmail data: addObserver always throws.
+   * (This is enforced here in addition to any prohibitAllSharing usage, so the lockdown holds even
+   * when sharing is otherwise permitted.) removeObserver is a no-op since none is ever recorded.
+   */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     throw new Error(
       "Gmail data cannot be shared with other users: this workspace reads a personal Gmail mailbox, " +
@@ -2306,11 +2318,13 @@ export class GoogleDocGatekeeperImpl
     throw new Error("revert is not implemented");
   }
 
-  // Observer tracking — strategy B (ACL check, single unit). The binding is one document, so we just
-  // confirm the observer can open it with their own token (hasDocAccess, via the Drive/Docs ACL).
-  // The document is the atomic unit (everything read through this binding is that one doc), so no
-  // observers are tracked and removeObserver is a no-op. The overseer re-runs addObserver on every
-  // open, catching loss of access promptly.
+  /**
+   * Observer tracking — strategy B (ACL check, single unit). The binding is one document, so we just
+   * confirm the observer can open it with their own token (hasDocAccess, via the Drive/Docs ACL).
+   * The document is the atomic unit (everything read through this binding is that one doc), so no
+   * observers are tracked and removeObserver is a no-op. The overseer re-runs addObserver on every
+   * open, catching loss of access promptly.
+   */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<GoogleVerifierApi>;
     if (!(await verifier.hasDocAccess(this.ctx.props.documentId))) {
@@ -2561,7 +2575,7 @@ export class GoogleSheetsGatekeeperImpl
     );
   }
 
-  // Read-only — no side-effecting actions.
+  /** Read-only — no side-effecting actions. */
   async applyAction(_action: number): Promise<void> {
     throw new Error("Google Sheets is read-only and implements no actions.");
   }
@@ -2572,9 +2586,11 @@ export class GoogleSheetsGatekeeperImpl
     throw new Error("Google Sheets is read-only and implements no actions.");
   }
 
-  // Observer tracking — strategy B (ACL check, single unit). Google applies sharing permissions at
-  // spreadsheet granularity, so an observer must be able to open this spreadsheet with their own
-  // account. The overseer re-runs this check on every open, catching revoked access.
+  /**
+   * Observer tracking — strategy B (ACL check, single unit). Google applies sharing permissions at
+   * spreadsheet granularity, so an observer must be able to open this spreadsheet with their own
+   * account. The overseer re-runs this check on every open, catching revoked access.
+   */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<GoogleVerifierApi>;
     if (!(await verifier.hasSpreadsheetAccess(this.ctx.props.spreadsheetId))) {
@@ -3307,7 +3323,7 @@ export class BigQueryGatekeeperImpl
     );
   }
 
-  // Read-only — no side-effecting actions.
+  /** Read-only — no side-effecting actions. */
   async applyAction(_action: number): Promise<void> {}
   async rejectAction(_action: number): Promise<void> {}
   revertAction(_action: number): Promise<void> {

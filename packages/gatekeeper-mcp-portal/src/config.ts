@@ -12,32 +12,36 @@ import { fetchOptions } from "@gadgets/mcp-shared/fetch";
 import { sameEndpoint } from "@gadgets/mcp-shared/scope";
 import type { ServerTrust } from "@gadgets/mcp-shared/tools";
 
-// The configured portal, once the deployment's vars have been read and validated.
+/** The configured portal, once the deployment's vars have been read and validated. */
 export type PortalConfig = {
-  // The portal's MCP endpoint URL (Streamable HTTP).
+  /** The portal's MCP endpoint URL (Streamable HTTP). */
   endpoint: string;
-  // Display name shown in the connector list and in every approval prompt.
+  /** Display name shown in the connector list and in every approval prompt. */
   name: string;
-  // How to authenticate.
+  /** How to authenticate. */
   auth: ServerAuthKind;
 };
 
-// Stable id used in binding names, action kinds, and generated type names.
+/** Stable id used in binding names, action kinds, and generated type names. */
 export const PORTAL_SERVER_ID = "portal";
 
-// Whether this portal's tool annotations may drive auto-approval. Off unless a deployment asserts
-// that the upstreams are trusted, since a portal relays annotations written by servers the
-// administrator never reviewed.
-//
-// Call it at the point of use, every time. Persisting the answer would leave accounts vetted after
-// an administrator withdrew the assertion, until each one reconnected.
+/**
+ * Whether this portal's tool annotations may drive auto-approval. Off unless a deployment asserts
+ * that the upstreams are trusted, since a portal relays annotations written by servers the
+ * administrator never reviewed.
+ *
+ * Call it at the point of use, every time. Persisting the answer would leave accounts vetted after
+ * an administrator withdrew the assertion, until each one reconnected.
+ */
 export function portalTrust(env: Env): ServerTrust {
   return (env.MCP_PORTAL_TRUST_ANNOTATIONS ?? "").toLowerCase() === "true" ? "vetted" : "byo";
 }
 
-// Reads the deployment's portal configuration, or null when it is not configured. A missing or
-// unusable `MCP_PORTAL_URL` returns null rather than throwing, so the connector advertises no
-// resources and the Workshop hides it.
+/**
+ * Reads the deployment's portal configuration, or null when it is not configured. A missing or
+ * unusable `MCP_PORTAL_URL` returns null rather than throwing, so the connector advertises no
+ * resources and the Workshop hides it.
+ */
 export function readPortalConfig(env: Env): PortalConfig | null {
   const raw = env.MCP_PORTAL_URL?.trim();
   if (!raw) return null;
@@ -72,16 +76,18 @@ export function readPortalConfig(env: Env): PortalConfig | null {
   };
 }
 
-// Refuses a grant that does not name one upstream server.
-//
-// A portal flattens many systems behind one endpoint, so a scope with no `serverId` is a grant over
-// all of them at once -- `scopeAllows` permits every tool that is not portal-native -- and that is
-// the one breadth this connector deliberately does not offer.
-//
-// This is the enforcement, not the configurator. The form refuses to *emit* such a URL, but a
-// resource URL is not only ever produced by the form: an agent passes a concrete one to
-// `requestConnection`, and any URL under the portal's origin reaches `getGatekeeperClassFor`. A
-// rule that lives only in the iframe is a suggestion; the facet is minted here.
+/**
+ * Refuses a grant that does not name one upstream server.
+ *
+ * A portal flattens many systems behind one endpoint, so a scope with no `serverId` is a grant over
+ * all of them at once -- `scopeAllows` permits every tool that is not portal-native -- and that is
+ * the one breadth this connector deliberately does not offer.
+ *
+ * This is the enforcement, not the configurator. The form refuses to *emit* such a URL, but a
+ * resource URL is not only ever produced by the form: an agent passes a concrete one to
+ * `requestConnection`, and any URL under the portal's origin reaches `getGatekeeperClassFor`. A
+ * rule that lives only in the iframe is a suggestion; the facet is minted here.
+ */
 export function requirePortalServerScope(scope: ToolScope): void {
   if (scope.serverId !== undefined) return;
   throw new Error(
@@ -89,7 +95,7 @@ export function requirePortalServerScope(scope: ToolScope): void {
     "would cover every system connected to it, including ones added later.");
 }
 
-// The single resource type this connector offers, scoped to the configured portal's origin.
+/** The single resource type this connector offers, scoped to the configured portal's origin. */
 export function portalResource(config: PortalConfig): SupportedResource {
   return {
     // Origin-scoped, so a resource URL for anything else matches nothing this connector offers.
@@ -100,9 +106,11 @@ export function portalResource(config: PortalConfig): SupportedResource {
   };
 }
 
-// The connected-server record stored on an account, derived entirely from configuration.
-// `provenance` is what keeps the far side from renaming itself over `MCP_PORTAL_NAME` in every
-// approval prompt (see `McpAccountBase.complete`).
+/**
+ * The connected-server record stored on an account, derived entirely from configuration.
+ * `provenance` is what keeps the far side from renaming itself over `MCP_PORTAL_NAME` in every
+ * approval prompt (see `McpAccountBase.complete`).
+ */
 export function portalServer(config: PortalConfig): ConnectedServer {
   return {
     endpoint: config.endpoint,
@@ -113,27 +121,31 @@ export function portalServer(config: PortalConfig): ConnectedServer {
   };
 }
 
-// Probing may legitimately move between none and OAuth. A preissued token is deployment authority,
-// so entering or leaving that mode requires the account to reconnect against current configuration.
+/**
+ * Probing may legitimately move between none and OAuth. A preissued token is deployment authority,
+ * so entering or leaving that mode requires the account to reconnect against current configuration.
+ */
 export function portalAuthRequiresReconnect(
   connected: ServerAuthKind, configured: ServerAuthKind,
 ): boolean {
   return (connected === "token") !== (configured === "token");
 }
 
-// The preissued token, but only for the endpoint the deployment currently names.
-//
-// `MCP_PORTAL_TOKEN` is the one credential in this connector read from live configuration rather
-// than from an account's storage. Everything else an account hands out was minted for the endpoint
-// that account records, so it is safe to send there by construction. This is not: an administrator
-// repoints the gateway by editing the URL and its token together, which touches no account, so
-// until someone reconnects the account still names the old host while this value is already the new
-// deployment's secret. An account-side endpoint check cannot catch that -- it compares the caller
-// against storage that has not moved yet -- so the scoping has to happen here, against the
-// configuration the token actually belongs to.
-//
-// Null means "this deployment has no token for that endpoint", covering both a portal with no token
-// configured and one that has since been repointed. Callers fail the request closed either way.
+/**
+ * The preissued token, but only for the endpoint the deployment currently names.
+ *
+ * `MCP_PORTAL_TOKEN` is the one credential in this connector read from live configuration rather
+ * than from an account's storage. Everything else an account hands out was minted for the endpoint
+ * that account records, so it is safe to send there by construction. This is not: an administrator
+ * repoints the gateway by editing the URL and its token together, which touches no account, so
+ * until someone reconnects the account still names the old host while this value is already the new
+ * deployment's secret. An account-side endpoint check cannot catch that -- it compares the caller
+ * against storage that has not moved yet -- so the scoping has to happen here, against the
+ * configuration the token actually belongs to.
+ *
+ * Null means "this deployment has no token for that endpoint", covering both a portal with no token
+ * configured and one that has since been repointed. Callers fail the request closed either way.
+ */
 export function portalTokenFor(env: Env, endpoint: string): string | null {
   const config = readPortalConfig(env);
   if (config?.auth !== "token" || !sameEndpoint(config.endpoint, endpoint)) return null;

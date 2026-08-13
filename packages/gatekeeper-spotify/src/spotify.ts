@@ -664,7 +664,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     });
   }
 
-  // Spotify is not offered as a sign-in identity provider (no verified-email flag exposed).
+  /** Spotify is not offered as a sign-in identity provider (no verified-email flag exposed). */
   async getAuthenticatedEmail(): Promise<string | null> {
     return null;
   }
@@ -727,11 +727,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
-  // Mint a verifier representing this account. Spotify uses the "low-stakes" observer strategy (see
-  // SpotifyGatekeeperImpl.addObserver): a personal Spotify account is not the kind of restricted
-  // corporate data the information-flow model is designed to protect, so any collaborator may
-  // observe. The verifier therefore carries no identity and is never consulted — but the overseer
-  // mints one on every open, so it must exist and not throw.
+  /**
+   * Mint a verifier representing this account. Spotify uses the "low-stakes" observer strategy (see
+   * SpotifyGatekeeperImpl.addObserver): a personal Spotify account is not the kind of restricted
+   * corporate data the information-flow model is designed to protect, so any collaborator may
+   * observe. The verifier therefore carries no identity and is never consulted — but the overseer
+   * mints one on every open, so it must exist and not throw.
+   */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     return this.ctx.exports.SpotifyVerifier({});
@@ -1037,11 +1039,13 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     return new SpotifyAccountSessionImpl(this, queue);
   }
 
-  // Observer tracking: Spotify uses the "low-stakes" strategy. A personal Spotify account (profile,
-  // library, playlists, playback) is not the kind of restricted, access-controlled corporate data
-  // the information-flow model exists to protect — if you share a Gadget that can read your
-  // playlists, that is your call. So any collaborator may observe: addObserver/removeObserver are
-  // no-ops and we never set excludeObservers on observations.
+  /**
+   * Observer tracking: Spotify uses the "low-stakes" strategy. A personal Spotify account (profile,
+   * library, playlists, playback) is not the kind of restricted, access-controlled corporate data
+   * the information-flow model exists to protect — if you share a Gadget that can read your
+   * playlists, that is your call. So any collaborator may observe: addObserver/removeObserver are
+   * no-ops and we never set excludeObservers on observations.
+   */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
   async removeObserver(_id: string): Promise<void> {}
 
@@ -1214,9 +1218,11 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     return entries;
   }
 
-  // Verify the connected user may edit this playlist (owns it, or it's collaborative) before
-  // queueing a content edit, and return the current (simulated) track count for bounds checks.
-  // Provisional (not-yet-created) playlists are always owned by the user.
+  /**
+   * Verify the connected user may edit this playlist (owns it, or it's collaborative) before
+   * queueing a content edit, and return the current (simulated) track count for bounds checks.
+   * Provisional (not-yet-created) playlists are always owned by the user.
+   */
   async assertEditablePlaylist(logicalId: string): Promise<{ trackCount: number }> {
     const realId = this.#resolveRealPlaylistId(logicalId);
     if (!realId) {

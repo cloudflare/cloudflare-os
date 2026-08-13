@@ -8,9 +8,11 @@
 
 import type { ClassifiedTool } from "./tools.js";
 
-// Method names that must never be generated. The first group is measured: an `RpcStub` intercepts
-// these or resolves them to something other than the target's method, so a tool named after one
-// would appear to exist and then misbehave. The second is the session's own surface.
+/**
+ * Method names that must never be generated. The first group is measured: an `RpcStub` intercepts
+ * these or resolves them to something other than the target's method, so a tool named after one
+ * would appear to exist and then misbehave. The second is the session's own surface.
+ */
 export const RESERVED_METHOD_NAMES: ReadonlySet<string> = new Set([
   // Intercepted or hijacked by the RPC stub itself.
   "then", "catch", "finally", "dup", "onRpcBroken", "constructor", "toString", "valueOf",
@@ -19,8 +21,10 @@ export const RESERVED_METHOD_NAMES: ReadonlySet<string> = new Set([
   "callTool", "getActionResult", "listTools",
 ]);
 
-// Converts an MCP tool name to a JavaScript method name: `list_issues` -> `listIssues`. Null when
-// the name cannot become a usable identifier; servers are free to name tools anything.
+/**
+ * Converts an MCP tool name to a JavaScript method name: `list_issues` -> `listIssues`. Null when
+ * the name cannot become a usable identifier; servers are free to name tools anything.
+ */
 export function toMethodName(wireName: string): string | null {
   const parts = wireName.split(/[^A-Za-z0-9]+/).filter(part => part.length > 0);
   if (parts.length === 0) return null;
@@ -34,9 +38,11 @@ export function toMethodName(wireName: string): string | null {
   return /^[A-Za-z_$]/.test(name) ? name : null;
 }
 
-// Maps generated method name to wire tool name, for the tools that can have one. Both sides of a
-// collision are dropped: with `list_issues` and `listIssues` both published, one shadowing the other
-// would send a Gadget to a tool it did not mean, while `callTool` keeps the names distinct.
+/**
+ * Maps generated method name to wire tool name, for the tools that can have one. Both sides of a
+ * collision are dropped: with `list_issues` and `listIssues` both published, one shadowing the other
+ * would send a Gadget to a tool it did not mean, while `callTool` keeps the names distinct.
+ */
 export function toolMethodNames(tools: ClassifiedTool[]): Map<string, string> {
   const claims = new Map<string, string[]>();
   for (const { tool } of tools) {
@@ -61,8 +67,10 @@ type CallsTools = { callTool(name: string, args?: Record<string, unknown>): unkn
 // exactly this of a mixin base (TS2545); the constructor arguments are never touched.
 type SessionBase = abstract new (...args: any[]) => CallsTools;
 
-// Returns a subclass of `Base` carrying one method per tool. `Base` is untouched, so a session built
-// from it directly still works when the tool list cannot be fetched at all.
+/**
+ * Returns a subclass of `Base` carrying one method per tool. `Base` is untouched, so a session built
+ * from it directly still works when the tool list cannot be fetched at all.
+ */
 export function installToolMethods<T extends SessionBase>(Base: T, tools: ClassifiedTool[]): T {
   // An anonymous subclass, so the prototype this mutates cannot be one anything else shares.
   abstract class WithTools extends Base {}

@@ -1,9 +1,11 @@
 import { defineConfig } from 'vitest/config'
 import { cloudflareTest } from '@cloudflare/vitest-pool-workers'
 
-// Tests run inside workerd (via vitest-pool-workers) so they exercise the same runtime APIs as
-// production. A minimal inline Miniflare config suffices: the tests call the exported handler
-// directly with stub env objects, so no real service bindings are needed.
+/**
+ * Tests run inside workerd (via vitest-pool-workers) so they exercise the same runtime APIs as
+ * production. A minimal inline Miniflare config suffices: the tests call the exported handler
+ * directly with stub env objects, so no real service bindings are needed.
+ */
 export default defineConfig({
   plugins: [
     cloudflareTest({

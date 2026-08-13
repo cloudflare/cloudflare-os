@@ -13,8 +13,10 @@ interface AutoApproveConfirmDialogProps {
   onConfirm: () => void
 }
 
-// Confirmation for enabling auto-approval of an action type on a connection. Enabling is a standing
-// policy change -- it removes human review for a whole class of future actions
+/**
+ * Confirmation for enabling auto-approval of an action type on a connection. Enabling is a standing
+ * policy change -- it removes human review for a whole class of future actions
+ */
 export default function AutoApproveConfirmDialog({
   open,
   actionLabel,

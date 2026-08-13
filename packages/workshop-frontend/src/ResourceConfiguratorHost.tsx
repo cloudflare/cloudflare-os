@@ -1,7 +1,7 @@
 import { ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
 import SandboxedResourceConfigurator from './SandboxedResourceConfigurator'
 
-// Renders the resource configurator slot inside the gatekeeper modal.
+/** Renders the resource configurator slot inside the gatekeeper modal. */
 export default function ResourceConfiguratorHost({
   frame,
   frameKey,

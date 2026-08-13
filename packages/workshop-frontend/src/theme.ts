@@ -61,10 +61,10 @@ export function applyStoredThemeMode(): ResolvedThemeMode {
   return applyThemeMode(readThemeMode())
 }
 
-// Apply the accent color to the document root. Pass "" / invalid to clear back to the base theme.
+/** Apply the accent color to the document root. Pass "" / invalid to clear back to the base theme. */
 export function applyAccentColor(color: string | null | undefined): void {
   applyAccentColorToStyle(document.documentElement.style, color)
 }
 
-// The base/default accent, shown in the admin picker when no custom color is set.
+/** The base/default accent, shown in the admin picker when no custom color is set. */
 export const DEFAULT_ACCENT_COLOR = '#ff4801'

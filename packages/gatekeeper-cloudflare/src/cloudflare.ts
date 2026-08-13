@@ -95,7 +95,7 @@ const NOT_CONFIGURED_HTML = `<!DOCTYPE html>
 <p>Please see the README.md for instructions on configuring an OAuth client ID and secret.</p>
 </body></html>`;
 
-// Main HTTP entrypoint — used only to initiate and complete the OAuth flow.
+/** Main HTTP entrypoint — used only to initiate and complete the OAuth flow. */
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(req.url);
@@ -173,7 +173,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     return { url: `${getBaseUrl(this.env)}/${userObjectId.toString()}/${initiationNonce}` };
   }
 
-  // No gadget/agent resource types yet — the Cloudflare gatekeeper currently provides auth only.
+  /** No gadget/agent resource types yet — the Cloudflare gatekeeper currently provides auth only. */
   async getSupportedResources(): Promise<SupportedResource[]> {
     return [];
   }
@@ -216,8 +216,10 @@ export class UserAccount extends DurableObject<Env> {
     });
   }
 
-  // Verify+consume the initiation nonce; mint a fresh OAuth nonce + PKCE pair. Returns the OAuth
-  // nonce (for the `state`) and the PKCE challenge (for the authorize URL), or null if invalid.
+  /**
+   * Verify+consume the initiation nonce; mint a fresh OAuth nonce + PKCE pair. Returns the OAuth
+   * nonce (for the `state`) and the PKCE challenge (for the authorize URL), or null if invalid.
+   */
   async beginOAuthFlow(initiationNonce: string): Promise<{ oauthNonce: string; challenge: string; scopes: string[] } | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "initiation" ||
@@ -285,8 +287,10 @@ export class UserAccount extends DurableObject<Env> {
     return this.ctx.storage.kv.get<string>("refreshToken") !== undefined;
   }
 
-  // Returns a usable access token (refreshing if needed), or null if the credentials are gone or
-  // can no longer be refreshed (in which case the workshop is notified via credentialsExpired()).
+  /**
+   * Returns a usable access token (refreshing if needed), or null if the credentials are gone or
+   * can no longer be refreshed (in which case the workshop is notified via credentialsExpired()).
+   */
   async getAccessToken(): Promise<string | null> {
     const refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
     if (!refreshToken) return null;
@@ -390,10 +394,12 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
-  // Mint a verifier representing this account. The Cloudflare gatekeeper currently exposes no
-  // resource bindings (getGatekeeperClassFor always throws), so it is never an in-scope binding and
-  // this verifier is never consulted by the observer flow — but getVerifier is part of the
-  // GatekeeperUser contract, so it must exist. Returns a trivial verifier with no identity.
+  /**
+   * Mint a verifier representing this account. The Cloudflare gatekeeper currently exposes no
+   * resource bindings (getGatekeeperClassFor always throws), so it is never an in-scope binding and
+   * this verifier is never consulted by the observer flow — but getVerifier is part of the
+   * GatekeeperUser contract, so it must exist. Returns a trivial verifier with no identity.
+   */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     return this.ctx.exports.CloudflareVerifier({});

@@ -95,7 +95,7 @@ export function accountLabel(account: ConnectedAccount): string {
   return uniqueName || displayName || `account ${account.id}`;
 }
 
-// Read the user's connected accounts by driving subscribeConnectedAccounts() to its ready() call.
+/** Read the user's connected accounts by driving subscribeConnectedAccounts() to its ready() call. */
 export async function listConnectedAccounts(
     api: RpcStub<AuthenticatedApi>): Promise<ConnectedAccount[]> {
   const accounts: ConnectedAccount[] = [];
@@ -130,10 +130,12 @@ export async function listConnectedAccounts(
  */
 export const MAX_OBSERVER_PROMPTS = 2;
 
-// Records every configure() call the overseer makes and answers from a scripted queue.
-//
-// The recording is the assertion surface for these tests: "did the overseer prompt a second time,
-// and did that prompt carry `failure`?" is answered by inspecting `calls`.
+/**
+ * Records every configure() call the overseer makes and answers from a scripted queue.
+ *
+ * The recording is the assertion surface for these tests: "did the overseer prompt a second time,
+ * and did that prompt carry `failure`?" is answered by inspecting `calls`.
+ */
 export class ObserverConfigRecorder extends RpcTarget implements ObserverConfigCallback {
   readonly calls: ObserverBindingNeed[][] = [];
   #responses: ((needs: ObserverBindingNeed[]) => ObserverAccountChoice[])[] = [];

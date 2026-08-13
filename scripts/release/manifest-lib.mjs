@@ -79,7 +79,7 @@ export const DEFAULT_CRED_INPUTS = [
   },
 ];
 
-// Discover the deployable set: every public package with a wrangler.jsonc.
+/** Discover the deployable set: every public package with a wrangler.jsonc. */
 export function findDeployablePackages(packagesDir) {
   return readdirSync(packagesDir)
       .filter((name) => {
@@ -114,8 +114,10 @@ function shortName(pkgName) {
   return pkgName.slice("gatekeeper-".length);
 }
 
-// Builds one worker's manifest entry from its parsed wrangler.jsonc and collected modules.
-// `modules` entries are { name, type, sha256, size } (bytes stripped by the caller).
+/**
+ * Builds one worker's manifest entry from its parsed wrangler.jsonc and collected modules.
+ * `modules` entries are { name, type, sha256, size } (bytes stripped by the caller).
+ */
 export function buildWorkerEntry({ pkgName, config, mainModule, modules, deployInputs }) {
   const kind = workerKind(pkgName);
   const unknownKeys = Object.keys(config).filter((k) => !HANDLED_CONFIG_KEYS.has(k));
@@ -257,10 +259,12 @@ export function assetR2Key(cfHash) {
   return `blobs/assets/${cfHash}`;
 }
 
-// Assembles the full manifest.
-//  - workers: [{ pkgName, config, mainModule, modules, deployInputs }]
-//  - assetVariants: { [variantName]: { manifest, blobs } } from collectAssets() — attached to
-//    every worker entry that has an assetsConfig (today: just the router).
+/**
+ * Assembles the full manifest.
+ *  - workers: [{ pkgName, config, mainModule, modules, deployInputs }]
+ *  - assetVariants: { [variantName]: { manifest, blobs } } from collectAssets() — attached to
+ *    every worker entry that has an assetsConfig (today: just the router).
+ */
 export function generateManifest({
   releaseId, commit, createdAt, wranglerVersion, workers, assetVariants,
 }) {

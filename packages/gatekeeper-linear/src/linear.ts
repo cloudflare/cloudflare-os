@@ -598,7 +598,7 @@ export class UserAccount extends DurableObject<Env> {
     return true;
   }
 
-  // Returns a currently-valid access token, refreshing it first if it is about to expire.
+  /** Returns a currently-valid access token, refreshing it first if it is about to expire. */
   async getAccessToken(): Promise<string> {
     const grant = this.ctx.storage.kv.get<LinearOAuthGrant>("grant");
     if (!grant) throw new Error("Linear credentials have not been configured for this account.");
@@ -794,10 +794,12 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
-  // Mint a verifier representing this account, used by LinearGatekeeperImpl.addObserver to confirm a
-  // prospective observer may read a bound team/issue (and, for workspace bindings, the workspace and
-  // each accessed team). The verifier carries this user's own account id, so the access checks run
-  // against the observer's *own* Linear token.
+  /**
+   * Mint a verifier representing this account, used by LinearGatekeeperImpl.addObserver to confirm a
+   * prospective observer may read a bound team/issue (and, for workspace bindings, the workspace and
+   * each accessed team). The verifier carries this user's own account id, so the access checks run
+   * against the observer's *own* Linear token.
+   */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     const props: LinearVerifierProps = { userObjectId: this.ctx.props.userObjectId };
@@ -826,8 +828,10 @@ type LinearVerifierProps = {
   userObjectId: string;
 };
 
-// The non-standard methods the Linear gatekeeper calls on its own verifier (see addObserver). Not
-// part of the generic GatekeeperUserVerifier contract.
+/**
+ * The non-standard methods the Linear gatekeeper calls on its own verifier (see addObserver). Not
+ * part of the generic GatekeeperUserVerifier contract.
+ */
 export interface LinearVerifierApi extends GatekeeperUserVerifier {
   hasWorkspaceAccess(workspaceUrlKey: string): Promise<boolean>;
   hasTeamAccess(workspaceUrlKey: string, teamKeyOrId: string): Promise<boolean>;
@@ -989,7 +993,7 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     return `~comment:${this.#nextCounter("comment")}`;
   }
 
-  // The workspace url key (first path segment of linear.app URLs), used to build canonical URLs.
+  /** The workspace url key (first path segment of linear.app URLs), used to build canonical URLs. */
   workspaceKey(): string {
     return this.ctx.props.workspaceUrlKey;
   }
@@ -1049,12 +1053,14 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     };
   }
 
-  // Authorize an observation that reveals data belonging to specific team(s). For workspace bindings
-  // this also tracks those teams as observed data sets and excludes any observers lacking access to a
-  // newly-seen one; for team/issue bindings it is a plain authorizeObservation (the bound resource is
-  // a single ACL unit verified up front). Every team-scoped read should go through this rather than
-  // calling approvalQueue.authorizeObservation directly. `teamIds` may be empty for workspace-level
-  // reads (org metadata, member directory) that any workspace member may see.
+  /**
+   * Authorize an observation that reveals data belonging to specific team(s). For workspace bindings
+   * this also tracks those teams as observed data sets and excludes any observers lacking access to a
+   * newly-seen one; for team/issue bindings it is a plain authorizeObservation (the bound resource is
+   * a single ACL unit verified up front). Every team-scoped read should go through this rather than
+   * calling approvalQueue.authorizeObservation directly. `teamIds` may be empty for workspace-level
+   * reads (org metadata, member directory) that any workspace member may see.
+   */
   async authorizeTeamObservation(
     queue: RpcStub<ApprovalQueue>,
     teamIds: string[],
@@ -1069,9 +1075,11 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     check.commit();
   }
 
-  // Resolve an issue reference (real identifier/UUID, or provisional id) to the id usable against
-  // Linear. Throws if a provisional issue's create has not actually been applied yet (used by
-  // applyAction/revertAction, which must hit the real API).
+  /**
+   * Resolve an issue reference (real identifier/UUID, or provisional id) to the id usable against
+   * Linear. Throws if a provisional issue's create has not actually been applied yet (used by
+   * applyAction/revertAction, which must hit the real API).
+   */
   resolveIssueRef(ref: string): string {
     if (!ref.startsWith("~")) return ref;
     const real = this.ctx.storage.kv.get<string>(`provisional:${ref}`);
@@ -1330,13 +1338,13 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
       () => this.#run(api => api.listWorkflowStates(teamId)));
   }
 
-  // Real labels only — used internally to resolve label names to real ids.
+  /** Real labels only — used internally to resolve label names to real ids. */
   async labelsRaw(teamId: string): Promise<RawLabel[]> {
     return await this.#cachedFetch(`cache:labels:${teamId}`, METADATA_CACHE_TTL_MS,
       () => this.#run(api => api.listLabels(teamId)));
   }
 
-  // Labels for display to the gadget: real labels plus pending-created ones.
+  /** Labels for display to the gadget: real labels plus pending-created ones. */
   async labelsForDisplay(teamId: string): Promise<RawLabel[]> {
     const real = await this.labelsRaw(teamId);
     return [...real, ...this.#pendingCreatedLabels(teamId)];
@@ -1366,7 +1374,7 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     return await this.#run(api => api.listUsers({ first: 50, filter }));
   }
 
-  // Resolve an assignee string (email / display name / UUID) to a single member.
+  /** Resolve an assignee string (email / display name / UUID) to a single member. */
   async resolveMemberRaw(query: string): Promise<RawUser> {
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(query)) {
       const byId = await this.#run(api => api.listUsers({ first: 1, filter: { id: { eq: query } } }));
@@ -1446,21 +1454,23 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     }
   }
 
-  // Observer tracking. Strategy depends on the binding's granularity:
-  //
-  // - Team / Issue binding — "ACL check (single unit)". The binding is one team (or one issue, which
-  //   inherits its team's ACL), so we just confirm the observer can see it (hasTeamAccess /
-  //   hasIssueAccess, against their own token, honoring team privacy). Nothing read later could be
-  //   outside that unit, so no observers are tracked and removeObserver is a no-op.
-  //
-  // - Workspace binding — "data-set tracking (by team)". Workspace members may belong to different
-  //   teams, so we track which teams' data the Gadget has actually observed and verify each observer
-  //   against them. addObserver requires workspace membership (so workspace-level metadata and the
-  //   member directory are fine to show) plus access to every already-observed team; later, the first
-  //   observation of a *new* team excludes any observer lacking it (see #prepareTeamObservation). Verified
-  //   observers are remembered (their verifier stored) so that forward-exclusion check can run.
-  //
-  // The overseer re-runs addObserver on every open, catching loss of access promptly.
+  /**
+   * Observer tracking. Strategy depends on the binding's granularity:
+   *
+   * - Team / Issue binding — "ACL check (single unit)". The binding is one team (or one issue, which
+   *   inherits its team's ACL), so we just confirm the observer can see it (hasTeamAccess /
+   *   hasIssueAccess, against their own token, honoring team privacy). Nothing read later could be
+   *   outside that unit, so no observers are tracked and removeObserver is a no-op.
+   *
+   * - Workspace binding — "data-set tracking (by team)". Workspace members may belong to different
+   *   teams, so we track which teams' data the Gadget has actually observed and verify each observer
+   *   against them. addObserver requires workspace membership (so workspace-level metadata and the
+   *   member directory are fine to show) plus access to every already-observed team; later, the first
+   *   observation of a *new* team excludes any observer lacking it (see #prepareTeamObservation). Verified
+   *   observers are remembered (their verifier stored) so that forward-exclusion check can run.
+   *
+   * The overseer re-runs addObserver on every open, catching loss of access promptly.
+   */
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     const verifier = user as unknown as Fetcher<LinearVerifierApi>;
     const ws = this.ctx.props.workspaceUrlKey;

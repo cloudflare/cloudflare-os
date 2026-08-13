@@ -34,8 +34,10 @@ const INLINE_MARKDOWN_COMPONENTS: Components = {
   ),
 }
 
-// Deployment-wide full-width banner across the top of the app (logged in or not), configured by an
-// admin. Dismissible per-message: a changed banner re-appears after dismissal.
+/**
+ * Deployment-wide full-width banner across the top of the app (logged in or not), configured by an
+ * admin. Dismissible per-message: a changed banner re-appears after dismissal.
+ */
 export default function AnnouncementBanner() {
   const config = useServerConfig()
   const text = (config?.banner ?? '').trim()

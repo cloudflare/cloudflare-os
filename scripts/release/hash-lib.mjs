@@ -16,7 +16,7 @@ export function sha256Hex(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-// The Workers static-asset content key (see header comment).
+/** The Workers static-asset content key (see header comment). */
 export function cfAssetHash(bytes, filePath) {
   const base64 = Buffer.from(bytes).toString("base64");
   const extension = extname(filePath).slice(1);
@@ -39,10 +39,12 @@ function isNonModuleFile(name) {
   return name.endsWith(".map") || name === "README.md";
 }
 
-// Reads a `wrangler deploy --dry-run --outdir` output directory and returns
-// `{ mainModule, modules }` where modules is sorted by name and each entry is
-// `{ name, type, sha256, size, bytes }`. Fails closed: an extension we don't recognize means a
-// bundle shape this pipeline has never seen, and needs an explicit decision rather than a guess.
+/**
+ * Reads a `wrangler deploy --dry-run --outdir` output directory and returns
+ * `{ mainModule, modules }` where modules is sorted by name and each entry is
+ * `{ name, type, sha256, size, bytes }`. Fails closed: an extension we don't recognize means a
+ * bundle shape this pipeline has never seen, and needs an explicit decision rather than a guess.
+ */
 export function collectModules(outDir) {
   const unsorted = [];
   for (const file of walkFiles(outDir)) {
@@ -66,9 +68,11 @@ export function collectModules(outDir) {
   return { mainModule: esmModules[0].name, modules };
 }
 
-// Reads a built static-asset directory and returns `{ manifest, blobs }`:
-//  - manifest: { "/path": { hash, size } } in the exact shape the assets-upload-session API takes
-//  - blobs: Map<hash, { bytes, size }> for content-addressed storage
+/**
+ * Reads a built static-asset directory and returns `{ manifest, blobs }`:
+ *  - manifest: { "/path": { hash, size } } in the exact shape the assets-upload-session API takes
+ *  - blobs: Map<hash, { bytes, size }> for content-addressed storage
+ */
 export function collectAssets(distDir) {
   const manifest = {};
   const blobs = new Map();
@@ -95,8 +99,10 @@ function walkFiles(dir) {
   return out;
 }
 
-// JSON.stringify with all object keys sorted, so manifests diff cleanly and the golden-manifest
-// test is byte-stable. Arrays keep their order (migration history is ordered!).
+/**
+ * JSON.stringify with all object keys sorted, so manifests diff cleanly and the golden-manifest
+ * test is byte-stable. Arrays keep their order (migration history is ordered!).
+ */
 export function stableStringify(value, indent = 2) {
   return JSON.stringify(sortKeysDeep(value), null, indent);
 }

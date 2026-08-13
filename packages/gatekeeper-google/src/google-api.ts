@@ -8,8 +8,10 @@ import { createMimeMessage } from "mimetext/browser";
 import PostalMime, { addressParser } from "postal-mime";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 
-// Internal type for parsed message info with raw label IDs (not yet resolved
-// to GmailLabel objects). The stub layer resolves labels via the label map.
+/**
+ * Internal type for parsed message info with raw label IDs (not yet resolved
+ * to GmailLabel objects). The stub layer resolves labels via the label map.
+ */
 export type GmailMessageInfoRaw = {
   from: EmailAddress;
   to: EmailAddress[];
@@ -48,7 +50,7 @@ export type GoogleOAuthGrant = {
   grantedScopes: string[];
 };
 
-// `signal` lets the caller bound the round trip; UserAccount holds the credential mutex across this.
+/** `signal` lets the caller bound the round trip; UserAccount holds the credential mutex across this. */
 export async function exchangeAuthCode(
     code: string, clientId: string, clientSecret: string, redirectUri: string,
     signal?: AbortSignal)
@@ -101,7 +103,7 @@ export type RefreshFailure =
 
 export type AccessTokenResult = { ok: true; token: GoogleAccessToken } | RefreshFailure;
 
-// Exchange a refresh token for an access token. `signal` lets the caller bound the round trip
+/** Exchange a refresh token for an access token. `signal` lets the caller bound the round trip */
 export async function getAccessToken(
     refreshToken: string, clientId: string, clientSecret: string, signal?: AbortSignal)
     : Promise<AccessTokenResult> {
@@ -179,9 +181,11 @@ export async function getGoogleAccountDescription(accessToken: string)
   };
 }
 
-// Fetch the account's email for use as a sign-in identity, but only if Google reports it as
-// verified (`email_verified`). Returns null otherwise, so the Workshop never keys an account by an
-// unverified address.
+/**
+ * Fetch the account's email for use as a sign-in identity, but only if Google reports it as
+ * verified (`email_verified`). Returns null otherwise, so the Workshop never keys an account by an
+ * unverified address.
+ */
 export async function getGoogleVerifiedEmail(accessToken: string): Promise<string | null> {
   const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
     method: 'GET',
@@ -201,7 +205,7 @@ export async function getGoogleVerifiedEmail(accessToken: string): Promise<strin
   return data.email;
 }
 
-// `signal` lets the caller bound the round trip; UserAccount holds the credential mutex across this.
+/** `signal` lets the caller bound the round trip; UserAccount holds the credential mutex across this. */
 export async function revokeGoogleToken(
     refreshToken: string, signal?: AbortSignal): Promise<void> {
   // Although we are revoking the token anyway, it's nice to avoid ever putting tokens in the
@@ -249,9 +253,11 @@ type GmailThread = {
   messages: Array<{ id: string; threadId: string }>;
 };
 
-// Message data from Gmail API when using format=raw. The `raw` field
-// contains the full RFC 2822 MIME message as a base64url-encoded string,
-// which postal-mime parses into structured headers and body content.
+/**
+ * Message data from Gmail API when using format=raw. The `raw` field
+ * contains the full RFC 2822 MIME message as a base64url-encoded string,
+ * which postal-mime parses into structured headers and body content.
+ */
 export type GmailMessageRaw = {
   id: string;
   threadId: string;
@@ -540,8 +546,10 @@ export class GmailApi {
   // Thread operations
   // ─────────────────────────────────────────────────────────────────
 
-  // List threads. Gmail returns Thread resources with id/snippet, omitting only
-  // the messages array. Subject/count are enriched separately by getThreadInfo().
+  /**
+   * List threads. Gmail returns Thread resources with id/snippet, omitting only
+   * the messages array. Subject/count are enriched separately by getThreadInfo().
+   */
   async listThreads(count: number, query?: string, pageToken?: string, labelIds?: string[]):
       Promise<{ threads: Array<{ id: string; snippet?: string }>; nextPageToken?: string }> {
     let url = `https://gmail.googleapis.com/gmail/v1/users/me/threads?maxResults=${count}`;
@@ -573,8 +581,10 @@ export class GmailApi {
     };
   }
 
-  // Get thread snippet and message IDs. Raw MIME is fetched lazily by each
-  // message capability when content is actually needed.
+  /**
+   * Get thread snippet and message IDs. Raw MIME is fetched lazily by each
+   * message capability when content is actually needed.
+   */
   async getThread(threadId: string): Promise<GmailThread> {
     validateGmailId(threadId, "thread ID");
 
@@ -601,8 +611,10 @@ export class GmailApi {
     return { id: thread.id, snippet: thread.snippet ?? '', messages };
   }
 
-  // Get thread info (id, snippet, subject) using a metadata-only fetch to
-  // avoid downloading full message payloads.
+  /**
+   * Get thread info (id, snippet, subject) using a metadata-only fetch to
+   * avoid downloading full message payloads.
+   */
   async getThreadInfo(threadId: string): Promise<GmailThreadInfo> {
     validateGmailId(threadId, "thread ID");
 
@@ -629,7 +641,7 @@ export class GmailApi {
     };
   }
 
-  // Modify thread labels (for archive, trash, read/unread).
+  /** Modify thread labels (for archive, trash, read/unread). */
   async modifyThread(
     threadId: string,
     addLabelIds?: string[],
@@ -658,7 +670,7 @@ export class GmailApi {
     await response.body?.cancel();
   }
 
-  // Trash a thread.
+  /** Trash a thread. */
   async trashThread(threadId: string): Promise<void> {
     validateGmailId(threadId, "thread ID");
 
@@ -678,8 +690,10 @@ export class GmailApi {
   // Message operations
   // ─────────────────────────────────────────────────────────────────
 
-  // Fetch only participant headers for visibility checks, avoiding message
-  // bodies and attachments.
+  /**
+   * Fetch only participant headers for visibility checks, avoiding message
+   * bodies and attachments.
+   */
   async getMessageParticipants(messageId: string): Promise<Set<string>> {
     validateGmailId(messageId, "message ID");
     const url = new URL(
@@ -708,7 +722,7 @@ export class GmailApi {
     return participants;
   }
 
-  // Get a single message with raw MIME content.
+  /** Get a single message with raw MIME content. */
   async getMessage(messageId: string): Promise<GmailMessageRaw> {
     validateGmailId(messageId, "message ID");
 
@@ -724,8 +738,10 @@ export class GmailApi {
     return await response.json() as GmailMessageRaw;
   }
 
-  // Parse message info from raw MIME data via postal-mime. Returns raw label
-  // IDs — the caller resolves them to GmailLabel objects via the label map.
+  /**
+   * Parse message info from raw MIME data via postal-mime. Returns raw label
+   * IDs — the caller resolves them to GmailLabel objects via the label map.
+   */
   async parseMessageInfo(message: GmailMessageRaw): Promise<GmailMessageInfoRaw> {
     const parsed = await parseMimeMessage(message.raw);
 
@@ -743,7 +759,7 @@ export class GmailApi {
     };
   }
 
-  // Parse both info and content from a single postal-mime pass.
+  /** Parse both info and content from a single postal-mime pass. */
   async parseMessage(message: GmailMessageRaw): Promise<{
     info: GmailMessageInfoRaw;
     content: { text?: string; html?: string };
@@ -779,8 +795,10 @@ export class GmailApi {
   // mailbox (no draft) before approval.
   // ─────────────────────────────────────────────────────────────────
 
-  // Build a raw new outbound email and return the exact structured payload
-  // used to generate it, for approval display.
+  /**
+   * Build a raw new outbound email and return the exact structured payload
+   * used to generate it, for approval display.
+   */
   buildSendRaw(to: string[], subject: string, body: string): GmailOutboundMessage {
     const normalizedTo = normalizeEmailRecipients(to);
     return {
@@ -794,11 +812,13 @@ export class GmailApi {
     };
   }
 
-  // Build a raw reply to an existing message. `originalMessage` is the cached
-  // raw message being replied to (no extra fetch). When replyAll is true, this
-  // mailbox's own address is filtered out of the CC list. Returns the encoded
-  // raw message along with the resolved recipients and subject so the caller
-  // can describe exactly what will be sent in the approval prompt.
+  /**
+   * Build a raw reply to an existing message. `originalMessage` is the cached
+   * raw message being replied to (no extra fetch). When replyAll is true, this
+   * mailbox's own address is filtered out of the CC list. Returns the encoded
+   * raw message along with the resolved recipients and subject so the caller
+   * can describe exactly what will be sent in the approval prompt.
+   */
   async buildReplyRaw(
     originalMessage: GmailMessageRaw,
     body: string,
@@ -886,9 +906,11 @@ export class GmailApi {
     };
   }
 
-  // Build a lossless forward by attaching the complete original raw message as
-  // message/rfc822. This preserves the original HTML, MIME structure, headers,
-  // inline resources, and attachments without reconstructing any of them.
+  /**
+   * Build a lossless forward by attaching the complete original raw message as
+   * message/rfc822. This preserves the original HTML, MIME structure, headers,
+   * inline resources, and attachments without reconstructing any of them.
+   */
   async buildForwardRaw(
     originalMessage: GmailMessageRaw,
     to: string[],
@@ -967,11 +989,13 @@ export class GmailApi {
     };
   }
 
-  // Send a pre-built raw RFC 2822 message. Optionally attach to an existing
-  // thread. Called only from applyAction(), i.e. after approval. An approved send
-  // lands at most once: a POST is never replayed for a transient failure, and the
-  // one case that is replayed — a 401 — is rejected before the message is accepted
-  // for delivery.
+  /**
+   * Send a pre-built raw RFC 2822 message. Optionally attach to an existing
+   * thread. Called only from applyAction(), i.e. after approval. An approved send
+   * lands at most once: a POST is never replayed for a transient failure, and the
+   * one case that is replayed — a 401 — is rejected before the message is accepted
+   * for delivery.
+   */
   async sendRawMessage(raw: string, threadId?: string): Promise<{ id: string; threadId: string }> {
     if (threadId !== undefined) validateGmailId(threadId, "thread ID");
 
@@ -1005,7 +1029,7 @@ export class GmailApi {
   // Labels
   // ─────────────────────────────────────────────────────────────────
 
-  // Fetch all labels for this account. Returns a map of label ID → label name.
+  /** Fetch all labels for this account. Returns a map of label ID → label name. */
   async listLabels(): Promise<Map<string, string>> {
     const response = await this.authedFetch(
       'https://gmail.googleapis.com/gmail/v1/users/me/labels',

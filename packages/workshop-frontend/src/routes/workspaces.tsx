@@ -3,8 +3,10 @@ import { Plus } from '@phosphor-icons/react'
 import GadgetList from '../components/GadgetList'
 import { useDocumentTitle } from '../useDocumentTitle'
 
-// Full workspace listing. The sidebar surfaces Favorites + a handful of Recent workspaces; this is
-// the "see them all" destination linked from the rail.
+/**
+ * Full workspace listing. The sidebar surfaces Favorites + a handful of Recent workspaces; this is
+ * the "see them all" destination linked from the rail.
+ */
 export const Route = createFileRoute('/workspaces')({
   component: WorkspacesPage,
 })

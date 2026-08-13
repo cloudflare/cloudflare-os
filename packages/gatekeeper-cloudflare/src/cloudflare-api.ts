@@ -32,16 +32,18 @@ async function cfGet<T>(token: string, path: string): Promise<T | null> {
 }
 
 export interface CloudflareIdentity {
-  // Cloudflare user id (stable).
+  /** Cloudflare user id (stable). */
   id: string;
-  // Account email — verified by Cloudflare, so safe to use as a sign-in identity.
+  /** Account email — verified by Cloudflare, so safe to use as a sign-in identity. */
   email: string;
   displayName: string;
 }
 
-// Resolve the connected user's identity via the /user API (requires `user-details.read`). We use
-// this rather than an OIDC userinfo endpoint because the dashboard OAuth client isn't permitted the
-// `openid` scope. Returns null if the email is missing.
+/**
+ * Resolve the connected user's identity via the /user API (requires `user-details.read`). We use
+ * this rather than an OIDC userinfo endpoint because the dashboard OAuth client isn't permitted the
+ * `openid` scope. Returns null if the email is missing.
+ */
 export async function fetchIdentity(token: string): Promise<CloudflareIdentity | null> {
   const r = await cfGet<{ id?: string; email?: string; first_name?: string; last_name?: string }>(
     token, "/user",
@@ -60,7 +62,7 @@ export interface CloudflareAccount {
   accountName: string;
 }
 
-// List the accounts the token can access. Requires `account-settings.read`.
+/** List the accounts the token can access. Requires `account-settings.read`. */
 export async function listAccounts(token: string): Promise<CloudflareAccount[]> {
   const result = await cfGet<Array<{ id: string; name: string }>>(token, "/accounts");
   if (!result) return [];

@@ -7,55 +7,63 @@
 // =======================================================================================
 // Types
 
-// Specifies constraints on an indexed list() operation.
+/** Specifies constraints on an indexed list() operation. */
 export type ListOptions<T = string> = {
-  // List starting at the given key, including the key itself.
+  /** List starting at the given key, including the key itself. */
   start?: T;
 
-  // List starting immediately after the given key.
+  /** List starting immediately after the given key. */
   startAfter?: T;
 
-  // List ending immediately before the given key.
+  /** List ending immediately before the given key. */
   end?: T;
 
-  // List only keys starting with the given prefix.
-  //
-  // This only makes sense for string keys, not integers.
+  /**
+   * List only keys starting with the given prefix.
+   *
+   * This only makes sense for string keys, not integers.
+   */
   prefix?: T extends string ? T : never;
 
-  // Stop after the given number of matches.
-  //
-  // Note that for non-unique indexes, this counts the number of matching keys, not the number of
-  // records. Hence, more than `limit` records may be returned. Meanwhile, a subsequent `list()` can
-  // use `startAfter` set to the last record's key and be assured that it won't miss anything.
+  /**
+   * Stop after the given number of matches.
+   *
+   * Note that for non-unique indexes, this counts the number of matching keys, not the number of
+   * records. Hence, more than `limit` records may be returned. Meanwhile, a subsequent `list()` can
+   * use `startAfter` set to the last record's key and be assured that it won't miss anything.
+   */
   limit?: number;
 
-  // Normally, keys are listed in ascending order. Set `reverse: true` to list in descending order.
-  //
-  // For non-unique indexes, this also reverses the order of matches for a particular key.
+  /**
+   * Normally, keys are listed in ascending order. Set `reverse: true` to list in descending order.
+   *
+   * For non-unique indexes, this also reverses the order of matches for a particular key.
+   */
   reverse?: boolean;
 
-  // When listing by an index where each record may have multiple keys, the default is to
-  // list a record again for each key within the list range. Set `dedupe: true` to list each
-  // record only once.
-  //
-  // Note that when used together with the `limit` option, the limit is enforced on the total
-  // number of matching keys, before de-duplication, hence de-duplication may cause the returned
-  // list to have fewer than `limit` keys even if the limit was reached. Keep in mind also that
-  // any de-duplication applies only within a single call to list(), so if you are making several
-  // `limit`ed calls in sequence to list incrementally, you may still get duplicates between calls.
-  // Generally, `limit` and `dedupe` don't work well together.
+  /**
+   * When listing by an index where each record may have multiple keys, the default is to
+   * list a record again for each key within the list range. Set `dedupe: true` to list each
+   * record only once.
+   *
+   * Note that when used together with the `limit` option, the limit is enforced on the total
+   * number of matching keys, before de-duplication, hence de-duplication may cause the returned
+   * list to have fewer than `limit` keys even if the limit was reached. Keep in mind also that
+   * any de-duplication applies only within a single call to list(), so if you are making several
+   * `limit`ed calls in sequence to list incrementally, you may still get duplicates between calls.
+   * Generally, `limit` and `dedupe` don't work well together.
+   */
   dedupe?: boolean;
 };
 
-// An index where each key matches exactly one record.
+/** An index where each key matches exactly one record. */
 export interface UniqueIndex<T, Key> {
   get(key: Key): T | undefined;
   list(options?: ListOptions<Key>): Iterable<T>;
   delete(key: Key): boolean;
 }
 
-// An index where each key may match multiple records.
+/** An index where each key may match multiple records. */
 export interface NonUniqueIndex<T, Key> {
   get(key: Key): Iterable<T>;
   list(options?: ListOptions<Key>): Iterable<T>;

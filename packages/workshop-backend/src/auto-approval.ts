@@ -15,8 +15,10 @@ export interface AutoApprovalStorage {
   autoApproveTags: Collection<AutoApproveTagRecord>;
 }
 
-// Applies a single eligible pending action: invoke the gatekeeper, mark it approved, persist. The
-// caller has already validated that the record is still pending.
+/**
+ * Applies a single eligible pending action: invoke the gatekeeper, mark it approved, persist. The
+ * caller has already validated that the record is still pending.
+ */
 export type ApplyPendingActionFn = (
     record: ActionRecord & {type: "action"},
     resolvedBy: AiChatAuthorInfo,

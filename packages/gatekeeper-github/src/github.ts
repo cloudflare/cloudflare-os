@@ -1319,10 +1319,12 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return {};
   }
 
-  // Mint a verifier representing this account, used by GitHubGatekeeperImpl.addObserver to confirm
-  // a prospective observer is allowed to read a bound repository (see that method). The verifier
-  // carries this user's own account id, so when the gatekeeper calls hasRepoAccess() the check runs
-  // against the observer's *own* GitHub token.
+  /**
+   * Mint a verifier representing this account, used by GitHubGatekeeperImpl.addObserver to confirm
+   * a prospective observer is allowed to read a bound repository (see that method). The verifier
+   * carries this user's own account id, so when the gatekeeper calls hasRepoAccess() the check runs
+   * against the observer's *own* GitHub token.
+   */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     const props: GitHubVerifierProps = { userObjectId: this.ctx.props.userObjectId };
@@ -1347,8 +1349,10 @@ type GitHubVerifierProps = {
   userObjectId: string;
 };
 
-// The non-standard method the GitHub gatekeeper calls on its own verifier (see addObserver). Not
-// part of the generic GatekeeperUserVerifier contract.
+/**
+ * The non-standard method the GitHub gatekeeper calls on its own verifier (see addObserver). Not
+ * part of the generic GatekeeperUserVerifier contract.
+ */
 export interface GitHubVerifierApi extends GatekeeperUserVerifier {
   hasRepoAccess(owner: string, repo: string): Promise<boolean>;
 }
@@ -3768,15 +3772,17 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     };
   }
 
-  // Observer tracking: GitHub uses the "ACL check (single unit)" strategy. Every binding — repo,
-  // issue, or pull request — is scoped to one repository, and issues/PRs inherit the repo's
-  // permissions, so the repository is the atomic ACL unit. To admit an observer we simply confirm
-  // they can read that repo, using their own token via the verifier (see GitHubVerifier).
-  //
-  // Because the whole unit is verified up front, there is never a later observation a verified
-  // observer shouldn't see, so we set no excludeObservers and need not remember observers;
-  // removeObserver is an idempotent no-op. The overseer re-runs addObserver on every open, so loss
-  // of the observer's repo access is caught promptly.
+  /**
+   * Observer tracking: GitHub uses the "ACL check (single unit)" strategy. Every binding — repo,
+   * issue, or pull request — is scoped to one repository, and issues/PRs inherit the repo's
+   * permissions, so the repository is the atomic ACL unit. To admit an observer we simply confirm
+   * they can read that repo, using their own token via the verifier (see GitHubVerifier).
+   *
+   * Because the whole unit is verified up front, there is never a later observation a verified
+   * observer shouldn't see, so we set no excludeObservers and need not remember observers;
+   * removeObserver is an idempotent no-op. The overseer re-runs addObserver on every open, so loss
+   * of the observer's repo access is caught promptly.
+   */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     const verifier = user as unknown as Fetcher<GitHubVerifierApi>;
     const { owner, repo } = this.ctx.props;

@@ -3,7 +3,7 @@
 
 import type { RpcTarget } from "capnweb";
 
-// Vendor id = GATEKEEPER_<NAME> binding suffix (lowercased).
+/** Vendor id = GATEKEEPER_<NAME> binding suffix (lowercased). */
 export const VENDOR_ID = "context";
 
 // ---------------------------------------------------------------------------
@@ -12,27 +12,27 @@ export const VENDOR_ID = "context";
 // Keep these in sync with CONTEXT_LIBRARY_TYPES in library-gatekeeper.ts.
 // ---------------------------------------------------------------------------
 
-// Search result.
+/** Search result. */
 export type ContextSearchResult = {
-  // Opaque document identifier ("collectionId/path") to pass to read().
+  /** Opaque document identifier ("collectionId/path") to pass to read(). */
   docId: string;
   collectionId?: string;
-  // Document title.
+  /** Document title. */
   title: string;
-  // Path within the collection (e.g. "billing/revenue.md").
+  /** Path within the collection (e.g. "billing/revenue.md"). */
   path?: string;
-  // When/why this document is relevant.
+  /** When/why this document is relevant. */
   description?: string;
-  // A snippet showing the matched region, if available.
+  /** A snippet showing the matched region, if available. */
   snippet?: string;
-  // Relevance score (higher is better).
+  /** Relevance score (higher is better). */
   score?: number;
 };
 
-// A listing entry returned when browsing the content tree.
+/** A listing entry returned when browsing the content tree. */
 export type ContextListingEntry = {
   type: "collection";
-  // A collectionId — pass to list()/search() to see inside it, not to read() (which takes a docId).
+  /** A collectionId — pass to list()/search() to see inside it, not to read() (which takes a docId). */
   id: string;
   title: string;
   description?: string;
@@ -47,18 +47,18 @@ export type ContextListingEntry = {
   path: string;
   name: string;
   description?: string;
-  // MIME type, so the agent can tell text documents from embeddable binary ones (e.g. images).
+  /** MIME type, so the agent can tell text documents from embeddable binary ones (e.g. images). */
   contentType?: string;
 };
 
-// Top-level collections or a collection subtree.
+/** Top-level collections or a collection subtree. */
 export type ContextListing = {
   collectionId?: string;
   path?: string;
   entries: ContextListingEntry[];
 };
 
-// Full document returned by read(); binary content is a data: URI.
+/** Full document returned by read(); binary content is a data: URI. */
 export type ContextReadResult = {
   docId: string;
   title: string;
@@ -67,12 +67,12 @@ export type ContextReadResult = {
   content: string;
 };
 
-// Document IDs join the collection ID and path with a slash.
+/** Document IDs join the collection ID and path with a slash. */
 export function encodeDocId(collectionId: string, path: string): string {
   return `${collectionId}/${path}`;
 }
 
-// Invalid IDs resolve to no document.
+/** Invalid IDs resolve to no document. */
 export function decodeDocId(docId: string): {collectionId: string; path: string} | null {
   let slashIndex = docId.indexOf("/");
   if (slashIndex < 0) return null;
@@ -85,7 +85,7 @@ export function decodeDocId(docId: string): {collectionId: string; path: string}
 // Stored data model
 // ---------------------------------------------------------------------------
 
-// Collection visibility within a sharing domain.
+/** Collection visibility within a sharing domain. */
 export type ContextCollectionVisibility = "public" | "private";
 export const DEFAULT_GIT_BRANCH = "main";
 
@@ -96,16 +96,16 @@ export type ContextCollectionContent =
   | { source: "git"; remote: string; branch: string; lastRefreshedAt: Date; commit?: string };
 
 export type ContextCollectionMetadata = {
-  // Random hex ID.
+  /** Random hex ID. */
   id: string;
 
-  // Optional emoji icon.
+  /** Optional emoji icon. */
   icon?: string;
 
-  // Human-readable title.
+  /** Human-readable title. */
   title: string;
 
-  // Listed and used by agents to decide relevance.
+  /** Listed and used by agents to decide relevance. */
   description: string;
 
   visibility: ContextCollectionVisibility;
@@ -113,7 +113,7 @@ export type ContextCollectionMetadata = {
   created: Date;
   lastUpdated: Date;
 
-  // Number of documents in this collection.
+  /** Number of documents in this collection. */
   documentCount: number;
 
   content: ContextCollectionContent;
@@ -134,7 +134,7 @@ export type ContextGitTokenCreateResult = {
   remote: string;
 };
 
-// Collection summary for listings.
+/** Collection summary for listings. */
 export type ContextCollectionSummary = {
   id: string;
   title: string;
@@ -145,30 +145,30 @@ export type ContextCollectionSummary = {
   lastUpdated: Date;
 };
 
-// Stored document. Text bodies are literal text; binary bodies are base64 without a data: prefix.
+/** Stored document. Text bodies are literal text; binary bodies are base64 without a data: prefix. */
 export type ContextDocument = {
-  // Primary key within the collection, using "/" separators.
+  /** Primary key within the collection, using "/" separators. */
   path: string;
 
-  // File name derived from the path.
+  /** File name derived from the path. */
   name: string;
 
-  // What this document covers and when to use it.
+  /** What this document covers and when to use it. */
   description: string;
 
-  // Determines whether `body` is text or base64.
+  /** Determines whether `body` is text or base64. */
   contentType: string;
 
-  // Literal text for text content types; base64 for binary ones.
+  /** Literal text for text content types; base64 for binary ones. */
   body: string;
 
-  // Set when this document is a valid skill.
+  /** Set when this document is a valid skill. */
   skillName?: string;
 
   lastUpdated: Date;
 };
 
-// Document info without body.
+/** Document info without body. */
 export type ContextDocumentSummary = {
   path: string;
   name: string;
@@ -178,7 +178,7 @@ export type ContextDocumentSummary = {
   lastUpdated: Date;
 };
 
-// A user's record of one of their own (private) collections.
+/** A user's record of one of their own (private) collections. */
 export type OwnedCollectionRecord = {
   id: string;
   title: string;
@@ -187,7 +187,7 @@ export type OwnedCollectionRecord = {
   lastUpdated: Date;
 };
 
-// Collections an account's agents can use: own private plus all public.
+/** Collections an account's agents can use: own private plus all public. */
 export type EnabledCollectionInfo = {
   id: string;
   title: string;
@@ -203,7 +203,7 @@ export type EnabledCollectionInfo = {
 
 export const DEFAULT_DOCUMENT_CONTENT_TYPE = "text/markdown";
 
-// UTF-8 bytes of stored body; base64 overhead caps raw binary around 1 MB.
+/** UTF-8 bytes of stored body; base64 overhead caps raw binary around 1 MB. */
 export const MAX_DOCUMENT_BODY_BYTES = 1_400_000;
 
 // Map of file extensions (without the dot, lowercased) to MIME types we recognize.
@@ -265,7 +265,7 @@ const EXTENSION_CONTENT_TYPES: Record<string, string> = {
   pdf: "application/pdf",
 };
 
-// Derive a MIME type from a path's file extension, defaulting to markdown.
+/** Derive a MIME type from a path's file extension, defaulting to markdown. */
 export function contentTypeFromPath(path: string): string {
   let dot = path.lastIndexOf(".");
   if (dot < 0) return DEFAULT_DOCUMENT_CONTENT_TYPE;
@@ -273,7 +273,7 @@ export function contentTypeFromPath(path: string): string {
   return EXTENSION_CONTENT_TYPES[ext] ?? DEFAULT_DOCUMENT_CONTENT_TYPE;
 }
 
-// Text bodies are literal/searchable; everything else is base64. SVG is treated as an image.
+/** Text bodies are literal/searchable; everything else is base64. SVG is treated as an image. */
 export function isTextContentType(contentType: string): boolean {
   contentType = contentType.split(";", 1)[0].trim().toLowerCase();
   if (contentType.startsWith("text/")) return true;
@@ -285,13 +285,15 @@ export function isTextContentType(contentType: string): boolean {
   );
 }
 
-// Whether a content type is an image we can preview / embed as a data: URI.
+/** Whether a content type is an image we can preview / embed as a data: URI. */
 export function isImageContentType(contentType: string): boolean {
   return contentType.startsWith("image/");
 }
 
-// Whether a content type is Markdown, which the document viewer renders as prose in View mode
-// (all other text is shown as source). Everything else falls back to the source editor.
+/**
+ * Whether a content type is Markdown, which the document viewer renders as prose in View mode
+ * (all other text is shown as source). Everything else falls back to the source editor.
+ */
 export function isMarkdownContentType(contentType: string): boolean {
   return contentType === "text/markdown";
 }
@@ -300,9 +302,9 @@ export function isMarkdownContentType(contentType: string): boolean {
 // Per-user management capability (ContextApi)
 // ---------------------------------------------------------------------------
 
-// Per-account management API exposed to the gatekeeper app iframe.
+/** Per-account management API exposed to the gatekeeper app iframe. */
 export interface ContextApi extends RpcTarget {
-  // Gates creating/editing public collections and offering Git-backed collections.
+  /** Gates creating/editing public collections and offering Git-backed collections. */
   getViewerInfo(): Promise<{ isAdmin: boolean; supportsGitCollections: boolean }>;
 
   createContextCollection(
@@ -320,14 +322,14 @@ export interface ContextApi extends RpcTarget {
   getContextCollectionMetadata(collectionId: string): Promise<ContextCollectionMetadata | null>;
   listContextDocuments(collectionId: string, prefix?: string): Promise<ContextDocumentSummary[]>;
   getContextDocument(collectionId: string, path: string): Promise<ContextDocument | null>;
-  // The document's display name is always derived from its path (the file name), so it's not passed.
+  /** The document's display name is always derived from its path (the file name), so it's not passed. */
   putContextDocument(collectionId: string, path: string, doc: {
     description: string; body: string; contentType?: string;
   }): Promise<void>;
   deleteContextDocument(collectionId: string, path: string): Promise<void>;
   moveContextDocument(collectionId: string, fromPath: string, toPath: string): Promise<void>;
-  // Own private collections plus every public one.
+  /** Own private collections plus every public one. */
   listEnabledContextCollections(): Promise<EnabledCollectionInfo[]>;
-  // Whether the viewer may edit this collection: own private collection, or public collection as admin.
+  /** Whether the viewer may edit this collection: own private collection, or public collection as admin. */
   canWriteContextCollection(collectionId: string): Promise<boolean>;
 }

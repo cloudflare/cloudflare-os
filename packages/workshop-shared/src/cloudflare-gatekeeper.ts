@@ -8,9 +8,11 @@
 import { GatekeeperUser } from "./gatekeeper.js";
 
 export interface CloudflareGatekeeperUser extends GatekeeperUser {
-  // Returns a currently-usable (refreshed if needed) Cloudflare API access token for the connected
-  // account, or null if the connection is broken/expired. Workshop-only — never exposed to gadgets
-  // or agents. Used by the AI Gateway billing flow to read the credit balance and route BYOK
-  // inference through the account's default AI Gateway.
+  /**
+   * Returns a currently-usable (refreshed if needed) Cloudflare API access token for the connected
+   * account, or null if the connection is broken/expired. Workshop-only — never exposed to gadgets
+   * or agents. Used by the AI Gateway billing flow to read the credit balance and route BYOK
+   * inference through the account's default AI Gateway.
+   */
   getUsableAccessToken(): Promise<string | null>;
 }

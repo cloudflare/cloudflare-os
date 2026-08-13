@@ -34,8 +34,10 @@ export default function AdminFormatsPanel({
 }: {
   admin: RpcStub<AdminApi>
   formats: AdminFormat[]
-  // Re-fetch after a mutation. Formats are edited rarely, so re-reading beats an optimistic local
-  // copy that could disagree about order.
+  /**
+   * Re-fetch after a mutation. Formats are edited rarely, so re-reading beats an optimistic local
+   * copy that could disagree about order.
+   */
   onChanged: () => Promise<void>
 }) {
   const { authenticatedApi } = useAuthenticatedApi()

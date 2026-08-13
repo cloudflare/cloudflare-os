@@ -39,24 +39,32 @@ import { AccountsSubscriberAdapter } from './accountsSubscriber'
 export interface GatekeeperModalProps {
   open: boolean
   onClose: () => void
-  // Returns an overseer stub. Called only when actually creating a gatekeeper. This allows
-  // the Home page to lazily provision a gadget on first use.
+  /**
+   * Returns an overseer stub. Called only when actually creating a gatekeeper. This allows
+   * the Home page to lazily provision a gadget on first use.
+   */
   getOverseer: () => Promise<RpcStub<Overseer>> | RpcStub<Overseer>
-  // Called after the gatekeeper is successfully created. The caller decides what to do with
-  // the stub (e.g. assign a binding name, or insert a capsule). The modal awaits this callback
-  // and shows a loading state while it runs.
+  /**
+   * Called after the gatekeeper is successfully created. The caller decides what to do with
+   * the stub (e.g. assign a binding name, or insert a capsule). The modal awaits this callback
+   * and shows a loading state while it runs.
+   */
   onCreated: (gk: RpcStub<GatekeeperClient<any>>) => Promise<void>
-  // Workpieces offered as env entries when creating an agent spawner (see AgentSpawnerConfig.env),
-  // normally the gadget the spawner is being created for plus that gadget's own bindings. All are
-  // enabled by default, reproducing the pre-multi-gadget "spawned agents inherit everything"
-  // behavior; the user may deselect or rename them. Empty (the default) means the spawner starts
-  // with an empty env, which is all a context with no gadget can offer.
+  /**
+   * Workpieces offered as env entries when creating an agent spawner (see AgentSpawnerConfig.env),
+   * normally the gadget the spawner is being created for plus that gadget's own bindings. All are
+   * enabled by default, reproducing the pre-multi-gadget "spawned agents inherit everything"
+   * behavior; the user may deselect or rename them. Empty (the default) means the spawner starts
+   * with an empty env, which is all a context with no gadget can offer.
+   */
   spawnerEnvCandidates?: Omit<SpawnerEnvRow, 'enabled'>[]
-  // Optional pre-seed: when the modal opens, auto-select the resource connection for this vendor.
-  // Used by the agent's requestConnection accept flow so the user lands on the right connection with
-  // minimal clicks. `initialResourceUrlPattern` is the exact SupportedResource.urlPattern the
-  // backend resolved the request to (authoritative); `initialResourceUrl` is the raw URL the agent
-  // supplied (used only as a fallback if the resolved pattern isn't present in the current list).
+  /**
+   * Optional pre-seed: when the modal opens, auto-select the resource connection for this vendor.
+   * Used by the agent's requestConnection accept flow so the user lands on the right connection with
+   * minimal clicks. `initialResourceUrlPattern` is the exact SupportedResource.urlPattern the
+   * backend resolved the request to (authoritative); `initialResourceUrl` is the raw URL the agent
+   * supplied (used only as a fallback if the resolved pattern isn't present in the current list).
+   */
   initialVendorId?: string
   initialResourceUrl?: string
   initialResourceUrlPattern?: string

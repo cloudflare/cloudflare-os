@@ -71,9 +71,11 @@ export interface Template {
   price: 'Free' | string
 }
 
-// ---------------------
-// Inline demo prompts shown under the chat input
-// ---------------------
+/**
+ * ---------------------
+ * Inline demo prompts shown under the chat input
+ * ---------------------
+ */
 export const inlineDemos: InlineDemo[] = [
   {
     id: 'd1',
@@ -102,9 +104,11 @@ export const inlineDemos: InlineDemo[] = [
   },
 ]
 
-// ---------------------
-// Connections (external data sources)
-// ---------------------
+/**
+ * ---------------------
+ * Connections (external data sources)
+ * ---------------------
+ */
 export const connections: Connection[] = [
   {
     id: 'slack',
@@ -250,9 +254,11 @@ export const connections: Connection[] = [
 
 export const recentConnections = connections.filter((c) => c.connected)
 
-// ---------------------
-// Recent apps
-// ---------------------
+/**
+ * ---------------------
+ * Recent apps
+ * ---------------------
+ */
 export const recentApps: App[] = [
   {
     id: 'app-1',
@@ -310,9 +316,11 @@ export const recentApps: App[] = [
   },
 ]
 
-// ---------------------
-// Templates
-// ---------------------
+/**
+ * ---------------------
+ * Templates
+ * ---------------------
+ */
 export const templates: Template[] = [
   {
     id: '1',

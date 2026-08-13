@@ -9,8 +9,10 @@ function disposeFrame(frame: GatekeeperUiFrame | null) {
   (frame?.ui as { [Symbol.dispose]?(): void } | undefined)?.[Symbol.dispose]?.()
 }
 
-// Renders a gatekeeper's full-page management app (a sandboxed SPA the gatekeeper serves).
-// Fetches the app frame (iframe HTML + `ui` capability) from the backend and hosts it.
+/**
+ * Renders a gatekeeper's full-page management app (a sandboxed SPA the gatekeeper serves).
+ * Fetches the app frame (iframe HTML + `ui` capability) from the backend and hosts it.
+ */
 export default function GatekeeperAppPage({ appId }: { appId: string }) {
   const { authenticatedApi } = useAuthenticatedApi()
   // Wrap the frame in an object: it holds a `ui` RPC stub, and we never want useState's setter to

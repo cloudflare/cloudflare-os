@@ -35,8 +35,10 @@ interface ConnectionsProps {
   onHasGatekeepersChange?: (hasGatekeepers: boolean) => void
 }
 
-// Auto-approval rules live in Activity because they apply across the workspace, while this view is
-// scoped to one gadget.
+/**
+ * Auto-approval rules live in Activity because they apply across the workspace, while this view is
+ * scoped to one gadget.
+ */
 export default function Connections({ overseer, gadget, chatId, authenticatedApi, onConnectionsChange, isVisible, onHasGatekeepersChange }: ConnectionsProps) {
   const [bindings, setBindings] = useState<GadgetBindingInfo[]>([])
   // Identity of the gadget this tab is showing, needed to offer it to agent spawners.

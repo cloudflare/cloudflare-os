@@ -6,12 +6,14 @@ import type { MutableRefObject, Dispatch, SetStateAction } from 'react'
 import type { SelectableItem } from './ResourcePicker'
 import { getPlaceholderRanges } from './resourceMatching'
 
-// Handle arrow-key navigation and Tab (placeholder advance / item activation)
-// for an input element paired with a ResourcePicker.
-//
-// `urlText`   – the URL string being edited (may be a substring of the input value)
-// `urlOffset` – position of urlText within the input element's value (0 if the
-//               input contains only the URL)
+/**
+ * Handle arrow-key navigation and Tab (placeholder advance / item activation)
+ * for an input element paired with a ResourcePicker.
+ *
+ * `urlText`   – the URL string being edited (may be a substring of the input value)
+ * `urlOffset` – position of urlText within the input element's value (0 if the
+ *               input contains only the URL)
+ */
 export function handlePickerKeyDown(
   e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>,
   urlText: string,

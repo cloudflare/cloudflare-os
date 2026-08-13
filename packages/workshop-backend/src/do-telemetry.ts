@@ -12,9 +12,11 @@ import { createWorkshopLogger } from "./observability";
 
 const logger = createWorkshopLogger("workshop.server");
 
-// True for rejections caused by a DO reset or lost connection. These are requests that could make
-// sense to retry (although as of this writing, the code does not do so). `overloaded` is excluded
-// because when the DO is overloaded, retrying would make the problem worse.
+/**
+ * True for rejections caused by a DO reset or lost connection. These are requests that could make
+ * sense to retry (although as of this writing, the code does not do so). `overloaded` is excluded
+ * because when the DO is overloaded, retrying would make the problem worse.
+ */
 export function isDoResetError(e: unknown): boolean {
   if (typeof e !== "object" || e === null) return false;
   const flags = e as { durableObjectReset?: unknown; retryable?: unknown };

@@ -422,8 +422,10 @@ export class GitHubApi {
     return await this.#conditionalGet<GitHubSimpleUser>("/user", undefined, options);
   }
 
-  // Returns the account's primary, verified email (for use as a sign-in identity), or null if the
-  // account has no verified email. Requires the `user:email` scope.
+  /**
+   * Returns the account's primary, verified email (for use as a sign-in identity), or null if the
+   * account has no verified email. Requires the `user:email` scope.
+   */
   async getPrimaryVerifiedEmail(): Promise<string | null> {
     const result = await this.#request<Array<{
       email: string; primary: boolean; verified: boolean;
@@ -465,9 +467,11 @@ export class GitHubApi {
     return result.data;
   }
 
-  // GitHub's `/search/repositories` endpoint. Use this when the user has typed a query so we
-  // only fetch the matching repos rather than enumerating their entire affiliation list. The
-  // query string follows GitHub's search-syntax (e.g. "react user:jonesphillip in:name").
+  /**
+   * GitHub's `/search/repositories` endpoint. Use this when the user has typed a query so we
+   * only fetch the matching repos rather than enumerating their entire affiliation list. The
+   * query string follows GitHub's search-syntax (e.g. "react user:jonesphillip in:name").
+   */
   async searchRepos(options: {
     q: string;
     per_page: number;

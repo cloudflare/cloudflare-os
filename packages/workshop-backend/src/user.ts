@@ -32,8 +32,10 @@ type ConnectedAccountRecord = {
   autoProvisioned?: boolean;
 };
 
-// Metadata about an auto-provisioned account that provides an agent singleton and/or a management UI.
-// Returned to the overseer (ambient capsules / catalog) and the management-UI listing.
+/**
+ * Metadata about an auto-provisioned account that provides an agent singleton and/or a management UI.
+ * Returned to the overseer (ambient capsules / catalog) and the management-UI listing.
+ */
 export type ProvidedAccountInfo = {
   accountId: number;
   vendorId: string;
@@ -58,8 +60,10 @@ function areCredentialsValid(record: ConnectedAccountRecord): boolean {
   return true;
 }
 
-// Vendor id of the Cloudflare gatekeeper (the suffix of GATEKEEPER_CLOUDFLARE, lowercased). The AI
-// Gateway billing flow is Cloudflare-specific, so several places key off this literal.
+/**
+ * Vendor id of the Cloudflare gatekeeper (the suffix of GATEKEEPER_CLOUDFLARE, lowercased). The AI
+ * Gateway billing flow is Cloudflare-specific, so several places key off this literal.
+ */
 export const CLOUDFLARE_VENDOR_ID = "cloudflare";
 
 export type UserAiModelRecord = {
@@ -105,16 +109,18 @@ function isFullyCreated(g: GadgetRecord): g is GadgetMetadataWithTimestamps {
   return g.lastActive !== undefined;
 }
 
-// One output of a workspace, as pushed into a user's output index by the Overseer that owns it
-// (see `syncWorkspaceOutputs()`). Carries only what the workspace itself knows: its title,
-// activity time and ownership are joined in from the `gadgets` collection on read, so they can't
-// go stale here.
+/**
+ * One output of a workspace, as pushed into a user's output index by the Overseer that owns it
+ * (see `syncWorkspaceOutputs()`). Carries only what the workspace itself knows: its title,
+ * activity time and ownership are joined in from the `gadgets` collection on read, so they can't
+ * go stale here.
+ */
 export type WorkspaceOutputEntry = {
   workpieceId: WorkpieceId;
   title: string;
   created: Date;
 
-  // The format the gadget was built as, if it was instantiated from a blueprint declaring one.
+  /** The format the gadget was built as, if it was instantiated from a blueprint declaring one. */
   output?: BlueprintOutput;
 };
 
@@ -272,7 +278,7 @@ async function checkGatekeeperVendorFilter(
   }
 }
 
-// Durable Object that stores information about a user.
+/** Durable Object that stores information about a user. */
 export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   private storage: UserStorage;
   private vendors: Map<string, Service<GatekeeperVendor>>;
@@ -312,9 +318,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  // Returns true when this login created the account on first use. When the account doesn't yet
-  // exist and `allowCreate` is false (deployment signups are closed), refuses rather than creating —
-  // existing users can still sign in.
+  /**
+   * Returns true when this login created the account on first use. When the account doesn't yet
+   * exist and `allowCreate` is false (deployment signups are closed), refuses rather than creating —
+   * existing users can still sign in.
+   */
   async authenticateFromCfAccess(email: string, allowCreate: boolean): Promise<boolean> {
     if (!this.storage.created.get()) {
       if (!allowCreate) {
@@ -391,18 +399,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.#newSessionToken();
   }
 
-  // Log in via an authentication gatekeeper, creating the account on first use. The user DO is keyed
-  // by the verified email (this DO's id derives from idFromName(email)), so `email` is also used as
-  // the profile id and the initial display name is the email's local-part — consistent with the
-  // Cloudflare Access flow. Password login is left disabled for these accounts. Returns the session
-  // secret to store client-side.
-  //
-  // The profile is written only on first sign-in. We intentionally do NOT refresh the display name
-  // on later logins: once set, the name is the user's to change (via setOwnDisplayName), so we don't
-  // clobber a customized name with the email local-part.
-  //
-  // When the account doesn't yet exist and `allowCreate` is false (deployment signups are closed),
-  // returns null instead of creating one — existing users can still sign in.
+  /**
+   * Log in via an authentication gatekeeper, creating the account on first use. The user DO is keyed
+   * by the verified email (this DO's id derives from idFromName(email)), so `email` is also used as
+   * the profile id and the initial display name is the email's local-part — consistent with the
+   * Cloudflare Access flow. Password login is left disabled for these accounts. Returns the session
+   * secret to store client-side.
+   *
+   * The profile is written only on first sign-in. We intentionally do NOT refresh the display name
+   * on later logins: once set, the name is the user's to change (via setOwnDisplayName), so we don't
+   * clobber a customized name with the email local-part.
+   *
+   * When the account doesn't yet exist and `allowCreate` is false (deployment signups are closed),
+   * returns null instead of creating one — existing users can still sign in.
+   */
   async loginOrCreateViaGatekeeper(email: string, allowCreate: boolean): Promise<string | null> {
     if (!this.storage.created.get()) {
       if (!allowCreate) return null;
@@ -416,7 +426,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.#newSessionToken();
   }
 
-  // Whether this account has a password set (false for gatekeeper sign-in accounts).
+  /** Whether this account has a password set (false for gatekeeper sign-in accounts). */
   async hasPasswordLogin(): Promise<boolean> {
     return this.storage.passwordHashHash.get() !== null;
   }
@@ -440,7 +450,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.storage.profile.get();
   }
 
-  // Like whoami(), but returns null if the account was never initialized.
+  /** Like whoami(), but returns null if the account was never initialized. */
   async whoamiIfExists(): Promise<AiChatAuthorInfo | null> {
     if (!this.storage.created.get()) {
       return null;
@@ -448,12 +458,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.storage.profile.get();
   }
 
-  // Called by the overseer every time a collaborator opens a shared gadget.
-  // Creates the record on first open; updates lastActive on subsequent opens.
-  //
-  // `role` is cached so listings built from this DO can offer the actions it permits without
-  // reopening the workspace to ask. Presentation only: every operation is still authorized by the
-  // Overseer when attempted.
+  /**
+   * Called by the overseer every time a collaborator opens a shared gadget.
+   * Creates the record on first open; updates lastActive on subsequent opens.
+   *
+   * `role` is cached so listings built from this DO can offer the actions it permits without
+   * reopening the workspace to ask. Presentation only: every operation is still authorized by the
+   * Overseer when attempted.
+   */
   async recordSharedGadgetOpen(
       gadgetId: string, title: string, ownerProfile: AiChatAuthorInfo, role?: CollaboratorRole
   ): Promise<void> {
@@ -482,9 +494,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  // Updates the presentation-only role cached for a shared workspace listing. Authorization still
-  // comes from the Overseer's live sharing graph; this only keeps the listing's available actions
-  // accurate after a collaborator is downgraded.
+  /**
+   * Updates the presentation-only role cached for a shared workspace listing. Authorization still
+   * comes from the Overseer's live sharing graph; this only keeps the listing's available actions
+   * accurate after a collaborator is downgraded.
+   */
   async updateSharedGadgetRole(gadgetId: string, role: CollaboratorRole): Promise<void> {
     let record = this.storage.gadgets.get(gadgetId);
     if (!record?.owner) return;
@@ -492,9 +506,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
-  // Forgets a gadget shared with this user: drops it from their workspace listing and its outputs
-  // from their Outputs index. Called both when the user dismisses it and when their access is
-  // revoked (Overseer.refreshAffectedCollaboratorListings()); it grants and revokes nothing.
+  /**
+   * Forgets a gadget shared with this user: drops it from their workspace listing and its outputs
+   * from their Outputs index. Called both when the user dismisses it and when their access is
+   * revoked (Overseer.refreshAffectedCollaboratorListings()); it grants and revokes nothing.
+   */
   async forgetSharedGadget(gadgetId: string): Promise<void> {
     let record = this.storage.gadgets.get(gadgetId);
     if (record && record.owner) {
@@ -596,9 +612,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // Cloudflare account connection (optional top-up flow).
   // ---------------------------------------------------------------------------------------------
 
-  // Return the connected Cloudflare *gatekeeper* account stub, if any. The AI Gateway billing flow
-  // narrows it to CloudflareGatekeeperUser to obtain a usable access token. Null if the user hasn't
-  // connected (or signed in with) Cloudflare.
+  /**
+   * Return the connected Cloudflare *gatekeeper* account stub, if any. The AI Gateway billing flow
+   * narrows it to CloudflareGatekeeperUser to obtain a usable access token. Null if the user hasn't
+   * connected (or signed in with) Cloudflare.
+   */
   async getCloudflareGatekeeperAccount(): Promise<Fetcher<CloudflareGatekeeperUser> | null> {
     let nextAccountId = this.storage.nextAccountId.get();
     for (let id = 0; id < nextAccountId; id++) {
@@ -611,12 +629,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return null;
   }
 
-  // The AI Gateway billing state (selected account + cached balance), or null if unset.
+  /** The AI Gateway billing state (selected account + cached balance), or null if unset. */
   async getCloudflareBilling(): Promise<CloudflareBilling | null> {
     return this.storage.cloudflareBilling.get();
   }
 
-  // Update the cached credit balance for the billed account.
+  /** Update the cached credit balance for the billed account. */
   async updateCloudflareCredits(creditsRemaining: number | null): Promise<void> {
     let record = this.storage.cloudflareBilling.get() ?? {};
     record.creditsRemaining = creditsRemaining;
@@ -624,8 +642,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.cloudflareBilling.put(record);
   }
 
-  // Persist which Cloudflare account to bill. Clears the cached credit balance (it belonged to the
-  // old account).
+  /**
+   * Persist which Cloudflare account to bill. Clears the cached credit balance (it belonged to the
+   * old account).
+   */
   async setCloudflareAccountSelection(accountId: string, accountName?: string): Promise<void> {
     let record = this.storage.cloudflareBilling.get() ?? {};
     record.accountId = accountId;
@@ -646,7 +666,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return record && record.day === day ? record.count : 0;
   }
 
-  // Read the current daily quota state without counting a call.
+  /** Read the current daily quota state without counting a call. */
   async checkDailyLlmCount(limit: number): Promise<DailyQuotaResult> {
     let day = utcDayKey();
     let used = this.#dailyUsed(day);
@@ -654,9 +674,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
              resetAt: nextUtcMidnightIso() };
   }
 
-  // Atomically check the daily limit and, if within it, count one call. `withinLimits` is the
-  // pre-count decision; `used`/`remaining` reflect the state AFTER counting. No-ops once exhausted,
-  // so a blocked request never counts.
+  /**
+   * Atomically check the daily limit and, if within it, count one call. `withinLimits` is the
+   * pre-count decision; `used`/`remaining` reflect the state AFTER counting. No-ops once exhausted,
+   * so a blocked request never counts.
+   */
   async consumeDailyLlmCall(limit: number): Promise<DailyQuotaResult> {
     let day = utcDayKey();
     let used = this.#dailyUsed(day);
@@ -669,7 +691,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
              resetAt: nextUtcMidnightIso() };
   }
 
-  // DO NOT MAKE PUBLIC -- returns API keys.
+  /** DO NOT MAKE PUBLIC -- returns API keys. */
   async getChatContext(modelId: string | null): Promise<UserChatContext> {
     let gwConfig = getAiGatewayConfig(this.env);
 
@@ -771,11 +793,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.outputs.byWorkspace.delete(id);
   }
 
-  // Replace the set of outputs recorded for one workspace. Called by that workspace's Overseer
-  // whenever its gadget registry changes and whenever it is opened.
-  //
-  // A workspace the user no longer tracks (deleted, or a shared one they dismissed) has its
-  // entries dropped.
+  /**
+   * Replace the set of outputs recorded for one workspace. Called by that workspace's Overseer
+   * whenever its gadget registry changes and whenever it is opened.
+   *
+   * A workspace the user no longer tracks (deleted, or a shared one they dismissed) has its
+   * entries dropped.
+   */
   syncWorkspaceOutputs(workspaceId: string, entries: WorkspaceOutputEntry[]): void {
     this.storage.outputs.byWorkspace.delete(workspaceId);
     if (!this.storage.gadgets.get(workspaceId)) return;
@@ -1189,9 +1213,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return described.filter(v => v !== null);
   }
 
-  // The ambient gatekeepers the user can opt into now: mode "optional" and not yet added. Backs the
-  // Connectors "Available" section. ("enabled" ones are already provisioned; "disabled" ones aren't
-  // offered.)
+  /**
+   * The ambient gatekeepers the user can opt into now: mode "optional" and not yet added. Backs the
+   * Connectors "Available" section. ("enabled" ones are already provisioned; "disabled" ones aren't
+   * offered.)
+   */
   async listAddableGatekeepers(): Promise<GatekeeperVendorInfo[]> {
     let config = await readAdminConfig(this.env);
     return (await this.#ambientVendors())
@@ -1205,8 +1231,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // #ensureAccountsPromise (see its comment below), e.g. a double-click on "Add". Cleared on completion.
   #provisionPromises = new Map<string, Promise<void>>();
 
-  // Opt into an ambient gatekeeper on demand: mint its connected account for this user (no OAuth).
-  // Only when the vendor's mode isn't "disabled" and the user has no account yet. Idempotent.
+  /**
+   * Opt into an ambient gatekeeper on demand: mint its connected account for this user (no OAuth).
+   * Only when the vendor's mode isn't "disabled" and the user has no account yet. Idempotent.
+   */
   provisionAmbientAccount(vendorId: string): Promise<void> {
     vendorId = vendorId.toLowerCase();
     let inFlight = this.#provisionPromises.get(vendorId);
@@ -1293,11 +1321,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  // Ensure the user's auto-provisioned accounts exist (idempotent; see #ensureAutoProvisionedAccounts),
-  // then list those that declare an agent singleton and/or a management UI. Folding the ensure in lets
-  // callers (gadget open, app nav) provision and read the accounts back in a single round trip to this
-  // DO. Callers filter on `description.singleton` (ambient capsules / catalog) or
-  // `description.providesUi` (management-UI listing).
+  /**
+   * Ensure the user's auto-provisioned accounts exist (idempotent; see #ensureAutoProvisionedAccounts),
+   * then list those that declare an agent singleton and/or a management UI. Folding the ensure in lets
+   * callers (gadget open, app nav) provision and read the accounts back in a single round trip to this
+   * DO. Callers filter on `description.singleton` (ambient capsules / catalog) or
+   * `description.providesUi` (management-UI listing).
+   */
   async listProvidedAccounts(): Promise<ProvidedAccountInfo[]> {
     await this.#ensureAutoProvisionedAccounts();
     let config = await readAdminConfig(this.env);
@@ -1312,10 +1342,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return result;
   }
 
-  // Get the gatekeeper class implementing a singleton account's agent session. The overseer installs
-  // this gatekeeper into the owner's gadgets (as a Facet) like any other gatekeeper, so the session
-  // and catalog run gadget-side in the gatekeeper's own worker — no further round-trips through this
-  // DO. The account capability stays encapsulated here; only the class reference crosses out.
+  /**
+   * Get the gatekeeper class implementing a singleton account's agent session. The overseer installs
+   * this gatekeeper into the owner's gadgets (as a Facet) like any other gatekeeper, so the session
+   * and catalog run gadget-side in the gatekeeper's own worker — no further round-trips through this
+   * DO. The account capability stays encapsulated here; only the class reference crosses out.
+   */
   async getSingletonGatekeeperClass(accountId: number)
       : Promise<DurableObjectClass<Gatekeeper<any>> | null> {
     let record = this.storage.connectedAccounts.get(accountId);
@@ -1325,8 +1357,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return (record.account as unknown as SingletonAccountStub).getSingletonGatekeeperClass();
   }
 
-  // Open the full-page management UI for an account that declares one. `context.isAdmin` is supplied
-  // fresh by the caller so admin-gated features reflect the user's current status.
+  /**
+   * Open the full-page management UI for an account that declares one. `context.isAdmin` is supplied
+   * fresh by the caller so admin-gated features reflect the user's current status.
+   */
   async startAccountAppUi(accountId: number, context: AppUiContext): Promise<GatekeeperUiFrame> {
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record?.description.providesUi) throw new Error("No such app.");
@@ -1517,10 +1551,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return record.account.startResourceConfigurator(resourceUrlPattern);
   }
 
-  // Persist a connected gatekeeper account that was established during sign-in (rather than via the
-  // usual logged-in connectAccount flow). Used for providers like Cloudflare where signing in also
-  // links the account for AI Gateway billing: the login callback resolves this user by verified
-  // email, then calls here to store the full-scope grant.
+  /**
+   * Persist a connected gatekeeper account that was established during sign-in (rather than via the
+   * usual logged-in connectAccount flow). Used for providers like Cloudflare where signing in also
+   * links the account for AI Gateway billing: the login callback resolves this user by verified
+   * email, then calls here to store the full-scope grant.
+   */
   async linkConnectedAccountFromLogin(
       account: Fetcher<GatekeeperUser>, vendorId: string, expiresAt?: Date): Promise<void> {
     let description = await account.describe();
@@ -1652,14 +1688,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return {class: cls, vendorId: account.vendorId, typeUrlPattern: resource.urlPattern};
   }
 
-  // Mint a verifier from one of THIS user's connected accounts, identified by accountId. The
-  // overseer passes the returned verifier to a gatekeeper's `addObserver()` so the gatekeeper can
-  // check whether this user is allowed to observe the data read through it. Returns null if the
-  // account no longer exists (or never existed). Throws if the account belongs to a different
-  // vendor (not a legitimate UI state — only reachable by bypassing client-side filtering).
-  //
-  // Account *selection* (which of the user's accounts to use for a given binding) is done by the
-  // frontend; this method validates and resolves a chosen account to its verifier.
+  /**
+   * Mint a verifier from one of THIS user's connected accounts, identified by accountId. The
+   * overseer passes the returned verifier to a gatekeeper's `addObserver()` so the gatekeeper can
+   * check whether this user is allowed to observe the data read through it. Returns null if the
+   * account no longer exists (or never existed). Throws if the account belongs to a different
+   * vendor (not a legitimate UI state — only reachable by bypassing client-side filtering).
+   *
+   * Account *selection* (which of the user's accounts to use for a given binding) is done by the
+   * frontend; this method validates and resolves a chosen account to its verifier.
+   */
   async getVerifier(accountId: number, expectedVendorId: string)
       : Promise<Fetcher<GatekeeperUserVerifier> | null> {
     let account = this.storage.connectedAccounts.get(accountId);
@@ -1674,8 +1712,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return await account.account.getVerifier();
   }
 
-  // Describe one of the user's connected accounts so a caller can name it in a message. Returns null
-  // if it no longer exists.
+  /**
+   * Describe one of the user's connected accounts so a caller can name it in a message. Returns null
+   * if it no longer exists.
+   */
   async describeConnectedAccount(accountId: number): Promise<AccountDescription | null> {
     let account = this.storage.connectedAccounts.get(accountId);
     return account ? account.description : null;

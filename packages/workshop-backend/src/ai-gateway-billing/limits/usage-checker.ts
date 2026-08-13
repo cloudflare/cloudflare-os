@@ -15,27 +15,29 @@ import { getConnectionStatus, resolveConnection, ByokGatewayRouting } from "../c
 import type { UserDurableObject } from "../../user.js";
 
 export interface UsageCheckResult {
-  // Whether the request may proceed.
+  /** Whether the request may proceed. */
   allowed: boolean;
-  // Guidance/reason when blocked.
+  /** Guidance/reason when blocked. */
   reason?: string;
-  // Whether to serve the request using the user's own gateway/keys rather than the platform's.
+  /** Whether to serve the request using the user's own gateway/keys rather than the platform's. */
   shouldUseByok: boolean;
-  // Whether the user is within their free-tier limit.
+  /** Whether the user is within their free-tier limit. */
   withinLimits: boolean;
-  // Calls remaining in the current window (Infinity when limits are disabled).
+  /** Calls remaining in the current window (Infinity when limits are disabled). */
   remaining: number;
-  // The configured limit (Infinity when limits are disabled).
+  /** The configured limit (Infinity when limits are disabled). */
   limit: number;
-  // Window kind and reset time (omitted when unlimited).
+  /** Window kind and reset time (omitted when unlimited). */
   windowKind?: LimitWindowKind;
   resetAt?: string;
-  // The user's Cloudflare AI Gateway balance, or null if unknown / not connected.
+  /** The user's Cloudflare AI Gateway balance, or null if unknown / not connected. */
   balance: number | null;
-  // Whether the user has connected a Cloudflare account with a usable token.
+  /** Whether the user has connected a Cloudflare account with a usable token. */
   hasUserToken: boolean;
-  // Routing to bill the user's own account, present only when shouldUseByok is true. Resolved here
-  // (reusing the connection lookup) so the caller needn't decrypt the token a second time.
+  /**
+   * Routing to bill the user's own account, present only when shouldUseByok is true. Resolved here
+   * (reusing the connection lookup) so the caller needn't decrypt the token a second time.
+   */
   byokRouting?: ByokGatewayRouting;
 }
 
@@ -52,11 +54,13 @@ function unlimitedResult(): UsageCheckResult {
   };
 }
 
-// Check whether the user may proceed with an LLM-backed request.
-//
-// When limits are disabled, always allows without touching the user object. Otherwise: connected +
-// funded users bill their own gateway and skip the daily counter entirely; everyone else draws on
-// the platform free tier (consuming one call against the user object) until it's exhausted.
+/**
+ * Check whether the user may proceed with an LLM-backed request.
+ *
+ * When limits are disabled, always allows without touching the user object. Otherwise: connected +
+ * funded users bill their own gateway and skip the daily counter entirely; everyone else draws on
+ * the platform free tier (consuming one call against the user object) until it's exhausted.
+ */
 export async function checkUsageAndBalance(
   env: Cloudflare.Env,
   userStub: DurableObjectStub<UserDurableObject>,
@@ -121,8 +125,10 @@ export async function checkUsageAndBalance(
   };
 }
 
-// Read the user's current usage + connection status WITHOUT counting a call. Used by the UI to
-// render the usage banner. Returns an "unlimited" snapshot when limits are disabled.
+/**
+ * Read the user's current usage + connection status WITHOUT counting a call. Used by the UI to
+ * render the usage banner. Returns an "unlimited" snapshot when limits are disabled.
+ */
 export async function getUsageInfo(
   env: Cloudflare.Env,
   userStub: DurableObjectStub<UserDurableObject>,

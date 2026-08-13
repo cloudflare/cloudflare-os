@@ -16,7 +16,7 @@ import {
 } from "./collection-kv.js";
 import { domainName } from "./domain.js";
 
-// Collections visible to this account's agents.
+/** Collections visible to this account's agents. */
 export async function loadEnabledContextCollections(
     env: Pick<Cloudflare.Env, "CONTEXT_COLLECTIONS">,
     domain: string,

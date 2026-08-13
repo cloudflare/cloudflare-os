@@ -38,15 +38,17 @@ async function cfGet<T>(token: string, path: string): Promise<T | null> {
   return data.result;
 }
 
-// List the accounts the token can access. Requires the `account-settings.read` OAuth scope.
+/** List the accounts the token can access. Requires the `account-settings.read` OAuth scope. */
 export async function listAccounts(token: string): Promise<CloudflareAccount[]> {
   const result = await cfGet<Array<{ id: string; name: string }>>(token, "/accounts");
   if (!result) return [];
   return result.map((a) => ({ accountId: a.id, accountName: a.name }));
 }
 
-// Fetch the account's AI Gateway credit balance in USD. Returns null on any upstream failure so
-// callers can distinguish "unknown" from a genuine $0 balance.
+/**
+ * Fetch the account's AI Gateway credit balance in USD. Returns null on any upstream failure so
+ * callers can distinguish "unknown" from a genuine $0 balance.
+ */
 export async function fetchCreditBalance(token: string, accountId: string): Promise<number | null> {
   const result = await cfGet<{ balance?: number }>(
     token, `/accounts/${accountId}/ai-gateway-billing/credit_balance`,

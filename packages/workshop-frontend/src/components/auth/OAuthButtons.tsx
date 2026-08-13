@@ -9,9 +9,11 @@ interface OAuthButtonsProps {
   onSuccess?: () => void
 }
 
-// Renders a sign-in button per auth-capable gatekeeper vendor. Clicking opens the gatekeeper's
-// OAuth popup (which self-closes) and waits for the result over RPC; on success the session token is
-// stored and the app re-authenticates.
+/**
+ * Renders a sign-in button per auth-capable gatekeeper vendor. Clicking opens the gatekeeper's
+ * OAuth popup (which self-closes) and waits for the result over RPC; on success the session token is
+ * stored and the app re-authenticates.
+ */
 export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButtonsProps) {
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<string | null>(null)

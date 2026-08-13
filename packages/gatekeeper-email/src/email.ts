@@ -307,7 +307,7 @@ export class UserAccount extends DurableObject<Env> {
     this.ctx.storage.kv.put("nonce", { value: nonce, expiresAt: Date.now() + NONCE_LIFETIME_MS });
   }
 
-  // Returns false if the nonce is invalid or expired.
+  /** Returns false if the nonce is invalid or expired. */
   async complete(nonce: string): Promise<boolean> {
     let stored = this.ctx.storage.kv.get<{value: string, expiresAt: number}>("nonce");
     if (!stored || Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, nonce)) {
@@ -363,7 +363,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     };
   }
 
-  // This gatekeeper does not provide sign-in.
+  /** This gatekeeper does not provide sign-in. */
   async getAuthenticatedEmail(): Promise<string | null> {
     return null;
   }
@@ -457,11 +457,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return {};
   }
 
-  // Mint a verifier representing this account. The email gatekeeper uses the "low-stakes" observer
-  // strategy (see EmailGatekeeperImpl.addObserver): a mailbox here is a fresh address minted on the
-  // deployment's own domain specifically for the Gadget, so the Gadget's collaborators are the
-  // intended audience. The verifier carries no identity and is never consulted — but the overseer
-  // mints one on every open, so it must exist and not throw.
+  /**
+   * Mint a verifier representing this account. The email gatekeeper uses the "low-stakes" observer
+   * strategy (see EmailGatekeeperImpl.addObserver): a mailbox here is a fresh address minted on the
+   * deployment's own domain specifically for the Gadget, so the Gadget's collaborators are the
+   * intended audience. The verifier carries no identity and is never consulted — but the overseer
+   * mints one on every open, so it must exist and not throw.
+   */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     return this.ctx.exports.EmailVerifier({});
@@ -572,11 +574,13 @@ export class EmailGatekeeperImpl extends DurableObject<Env, EmailGatekeeperImplP
     throw new Error("Email gatekeeper has no actions to revert");
   }
 
-  // Observer tracking: the email gatekeeper uses the "low-stakes" strategy. Each mailbox is a fresh
-  // address minted on the deployment's own domain for this Gadget; there is no external ACL and no
-  // other party who "independently has access" to that inbox, so the Gadget's own collaborators are
-  // the natural audience. Any collaborator may observe: addObserver/removeObserver are no-ops and we
-  // never set excludeObservers on observations.
+  /**
+   * Observer tracking: the email gatekeeper uses the "low-stakes" strategy. Each mailbox is a fresh
+   * address minted on the deployment's own domain for this Gadget; there is no external ACL and no
+   * other party who "independently has access" to that inbox, so the Gadget's own collaborators are
+   * the natural audience. Any collaborator may observe: addObserver/removeObserver are no-ops and we
+   * never set excludeObservers on observations.
+   */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
   async removeObserver(_id: string): Promise<void> {}
 }
@@ -584,8 +588,10 @@ export class EmailGatekeeperImpl extends DurableObject<Env, EmailGatekeeperImplP
 @validateRpc()
 export class EmailHookControllerImpl extends WorkerEntrypoint<Env, EmailGatekeeperImplProps>
     implements HookController<EmailHookTarget> {
-  // `_target` is unused -- email doesn't display its hooks -- but must be declared, since RPC
-  // argument validation is generated from this signature and would reject the extra argument.
+  /**
+   * `_target` is unused -- email doesn't display its hooks -- but must be declared, since RPC
+   * argument validation is generated from this signature and would reject the extra argument.
+   */
   async enable(initiator: Fetcher<HookInitiator<EmailHookTarget>>,
                _target: HookTargetMetadata): Promise<void> {
     return this.#setHook(initiator);
@@ -612,9 +618,11 @@ export class EmailHookControllerImpl extends WorkerEntrypoint<Env, EmailGatekeep
 // Stores the hook Fetcher and dispatches inbound emails to it.
 
 export class EmailAddress extends DurableObject<Env> {
-  // Claim this email address for a user account. The first caller to claim an address becomes
-  // its permanent owner. Subsequent calls from the same owner are idempotent. Calls from a
-  // different owner are rejected.
+  /**
+   * Claim this email address for a user account. The first caller to claim an address becomes
+   * its permanent owner. Subsequent calls from the same owner are idempotent. Calls from a
+   * different owner are rejected.
+   */
   async claim(userAccountId: string): Promise<boolean> {
     let owner = this.ctx.storage.kv.get<string>("owner");
     if (owner && owner !== userAccountId) {

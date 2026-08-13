@@ -199,8 +199,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     return { url: `${getBaseUrl(this.env)}/${accountId.toString()}/${initiationNonce}` };
   }
 
-  // The one resource this connector offers, or none when unconfigured. Returning nothing is how the
-  // connector hides itself: the Workshop drops a vendor that advertises no resources.
+  /**
+   * The one resource this connector offers, or none when unconfigured. Returning nothing is how the
+   * connector hides itself: the Workshop drops a vendor that advertises no resources.
+   */
   async getSupportedResources(): Promise<SupportedResource[]> {
     const config = readPortalConfig(this.env);
     return config ? [portalResource(config)] : [];
@@ -217,10 +219,12 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 // ---------------------------------------------------------------------------
 // Account DO — owns the endpoint choice and every credential for it.
 
-// One connected portal, for one user. Nothing outside this object ever sees a credential.
-//
-// The endpoint is a deployment setting rather than user input, so the preissued token is the only
-// real addition: a portal may be fronted by one instead of using OAuth.
+/**
+ * One connected portal, for one user. Nothing outside this object ever sees a credential.
+ *
+ * The endpoint is a deployment setting rather than user input, so the preissued token is the only
+ * real addition: a portal may be fronted by one instead of using OAuth.
+ */
 export class McpAccount extends McpAccountBase<Env> {
   protected baseUrl(): string {
     return getBaseUrl(this.env);
@@ -235,8 +239,10 @@ export class McpAccount extends McpAccountBase<Env> {
     return this.ctx.exports.GatekeeperUserImpl({ props });
   }
 
-  // Scoped to the endpoint this account is connected to, never merely to what configuration says
-  // today. The rule lives beside the configuration it guards, in `portalTokenFor`.
+  /**
+   * Scoped to the endpoint this account is connected to, never merely to what configuration says
+   * today. The rule lives beside the configuration it guards, in `portalTokenFor`.
+   */
   protected override staticToken(server: ConnectedServer): string | null {
     return portalTokenFor(this.env, server.endpoint);
   }
@@ -259,9 +265,11 @@ export class GatekeeperUserImpl
     return { account: this.#account(), avatar: PORTAL_AVATAR, baseUrl: getBaseUrl(this.env) };
   }
 
-  // The portal as currently configured, not as it was when this account connected. Repointing the
-  // deployment therefore surfaces as a reconnect, via `getGatekeeperClassFor` refusing the old
-  // endpoint, rather than as a Gadget quietly talking to a portal nobody chose.
+  /**
+   * The portal as currently configured, not as it was when this account connected. Repointing the
+   * deployment therefore surfaces as a reconnect, via `getGatekeeperClassFor` refusing the old
+   * endpoint, rather than as a Gadget quietly talking to a portal nobody chose.
+   */
   async getSupportedResources(): Promise<SupportedResource[]> {
     const config = readPortalConfig(this.env);
     return config ? [portalResource(config)] : [];
@@ -535,9 +543,11 @@ export class McpGatekeeperImpl
     return scope.serverId ? `${serverId}-${scope.serverId}` : serverId;
   }
 
-  // Namespaces persistent approval policy by both the readable binding shape and the exact portal
-  // endpoint. A deployment repoint must not carry an always-approve decision to a different system
-  // merely because both portals expose a tool with the same name.
+  /**
+   * Namespaces persistent approval policy by both the readable binding shape and the exact portal
+   * endpoint. A deployment repoint must not carry an always-approve decision to a different system
+   * merely because both portals expose a tool with the same name.
+   */
   protected get actionScopeTag(): string {
     return `mcp-portal:${endpointTag(this.ctx.props.endpoint)}:${this.#bindingId()}`;
   }
@@ -554,8 +564,10 @@ export class McpGatekeeperImpl
     });
   }
 
-  // The upstream server as the user should see it, not the portal's own name. The same label
-  // `describe()` shows, so an approval prompt names the system being written to.
+  /**
+   * The upstream server as the user should see it, not the portal's own name. The same label
+   * `describe()` shows, so an approval prompt names the system being written to.
+   */
   get serverName(): string {
     return this.#scopeLabel();
   }

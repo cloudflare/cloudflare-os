@@ -15,35 +15,41 @@ const MAX_REDIRECTS = 3;
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
-// Set by local development against an MCP server on localhost, which is otherwise refused.
+/** Set by local development against an MCP server on localhost, which is otherwise refused. */
 export type FetchOptions = { allowInsecure?: boolean };
 
-// The one environment variable this package reads. Each Worker's own `Env` satisfies it structurally.
+/** The one environment variable this package reads. Each Worker's own `Env` satisfies it structurally. */
 export type InsecureEnv = {
-  // When `"true"`, permits plain HTTP and private hosts. Local development only.
+  /** When `"true"`, permits plain HTTP and private hosts. Local development only. */
   MCP_ALLOW_INSECURE?: string;
 };
 
-// Reads the local-development escape hatch. One definition, since this switch turns off the SSRF
-// checks and copies of it would be copies of that.
+/**
+ * Reads the local-development escape hatch. One definition, since this switch turns off the SSRF
+ * checks and copies of it would be copies of that.
+ */
 export function fetchOptions(env: InsecureEnv): FetchOptions {
   return { allowInsecure: (env.MCP_ALLOW_INSECURE ?? "").toLowerCase() === "true" };
 }
 
-// Cap on any single response body this gatekeeper buffers.
-//
-// Every response here is parsed whole -- JSON-RPC frames and SSE streams alike -- so the body is in
-// memory before any higher-level limit can apply. `listTools` bounds the catalog it *keeps*, which
-// bounds nothing about what arrives, and a `tools/call` result is not bounded at all: a server
-// answering one request with a gigabyte exhausts the Worker.
+/**
+ * Cap on any single response body this gatekeeper buffers.
+ *
+ * Every response here is parsed whole -- JSON-RPC frames and SSE streams alike -- so the body is in
+ * memory before any higher-level limit can apply. `listTools` bounds the catalog it *keeps*, which
+ * bounds nothing about what arrives, and a `tools/call` result is not bounded at all: a server
+ * answering one request with a gigabyte exhausts the Worker.
+ */
 export const MAX_RESPONSE_BYTES = 1024 * 1024;
 
-// Reads a response body as text, refusing one larger than `maxBytes`.
-//
-// Refused rather than truncated: half a JSON document does not parse, and a clipped SSE stream can
-// lose the very event carrying the response, which would surface as a confusing protocol error
-// instead of the size problem it is. The body is cancelled on refusal so the transfer stops rather
-// than running to completion unread.
+/**
+ * Reads a response body as text, refusing one larger than `maxBytes`.
+ *
+ * Refused rather than truncated: half a JSON document does not parse, and a clipped SSE stream can
+ * lose the very event carrying the response, which would surface as a confusing protocol error
+ * instead of the size problem it is. The body is cancelled on refusal so the transfer stops rather
+ * than running to completion unread.
+ */
 export async function readTextCapped(
   response: Response, maxBytes: number = MAX_RESPONSE_BYTES,
 ): Promise<string> {
@@ -76,7 +82,7 @@ export async function readTextCapped(
   return new TextDecoder().decode(joined);
 }
 
-// Gives SDK OAuth helpers the same redirect and response-size policy as the local MCP transport.
+/** Gives SDK OAuth helpers the same redirect and response-size policy as the local MCP transport. */
 export function sdkFetch(options: FetchOptions = {}): FetchLike {
   return async (url, init) => {
     const response = await guardedFetch(String(url), init ?? {}, options);
@@ -89,8 +95,10 @@ export function sdkFetch(options: FetchOptions = {}): FetchLike {
   };
 }
 
-// Whether a URL may be requested at all. Fails closed: an unparseable URL is refused rather than
-// handed to `fetch` to find out.
+/**
+ * Whether a URL may be requested at all. Fails closed: an unparseable URL is refused rather than
+ * handed to `fetch` to find out.
+ */
 export function isAllowedUrl(url: string, options: FetchOptions = {}): boolean {
   let parsed: URL;
   try {
@@ -103,10 +111,12 @@ export function isAllowedUrl(url: string, options: FetchOptions = {}): boolean {
   return !isBlockedHost(parsed.hostname);
 }
 
-// Fetches `url`, following redirects manually so each hop is checked.
-//
-// Throws if the first URL is not allowed; a redirect to a refused host returns the 3xx response
-// itself, which every caller already treats as a failure.
+/**
+ * Fetches `url`, following redirects manually so each hop is checked.
+ *
+ * Throws if the first URL is not allowed; a redirect to a refused host returns the 3xx response
+ * itself, which every caller already treats as a failure.
+ */
 export async function guardedFetch(
   url: string, init: RequestInit, options: FetchOptions = {},
 ): Promise<Response> {

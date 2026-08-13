@@ -139,7 +139,7 @@ export class ContextAccount
     };
   }
 
-  // Return the gadget-side read-path class, scoped by this account's props.
+  /** Return the gadget-side read-path class, scoped by this account's props. */
   async getSingletonGatekeeperClass(): Promise<DurableObjectClass<Gatekeeper<any>>> {
     return this.ctx.exports.ContextGatekeeper({
       props: { sharingDomain: this.ctx.props.sharingDomain, accountId: this.ctx.props.accountId },
@@ -155,7 +155,7 @@ export class ContextAccount
     return { iframeHtml: APP_HTML, ui };
   }
 
-  // --- GatekeeperUser resource surface (no URL-addressed resources) ---
+  /** --- GatekeeperUser resource surface (no URL-addressed resources) --- */
   async getSupportedResources(): Promise<SupportedResource[]> {
     return [];
   }
@@ -165,11 +165,11 @@ export class ContextAccount
   startResourceConfigurator(_resourceUrlPattern: string): never {
     throw new Error("The Context Library has no URL-addressed resources.");
   }
-  // No grantable resource types, so nothing to authorize and no URL to return.
+  /** No grantable resource types, so nothing to authorize and no URL to return. */
   async ensureResources(_resourceUrlPatterns: string[]): Promise<{url?: string}> {
     return {};
   }
-  // Delete private collections; public collections are domain-owned.
+  /** Delete private collections; public collections are domain-owned. */
   async revoke(): Promise<void> {
     let domain = this.ctx.props.sharingDomain;
     let userLibrary = this.#userLibraries().get(
@@ -189,8 +189,10 @@ export class ContextAccount
     return null;
   }
 
-  // Mint a verifier tied to this account. ContextGatekeeper uses it to check whether a prospective
-  // observer can independently read each collection the Gadget has observed.
+  /**
+   * Mint a verifier tied to this account. ContextGatekeeper uses it to check whether a prospective
+   * observer can independently read each collection the Gadget has observed.
+   */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     return this.ctx.exports.ContextVerifier({ props: this.ctx.props });
@@ -351,13 +353,15 @@ export class ContextGatekeeper
     return catalog;
   }
 
-  // Read-only gatekeeper: no side-effecting actions, so nothing is ever auto-approvable.
+  /** Read-only gatekeeper: no side-effecting actions, so nothing is ever auto-approvable. */
   async getAutoApprovableActions(): Promise<ActionKind[]> {
     return [];
   }
 
-  // The Context singleton is a broad binding over public and account-private collections. Track the
-  // collections actually revealed and verify every observer against each one.
+  /**
+   * The Context singleton is a broad binding over public and account-private collections. Track the
+   * collections actually revealed and verify every observer against each one.
+   */
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     await this.#observers().addObserver(
       id, user as unknown as Fetcher<ContextVerifierApi>);
@@ -367,7 +371,7 @@ export class ContextGatekeeper
     this.#observers().removeObserver(id);
   }
 
-  // Read-only gatekeeper: no actions are submitted, so these callbacks should never run.
+  /** Read-only gatekeeper: no actions are submitted, so these callbacks should never run. */
   applyAction(_action: number): Promise<void> {
     throw new Error("The Context Library is read-only and implements no actions.");
   }
@@ -403,9 +407,11 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env, Gatekeepe
     };
   }
 
-  // Mint a fresh account capability with no user identity.
-  //
-  // Skip return validation: proxy-wrapping a WorkerEntrypoint stub breaks Workers serialization.
+  /**
+   * Mint a fresh account capability with no user identity.
+   *
+   * Skip return validation: proxy-wrapping a WorkerEntrypoint stub breaks Workers serialization.
+   */
   @skipRpcValidation()
   async createAccount(): Promise<Fetcher<GatekeeperUser>> {
     let sharingDomain = this.ctx.props.sharingDomain ?? DEFAULT_SHARING_DOMAIN;

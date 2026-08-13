@@ -29,19 +29,21 @@ const logger = createWorkshopLogger("workshop.auth");
 
 type PendingResult = { token: string } | { error: string };
 
-// Bridges a login result from the (separate) OAuth-callback invocation back to the waiting browser.
-//
-// This DO holds no durable storage: a login normally completes within seconds, and the in-flight
-// awaitResult() request keeps the DO alive so the in-memory waiter is reachable when deliver()/fail()
-// fire. If the attempt is abandoned, the client disposes the awaiting RPC (the `attempt` stub) and
-// the DO is simply evicted — no alarm or cleanup needed.
+/**
+ * Bridges a login result from the (separate) OAuth-callback invocation back to the waiting browser.
+ *
+ * This DO holds no durable storage: a login normally completes within seconds, and the in-flight
+ * awaitResult() request keeps the DO alive so the in-memory waiter is reachable when deliver()/fail()
+ * fire. If the attempt is abandoned, the client disposes the awaiting RPC (the `attempt` stub) and
+ * the DO is simply evicted — no alarm or cleanup needed.
+ */
 export class PendingLogin extends DurableObject<Cloudflare.Env> {
   // Awaiters from in-flight awaitResult() calls, resolved/rejected when the result arrives.
   #waiters: { resolve: (token: string) => void; reject: (err: Error) => void }[] = [];
   // Stash for the rare case deliver()/fail() arrives before awaitResult() registers a waiter.
   #result?: PendingResult;
 
-  // Block until the login completes (or fails).
+  /** Block until the login completes (or fails). */
   async awaitResult(): Promise<string> {
     if (this.#result) {
       const result = this.#result;
@@ -54,8 +56,10 @@ export class PendingLogin extends DurableObject<Cloudflare.Env> {
     });
   }
 
-  // Called by LoginConnectCallbackImpl on success: resolve the awaiter (or stash the token if none
-  // is waiting yet).
+  /**
+   * Called by LoginConnectCallbackImpl on success: resolve the awaiter (or stash the token if none
+   * is waiting yet).
+   */
   async deliver(token: string): Promise<void> {
     if (this.#waiters.length > 0) {
       for (const w of this.#waiters) w.resolve(token);
@@ -139,11 +143,13 @@ export class LoginConnectCallbackImpl
     }
   }
 
-  // No-ops: for transient sign-in grants there's nothing persisted to update. For the Cloudflare
-  // billing connection (persisted on login) these would ideally flip the account's credential flag,
-  // but the callback doesn't carry the user/account identity (it's only learned in complete()). The
-  // billing path degrades gracefully regardless — getUsableAccessToken() returns null on expiry and
-  // the user falls back to the free tier / a reconnect prompt.
+  /**
+   * No-ops: for transient sign-in grants there's nothing persisted to update. For the Cloudflare
+   * billing connection (persisted on login) these would ideally flip the account's credential flag,
+   * but the callback doesn't carry the user/account identity (it's only learned in complete()). The
+   * billing path degrades gracefully regardless — getUsableAccessToken() returns null on expiry and
+   * the user falls back to the free tier / a reconnect prompt.
+   */
   async credentialsExpired(): Promise<void> {}
   async credentialsRestored(_expiresAt?: Date): Promise<void> {}
 }

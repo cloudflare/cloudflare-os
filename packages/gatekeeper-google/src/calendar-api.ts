@@ -121,8 +121,10 @@ export function googleEventFromDraft(event: CalendarEventDraft): Partial<GoogleC
   };
 }
 
-// Build a Google Calendar PATCH body from a partial patch. Only fields present in the patch are
-// included, so omitted fields are left unchanged by the API.
+/**
+ * Build a Google Calendar PATCH body from a partial patch. Only fields present in the patch are
+ * included, so omitted fields are left unchanged by the API.
+ */
 export function eventPatchToGoogle(patch: CalendarEventPatch): Partial<GoogleCalendarEvent> {
   let body: Partial<GoogleCalendarEvent> = {};
   if (patch.title !== undefined) body.summary = patch.title;
@@ -232,7 +234,7 @@ export class GoogleCalendarApi {
     };
   }
 
-  // Lists all events in the window, paginating fully.
+  /** Lists all events in the window, paginating fully. */
   async listEvents(calendarId: string, opts: CalendarListEventsOptions): Promise<CalendarEvent[]> {
     let events: CalendarEvent[] = [];
     let pageToken: string | undefined;

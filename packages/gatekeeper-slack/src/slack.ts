@@ -346,8 +346,10 @@ export class UserAccount extends DurableObject<Env> {
     });
   }
 
-  // Prepare for a reconnect/expansion flow: the next acceptAuthCode() replaces credentials and
-  // notifies via credentialsRestored() instead of complete().
+  /**
+   * Prepare for a reconnect/expansion flow: the next acceptAuthCode() replaces credentials and
+   * notifies via credentialsRestored() instead of complete().
+   */
   async prepareReconnect(initiationNonce: string, requestedScopes: string[]) {
     this.ctx.storage.kv.put<boolean>("reconnecting", true);
     this.ctx.storage.kv.put<string[]>("requestedScopes", requestedScopes);
@@ -447,7 +449,7 @@ export class UserAccount extends DurableObject<Env> {
     return this.ctx.storage.kv.get<string>("teamId") ?? "";
   }
 
-  // Refresh rotating tokens shortly before expiry.
+  /** Refresh rotating tokens shortly before expiry. */
   async getAccessToken(): Promise<SlackAccessToken> {
     return this.#updateCredentials(() => this.#getAccessTokenLocked());
   }
@@ -650,10 +652,12 @@ export class SlackUserImpl extends WorkerEntrypoint<Env, SlackUserImplProps>
     await this.#account().revoke();
   }
 
-  // Mint a verifier representing this account, used by the Slack gatekeepers' addObserver to confirm
-  // a prospective observer may read a bound conversation (and, for workspace bindings, the workspace
-  // and each observed conversation). The verifier carries this user's own account id, so the access
-  // checks run against the observer's *own* Slack token.
+  /**
+   * Mint a verifier representing this account, used by the Slack gatekeepers' addObserver to confirm
+   * a prospective observer may read a bound conversation (and, for workspace bindings, the workspace
+   * and each observed conversation). The verifier carries this user's own account id, so the access
+   * checks run against the observer's *own* Slack token.
+   */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     let props: SlackVerifierProps = { userObjectId: this.ctx.props.userObjectId };
@@ -679,8 +683,10 @@ type SlackVerifierProps = {
   userObjectId: string;
 };
 
-// The non-standard methods the Slack gatekeepers call on their own verifier (see addObserver). Not
-// part of the generic GatekeeperUserVerifier contract.
+/**
+ * The non-standard methods the Slack gatekeepers call on their own verifier (see addObserver). Not
+ * part of the generic GatekeeperUserVerifier contract.
+ */
 export interface SlackVerifierApi extends GatekeeperUserVerifier {
   getTeamId(): Promise<string | null>;
   hasConversationAccess(conversationId: string): Promise<boolean>;
@@ -695,9 +701,11 @@ export class SlackVerifier extends WorkerEntrypoint<Env, SlackVerifierProps>
     return new SlackApi(createAccessTokenGetter(() => account));
   }
 
-  // The observer's workspace team id, or null if their token is broken/expired (a token that can't
-  // demonstrate access is treated as "no access" rather than failing the whole open; the observer is
-  // re-checked on their next open).
+  /**
+   * The observer's workspace team id, or null if their token is broken/expired (a token that can't
+   * demonstrate access is treated as "no access" rather than failing the whole open; the observer is
+   * re-checked on their next open).
+   */
   async getTeamId(): Promise<string | null> {
     try {
       return (await this.#api().authedTeamId()) || null;
@@ -953,9 +961,11 @@ export class SlackWorkspaceGatekeeperImpl extends DurableObject<Env, SlackWorksp
     };
   }
 
-  // Routes a conversation-scoped observation through data-set tracking (see the class comment).
-  // Called in-process by the workspace session and its child capabilities via
-  // authorizeConversationObservation.
+  /**
+   * Routes a conversation-scoped observation through data-set tracking (see the class comment).
+   * Called in-process by the workspace session and its child capabilities via
+   * authorizeConversationObservation.
+   */
   async authorizeConversationObservation(
       queue: RpcStub<ApprovalQueue>, conversationIds: string[],
       description: ObservationDescription): Promise<void> {
@@ -1051,11 +1061,13 @@ export class SlackConversationGatekeeperImpl
         this.ctx.props.conversationId);
   }
 
-  // Observer tracking: "ACL check (single unit)". The binding is one conversation, so we simply
-  // confirm the observer can read it with their own token (see SlackVerifier). Nothing read later
-  // could be outside that conversation, so no observers are tracked, no excludeObservers is set, and
-  // removeObserver is an idempotent no-op. The overseer re-runs addObserver on every open, catching
-  // loss of access promptly.
+  /**
+   * Observer tracking: "ACL check (single unit)". The binding is one conversation, so we simply
+   * confirm the observer can read it with their own token (see SlackVerifier). Nothing read later
+   * could be outside that conversation, so no observers are tracked, no excludeObservers is set, and
+   * removeObserver is an idempotent no-op. The overseer re-runs addObserver on every open, catching
+   * loss of access promptly.
+   */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<SlackVerifierApi>;
     if (!(await verifier.hasConversationAccess(this.ctx.props.conversationId))) {
@@ -1125,10 +1137,12 @@ export class SlackThreadGatekeeperImpl extends DurableObject<Env, SlackThreadGat
         this.ctx.props.conversationId, this.ctx.props.threadTs);
   }
 
-  // Observer tracking: "ACL check (single unit)". A thread inherits its conversation's ACL, so we
-  // confirm the observer can read that conversation with their own token (see SlackVerifier). Nothing
-  // read later could be outside it, so no observers are tracked and removeObserver is an idempotent
-  // no-op. The overseer re-runs addObserver on every open, catching loss of access promptly.
+  /**
+   * Observer tracking: "ACL check (single unit)". A thread inherits its conversation's ACL, so we
+   * confirm the observer can read that conversation with their own token (see SlackVerifier). Nothing
+   * read later could be outside it, so no observers are tracked and removeObserver is an idempotent
+   * no-op. The overseer re-runs addObserver on every open, catching loss of access promptly.
+   */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<SlackVerifierApi>;
     if (!(await verifier.hasConversationAccess(this.ctx.props.conversationId))) {

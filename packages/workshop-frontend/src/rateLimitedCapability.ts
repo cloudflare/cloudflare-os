@@ -10,16 +10,20 @@ export type RateLimitOptions = {
   maxConcurrency: number
   maxCallsPerMinute: number
   maxPendingCalls: number
-  // What to do when the per-minute window is full. `throttle` pauses and resumes once the window has
-  // room (used by long-lived apps); `reject` fails the call immediately (used by the short-lived
-  // configurator form, where a flood is always a bug).
+  /**
+   * What to do when the per-minute window is full. `throttle` pauses and resumes once the window has
+   * room (used by long-lived apps); `reject` fails the call immediately (used by the short-lived
+   * configurator form, where a flood is always a bug).
+   */
   onRateLimit: 'throttle' | 'reject'
-  // Human-readable noun for error messages, e.g. "Gatekeeper app" or "Resource configurator".
+  /** Human-readable noun for error messages, e.g. "Gatekeeper app" or "Resource configurator". */
   label: string
 }
 
-// Returns the rate-limited proxy plus a `dispose` that cancels any pending resume timer (otherwise it
-// could fire after the session is torn down). `dispose` is a no-op in `reject` mode (no timer).
+/**
+ * Returns the rate-limited proxy plus a `dispose` that cancels any pending resume timer (otherwise it
+ * could fire after the session is torn down). `dispose` is a no-op in `reject` mode (no timer).
+ */
 export function createRateLimitedCapability(
   capability: any,
   options: RateLimitOptions,

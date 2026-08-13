@@ -26,7 +26,7 @@ export const TEST_GATEKEEPER_WORKER = "gatekeeper-test";
 export const TEST_GATEKEEPER_BINDING = "TEST";
 export const TEST_VENDOR_ID = TEST_GATEKEEPER_BINDING.toLowerCase();
 
-// Username that `vars.ADMINS` grants deployment-admin rights to, mirroring run-dev-server.js.
+/** Username that `vars.ADMINS` grants deployment-admin rights to, mirroring run-dev-server.js. */
 export const ADMIN_USERNAME = "admin";
 
 // The slice of wrangler.jsonc the harness reads or rewrites. Loose on purpose: everything else a
