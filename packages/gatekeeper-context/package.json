@@ -10,7 +10,7 @@
     "typecheck:app": "tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json",
     "build": "pnpm run typecheck:app && vp run --cache build:app && tsc",
     "clean": "rm -rf dist src/generated",
-    "test": "vitest run"
+    "test:run": "vitest run"
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",

@@ -33,7 +33,7 @@
   "scripts": {
     "build": "tsc && tsc -p tsconfig.test.json",
     "clean": "rm -rf dist",
-    "test": "vitest run"
+    "test:run": "vitest run"
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",

@@ -55,5 +55,5 @@ consistent. This split is hidden from the Session API.
 
 ```
 pnpm --filter @gadgets/notion-gatekeeper build   # build:configurator + tsc
-pnpm --filter @gadgets/notion-gatekeeper test    # vitest
+pnpm --filter @gadgets/notion-gatekeeper test:run    # vitest
 ```

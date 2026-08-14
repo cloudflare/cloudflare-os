@@ -9,8 +9,8 @@
     "build:worker": "node build-browser-runtime.mjs && pnpm exec capnweb-validate build --out .wrangler/validate",
     "build": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && tsc",
     "clean": "rm -rf dist",
-    "test": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest run && vitest run --config vitest.integration.config.ts",
     "test:integration": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest run --config vitest.integration.config.ts",
+    "test:run": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest run && vitest run --config vitest.integration.config.ts",
     "test:watch": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest",
     "build:format-blueprints": "node scripts/build-format-blueprints.mjs",
     "import:format-blueprint": "node --experimental-strip-types --no-warnings scripts/import-format-blueprint.mjs"

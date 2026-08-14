@@ -11,7 +11,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "vitest run --passWithNoTests"
+    "test:run": "vitest run --passWithNoTests"
   },
   "devDependencies": {
     "typescript": "catalog:",

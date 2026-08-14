@@ -610,6 +610,10 @@ cache-fingerprinted (vp forbids a task and a script sharing a name, so do not ad
 // Vite+ per-package settings. The build:configurator task definition is shared by all gatekeepers
 // with a configurator UI and lives beside the builder it runs.
 export { default } from '../../scripts/gatekeeper-configurator-vite-config.js'
+
+// ...or, if the gatekeeper has tests, `withTests` instead: the same settings plus the shared vitest
+// `test` task. Add a `"test:run": "vitest run"` script too, for iterating without the cache.
+export { withTests as default } from '../../scripts/gatekeeper-configurator-vite-config.js'
 ```
 
 Keep tokens and broad API clients out of public `RpcTarget` properties; use closures, `#private`, or `WeakMap` state and expose only narrow read-only helper methods.

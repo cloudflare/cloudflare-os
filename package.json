@@ -7,7 +7,7 @@
   "scripts": {
     "build": "vp run -r --cache build",
     "run-local": "node scripts/run-local.mjs",
-    "test": "node --test scripts/*.test.js && vp run -r --cache test",
+    "test": "node --test scripts/*.test.js && vp run --filter '!cloudflare-os' --cache test",
     "dev-client": "cd packages/workshop-frontend && pnpm run dev",
     "dev-server": "node run-dev-server.js",
     "clean": "vp run -r clean",

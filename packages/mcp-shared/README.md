@@ -129,5 +129,5 @@ Fixed rather than configurable.
 
 ```
 pnpm --filter @gadgets/mcp-shared build   # tsc
-pnpm --filter @gadgets/mcp-shared test    # vitest
+pnpm --filter @gadgets/mcp-shared test:run    # vitest
 ```

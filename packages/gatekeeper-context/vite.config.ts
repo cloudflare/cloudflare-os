@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite-plus'
+import { vitestTask } from '../../scripts/vitest-task-vite-config.js'
 
 /**
  * Vite+ settings for this package. The SPA's own build config lives in `vite.app.config.ts`;
@@ -7,6 +8,9 @@ import { defineConfig } from 'vite-plus'
 export default defineConfig({
   run: {
     tasks: {
+      // Shared by every package whose tests run under vitest; see the module for why the two
+      // vitest scratch paths have to be excluded for this to cache at all.
+      test: vitestTask('vitest run'),
       // Uncached: a cache hit restores archived outputs but never deletes files, so the sourcemap
       // artifacts of an enabled-reporting build (dist-app/gatekeeper-context.js + .js.map) would
       // survive a later disabled-reporting cache hit and could be collected as if they matched the

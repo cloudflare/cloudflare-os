@@ -195,7 +195,7 @@ Everything else comes from [`@gadgets/mcp-shared`](../mcp-shared/README.md).
 
 ```
 pnpm --filter @gadgets/mcp-portal-gatekeeper build   # build:configurator + tsc
-pnpm --filter @gadgets/mcp-portal-gatekeeper test    # vitest
+pnpm --filter @gadgets/mcp-portal-gatekeeper test:run    # vitest
 ```
 
 The Worker is run via the root `pnpm dev-server`, not directly.

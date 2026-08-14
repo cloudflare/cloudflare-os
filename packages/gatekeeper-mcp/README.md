@@ -220,7 +220,7 @@ The MCP client, OAuth, tool classification, generated TypeScript, and the scope 
 
 ```
 pnpm --filter @gadgets/mcp-gatekeeper build   # build:configurator + tsc
-pnpm --filter @gadgets/mcp-gatekeeper test    # vitest
+pnpm --filter @gadgets/mcp-gatekeeper test:run    # vitest
 ```
 
 The Worker is run via the root `pnpm dev-server`, not directly.

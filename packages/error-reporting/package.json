@@ -11,7 +11,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "vitest run"
+    "test:run": "vitest run"
   },
   "devDependencies": {
     "typescript": "catalog:",

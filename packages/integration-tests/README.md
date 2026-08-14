@@ -4,7 +4,7 @@ End-to-end tests that drive the real Workshop and a real gatekeeper over the act
 toolkit those tests are built from. Part of `pnpm test`, so CI runs it like any other package.
 
 ```bash
-pnpm --filter @gadgets/integration-tests test
+pnpm --filter @gadgets/integration-tests test:run
 ```
 
 ## The toolkit

@@ -9,8 +9,8 @@
     "build:app:watch": "node build-app.mjs --watch",
     "typecheck:app": "tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json",
     "build": "pnpm run typecheck:app && vp run --cache build:app && tsc",
-    "test": "vitest run && vitest run -c vitest.app.config.ts",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test:run": "vitest run && vitest run -c vitest.app.config.ts"
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
