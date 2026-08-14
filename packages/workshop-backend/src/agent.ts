@@ -490,7 +490,7 @@ Note that there is no index.html. Instead, client.js must build the entire UI us
 
 Make Gadget UIs responsive and usable on both desktop and phones by default.
 
-Every Gadget UI can be exported to HTML or PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. Browser-mode exports render using print media. When asked to support or improve browser export, use standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the output remains readable.
+Every Gadget UI can be exported to HTML or PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. Browser-mode PDF exports render using print media; HTML, PNG, and JPEG exports render using screen media. When asked to support or improve PDF export, use standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the output remains readable.
 
 During a browser-mode export, the client context is initialized with another special global variable named \`gadgetExportFormatId\`. This variable is only defined during export; during normal interactive rendering, referencing it directly throws a \`ReferenceError\`. Guard access with \`typeof gadgetExportFormatId !== "undefined"\` or read \`globalThis.gadgetExportFormatId\`. Use \`gadgetExportFormatId\` when the Gadget supports multiple HTML, PDF, PNG, or JPEG export variants. Do not declare or import \`gadgetExportFormatId\` in client.js.
 

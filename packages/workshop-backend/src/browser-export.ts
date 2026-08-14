@@ -205,7 +205,9 @@ export async function renderGadgetInBrowser(
   try {
     let source = await deadline.race((async () => {
       let page = await browser.newPage();
-      await page.emulateMediaType("print");
+      await page.emulateMediaType(
+        format.contentType === "application/pdf" ? "print" : "screen",
+      );
       await page.setRequestInterception(true);
       page.on("request", (request) => {
         let url = request.url();

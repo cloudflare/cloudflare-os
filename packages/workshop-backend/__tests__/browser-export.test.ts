@@ -331,6 +331,7 @@ describe("renderGadgetInBrowser", () => {
     expect(harness.htmlSanitized()).toBe(true);
     expect(harness.sanitizerInstalled()).toBe(true);
     expect(harness.sanitizedInIsolatedRealm()).toBe(true);
+    expect(harness.mediaType()).toBe("screen");
     expect(harness.browserClosed()).toBe(true);
   });
 
@@ -366,6 +367,7 @@ describe("renderGadgetInBrowser", () => {
     expect(harness.screenshotType()).toBe(screenshotType);
     expect(harness.screenshotClip()).toEqual({x: 0, y: 0, width: 1000, height: 1000});
     expect(harness.screenshotCaptureBeyondViewport()).toBe(true);
+    expect(harness.mediaType()).toBe("screen");
     expect(harness.browserClosed()).toBe(true);
   });
 
