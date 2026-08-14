@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -256,5 +256,159 @@ describe("generated configurator option sanitizing", () => {
     };
     pruneCheckboxEntries(entries, new Set(["tools:new"]));
     assert.deepEqual(entries, { "tools:new": { status: "ready", disabled: false } });
+  });
+});
+
+// The builder reads its env through `loadEnv`, and the Vite+ task that runs it has to declare each
+// variable by name: a cached `vp run` executes a task with undeclared vars stripped *and* absent
+// from the fingerprint, so an undeclared read is silently `undefined` and a changed value silently
+// replays. Nothing else catches that -- the build still succeeds, and the wrong value is baked into
+// the generated HTML that ships in the Worker.
+//
+// Deliberately an exact match rather than a `VITE_*` wildcard on the task. The builder is not vite:
+// it transpiles with `ts.transpileModule` and has no `define` pass, so no configurator source can
+// read `import.meta.env` and the set of variables that can affect its output is closed -- exactly
+// what this assertion pins. A wildcard would instead invalidate all 13 configurator builds whenever
+// any unrelated `VITE_` var moves (measured on workshop-frontend, whose wildcard is right for the
+// opposite reason: vite's `define` inlines any of them, so its set is open).
+/**
+ * `source` with comments removed, tracking string literals so that one cannot be mistaken for a
+ * comment. A regex will not do here: the task below excludes `src/generated` with a glob whose
+ * leading wildcards put a slash directly after a star, which
+ * `replaceAll(/\/\*[\s\S]*?\*\//g, "")` reads as the start of a block comment and then runs to the
+ * end of the next JSDoc -- taking the only `env` declaration in the file with it, so the assertion
+ * below would compare the builder's reads against nothing at all and still pass.
+ */
+function stripComments(source) {
+  let out = "";
+  let index = 0;
+  while (index < source.length) {
+    const char = source[index];
+    if (char === '"' || char === "'" || char === "`") {
+      const start = index++;
+      while (index < source.length && source[index] !== char) {
+        index += source[index] === "\\" ? 2 : 1;
+      }
+      out += source.slice(start, ++index);
+    } else if (char === "/" && source[index + 1] === "/") {
+      while (index < source.length && source[index] !== "\n") index++;
+    } else if (char === "/" && source[index + 1] === "*") {
+      const end = source.indexOf("*/", index + 2);
+      index = end === -1 ? source.length : end + 2;
+    } else {
+      out += source[index++];
+    }
+  }
+  return out;
+}
+
+/** The declaration of `task` in a Vite+ `tasks` map, from its `{` to the matching `}`. */
+function taskDeclaration(configSource, task) {
+  const source = stripComments(configSource);
+  const opening = source.match(new RegExp(String.raw`["']${task}["']\s*:\s*\{`));
+  if (!opening) return null;
+  const start = opening.index + opening[0].length - 1;
+  let depth = 0;
+  for (let index = start; index < source.length; index++) {
+    if ("{[(".includes(source[index])) depth++;
+    else if ("}])".includes(source[index]) && --depth === 0) return source.slice(start, index + 1);
+  }
+  return null;
+}
+
+describe("configurator builder env declarations", () => {
+  it("declares every VITE_ variable the builder reads on the task that runs it", async () => {
+    const configPath = "scripts/gatekeeper-configurator-vite-config.ts";
+    const [builderSource, taskConfig] = await Promise.all([
+      readFile(builder, "utf8"),
+      readFile(resolve(configPath), "utf8"),
+    ]);
+
+    // Property accesses only (`loadEnv(...).VITE_X`, `process.env.VITE_X`), so a variable merely
+    // named in a comment doesn't register as a read.
+    const read = new Set(
+      [...builderSource.matchAll(/\.(VITE_[A-Z0-9_]+)/g)].map(match => match[1]));
+    assert.ok(read.size > 0, "expected the builder to read at least one VITE_ variable");
+
+    // `build:configurator`'s own `env`, not the union of every task's. `env` is per-task: vp strips
+    // whatever the *running* task does not declare, so a declaration on a sibling reaches the builder
+    // no better than none at all -- and `build`, one entry below in the same map, runs `tsc` and reads
+    // nothing. The union was meant to tolerate the read moving to another task, but it cannot tell
+    // that from the declaration drifting away from the task that needs it, which is the actual failure
+    // this pins. Which task runs the builder is asserted rather than assumed, so the two cannot
+    // separate silently.
+    const task = taskDeclaration(taskConfig, "build:configurator");
+    assert.ok(task, `expected a \`build:configurator\` task in ${configPath}`);
+    assert.ok(
+      task.includes(basename(builder)),
+      `${configPath}'s \`build:configurator\` no longer runs ${basename(builder)}, so its \`env\` ` +
+        "is not what reaches the builder. Point this assertion at the task that runs it.");
+
+    const declared = new Set(
+      [...(task.match(/env:\s*\[([^\]]*)\]/)?.[1] ?? "")
+        .matchAll(/["'](VITE_[A-Z0-9_]+)["']/g)].map(match => match[1]));
+
+    assert.deepEqual(
+      [...read].toSorted(), [...declared].toSorted(),
+      `every VITE_ variable the builder reads must be declared in \`env\` on \`build:configurator\` ` +
+        `in ${configPath} (and vice versa -- a stale declaration only adds spurious cache misses)`);
+  });
+});
+
+/**
+ * The packages the builder runs for: any package with a `.tsx` under `src/configurator/`, the glob
+ * `buildConfiguratorUIs()` itself reads. Derived rather than listed so a new gatekeeper is covered
+ * the day it lands, which is the one most likely to be wired up wrong.
+ */
+async function configuratorPackages() {
+  const names = [];
+  for (const entry of await readdir("packages", { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const sources =
+      await readdir(join("packages", entry.name, "src", "configurator")).catch(() => []);
+    if (sources.some(name => name.endsWith(".tsx"))) names.push(entry.name);
+  }
+  return names;
+}
+
+/**
+ * The declaration above is worth nothing to a package that never reaches the task, and
+ * `env-passthrough.test.js` cannot see that: it discovers reads per directory, and these packages
+ * contain none -- the read lives in the shared builder under `scripts/`.
+ *
+ * Without the task there is no `env`, so `pnpm build` (`vp run -r --cache build`) runs a plain
+ * script in vp's clean environment and bakes the wrong flag in, exit 0. Verified on
+ * `gatekeeper-slack`: a local `vp run -F <pkg> build` still looks right, which is the trap.
+ */
+describe("configurator task wiring", () => {
+  it("routes every package the builder builds through the shared task", async () => {
+    const names = await configuratorPackages();
+    assert.ok(names.length > 0, "expected to find packages with configurator UI sources");
+
+    for (const name of names) {
+      const config =
+        await readFile(join("packages", name, "vite.config.ts"), "utf8").catch(() => null);
+      assert.ok(
+        config?.includes("gatekeeper-configurator-vite-config"),
+        `packages/${name} has configurator UI sources but no vite.config.ts re-exporting ` +
+          "gatekeeper-configurator-vite-config, so it declares no `build:configurator` task and " +
+          "`pnpm build` would strip VITE_FRONTEND_ERROR_REPORTING from the builder. Re-export the " +
+          "shared config (or declare the task with its own `env` and widen this assertion).");
+    }
+  });
+
+  // deploy-scripts.test.js holds the two general deploy invariants. Both pass vacuously on a
+  // `deploy` that never runs the codegen at all -- it contains no `vp run` to want `--no-cache`
+  // and no builder filename to reject -- so the configurator-specific third one lives here.
+  it("runs the codegen task from every configurator gatekeeper's deploy", async () => {
+    for (const name of await configuratorPackages()) {
+      const manifest = JSON.parse(await readFile(join("packages", name, "package.json"), "utf8"));
+      const command = manifest.scripts?.deploy ?? "";
+      assert.match(
+        command, /vp run [^&]*build:configurator/,
+        `packages/${name} deploys without running \`build:configurator\`: ` +
+          `${command || "(no deploy script)"}\nwrangler bundles src/generated/ from disk, so a ` +
+          "deploy that skips the codegen ships whatever the last build happened to leave there.");
+    }
   });
 });

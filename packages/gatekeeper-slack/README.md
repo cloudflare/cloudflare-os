@@ -64,5 +64,5 @@ names.
 ## Build
 
 ```
-pnpm --filter @gadgets/slack-gatekeeper build
+pnpm exec vp run -F @gadgets/slack-gatekeeper build
 ```

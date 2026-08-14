@@ -4,7 +4,6 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && tsc -p tsconfig.vite.json && vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "test:run": "vitest run"

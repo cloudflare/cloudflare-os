@@ -5,7 +5,7 @@
   "main": "./src/index.ts",
   "scripts": {
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
-    "deploy": "vp run --cache build:app && wrangler deploy",
+    "deploy": "vp run --no-cache build:app && wrangler deploy",
     "build:app:watch": "node build-app.mjs --watch",
     "typecheck:app": "tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json",
     "build": "pnpm run typecheck:app && vp run --cache build:app && tsc",

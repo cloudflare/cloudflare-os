@@ -13,9 +13,32 @@ import { withVitestTask, type GlobWithBase } from "./vitest-task-vite-config.js"
  * `frontendReportingEnabled = false` into the generated HTML regardless of the shell environment,
  * the directly-spawned watcher (which inherits the shell) rewrote it moments later, and Wrangler
  * restarted the worker on the change -- and a cached artifact built under one value of the variable
- * would be restored under the other. vp forbids a task and a script sharing a name, so the
- * packages' `build` and `deploy` scripts invoke the builder directly instead of through a
- * `build:configurator` script.
+ * would be restored under the other. vp forbids a task and a script sharing a name, so there is no
+ * `build:configurator` script: `deploy` reaches this task with
+ * `vp run --no-cache build:configurator`, the same way `gatekeeper-context` and
+ * `gatekeeper-scheduler` reach `build:app`. Invoking the builder directly there would also work --
+ * `deploy` is manual and does not run under vp, so it keeps the real environment -- but it
+ * duplicated the command in thirteen packages, and a script shadowing a declared task is the shape
+ * of the bug described below.
+ *
+ * `--no-cache` on the deploy path specifically, where `build` uses the cache. A cache hit is only as
+ * correct as the fingerprint is complete, and every bug in this file's history has been a fingerprint
+ * missing an input -- an undeclared env var here, a directory outside the workspace in
+ * `workshop-backend`. Those are cheap to absorb on a build you can re-run and expensive on a deploy
+ * you cannot, and the codegen costs a second or two, so a deploy always rebuilds from source rather
+ * than trusting the fingerprint. The uncached `clean:error-reporting-artifacts` dependency matters
+ * more here than anywhere: a cache *hit* restores archived outputs without deleting anything, so
+ * without it a reporting-disabled deploy could keep the previous enabled build's sourcemaps.
+ *
+ * `build` is a task for the same reason, and declaring `build:configurator` was not enough on its
+ * own: `build` was a script running the builder directly, and `pnpm build` runs `build`, not
+ * `build:configurator`, so the whole point of the declaration was bypassed for every deploy.
+ * Measured on `slack-gatekeeper` with the cache primed at one value of the variable and the build
+ * then run at the other: the shipped `*-configurator-ui.txt` came out byte-identical (190,967 B
+ * either way, against 195,361 B under `--no-cache`) and no sourcemap artifacts were emitted. The
+ * builder had genuinely re-executed -- it was not a stale replay -- so it simply never saw the
+ * variable. Depending on the task instead keeps the codegen in one place and lets `tsc` cache apart
+ * from it.
  */
 const gatekeeperConfiguratorConfig = {
   run: {
@@ -44,6 +67,13 @@ const gatekeeperConfiguratorConfig = {
         // Read via `loadEnv` in build-gatekeeper-configurator.mjs and baked into the generated
         // HTML, so it belongs in the fingerprint.
         env: ["VITE_FRONTEND_ERROR_REPORTING"],
+      },
+      // Just the type check: the codegen it used to run with `&&` is `build:configurator` above, so
+      // the two cache separately and a run that only touched types replays the generated HTML.
+      // No `env` of its own -- `tsc` reads none, and the variable reaches the step that does.
+      build: {
+        command: "tsc",
+        dependsOn: ["build:configurator"],
       },
     },
   },

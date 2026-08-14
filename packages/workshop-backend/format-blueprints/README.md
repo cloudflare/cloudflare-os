@@ -86,8 +86,11 @@ Rename files freely; the id is the load-bearing part.
 This directory is only the **default**. `FORMAT_BLUEPRINTS_DIR` points the build somewhere else:
 
 ```
-FORMAT_BLUEPRINTS_DIR=../../acme-formats pnpm build
+FORMAT_BLUEPRINTS_DIR=../../acme-formats pnpm exec vp run build
 ```
+
+`vp run`, not `pnpm build`: this package's `build` is a Vite+ task rather than a package.json
+script, so pnpm cannot see it. `../vite.config.ts` explains why it has to be one.
 
 Whatever directory it names *is* the deployment's format set — it replaces this one rather than
 adding to it. Keep it in your own tree, in the same `<name>.gadget` + `<name>.json` layout; nothing

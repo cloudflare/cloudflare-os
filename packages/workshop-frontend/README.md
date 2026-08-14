@@ -5,10 +5,18 @@ Single-page app for the Gadgets Workshop UI. Built with React, Kumo, and Vite.
 ## Development
 
 ```sh
-pnpm dev        # start dev server on http://localhost:3000
-pnpm build      # type-check and build for production
-pnpm preview    # preview production build locally
+pnpm dev                # start dev server on http://localhost:3000
+pnpm exec vp run build  # type-check and build for production
+pnpm preview            # preview production build locally
 ```
+
+`build` is a Vite+ task, not a package.json script, so that it can declare the `VITE_*` flags below
+as fingerprinted env: a cached `vp` run executes each task in a clean environment, which drops any
+ambient value, and a flag the fingerprint ignores means a changed flag replays the old bundle.
+
+It always produces a production bundle, whatever `NODE_ENV` the shell holds, and it deletes `dist/`
+before building — a cache hit restores archived files without deleting any, so the previous build's
+sourcemaps would otherwise linger. `vite.config.ts` documents both.
 
 ## Authentication modes
 
@@ -29,7 +37,7 @@ When the backend is deployed behind [Cloudflare Access](https://developers.cloud
 To build in CF Access mode, set `VITE_CF_ACCESS_MODE=true`:
 
 ```sh
-VITE_CF_ACCESS_MODE=true pnpm build
+VITE_CF_ACCESS_MODE=true pnpm exec vp run build
 ```
 
 Or add it to a `.env` file for persistent local configuration:

@@ -151,6 +151,6 @@ the correct site), so pasting a URL works for any connected site too.
 
 ## Development
 
-- `pnpm --filter @gadgets/confluence-gatekeeper build` — build the configurator UIs (`build:configurator`) and type-check (`tsc`).
+- `pnpm exec vp run -F @gadgets/confluence-gatekeeper build` — build the configurator UIs (`build:configurator`, which this task depends on) and type-check (`tsc`). A Vite+ task rather than a script, so `pnpm --filter` cannot see it.
 - `pnpm --filter @gadgets/confluence-gatekeeper test:run` — run unit tests (URL/CQL parsing, Markdown conversion, v2 converters, action simulation).
 - The Worker is run via the root `pnpm dev-server`, not directly.

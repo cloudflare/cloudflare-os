@@ -194,7 +194,7 @@ Everything else comes from [`@gadgets/mcp-shared`](../mcp-shared/README.md).
 ## Build & test
 
 ```
-pnpm --filter @gadgets/mcp-portal-gatekeeper build   # build:configurator + tsc
+pnpm exec vp run -F @gadgets/mcp-portal-gatekeeper build   # build:configurator + tsc
 pnpm --filter @gadgets/mcp-portal-gatekeeper test:run    # vitest
 ```
 

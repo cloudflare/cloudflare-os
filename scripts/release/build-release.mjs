@@ -72,9 +72,13 @@ function pinnedWranglerVersion() {
 
 // Builds the Access-mode frontend (VITE_CF_ACCESS_MODE is a build-time flag,
 // workshop-frontend/src/useAuth.ts) — the one asset variant every release carries.
+//
+// Through vp rather than a package script: `build` is a task, so there is no script to run, and the
+// task declares VITE_* as fingerprinted env — a release built at a different flag value is a cache
+// miss rather than a stale replay.
 function buildFrontend() {
   const env = { ...process.env, VITE_CF_ACCESS_MODE: "true" };
-  run("pnpm", ["run", "build"], { cwd: FRONTEND_DIR, env });
+  run("pnpm", ["exec", "vp", "run", "-F", "@gadgets/workshop-frontend", "build"], { env });
   return collectAssets(join(FRONTEND_DIR, "dist"));
 }
 

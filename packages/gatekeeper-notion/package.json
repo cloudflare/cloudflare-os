@@ -5,8 +5,7 @@
   "main": "./src/notion.ts",
   "scripts": {
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
-    "deploy": "node ../../scripts/build-gatekeeper-configurator.mjs . && wrangler deploy",
-    "build": "node ../../scripts/build-gatekeeper-configurator.mjs . && tsc",
+    "deploy": "vp run --no-cache build:configurator && wrangler deploy",
     "clean": "rm -rf dist src/generated",
     "test:run": "vitest run"
   },

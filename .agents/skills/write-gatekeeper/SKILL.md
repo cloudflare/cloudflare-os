@@ -119,10 +119,14 @@ If you use this:
 - `resourceUrl()` returns the selected resource URL.
 - `src/configurator/*-types.d.ts` describes the iframe-facing `ui` API.
 - `scripts/build-gatekeeper-configurator.mjs` generates `src/generated/*.txt`.
-- Package `build` / `deploy` scripts run the builder directly
-  (`node ../../scripts/build-gatekeeper-configurator.mjs .`), and `vite.config.ts` re-exports the
-  shared `build:configurator` Vite+ task from `scripts/gatekeeper-configurator-vite-config.ts` so
-  the dev-server pre-flight caches it with `VITE_FRONTEND_ERROR_REPORTING` in the fingerprint.
+- Nothing invokes `build-gatekeeper-configurator.mjs` by hand. `vite.config.ts` re-exports the
+  shared `build` and `build:configurator` Vite+ tasks from
+  `scripts/gatekeeper-configurator-vite-config.ts`; `build` is just `tsc` and depends on
+  `build:configurator`, which carries `VITE_FRONTEND_ERROR_REPORTING` in its fingerprint, and
+  `deploy` runs `vp run --no-cache build:configurator && wrangler deploy` — deploys never replay a
+  cached artifact. There is no `build` script
+  and no direct builder call, because a script running the builder gets vp's stripped environment
+  and bakes the wrong flag into the shipped HTML.
 
 ##### Pre-filling the form from a known resource URL
 
