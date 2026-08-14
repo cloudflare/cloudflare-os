@@ -254,6 +254,9 @@ export type SupportedResource = {
    * If omitted/false, the resource type is not separately grantable.
    */
   grantable?: boolean;
+
+  /** Whether a grantable resource is selected initially when connecting an account. Defaults true. */
+  selectedByDefault?: boolean;
 }
 
 /** Removes every trailing slash from a string in linear time. */

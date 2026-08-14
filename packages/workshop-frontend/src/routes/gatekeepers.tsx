@@ -647,9 +647,7 @@ function ConnectorsPage() {
   const filteredAccounts = useMemo(() => {
     const matchesSearch = (text: string | undefined) =>
       !searchLower || (text ?? '').toLowerCase().includes(searchLower)
-    const resourcesForAccountFilter = (account: AccountEntry) =>
-      vendors.find((v) => v.id === account.vendorId)?.supportedResources ??
-      account.supportedResources
+    const resourcesForAccountFilter = (account: AccountEntry) => account.supportedResources
 
     return accounts.filter((a) => {
       const resources = resourcesForAccountFilter(a)
@@ -694,9 +692,10 @@ function ConnectorsPage() {
     modalTarget?.kind === 'connect'
       ? availableVendors.find((v) => v.id === modalTarget.vendorId)
       : activeAccount
-      ? availableVendors.find((v) => v.id === activeAccount.vendorId) ?? {
+      ? {
           id: activeAccount.vendorId,
-          description: activeAccount.vendorDescription,
+          description: availableVendors.find((v) => v.id === activeAccount.vendorId)?.description ??
+            activeAccount.vendorDescription,
           supportedResources: activeAccount.supportedResources,
         }
       : undefined

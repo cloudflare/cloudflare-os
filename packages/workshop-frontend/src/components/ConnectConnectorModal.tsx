@@ -90,7 +90,9 @@ export default function ConnectConnectorModal({
         ),
       )
     } else {
-      setSelected(new Set(grantableResources.map((r) => r.urlPattern)))
+      setSelected(new Set(grantableResources
+        .filter((r) => r.selectedByDefault !== false)
+        .map((r) => r.urlPattern)))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, isManage, grantableKey, grantedKey])
