@@ -61,6 +61,7 @@ import {
   getStoredSelectedModel,
   persistSelectedModel,
 } from "./modelSelection";
+import { isImeComposing } from "./components/chat/composer-keyboard";
 import {
   Overseer,
   GatekeeperClient,
@@ -3368,6 +3369,11 @@ export const ChatInput = ({
                 }
               }}
               onKeyDown={(e) => {
+                // Enter confirms the highlighted candidate in Chinese/Japanese/Korean IMEs. Let
+                // the browser finish that composition instead of selecting a slash command or
+                // submitting the message. keyCode 229 covers older browsers/WebViews that do not
+                // reliably expose KeyboardEvent.isComposing.
+                if (isImeComposing(e.nativeEvent)) return;
                 if (slashCommandPicker.open && e.key === "Escape") {
                   e.preventDefault();
                   slashCommandPicker.dismiss();
