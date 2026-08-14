@@ -5,9 +5,8 @@
   "main": "./src/slack.ts",
   "scripts": {
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
-    "build:configurator": "node ../../scripts/build-gatekeeper-configurator.mjs .",
-    "deploy": "pnpm run build:configurator && wrangler deploy",
-    "build": "pnpm run build:configurator && tsc",
+    "deploy": "node ../../scripts/build-gatekeeper-configurator.mjs . && wrangler deploy",
+    "build": "node ../../scripts/build-gatekeeper-configurator.mjs . && tsc",
     "clean": "rm -rf dist src/generated"
   },
   "dependencies": {

@@ -42,6 +42,10 @@ jobs:
   test:
     name: Build and test
     runs-on: ubuntu-latest
+    # Install, build and test together take ~2.5 minutes. Without an explicit cap a wedged test
+    # process (a spawned child that outlives its reap keeps `node --test` alive forever) burns the
+    # 6-hour default instead of failing, on every run of the branch.
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

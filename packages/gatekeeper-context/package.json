@@ -5,11 +5,10 @@
   "main": "./src/index.ts",
   "scripts": {
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
-    "deploy": "pnpm run build:app && wrangler deploy",
-    "build:app": "node build-app.mjs",
+    "deploy": "vp run --cache build:app && wrangler deploy",
     "build:app:watch": "node build-app.mjs --watch",
     "typecheck:app": "tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json",
-    "build": "pnpm run typecheck:app && pnpm run build:app && tsc",
+    "build": "pnpm run typecheck:app && vp run --cache build:app && tsc",
     "clean": "rm -rf dist src/generated",
     "test": "vitest run"
   },
@@ -52,6 +51,7 @@
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plugin-singlefile": "^2.3.3",
+    "vite-plus": "catalog:",
     "vite-tsconfig-paths": "^6.1.1",
     "vitest": "catalog:",
     "wrangler": "catalog:"

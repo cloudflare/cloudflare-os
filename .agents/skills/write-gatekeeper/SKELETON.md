@@ -592,14 +592,24 @@ Add package scripts:
 ```json
 {
   "scripts": {
-    "build:configurator": "node ../../scripts/build-gatekeeper-configurator.mjs .",
-    "build": "pnpm run build:configurator && tsc",
-    "deploy": "pnpm run build:configurator && wrangler deploy"
+    "build": "node ../../scripts/build-gatekeeper-configurator.mjs . && tsc",
+    "deploy": "node ../../scripts/build-gatekeeper-configurator.mjs . && wrangler deploy"
   },
   "dependencies": {
     "@gadgets/configurator-ui": "workspace:*"
   }
 }
+```
+
+Also add a `vite.config.ts` re-exporting the shared `build:configurator` Vite+ task, which is what
+the `pnpm dev-server` pre-flight builds (`vp run -r --cache build:configurator --dev`). It must be
+a task rather than a package.json script so `VITE_FRONTEND_ERROR_REPORTING` is passed through and
+cache-fingerprinted (vp forbids a task and a script sharing a name, so do not add the script back):
+
+```typescript
+// Vite+ per-package settings. The build:configurator task definition is shared by all gatekeepers
+// with a configurator UI and lives beside the builder it runs.
+export { default } from '../../scripts/gatekeeper-configurator-vite-config.js'
 ```
 
 Keep tokens and broad API clients out of public `RpcTarget` properties; use closures, `#private`, or `WeakMap` state and expose only narrow read-only helper methods.

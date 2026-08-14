@@ -11,12 +11,17 @@
 // Env:
 //   VITE_BACKEND_HOST=localhost:9000  Also pass --port 9000 to wrangler dev.
 
-import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
-import { execFileSync, spawn } from "node:child_process";
+import {
+  existsSync, readFileSync, writeFileSync, readdirSync, statSync, realpathSync,
+} from "node:fs";
+import { spawn } from "node:child_process";
+import { connect } from "node:net";
+import { constants } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
 import { getDevServerConfig } from "./scripts/dev-server-config.js";
+import { killProcessTree } from "./scripts/kill-process-tree.js";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PACKAGES_DIR = join(ROOT, "packages");
@@ -45,14 +50,6 @@ function loadDevVars() {
 loadDevVars();
 
 const useWorkersAi = process.argv.includes("--use-workers-ai-binding");
-
-// Generate the format blueprint module before Wrangler tries to bundle the backend. The output is
-// gitignored, so it will not exist on a clean checkout.
-execFileSync(
-  process.execPath,
-  [join(WORKSHOP_BACKEND_DIR, "scripts", "build-format-blueprints.mjs")],
-  { stdio: "inherit", cwd: WORKSHOP_BACKEND_DIR },
-);
 
 // In `run-local` mode the backend serves the pre-built frontend bundle as static assets (there is no
 // Vite dev server). In normal dev mode we leave assets unconfigured so the frontend is served by
@@ -97,10 +94,35 @@ const gatekeepers = findGatekeepers(PACKAGES_DIR);
 // wiring it needs is a sharingDomain in its binding props (see below).
 const CONTEXT_GATEKEEPER_NAME = "gatekeeper-context";
 
-// Rebuild each gatekeeper's generated UI (src/generated/*) on source change so edits show up on
-// reload; wrangler dev's `watch_dir: src` then re-bundles the worker.
+// What Wrangler picks for itself when no --port is derived, so also what we poll.
+const DEFAULT_WRANGLER_PORT = 8787;
+
+// Watchers rebuild each gatekeeper's generated UI (src/generated/*) on source change; wrangler dev's
+// `watch_dir: src` then re-bundles the worker. Deferred ones start once Wrangler is listening.
 const devWatchers = [];
+const deferredWatchers = [];
 let stoppingDevWatchers = false;
+let wranglerChild = null;
+
+// Resolve once something accepts a TCP connection on `port`, or once `timeoutMs` has elapsed.
+function waitForPort(port, timeoutMs) {
+  return new Promise(resolve => {
+    const deadline = Date.now() + timeoutMs;
+    const attempt = () => {
+      const socket = connect({ port, host: "127.0.0.1" });
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve();
+      });
+      socket.once("error", () => {
+        socket.destroy();
+        if (Date.now() >= deadline) resolve();
+        else setTimeout(attempt, 100).unref();
+      });
+    };
+    attempt();
+  });
+}
 
 // Spawn a persistent watcher.
 function spawnDevWatcher(label, command, args) {
@@ -112,44 +134,252 @@ function spawnDevWatcher(label, command, args) {
   devWatchers.push(watcher);
 }
 
-for (const gk of gatekeepers) {
-  // Configurator UI (compiled by build-gatekeeper-configurator.mjs).
-  if (existsSync(join(gk.dir, "src", "configurator"))) {
-    const script = join(ROOT, "scripts", "build-gatekeeper-configurator.mjs");
-    execFileSync(process.execPath, [script, gk.dir, "--quiet"], { stdio: "inherit", cwd: ROOT });
-    spawnDevWatcher(
-      `configurator UI watcher for ${gk.name}`,
-      process.execPath,
-      [script, gk.dir, "--watch", "--quiet"],
-    );
-  }
-
-  // Single-file app UI (Vite bundle written to src/generated/app.txt by build-app.mjs).
-  if (existsSync(join(gk.dir, "build-app.mjs"))) {
-    const script = join(gk.dir, "build-app.mjs");
-    execFileSync(process.execPath, [script], { stdio: "inherit", cwd: gk.dir });
-    spawnDevWatcher(`app UI watcher for ${gk.name}`, process.execPath, [script, "--watch"]);
-  }
+// No-op once shutdown has begun: reaching the port deadline just as the user hits Ctrl-C must not
+// spawn a watcher that nothing is left to kill.
+function startDeferredWatchers() {
+  if (stoppingDevWatchers) return;
+  for (const start of deferredWatchers.splice(0)) start();
 }
 
 function stopDevWatchers() {
   stoppingDevWatchers = true;
+  deferredWatchers.length = 0;
   for (const watcher of devWatchers) watcher.kill();
 }
 
 process.on("exit", stopDevWatchers);
-process.on("SIGINT", () => {
-  stopDevWatchers();
-  process.exit(130);
-});
-process.on("SIGTERM", () => {
-  stopDevWatchers();
-  process.exit(143);
-});
+
+// Reaches each app watcher's `pnpm exec vite build --watch` grandchild, which a bare kill() on the
+// `node build-app.mjs --watch` wrapper leaves holding CPU and file watches after we are gone. Must
+// not call stopDevWatchers() first: killing a wrapper reparents its children away from it, and the
+// tree walk can no longer find them.
+async function stopDevWatchersDeep() {
+  stoppingDevWatchers = true;
+  deferredWatchers.length = 0;
+  await Promise.all(devWatchers
+      .filter(watcher => watcher.exitCode === null && watcher.signalCode === null && watcher.pid)
+      .map(watcher => killProcessTree(watcher.pid).catch(() => {})));
+}
+
+// Shutdown is driven by Wrangler's exit. Ctrl-C reaches the whole process group, so Wrangler is
+// already tearing down its workerd children and exiting first would orphan them. These handlers
+// disable Node's default exit-on-signal, so a wedged Wrangler would otherwise make Ctrl-C
+// ineffective and leave this process waiting forever -- a second signal or the grace deadline
+// escalates to SIGKILLing Wrangler's whole tree.
+const FORCE_KILL_GRACE_MS = 10_000;
+let receivedShutdownSignals = 0;
+let forcingShutdown = false;
+let shutdownExitCode = null;
+
+async function forceKillWrangler(exitCode) {
+  if (forcingShutdown) return;
+  forcingShutdown = true;
+  if (wranglerChild?.exitCode === null && wranglerChild.signalCode === null && wranglerChild.pid) {
+    await killProcessTree(wranglerChild.pid, "SIGKILL").catch(() => {});
+  }
+  process.exit(exitCode);
+}
+
+async function onShutdownSignal(signal, exitCode) {
+  receivedShutdownSignals++;
+  shutdownExitCode ??= exitCode;
+  if (receivedShutdownSignals > 1) return forceKillWrangler(exitCode);
+  // Awaited before Wrangler is signalled: this process stays alive waiting for Wrangler's exit, so
+  // there is time for the process tree walks. Ctrl-C is group-delivered, but a targeted signal
+  // (kill <pid>, IDE stop buttons) reaches only this process, so the pre-flight builds have to be
+  // torn down here too and a live Wrangler has to be signalled explicitly -- on the Ctrl-C path
+  // the forwarded signal lands during Wrangler's own teardown, which tolerates the repeat.
+  await stopDevWatchersDeep();
+  await stopPreflightBuilds();
+  if (wranglerChild?.exitCode === null) {
+    wranglerChild.kill(signal);
+    setTimeout(() => forceKillWrangler(exitCode), FORCE_KILL_GRACE_MS).unref();
+  } else {
+    // Nothing left to wait for; without this exit the disabled default would keep us alive.
+    process.exit(exitCode);
+  }
+}
+
+process.on("SIGINT", () => onShutdownSignal("SIGINT", 130));
+process.on("SIGTERM", () => onShutdownSignal("SIGTERM", 143));
+
+// The pre-flight builds still running. Kept separate from `devWatchers`, whose `exit` handler runs
+// on every shutdown path; these need killing on two paths only: when a sibling build has failed,
+// and on a SIGTERM that arrives while they are still running.
+const preflightBuilds = new Set();
+let stoppingPreflightBuilds = false;
+
+// Two of the three builds are `pnpm exec vp run ...`, so this has to reach each one's `vp`/`vite`
+// descendants -- a bare kill() would signal only the wrapper and leave them writing. Awaited by
+// callers: process.exit() would cut the tree walk short.
+async function stopPreflightBuilds() {
+  stoppingPreflightBuilds = true;
+  await Promise.all([...preflightBuilds].map(child =>
+      child.pid ? killProcessTree(child.pid).catch(() => {}) : null));
+}
+
+// Run a one-shot build to completion. A promise rather than execFileSync so the pre-flight builds
+// can overlap.
+function runBuild(label, command, args, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: "inherit", cwd });
+    preflightBuilds.add(child);
+    child.on("error", error => {
+      preflightBuilds.delete(child);
+      reject(error);
+    });
+    child.on("exit", (code, signal) => {
+      preflightBuilds.delete(child);
+      if (code === 0) resolve();
+      else reject(new Error(`${label} failed (code=${code}, signal=${signal}).`));
+    });
+  });
+}
+
+// Everything Wrangler needs generated before it bundles: the backend's format blueprint module
+// (gitignored, so absent on a clean checkout) and each gatekeeper's UI.
+//
+// The UI groups go through `vp` rather than a loop over `gatekeepers` so they run in parallel and
+// hit the task cache; `vp run` takes one task name, hence two invocations. `vp` selects packages by
+// which ones declare the task, matching the directory probes in the watcher loop below -- so a new
+// gatekeeper needs its `build:configurator` or `build:app:dev` task (declared in its
+// `vite.config.ts`) to be built here. Tasks rather than package.json scripts so
+// VITE_FRONTEND_ERROR_REPORTING is passed through and fingerprinted; a cached script would strip
+// it, and the watchers below, which inherit the shell, would rewrite the outputs moments later.
+//
+// `build:app:dev` rather than `build:app`: the app watchers cannot skip their own initial build, so
+// this output is rebuilt regardless, and unless the bytes match Wrangler sees `src/generated/app.txt`
+// change and restarts the worker. Same build, unminified.
+try {
+  await Promise.all([
+    runBuild(
+      "format blueprints",
+      process.execPath,
+      [join(WORKSHOP_BACKEND_DIR, "scripts", "build-format-blueprints.mjs")],
+      WORKSHOP_BACKEND_DIR,
+    ),
+    runBuild("configurator UIs", "pnpm",
+        ["exec", "vp", "run", "-r", "--cache", "build:configurator", "--dev"], ROOT),
+    runBuild("gatekeeper app UIs", "pnpm",
+        ["exec", "vp", "run", "-r", "--cache", "build:app:dev"], ROOT),
+  ]);
+} catch (err) {
+  // The SIGTERM handler killing the builds also lands here, as the rejection of whichever build
+  // died first. The handler owns teardown and the exit code (143), so park and let it exit.
+  if (stoppingPreflightBuilds) await new Promise(() => {});
+  console.error(err.message);
+  // The siblings of the build that failed are still running. Left alone they would outlive this
+  // process, writing their outputs after startup has reported failure and colliding with an
+  // immediate re-run.
+  await stopPreflightBuilds();
+  process.exit(1);
+}
+
+// Watchers start only after those builds finish. Both watch modes run a full build before they
+// begin watching, so starting one earlier would put two processes on the same src/generated files.
+for (const gk of gatekeepers) {
+  // Configurator UI (compiled by build-gatekeeper-configurator.mjs). The pre-flight already ran this
+  // same build, so each watcher's own initial build is a no-op write -- and it is what keeps the
+  // watcher self-contained: it reads the sources itself, immediately before it starts watching them,
+  // so an edit made while the watchers are still spawning is either in that build or seen by the
+  // watcher. Skipping it would leave that edit sitting unbuilt until the next save, while Wrangler,
+  // which sees the same edit through `watch_dir: src`, restarted the worker as if it had landed.
+  if (existsSync(join(gk.dir, "src", "configurator"))) {
+    spawnDevWatcher(
+      `configurator UI watcher for ${gk.name}`,
+      process.execPath,
+      [join(ROOT, "scripts", "build-gatekeeper-configurator.mjs"), gk.dir, "--watch", "--quiet"],
+    );
+  }
+
+  // Single-file app UI (Vite bundle written to src/generated/app.txt by build-app.mjs).
+  //
+  // Deferred until Wrangler is listening: unlike the configurator watcher, `vite build --watch`
+  // cannot skip its initial build, and these are the largest builds in the repo, so running them now
+  // takes cores from the worker bundles Wrangler is building concurrently. Nothing needs them sooner
+  // -- the pre-flight already wrote the `app.txt` they will produce -- and Vite reads the disk when
+  // it finally starts, so an edit made while the server was coming up is still picked up.
+  if (existsSync(join(gk.dir, "build-app.mjs"))) {
+    deferredWatchers.push(() => spawnDevWatcher(
+      `app UI watcher for ${gk.name}`,
+      process.execPath,
+      [join(gk.dir, "build-app.mjs"), "--watch"],
+    ));
+  }
+}
 
 // Helper: "gatekeeper-github" -> "GATEKEEPER_GITHUB"
 function bindingName(gk) {
   return gk.name.toUpperCase().replaceAll("-", "_");
+}
+
+// ---------------------------------------------------------------------------
+// Speed up wrangler's per-worker `build.command`.
+//
+// Wrangler runs it twice per worker at startup (cloudflare/workers-sdk#7934) and again on every
+// watch_dir event, and reaching the binary through `pnpm exec` costs ~0.33s of process startup each
+// time -- for most of these workers longer than the build itself, and all of it on the startup
+// critical path.
+//
+// So for dev only we rewrite the command to spawn the same binaries directly. What runs does not
+// change -- same entry point, arguments and cwd -- only how it is reached. Anything that does not
+// resolve is left exactly as written, so the committed wrangler.jsonc stays the source of truth and
+// an unrecognised command still works, just at the original speed.
+// ---------------------------------------------------------------------------
+
+// Absolute path to the JS entry point behind `node_modules/.bin/<bin>`, or null if it cannot be
+// found. Resolved from the package's own node_modules so pnpm's per-package layout is respected.
+function resolveBinEntry(pkgDir, bin) {
+  try {
+    const manifestPath = realpathSync(join(pkgDir, "node_modules", bin, "package.json"));
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const relative = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.[bin];
+    if (!relative) return null;
+    const entry = join(dirname(manifestPath), relative);
+    return existsSync(entry) ? entry : null;
+  } catch {
+    return null;
+  }
+}
+
+// Whether wrapping `path` in plain double quotes is safe in the shell that runs the rewritten
+// command: inside them POSIX shells still expand `$` and backticks and collapse `\\`, cmd still
+// expands `%`, and an embedded quote or a trailing backslash would break the quoting itself.
+// Unsafe paths keep the committed `pnpm exec` form -- slower, but correct for any path.
+function shellSafe(path) {
+  return !/[$`%"]|\\\\|\\$/.test(path);
+}
+
+// `pnpm run <script>` is expanded to the script body (so any `pnpm exec` inside it is rewritten
+// too), then each `pnpm exec <bin>` becomes a direct `node <entry>`. Wrangler runs the result
+// through a shell, so a body chained with `&&` stays valid.
+function withoutPnpmIndirection(pkgDir, command, depth = 0) {
+  const runScript = /^pnpm run ([\w:.@-]+)$/.exec(command.trim())?.[1];
+  if (runScript && depth < 2) {
+    try {
+      const { scripts } = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
+      const body = scripts?.[runScript];
+      if (body) return withoutPnpmIndirection(pkgDir, body, depth + 1);
+    } catch {
+      // Fall through and return the command untouched.
+    }
+  }
+  return command.replaceAll(/\bpnpm exec ([\w@/.-]+)/g, (original, bin) => {
+    const entry = resolveBinEntry(pkgDir, bin);
+    return entry && shellSafe(process.execPath) && shellSafe(entry)
+        ? `"${process.execPath}" "${entry}"` : original;
+  });
+}
+
+// Dev build settings for a worker: an explicit cwd (this script starts a multi-config Wrangler from
+// the repo root, so the committed relative paths would otherwise resolve against the wrong
+// directory) and the de-indirected command.
+function devBuildConfig(build, pkgDir) {
+  const dev = { ...build, cwd: pkgDir };
+  if (typeof dev.command !== "string") return dev;
+
+  dev.command = withoutPnpmIndirection(pkgDir, dev.command);
+  return dev;
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +438,7 @@ const PASSTHROUGH_GATEKEEPER_VARS = {
 for (const gk of gatekeepers) {
   const srcPath = join(gk.dir, "wrangler.jsonc");
   const config = parse(readFileSync(srcPath, "utf8"));
-  config.build = { ...config.build, cwd: gk.dir };
+  config.build = devBuildConfig(config.build, gk.dir);
   config.vars = config.vars || {};
   config.vars.BASE_URL = `http://${backendHost}/gatekeeper/${gk.name.slice("gatekeeper-".length)}`;
 
@@ -294,7 +524,7 @@ for (const gk of gatekeepers) {
     };
   }
 
-  config.build = { ...config.build, cwd: WORKSHOP_BACKEND_DIR };
+  config.build = devBuildConfig(config.build, WORKSHOP_BACKEND_DIR);
 
   const outPath = join(ROOT, "packages", "workshop-backend", "wrangler.dev.jsonc");
   writeFileSync(outPath, JSON.stringify(config, null, 2) + "\n");
@@ -321,11 +551,32 @@ if (wranglerPort) {
 }
 console.log(`\nStarting: wrangler dev ${args.join(" ")}\n`);
 
-try {
-  execFileSync("pnpm", ["exec", "wrangler", "dev", ...args],
-      { stdio: "inherit", cwd: ROOT });
-} catch (e) {
-  // wrangler was killed or exited with an error; the output was already shown
-  // via stdio: "inherit", so just propagate the exit code.
-  process.exit(e.status ?? 1);
-}
+// Reached directly for the same reason the generated custom builds are; falls back to `pnpm exec` if
+// it cannot be resolved.
+const wranglerEntry = resolveBinEntry(ROOT, "wrangler");
+const [wranglerCommand, wranglerArgv] = wranglerEntry
+  ? [process.execPath, [wranglerEntry, "dev", ...args]]
+  : ["pnpm", ["exec", "wrangler", "dev", ...args]];
+
+// `spawn`, not `execFileSync`, so the deferred watchers can start once the server is up. It stays in
+// this process group with the terminal attached, so Ctrl-C reaches it as before.
+wranglerChild = spawn(wranglerCommand, wranglerArgv, { stdio: "inherit", cwd: ROOT });
+
+wranglerChild.on("error", err => {
+  console.error(`wrangler dev could not be started: ${err.message}`);
+  process.exit(1);
+});
+wranglerChild.on("exit", async (code, signal) => {
+  // The crash path: Wrangler died on its own, so nothing has signalled the watchers and this handler
+  // is what tears them down.
+  await stopDevWatchersDeep();
+  // The output was already shown via stdio: "inherit". A signal-initiated shutdown reports the
+  // initiating signal's status; only when Wrangler died on its own is its status propagated.
+  process.exit(shutdownExitCode ?? (signal ? 128 + (constants.signals[signal] ?? 0) : code ?? 1));
+});
+
+// Poll the socket rather than parsing stdout for "Ready on", which would mean giving up
+// `stdio: "inherit"`. The deadline is a backstop so a server that never comes up does not leave the
+// watchers silently unstarted.
+await waitForPort(Number(wranglerPort ?? DEFAULT_WRANGLER_PORT), 60_000);
+if (wranglerChild.exitCode === null) startDeferredWatchers();

@@ -10,8 +10,10 @@ import { loadEnv } from "vite";
 const packageDir = resolve(process.argv[2] ?? ".");
 const watchMode = process.argv.includes("--watch");
 const quietMode = process.argv.includes("--quiet");
+const devMode = process.argv.includes("--dev");
 const frontendReportingEnabled =
-  loadEnv(watchMode ? "development" : "production", packageDir).VITE_FRONTEND_ERROR_REPORTING === "true";
+  loadEnv(watchMode || devMode ? "development" : "production", packageDir)
+      .VITE_FRONTEND_ERROR_REPORTING === "true";
 const configuratorDir = join(packageDir, "src", "configurator");
 const generatedDir = join(packageDir, "src", "generated");
 const vendorId = basename(packageDir).replace(/^gatekeeper-/, "");

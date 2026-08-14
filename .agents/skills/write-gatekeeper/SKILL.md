@@ -119,7 +119,10 @@ If you use this:
 - `resourceUrl()` returns the selected resource URL.
 - `src/configurator/*-types.d.ts` describes the iframe-facing `ui` API.
 - `scripts/build-gatekeeper-configurator.mjs` generates `src/generated/*.txt`.
-- Package `build` / `deploy` scripts should run `pnpm run build:configurator`.
+- Package `build` / `deploy` scripts run the builder directly
+  (`node ../../scripts/build-gatekeeper-configurator.mjs .`), and `vite.config.ts` re-exports the
+  shared `build:configurator` Vite+ task from `scripts/gatekeeper-configurator-vite-config.js` so
+  the dev-server pre-flight caches it with `VITE_FRONTEND_ERROR_REPORTING` in the fingerprint.
 
 ##### Pre-filling the form from a known resource URL
 

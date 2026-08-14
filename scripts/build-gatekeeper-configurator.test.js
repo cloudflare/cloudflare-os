@@ -14,14 +14,19 @@ const configuratorSource =
   'export default { render() { throw new Error("mapped configurator failure"); return <div />; } };\n';
 let fixtureDir;
 let disabledFixtureDir;
+let devModeFixtureDir;
+let devEnvWithoutDevFlagFixtureDir;
 
-async function createFixture(prefix, reportingEnabled) {
+// `envFile` is the `.env.*` file that enables reporting, so which one is written decides which build
+// mode picks it up. `staleArtifacts` pre-seeds the outputs a reporting-disabled build must remove.
+async function createFixture(prefix, { envFile, builderArgs = [], staleArtifacts = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), prefix));
   await mkdir(join(directory, "src", "configurator"), { recursive: true });
   await mkdir(join(directory, "node_modules", "capnweb", "dist"), { recursive: true });
-  if (reportingEnabled) {
-    await writeFile(join(directory, ".env.production"), "VITE_FRONTEND_ERROR_REPORTING=true\n");
-  } else {
+  if (envFile) {
+    await writeFile(join(directory, envFile), "VITE_FRONTEND_ERROR_REPORTING=true\n");
+  }
+  if (staleArtifacts) {
     await mkdir(join(directory, "src", "generated"), { recursive: true });
     await writeFile(join(directory, "src", "generated", "test-ui.js"), "stale");
     await writeFile(join(directory, "src", "generated", "test-ui.js.map"), "stale");
@@ -29,7 +34,7 @@ async function createFixture(prefix, reportingEnabled) {
   await writeFile(join(directory, "node_modules", "capnweb", "dist", "index.js"),
     "export class RpcTarget {}\nexport function newMessagePortRpcSession() {}\n");
   await writeFile(join(directory, "src", "configurator", "test-ui.tsx"), configuratorSource);
-  await execFileAsync(process.execPath, [builder, directory]);
+  await execFileAsync(process.execPath, [builder, directory, ...builderArgs]);
   return directory;
 }
 
@@ -75,13 +80,19 @@ function originalPositionFor(sourceMap, line, column) {
 }
 
 before(async () => {
-  fixtureDir = await createFixture("configurator-reporting-", true);
-  disabledFixtureDir = await createFixture("configurator-no-reporting-", false);
+  fixtureDir = await createFixture("configurator-reporting-", { envFile: ".env.production" });
+  disabledFixtureDir = await createFixture("configurator-no-reporting-", { staleArtifacts: true });
+  devModeFixtureDir = await createFixture("configurator-dev-mode-",
+    { envFile: ".env.development", builderArgs: ["--dev"] });
+  devEnvWithoutDevFlagFixtureDir = await createFixture("configurator-dev-env-oneshot-",
+    { envFile: ".env.development", staleArtifacts: true });
 });
 
 after(async () => {
   await rm(fixtureDir, { recursive: true, force: true });
   await rm(disabledFixtureDir, { recursive: true, force: true });
+  await rm(devModeFixtureDir, { recursive: true, force: true });
+  await rm(devEnvWithoutDevFlagFixtureDir, { recursive: true, force: true });
 });
 
 describe("generated configurator error reporting", () => {
@@ -155,6 +166,30 @@ describe("generated configurator error reporting", () => {
   it("disables reporting and removes source-map artifacts when reporting is disabled", async () => {
     const generatedDir = join(disabledFixtureDir, "src", "generated");
     const runtime = await readRuntime(disabledFixtureDir);
+
+    assert.match(runtime, /const frontendReportingEnabled = false;/);
+    assert.doesNotMatch(runtime, /sourceURL=.*serialize-exception/);
+    await assert.rejects(access(join(generatedDir, "test-ui.js")), { code: "ENOENT" });
+    await assert.rejects(access(join(generatedDir, "test-ui.js.map")), { code: "ENOENT" });
+  });
+
+  // `--dev` is what the `pnpm dev-server` pre-flight passes so its one-shot build resolves the same
+  // env mode the watchers do. If these two ever agreed, the pre-flight's output would differ from the
+  // watcher's and Wrangler would restart every gatekeeper worker mid-startup.
+  it("reads .env.development when built with --dev", async () => {
+    const runtime = await readRuntime(devModeFixtureDir);
+
+    assert.match(runtime, /const frontendReportingEnabled = true;/);
+    // The serializer's own sourceURL is inside its base64 data module, not the runtime text, so the
+    // import is what is visible here.
+    assert.match(runtime, /import \{ serializeException \} from "data:text\/javascript/);
+    await access(join(devModeFixtureDir, "src", "generated", "test-ui.js"));
+    await access(join(devModeFixtureDir, "src", "generated", "test-ui.js.map"));
+  });
+
+  it("ignores .env.development without --dev", async () => {
+    const generatedDir = join(devEnvWithoutDevFlagFixtureDir, "src", "generated");
+    const runtime = await readRuntime(devEnvWithoutDevFlagFixtureDir);
 
     assert.match(runtime, /const frontendReportingEnabled = false;/);
     assert.doesNotMatch(runtime, /sourceURL=.*serialize-exception/);
