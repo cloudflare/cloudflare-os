@@ -50,7 +50,7 @@ import { renderGadgetPdf } from "./browser-export";
 const logger = createWorkshopLogger("workshop.overseer");
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
 
-export const CODE_MODE_HARNESS =
+let CODE_MODE_HARNESS =
 `import { WorkerEntrypoint, restore } from "cloudflare:workers";
 import agent from "agent.js";
 

@@ -1,7 +1,9 @@
 import { expect, it } from "vitest";
-import { appendCodeModeReturnValue, CODE_MODE_HARNESS } from "../src/overseer.js";
+import { appendCodeModeReturnValue } from "../src/overseer.js";
 it("preserves code mode return values", () => {
-  expect(CODE_MODE_HARNESS).toContain("return await agent");
+  const circular: Record<string, unknown> = {};
+  circular.self = circular;
   expect(appendCodeModeReturnValue("", 1n)).toBe("1");
   expect(appendCodeModeReturnValue("started", { ok: true })).toBe('started\n{"ok":true}');
+  expect(appendCodeModeReturnValue("", circular)).toBe("[unserializable return value]");
 });
