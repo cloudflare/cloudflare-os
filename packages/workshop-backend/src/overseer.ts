@@ -7235,10 +7235,12 @@ export class CodeModeTailLoopback extends WorkerEntrypoint<Cloudflare.Env, CodeM
   //   on workerd console, need to fix that first.
 
   async tail(events: TraceItem[]) {
-    const methods = events.map(event => event.event && "rpcMethod" in event.event
-        ? event.event.rpcMethod : undefined);
-    if (events.length === 2 && methods.includes("verify") && methods.includes("run")) {
-      events = [events[methods.indexOf("run")]];
+    if (events.length === 2) {
+      const [first, second] = events;
+      const firstMethod = first.event && "rpcMethod" in first.event ? first.event.rpcMethod : undefined;
+      const secondMethod = second.event && "rpcMethod" in second.event ? second.event.rpcMethod : undefined;
+      if (firstMethod === "verify" && secondMethod === "run") events = [second];
+      else if (firstMethod === "run" && secondMethod === "verify") events = [first];
     }
     if (events.length != 1) {
       logger.error("unexpected code mode trace size", {

@@ -1,10 +1,8 @@
 import { expect, it, vi } from "vitest";
 import { CodeModeTailLoopback } from "../src/overseer.js";
-
 const trace = (rpcMethod: string) => ({
   event: { rpcMethod }, logs: [], exceptions: [], diagnosticsChannelEvents: [],
 }) as unknown as TraceItem;
-
 it("delivers only a run paired with one verify", async () => {
   const deliverCodeModeTrace = vi.fn(async () => undefined);
   const loopback = { ctx: {
