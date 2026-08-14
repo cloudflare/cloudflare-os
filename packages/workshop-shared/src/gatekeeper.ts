@@ -103,44 +103,44 @@ export type AgentCatalogEntry = {
 
 /** The discovery metadata returned for one gatekeeper session. */
 export type AgentCatalog = {
-  /** The discoverable items, already truncated to the requested/maximum count. */
+  /**
+   * The discoverable items, in the gatekeeper's priority order: the Workshop clamps the list by
+   * dropping from the tail, so entries that must survive belong first.
+   */
   entries: AgentCatalogEntry[];
-  /** True if entries were dropped to fit the limit, so the agent knows the list is partial. */
+  /** True if entries were dropped to fit the caps, so the agent knows the list is partial. */
   truncated?: boolean;
-};
-
-/** Parameters the Workshop passes when requesting a catalog. */
-export type AgentCatalogRequest = {
-  /** Maximum number of entries to return. The gatekeeper must also enforce AGENT_CATALOG_MAX_ENTRIES. */
-  limit: number;
 };
 
 /**
  * Hard caps the Workshop enforces on any catalog, regardless of what the gatekeeper returns, since
  * the catalog is injected into the agent's context as untrusted data and must stay bounded.
+ *
+ * The entry count is a ceiling, not a budget. At the field caps below one entry serializes to about
+ * 793 ASCII bytes, so 1000 entries is ~775 KiB of prompt, and the catalog sits in the system prompt
+ * on every turn where compaction never reaches it. A gatekeeper is expected to return far fewer than
+ * the ceiling and to bound whichever of its item classes can grow without limit (the Context Library
+ * caps its skills), leaving this as the backstop against one that doesn't.
  */
-export const AGENT_CATALOG_MAX_ENTRIES = 25;
+export const AGENT_CATALOG_MAX_ENTRIES = 1000;
 export const AGENT_CATALOG_MAX_ID_LENGTH = 256;
 export const AGENT_CATALOG_MAX_TITLE_LENGTH = 100;
 export const AGENT_CATALOG_MAX_DESCRIPTION_LENGTH = 400;
 
 /**
- * Helper for gatekeepers to produce a well-formed AgentCatalog: clamps the entry count to the
- * smaller of the request's limit and AGENT_CATALOG_MAX_ENTRIES, truncates each field to its cap, and
- * sets `truncated` when entries were dropped. Gatekeepers should call this rather than hand-rolling
- * the limits.
+ * Clamps a catalog to the AGENT_CATALOG_MAX_* caps and sets `truncated` when entries were dropped.
+ * Gatekeepers must apply this before returning, so an oversized library is bounded before it crosses
+ * the RPC boundary rather than after; the Workshop re-clamps what it receives regardless. Entries
+ * are kept in the order given, so the caller decides what survives.
  */
-export function boundAgentCatalog(
-    entries: AgentCatalogEntry[], request: AgentCatalogRequest): AgentCatalog {
-  let requestedLimit = Number.isFinite(request.limit) ? Math.max(0, Math.floor(request.limit)) : 0;
-  let limit = Math.min(requestedLimit, AGENT_CATALOG_MAX_ENTRIES);
+export function boundAgentCatalog(entries: AgentCatalogEntry[]): AgentCatalog {
   return {
-    entries: entries.slice(0, limit).map(entry => ({
+    entries: entries.slice(0, AGENT_CATALOG_MAX_ENTRIES).map(entry => ({
       id: entry.id.slice(0, AGENT_CATALOG_MAX_ID_LENGTH),
       title: entry.title.slice(0, AGENT_CATALOG_MAX_TITLE_LENGTH),
       description: entry.description.slice(0, AGENT_CATALOG_MAX_DESCRIPTION_LENGTH),
     })),
-    truncated: entries.length > limit,
+    truncated: entries.length > AGENT_CATALOG_MAX_ENTRIES,
   };
 }
 
@@ -743,10 +743,10 @@ export interface Gatekeeper<Session> extends DurableObject {
    * whose session benefits from a discovery index (e.g. an agent singleton like the Context
    * Library); most gatekeepers omit it. Catalog access is an observation, so the implementation
    * must authorize it via `authorizer.authorizeObservation()` before returning metadata. Returns
-   * null when there is no catalog. Use `boundAgentCatalog()` to enforce the size limits.
+   * null when there is no catalog. Return the entries the agent most needs first and pass them
+   * through `boundAgentCatalog()`, since both that clamp and the Workshop's drop from the tail.
    */
   getAgentCatalog?(
-    request: AgentCatalogRequest,
     authorizer: RpcStub<ObservationAuthorizer>,
   ): Promise<AgentCatalog | null>;
 

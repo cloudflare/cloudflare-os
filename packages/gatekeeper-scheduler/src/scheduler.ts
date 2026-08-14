@@ -9,7 +9,6 @@ import type {
   AccountDescription,
   ActionKind,
   AgentCatalog,
-  AgentCatalogRequest,
   AppUiContext,
   ApprovalQueue,
   Gatekeeper,
@@ -271,7 +270,6 @@ export class SchedulerGatekeeper
 
   /** Returns no catalog because schedule discovery happens through list(). */
   async getAgentCatalog(
-    _request: AgentCatalogRequest,
     _authorizer: NativeRpcStub<ObservationAuthorizer>,
   ): Promise<AgentCatalog | null> {
     return null;

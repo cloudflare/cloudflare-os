@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  AGENT_CATALOG_MAX_DESCRIPTION_LENGTH, AGENT_CATALOG_MAX_ENTRIES, AGENT_CATALOG_MAX_TITLE_LENGTH,
-  boundAgentCatalog,
+  AGENT_CATALOG_MAX_DESCRIPTION_LENGTH, AGENT_CATALOG_MAX_ENTRIES, AGENT_CATALOG_MAX_ID_LENGTH,
+  AGENT_CATALOG_MAX_TITLE_LENGTH, boundAgentCatalog,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   completeAgentCatalogSnapshot, formatAgentCatalogPrompt,
@@ -12,7 +12,8 @@ describe("normalizeAgentCatalog", () => {
   it("sorts entries, strips control characters, and truncates long fields to the max bounds", () => {
     let catalog = normalizeAgentCatalog({
       entries: [
-        { id: "2", title: "  Zebra\u0000  ", description: "D".repeat(AGENT_CATALOG_MAX_DESCRIPTION_LENGTH + 100) },
+        { id: "2".repeat(AGENT_CATALOG_MAX_ID_LENGTH + 10), title: "  Zebra\u0000  ",
+          description: "D".repeat(AGENT_CATALOG_MAX_DESCRIPTION_LENGTH + 100) },
         { id: "1", title: "T".repeat(AGENT_CATALOG_MAX_TITLE_LENGTH + 50), description: " First collection " },
       ],
     });
@@ -20,7 +21,8 @@ describe("normalizeAgentCatalog", () => {
     expect(catalog).toEqual({
       entries: [
         { id: "1", title: "T".repeat(AGENT_CATALOG_MAX_TITLE_LENGTH), description: "First collection" },
-        { id: "2", title: "Zebra", description: "D".repeat(AGENT_CATALOG_MAX_DESCRIPTION_LENGTH) },
+        { id: "2".repeat(AGENT_CATALOG_MAX_ID_LENGTH), title: "Zebra",
+          description: "D".repeat(AGENT_CATALOG_MAX_DESCRIPTION_LENGTH) },
       ],
     });
   });
@@ -33,6 +35,23 @@ describe("normalizeAgentCatalog", () => {
     let catalog = normalizeAgentCatalog({ entries });
 
     expect(catalog.entries.length).toBe(AGENT_CATALOG_MAX_ENTRIES);
+    expect(catalog.truncated).toBe(true);
+  });
+
+  it("drops from the tail in provider order, then sorts the survivors", () => {
+    // The gatekeeper puts what must survive first (the Context Library leads with its collections),
+    // so a title that sorts last must still be kept when the cap clamps the list.
+    let entries = [
+      {id: "keep", title: "Zulu collection", description: "survives despite sorting last"},
+      ...Array.from({length: AGENT_CATALOG_MAX_ENTRIES}, (_, i) => ({
+        id: `skill${i}`, title: `aa-skill-${String(i).padStart(4, "0")}`, description: "x",
+      })),
+    ];
+
+    let catalog = normalizeAgentCatalog({entries});
+
+    expect(catalog.entries).toHaveLength(AGENT_CATALOG_MAX_ENTRIES);
+    expect(catalog.entries.at(-1)).toEqual(entries[0]);
     expect(catalog.truncated).toBe(true);
   });
 
@@ -84,25 +103,29 @@ describe("normalizeAgentCatalog", () => {
 });
 
 describe("boundAgentCatalog", () => {
-  it("enforces provider-side count and metadata limits", () => {
-    let entries = Array.from({length: 30}, (_, index) => ({
-      id: `${index}`.repeat(300),
-      title: `Title ${index}`.repeat(30),
-      description: `Description ${index}`.repeat(100),
+  it("clamps the count and each field, keeping the order it was given", () => {
+    let entries = Array.from({length: AGENT_CATALOG_MAX_ENTRIES + 5}, (_, index) => ({
+      id: `${index}-${"i".repeat(AGENT_CATALOG_MAX_ID_LENGTH)}`,
+      title: `${index}-${"t".repeat(AGENT_CATALOG_MAX_TITLE_LENGTH)}`,
+      description: `${index}-${"d".repeat(AGENT_CATALOG_MAX_DESCRIPTION_LENGTH)}`,
     }));
 
-    let catalog = boundAgentCatalog(entries, {limit: Number.POSITIVE_INFINITY});
+    let catalog = boundAgentCatalog(entries);
 
-    expect(catalog.entries).toHaveLength(0);
+    expect(catalog.entries).toHaveLength(AGENT_CATALOG_MAX_ENTRIES);
+    expect(catalog.entries[0].id).toHaveLength(AGENT_CATALOG_MAX_ID_LENGTH);
+    expect(catalog.entries[0].title).toHaveLength(AGENT_CATALOG_MAX_TITLE_LENGTH);
+    expect(catalog.entries[0].description).toHaveLength(AGENT_CATALOG_MAX_DESCRIPTION_LENGTH);
+    // Order preserved, so the caller decides which entries survive.
+    expect(catalog.entries[0].id.startsWith("0-")).toBe(true);
     expect(catalog.truncated).toBe(true);
-    let bounded = boundAgentCatalog(entries, {limit: 1000});
-    expect(bounded.entries).toHaveLength(25);
-    expect(bounded.entries[0].id).toHaveLength(256);
-    expect(bounded.entries[0].title).toHaveLength(100);
-    expect(bounded.entries[0].description).toHaveLength(400);
-    expect(bounded.truncated).toBe(true);
-    expect(boundAgentCatalog(entries, {limit: -1}).entries).toEqual([]);
-    expect(boundAgentCatalog(entries, {limit: 2.9}).entries).toHaveLength(2);
+  });
+
+  it("reports no truncation when everything fits", () => {
+    expect(boundAgentCatalog([{id: "a", title: "A", description: "d"}])).toEqual({
+      entries: [{id: "a", title: "A", description: "d"}],
+      truncated: false,
+    });
   });
 });
 

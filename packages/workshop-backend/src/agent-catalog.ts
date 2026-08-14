@@ -17,11 +17,12 @@ function normalizeText(value: string, maxLength: number): string {
 }
 
 /**
- * Workshop-side re-validation of a gatekeeper's catalog (defense-in-depth — the gatekeeper output is
- * untrusted): strip control chars / collapse whitespace, drop unusable entries, sort, and re-clamp to
- * the global AGENT_CATALOG_MAX_* bounds. This intentionally overlaps the provider-side
- * boundAgentCatalog() (shared) — we don't trust the gatekeeper to have applied it. `id` keeps the full
- * bound since it's the opaque key the agent passes back; only the title/description need shortening.
+ * Workshop-side re-validation of a gatekeeper's catalog (the gatekeeper output is untrusted): strip
+ * control chars / collapse whitespace, drop unusable entries, and re-clamp to the global
+ * AGENT_CATALOG_MAX_* bounds. Gatekeepers should apply the same caps before RPC, but the Workshop
+ * does not trust them to do so. `id` keeps the full bound since it is the opaque key the agent passes
+ * back; only the title/description need shortening. The count clamp drops from the tail so the
+ * gatekeeper's priority order decides what survives; the survivors are then sorted for display.
  */
 export function normalizeAgentCatalog(catalog: AgentCatalog): AgentCatalog {
   let entries = catalog.entries
@@ -30,12 +31,18 @@ export function normalizeAgentCatalog(catalog: AgentCatalog): AgentCatalog {
         title: normalizeText(entry.title, AGENT_CATALOG_MAX_TITLE_LENGTH),
         description: normalizeText(entry.description, AGENT_CATALOG_MAX_DESCRIPTION_LENGTH),
       }))
-      .filter(entry => entry.id.length > 0 && entry.title.length > 0)
-      .toSorted((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
-  let truncated = catalog.truncated === true || entries.length > AGENT_CATALOG_MAX_ENTRIES;
+      .filter(entry => entry.id.length > 0 && entry.title.length > 0);
+  let dropped = entries.length > AGENT_CATALOG_MAX_ENTRIES;
+  if (dropped) {
+    logger.warn("agent catalog exceeded the entry cap", {
+      event: "agent.catalog.truncated", size: entries.length,
+    });
+  }
   return {
-    entries: entries.slice(0, AGENT_CATALOG_MAX_ENTRIES),
-    ...(truncated ? {truncated: true} : {}),
+    entries: entries
+        .slice(0, AGENT_CATALOG_MAX_ENTRIES)
+        .toSorted((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id)),
+    ...(catalog.truncated === true || dropped ? {truncated: true} : {}),
   };
 }
 

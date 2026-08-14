@@ -1,10 +1,20 @@
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import type { SlashCommandDescriptor } from "@gadgets/workshop-shared/gatekeeper";
+import { boundAgentCatalog } from "@gadgets/workshop-shared/gatekeeper";
+import type { AgentCatalog, SlashCommandDescriptor } from "@gadgets/workshop-shared/gatekeeper";
 import type { EnabledCollectionInfo } from "./context-types.js";
 import { encodeDocId } from "./context-types.js";
 
 const AGENT_SKILL_NAME_MAX_LENGTH = 64;
+
+/**
+ * How many skills the catalog advertises. Skills are the one item class here that grows without
+ * limit (one git-backed collection can import hundreds), so they get their own cap well under
+ * AGENT_CATALOG_MAX_ENTRIES. That leaves the shared ceiling as headroom for collections, which are
+ * the agent's entry points and must not be dropped. Skills past the cap stay reachable through the
+ * session's list()/search().
+ */
+export const AGENT_SKILL_CATALOG_MAX_ENTRIES = 150;
 
 /** Fields read from SKILL.md frontmatter. */
 export type SkillManifestMetadata = {
@@ -58,6 +68,31 @@ export function buildAgentSkillCatalogEntries(
   }
   return entries.toSorted((left, right) =>
     left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
+}
+
+/**
+ * The catalog the library advertises: collections first, then up to
+ * AGENT_SKILL_CATALOG_MAX_ENTRIES skills. Collections get the shared 1000-entry ceiling before any
+ * skill, so a large skill set cannot displace them. The merged list stays unsorted because the
+ * Workshop sorts the survivors; sorting here would only decide alphabetically which entries lose.
+ */
+export function buildContextCatalog(
+    collections: EnabledCollectionInfo[], loaded: CollectionSkills[]): AgentCatalog {
+  let collectionEntries = collections
+      .map(collection => ({
+        id: collection.id,
+        title: collection.title,
+        description: collection.description,
+      }))
+      .toSorted((left, right) =>
+        left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
+  let skillEntries = buildAgentSkillCatalogEntries(loaded);
+  let catalog = boundAgentCatalog([
+    ...collectionEntries,
+    ...skillEntries.slice(0, AGENT_SKILL_CATALOG_MAX_ENTRIES),
+  ]);
+  if (skillEntries.length > AGENT_SKILL_CATALOG_MAX_ENTRIES) catalog.truncated = true;
+  return catalog;
 }
 
 /**

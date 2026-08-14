@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_SKILL_CATALOG_MAX_ENTRIES,
   isSkillManifestPath, buildAgentSkillCatalogEntries, buildAgentSkillCommands,
-  buildAgentSkillMessage, parseSkillManifest,
+  buildAgentSkillMessage, buildContextCatalog, parseSkillManifest,
   type CollectionSkills,
 } from "../src/agent-skill";
 import { isTextContentType } from "../src/context-types";
@@ -265,5 +266,46 @@ describe("buildAgentSkillMessage", () => {
     expect(buildAgentSkillMessage("Create a clear presentation.", "")).toBe(
       "<agent_skill>\nCreate a clear presentation.\n</agent_skill>",
     );
+  });
+});
+
+describe("buildContextCatalog", () => {
+  let collection = (id: string, title: string) => ({
+    id, title, description: `${title} description`,
+    source: "public" as const, lastUpdated: new Date(),
+  });
+
+  it("keeps every collection when skills exceed their cap", () => {
+    let collections = Array.from({length: 40}, (_, index) =>
+      collection(`c${index}`, `Zulu collection ${String(index).padStart(2, "0")}`));
+    let loaded: CollectionSkills[] = [{
+      collection: collections[0],
+      // Named to sort ahead of every collection title, which is what used to evict them.
+      skills: Array.from({length: AGENT_SKILL_CATALOG_MAX_ENTRIES + 50}, (_, index) => ({
+        path: `aa-skill-${index}/SKILL.md`,
+        description: `Skill ${index}`,
+        skillName: `aa-skill-${String(index).padStart(4, "0")}`,
+      })),
+    }];
+
+    let catalog = buildContextCatalog(collections, loaded);
+
+    let ids = new Set(catalog.entries.map(entry => entry.id));
+    expect(collections.every(each => ids.has(each.id))).toBe(true);
+    expect(catalog.entries).toHaveLength(collections.length + AGENT_SKILL_CATALOG_MAX_ENTRIES);
+    expect(catalog.truncated).toBe(true);
+  });
+
+  it("reports no truncation when every skill fits", () => {
+    let collections = [collection("c0", "Runbooks")];
+    let loaded: CollectionSkills[] = [{
+      collection: collections[0],
+      skills: [{path: "deploy/SKILL.md", description: "Deploy", skillName: "deploy"}],
+    }];
+
+    let catalog = buildContextCatalog(collections, loaded);
+
+    expect(catalog.entries.map(entry => entry.id)).toEqual(["c0", "c0/deploy/SKILL.md"]);
+    expect(catalog.truncated).toBe(false);
   });
 });

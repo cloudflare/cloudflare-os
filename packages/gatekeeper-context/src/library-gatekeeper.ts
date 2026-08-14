@@ -5,9 +5,8 @@
 import { WorkerEntrypoint, DurableObject, RpcStub as NativeRpcStub, RpcTarget as NativeRpcTarget } from "cloudflare:workers";
 import { RpcStub } from "capnweb";
 import { validateRpc, skipRpcValidation } from "capnweb-validate";
-import { boundAgentCatalog } from "@gadgets/workshop-shared/gatekeeper";
 import type {
-  VendorDescription, AccountDescription, AgentCatalog, AgentCatalogRequest,
+  VendorDescription, AccountDescription, AgentCatalog,
   AppUiContext, GatekeeperUser, GatekeeperUiFrame, ApprovalQueue, ObservationAuthorizer,
   GatekeeperConnectCallback, GatekeeperConnectOptions, SupportedResource,
   Gatekeeper, GatekeeperUserVerifier, ResourceDescription, ActionKind,
@@ -18,8 +17,7 @@ import { ContextApiImpl, loadEnabledContextCollections } from "./context-api.js"
 import { ContextObserverTracker } from "./context-observers.js";
 import type { ContextVerifierApi } from "./context-observers.js";
 import {
-  buildAgentSkillCatalogEntries, buildAgentSkillCommands, buildAgentSkillMessage,
-  parseSkillManifest,
+  buildAgentSkillCommands, buildAgentSkillMessage, buildContextCatalog, parseSkillManifest,
   type CollectionSkills,
 } from "./agent-skill.js";
 import type { EnabledCollectionInfo } from "./context-types.js";
@@ -318,25 +316,12 @@ export class ContextGatekeeper
   }
 
   async getAgentCatalog(
-      request: AgentCatalogRequest,
       authorizer: NativeRpcStub<ObservationAuthorizer>): Promise<AgentCatalog> {
     let domain = this.ctx.props.sharingDomain;
     let userLibrary = this.#userLibraries().get(
       this.#userLibraries().idFromName(domainName(domain, this.ctx.props.accountId)));
     let collections = await loadEnabledContextCollections(this.env, domain, userLibrary);
-    let loaded = await this.#loadSkills(collections);
-    let skillEntries = buildAgentSkillCatalogEntries(loaded);
-    let collectionEntries = collections
-        .map(collection => ({
-          id: collection.id,
-          title: collection.title,
-          description: collection.description,
-        }))
-        .toSorted((left, right) =>
-          left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
-    let entries = [...skillEntries, ...collectionEntries].toSorted((left, right) =>
-      left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
-    let catalog = boundAgentCatalog(entries, request);
+    let catalog = buildContextCatalog(collections, await this.#loadSkills(collections));
     if (catalog.entries.length > 0) {
       let collectionIds = [...new Set(catalog.entries.map(entry => {
         let slash = entry.id.indexOf("/");
