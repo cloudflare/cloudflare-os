@@ -13,7 +13,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectAssets, collectModules, stableStringify } from "./release/hash-lib.mjs";
 import {
-  findDeployablePackages, generateManifest, readDeployInputs, readWranglerConfig,
+  buildWorkerEntry, findDeployablePackages, generateManifest, readDeployInputs,
+  readWranglerConfig,
 } from "./release/manifest-lib.mjs";
 
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
@@ -83,8 +84,40 @@ test("every $-token in binding templates and vars uses known placeholder syntax"
   for (const [name, entry] of Object.entries(manifest.workers)) {
     check(entry.bindings, `${name}.bindings`);
     check(entry.vars, `${name}.vars`);
+    check(entry.workflowDefinitions ?? {}, `${name}.workflowDefinitions`);
     check(entry.gatekeeperBindingExpansion ?? {}, `${name}.gatekeeperBindingExpansion`);
   }
+});
+
+test("same-script Workflows are part of the deploy contract", () => {
+  const entry = buildWorkerEntry({
+    pkgName: "workshop-backend",
+    config: {
+      name: "workshop-backend",
+      main: "src/server.ts",
+      compatibility_date: "2026-08-01",
+      workflows: [{
+        name: "workshop-backend-agent-turn",
+        binding: "AGENT_TURN_WORKFLOW",
+        class_name: "AgentTurnWorkflow",
+      }],
+    },
+    mainModule: "server.js",
+    modules: [],
+  });
+
+  assert.deepEqual(
+      entry.bindings.find((binding) => binding.name === "AGENT_TURN_WORKFLOW"),
+      {
+        type: "workflow",
+        name: "AGENT_TURN_WORKFLOW",
+        workflow_name: "$WORKER_NAME(workshop-backend)-agent-turn",
+        class_name: "AgentTurnWorkflow",
+      });
+  assert.deepEqual(entry.workflowDefinitions, [{
+    name: "$WORKER_NAME(workshop-backend)-agent-turn",
+    className: "AgentTurnWorkflow",
+  }]);
 });
 
 test("worker entries carry the deploy contract", () => {

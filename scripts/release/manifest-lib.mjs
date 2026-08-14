@@ -20,14 +20,14 @@ import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "jsonc-parser";
 
-export const MANIFEST_VERSION = 1;
+export const MANIFEST_VERSION = 2;
 
 // wrangler.jsonc keys this generator understands. Anything else fails closed — a new config key
 // on a deployable worker needs an explicit decision about how customer instances get it.
 const HANDLED_CONFIG_KEYS = new Set([
   "$schema", "name", "main", "build", "compatibility_date", "compatibility_flags", "rules",
   "migrations", "observability", "kv_namespaces", "r2_buckets", "worker_loaders", "services",
-  "assets", "vars",
+  "workflows", "assets", "vars",
   // Browser Rendering (Gadget PDF exports). Unlike artifacts it is generally available, so it
   // passes through to customer instances as a placeholder-free binding, like the AI binding.
   "browser",
@@ -162,6 +162,34 @@ export function buildWorkerEntry({ pkgName, config, mainModule, modules, deployI
       ...(svc.entrypoint ? { entrypoint: svc.entrypoint } : {}),
     });
   }
+  const releaseWorkflowName = (workflow) => {
+    if (workflow.script_name && workflow.script_name !== config.name) return workflow.name;
+    let suffix = workflow.name.startsWith(config.name)
+      ? workflow.name.slice(config.name.length)
+      : `-${workflow.name}`;
+    return `$WORKER_NAME(${pkgName})${suffix}`;
+  };
+  for (const workflow of config.workflows ?? []) {
+    bindings.push({
+      type: "workflow",
+      name: workflow.binding,
+      workflow_name: releaseWorkflowName(workflow),
+      class_name: workflow.class_name,
+      ...(workflow.script_name ? {script_name: workflow.script_name} : {}),
+    });
+  }
+
+  // Same-script Workflow definitions require a Workflows API operation after Worker upload. Keep
+  // that operation explicit in the release contract; the binding alone cannot create a Workflow
+  // in a fresh customer account.
+  const workflowDefinitions = (config.workflows ?? [])
+      .filter((workflow) => !workflow.script_name || workflow.script_name === config.name)
+      .map((workflow) => ({
+        name: releaseWorkflowName(workflow),
+        className: workflow.class_name,
+        ...(workflow.limits ? {limits: workflow.limits} : {}),
+        ...(workflow.schedules ? {schedules: workflow.schedules} : {}),
+      }));
 
   let assetsConfig;
   if (config.assets) {
@@ -245,6 +273,7 @@ export function buildWorkerEntry({ pkgName, config, mainModule, modules, deployI
     bindings,
     vars,
     observability: config.observability ?? { enabled: false },
+    ...(workflowDefinitions.length > 0 ? {workflowDefinitions} : {}),
     ...(gatekeeperBindingExpansion ? { gatekeeperBindingExpansion } : {}),
     ...(assetsConfig ? { assetsConfig } : {}),
     ...(inputs ? { inputs } : {}),
