@@ -1058,6 +1058,12 @@
           "type": "worker_loader"
         },
         {
+          "class_name": "AgentTurnWorkflow",
+          "name": "AGENT_TURN_WORKFLOW",
+          "type": "workflow",
+          "workflow_name": "$WORKER_NAME(workshop-backend)-agent-turn"
+        },
+        {
           "name": "WORKERS_AI",
           "type": "ai"
         }
@@ -1123,7 +1129,13 @@
       },
       "vars": {
         "PUBLIC_BASE_URL": "$PUBLIC_BASE_URL"
-      }
+      },
+      "workflowDefinitions": [
+        {
+          "className": "AgentTurnWorkflow",
+          "name": "$WORKER_NAME(workshop-backend)-agent-turn"
+        }
+      ]
     }
   },
   "wranglerVersion": "0.0.0-fixture"

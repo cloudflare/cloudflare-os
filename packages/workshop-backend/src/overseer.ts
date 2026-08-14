@@ -3,8 +3,8 @@ import { validateRpc } from "capnweb-validate";
 import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, CodeUpdate, CodeSubscriber, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, AGENT_CATALOG_MAX_ENTRIES, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
-  RpcTarget as NativeRpcTarget, restore,
+  DurableObject, WorkerEntrypoint, WorkflowEntrypoint, RpcStub as NativeRpcStub,
+  RpcTarget as NativeRpcTarget, restore, type WorkflowEvent, type WorkflowStep,
 } from "cloudflare:workers";
 import { createTypedStorage, collection, keyString } from "@gadgets/typed-storage";
 import * as Y from "yjs";
@@ -650,6 +650,17 @@ type ExternalChatRecord = {
 
 type ActiveAgentRecord = {
   chatId: number;
+  // Stable Workflow instance ID. Assigned before direct execution starts so promotion and
+  // recovery can idempotently attach to the same turn.
+  workflowId?: string;
+  // Direct turns stay on the low-latency path until this deadline. A recovered turn is promoted
+  // immediately because its original execution is no longer trustworthy.
+  workflowPromoteAt?: number;
+  // Consecutive Workflow creation failures, used only to bound exponential retry.
+  workflowPromotionAttempts?: number;
+  // True after the Workflow instance has been found or created. Optional for records written by
+  // older deployments.
+  workflowStarted?: boolean;
   // Hex durable object ID of the initiator's user DO, used to re-resolve the model config and for
   // billing.
   initiatorUserId: string;
@@ -659,6 +670,14 @@ type ActiveAgentRecord = {
   initiator: AiChatAuthorInfo;
   // Whether this turn was initiated by a gadget callback (vs. a chat message).
   callbackInitiated: boolean;
+};
+
+type AgentWorkflowCompletionNotification = {
+  workflowId: string;
+  chatId: number;
+  nextAttemptAt: number;
+  expiresAt: number;
+  attempts: number;
 };
 
 // One agent step's model-facing snapshot (see StoredAssistantMessage in agent.ts), keyed by the
@@ -672,6 +691,13 @@ type ChatModelDataRecord = {
 const CHAT_DRAFT_AUTHOR_SPLIT_MS = 60_000;
 const CHAT_DRAFT_COMPACT_THRESHOLD = 128;
 const AGENT_RESPONSE_DELIVERED_RETENTION_MS = 24 * 60 * 60 * 1000;
+const AGENT_WORKFLOW_PROMOTION_DELAY_MS = 60_000;
+const AGENT_WORKFLOW_PROMOTION_RETRY_MAX_MS = 60_000;
+const AGENT_WORKFLOW_RECOVERY_MAX_PROMOTION_ATTEMPTS = 5;
+const AGENT_WORKFLOW_COMPLETION_EVENT = "agent-turn-complete";
+const AGENT_WORKFLOW_HEARTBEAT_MS = 5 * 60 * 1000;
+const AGENT_WORKFLOW_NOTIFICATION_RETRY_MAX_MS = 60_000;
+const AGENT_WORKFLOW_NOTIFICATION_RETENTION_MS = 25 * 60 * 60 * 1000;
 
 // Safely convert an unknown thrown value to a human-readable string.
 // Plain objects would otherwise render as "[object Object]".
@@ -911,6 +937,12 @@ function makeOverseerStorage(storage: DurableObjectStorage) {
         primaryKey: "chatId"
       }),
 
+      // Durable outbox for the completion event sent to a Workflow that owns a promoted turn.
+      // Delete a record only after the Workflow accepts the event or its retention expires.
+      agentWorkflowCompletionNotifications: collection<AgentWorkflowCompletionNotification>()({
+        primaryKey: "workflowId",
+      }),
+
       gadgetResponseDeliveries: collection<ExternalMessageRecord>()({
         primaryKey: "idempotencyKey",
         uniqueIndexes: {
@@ -1121,20 +1153,14 @@ class OverseerImpl implements AgentHooks {
 
   #preparingChatMessages = new Map<number, Promise<void>>();
 
-  // Set of chatIds that currently have a running agent turn. Used to manage the DO alarm (held
-  // while any agent runs) and to let `alarm()` wait for all agents to finish.
+  // Set of chatIds that currently have a running agent turn. While any are active, the shared DO
+  // alarm promotes direct turns and maintains a bounded recovery heartbeat; it never awaits an
+  // agent turn.
   #runningAgents = new Set<number>();
 
-  // If `alarm()` is currently waiting for all agents to finish, this resolves its wait. Invoked
-  // when the running-agent count drops to zero.
-  #allAgentsIdleWaiters: (() => void)[] = [];
-
-  // How long to set the keep-alive alarm into the future. Whenever the agent count goes from zero
-  // to one, we schedule an alarm this far out; whenever it drops back to zero, we clear it. The
-  // alarm guarantees the DO is restarted (and the agents resumed) after a server restart, even if
-  // no client reconnects. While an agent is actively running and the DO is alive, the agent itself
-  // keeps the DO alive, so the alarm typically never fires.
-  static #AGENT_KEEPALIVE_ALARM_MS = 60_000;
+  // A Workflow retry can reach the same live DO while the original RPC result is uncertain.
+  // Keying by Workflow ID makes that retry join the live turn instead of starting a duplicate.
+  #agentTurnPromises = new Map<string, Promise<void>>();
 
   addChatSubscriber(subscriber: RpcStub<AiChatSubscriber>) {
     this.#chatSubscribers.add(subscriber);
@@ -1273,43 +1299,48 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  // Register a newly-started (or resumed) agent turn. Called at the start of `startAgent` /
-  // `#resumeAgent`, in the same synchronous step that sets `chatMeta.activeAgent` and writes the
-  // `activeAgents` record, so that the three representations of "an agent is running for this chat"
-  // stay consistent. `#unregisterRunningAgent` performs the matching teardown.
+  // Register a newly-started or recovered turn in memory. The durable record is written separately
+  // by startAgent, or already exists during recovery.
   #registerRunningAgent(chatId: number) {
-    let wasEmpty = this.#runningAgents.size === 0;
     this.#runningAgents.add(chatId);
-    if (wasEmpty) {
-      // Zero -> one running agents: schedule the keep-alive alarm.
-      this.ctx.storage.setAlarm(Date.now() + OverseerImpl.#AGENT_KEEPALIVE_ALARM_MS);
-    }
   }
 
   // Tear down all bookkeeping for a finished agent turn: remove it from the in-memory registry,
-  // delete its persistent `activeAgents` record, and clear the keep-alive alarm if no agents remain.
+  // delete its persistent `activeAgents` record, and recompute the shared alarm.
   // MUST be called synchronously together with clearing `chatMeta.activeAgent`, so that the moment
   // the chat is observably idle, no stale records of the previous agent remain (which would
   // otherwise interfere if the user immediately starts a new agent).
   #unregisterRunningAgent(chatId: number) {
     this.#runningAgents.delete(chatId);
     this.storage.activeAgents.delete(chatId);
-    if (this.#runningAgents.size === 0) {
-      // One -> zero running agents: replace the keep-alive alarm with any response-target retry/sweep
-      // alarm that is now due, and wake any `alarm()` waiter.
-      this.#updateExternalMessageResponseDeliveryAlarm();
-      for (let waiter of this.#allAgentsIdleWaiters) {
-        waiter();
-      }
-      this.#allAgentsIdleWaiters = [];
-    }
+    this.#updateAlarm();
   }
 
-  #updateExternalMessageResponseDeliveryAlarm(): void {
-    if (this.#runningAgents.size > 0) return;
+  // Multiplex the one DO alarm between lazy Workflow promotion, completion-event delivery, and
+  // external-response delivery. No alarm invocation waits for the agent itself.
+  #updateAlarm(): void {
+    let nextWakeup: number | undefined;
+    for (let record of this.storage.activeAgents.list()) {
+      if (record.workflowStarted || record.workflowPromoteAt === undefined) continue;
+      nextWakeup = nextWakeup === undefined
+        ? record.workflowPromoteAt
+        : Math.min(nextWakeup, record.workflowPromoteAt);
+    }
+    for (let notification of this.storage.agentWorkflowCompletionNotifications.list()) {
+      nextWakeup = nextWakeup === undefined
+        ? notification.nextAttemptAt
+        : Math.min(nextWakeup, notification.nextAttemptAt);
+    }
+    if (this.#runningAgents.size > 0) {
+      let heartbeatAt = Date.now() + AGENT_WORKFLOW_HEARTBEAT_MS;
+      nextWakeup = nextWakeup === undefined ? heartbeatAt : Math.min(nextWakeup, heartbeatAt);
+    }
+    if (nextWakeup !== undefined) {
+      this.ctx.storage.setAlarm(nextWakeup);
+      return;
+    }
 
-    // This DO has one alarm shared by agent keep-alive, response-target retry, and delivered-record sweep.
-    // Recompute from storage whenever the alarm may have been overwritten by another concern.
+    // No agent or Workflow work remains. Recompute response retries and delivered-record sweeps.
     this.#sweepDeliveredExternalMessageResponses();
 
     let hasReadyExternalMessageResponse = [...this.storage.gadgetResponseDeliveries.readyByIdempotencyKey.list({ limit: 1 })]
@@ -1344,18 +1375,10 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  // Resolves once no agents are running. Used by `alarm()` to keep the DO alive until all running
-  // agents complete.
-  async waitForAllAgentsToComplete(): Promise<void> {
-    if (this.#runningAgents.size === 0) return;
-
-    await new Promise<void>(resolve => { this.#allAgentsIdleWaiters.push(resolve); });
-  }
-
-  // Resume a single interrupted agent turn. Re-resolves the model config from the initiator's user
-  // DO (we don't persist the secret API token), then runs the agent loop, which rebuilds its state
-  // by replaying the persisted chat log.
-  async #resumeAgent(record: ActiveAgentRecord, liveChat: LiveChatContext) {
+  // Resume a persisted turn for its Workflow. Resolve the model before reporting "running" so a
+  // transient resolution failure remains inside the Workflow step retry contract.
+  async #resumeAgent(record: ActiveAgentRecord, liveChat: LiveChatContext):
+      Promise<"running" | "complete"> {
     let aiModel: UserAiModelRecord | undefined;
     try {
       let user = this.users.get(this.users.idFromString(record.initiatorUserId));
@@ -1366,6 +1389,7 @@ class OverseerImpl implements AgentHooks {
         event: "agent.resume.model.resolve.failed",
         chatId: record.chatId, modelId: record.modelId, error: err,
       });
+      throw err;
     }
 
     if (!aiModel) {
@@ -1381,13 +1405,306 @@ class OverseerImpl implements AgentHooks {
         meta.lastActive = this.getChatTimestamp();
         this.storage.chatMeta.put(meta);
       }
+      this.#queueAgentWorkflowCompletion(record);
       this.#unregisterRunningAgent(record.chatId);
       this.#deliverWaitingExternalMessageResponse(record.chatId);
+      return "complete";
+    }
+
+    let workflowId = record.workflowId;
+    if (!workflowId) throw new Error("Active agent record has no Workflow ID.");
+    this.#registerRunningAgent(record.chatId);
+    let turn = this.#runAgentTurn(
+        record.chatId, aiModel, record.initiator, record.callbackInitiated, liveChat);
+    this.ctx.waitUntil(this.#trackAgentTurn(workflowId, turn));
+    return "running";
+  }
+
+  #trackAgentTurn(workflowId: string, turn: Promise<void>): Promise<void> {
+    this.#agentTurnPromises.set(workflowId, turn);
+    let cleanup = () => {
+      if (this.#agentTurnPromises.get(workflowId) === turn) {
+        this.#agentTurnPromises.delete(workflowId);
+      }
+    };
+    // Supplying both handlers consumes an otherwise-unobserved rejection from a fire-and-forget
+    // direct turn while retaining the promise long enough for Workflow adoption to find it.
+    void turn.then(cleanup, cleanup);
+    return turn;
+  }
+
+  #queueAgentWorkflowCompletion(record: ActiveAgentRecord):
+      AgentWorkflowCompletionNotification | undefined {
+    if (!record.workflowStarted || !record.workflowId) return undefined;
+    let notification: AgentWorkflowCompletionNotification = {
+      workflowId: record.workflowId,
+      chatId: record.chatId,
+      nextAttemptAt: Date.now(),
+      expiresAt: Date.now() + AGENT_WORKFLOW_NOTIFICATION_RETENTION_MS,
+      attempts: 0,
+    };
+    this.storage.agentWorkflowCompletionNotifications.put(notification);
+    return notification;
+  }
+
+  async #deliverAgentWorkflowCompletion(
+      notification: AgentWorkflowCompletionNotification): Promise<void> {
+    let current = this.storage.agentWorkflowCompletionNotifications.get(notification.workflowId);
+    if (!current || current.nextAttemptAt > Date.now()) return;
+
+    let startedAt = Date.now();
+    try {
+      let instance = await this.env.AGENT_TURN_WORKFLOW.get(notification.workflowId);
+      await instance.sendEvent({
+        type: AGENT_WORKFLOW_COMPLETION_EVENT,
+        payload: { chatId: notification.chatId },
+      });
+      this.storage.agentWorkflowCompletionNotifications.delete(notification.workflowId);
+      this.logger.debug("delivered agent Workflow completion event", {
+        event: "agent.workflow.completion.delivered",
+        chatId: notification.chatId,
+        executionId: notification.workflowId,
+        failureCount: current.attempts,
+        durationMs: Date.now() - startedAt,
+      });
+    } catch (err) {
+      let attempts = current.attempts + 1;
+      if (Date.now() >= current.expiresAt) {
+        this.storage.agentWorkflowCompletionNotifications.delete(notification.workflowId);
+        this.logger.error("failed to deliver agent Workflow completion event", {
+          event: "agent.workflow.completion.exhausted",
+          chatId: notification.chatId,
+          executionId: notification.workflowId,
+          failureCount: attempts,
+          durationMs: Date.now() - startedAt,
+          error: err,
+        });
+        reportIssue("overseer.agent-workflow.complete", err, {
+          handled: true,
+          attributes: {
+            ...obsContext.get(),
+            gadgetId: this.ctx.id.toString(),
+            chatId: notification.chatId,
+          },
+        });
+      } else {
+        let retryDelay = Math.min(
+          1_000 * 2 ** Math.min(attempts - 1, 6), AGENT_WORKFLOW_NOTIFICATION_RETRY_MAX_MS);
+        this.storage.agentWorkflowCompletionNotifications.put({
+          ...current,
+          attempts,
+          nextAttemptAt: Date.now() + retryDelay,
+        });
+        this.logger.warn("failed to deliver agent Workflow completion event; retry scheduled", {
+          event: "agent.workflow.completion.failed",
+          chatId: notification.chatId,
+          executionId: notification.workflowId,
+          failureCount: attempts,
+          durationMs: Date.now() - startedAt,
+          error: err,
+        });
+      }
+    }
+  }
+
+  // Create or find the one Workflow instance assigned to this turn. A failed create followed by a
+  // successful get means another invocation already completed the idempotent create.
+  async #ensureAgentWorkflow(record: ActiveAgentRecord): Promise<void> {
+    let workflowId = record.workflowId;
+    if (!workflowId) throw new Error("Active agent record has no Workflow ID.");
+
+    try {
+      await this.env.AGENT_TURN_WORKFLOW.create({
+        id: workflowId,
+        params: {
+          overseerId: this.ctx.id.toString(),
+          chatId: record.chatId,
+        },
+      });
+    } catch (err) {
+      try {
+        await this.env.AGENT_TURN_WORKFLOW.get(workflowId);
+      } catch {
+        throw err;
+      }
+    }
+
+    // A later turn may already occupy the same chat. Update only the exact record promoted here.
+    let current = this.storage.activeAgents.get(record.chatId);
+    if (current?.workflowId === workflowId) {
+      let updated = {...current, workflowStarted: true};
+      delete updated.workflowPromoteAt;
+      delete updated.workflowPromotionAttempts;
+      this.storage.activeAgents.put(updated);
+    }
+    this.#updateAlarm();
+  }
+
+  async #promoteAgentTurn(record: ActiveAgentRecord, adopt: boolean): Promise<void> {
+    await this.#ensureAgentWorkflow(record);
+    if (adopt && record.workflowId) {
+      await this.prepareAgentWorkflow(record.chatId, record.workflowId);
+    }
+  }
+
+  #handleAgentWorkflowPromotionFailure(record: ActiveAgentRecord, err: unknown): void {
+    let current = this.storage.activeAgents.get(record.chatId);
+    if (!current || current.workflowId !== record.workflowId) return;
+
+    let attempts = (current.workflowPromotionAttempts ?? 0) + 1;
+    let hasLiveDirectTurn = current.workflowId !== undefined &&
+      this.#agentTurnPromises.has(current.workflowId);
+    if (!hasLiveDirectTurn && attempts >= AGENT_WORKFLOW_RECOVERY_MAX_PROMOTION_ATTEMPTS) {
+      this.logger.error("failed to promote recovered agent turn to Workflow", {
+        event: "agent.workflow.promotion.exhausted",
+        chatId: record.chatId,
+        modelId: record.modelId,
+        failureCount: attempts,
+        error: err,
+      });
+      reportIssue("overseer.agent-workflow.promote", err, {
+        handled: true,
+        attributes: {
+          ...obsContext.get(),
+          gadgetId: this.ctx.id.toString(),
+          chatId: record.chatId,
+          modelId: record.modelId,
+        },
+      });
+      this.#failAgentWorkflow(current,
+          "The agent's durable task could not be restarted. Please try again.");
       return;
     }
 
-    await this.#runAgentTurn(
-        record.chatId, aiModel, record.initiator, record.callbackInitiated, liveChat);
+    let retryDelay = Math.min(
+        5_000 * 2 ** Math.min(attempts - 1, 4), AGENT_WORKFLOW_PROMOTION_RETRY_MAX_MS);
+    this.storage.activeAgents.put({
+      ...current,
+      workflowStarted: false,
+      workflowPromotionAttempts: attempts,
+      workflowPromoteAt: Date.now() + retryDelay,
+    });
+    this.#updateAlarm();
+
+    this.logger.warn("failed to promote agent turn to Workflow; retry scheduled", {
+      event: "agent.workflow.promotion.failed",
+      chatId: record.chatId,
+      modelId: record.modelId,
+      failureCount: attempts,
+      error: err,
+    });
+    if (attempts === 1) {
+      reportIssue("overseer.agent-workflow.promote", err, {
+        handled: true,
+        attributes: {
+          ...obsContext.get(),
+          gadgetId: this.ctx.id.toString(),
+          chatId: record.chatId,
+          modelId: record.modelId,
+        },
+      });
+    }
+  }
+
+  #failAgentWorkflow(record: ActiveAgentRecord, message: string): void {
+    // A late failure from an obsolete Workflow must not tear down a newer turn in this chat.
+    let current = this.storage.activeAgents.get(record.chatId);
+    if (current?.workflowId !== record.workflowId) return;
+
+    this.postAgentErrorMessage(record.chatId, record.initiator, message);
+    let meta = this.storage.chatMeta.get(record.chatId);
+    if (meta) {
+      delete meta.activeAgent;
+      meta.lastActive = this.getChatTimestamp();
+      this.storage.chatMeta.put(meta);
+    }
+    this.#unregisterRunningAgent(record.chatId);
+    this.#deliverWaitingExternalMessageResponse(record.chatId);
+  }
+
+  async failAgentWorkflow(chatId: number, workflowId: string): Promise<void> {
+    // A lost RPC response can make a healthy call look failed. First join any live matching turn.
+    let existing = this.#agentTurnPromises.get(workflowId);
+    if (existing) {
+      try {
+        await existing;
+        return;
+      } catch {
+        // The turn failed outside its normal error handling. Clear the durable record below.
+      }
+    }
+
+    let record = this.storage.activeAgents.get(chatId);
+    if (!record || record.workflowId !== workflowId) return;
+    this.#failAgentWorkflow(record,
+        "The agent's durable task could not recover after several attempts. Please try again.");
+  }
+
+  async prepareAgentWorkflow(chatId: number, workflowId: string):
+      Promise<"running" | "complete"> {
+    let record = this.storage.activeAgents.get(chatId);
+    if (!record || record.workflowId !== workflowId) return "complete";
+
+    if (!record.workflowStarted) {
+      record = {...record, workflowStarted: true};
+      delete record.workflowPromoteAt;
+      delete record.workflowPromotionAttempts;
+      this.storage.activeAgents.put(record);
+      this.#updateAlarm();
+    }
+
+    if (this.#agentTurnPromises.has(workflowId)) return "running";
+
+    let liveChat = this.#getLiveChat(chatId);
+    return this.#resumeAgent(record, liveChat);
+  }
+
+  // Chat deletion is terminal. Release a started Workflow before removing the durable turn record;
+  // otherwise it would wait until its 24-hour timeout for an event that can no longer be produced.
+  removeDeletedAgentTurn(chatId: number): void {
+    let record = this.storage.activeAgents.get(chatId);
+    if (record) this.#queueAgentWorkflowCompletion(record);
+    this.#runningAgents.delete(chatId);
+    this.storage.activeAgents.delete(chatId);
+    this.#updateAlarm();
+  }
+
+  async handleAlarm(): Promise<void> {
+    let startedAt = Date.now();
+    let outcome: "ok" | "error" = "ok";
+    try {
+      let now = Date.now();
+      let due = Array.from(this.storage.activeAgents.list()).filter(
+          record => !record.workflowStarted &&
+            record.workflowPromoteAt !== undefined && record.workflowPromoteAt <= now);
+      await Promise.all(due.map(record => this.#promoteAgentTurn(
+          record, record.workflowPromotionAttempts !== undefined).catch(
+          err => this.#handleAgentWorkflowPromotionFailure(record, err))));
+
+      let readyNotifications = Array.from(
+        this.storage.agentWorkflowCompletionNotifications.list(),
+      ).filter(notification => notification.nextAttemptAt <= Date.now());
+      await Promise.all(readyNotifications.map(notification =>
+        this.#deliverAgentWorkflowCompletion(notification)));
+
+      let hasReadyExternalMessageResponse = this.#runningAgents.size === 0 &&
+        [...this.storage.gadgetResponseDeliveries.readyByIdempotencyKey.list({ limit: 1 })]
+          .length > 0;
+      if (hasReadyExternalMessageResponse) {
+        await this.deliverReadyExternalMessageResponses();
+      } else {
+        this.#updateAlarm();
+      }
+    } catch (err) {
+      outcome = "error";
+      throw err;
+    } finally {
+      this.logger.debug("overseer alarm finished", {
+        event: "agent.alarm.finished",
+        outcome,
+        durationMs: Date.now() - startedAt,
+      });
+    }
   }
 
   constructor(public ctx: DurableObjectState, public env: Cloudflare.Env) {
@@ -1418,19 +1735,25 @@ class OverseerImpl implements AgentHooks {
       remove: () => this.markOutputsDirty(),
     });
 
-    // Resume any agent turns that were left running by a previous instance of this DO (i.e. were
-    // interrupted by a server restart).
+    // Any active record loaded by a new DO instance is an interrupted turn. Promote it immediately
+    // and re-adopt the existing Workflow ID. Workflow creation is idempotent, including when the
+    // prior instance created it but died before recording success.
+    let recoveredAgentTurn = false;
     for (let record of Array.from(this.storage.activeAgents.list())) {
-      // Make sure to register the running agent synchronously so that if we were called at the
-      // start of the alarm handler, it'll recognize that agents are running and wait for them.
+      recoveredAgentTurn = true;
+      record = {
+        ...record,
+        workflowId: record.workflowId ?? crypto.randomUUID(),
+        workflowStarted: false,
+        workflowPromoteAt: Date.now(),
+      };
+      this.storage.activeAgents.put(record);
       this.#registerRunningAgent(record.chatId);
-
-      // Also create the LiveChatContext synchronously, so that cancellations are immediately
-      // respected.
-      let liveChat = this.#getLiveChat(record.chatId);
-
-      this.#resumeAgent(record, liveChat);
+      this.#getLiveChat(record.chatId);
+      this.ctx.waitUntil(this.#promoteAgentTurn(record, true)
+        .catch(err => this.#handleAgentWorkflowPromotionFailure(record, err)));
     }
+    if (recoveredAgentTurn) this.#updateAlarm();
 
     // Backwards compatibility: Prior to the introduction of the `activeAgents` table, we could
     // only detect abandoned agents by the presence of `activeAgent` in the `AiChatMetadata` for
@@ -3741,9 +4064,9 @@ class OverseerImpl implements AgentHooks {
 
     let readyRecord: ExternalMessageRecord = { ...record, status: "ready", responseText: text };
     this.storage.gadgetResponseDeliveries.put(readyRecord);
-    this.#updateExternalMessageResponseDeliveryAlarm();
+    this.#updateAlarm();
     this.ctx.waitUntil(this.#deliverExternalMessageResponseToTarget(readyRecord).finally(() => {
-      this.#updateExternalMessageResponseDeliveryAlarm();
+      this.#updateAlarm();
     }));
   }
 
@@ -3782,7 +4105,7 @@ class OverseerImpl implements AgentHooks {
     for (let result of results) {
       if (result.status === "rejected") throw result.reason;
     }
-    this.#updateExternalMessageResponseDeliveryAlarm();
+    this.#updateAlarm();
   }
 
   cancelAgent(chatId: number) {
@@ -3932,10 +4255,9 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  // Start an agent turn for the given chat (fire-and-forget). Persists an `ActiveAgentRecord` so
-  // the turn can be resumed after a server restart, and tracks the turn so the keep-alive alarm is
-  // held while it runs. `initiatorUserId` is the hex DO ID of the user whose model/account is used,
-  // needed to re-resolve the model config on resume.
+  // Start directly so ordinary chat stays on the inexpensive low-latency path. The durable record
+  // schedules Workflow promotion after a grace period and contains enough authority to replay the
+  // turn after interruption without storing a model secret.
   startAgent(chatId: number, aiModel: UserAiModelRecord,
              initiator: AiChatAuthorInfo, initiatorUserId: string,
              callbackInitiated: boolean = false,
@@ -3943,8 +4265,11 @@ class OverseerImpl implements AgentHooks {
     // Register before starting the turn so registration always precedes the turn's teardown
     // (`#unregisterRunningAgent`, in `#runAgentTurn`'s finally).
     this.#registerRunningAgent(chatId);
+    let workflowId = crypto.randomUUID();
     this.storage.activeAgents.put({
       chatId,
+      workflowId,
+      workflowPromoteAt: Date.now() + AGENT_WORKFLOW_PROMOTION_DELAY_MS,
       initiatorUserId,
       modelId: aiModel.profile.id,
       initiator,
@@ -3952,7 +4277,10 @@ class OverseerImpl implements AgentHooks {
     });
 
     let liveChat = this.#getLiveChat(chatId);
-    let turn = this.#runAgentTurn(chatId, aiModel, initiator, callbackInitiated, liveChat);
+    let turn = this.#trackAgentTurn(
+        workflowId,
+        this.#runAgentTurn(chatId, aiModel, initiator, callbackInitiated, liveChat));
+    this.#updateAlarm();
     if (keepAlive) this.ctx.waitUntil(turn);
   }
 
@@ -4174,7 +4502,12 @@ class OverseerImpl implements AgentHooks {
         this.storage.chatMeta.put(meta);
       }
 
-      // Tear down the registry entry, persistent `activeAgents` record, and keep-alive alarm in the
+      // Queue completion before deleting the active record. The alarm-backed outbox retries the
+      // event so a transient Workflow API failure cannot strand the durable owner.
+      let activeRecord = this.storage.activeAgents.get(chatId);
+      if (activeRecord) this.#queueAgentWorkflowCompletion(activeRecord);
+
+      // Tear down the registry entry and persistent `activeAgents` record in the
       // same synchronous step as clearing `activeAgent` above, so the chat never appears idle while
       // stale records of this agent linger. If pending callbacks below restart the agent, they'll
       // re-register everything consistently.
@@ -6444,19 +6777,22 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * The alarm handler kicks in when we've had running agents that haven't completed for at least a
-   * minute. This serves a few purposes:
-   * - If the DO is still running when this is called, but the client has closed their browser and
-   *   so isn't holding the DO alive anymore, the alarm handler will take over and hold the DO
-   *   open until it's done.
-   * - If the DO somehow died since the agents were scheduled, the alarm will wake it up (and the
-   *   DO constructor will have rescheduled the agents, before alarm() itself runs).
-   * - If the DO dies *while* the alarm is running, the system will retry the alarm, thus resuming
-   *   the agents yet again.
+   * Promotes turns, retries completion events, and delivers external responses. The alarm never
+   * waits for an agent, so its wall-time limit cannot terminate a long turn.
    */
   async alarm() {
-    await this.impl.waitForAllAgentsToComplete();
-    await this.impl.deliverReadyExternalMessageResponses();
+    await this.impl.handleAlarm();
+  }
+
+  /** Starts or recovers a promoted agent turn without holding the Workflow step open. */
+  async prepareAgentWorkflow(chatId: number, workflowId: string):
+      Promise<"running" | "complete"> {
+    return this.impl.prepareAgentWorkflow(chatId, workflowId);
+  }
+
+  /** Clears an agent turn after its durable Workflow exhausts recovery attempts. */
+  async failAgentWorkflow(chatId: number, workflowId: string): Promise<void> {
+    await this.impl.failAgentWorkflow(chatId, workflowId);
   }
 
   #initializeEmptyCodeSnapshot(): void {
@@ -6948,6 +7284,55 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
   [restore](params: OverseerRestoreParams): any {
     return this.impl.restore(params);
+  }
+}
+
+/** Serializable parameters used to reconnect an agent-turn Workflow to its workspace. */
+export type AgentTurnWorkflowParams = {
+  overseerId: string;
+  chatId: number;
+};
+
+/** Durably coordinates a promoted long-running agent turn and its restart recovery. */
+export class AgentTurnWorkflow
+    extends WorkflowEntrypoint<Cloudflare.Env, AgentTurnWorkflowParams> {
+  async run(event: Readonly<WorkflowEvent<AgentTurnWorkflowParams>>, step: WorkflowStep) {
+    let overseers = this.ctx.exports.OverseerDurableObject;
+    let overseer = overseers.get(overseers.idFromString(event.payload.overseerId));
+    try {
+      let status = await step.do("prepare agent turn", {
+        retries: {
+          limit: 5,
+          delay: "1 second",
+          backoff: "exponential",
+        },
+      }, async () => {
+        return overseer.prepareAgentWorkflow(event.payload.chatId, event.instanceId);
+      });
+      if (status === "running") {
+        await step.waitForEvent("wait for agent turn", {
+          type: AGENT_WORKFLOW_COMPLETION_EVENT,
+          timeout: "24 hours",
+        });
+        logger.debug("agent Workflow received its completion event", {
+          event: "agent.workflow.completion.received",
+          gadgetId: event.payload.overseerId,
+          chatId: event.payload.chatId,
+          executionId: event.instanceId,
+        });
+      }
+    } catch (err) {
+      await step.do("mark agent turn failed", {
+        retries: {
+          limit: 5,
+          delay: "1 second",
+          backoff: "exponential",
+        },
+      }, async () => {
+        await overseer.failAgentWorkflow(event.payload.chatId, event.instanceId);
+      });
+      throw err;
+    }
   }
 }
 
@@ -8645,10 +9030,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
           `${keyString(entry.chatId)}.${keyString(entry.sequence)}`);
     }
 
-    // Defensively drop any resume record so a deleted chat is never resumed. (Aborting the agent
-    // below also clears this via the tracked promise's finally, but the chat may have no live
-    // agent in memory, e.g. after a restart before resumption ran.)
-    this.impl.storage.activeAgents.delete(chatId);
+    // Defensively drop any resume record so a deleted chat is never resumed. If a Workflow already
+    // owns the turn, queue its terminal event before removing the record.
+    this.impl.removeDeletedAgentTurn(chatId);
 
     // Clean up all in-memory live state for this chat.
     this.impl.destroyLiveChat(chatId);

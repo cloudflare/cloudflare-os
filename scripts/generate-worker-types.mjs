@@ -60,10 +60,10 @@ async function ownsGlobalProps(pkgDir) {
   }
 }
 
-function rewriteMainModule(text) {
+function rewriteValidatedSourceImports(text) {
   return text.replace(
-    /mainModule:\s*typeof import\("\.\/\.wrangler\/validate\/src\/([^"]+)"\)/g,
-    'mainModule: typeof import("./src/$1")',
+    /import\("\.\/\.wrangler\/validate\/src\/([^"]+)"\)/g,
+    'import("./src/$1")',
   );
 }
 
@@ -100,7 +100,7 @@ function normalizeBanner(text) {
 
 async function postprocess(pkgDir, text) {
   let next = normalizeBanner(text);
-  next = rewriteMainModule(next);
+  next = rewriteValidatedSourceImports(next);
   if (await ownsGlobalProps(pkgDir)) {
     next = stripProjectHeader(next);
   }

@@ -143,6 +143,18 @@ test("worker entries carry the deploy contract", () => {
   assert.deepEqual(
       backend.bindings.find((b) => b.name === "WORKERS_AI"),
       { type: "ai", name: "WORKERS_AI" });
+  assert.deepEqual(
+      backend.bindings.find((b) => b.name === "AGENT_TURN_WORKFLOW"),
+      {
+        type: "workflow",
+        name: "AGENT_TURN_WORKFLOW",
+        workflow_name: "$WORKER_NAME(workshop-backend)-agent-turn",
+        class_name: "AgentTurnWorkflow",
+      });
+  assert.deepEqual(backend.workflowDefinitions, [{
+    name: "$WORKER_NAME(workshop-backend)-agent-turn",
+    className: "AgentTurnWorkflow",
+  }]);
   assert.equal(backend.gatekeeperBindingExpansion.entrypoint, "GatekeeperVendor");
   assert.equal(backend.vars.PUBLIC_BASE_URL, "$PUBLIC_BASE_URL");
   // Full ordered migration history, verbatim from wrangler.jsonc.

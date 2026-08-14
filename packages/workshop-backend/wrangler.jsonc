@@ -83,6 +83,14 @@
     }
   ],
 
+  "workflows": [
+    {
+      "name": "workshop-backend-agent-turn",
+      "binding": "AGENT_TURN_WORKFLOW",
+      "class_name": "AgentTurnWorkflow"
+    }
+  ],
+
   // When deploying to prod, you may want to bundle the frontend as assets on the backend, like so.
   // But it's not the only way to do it.
   //
