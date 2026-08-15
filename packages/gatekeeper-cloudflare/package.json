@@ -5,11 +5,9 @@
   "main": "./src/cloudflare.ts",
   "scripts": {
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
-    "build:configurator": "node ../../scripts/build-gatekeeper-configurator.mjs .",
-    "deploy": "pnpm run build:configurator && wrangler deploy",
-    "build": "pnpm run build:configurator && tsc",
-    "test": "vitest run",
-    "clean": "rm -rf dist"
+    "deploy": "vp run --no-cache build:configurator && wrangler deploy",
+    "test:run": "vitest run",
+    "clean": "rm -rf dist src/generated"
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
