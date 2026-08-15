@@ -16,7 +16,7 @@
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
     "mimetext": "^3.0.28",
-    "postal-mime": "^2.7.5"
+    "postal-mime": "^2.7.6"
   },
   "devDependencies": {
     "typescript": "catalog:",

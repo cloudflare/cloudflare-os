@@ -15,7 +15,7 @@
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
-    "postal-mime": "^2.7.5"
+    "postal-mime": "^2.7.6"
   },
   "devDependencies": {
     "typescript": "catalog:",

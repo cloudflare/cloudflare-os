@@ -164,8 +164,8 @@ importers:
         specifier: 'catalog:'
         version: 0.2.4(capnweb@0.11.1)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
       isomorphic-git:
-        specifier: ^1.40.0
-        version: 1.40.0
+        specifier: ^1.40.5
+        version: 1.40.5
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -285,8 +285,8 @@ importers:
         specifier: 'catalog:'
         version: 0.2.4(capnweb@0.11.1)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
       postal-mime:
-        specifier: ^2.7.5
-        version: 2.7.5
+        specifier: ^2.7.6
+        version: 2.7.6
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -344,8 +344,8 @@ importers:
         specifier: ^3.0.28
         version: 3.0.28
       postal-mime:
-        specifier: ^2.7.5
-        version: 2.7.5
+        specifier: ^2.7.6
+        version: 2.7.6
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -783,8 +783,8 @@ importers:
         specifier: ^8.0.4
         version: 8.0.4
       jose:
-        specifier: ^6.2.5
-        version: 6.2.5
+        specifier: ^6.2.8
+        version: 6.2.8
       yjs:
         specifier: ^13.6.31
         version: 13.6.31
@@ -3631,8 +3631,8 @@ packages:
   isexe@2.0.0:
     resolution: {integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==}
 
-  isomorphic-git@1.40.0:
-    resolution: {integrity: sha512-/CbnxwZqIm17y3c/z0INbkgEKSvFerXtO/NGgaRxZ8nvL3eoMtbjuAS7f4Pj7lZzj8HaultvDD1ClJTBVDl89g==}
+  isomorphic-git@1.40.5:
+    resolution: {integrity: sha512-ldfNDHpdX5GkC1mCIkbTuZvXlOM1jt1RzmK4BnsALQ301gJlQlHfm4+sVO0rVpLHWzIhJQfYkuQQ285pL3ZTBg==}
     engines: {node: '>=14.17'}
     hasBin: true
 
@@ -3645,6 +3645,9 @@ packages:
 
   jose@6.2.5:
     resolution: {integrity: sha512-2E5L2yRp03FnwreJLJX8/r7mHiZICCf8kG7fAsTWkSQTDAcc46NIZoQLKy+EJ8sPoJlxyS4OQR5H70LjIZZlIQ==}
+
+  jose@6.2.8:
+    resolution: {integrity: sha512-Bsdjwm3Qsd/P0jR+BHDe3LytDfY7WBq2HmCCLIwuVRHMuEC9ae7/R474GIUdF1NgCyZjzVo/A9DOiOBtXq8ZoQ==}
 
   js-base64@3.9.2:
     resolution: {integrity: sha512-6zayE8QlUdiweYI6cETD/XBSqFcoCUlufn/29PJR99r82x1yDnIprRca0YvAYpAW+ez0GuQkVBC6xG5QkD7OjA==}
@@ -4221,8 +4224,8 @@ packages:
     resolution: {integrity: sha512-/+5VFTchJDoVj3bhoqi6UeymcD00DAwb1nJwamzPvHEszJ4FpF6SNNbUbOS8yI56qHzdV8eK0qEfOSiodkTdxg==}
     engines: {node: '>= 0.4'}
 
-  postal-mime@2.7.5:
-    resolution: {integrity: sha512-GNEXKvWFQnbgO5NlrGzVa0FmWzBZ24PersAWErttSg1Hjpf0ATxTwS5DOMGaOpTG6bUh5cTr7xi0jAD942wCJA==}
+  postal-mime@2.7.6:
+    resolution: {integrity: sha512-UUlyE2KlxmvwMGq060onF/VWU3zD6dVW31FwokQ5v26jWd35fbs2MoTFzh+jXnPwAyV2MULMKXcBInGOl5TO6Q==}
 
   postcss@8.5.25:
     resolution: {integrity: sha512-DTPx3RWSSnWyzLxQnlH0rJP+EW5ekl16ZU4/psbIhA0e53kJfdgaN5vKM+xP7yJtXVu+nfdVFmlgFDEKAe4Pyw==}
@@ -7464,7 +7467,7 @@ snapshots:
 
   isexe@2.0.0: {}
 
-  isomorphic-git@1.40.0:
+  isomorphic-git@1.40.5:
     dependencies:
       async-lock: 1.4.1
       clean-git-ref: 2.0.1
@@ -7483,6 +7486,8 @@ snapshots:
   jiti@2.7.0: {}
 
   jose@6.2.5: {}
+
+  jose@6.2.8: {}
 
   js-base64@3.9.2: {}
 
@@ -8251,7 +8256,7 @@ snapshots:
 
   possible-typed-array-names@1.1.0: {}
 
-  postal-mime@2.7.5: {}
+  postal-mime@2.7.6: {}
 
   postcss@8.5.25:
     dependencies:
