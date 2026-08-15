@@ -780,8 +780,8 @@ importers:
         specifier: 'catalog:'
         version: 0.2.4(capnweb@0.11.1)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
       diff:
-        specifier: ^8.0.4
-        version: 8.0.4
+        specifier: ^9.0.0
+        version: 9.0.0
       jose:
         specifier: ^6.2.5
         version: 6.2.5
@@ -1148,7 +1148,7 @@ packages:
     resolution: {integrity: sha512-ehg3jIkYKulZh+8om/O25vkvSsXXwC+skXmyA87FFx6A/45eqOkZsBltMw/TVteb0mloiGT8oGRTcjRAz66zaA==}
 
   '@cloudflare/kumo@2.9.2':
-    resolution: {integrity: sha512-c3RZBmx0TqxTKAPT4PWyTgVwPcDVW+KrFmf4mKCnwWBe6OIc0vWn+wMhnaARarJz/2kvsx87tMGmNRBsCn7pUA==, tarball: https://registry.npmjs.org/@cloudflare/kumo/-/kumo-2.9.2.tgz}
+    resolution: {integrity: sha512-c3RZBmx0TqxTKAPT4PWyTgVwPcDVW+KrFmf4mKCnwWBe6OIc0vWn+wMhnaARarJz/2kvsx87tMGmNRBsCn7pUA==}
     hasBin: true
     peerDependencies:
       '@phosphor-icons/react': ^2.1.10
@@ -1163,15 +1163,15 @@ packages:
         optional: true
 
   '@cloudflare/kv-asset-handler@0.5.0':
-    resolution: {integrity: sha512-jxQYkj8dSIzc0cD6cMMNdOc1UVjqSqu8BZdor5s8cGjW2I8BjODt/kWPVdY+u9zj3ms75Q5qaZgnxUad83+eAg==, tarball: https://registry.npmjs.org/@cloudflare/kv-asset-handler/-/kv-asset-handler-0.5.0.tgz}
+    resolution: {integrity: sha512-jxQYkj8dSIzc0cD6cMMNdOc1UVjqSqu8BZdor5s8cGjW2I8BjODt/kWPVdY+u9zj3ms75Q5qaZgnxUad83+eAg==}
     engines: {node: '>=22.0.0'}
 
   '@cloudflare/puppeteer@1.3.0':
-    resolution: {integrity: sha512-NBrJEUnqe082nopLh0eqnTXK4DjwsTsZGzoAcs71NFnBgzWU6Yb/ibUJHveCHV4AyAkM+mE/DChFev5gwaKZEg==, tarball: https://registry.npmjs.org/@cloudflare/puppeteer/-/puppeteer-1.3.0.tgz}
+    resolution: {integrity: sha512-NBrJEUnqe082nopLh0eqnTXK4DjwsTsZGzoAcs71NFnBgzWU6Yb/ibUJHveCHV4AyAkM+mE/DChFev5gwaKZEg==}
     engines: {node: '>=18'}
 
   '@cloudflare/unenv-preset@2.16.1':
-    resolution: {integrity: sha512-ECxObrMfyTl5bhQf/lZCXwo5G6xX9IAUo+nDMKK4SZ8m4Jvvxp52vilxyySSWh2YTZz8+HQ07qGH/2rEom1vDw==, tarball: https://registry.npmjs.org/@cloudflare/unenv-preset/-/unenv-preset-2.16.1.tgz}
+    resolution: {integrity: sha512-ECxObrMfyTl5bhQf/lZCXwo5G6xX9IAUo+nDMKK4SZ8m4Jvvxp52vilxyySSWh2YTZz8+HQ07qGH/2rEom1vDw==}
     peerDependencies:
       unenv: 2.0.0-rc.24
       workerd: '>1.20260305.0 <2.0.0-0'
@@ -1180,44 +1180,44 @@ packages:
         optional: true
 
   '@cloudflare/vitest-pool-workers@0.20.3':
-    resolution: {integrity: sha512-aCMvM5zQ3MTz8SorSZB6ZxjVK2Gof6UhIc2Z1z9zbX/obucSYwDUkx8A0MUOod4I7clfB0QLarKBjRdIczK3vg==, tarball: https://registry.npmjs.org/@cloudflare/vitest-pool-workers/-/vitest-pool-workers-0.20.3.tgz}
+    resolution: {integrity: sha512-aCMvM5zQ3MTz8SorSZB6ZxjVK2Gof6UhIc2Z1z9zbX/obucSYwDUkx8A0MUOod4I7clfB0QLarKBjRdIczK3vg==}
     peerDependencies:
       '@vitest/runner': ^4.1.0
       '@vitest/snapshot': ^4.1.0
       vitest: ^4.1.0
 
   '@cloudflare/workerd-darwin-64@1.20260801.1':
-    resolution: {integrity: sha512-wuJWbXpKvncJi1P0GKS+iYpN5tHdb7JPJJ/+6ZQe8zzovHHVMkLJPNBsgWpqeUhpM3g9qTwEKd2rglNKejuh5A==, tarball: https://registry.npmjs.org/@cloudflare/workerd-darwin-64/-/workerd-darwin-64-1.20260801.1.tgz}
+    resolution: {integrity: sha512-wuJWbXpKvncJi1P0GKS+iYpN5tHdb7JPJJ/+6ZQe8zzovHHVMkLJPNBsgWpqeUhpM3g9qTwEKd2rglNKejuh5A==}
     engines: {node: '>=16'}
     cpu: [x64]
     os: [darwin]
 
   '@cloudflare/workerd-darwin-arm64@1.20260801.1':
-    resolution: {integrity: sha512-kwoZiTpnhNrF3+APx84Q/oAqvJ3sU9yefGagwm/ASaH/2W19x0vghkW/r4qCoHCK0WW7EPugZ+aXjgPMRtlq1Q==, tarball: https://registry.npmjs.org/@cloudflare/workerd-darwin-arm64/-/workerd-darwin-arm64-1.20260801.1.tgz}
+    resolution: {integrity: sha512-kwoZiTpnhNrF3+APx84Q/oAqvJ3sU9yefGagwm/ASaH/2W19x0vghkW/r4qCoHCK0WW7EPugZ+aXjgPMRtlq1Q==}
     engines: {node: '>=16'}
     cpu: [arm64]
     os: [darwin]
 
   '@cloudflare/workerd-linux-64@1.20260801.1':
-    resolution: {integrity: sha512-r0vAxCZH+Jih9Unm1yoyiByPNWNgawcKciOHDm5Q37ZVGOkKLsT9AtLe3yLSaul76WrKqtf+JP2n0WW32VBLJg==, tarball: https://registry.npmjs.org/@cloudflare/workerd-linux-64/-/workerd-linux-64-1.20260801.1.tgz}
+    resolution: {integrity: sha512-r0vAxCZH+Jih9Unm1yoyiByPNWNgawcKciOHDm5Q37ZVGOkKLsT9AtLe3yLSaul76WrKqtf+JP2n0WW32VBLJg==}
     engines: {node: '>=16'}
     cpu: [x64]
     os: [linux]
 
   '@cloudflare/workerd-linux-arm64@1.20260801.1':
-    resolution: {integrity: sha512-zWgpdZtSozvIgzQNmQiDSF8yEOQJUkRAWNsDXXzAAoy+fCn8YUoSibj3mpFSbZRvbUldeBEaW6SCdC2VEMkhNQ==, tarball: https://registry.npmjs.org/@cloudflare/workerd-linux-arm64/-/workerd-linux-arm64-1.20260801.1.tgz}
+    resolution: {integrity: sha512-zWgpdZtSozvIgzQNmQiDSF8yEOQJUkRAWNsDXXzAAoy+fCn8YUoSibj3mpFSbZRvbUldeBEaW6SCdC2VEMkhNQ==}
     engines: {node: '>=16'}
     cpu: [arm64]
     os: [linux]
 
   '@cloudflare/workerd-windows-64@1.20260801.1':
-    resolution: {integrity: sha512-2oQz+Ksu4ji6e/+ZoYX+tWQEcxAii2p7l+iR8kx48W1llMalaufAsmVxTlk+3/vrM7D3/2c0iK448e0UQTcIMg==, tarball: https://registry.npmjs.org/@cloudflare/workerd-windows-64/-/workerd-windows-64-1.20260801.1.tgz}
+    resolution: {integrity: sha512-2oQz+Ksu4ji6e/+ZoYX+tWQEcxAii2p7l+iR8kx48W1llMalaufAsmVxTlk+3/vrM7D3/2c0iK448e0UQTcIMg==}
     engines: {node: '>=16'}
     cpu: [x64]
     os: [win32]
 
   '@cloudflare/workers-types@5.20260804.1':
-    resolution: {integrity: sha512-B1dwxpN6e5RZXZkE5zpZj+ooNeNZ1mwavLIyHDYe10ojhlGTwDfe8sAl7R1mMXc1cyIsbr+jKVdvmMEyVcdTdg==, tarball: https://registry.npmjs.org/@cloudflare/workers-types/-/workers-types-5.20260804.1.tgz}
+    resolution: {integrity: sha512-B1dwxpN6e5RZXZkE5zpZj+ooNeNZ1mwavLIyHDYe10ojhlGTwDfe8sAl7R1mMXc1cyIsbr+jKVdvmMEyVcdTdg==}
 
   '@codemirror/autocomplete@6.20.3':
     resolution: {integrity: sha512-tlosUqb+3BbxCxZdu4tKeRghPFC+QM7q4X5YhKV2eCmPG+1r2F3f4AaSz5sCrFqUtX4Jh20VFTKecl16MgiV9g==}
@@ -3267,6 +3267,10 @@ packages:
 
   diff@8.0.4:
     resolution: {integrity: sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw==}
+    engines: {node: '>=0.3.1'}
+
+  diff@9.0.0:
+    resolution: {integrity: sha512-svtcdpS8CgJyqAjEQIXdb3OjhFVVYjzGAPO8WGCmRbrml64SPw/jJD4GoE98aR7r25A0XcgrK3F02yw9R/vhQw==}
     engines: {node: '>=0.3.1'}
 
   dom-accessibility-api@0.5.16:
@@ -7078,6 +7082,8 @@ snapshots:
   diff3@0.0.3: {}
 
   diff@8.0.4: {}
+
+  diff@9.0.0: {}
 
   dom-accessibility-api@0.5.16: {}
 
