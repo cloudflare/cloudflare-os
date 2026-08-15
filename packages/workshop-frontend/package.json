@@ -16,7 +16,7 @@
     "@monaco-editor/react": "^4.7.0",
     "@phosphor-icons/react": "^2.1.10",
     "@tailwindcss/vite": "^4.3.3",
-    "@tanstack/react-router": "^1.170.21",
+    "@tanstack/react-router": "^1.170.23",
     "capnweb": "catalog:",
     "hash-wasm": "^4.12.0",
     "monaco-editor": "^0.56.0",
@@ -31,7 +31,7 @@
     "yjs": "^13.6.31"
   },
   "devDependencies": {
-    "@tanstack/router-plugin": "^1.168.26",
+    "@tanstack/router-plugin": "^1.168.27",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^5.2.0",
