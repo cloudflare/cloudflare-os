@@ -28,7 +28,7 @@
     "vite-tsconfig-paths": "^6.1.1",
     "y-monaco": "^0.1.6",
     "y-protocols": "^1.0.7",
-    "yjs": "^13.6.31"
+    "yjs": "^13.6.32"
   },
   "devDependencies": {
     "@tanstack/router-plugin": "^1.168.26",

@@ -27,7 +27,7 @@
     "capnweb-validate": "catalog:",
     "diff": "^8.0.4",
     "jose": "^6.2.5",
-    "yjs": "^13.6.31"
+    "yjs": "^13.6.32"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
