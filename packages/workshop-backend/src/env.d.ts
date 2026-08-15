@@ -85,6 +85,14 @@ declare global {
       // Minimum connected-account balance (USD) to proceed via BYOK. Defaults to
       // MINIMUM_CLOUDFLARE_BALANCE.
       MINIMUM_CLOUDFLARE_BALANCE?: string;
+
+      // Optional automatic Ollama model sync: when OLLAMA_AUTO_SYNC_URL is set (and AI Gateway
+      // mode is off), the user's model list is refreshed from that Ollama server's /v1/models on
+      // listModels() (rate-limited), so every model pulled on the server appears in the picker
+      // without manual Add Model entries. OLLAMA_AUTO_SYNC_TOKEN is the bearer token for the
+      // endpoint (e.g. the ollama.cdnet.uk auth-Worker shared secret); omit when unauthenticated.
+      OLLAMA_AUTO_SYNC_URL?: string;
+      OLLAMA_AUTO_SYNC_TOKEN?: string;
     }
   }
 }
