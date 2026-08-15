@@ -20,7 +20,7 @@ packages/workshop-backend/src/generated/browser-export-page.js
 .run-local-stamp
 
 # Cloudflare Workers
-.wrangler/
+.wrangler
 .env
 
 # Local dev secrets (loaded by run-dev-server.ts)
