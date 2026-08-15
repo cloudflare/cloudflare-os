@@ -19,6 +19,10 @@ const logger = createWorkshopLogger("workshop.user");
 // listOutputs() call wakes and how long it waits. The client calls again until catch-up is done.
 const OUTPUTS_BACKFILL_PAGE = 16;
 
+// How often the automatic Ollama model sync refetches /v1/models per user DO. Keeps picker loads
+// cheap (one fetch per window at most) while still picking up newly pulled models promptly.
+const OLLAMA_AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+
 type ConnectedAccountRecord = {
   id: number;
   account: Fetcher<GatekeeperUser>;
@@ -215,6 +219,11 @@ function makeUserStorage(storage: DurableObjectStorage) {
       //
       // null = password disabled (e.g. because some other auth mechanism is used)
       passwordHashHash: <Uint8Array | null>null,
+
+      // Last time the automatic Ollama model sync ran (unix ms), for rate-limiting. Null until the
+      // first sync. Written even on failure so a down Ollama server can't cause a fetch on every
+      // picker load.
+      ollamaSyncAt: <number | null>null,
     }
   });
 }
@@ -502,7 +511,74 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.profile.put(profile);
   }
 
+  // Refresh the user's configured models from the configured Ollama server (OLLAMA_AUTO_SYNC_URL),
+  // persisting any model the server has that the user doesn't already have configured. Runs at most
+  // once per OLLAMA_AUTO_SYNC_INTERVAL_MS and never throws: a failure (server down, bad token) is
+  // logged and the existing model list is returned unchanged, so the picker is never blocked.
+  //
+  // Persisting (rather than just listing) is what makes the auto-discovered models fully usable:
+  // getChatContext()/setPreferredModel()/deleteModel() all resolve through storage.aiModels, so a
+  // model that only existed in the list would throw "No such model" the moment it was selected.
+  // Deleting an auto-synced model is therefore a no-op in effect — the next sync re-adds it while
+  // it still exists on the server, which is the desired behavior for a live catalog.
+  async #syncAutoOllamaModels(): Promise<void> {
+    // Requires an explicit URL and only applies outside AI Gateway mode (Ollama is not a gateway
+    // provider; addModel() rejects it there, so auto-adding would just fail).
+    if (!this.env.OLLAMA_AUTO_SYNC_URL || getAiGatewayConfig(this.env)) return;
+
+    let lastSync = this.storage.ollamaSyncAt.get();
+    if (lastSync !== null && Date.now() - lastSync < OLLAMA_AUTO_SYNC_INTERVAL_MS) return;
+
+    try {
+      let url = `${this.env.OLLAMA_AUTO_SYNC_URL.replace(/\/+$/, "")}/v1/models`;
+      let headers: Record<string, string> = {"Accept": "application/json"};
+      if (this.env.OLLAMA_AUTO_SYNC_TOKEN) {
+        headers["Authorization"] = `Bearer ${this.env.OLLAMA_AUTO_SYNC_TOKEN}`;
+      }
+      let response = await fetch(url, {headers});
+      if (!response.ok) {
+        logger.warn("ollama auto-sync fetch failed", {
+          event: "ollama.autoSync.fetch.failed",
+          statusCode: response.status,
+          error: new Error(`GET ${this.env.OLLAMA_AUTO_SYNC_URL}/v1/models returned ${response.status}`),
+        });
+        return;
+      }
+      let body: {data?: Array<{id: string}>} = await response.json();
+      if (!Array.isArray(body.data)) return;
+
+      let added = 0;
+      for (let entry of body.data) {
+        if (!entry || typeof entry.id !== "string" || !entry.id) continue;
+        if (this.storage.aiModels.get(entry.id)) continue;
+        this.storage.aiModels.put({
+          profile: {type: "agent", id: entry.id, name: `${entry.id} (Ollama)`},
+          config: {
+            provider: "ollama",
+            model: entry.id,
+            apiToken: this.env.OLLAMA_AUTO_SYNC_TOKEN || "",
+            apiUrl: this.env.OLLAMA_AUTO_SYNC_URL,
+          },
+        });
+        ++added;
+      }
+      if (added > 0) {
+        logger.info("ollama auto-sync added models", {
+          event: "ollama.autoSync.added", size: added,
+        });
+      }
+    } catch (err) {
+      logger.warn("ollama auto-sync failed", {
+        event: "ollama.autoSync.failed", error: err,
+      });
+    } finally {
+      this.storage.ollamaSyncAt.put(Date.now());
+    }
+  }
+
   async listModels(): Promise<AiChatAuthorInfo[]> {
+    await this.#syncAutoOllamaModels();
+
     let result: AiChatAuthorInfo[] = [];
 
     // When AI Gateway mode is active, include all suggested models for enabled providers.
