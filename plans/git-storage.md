@@ -113,6 +113,7 @@ line refs into its `index.js`):
   under a virtual gitdir (e.g. `objects/ab/cdef...`), value = raw bytes. The path-keyed
   scheme keeps the shim trivial and leaves room for future non-object paths if git
   protocol support ever wants them.
+XXX Let's key on the hex ID alone. We need to parse these paths anyway to make sure we don't accept things we didn't intend to support. If we ever wanted to expand we can figure out a migration.
 - fs shim implementing `PromiseFsClient`:
   - Real: `readFile` (missing → reject ENOENT; zero-arg call → rejected promise),
     `writeFile`, `stat` (existence + size; directories synthesized from key prefixes,
@@ -197,6 +198,12 @@ line refs into its `index.js`):
 - Mainline Yjs doc, the `code` log (for new writes), snapshots, and standalone
   editing paths are all retired.
 
+XXX When we seed the Yjs from the base git commit(s), we must ensure this is deterministic, producing exactly the same Y.Doc when replayed, so that subsequent updates apply cleanly. Verify that Yjs allows this -- need to ensure it doesn't randomize change IDs (or if it does, we can seed the randomization).
+
+XXX When updating from mainline, I'm not sure we can actually "advance the chat's base commits to the heads", as this would change the Yjs seed and corrupt the rest of the history. Instead, we may need to store both the commit on which the Y.Doc is based, and the last mainline commit that has been merged into it.
+
+XXX I am beginning to wonder if we should consider changing from Yjs to an operational transform model in thne future. OT changes seem like they would integrate better with git, since an OT change is expressed as purely an operation on the file content as of some revision, without having to track the entire history of changes. Please add a section to the end of the doc exploring this as a future change to consider, with pros and cons.
+
 ### 4. Migration (lazy, per workspace, on Overseer DO access)
 
 - Trigger: a storage-schema flag; run before serving any code-touching request. Idempotent
@@ -224,6 +231,10 @@ line refs into its `index.js`):
 - Old `code` and `snapshots` collections: no new writes, retained read-only; deletion
   is a later cleanup change once in-flight chats have drained.
 
+XXX I think it would be best to do the migration in the overseer constructor, like previous migrations have done, triggered by the `version` singleton.
+
+XXX In addition to ensuring a commit matching every live chat's `observedCodeVersion`, we should also ensure a commit matching every `BlueprintGadgetRecord.codeVersion`. May want to review storage scehmas for any other relevant code version that needs to be pinned.
+
 ### 5. Protocol changes (`workshop-shared/src/api.ts`)
 
 - `subscribeToCode`/`updateCode` and the `CodeUpdate`/version-number model become
@@ -236,6 +247,12 @@ line refs into its `index.js`):
   metadata exposure (enough for a future history UI: `readCommitLog`-backed).
 - Kernel review bar: doc-comment every touched/added export; no hand-written mirrors
   of RPC types; keep the diff minimal.
+
+XXX I think `subscribeToCode` becomes obsolete becasue the correct way to subscribe to per-chat code is to subscribe to the chat itself and watch for "changes" messages. This also implies that `CodeSubscriber` goes away and `CodeUpdate` is no longer part of the API (though it is still needed for overseer's storage schema).
+
+XXX `subscribeToWorkpieces` should now report changes to each workpiece's commit ID -- `WorkpieceSummary` should contain the commit. This largely replaces `subscribeToCode`'s previous purpose.
+
+XXX We need some sort of API to read code at a commit, used when viewing code in a chat that has no proposed changes, or viewing code while not inside any chat at all.
 
 ### 6. Frontend
 
