@@ -18,25 +18,27 @@ carefully separated diffs; UI changes ride in their own commits.
   with the same read/write/edit tools, gatekeeper-gated push/pull, eventually speaking
   git protocol. isomorphic-git 1.40 is already proven in workerd (gatekeeper-context).
 - **Objects only, no refs.** Our refs are the gadget records (and blueprint records,
-  and chats' base commits). No branches/tags/HEAD.
+  and chats' pinned commits). No branches/tags/HEAD.
 - **One object store per workspace**, all gadgets' histories mixed together. Unrelated
   DAGs coexist fine in a content-addressed store; related histories dedup at the
   blob/tree level.
-- **Storage**: a new typed-storage collection in the Overseer DO, exposed to
-  isomorphic-git through a custom fs shim. No >2MB object handling initially, but the
-  design must leave chunking (or R2 spill for large blobs) open as a later shim-local
-  change.
+- **Storage**: a new typed-storage collection in the Overseer DO keyed by **object oid
+  (40-hex) alone**, exposed to isomorphic-git through a custom fs shim that parses the
+  loose-object paths and rejects anything it doesn't intend to support. No >2MB object
+  handling initially, but the design must leave chunking (or R2 spill for large blobs)
+  open as a later shim-local change.
 - **Editing happens only within chats.** Standalone (out-of-chat) mainline editing is
   removed. (A future change will make it easy to start an agent-less chat for manual
   edits.)
 - **Merge model — merge into the chat, not into mainline:**
-  - Committing to mainline is *only ever* a fast-forward: accept requires the chat's
-    base commit == the gadget's head commit, and creates a plain commit on head.
+  - Committing to mainline is *only ever* a fast-forward: accept requires that the
+    chat has already merged the gadget's head commit, and creates a plain commit on
+    head.
   - If mainline moved, the user must first "update from mainline": compute a 3-way
-    merge (diff3) of base/head/chat trees, deliver the result *into the chat* as a Yjs
-    update, and advance the chat's base commit to head. Conflicts are left inline as
-    3-way conflict markers; the user (or their agent) cleans them up in the chat, then
-    retries accept.
+    merge (diff3) of merged-head/head/chat trees, deliver the result *into the chat*
+    as a Yjs update, and advance the chat's **merged commit** (not its seed — see
+    "Chat flow"). Conflicts are left inline as 3-way conflict markers; the user (or
+    their agent) cleans them up in the chat, then retries accept.
   - This deliberately plans for future multi-commit chat sessions: the chat is the
     branch, and mainline only ever advances by simple commits.
   - Yjs merge semantics are explicitly *not* used for cross-base merging — CRDT merge
@@ -45,9 +47,10 @@ carefully separated diffs; UI changes ride in their own commits.
   addresses; in username/password mode they may be bare usernames — distinguish by the
   presence of `@`, and turn bare usernames into `<username>@localhost` (placeholder
   until users can customize commit identity). Message derived from chat context.
-- **Migration**: synthesize commits from the existing Yjs update log (details below).
-  Old `code`/`snapshots` collections kept read-only for a transition period; deletion
-  is a later cleanup change.
+- **Migration**: synthesize commits from the existing Yjs update log, run in the
+  Overseer constructor triggered by the `version` singleton, like previous migrations
+  (details below). Old `code`/`snapshots` collections kept read-only for a transition
+  period; deletion is a later cleanup change.
 
 ## isomorphic-git findings that shape the design
 
@@ -63,7 +66,7 @@ line refs into its `index.js`):
   missing HEAD). `git.merge` is unsuitable: recursive merge (multiple merge bases)
   throws `MergeNotSupportedError`, and both-sides-added conflicts throw *before* the
   `mergeDriver` runs. We never need merge-base discovery anyway — the chat records its
-  base commit explicitly.
+  merged commit explicitly.
 - **fs shim traps** (`bindFs`, index.js:5033ff): all ten methods (`readFile`,
   `writeFile`, `mkdir`, `rmdir`, `unlink`, `stat`, `lstat`, `readdir`, `readlink`,
   `symlink`) are bound unconditionally — missing ones throw at construction, so stubs
@@ -83,6 +86,44 @@ line refs into its `index.js`):
   `clean-git-ref`) are pure JS; workerd provides `Buffer` (nodejs_compat),
   `crypto.subtle` SHA-1, and `CompressionStream`. Tree-shakes well
   (`sideEffects: false`).
+
+## Yjs determinism findings that shape the design
+
+Seeding a chat's Y.Doc from a git commit only works if every participant derives a
+**byte-identical** seed, so that subsequent updates apply cleanly on replay. Verified
+against Yjs:
+
+- The only randomness in Yjs is the per-`Y.Doc` **clientID** (`generateNewClientId()`),
+  and it is a plain settable property — `doc.clientID = N` before making any changes is
+  supported (standard practice in Yjs tests). Item IDs are `(clientID, sequential
+  clock)`; the V2 update encoding contains no timestamps or other nondeterminism.
+- Therefore: fixed reserved seed clientID + sorted file iteration + a single
+  transaction ⇒ `encodeStateAsUpdateV2` output is a pure function of the file map.
+- Yjs's own collision handling (verified in yjs 13.6.31) makes a reserved clientID
+  safe without custom guards:
+  - Collision with a *past* client is safe by construction: new writes take their
+    clock from the doc's current state for that clientID (`nextID`,
+    Transaction.js:148), so a client that randomly picks a historical ID *continues*
+    that ID's sequence rather than colliding.
+  - *Concurrent* collision is detected heuristically: after applying a remote
+    transaction that advanced the clock of the doc's own clientID, Yjs re-rolls
+    `doc.clientID` with a warning (Transaction.js:357-359). Since the seed update is
+    always the first remote update a chat doc applies — before any local edits — a
+    client that randomly picked the reserved ID re-rolls automatically.
+- Guards we adopt:
+  - A **reserved seed clientID constant**, used only inside `seedDocFromFiles`, which
+    builds the seed in a **throwaway Y.Doc** and returns the encoded update.
+    Session/editor docs only ever *apply* the seed as a remote update, so no
+    long-lived doc holds the reserved ID locally (an in-place seeder would keep
+    writing as the reserved ID, and two such sessions would genuinely collide).
+    Corollary: docs must apply the seed before making any local edits, which the
+    seeding flow already guarantees by construction.
+  - A **golden-byte unit test**: fixed file map → exact expected seed bytes, catching
+    accidental drift from Yjs upgrades or refactors. The seed algorithm is part of
+    each chat's implicit contract for its whole lifetime.
+  - Each chat stores a **seed hash** (hash of its seed update bytes) so a mismatch
+    fails fast and loudly instead of corrupting the doc; if we ever need to change the
+    seed algorithm, gate it on a per-chat seed-version field (new chats only).
 
 ## Current-state anchors (for orientation)
 
@@ -109,16 +150,21 @@ line refs into its `index.js`):
 
 ### 1. Object store + fs shim (`workshop-backend/src/git-store.ts`)
 
-- New typed-storage collection `gitObjects` in `makeOverseerStorage()`: key = path
-  under a virtual gitdir (e.g. `objects/ab/cdef...`), value = raw bytes. The path-keyed
-  scheme keeps the shim trivial and leaves room for future non-object paths if git
-  protocol support ever wants them.
-XXX Let's key on the hex ID alone. We need to parse these paths anyway to make sure we don't accept things we didn't intend to support. If we ever wanted to expand we can figure out a migration.
+- New typed-storage collection `gitObjects` in `makeOverseerStorage()`: key = the
+  object's **40-hex oid**, value = raw loose-object bytes (zlib'd, as isomorphic-git
+  writes them). The fs shim parses paths: `<gitdir>/objects/xx/yyyy…38` →
+  oid `xxyyyy…`; anything else it doesn't explicitly support is rejected, so we never
+  silently accept writes we didn't intend to store. If we ever need non-object paths
+  (e.g. for git protocol support), that's a migration we design then.
 - fs shim implementing `PromiseFsClient`:
-  - Real: `readFile` (missing → reject ENOENT; zero-arg call → rejected promise),
-    `writeFile`, `stat` (existence + size; directories synthesized from key prefixes,
-    though nothing but `discoverGitdir` stats them), `mkdir` (no-op success),
-    `readdir` (list by prefix; `objects/pack` → `[]`).
+  - `readFile`: loose-object path → oid lookup (missing → reject ENOENT); the
+    tolerated non-object reads (`<gitdir>/shallow`, pack `.idx`/`.pack`) → ENOENT;
+    zero-arg call → rejected promise (promise-fs detection probe); anything else →
+    reject.
+  - `writeFile`: loose-object path → oid put; anything else → reject.
+  - `stat`: gitdir itself → directory (for `discoverGitdir`); loose-object path →
+    existence via oid lookup; else ENOENT.
+  - `mkdir`: no-op success. `readdir`: `objects/pack` → `[]`; else reject.
   - Rejecting stubs: `lstat`, `unlink`, `rmdir`, `readlink`, `symlink`.
 - Helper API wrapping the plumbing (module-private isomorphic-git usage; nothing else
   in the kernel imports isomorphic-git directly):
@@ -137,16 +183,20 @@ XXX Let's key on the hex ID alone. We need to parse these paths anyway to make s
     unexported ~35-line `mergeFile`. Handles both-added and delete-vs-modify
     explicitly (delete-vs-modify keeps the modified side and reports a conflict).
     Never throws on conflict; markers are the resolution mechanism.
+  - Deterministic Yjs seeding: `seedDocFromFiles(files) → Uint8Array` (V2 update) using
+    the reserved seed clientID, sorted iteration, single transaction (see "Yjs
+    determinism findings"); plus the seed-hash helper.
   - Commit author helper: profile ID → `{name, email}`; bare username (no `@`) →
     `username@localhost`.
 - Pass a shared isomorphic-git `cache` object per DO instance (avoids re-parsing).
 - Punt explicitly: no GC (dangling objects are cheap and only created by accepted
   merges/imports/migration; keep a GC-roots enumeration possible: gadget records,
-  blueprint gadget records, live chats' base commits), no >2MB objects (chunking is a
-  shim-local follow-up), no packfiles.
+  blueprint gadget records, live chats' pinned commits), no >2MB objects (chunking is
+  a shim-local follow-up), no packfiles.
 - Tests (workerd pool, like other workshop-backend tests): oid round-trips verified
   against known-good hashes produced by real git; log traversal; merge matrix (clean,
-  conflicting, both-added, delete-vs-modify, unchanged); fs-shim probe behavior.
+  conflicting, both-added, delete-vs-modify, unchanged); fs-shim path-parsing and
+  probe behavior; golden-byte seed determinism.
 
 ### 2. Commit-backed gadget records
 
@@ -155,7 +205,8 @@ XXX Let's key on the hex ID alone. We need to parse these paths anyway to make s
 - `BlueprintGadgetRecord.codeVersion` is superseded by a stored `commitId`; blueprint
   export builds the archive from the commit tree, import writes an initial commit
   (preserving ancestry where the archive carries commit objects — sets up GitHub
-  interop and cross-gadget dedup for blueprint-derived gadgets).
+  interop and cross-gadget dedup for blueprint-derived gadgets). `codeVersionDate`
+  derives from the commit's timestamp.
 - Readers of committed code switch from `buildYDoc` to `readCommitFiles`:
   `loadGadgetWorker` (`overseer.ts:2366`), UI bundle reads (`overseer.ts:9242`),
   blueprint export (`snapshotCode`). Where a chat context applies, the chat overlay
@@ -163,18 +214,23 @@ XXX Let's key on the hex ID alone. We need to parse these paths anyway to make s
 
 ### 3. Chat flow
 
-- Chat state records a **base commit per touched gadget** (map gadgetId → oid),
-  replacing the role of `observedCodeVersion`. Gadgets created within the chat have no
-  base (null).
+- Chat state records **two commits per touched gadget**:
+  - `seedCommit` — the commit whose tree seeded the chat's Y.Doc root for this gadget.
+    **Immutable for the life of the chat**: the deterministic seed is derived from it,
+    so changing it would invalidate every Yjs update recorded since.
+  - `mergedCommit` — the most recent mainline commit whose content has been merged
+    into the chat. Starts equal to `seedCommit`; advances on update-from-mainline.
+  - Gadgets created within the chat have neither (both null).
 - Session docs (`getSessionYDoc` in agent.ts, and the frontend's chat doc) are seeded
-  by inserting `readCommitFiles(baseCommit)` into a fresh Y.Doc, then applying the
-  chat's proposed updates + drafts as today. The `"changes"` message / draft /
-  compaction machinery is unchanged — it is exactly the "Yjs tracks uncommitted
-  changes per chat" model.
+  by applying `seedDocFromFiles(readCommitFiles(seedCommit))` (verified against the
+  chat's stored seed hash), then applying the chat's proposed updates + drafts as
+  today. The `"changes"` message / draft / compaction machinery is unchanged — it is
+  exactly the "Yjs tracks uncommitted changes per chat" model.
 - **Accept** (`mergeChanges` rewrite):
   1. For every gadget touched by the fold of proposed changes, assert
-     `chat.baseCommit[gadget] == gadgetRecord.commitId`. Any mismatch rejects the whole
-     accept with a typed "stale — update from mainline" error (no partial accepts).
+     `chat.mergedCommit[gadget] == gadgetRecord.commitId`. Any mismatch rejects the
+     whole accept with a typed "stale — update from mainline" error (no partial
+     accepts).
   2. Flatten the chat doc per gadget → file map → `writeFilesAsCommit` with parent =
      head (parentless for chat-created gadgets).
   3. Update `GadgetRecord.commitId`s, promote pending gadgets/binding edges, write the
@@ -182,15 +238,17 @@ XXX Let's key on the hex ID alone. We need to parse these paths anyway to make s
   - Objects are written **only** here (plus migration/import), so reverted chats leave
     zero garbage.
 - **Update-from-mainline** (new Overseer operation):
-  1. Per stale gadget: `threeWayMerge(readCommitFiles(base), readCommitFiles(head),
-     flatten(chatDoc))`.
+  1. Per stale gadget: `threeWayMerge(readCommitFiles(mergedCommit),
+     readCommitFiles(head), flatten(chatDoc))` — the last merged commit is the common
+     ancestor; no merge-base discovery needed.
   2. Convert the merged file map into a Yjs update against the current chat doc using
      minimal per-file text diffs applied to the `Y.Text` instances (so concurrent live
      editors converge instead of seeing delete-all/reinsert), recorded as a normal
      `"changes"` message.
-  3. Advance the chat's base commits to the heads. The chat now *contains* mainline;
-     a subsequent accept is a plain commit on head (assuming mainline didn't move
-     again).
+  3. Advance `mergedCommit` to head. `seedCommit` is untouched — the chat's Yjs
+     history remains anchored to it; the merge result is just more uncommitted change
+     on top. A subsequent accept is a plain commit on head (assuming mainline didn't
+     move again).
   - Conflict markers stay in the files; surface `conflictPaths` in the message so the
     UI/agent can point at them.
 - **Revert** is unchanged (fold-level erasure; nothing to clean up in the object
@@ -198,66 +256,71 @@ XXX Let's key on the hex ID alone. We need to parse these paths anyway to make s
 - Mainline Yjs doc, the `code` log (for new writes), snapshots, and standalone
   editing paths are all retired.
 
-XXX When we seed the Yjs from the base git commit(s), we must ensure this is deterministic, producing exactly the same Y.Doc when replayed, so that subsequent updates apply cleanly. Verify that Yjs allows this -- need to ensure it doesn't randomize change IDs (or if it does, we can seed the randomization).
+### 4. Migration (Overseer constructor, `version` singleton)
 
-XXX When updating from mainline, I'm not sure we can actually "advance the chat's base commits to the heads", as this would change the Yjs seed and corrupt the rest of the history. Instead, we may need to store both the commit on which the Y.Doc is based, and the last mainline commit that has been merged into it.
-
-XXX I am beginning to wonder if we should consider changing from Yjs to an operational transform model in thne future. OT changes seem like they would integrate better with git, since an OT change is expressed as purely an operation on the file content as of some revision, without having to track the entire history of changes. Please add a section to the end of the doc exploring this as a future change to consider, with pros and cons.
-
-### 4. Migration (lazy, per workspace, on Overseer DO access)
-
-- Trigger: a storage-schema flag; run before serving any code-touching request. Idempotent
-  and resumable (record progress so a mid-migration eviction restarts cleanly).
+- Runs in the Overseer DO constructor, triggered by bumping the `version` singleton,
+  like previous storage migrations. Idempotent in structure (content-addressed object
+  writes are naturally re-runnable; record updates happen after object writes).
 - Per gadget root, replay the `code` update log (using existing `replayUpdates`
   snapshot support) and synthesize a commit chain:
   - Materialize a commit at any version where the gap to the *next* `CodeUpdate`
     timestamp is ≥ 1 hour (batching keystroke bursts from old standalone editing),
-    **plus** the final version, **plus** every version pinned as some live chat's
-    `observedCodeVersion` (those become the chats' base commits).
+    **plus** the final version, **plus** every persisted pinned version (next bullet).
   - Skip versions where the gadget's flattened files are unchanged from its previous
     synthesized commit (most updates touch one gadget; others' chains stay short).
   - Commit timestamps from `CodeUpdate.timestamp`; author = workspace owner identity;
     generated message (e.g. `"history import"` with the version range).
-- Rewrite live chats' pinned versions to base-commit maps. Existing proposed-change
-  Yjs updates in chat messages remain valid: they were built against the doc at
-  `observedCodeVersion`, and the new seeding path reconstructs equivalent file content
-  from the synthesized commit at that version.
+- **Pinned versions** — every persisted code-version reference must map to a
+  synthesized commit:
+  - Live chats' `observedCodeVersion` (in `"changes"` messages, in
+    `AiToolCall.observedCodeVersion` details riding stored messages, and in compaction
+    checkpoints, agent.ts:133 — the latter two always reference some chat's fold
+    history, so enumerating each live chat's observed versions covers them).
+  - `BlueprintGadgetRecord.codeVersion` (`overseer.ts:435`) — used to reconstruct the
+    exported snapshot at `overseer.ts:8790`; each becomes the record's `commitId`.
+  - The `codeVersion` singleton is only a loader-cache counter — no pin needed.
+  - Review `makeOverseerStorage()` once more during implementation for any stragglers.
+- Rewrite live chats' pinned versions to `seedCommit`/`mergedCommit` maps (both set to
+  the synthesized commit at the chat's observed version).
   - Caveat to handle: the synthesized seed doc and the historical doc are different
     CRDT instances, so old updates do NOT apply to a freshly-seeded doc. For
-    *pre-existing* chats, keep seeding from the legacy log (`buildYDoc`) until the
-    chat merges or reverts; only new chats use commit-seeded docs. This is the main
-    reason the old `code`/`snapshots` collections stay read-only rather than being
-    deleted: they remain the CRDT base for in-flight chats.
+    *pre-existing* chats, keep seeding from the legacy log (`buildYDoc` at the chat's
+    observed version) until the chat merges or reverts; only new chats use
+    commit-seeded docs. (Staleness checks and accept still work identically — accept
+    flattens whatever doc the chat has and commits on head.) This is the main reason
+    the old `code`/`snapshots` collections stay read-only rather than being deleted:
+    they remain the CRDT base for in-flight chats.
 - Old `code` and `snapshots` collections: no new writes, retained read-only; deletion
   is a later cleanup change once in-flight chats have drained.
 
-XXX I think it would be best to do the migration in the overseer constructor, like previous migrations have done, triggered by the `version` singleton.
-
-XXX In addition to ensuring a commit matching every live chat's `observedCodeVersion`, we should also ensure a commit matching every `BlueprintGadgetRecord.codeVersion`. May want to review storage scehmas for any other relevant code version that needs to be pinned.
-
 ### 5. Protocol changes (`workshop-shared/src/api.ts`)
 
-- `subscribeToCode`/`updateCode` and the `CodeUpdate`/version-number model become
-  per-chat: subscribe to a chat's doc (seeded from base commits), push updates into the
-  chat's draft stream. Workspace-wide code subscription is removed.
+- **`subscribeToCode` is removed outright**, along with `CodeSubscriber`; `CodeUpdate`
+  leaves the public API (it survives only as an internal type in overseer's storage
+  schema for the read-only legacy collections). The correct way to observe a chat's
+  code is to subscribe to the chat itself and watch `"changes"` messages — which
+  already exists.
+- **`WorkpieceSummary` gains the gadget's `commitId`**, and `subscribeToWorkpieces`
+  notifies when it changes. This replaces `subscribeToCode`'s previous purpose of
+  tracking mainline code movement.
+- **New read API: code at a commit** — e.g. `getCodeAtCommit(commitId) →
+  {files: Record<string,string>}` — used when viewing code in a chat with no proposed
+  changes, or when viewing code outside any chat. Commits are immutable, so responses
+  are cacheable client-side by oid.
 - Version numbers are replaced by commit oids where they were load-bearing
-  (`observedCodeVersion` → per-gadget base commits; `WorkpieceSummary` /
-  `BlueprintGadgetRecord` surfaces).
+  (`observedCodeVersion` → per-gadget `seedCommit`/`mergedCommit`;
+  `BlueprintGadgetRecord` surfaces; `codeVersionDate` from commit timestamps).
 - New API surface: update-from-mainline operation; typed stale-accept error; commit
   metadata exposure (enough for a future history UI: `readCommitLog`-backed).
 - Kernel review bar: doc-comment every touched/added export; no hand-written mirrors
   of RPC types; keep the diff minimal.
 
-XXX I think `subscribeToCode` becomes obsolete becasue the correct way to subscribe to per-chat code is to subscribe to the chat itself and watch for "changes" messages. This also implies that `CodeSubscriber` goes away and `CodeUpdate` is no longer part of the API (though it is still needed for overseer's storage schema).
-
-XXX `subscribeToWorkpieces` should now report changes to each workpiece's commit ID -- `WorkpieceSummary` should contain the commit. This largely replaces `subscribeToCode`'s previous purpose.
-
-XXX We need some sort of API to read code at a commit, used when viewing code in a chat that has no proposed changes, or viewing code while not inside any chat at all.
-
 ### 6. Frontend
 
 - `GadgetCodeInterface` layering collapses from three layers (mainline doc → proposed
-  → drafts) to two (commit-seeded chat doc → drafts).
+  → drafts) to two (commit-seeded chat doc → drafts). Viewing code outside a chat (or
+  in a chat with no proposed changes) uses `getCodeAtCommit` — read-only, no Yjs doc
+  at all.
 - Remove standalone editing surfaces (editing is only reachable within a chat).
 - Accept-flow UX: when accept is rejected as stale, offer "update from mainline";
   after an update-with-conflicts, show the conflicted files (markers are visible in
@@ -267,21 +330,24 @@ XXX We need some sort of API to read code at a commit, used when viewing code in
 
 Ordered so the kernel-critical diffs are isolated and each commit builds/tests green:
 
-1. **git-store**: `git-store.ts` (fs shim, plumbing helpers, `threeWayMerge`, author
-   helper), `gitObjects` collection, isomorphic-git + diff3 dependencies in
-   workshop-backend, workerd tests. No behavior change anywhere else.
-2. **workshop-shared API**: new/changed RPC surface (per-chat code subscription,
-   base-commit fields, update-from-mainline, stale error, commit metadata types),
-   fully doc-commented. Type-only; backend implements in the next commit.
+1. **git-store**: `git-store.ts` (fs shim, plumbing helpers, `threeWayMerge`,
+   deterministic seeding, author helper), `gitObjects` collection, isomorphic-git +
+   diff3 dependencies in workshop-backend, workerd tests (including golden-byte seed
+   test). No behavior change anywhere else.
+2. **workshop-shared API**: removal of `subscribeToCode`/`CodeSubscriber`/public
+   `CodeUpdate`; `WorkpieceSummary.commitId`; `getCodeAtCommit`; seed/merged-commit
+   fields; update-from-mainline; stale error; commit metadata types — fully
+   doc-commented. Backend implements in the next commit.
 3. **commit-backed backend**: `GadgetRecord.commitId`, accept/update-from-mainline/
-   revert flows, commit-seeded session docs, readers switched to commit trees,
-   blueprint export/import on commits, retirement of mainline Yjs writes and
-   standalone editing paths.
-4. **migration**: lazy log→commit synthesis, chat pin rewriting, legacy-seeding path
-   for in-flight chats, read-only retention of `code`/`snapshots`. Tests over
-   synthetic logs (burst batching, multi-gadget, live-chat pins).
-5. **frontend**: chat-doc layering, standalone-editing removal, stale-accept /
-   update-from-mainline UX.
+   revert flows, commit-seeded session docs (with seed-hash verification), readers
+   switched to commit trees, blueprint export/import on commits, retirement of
+   mainline Yjs writes and standalone editing paths.
+4. **migration**: constructor migration (log→commit synthesis with 1-hour batching,
+   pinned-version commits, chat pin rewriting), legacy-seeding path for in-flight
+   chats, read-only retention of `code`/`snapshots`. Tests over synthetic logs (burst
+   batching, multi-gadget, live-chat pins, blueprint pins).
+5. **frontend**: chat-doc layering, `getCodeAtCommit` viewing, standalone-editing
+   removal, stale-accept / update-from-mainline UX.
 
 ## Accepted tradeoffs / future work
 
@@ -293,3 +359,51 @@ Ordered so the kernel-critical diffs are isolated and each commit builds/tests g
 - Multi-commit chat sessions, agent-less chats for manual edits, history UI,
   GitHub push/pull via gatekeepers, git protocol: future changes this design
   deliberately leaves room for.
+
+## Future consideration: replacing Yjs with operational transforms
+
+Once mainline lives in git, Yjs's remaining job shrinks to "represent one chat's
+uncommitted changes and synchronize live editors". That's a much better fit for OT
+than the original workspace-wide CRDT role was, and OT would compose more naturally
+with git. Worth considering as a follow-on change; not part of this plan.
+
+**Why OT fits the git-backed model:**
+
+- An OT operation is expressed purely against the file content as of some revision —
+  exactly "a change relative to commit X". No CRDT identity graph, no tombstones, no
+  seeding problem: the base *is* the git tree, and the deterministic-seed machinery
+  (reserved clientID, seed hashes, golden-byte tests, the immutable-`seedCommit`
+  constraint) disappears entirely.
+- Update-from-mainline becomes native: rebasing a chat onto a new head is literally
+  OT's transform operation (or, degenerately, re-diffing merged content), rather than
+  a diff smuggled through CRDT updates.
+- The chat's uncommitted state can always be compacted to a plain diff against its
+  base commit — bounded by content size, not edit history. Today's compaction
+  machinery exists precisely because CRDT state can't be compacted that way.
+- OT's classic weakness — requiring a central sequencer — is moot here: the Overseer
+  DO is already a single-threaded authoritative sequencer for every chat.
+- Removes the Yjs dependency (and its update encodings) from the kernel and the wire
+  protocol.
+
+**Why not (or not yet):**
+
+- Transform functions are notoriously hard to get right (TP1/TP2 correctness);
+  the mature open-source options are unmaintained (ot.js) or heavyweight (ShareDB).
+  We'd likely write and own a small text-OT core, which is real, subtle work.
+- The entire editor stack is Yjs-native today: y-codemirror bindings give sync,
+  presence/cursors, and local undo (Y.UndoManager) for free. OT needs equivalent
+  client integration built or adopted.
+- Offline and reconnect handling is where CRDTs quietly do a lot of work; OT clients
+  must buffer and transform against missed server ops on reconnect — more protocol
+  code, more edge cases.
+- The chat message format (`"changes"` carrying Yjs updates, compaction checkpoints)
+  would change shape again, with another migration for in-flight chats.
+- Nothing in the git move *requires* it: Yjs-as-uncommitted-layer works, and this plan
+  already isolates it behind the chat boundary. The right time to revisit is when the
+  seed-determinism constraints chafe (e.g. wanting to change seeding, or multi-commit
+  chat sessions making rebases frequent) or when a Yjs upgrade threatens encoding
+  stability.
+
+**Net**: this plan intentionally narrows Yjs's role to the point where an OT swap
+becomes a bounded, chat-local change rather than a rewrite. Decide after living with
+the git-backed model for a while.
