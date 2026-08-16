@@ -7,6 +7,7 @@ import {
   RpcTarget as NativeRpcTarget, restore,
 } from "cloudflare:workers";
 import { createTypedStorage, collection, keyString } from "@gadgets/typed-storage";
+import { gitObjectsCollection } from "./git-store";
 import * as Y from "yjs";
 import {
   LanguageModelGatekeeperProps,
@@ -842,6 +843,15 @@ function makeOverseerStorage(storage: DurableObjectStorage) {
       snapshots: collection<CodeUpdate>()({
         primaryKey: "version"
       }),
+
+      // The workspace's git object store: real git loose objects (blobs, trees, commits) keyed
+      // by 40-hex SHA-1 oid. Mainline gadget code is destined to live here as commits -- with
+      // each GadgetRecord pointing at its head, superseding the `code`/`snapshots` Yjs log --
+      // but nothing writes it yet; the commit-backed code flow lands in a subsequent change.
+      // There is deliberately no ref layer: gadget/blueprint records and chats' pinned commits
+      // are the refs, and all gadgets' histories share this one content-addressed store. See
+      // git-store.ts.
+      gitObjects: gitObjectsCollection(),
 
       // Registry of gadget workpieces.
       //

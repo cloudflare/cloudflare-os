@@ -183,11 +183,19 @@ against Yjs:
     unexported ~35-line `mergeFile`. Handles both-added and delete-vs-modify
     explicitly (delete-vs-modify keeps the modified side and reports a conflict).
     Never throws on conflict; markers are the resolution mechanism.
-  - Deterministic Yjs seeding: `seedDocFromFiles(files) → Uint8Array` (V2 update) using
-    the reserved seed clientID, sorted iteration, single transaction (see "Yjs
-    determinism findings"); plus the seed-hash helper.
-  - Commit author helper: profile ID → `{name, email}`; bare username (no `@`) →
+  - Commit author helper: `AiChatAuthorInfo` → `{name, email}` — the display name becomes
+    the commit name, the profile ID the email; bare-username IDs (no `@`) become
     `username@localhost`.
+- Deterministic Yjs seeding lives in **workshop-shared** (`src/yjs-seed.ts`, exported as
+  `@gadgets/workshop-shared/yjs-seed`), *not* in git-store: browser editors must derive
+  bit-identical seeds to what server sessions derive, so the algorithm is shared code
+  (adding `yjs` as a workshop-shared dependency — both frontend and backend already
+  depend on it). `seedDocFromFiles(roots) → Uint8Array` (V2 update) uses the reserved
+  seed clientID, sorted iteration, and a single transaction (see "Yjs determinism
+  findings"); `seedUpdateHash` is the seed-hash helper (manual hex — browsers can't rely
+  on `Uint8Array.prototype.toHex` yet). All roots a chat will ever seed must come from a
+  single call, since each call restarts the reserved clientID's clock from zero. The
+  golden-byte tests live in workshop-backend's suite so they run under workerd.
 - Pass a shared isomorphic-git `cache` object per DO instance (avoids re-parsing).
 - Punt explicitly: no GC (dangling objects are cheap and only created by accepted
   merges/imports/migration; keep a GC-roots enumeration possible: gadget records,
@@ -318,9 +326,11 @@ against Yjs:
 ### 6. Frontend
 
 - `GadgetCodeInterface` layering collapses from three layers (mainline doc → proposed
-  → drafts) to two (commit-seeded chat doc → drafts). Viewing code outside a chat (or
-  in a chat with no proposed changes) uses `getCodeAtCommit` — read-only, no Yjs doc
-  at all.
+  → drafts) to two (commit-seeded chat doc → drafts). The browser derives chat-doc
+  seeds itself via the shared `@gadgets/workshop-shared/yjs-seed` module (the same code
+  the server runs), verifying against the chat's stored seed hash. Viewing code outside
+  a chat (or in a chat with no proposed changes) uses `getCodeAtCommit` — read-only, no
+  Yjs doc at all.
 - Remove standalone editing surfaces (editing is only reachable within a chat).
 - Accept-flow UX: when accept is rejected as stale, offer "update from mainline";
   after an update-with-conflicts, show the conflicted files (markers are visible in
@@ -330,10 +340,11 @@ against Yjs:
 
 Ordered so the kernel-critical diffs are isolated and each commit builds/tests green:
 
-1. **git-store**: `git-store.ts` (fs shim, plumbing helpers, `threeWayMerge`,
-   deterministic seeding, author helper), `gitObjects` collection, isomorphic-git +
-   diff3 dependencies in workshop-backend, workerd tests (including golden-byte seed
-   test). No behavior change anywhere else.
+1. **git-store**: `git-store.ts` (fs shim, plumbing helpers, `threeWayMerge`, author
+   helper), `gitObjects` collection, isomorphic-git + diff3 dependencies in
+   workshop-backend; deterministic seeding as the shared `yjs-seed` module in
+   workshop-shared (with `yjs` added as a dependency there); workerd tests (including
+   golden-byte seed test). No behavior change anywhere else.
 2. **workshop-shared API**: removal of `subscribeToCode`/`CodeSubscriber`/public
    `CodeUpdate`; `WorkpieceSummary.commitId`; `getCodeAtCommit`; seed/merged-commit
    fields; update-from-mainline; stale error; commit metadata types — fully

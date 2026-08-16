@@ -30,6 +30,10 @@
     "./theme": {
       "types": "./src/theme.ts",
       "import": "./src/theme.ts"
+    },
+    "./yjs-seed": {
+      "types": "./src/yjs-seed.ts",
+      "import": "./src/yjs-seed.ts"
     }
   },
   "scripts": {
@@ -39,7 +43,8 @@
   },
   "dependencies": {
     "@cloudflare/workers-types": "^5.20260808.1",
-    "capnweb": "catalog:"
+    "capnweb": "catalog:",
+    "yjs": "^13.6.31"
   },
   "devDependencies": {
     "typescript": "catalog:"
