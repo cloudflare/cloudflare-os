@@ -35,6 +35,13 @@
     "esbuild": "^0.28.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10",
+    "@vitest/expect": "^4.1.10",
+    "@vitest/mocker": "^4.1.10",
+    "@vitest/pretty-format": "^4.1.10",
+    "@vitest/runner": "^4.1.10",
+    "@vitest/snapshot": "^4.1.10",
+    "@vitest/spy": "^4.1.10",
+    "@vitest/utils": "^4.1.10",
     "wrangler": "^4.115.0"
   }
 }
