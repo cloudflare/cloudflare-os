@@ -332,7 +332,7 @@ describe("compaction checkpoint state", () => {
     let messages: AiChatMessage[] = [
       record(0, agent, {type: "changes", update: update("a", "accepted.js")}),
       record(1, agent, {type: "changes", update: update("b", "proposed.js")}),
-      record(2, user, {type: "merge", mergeThrough: 0, version: 2}),
+      record(2, user, {type: "merge", mergeThrough: 0, version: 2, commits: []}),
     ];
 
     let state = buildState(messages, 3);
@@ -343,7 +343,7 @@ describe("compaction checkpoint state", () => {
   it("keeps a change merged at the boundary sequence when a later revert lands", () => {
     let messages: AiChatMessage[] = [
       record(0, agent, {type: "changes", update: update("a")}),
-      record(1, user, {type: "merge", mergeThrough: 0, version: 2}),
+      record(1, user, {type: "merge", mergeThrough: 0, version: 2, commits: []}),
       record(2, user, {type: "revert", revertFrom: 0}),
     ];
 
@@ -394,7 +394,7 @@ describe("compaction checkpoint state", () => {
     };
 
     let next = buildCompactionState(
-        [record(2, user, {type: "merge", mergeThrough: 2, version: 2})],
+        [record(2, user, {type: "merge", mergeThrough: 2, version: 2, commits: []})],
         3, initialBindings, previous);
     expect(next.proposedChanges).toBeUndefined();
     expect(next.acceptedChanges).toBeDefined();

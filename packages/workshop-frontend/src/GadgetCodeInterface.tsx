@@ -1,8 +1,8 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import { DownloadSimple } from '@phosphor-icons/react'
-import { Overseer, CodeSubscriber, CodeUpdate } from '@gadgets/workshop-shared/api'
-import { RpcStub, RpcTarget } from 'capnweb'
+import { Overseer } from '@gadgets/workshop-shared/api'
+import { RpcStub } from 'capnweb'
 import * as Y from 'yjs'
 import FileSidebar from './FileSidebar'
 import type { FileChangeStatus, FileSidebarHandle } from './FileSidebar'
@@ -12,41 +12,10 @@ import CodeDiffEditor from './CodeDiffEditor'
 import type { StreamingProposedChanges } from './ChatInterface'
 import { saveTextToFile } from './fileTransfers'
 
-// RpcTarget implementation for receiving code updates from the server
-class CodeSubscriberImpl extends RpcTarget implements CodeSubscriber {
-  private disabled: boolean = false;
-
-  constructor(
-    private ydoc: Y.Doc,
-    private onReady: () => void,
-    private onVersionUpdate: (version: number) => void
-  ) {
-    super()
-  }
-
-  update(up: CodeUpdate): void {
-    if (this.disabled) return;
-
-    // Apply the Yjs update to our local document
-    // Mark origin as 'server' so we don't echo it back
-    Y.applyUpdateV2(this.ydoc, up.update, 'server')
-
-    // Update version and pass the update to be applied to server shadow doc
-    this.onVersionUpdate(up.version)
-  }
-
-  ready(): void {
-    if (this.disabled) return;
-
-    // Called when we're initially synced with the server
-    this.onReady()
-  }
-
-  // local call
-  disable(): void {
-    this.disabled = true;
-  }
-}
+// TODO(git-storage): OUT OF SERVICE: the git-storage API change removed subscribeToCode()
+// (committed code is becoming git commits, with Yjs representing only a chat's uncommitted
+// changes), so this component's mainline doc is never populated and it renders its loading state
+// indefinitely. It is rebuilt on commit-seeded chat docs later in this change sequence.
 
 interface GadgetCodeInterfaceProps {
   overseer: RpcStub<Overseer>
@@ -55,6 +24,8 @@ interface GadgetCodeInterfaceProps {
   // workpiece's files the editor shows.
   filesRoot: string
   height?: string | number
+  // TODO(git-storage): Formerly fired on local mainline edits; unobserved while the component is
+  // out of service.
   onCodeChange?: () => void
   selectedChatId?: number | null
   proposedChanges?: Uint8Array
@@ -129,11 +100,11 @@ function getTouchedFilesFromEvents(events: Y.YEvent<any>[], rootMap: Y.Map<Y.Tex
 }
 
 type QueuedCodeUpdate = {
-  chatId: number | null
+  chatId: number
   update: Uint8Array
 }
 
-export default function GadgetCodeInterface({ overseer, filesRoot, height = '100%', onCodeChange, selectedChatId = null, proposedChanges, draftProposedChanges, streamingProposedChanges, streamingActiveFile, isAgentActive, isVisible = true, onHasCodeChange }: GadgetCodeInterfaceProps) {
+export default function GadgetCodeInterface({ overseer, filesRoot, height = '100%', selectedChatId = null, proposedChanges, draftProposedChanges, streamingProposedChanges, streamingActiveFile, isAgentActive, isVisible = true, onHasCodeChange }: GadgetCodeInterfaceProps) {
   const toasts = useKumoToastManager()
   const branchMode = selectedChatId !== null
 
@@ -148,20 +119,18 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
   // Updates originating locally are enqueued to this array.
   const updateQueueRef = useRef<QueuedCodeUpdate[]>([]);
 
-  // Track the server's version for reconnection
-  const serverVersionRef = useRef<number>(0)
-
   // Track whether we're currently sending updates to prevent concurrent sends
   const isSendingRef = useRef<boolean>(false)
 
-  // React state for UI
+  // React state for UI. `isReady`/`loading`/`committedDocVersion` never leave their initial
+  // values while the component is out of service (see the note at the top of this file).
   const [fileNames, setFileNames] = useState<string[]>([])
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const fileSidebarRef = useRef<FileSidebarHandle | null>(null)
-  const [isReady, setIsReady] = useState(false)
-  const [loading, setLoading] = useState(true)
+  const [isReady] = useState(false)
+  const [loading] = useState(true)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
-  const [committedDocVersion, setCommittedDocVersion] = useState(0)
+  const [committedDocVersion] = useState(0)
   const [, setEditableDocVersion] = useState(0)
 
   // Branch and preview docs layered on top of committed mainline code.
@@ -208,13 +177,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
 
   // Keep a ref to the current sender so editable-doc listeners don't need to
   // re-register just because the component rendered again.
-  const sendUpdateToServerRef = useRef<(update?: Uint8Array, chatId?: number | null) => Promise<void>>(async () => {})
-
-  // Keep a ref to the ready state so we can check it in error handlers without closure issues
-  const isReadyRef = useRef(false)
-
-  // Subscription stub for cleanup
-  const subscriptionRef = useRef<RpcStub<{}> | null>(null)
+  const sendUpdateToServerRef = useRef<(update: Uint8Array, chatId: number) => Promise<void>>(async () => {})
 
   // When the selected workpiece changes, the previous root's file selection and per-turn state
   // are meaningless; reset so the auto-select effect picks a file from the new root.
@@ -554,10 +517,8 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
 
   // Helper to send updates to server based on what it's missing
   // Uses a loop to ensure all changes get sent, with only one send in flight at a time
-  const sendUpdateToServer = async (update?: Uint8Array, chatId: number | null = null) => {
-    if (update) {
-      updateQueueRef.current.push({ update, chatId });
-    }
+  const sendUpdateToServer = async (update: Uint8Array, chatId: number) => {
+    updateQueueRef.current.push({ update, chatId });
 
     // If already sending, return early - the running instance will pick up our changes
     if (isSendingRef.current) {
@@ -588,10 +549,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
         }
 
         try {
-          await currentOverseerRef.current.updateCode(
-            outgoingUpdate,
-            currentTarget ?? undefined,
-          )
+          await currentOverseerRef.current.updateCode(outgoingUpdate, currentTarget)
           // Successfully sent - clear unsaved changes indicator
           setHasUnsavedChanges(false)
         } catch (error) {
@@ -614,92 +572,6 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
     }
   }
   sendUpdateToServerRef.current = sendUpdateToServer
-
-  // Subscribe to code updates from server
-  useEffect(() => {
-    const ydoc = ydocRef.current
-    const isInitialLoad = serverVersionRef.current === 0
-
-    const subscriberImpl = new CodeSubscriberImpl(
-      ydoc,
-      () => {
-        setIsReady(true)
-        isReadyRef.current = true
-        setLoading(false)
-        // Send any local changes after we're synced with server
-        // This handles reconnection after offline edits
-        sendUpdateToServer()
-      },
-      (version: number) => {
-        // Update version
-        serverVersionRef.current = version
-        setCommittedDocVersion(version)
-      }
-    )
-
-    const subscribe = async () => {
-      try {
-        // Only show loading state on initial load, not on reconnection
-        if (isInitialLoad) {
-          setLoading(true)
-        }
-
-        // Subscribe from the last known version (0 for initial load)
-        const subscriptionStub = await currentOverseerRef.current.subscribeToCode(
-          subscriberImpl,
-          serverVersionRef.current
-        )
-        subscriptionRef.current = subscriptionStub
-
-        // If this is a reconnection, the user can continue editing immediately
-        if (!isInitialLoad) {
-          setIsReady(true)
-        }
-      } catch (error) {
-        console.error('Failed to subscribe to code updates:', error)
-        // Only show error if we've never successfully loaded (never reached ready state)
-        if (!isReadyRef.current) {
-          toasts.add({ title: 'Failed to load code files', variant: 'error' })
-          setLoading(false)
-        }
-        // For reconnection failures after we've loaded, don't show toast - user can keep editing
-      }
-    }
-
-    subscribe()
-
-    return () => {
-      // Cleanup: dispose subscription stub
-      if (subscriptionRef.current) {
-        subscriptionRef.current[Symbol.dispose]()
-        subscriptionRef.current = null
-      }
-      subscriberImpl.disable();
-    }
-  }, [overseer])
-
-  // Set up committed-doc observer to send local changes to server in mainline mode.
-  useEffect(() => {
-    const ydoc = ydocRef.current
-
-    const updateHandler = async (update: Uint8Array, origin: any) => {
-      // Don't send updates that came from the server back to the server
-      if (origin === 'server' || branchMode) {
-        return
-      }
-
-      onCodeChange?.()
-
-      // Send update to server
-      await sendUpdateToServer(update, null)
-    }
-
-    ydoc.on('updateV2', updateHandler)
-
-    return () => {
-      ydoc.off('updateV2', updateHandler)
-    }
-  }, [branchMode, overseer, onCodeChange])
 
   // Handle file selection
   const handleFileSelect = (filename: string) => {

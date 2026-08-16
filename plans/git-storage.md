@@ -235,10 +235,11 @@ against Yjs:
   today. The `"changes"` message / draft / compaction machinery is unchanged — it is
   exactly the "Yjs tracks uncommitted changes per chat" model.
 - **Accept** (`mergeChanges` rewrite):
-  1. For every gadget touched by the fold of proposed changes, assert
-     `chat.mergedCommit[gadget] == gadgetRecord.commitId`. Any mismatch rejects the
-     whole accept with a typed "stale — update from mainline" error (no partial
-     accepts).
+  1. For every gadget touched by the fold of proposed changes, check
+     `chat.mergedCommit[gadget] == gadgetRecord.commitId`. Any mismatch makes the whole
+     accept a no-op returning a "stale" outcome (no partial accepts) — an expected
+     result reported as a value (`MergeChangesResult`), not an exception, since someone
+     else's accept can land at any time.
   2. Flatten the chat doc per gadget → file map → `writeFilesAsCommit` with parent =
      head (parentless for chat-created gadgets).
   3. Update `GadgetRecord.commitId`s, promote pending gadgets/binding edges, write the
@@ -271,13 +272,24 @@ against Yjs:
   writes are naturally re-runnable; record updates happen after object writes).
 - Per gadget root, replay the `code` update log (using existing `replayUpdates`
   snapshot support) and synthesize a commit chain:
-  - Materialize a commit at any version where the gap to the *next* `CodeUpdate`
-    timestamp is ≥ 1 hour (batching keystroke bursts from old standalone editing),
-    **plus** the final version, **plus** every persisted pinned version (next bullet).
+  - Materialize a commit at **every code version recorded by a `merge` message** in
+    any chat (`version`, present on every historical merge). The chat history is a
+    complete record of past `mergeChanges()` calls, so these are the principled commit
+    points — each one is a moment a user deliberately accepted changes.
+  - **Plus** any version where the gap to the *next* `CodeUpdate` timestamp is ≥ 1
+    hour (batching keystroke bursts from old standalone editing, which bypassed
+    merges), **plus** the final version, **plus** every persisted pinned version
+    (next bullet).
   - Skip versions where the gadget's flattened files are unchanged from its previous
     synthesized commit (most updates touch one gadget; others' chains stay short).
   - Commit timestamps from `CodeUpdate.timestamp`; author = workspace owner identity;
     generated message (e.g. `"history import"` with the version range).
+- **Backfill `commits` on historical `merge` messages**: rewrite each stored merge
+  message, setting `commits` to the synthesized commits at its recorded `version`
+  (the gadgets whose files changed there; empty when the merge changed no code).
+  Combined with the pre-git writer already recording `commits: []` (accurate: those
+  merges create no commits), this makes the field **required** on the wire — every
+  delivered merge message carries it, forever.
 - **Pinned versions** — every persisted code-version reference must map to a
   synthesized commit:
   - Live chats' `observedCodeVersion` (in `"changes"` messages, in
@@ -311,17 +323,50 @@ against Yjs:
 - **`WorkpieceSummary` gains the gadget's `commitId`**, and `subscribeToWorkpieces`
   notifies when it changes. This replaces `subscribeToCode`'s previous purpose of
   tracking mainline code movement.
-- **New read API: code at a commit** — e.g. `getCodeAtCommit(commitId) →
+- **New read API: code at a commit** — `getCodeAtCommit(commitId) →
   {files: Record<string,string>}` — used when viewing code in a chat with no proposed
   changes, or when viewing code outside any chat. Commits are immutable, so responses
   are cacheable client-side by oid.
+- **`updateCode`'s `chatId` becomes required** (editing happens only within chats; the
+  method now records only live draft edits on a chat's branch).
 - Version numbers are replaced by commit oids where they were load-bearing
   (`observedCodeVersion` → per-gadget `seedCommit`/`mergedCommit`;
-  `BlueprintGadgetRecord` surfaces; `codeVersionDate` from commit timestamps).
-- New API surface: update-from-mainline operation; typed stale-accept error; commit
-  metadata exposure (enough for a future history UI: `readCommitLog`-backed).
+  `BlueprintGadgetRecord` surfaces; `codeVersionDate` from commit timestamps). The
+  legacy `observedCodeVersion` fields (changes messages, `AiToolCall`) and the merge
+  message's `version` stay, doc-marked legacy, because replaying pre-git-storage chats
+  depends on them; the merge message gains `commits` (per-gadget new heads) —
+  **required, not optional**: the migration synthesizes a commit at every historical
+  merge's version and backfills the field (§4), and the pre-git writer records an
+  accurate `commits: []` in the interim.
+- **Chat pins ride `AiChatMetadata.codeBase`** (`ChatCodeBase` / `ChatGadgetPin`):
+  per-gadget `seedCommit`(optional — absent for roots that entered the chat via
+  update-from-mainline or in-chat creation)/`mergedCommit` pins plus the chat's
+  `seedHash`, delivered and re-delivered via the existing metadata subscription. Each
+  pin denormalizes `filesRoot` so it stays interpretable after gadget deletion.
+  `seedHash` absent marks a pre-git-storage chat whose Yjs base is not derivable from
+  commits; **`getLegacyChatDocBase(chatId)`** returns that base as a whole-doc V2
+  update (the client-side counterpart of §4's legacy-seeding path).
+- New API surface: `updateChatFromMainline(chatId) → {conflictPaths}` (also recorded on
+  the changes message as `mainlineMerge`); `mergeChanges` returns `MergeChangesResult`
+  (`outcome: "merged" | "stale"` — staleness is expected control flow, reported as a
+  value rather than thrown); commit metadata exposure via
+  `getCommitLog(fromCommit, depth?)` returning the shared `CommitInfo` type (enough for
+  a future history UI).
+- `CommitIdentity`/`CommitInfo` are defined in api.ts and imported by git-store.ts
+  (which previously defined them locally) — one definition, no backend mirror.
 - Kernel review bar: doc-comment every touched/added export; no hand-written mirrors
   of RPC types; keep the diff minimal.
+- Keeping the tree *compiling* mid-sequence -- reviewability beats intermediate
+  functionality, so no transitional shims that a later commit of the same PR would
+  delete: `CodeUpdate` moves into overseer.ts as an internal type (the storage schema
+  of the `code`/`snapshots` collections); the `subscribeToCode` implementation, its
+  `CodeSubscriber` callback type, and the use-role deny are deleted together with the
+  interface method; the new interface methods get throwing stubs in
+  `OverseerClientInterface` and denies in `UseOverseerInterface` (whose
+  `implements Overseer` forces both at compile time); and the frontend's
+  now-uncallable sync paths are simply deleted, leaving the code view rendering its
+  loading state ("out of service") until the frontend commit rebuilds it on
+  commit-seeded chat docs.
 
 ### 6. Frontend
 
@@ -332,7 +377,7 @@ against Yjs:
   a chat (or in a chat with no proposed changes) uses `getCodeAtCommit` — read-only, no
   Yjs doc at all.
 - Remove standalone editing surfaces (editing is only reachable within a chat).
-- Accept-flow UX: when accept is rejected as stale, offer "update from mainline";
+- Accept-flow UX: when accept returns a stale outcome, offer "update from mainline";
   after an update-with-conflicts, show the conflicted files (markers are visible in
   the editor; a richer resolution workflow is future work).
 
@@ -346,17 +391,23 @@ Ordered so the kernel-critical diffs are isolated and each commit builds/tests g
    workshop-shared (with `yjs` added as a dependency there); workerd tests (including
    golden-byte seed test). No behavior change anywhere else.
 2. **workshop-shared API**: removal of `subscribeToCode`/`CodeSubscriber`/public
-   `CodeUpdate`; `WorkpieceSummary.commitId`; `getCodeAtCommit`; seed/merged-commit
-   fields; update-from-mainline; stale error; commit metadata types — fully
-   doc-commented. Backend implements in the next commit.
+   `CodeUpdate`; required `updateCode` chatId; `WorkpieceSummary.commitId`;
+   `getCodeAtCommit`/`getCommitLog`/`getLegacyChatDocBase`; `ChatCodeBase` pins on
+   chat metadata; `updateChatFromMainline` + `mainlineMerge`/`commits` message fields;
+   stale-accept outcome; `CommitIdentity`/`CommitInfo` (shared with git-store) — fully
+   doc-commented. Rides with the minimal keep-compiling fallout described in §5:
+   internal `CodeUpdate` type + deletion of the `subscribeToCode` implementation in
+   overseer.ts, throwing stubs/denies for the new methods, and deletion of the
+   frontend's mainline sync paths (the code view is out of service until commit 5).
 3. **commit-backed backend**: `GadgetRecord.commitId`, accept/update-from-mainline/
    revert flows, commit-seeded session docs (with seed-hash verification), readers
    switched to commit trees, blueprint export/import on commits, retirement of
    mainline Yjs writes and standalone editing paths.
-4. **migration**: constructor migration (log→commit synthesis with 1-hour batching,
-   pinned-version commits, chat pin rewriting), legacy-seeding path for in-flight
-   chats, read-only retention of `code`/`snapshots`. Tests over synthetic logs (burst
-   batching, multi-gadget, live-chat pins, blueprint pins).
+4. **migration**: constructor migration (log→commit synthesis at merge-message
+   versions plus 1-hour batching, pinned-version commits, `commits` backfill on
+   historical merge messages, chat pin rewriting), legacy-seeding path for in-flight
+   chats, read-only retention of `code`/`snapshots`. Tests over synthetic logs (merge
+   points, burst batching, multi-gadget, live-chat pins, blueprint pins).
 5. **frontend**: chat-doc layering, `getCodeAtCommit` viewing, standalone-editing
    removal, stale-accept / update-from-mainline UX.
 

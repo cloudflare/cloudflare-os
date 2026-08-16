@@ -44,7 +44,7 @@ import {
 } from "isomorphic-git";
 import diff3Merge from "diff3";
 import { collection, type Collection } from "@gadgets/typed-storage";
-import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
+import type { AiChatAuthorInfo, CommitIdentity, CommitInfo } from "@gadgets/workshop-shared/api";
 
 // =======================================================================================
 // Storage schema
@@ -182,12 +182,6 @@ export function makeGitObjectsFs(objects: Collection<GitObjectRecord, string>): 
 // =======================================================================================
 // GitStore
 
-/** A commit author or committer, without the timestamp (which is supplied per commit). */
-export interface CommitIdentity {
-  name: string;
-  email: string;
-}
-
 /** Options for `GitStore.writeFilesAsCommit()`. */
 export interface WriteCommitOptions {
   /** Parent commit oids; empty for a root commit. */
@@ -203,24 +197,6 @@ export interface WriteCommitOptions {
   message: string;
 
   /** Author and committer timestamp. Recorded in UTC (timezone offset 0). */
-  timestamp: Date;
-}
-
-/** Metadata of one commit, as returned by `GitStore.readCommitLog()`. */
-export interface CommitInfo {
-  /** The commit's oid. */
-  oid: string;
-
-  /** Parent commit oids; empty for a root commit. */
-  parents: string[];
-
-  /** The commit message, as stored (git normalization gives it a trailing newline). */
-  message: string;
-
-  /** The commit author. */
-  author: CommitIdentity;
-
-  /** The author timestamp. */
   timestamp: Date;
 }
 

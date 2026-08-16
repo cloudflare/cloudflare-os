@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, CodeUpdate, CodeSubscriber, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
@@ -758,6 +758,24 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
       throw new TypeError(`Invalid ActionRecord type: ${(record as ActionRecord).type}`);
   }
 }
+
+/**
+ * One incremental update in the workspace-wide Yjs code log (the `code` and `snapshots`
+ * collections). Formerly the public `CodeUpdate` wire type; the git-storage transition removed it
+ * from the API along with `subscribeToCode()` (mainline code becomes commits; see git-store.ts),
+ * leaving it as the internal record type of the log, which ultimately remains only as the
+ * read-only CRDT base for chats that predate commit-seeded docs.
+ */
+type CodeUpdate = {
+  /** Version number of the code AFTER this update has been applied. */
+  version: number;
+
+  /** Original timestamp of this update. */
+  timestamp: Date;
+
+  /** Yjs-encoded (V2) update blob. */
+  update: Uint8Array;
+};
 
 function makeOverseerStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
@@ -7642,47 +7660,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     });
   }
 
-  async subscribeToCode(subscriber: RpcStub<CodeSubscriber>, fromVersion: number = 0)
-      : Promise<RpcStub<{}>> {
-    let codeVersions = this.impl.storage.code;
-
-    subscriber = subscriber.dup();  // keep stub after return
-
-    let dbSubscriber = {
-      add(record: CodeUpdate) {
-        subscriber.update(record).catch((_err: any) => { codeVersions.unsubscribe(dbSubscriber) });
-      },
-      update(oldRecord: CodeUpdate, newRecord: CodeUpdate): void {
-        // Never happens.
-      },
-      remove(record: CodeUpdate): void {
-        // Never happens.
-      }
-    }
-
-    let unsubscribe = () => {
-      codeVersions.unsubscribe(dbSubscriber);
-      subscriber[Symbol.dispose]();
-    };
-
-    this.impl.replayUpdates(fromVersion, "current", (version: CodeUpdate) => {
-      // TODO: Do some flow control here.
-      subscriber.update(version).catch(unsubscribe);
-    });
-
-    subscriber.ready().catch(unsubscribe);
-
-    codeVersions.subscribe(dbSubscriber);
-
-    // @ts-expect-error Bugs in native RPC types make this not work currently.
-    return new NativeRpcStub<{}>({
-      [Symbol.dispose]() {
-        unsubscribe();
-        subscriber[Symbol.dispose]();
-      }
-    });
-  }
-
   async updateCode(update: Uint8Array, chatId?: number): Promise<void> {
     if (chatId === undefined) {
       this.impl.updateCode(update);
@@ -7724,6 +7701,30 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let displayAuthor = this.impl.normalizeDraftAuthor(allUpdates);
     this.impl.emitChatDraftUpdate(chatId, timestamp, displayAuthor, update);
     this.impl.compactChatDraftUpdates(chatId, allUpdates);
+  }
+
+  // --- Commit-backed code reads (not yet implemented) ---
+  //
+  // Declared by the Overseer interface as of the git-storage API change; the implementations land
+  // with the commit-backed code flow in the next change of this sequence. Throwing (rather than
+  // returning dummies) keeps any premature caller loud.
+
+  async getCodeAtCommit(_commitId: string): Promise<{files: Record<string, string>}> {
+    throw new Error("getCodeAtCommit: not implemented until the commit-backed code flow lands");
+  }
+
+  async getCommitLog(_fromCommit: string, _depth?: number): Promise<CommitInfo[]> {
+    throw new Error("getCommitLog: not implemented until the commit-backed code flow lands");
+  }
+
+  async getLegacyChatDocBase(_chatId: number): Promise<Uint8Array> {
+    throw new Error(
+        "getLegacyChatDocBase: not implemented until the commit-backed code flow lands");
+  }
+
+  async updateChatFromMainline(_chatId: number): Promise<{conflictPaths: string[]}> {
+    throw new Error(
+        "updateChatFromMainline: not implemented until the commit-backed code flow lands");
   }
 
   async getGatekeeperById(id: number): Promise<GatekeeperClient<any>> {
@@ -8514,7 +8515,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async mergeChanges(chatId: number, mergeThrough: number | null,
-                     options?: { includeDraft?: boolean }): Promise<void> {
+                     options?: { includeDraft?: boolean }): Promise<MergeChangesResult> {
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(null), this.impl.logger);
 
@@ -8527,8 +8528,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       }
     }
 
+    // Note: the "stale" outcome is never produced yet. Chats have no commit pins until the
+    // commit-backed code flow lands; until then, CRDT merging keeps every accept applicable.
     if (mergeThrough === null) {
-      return;
+      return {outcome: "merged"};
     }
 
     // Promote provisional gadgets whose creation is covered by this merge: accepting the chat's
@@ -8573,7 +8576,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     if (updates.length === 0) {
       // Nothing to merge, so this is a no-op.
-      return;
+      return {outcome: "merged"};
     }
 
     // To detect if this is the first code change, we have to see if there are any changes listed
@@ -8601,6 +8604,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       type: "merge",
       mergeThrough,
       version,
+
+      // TODO(git-storage): Create commits on merge, fill this in.
+      commits: [],
     });
 
     meta.lastActive = timestamp;
@@ -8619,6 +8625,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       chat_id: chatId,
       interaction_type: "code_merged",
     });
+
+    return {outcome: "merged"};
   }
 
   async revertChanges(chatId: number, revertFrom: number): Promise<void> {
@@ -9199,11 +9207,17 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async setPinned(_pinned: boolean): Promise<void> { this.#deny(); }
   async deleteSelf(): Promise<void> { this.#deny(); }
   async createGadget(_title: string): Promise<RpcStub<GadgetClient>> { this.#deny(); }
-  async subscribeToCode(
-      _subscriber: RpcStub<CodeSubscriber>, _fromVersion?: number): Promise<RpcStub<{}>> {
+  async updateCode(_update: Uint8Array, _chatId?: number): Promise<void> { this.#deny(); }
+  async getCodeAtCommit(_commitId: string): Promise<{files: Record<string, string>}> {
     this.#deny();
   }
-  async updateCode(_update: Uint8Array, _chatId?: number): Promise<void> { this.#deny(); }
+  async getCommitLog(_fromCommit: string, _depth?: number): Promise<CommitInfo[]> {
+    this.#deny();
+  }
+  async getLegacyChatDocBase(_chatId: number): Promise<Uint8Array> { this.#deny(); }
+  async updateChatFromMainline(_chatId: number): Promise<{conflictPaths: string[]}> {
+    this.#deny();
+  }
   async listPreApprovableActions(): Promise<PreApprovableAction[]> { this.#deny(); }
   async getGatekeeperById(_id: number): Promise<GatekeeperClient<any>> { this.#deny(); }
   async newGatekeeper(_accountId: number, _resourceUrl: string)
@@ -9269,7 +9283,9 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async deleteChatAttachment(_id: string): Promise<void> { this.#deny(); }
   async setChatTitle(_chatId: number, _title: string): Promise<void> { this.#deny(); }
   async mergeChanges(_chatId: number, _mergeThrough: number | null,
-                     _options?: { includeDraft?: boolean }): Promise<void> { this.#deny(); }
+                     _options?: { includeDraft?: boolean }): Promise<MergeChangesResult> {
+    this.#deny();
+  }
   async revertChanges(_chatId: number, _revertFrom: number): Promise<void> { this.#deny(); }
   async finalizeChatDraft(_chatId: number): Promise<void> { this.#deny(); }
   async discardChatDraftChanges(_chatId: number): Promise<void> { this.#deny(); }

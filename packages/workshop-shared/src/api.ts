@@ -1429,42 +1429,39 @@ export type UiBundle = {
   // libraries should be loaded.
 };
 
-/** Represents an incremental update to the code. */
-export type CodeUpdate = {
-  /** Version number of the code AFTER this update has been applied. */
-  version: number;
+/**
+ * A git author/committer identity, as recorded in commits in a workspace's git object store.
+ * Derived from the committing user's profile: the display name becomes `name` and the profile ID
+ * the `email` (profile IDs that aren't email addresses get an `@localhost` placeholder appended).
+ */
+export type CommitIdentity = {
+  /** Human-readable name, e.g. "Kenton Varda". */
+  name: string;
 
-  /** Original timestamp of this update. */
+  /** Email address, e.g. "kenton@cloudflare.com" or "kenton@localhost". */
+  email: string;
+};
+
+/**
+ * Metadata of one commit in a workspace's git object store, as returned by
+ * Overseer.getCommitLog(). Commits are immutable, so results may be cached by oid.
+ */
+export type CommitInfo = {
+  /** The commit's oid (40-hex SHA-1), as found in e.g. WorkpieceSummary.commitId. */
+  oid: string;
+
+  /** Parent commit oids; empty for a root commit. */
+  parents: string[];
+
+  /** The commit message, as stored (git normalization gives it a trailing newline). */
+  message: string;
+
+  /** The commit author. */
+  author: CommitIdentity;
+
+  /** The author timestamp. */
   timestamp: Date;
-
-  /**
-   * Yjs encoded update blob, encoding at least all changes since the previous version that the
-   * client is known to already have.
-   *
-   * All encoded updates use V2 format.
-   */
-  update: Uint8Array;
-}
-
-/** Callback interface used to receive code updates from the server. */
-export interface CodeSubscriber {
-  /**
-   * Called any time the version on the server is newer than what the subscriber has.
-   *
-   * When the subscriber is multiple versions behind, the server may choose to send multiple
-   * incremental updates or one big update. The server may make several calls in rapid succession
-   * without waiting for previous calls to return. Cap'n Web guarantees that the calls will be
-   * delivered in order, but it is important that the subscriber either applies the updates or
-   * places them in some sort of queue synchronously to maintain ordering.
-   */
-  update(up: CodeUpdate): void;
-
-  /**
-   * Called the first time the subscriber is up-to-date with the latest version known to the
-   * server.
-   */
-  ready(): void;
-}
+};
 
 /**
  * Specifies the state of an action in the action log:
@@ -1579,8 +1576,10 @@ export type AgentSpawnerConfig = {
 
 /**
  * Interface to a workspace's Overseer, used to display the Gadget Workshop shell UI around that
- * workspace. Workspace-level concerns live here: the gadget registry, code sync (one Yjs doc for
- * the whole workspace), chats, actions/hooks, sharing, and blueprint listing. Per-gadget
+ * workspace. Workspace-level concerns live here: the gadget registry, committed code (git
+ * commits in the workspace's shared object store, each gadget's head recorded in
+ * WorkpieceSummary.commitId), per-chat uncommitted changes (a Yjs doc per chat, seeded from
+ * commits; see ChatCodeBase), chats, actions/hooks, sharing, and blueprint listing. Per-gadget
  * operations live on the GadgetClient sub-capability (see createGadget()/getGadget()).
  */
 export interface Overseer extends RpcTarget {
@@ -1657,27 +1656,46 @@ export interface Overseer extends RpcTarget {
   getGadget(id: WorkpieceId): Promise<RpcStub<GadgetClient>>;
 
   /**
-   * Subscribe to code updates.
+   * Read the full file map of a commit in the workspace's git object store: file path -> text
+   * content, with nested trees flattened to `/`-joined paths.
    *
-   * Code is represented as a single Yjs doc shared by the whole workspace. Each workpiece that
-   * owns files has its own root Y.Map (mapping file names to Y.Text instances) within the doc,
-   * named per WorkpieceSummary.filesRoot. Updates are whole-doc and may span workpieces.
-   *
-   * `subscriber` will receive updates whenever it becomes out-of-date. `fromVersion` is the
-   * version the subscriber already has before the subscription starts. To download the code from
-   * scratch, omit the version (or pass zero).
-   *
-   * Disposing the returned `RpcStub` will cancel the subscription.
+   * Commits are immutable, so responses are cacheable client-side by oid. This is how committed
+   * code is viewed when no chat's uncommitted state applies (outside any chat, or in a chat with
+   * no proposed changes) -- no Yjs doc is involved at all -- and how a chat doc's seed inputs
+   * are fetched (see ChatCodeBase).
    */
-  subscribeToCode(subscriber: RpcStub<CodeSubscriber>, fromVersion?: number): Promise<RpcStub<{}>>;
+  getCodeAtCommit(commitId: string): Promise<{files: Record<string, string>}>;
 
   /**
-   * Send a Yjs update to the server.
-   *
-   * If `chatId` is omitted, the update applies to the committed mainline code. If `chatId`
-   * is provided, the update is recorded as a live draft edit for that chat's branch.
+   * Walk the commit graph from `fromCommit` (that commit first, then its ancestry), returning up
+   * to `depth` commits' metadata -- all reachable commits when `depth` is omitted. Traversal
+   * order for merge commits follows git log's default (reverse chronological). Like
+   * getCodeAtCommit(), results are immutable and cacheable.
    */
-  updateCode(update: Uint8Array, chatId?: number): Promise<void>;
+  getCommitLog(fromCommit: string, depth?: number): Promise<CommitInfo[]>;
+
+  /**
+   * Fetch the Yjs base doc, encoded as a whole-doc V2 update, for a chat that predates
+   * commit-seeded chat docs (indicated by ChatCodeBase.seedHash being absent). Such a chat's Yjs
+   * history is anchored to the retired workspace-wide code log, so its base cannot be re-derived
+   * from commits; this returns it in one shot instead. The chat's proposed changes and drafts
+   * apply on top, exactly as with a commit-derived seed. Chats created after the git-storage
+   * transition never need this.
+   */
+  getLegacyChatDocBase(chatId: number): Promise<Uint8Array>;
+
+  /**
+   * Record a live draft edit on a chat's branch.
+   *
+   * `update` is a Yjs V2 update against the chat's code doc (see ChatCodeBase for how that doc
+   * is derived). Draft updates are keystroke-level provisional state: they are broadcast to
+   * other clients via AiChatSubscriber.draftUpdate() and later materialized into a durable
+   * `changes` message (see finalizeChatDraft() / mergeChanges()).
+   *
+   * All editing happens within some chat. There is no way to write committed code directly:
+   * gadget heads only advance when a chat's changes are accepted (see mergeChanges()).
+   */
+  updateCode(update: Uint8Array, chatId: number): Promise<void>;
 
   /** Get an existing gatekeeper by workpiece ID. Throws if the ID doesn't exist. */
   getGatekeeperById(id: WorkpieceId): Promise<GatekeeperClient<any>>;
@@ -1897,10 +1915,35 @@ export interface Overseer extends RpcTarget {
    *
    * If `options.includeDraft` is true, any current live draft for the chat is first materialized
    * into one durable `changes` message and included in the merge.
+   *
+   * Accepting is only ever a fast-forward: every gadget touched by the merged changes must have
+   * its chat pin equal to the gadget's current head commit (see ChatGadgetPin.mergedCommit). If
+   * mainline has advanced past any pin, nothing at all is merged -- no partial accepts -- and
+   * the call returns a "stale" outcome (an expected result, not an exception; see
+   * MergeChangesResult): call updateChatFromMainline(), resolve any conflicts, and retry.
    */
   mergeChanges(
       chatId: number, mergeThrough: number | null,
-      options?: { includeDraft?: boolean }): Promise<void>;
+      options?: { includeDraft?: boolean }): Promise<MergeChangesResult>;
+
+  /**
+   * Merge mainline commits that landed after this chat's pins into the chat's uncommitted state.
+   *
+   * For each gadget whose ChatGadgetPin.mergedCommit is behind the gadget's current head, the
+   * server computes a 3-way text merge (base = the pinned commit's tree, ours = the head tree,
+   * theirs = the chat's current files) and delivers the result *into the chat* as a normal
+   * `changes` message (see AiChatMessageBody.mainlineMerge), advancing the pin to head.
+   * Conflicting hunks are left inline as 3-way conflict markers
+   * (`<<<<<<<`/`|||||||`/`=======`/`>>>>>>>`) for the user or their agent to clean up; the
+   * affected paths are returned and also recorded on the message. Yjs merge semantics are
+   * deliberately not used across divergent bases: CRDT merges of independently edited text
+   * produce nonsense, whereas conflict markers are an explicit, fixable representation.
+   *
+   * Once the chat is up to date (and mainline hasn't moved again), mergeChanges() succeeds as a
+   * plain fast-forward. Returns an empty `conflictPaths` when every file merged cleanly (or
+   * there was nothing to merge).
+   */
+  updateChatFromMainline(chatId: number): Promise<{conflictPaths: string[]}>;
 
   /**
    * Indicates that the user has requested that proposed changes starting from the given sequence
@@ -2116,6 +2159,87 @@ export type AiChatMetadata = {
    * checkpoint; those messages remain in canonical history but no longer drive current-state reads.
    */
   compactedTo?: number;
+
+  /**
+   * The chat's code-branch state: which commits seeded its code doc and how far mainline has
+   * been merged in. Absent until the chat first involves code. Delivered (and re-delivered on
+   * change, e.g. when updateChatFromMainline() advances a pin) via AiChatSubscriber.metadata().
+   */
+  codeBase?: ChatCodeBase;
+};
+
+/**
+ * A chat's code-branch state. A chat behaves as a branch: its Y.Doc is seeded from the gadgets'
+ * commits, its edits are uncommitted changes on top, and accepting fast-forwards each touched
+ * gadget's head (see Overseer.mergeChanges()).
+ *
+ * Clients derive the chat doc's base themselves: fetch each pinned gadget's seedCommit tree
+ * (Overseer.getCodeAtCommit(), cacheable by oid), build the deterministic seed update with
+ * `seedDocFromFiles` from `@gadgets/workshop-shared/yjs-seed` -- all seedCommit-bearing pins in
+ * a single call, keyed by filesRoot -- verify it against `seedHash`, then apply the chat's
+ * proposed changes and drafts on top.
+ */
+export type ChatCodeBase = {
+  /** Per-gadget pins: every gadget seeded into the chat doc, plus any that joined later. */
+  gadgets: ChatGadgetPin[];
+
+  /**
+   * SHA-256 (64-hex) of the seed update bytes (see `seedUpdateHash` in
+   * `@gadgets/workshop-shared/yjs-seed`). Every participant must derive a byte-identical seed
+   * for the chat's Yjs updates to compose; a client that derives a different hash must fail
+   * loudly rather than edit a diverged doc. Absent for chats predating commit-seeded docs:
+   * their Yjs base is not derivable from commits -- fetch it with
+   * Overseer.getLegacyChatDocBase() instead.
+   */
+  seedHash?: string;
+};
+
+/**
+ * One gadget's commit pins within a chat (see ChatCodeBase).
+ */
+export type ChatGadgetPin = {
+  /** The pinned gadget. */
+  gadgetId: WorkpieceId;
+
+  /**
+   * The gadget's root map name in the chat's code doc, denormalized from
+   * WorkpieceSummary.filesRoot so the pin remains interpretable even after the gadget is
+   * deleted from the workspace.
+   */
+  filesRoot: string;
+
+  /**
+   * The commit whose tree seeded this gadget's root in the chat's code doc. Immutable for the
+   * life of the chat: the deterministic seed is derived from it (see ChatCodeBase.seedHash), so
+   * every Yjs update recorded since builds on the item IDs it established. Absent when the
+   * gadget's root entered the chat by other means: created within the chat itself, or delivered
+   * by updateChatFromMainline() after appearing on mainline post-seeding (in both cases its
+   * content arrived as regular updates, not seed items).
+   */
+  seedCommit?: string;
+
+  /**
+   * The most recent mainline commit whose content has been merged into the chat for this gadget.
+   * Starts equal to seedCommit and advances on updateChatFromMainline(). Accepting the chat's
+   * changes requires this to equal the gadget's current head (WorkpieceSummary.commitId); a
+   * difference means the chat is stale and the UI should offer updating from mainline.
+   */
+  mergedCommit: string;
+};
+
+/**
+ * Result of Overseer.mergeChanges(). A stale chat is an expected outcome of the accept flow --
+ * someone else's accept can land at any time -- so it is reported as a value for ordinary
+ * control flow, not thrown as an error.
+ */
+export type MergeChangesResult = {
+  /**
+   * "merged": the changes were accepted; every touched gadget's head fast-forwarded (also the
+   * outcome when there was nothing to merge). "stale": nothing was merged -- mainline advanced
+   * past one of the chat's pins, so the accept could not fast-forward; call
+   * updateChatFromMainline(), resolve any conflicts, and retry.
+   */
+  outcome: "merged" | "stale";
 };
 
 /**
@@ -2227,24 +2351,28 @@ export type AiChatMessageBody = {
   type: "changes";
 
   /**
-   * The code changes themselves, as a Yjs-encoded (V2) update against the workspace code Y.Doc.
-   * Absent when the batch records only gadget creations and/or binding additions with no
-   * accompanying code edits.
+   * The code changes themselves, as a Yjs-encoded (V2) update against the chat's code doc (see
+   * ChatCodeBase). Absent when the batch records only gadget creations and/or binding additions
+   * with no accompanying code edits.
    */
   update?: Uint8Array;
 
   /**
-   * The workspace code version that `update` was built against. Once an agent session observes
-   * the code at some version, the chat stays locked to that version (see
-   * AiToolCall.observedCodeVersion), so history replay must learn each update's base version
-   * *before* it reconstructs the session's code state. Present whenever `update` is, except in
-   * messages persisted before this field existed. For user-authored batches this records the
-   * mainline base at the time the user's edits were captured, which may legitimately differ
-   * from the version an agent session is locked to (the user can accept changes -- advancing
-   * mainline -- and keep editing); such stamps seed a session's version lock but are never
-   * checked against it.
+   * Legacy (pre-git-storage): the workspace-wide code version that `update` was built against,
+   * from when mainline was a Yjs log rather than commits. Retained because history replay of
+   * chats from that era still needs each update's base version (see
+   * AiToolCall.observedCodeVersion). Chats with commit-seeded docs pin commits per gadget
+   * instead (see ChatCodeBase) and never record this.
    */
   observedCodeVersion?: number;
+
+  /**
+   * Present when this batch was produced by Overseer.updateChatFromMainline(): `update` merges
+   * mainline commits into the chat. `conflictPaths` lists the files whose 3-way merge was not
+   * clean, in sorted order; their merged contents carry inline conflict markers (or, for
+   * delete-vs-modify, the surviving side's content) for the user or their agent to resolve.
+   */
+  mainlineMerge?: {conflictPaths: string[]};
 
   /**
    * Gadgets created as part of this batch of changes (by the agent's `createGadget` tool, or by
@@ -2276,10 +2404,21 @@ export type AiChatMessageBody = {
   mergeThrough: number;
 
   /**
-   * Code version at which the merge was applied. (A merge covering only gadget creations /
-   * binding additions writes no new code version; this then records the bumped version counter.)
+   * Legacy (pre-git-storage): the workspace-wide code version at which the merge was applied,
+   * from when mainline was a Yjs log. Merges of chats with commit-seeded docs record `commits`
+   * instead.
    */
-  version: number;
+  version?: number;
+
+  /**
+   * The commits this merge created: each touched gadget's new head (see
+   * WorkpieceSummary.commitId). Empty when the merge created no commits (e.g. it covered only
+   * gadget creations / binding additions, with no code changes). Present on every merge
+   * message: merges are the historically meaningful points in the old workspace-wide code log,
+   * so the git-storage migration synthesizes a commit at each historical merge's recorded
+   * `version` and backfills this field.
+   */
+  commits: {gadgetId: WorkpieceId, commitId: string}[];
 } | {
   /**
    * Indicates that at this point in the chat, the user chose to revert all changes starting at the
@@ -2466,11 +2605,13 @@ export type AiToolCall = {
   toolCallId: string;
 
   /**
-   * If present, this tool observed the code at the given version number.
-   *
-   * Note that generally once the agent observes code at a particular version, the server tries
-   * to stay at that version for the rest of the thread, to avoid confusing the agent. ("changes"
-   * messages record the base version of their code updates the same way; see AiChatMessageBody.)
+   * Legacy (pre-git-storage): if present, this tool observed the code at the given
+   * workspace-wide version number, from when mainline was a Yjs log rather than commits. Once an
+   * agent observed code at a particular version, the server stayed at that version for the rest
+   * of the thread, to avoid confusing the agent. ("changes" messages record the base version of
+   * their code updates the same way; see AiChatMessageBody.) Retained because replaying chats
+   * from that era still depends on these stamps; chats with commit-seeded docs pin commits at
+   * the chat level instead (see ChatCodeBase) and never record this.
    */
   observedCodeVersion?: number;
 
@@ -2954,11 +3095,20 @@ export type WorkpieceSummary = {
   output?: BlueprintOutput;
 
   /**
-   * The name of the Y.Doc root map that holds this workpiece's files, if it owns files (see
-   * Overseer.subscribeToCode). For most gadgets this is the decimal workpiece ID; the gadget
-   * migrated from before multi-gadget support keeps the legacy unnamed root "".
+   * The name of the Y.Doc root map that holds this workpiece's files within a chat's code doc,
+   * if it owns files (see ChatCodeBase). For most gadgets this is the decimal workpiece ID; the
+   * gadget migrated from before multi-gadget support keeps the legacy unnamed root "".
    */
   filesRoot?: string;
+
+  /**
+   * The gadget's head commit (40-hex oid) in the workspace's git object store -- i.e. its
+   * committed mainline code, readable via Overseer.getCodeAtCommit()/getCommitLog(). Advances
+   * when a chat's changes are accepted; subscribeToWorkpieces() delivers a fresh entry()
+   * whenever it does. Absent while the gadget has no accepted code yet (in particular, a gadget
+   * still pending in a chat; see `chatId`).
+   */
+  commitId?: string;
 
   /**
    * If present, this workpiece exists only in the context of the given chat. The UI should display

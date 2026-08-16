@@ -17,7 +17,7 @@ function changes(sequence: number, update: Uint8Array): AiChatMessage {
 }
 
 function merge(sequence: number, mergeThrough: number): AiChatMessage {
-  return message(sequence, { type: "merge", mergeThrough, version: 1 });
+  return message(sequence, { type: "merge", mergeThrough, version: 1, commits: [] });
 }
 
 function revert(sequence: number, revertFrom: number): AiChatMessage {
