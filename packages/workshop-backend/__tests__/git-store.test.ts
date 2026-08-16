@@ -103,6 +103,18 @@ describe("GitStore", () => {
     expect(limited.map(entry => entry.oid)).toEqual([SECOND_COMMIT_OID]);
   });
 
+  it("writes and round-trips an empty-tree commit", async () => {
+    // An accepted gadget creation with no files yet commits an empty tree (see mergeChanges),
+    // so the empty map must produce a valid commit -- byte-identical to real git's, over the
+    // canonical empty tree (4b825dc...) -- and read back as zero files.
+    let store = new GitStore(makeObjects());
+    let oid = await store.writeFilesAsCommit(new Map(), {
+      parents: [], author: ALICE, message: "create gadget", timestamp: new Date(1700000000_000),
+    });
+    expect(oid).toBe("bb4cb778675f2b2a4e442e89256aa6da72fd09a2");  // real `git commit-tree` oid
+    expect((await store.readCommitFiles(oid)).size).toBe(0);
+  });
+
   it("rejects reads of unknown commits", async () => {
     let store = new GitStore(makeObjects());
     await expect(store.readCommitFiles("deadbeef".repeat(5))).rejects.toThrow();
@@ -199,6 +211,18 @@ describe("threeWayMerge", () => {
         files({ "a.js": "theirs\n" }));                 // theirs modified a.js, deleted b.js
     expect(result.conflictPaths).toEqual(["a.js", "b.js"]);
     expect(result.files).toEqual(files({ "a.js": "theirs\n", "b.js": "ours\n" }));
+  });
+
+  it("preserves bare \\r and U+2028/U+2029, which are not line boundaries here", () => {
+    // A lossy line split (one that treats these as boundaries but drops them) would corrupt
+    // merged content; splitLines keeps them inside their line instead, merely coarsening the
+    // merge granularity for such files.
+    let result = threeWayMerge(
+        files({ "a.js": "one\rtwo\u2028three\nmid\nend\n" }),
+        files({ "a.js": "one\rtwo\u2028three\nmid\nEND\n" }),
+        files({ "a.js": "ONE\rtwo\u2028three\nmid\nend\n" }));
+    expect(result.conflictPaths).toEqual([]);
+    expect(result.files.get("a.js")).toBe("ONE\rtwo\u2028three\nmid\nEND\n");
   });
 
   it("terminates unterminated conflict hunks with a newline", () => {

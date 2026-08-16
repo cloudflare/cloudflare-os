@@ -1,13 +1,16 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ChatCodeBase, ChatGadgetPin, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
 } from "cloudflare:workers";
 import { createTypedStorage, collection, keyString } from "@gadgets/typed-storage";
-import { gitObjectsCollection } from "./git-store";
+import { GitStore, commitIdentityForAuthor, gitObjectsCollection, threeWayMerge }
+  from "./git-store";
+import { seedDocFromFiles, seedUpdateHash } from "@gadgets/workshop-shared/yjs-seed";
+import { readDocFiles, writeDocFiles } from "./yjs-files";
 import * as Y from "yjs";
 import {
   LanguageModelGatekeeperProps,
@@ -23,7 +26,8 @@ import {
 } from "./ai-gateway";
 import { AgentGadgetInfo, AgentHooks, AiChatAgentContext, ChatBindingEntry, SeedBindingInfo, runAgent, makeStorableArgs, summarizeArgs, type AiChatMessageBodyWithModelData, type CompactionCheckpoint, type StoredAssistantMessage } from "./agent";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
-import { foldProposedChanges, isCompactionTurn, type ChangeBatch } from "./agent-compaction";
+import { chatChangeStatuses, foldProposedChanges, isCompactionTurn, type ChangeBatch }
+  from "./agent-compaction";
 import { ambientGatekeeperMode } from "./provisioning-policy";
 import { listFeaturedBlueprintsFromKv, readBlueprintContent, readBlueprintKvRecord, sanitizeBlueprintOutput } from "./blueprint-archive";
 import { WebFetchEnv } from "./web-fetch";
@@ -332,6 +336,19 @@ type GadgetRecord = {
   // same-named gadget provisionally at the same time.
   bindingName: string;
 
+  // The gadget's head commit (40-hex oid) in the workspace's git object store -- its committed
+  // mainline code (see git-store.ts and the `gitObjects` collection). This field is the gadget's
+  // "ref": the store itself has no ref layer. It advances only in mergeChanges(), which requires
+  // the accepting chat to have already merged this commit (accepts are fast-forward only), and is
+  // surfaced to clients as WorkpieceSummary.commitId. Absent only before the first accept: a
+  // gadget still pending in a chat (its files exist only in that chat's proposed changes), or a
+  // permanent gadget created outside any chat (createGadget with no chatId). Accepting a
+  // creation always writes a first commit -- an empty tree when the gadget has no files yet --
+  // so a promoted gadget always has a head other chats' pins can see. The first accept's
+  // fast-forward check still serializes competing chats in the absent state: whichever accept
+  // lands first sets the head, and every other chat's pin (absent != head) goes stale.
+  commitId?: string;
+
   // This gadget's bindings: binding name (as it appears in the gadget worker's `env`) -> binding
   // edge. Expected to stay small, so it's a map on the record rather than a separate collection.
   bindings: Record<string, BindingRecord>;
@@ -439,9 +456,16 @@ type BlueprintGadgetRecord = {
   // Which gadget this blueprint exports. If omitted, use `defaultGadgetId`.
   gadgetId?: WorkpieceId;
 
-  // Version of the workspace code (from the code collection) that was exported into this
-  // blueprint. (The blueprint's snapshot itself contains only this gadget's files.)
-  codeVersion: number;
+  // The commit (in the workspace's git object store) whose tree was exported into this
+  // blueprint. Every record written since git-backed code storage carries it (a blueprint of a
+  // gadget with no committed code cannot be created); absent only on records written before,
+  // which carry `codeVersion` instead until the migration converts them.
+  commitId?: string;
+
+  // Legacy (pre-git-storage): version of the workspace code (from the read-only `code`
+  // collection) that was exported into this blueprint. Superseded by `commitId`; retained so
+  // old records stay interpretable until the migration rewrites them.
+  codeVersion?: number;
 
   // Set true before propagating to User DO / KV; cleared on success.
   // If persistently true, the UI should show a retry indicator.
@@ -844,28 +868,26 @@ function makeOverseerStorage(storage: DurableObjectStorage) {
     },
 
     collections: {
-      // All incremental code changes from the beginning of time. This table is tightly-packed,
-      // starting from 1. (There's no entry for version 0 since it represents the starting empty
-      // state.)
+      // READ-ONLY LEGACY: the pre-git-storage incremental code log, tightly-packed from version 1
+      // (there's no entry for version 0, the starting empty state). Nothing writes it anymore --
+      // mainline code lives in `gitObjects` as commits -- but it remains the CRDT base for chats
+      // that predate commit-seeded docs (see buildChatDoc / getLegacyChatDocBase), so it is
+      // retained until those drain; deletion is a later cleanup change. Workspaces initialized
+      // after git storage never write it at all.
       code: collection<CodeUpdate>()({
         primaryKey: "version"
       }),
 
-      // "Snapshots" of the code. Each item in this collection contains an encoded update "from
-      // zero". This is an optimization so that it's not necessary to scan the whole code table
-      // to get caught up.
-      //
-      // We create a snapshot each time the total byte size of all encoded updates since the
-      // previous snapshot exceeds the size of the previous snapshot. This ensures that the total
-      // storage size of the DO is no more than 2x the size of the update history.
+      // READ-ONLY LEGACY: "snapshots" of the code log, each an encoded update "from zero", so
+      // replaying the log (replayUpdates) needn't scan the whole `code` table. No new snapshots
+      // are created; the retained ones keep legacy-chat replay cheap.
       snapshots: collection<CodeUpdate>()({
         primaryKey: "version"
       }),
 
       // The workspace's git object store: real git loose objects (blobs, trees, commits) keyed
-      // by 40-hex SHA-1 oid. Mainline gadget code is destined to live here as commits -- with
-      // each GadgetRecord pointing at its head, superseding the `code`/`snapshots` Yjs log --
-      // but nothing writes it yet; the commit-backed code flow lands in a subsequent change.
+      // by 40-hex SHA-1 oid. Mainline gadget code lives here as commits, with each
+      // GadgetRecord.commitId pointing at its head (superseding the `code`/`snapshots` Yjs log).
       // There is deliberately no ref layer: gadget/blueprint records and chats' pinned commits
       // are the refs, and all gadgets' histories share this one content-addressed store. See
       // git-store.ts.
@@ -1057,8 +1079,22 @@ function makeOverseerStorage(storage: DurableObjectStorage) {
 
 type OverseerStorage = ReturnType<typeof makeOverseerStorage>;
 
-// Don't build a snapshot until we have at least 64k of logs since the last one.
-const MIN_SNAPSHOT_THRESHOLD: number = 65536;
+// Validates a client-supplied commit oid before it reaches the git store.
+function validateOid(oid: string): string {
+  if (!/^[0-9a-f]{40}$/.test(oid)) {
+    throw new Error("Invalid commit id.");
+  }
+  return oid;
+}
+
+// Compares two flattened file maps for identical content.
+function filesEqual(a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>): boolean {
+  if (a.size !== b.size) return false;
+  for (let [name, content] of a) {
+    if (b.get(name) !== content) return false;
+  }
+  return true;
+}
 
 // Common internals that several interfaces implemented by the Overseer need to use. Can't just
 // declare private methods because some of the methods are needed by multiple classes.
@@ -1145,9 +1181,9 @@ class OverseerImpl implements AgentHooks {
 
   users: DurableObjectNamespace<UserDurableObject>;
 
-  // Tracks the size of the most-recent snapshot, and the size of all incremental updates since,
-  // in order to help decide when to make a new snapshot.
-  #snapshotMetrics?: {snapshotSize: number, logSize: number};
+  // The workspace's git object store, holding all gadgets' committed code (see git-store.ts).
+  // One instance per DO so isomorphic-git's parse cache is shared.
+  readonly gitStore: GitStore;
 
   // Per-chat in-memory state for running agents and pending agent callbacks.
   #liveChats = new Map<number, LiveChatContext>();
@@ -1429,6 +1465,7 @@ class OverseerImpl implements AgentHooks {
   constructor(public ctx: DurableObjectState, public env: Cloudflare.Env) {
     this.logger = logger.with({ gadgetId: ctx.id.toString() });
     this.storage = makeOverseerStorage(ctx.storage);
+    this.gitStore = new GitStore(this.storage.gitObjects);
     this.users = this.ctx.exports.UserDurableObject;
     this.ownerId = this.storage.ownerId.get();
 
@@ -1731,14 +1768,18 @@ class OverseerImpl implements AgentHooks {
   // re-adopt. An unstamped edge is a re-adoptable tail iff persisted tool calls for its key
   // outnumber agent-flushed `addedBindings` recordings -- exactly the condition under which the
   // resumed turn's replay re-adopts (and thereby flushes and stamps) it.
-  // Called at agent turn start (before history replay) and turn end, plus defensively from
-  // merge/revert (which assert the chat has no active turn). The log scan runs only when an
-  // unstamped record actually exists, so the common case costs one registry listing.
+  // A *stamped* record is reaped when the log marks its creation reverted: reverts record their
+  // message before the awaited record deletions (see #revertChanges), so this is both the tail
+  // of every revert and the recovery from one that crashed partway.
+  // Called at agent turn start (before history replay) and turn end, plus from merge and revert
+  // (which assert the chat has no active turn). The log scans run only when a pending record
+  // actually exists, so the common case costs one registry listing.
   // Best-effort per gadget: a failure (e.g. a hook controller that can't be reached) leaves the
   // record for the next reconciliation attempt.
   async reconcilePendingGadgets(chatId: number): Promise<void> {
-    let unstamped = this.listPendingGadgets(chatId)
-        .filter(gadget => gadget.pending!.sequence === undefined);
+    let pending = this.listPendingGadgets(chatId);
+    let unstamped = pending.filter(gadget => gadget.pending!.sequence === undefined);
+    let stamped = pending.filter(gadget => gadget.pending!.sequence !== undefined);
     let unstampedEdges: {gadget: GadgetRecord, name: string}[] = [];
     for (let gadget of this.storage.gadgets.list()) {
       for (let [name, edge] of Object.entries(gadget.bindings)) {
@@ -1747,6 +1788,27 @@ class OverseerImpl implements AgentHooks {
         }
       }
     }
+
+    // A marking message only affects messages recorded before it, so statuses for the stamped
+    // creations need only the log tail from the earliest one on.
+    let reverted: GadgetRecord[] = [];
+    if (stamped.length > 0) {
+      let statuses = chatChangeStatuses(this.storage.chats.list({
+        prefix: `${keyString(chatId)}.`,
+        start: compactionKey(chatId, Math.min(...stamped.map(g => g.pending!.sequence!))),
+      }));
+      reverted = stamped.filter(g => statuses.get(g.pending!.sequence!) === "reverted");
+    }
+    for (let gadget of reverted) {
+      try {
+        await this.removeGadget(gadget.id);
+      } catch (err) {
+        this.logger.warn("failed to reap reverted pending gadget", {
+          event: "gadget.pending.reconcile.failed", chatId, error: err,
+        });
+      }
+    }
+
     if (unstamped.length === 0 && unstampedEdges.length === 0) return;
 
     let referenced = new Set<WorkpieceId>();
@@ -1910,11 +1972,12 @@ class OverseerImpl implements AgentHooks {
     this.bumpVersion([gadgetId]);
   }
 
-  // Permanently delete a gadget: its hooks, its files, its registry entry (which carries its
-  // binding map), and its running facet. Gatekeepers it bound survive, possibly orphaned. The
-  // gadget's Y.Doc root can't be deleted (Yjs roots are permanent), so its files are cleared;
-  // any content later resurrected into the root by an old client or merged branch is inert
-  // because the registry entry -- the enumeration source of truth -- is gone.
+  // Permanently delete a gadget: its hooks, its registry entry (which carries its binding map
+  // and head commit -- the gadget's only "ref"), and its running facet. Gatekeepers it bound
+  // survive, possibly orphaned. The gadget's commits become dangling objects in the git store,
+  // which is fine: content-addressed objects are cheap, unreachable, and shared with any related
+  // histories. (Chat docs may still hold content in the gadget's files root; such content is
+  // inert because the registry entry -- the enumeration source of truth -- is gone.)
   async removeGadget(id: WorkpieceId): Promise<void> {
     this.getGadgetRecord(id);  // validate it exists
 
@@ -1923,24 +1986,6 @@ class OverseerImpl implements AgentHooks {
     for (let hook of Array.from(this.storage.boundHooks.list())) {
       if ((hook.gadgetId ?? def) === id) {
         await this.deleteHook(hook.id);
-      }
-    }
-
-    // Clear the gadget's files.
-    let {ydoc} = this.buildYDoc("current");
-    let root = ydoc.getMap<Y.Text>(this.gadgetRootName(id));
-    if (root.size > 0) {
-      let updates: Uint8Array[] = [];
-      ydoc.on("updateV2", update => updates.push(update));
-      // Snapshot the key list before mutating the map we're iterating.
-      let files = Array.from(root.keys());
-      ydoc.transact(() => {
-        for (let key of files) {
-          root.delete(key);
-        }
-      });
-      if (updates.length > 0) {
-        this.updateCode(Y.mergeUpdatesV2(updates));
       }
     }
 
@@ -1984,6 +2029,9 @@ class OverseerImpl implements AgentHooks {
         title: record.title,
         filesRoot: this.gadgetRootName(record.id),
       };
+      if (record.commitId !== undefined) {
+        summary.commitId = record.commitId;
+      }
       if (record.output) {
         summary.output = record.output;
       }
@@ -2045,14 +2093,10 @@ class OverseerImpl implements AgentHooks {
   }
 
 
-  // Walk the list of updates to get from `fromVersion` to the current version, calling `apply`
-  // on each one. `fromVersion` can be zero to start from the beginning.
-  //
-  // This function in particular takes care of finding the best snapshot to start from, applying
-  // that first, followed by scanning the code updates table. It also opportunistically calculates
-  // and stashes some metrics on log sizes, useful to decide when to make a new snapshot.
-  //
-  // Returns the final version number.
+  // Walk the (read-only legacy) code log to get from `fromVersion` to the given version, calling
+  // `apply` on each update. `fromVersion` can be zero to start from the beginning. Takes care of
+  // finding the best retained snapshot to start from, applying that first, followed by scanning
+  // the code updates table. Returns the final version number.
   replayUpdates(fromVersion: number, toVersion: number | "current",
                 apply: (update: CodeUpdate) => void): number {
     let endConstraint = toVersion === "current" ? {} : {end: toVersion + 1};
@@ -2065,57 +2109,40 @@ class OverseerImpl implements AgentHooks {
     })][0];
 
     if (!snapshot && fromVersion === 0) {
-      // We are starting from the beginning and we don't have a snapshot. But version 1 is itself
-      // sort of like a snapshot: it often contains a bunch of initial code. If we don't treat it
-      // as a snapshot, then we'll count it in the log size, and we'll immediately say "oh, we have
-      // a lot of logs, we need to make a snapshot", but then we might make a totally pointless
-      // snapshot at version 1, which will just be a copy of the actual version 1. To avoid this,
-      // treat version 1 itself as a snapshot, for metrics purposes.
-      snapshot = this.storage.code.get(1);
-
-      if (!snapshot) {
-        throw new Error("Code is uninitialized?");
+      // Workspaces from before git-backed code storage always wrote an (often empty) version 1
+      // at initialization, so its absence means this replay shouldn't have been reachable:
+      // workspaces initialized since then have no legacy log, and no legacy chats to need one.
+      if (!this.storage.code.get(1)) {
+        throw new Error("This workspace has no legacy code log.");
       }
     }
 
-    let snapshotSize: number = 0;
     if (snapshot) {
       apply(snapshot);
       fromVersion = snapshot.version;
-      snapshotSize = snapshot.update.length;
     }
 
-    let finalVersion: number = snapshot ? snapshot.version : fromVersion;
+    let finalVersion: number = fromVersion;
 
-    let logSize: number = 0;
     for (let update of this.storage.code.list({startAfter: fromVersion, ...endConstraint})) {
       apply(update);
-      logSize += update.update.length;
       finalVersion = update.version;
-    }
-
-    if (!this.#snapshotMetrics && (fromVersion === 0 || snapshot)) {
-      // We didn't previously have snapshot metrics, and this particular replay either started
-      // from zero or from a snapshot, so the metrics computed during this replay should be
-      // accurate. Let's take advantage and record the metrics now so we don't have to make a
-      // separate pass throught the data to build the metrics later.
-      this.#snapshotMetrics = {snapshotSize, logSize};
     }
 
     return finalVersion;
   }
 
-  // The base version of the current code: the version of the last entry in the `code` log,
-  // i.e. what buildYDoc("current") reports and what agent sessions record in
-  // `observedCodeVersion` stamps. (Deliberately not the `codeVersion` counter, which also
+  // The base version of the current code in the (read-only legacy) code log: the version of its
+  // last entry, i.e. what buildYDoc("current") reports and what legacy chats' sessions recorded
+  // in `observedCodeVersion` stamps. (Deliberately not the `codeVersion` counter, which also
   // counts non-code changes like binding edits -- see bumpVersion().)
   currentCodeBaseVersion(): number {
     return [...this.storage.code.list({reverse: true, limit: 1})][0]?.version ?? 0;
   }
 
-  // Construct a `Y.Doc` for the current code version.
+  // Construct a `Y.Doc` from the (read-only legacy) code log. Only legacy chats' doc bases are
+  // built this way; committed code is read from the git store (see gitStore / buildChatDoc).
   buildYDoc(version: number | "current"): {ydoc: Y.Doc, version: number} {
-    // TODO: Use snapshots.
     let ydoc = new Y.Doc();
     version = this.replayUpdates(0, version, (version: CodeUpdate) => {
       Y.applyUpdateV2(ydoc, version.update);
@@ -2123,38 +2150,107 @@ class OverseerImpl implements AgentHooks {
     return {ydoc, version};
   }
 
-  // Apply a Yjs-encoded (V2) update to the code, incrementing the code version.
-  updateCode(update: Uint8Array): number {
-    let version = this.bumpVersion();
-    let timestamp = new Date();
-    this.storage.code.put({version, timestamp, update});
+  // =======================================================================================
+  // Commit-backed chat code.
+  //
+  // Mainline code is git commits (see git-store.ts); a chat's Yjs doc holds its uncommitted
+  // changes on top of a fixed base. For chats created since git storage, the base is a
+  // deterministic seed derived from the commits pinned in AiChatMetadata.codeBase; for chats
+  // predating it, the base remains the legacy code log at the chat's observed version.
 
-    if (this.#snapshotMetrics) {
-      this.#snapshotMetrics.logSize += update.length;
-      if (this.#snapshotMetrics.logSize >
-          Math.max(this.#snapshotMetrics.snapshotSize, MIN_SNAPSHOT_THRESHOLD)) {
-        let logBytes = this.#snapshotMetrics.logSize;
-        let startedAt = Date.now();
-        traced("code.snapshot.rebuild", (span) => {
-          let {ydoc} = this.buildYDoc("current");
-          let snapshotUpdate = Y.encodeStateAsUpdateV2(ydoc);
-          this.storage.snapshots.put({version, timestamp, update: snapshotUpdate});
-          span.setAttribute("gadgetId", this.ctx.id.toString());
-          span.setAttribute("size", snapshotUpdate.length);
-          span.setAttribute("logBytes", logBytes);
-          this.#snapshotMetrics = {
-            snapshotSize: snapshotUpdate.length,
-            logSize: 0,
-          };
-          this.logger.info("rebuilt code snapshot", {
-            event: "code.snapshot.rebuilt", durationMs: Date.now() - startedAt,
-            size: snapshotUpdate.length, logBytes, sequence: version,
-          });
-        });
+  // The version a legacy (pre-git-storage) chat's Yjs doc base is anchored to, per the same
+  // latch rule agent replay uses: the active compaction checkpoint's stamp wins, else the first
+  // observedCodeVersion recorded in the log. A chat with no stamps reads the legacy log's tip,
+  // which is stable now that the log is read-only.
+  legacyChatBaseVersion(chatId: number): number | "current" {
+    let checkpoint = this.getActiveChatCompaction(chatId);
+    if (checkpoint?.observedCodeVersion !== undefined) return checkpoint.observedCodeVersion;
+    for (let msg of this.storage.chats.list({prefix: `${keyString(chatId)}.`})) {
+      if (msg.type === "message") {
+        for (let call of msg.toolCalls ?? []) {
+          if (call.observedCodeVersion !== undefined) return call.observedCodeVersion;
+        }
+      } else if (msg.type === "changes" && msg.observedCodeVersion !== undefined) {
+        return msg.observedCodeVersion;
       }
     }
+    return "current";
+  }
 
-    return version;
+  // Build the code-base pins and deterministic seed hash for a new chat: one pin per committed
+  // gadget, seeded at its current head. All of a chat's seeded roots must come from a single
+  // seedDocFromFiles call (see yjs-seed in workshop-shared), which is why the seed is derived
+  // here, together with the pins it covers, rather than per gadget.
+  async makeChatCodeBase(): Promise<ChatCodeBase> {
+    let pins: ChatGadgetPin[] = [];
+    let roots = new Map<string, ReadonlyMap<string, string>>();
+    for (let record of Array.from(this.storage.gadgets.list())) {
+      // A pending gadget never has a commit; every committed gadget is a permanent one.
+      if (record.commitId === undefined) continue;
+      let filesRoot = this.gadgetRootName(record.id);
+      pins.push({
+        gadgetId: record.id,
+        filesRoot,
+        seedCommit: record.commitId,
+        mergedCommit: record.commitId,
+      });
+      roots.set(filesRoot, await this.gitStore.readCommitFiles(record.commitId));
+    }
+    return {gadgets: pins, seedHash: await seedUpdateHash(seedDocFromFiles(roots))};
+  }
+
+  // Rebuild a commit-seeded chat's deterministic seed update from its pins, verifying it against
+  // the stored seed hash. Every participant (server sessions and browser editors) must derive
+  // byte-identical seeds for the chat's Yjs updates to compose, so a mismatch -- drifted seed
+  // derivation, e.g. from a Yjs upgrade -- fails loudly instead of corrupting the doc.
+  async chatSeedUpdate(codeBase: ChatCodeBase): Promise<Uint8Array> {
+    let roots = new Map<string, ReadonlyMap<string, string>>();
+    for (let pin of codeBase.gadgets) {
+      if (pin.seedCommit !== undefined) {
+        roots.set(pin.filesRoot, await this.gitStore.readCommitFiles(pin.seedCommit));
+      }
+    }
+    let seed = seedDocFromFiles(roots);
+    let hash = await seedUpdateHash(seed);
+    if (hash !== codeBase.seedHash) {
+      throw new Error(`Chat code seed derivation mismatch (derived ${hash}, chat expects ` +
+          `${codeBase.seedHash}); refusing to build a diverged chat doc.`);
+    }
+    return seed;
+  }
+
+  // AgentHooks implementation: the verified seed update for a commit-seeded chat's session doc,
+  // or undefined for a chat whose Yjs base is the legacy code log.
+  async getChatSeedUpdate(chatId: number): Promise<Uint8Array | undefined> {
+    let codeBase = this.storage.chatMeta.get(chatId)?.codeBase;
+    if (codeBase?.seedHash === undefined) return undefined;
+    return await this.chatSeedUpdate(codeBase);
+  }
+
+  // Rebuild a chat's code doc: its Yjs base (commit-derived seed, or the legacy log) plus every
+  // non-reverted "changes" update in the chat log -- both already-accepted and still-proposed
+  // updates, since the base never advances. With `through`, still-proposed updates after that
+  // sequence are excluded (already-accepted ones always apply: they are part of every later
+  // state). Note this does not include unmaterialized draft updates; callers that need drafts
+  // reflected materialize them first.
+  async buildChatDoc(chatId: number, meta: AiChatMetadata, through?: number): Promise<Y.Doc> {
+    let ydoc: Y.Doc;
+    if (meta.codeBase?.seedHash !== undefined) {
+      ydoc = new Y.Doc();
+      Y.applyUpdateV2(ydoc, await this.chatSeedUpdate(meta.codeBase));
+    } else {
+      ydoc = this.buildYDoc(this.legacyChatBaseVersion(chatId)).ydoc;
+    }
+    let messages = [...this.storage.chats.list({prefix: `${keyString(chatId)}.`})];
+    let statuses = chatChangeStatuses(messages);
+    for (let msg of messages) {
+      if (msg.type !== "changes" || msg.update === undefined) continue;
+      let status = statuses.get(msg.sequence);
+      if (status === "reverted") continue;
+      if (through !== undefined && msg.sequence > through && status !== "merged") continue;
+      Y.applyUpdateV2(ydoc, msg.update);
+    }
+    return ydoc;
   }
 
   makeBindingLoopback(target: BindingLoopbackTarget, caller: GatekeeperCaller) {
@@ -2378,9 +2474,11 @@ class OverseerImpl implements AgentHooks {
       author: this.normalizeDraftAuthor(updates),
       type: "changes",
       update: Y.mergeUpdatesV2(updates.map(update => update.update)),
-      // Record the base version the user's edits were captured against; agent history replay
-      // seeds its version lock from this (see the "changes" replay case in agent.ts).
-      observedCodeVersion: this.currentCodeBaseVersion(),
+      // Legacy chats record the base version the user's edits were captured against; agent
+      // history replay seeds its version lock from this (see the "changes" replay case in
+      // agent.ts). Commit-seeded chats pin their base via codeBase instead and never stamp it.
+      ...(meta.codeBase?.seedHash === undefined
+          ? {observedCodeVersion: this.currentCodeBaseVersion()} : {}),
     });
 
     this.deleteChatDraftUpdates(chatId, updates);
@@ -2394,11 +2492,12 @@ class OverseerImpl implements AgentHooks {
     return {sequence, meta};
   }
 
-  // Load the dynamic worker representing the given gadget as of the current code version.
+  // Load the dynamic worker representing the given gadget's committed (head-commit) code.
   // Returns the dynamic WorkerStub (which can be used to get any entrypoint).
   //
-  // If `chatId` is specified, load the worker including changes proposed in the given chat
-  // thread. (The caller is presumed to have verified the chat exists and has proposed changes.)
+  // If `chatId` is specified, load the worker from that chat's code doc instead, including its
+  // proposed changes. (The caller is presumed to have verified the chat exists and has proposed
+  // changes.)
   loadGadgetWorker(gadgetId: WorkpieceId, chatId?: number): WorkerStub {
     let codeVersion = `${this.storage.codeVersion.get()}`;
     let sequence: number | undefined;
@@ -2408,20 +2507,23 @@ class OverseerImpl implements AgentHooks {
     }
 
     return this.env.LOADER.get(`${this.ctx.id}.${codeVersion}.${gadgetId}`, async () => {
-      let {ydoc} = this.buildYDoc("current");
-
+      let files: ReadonlyMap<string, string>;
       if (chatId !== undefined) {
-        this.getProposedChanges(chatId, sequence).forEach(({update}) => {
-          if (update !== undefined) {
-            Y.applyUpdateV2(ydoc, update);
-          }
-        });
+        // The cache key snapshotted the chat's next sequence, so exclude any batch recorded
+        // after it (a fresh load with a fresh key sees those).
+        let ydoc = await this.buildChatDoc(chatId, this.getChatMetaOrThrow(chatId), sequence! - 1);
+        files = readDocFiles(ydoc, this.gadgetRootName(gadgetId));
+      } else {
+        let commitId = this.storage.gadgets.get(gadgetId)?.commitId;
+        files = commitId !== undefined
+            ? await this.gitStore.readCommitFiles(commitId)
+            : new Map();
       }
 
       let modules: Record<string, string> = {};
-      for (let [file, content] of ydoc.getMap<Y.Text>(this.gadgetRootName(gadgetId))) {
+      for (let [file, content] of files) {
         if (file.endsWith(".js")) {
-          modules[file] = content.toString();
+          modules[file] = content;
         }
       }
 
@@ -2564,18 +2666,24 @@ class OverseerImpl implements AgentHooks {
     return new NativeRpcStub(proxy) as RpcStub<any>;
   }
 
-  getGadgetUiBundle(gadgetId: WorkpieceId, chatId?: number): UiBundle | null {
-    this.checkChatExistsAndMaterializeDrafts(chatId);
-
-    let {ydoc} = this.buildYDoc("current");
+  // The gadget's file tree as seen from `chatId` (its code doc; the caller is presumed to have
+  // materialized drafts, see checkChatExistsAndMaterializeDrafts) or from mainline (its head
+  // commit; a gadget with no commit yet has no mainline files).
+  async readGadgetFiles(gadgetId: WorkpieceId, chatId?: number)
+      : Promise<ReadonlyMap<string, string>> {
     if (chatId !== undefined) {
-      this.getProposedChanges(chatId).forEach(({update}) => {
-        if (update !== undefined) Y.applyUpdateV2(ydoc, update);
-      });
+      let ydoc = await this.buildChatDoc(chatId, this.getChatMetaOrThrow(chatId));
+      return readDocFiles(ydoc, this.gadgetRootName(gadgetId));
     }
+    let commitId = this.storage.gadgets.get(gadgetId)?.commitId;
+    return commitId !== undefined ? await this.gitStore.readCommitFiles(commitId) : new Map();
+  }
 
-    let file = ydoc.getMap<Y.Text>(this.gadgetRootName(gadgetId)).get("client.js");
-    return file ? {jsCode: file.toString()} : null;
+  async getGadgetUiBundle(gadgetId: WorkpieceId, chatId?: number): Promise<UiBundle | null> {
+    // TODO: Bundle the UI? For now we just return client.js.
+    this.checkChatExistsAndMaterializeDrafts(chatId);
+    let jsCode = (await this.readGadgetFiles(gadgetId, chatId)).get("client.js");
+    return jsCode !== undefined ? {jsCode} : null;
   }
 
   async getGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number)
@@ -2602,7 +2710,7 @@ class OverseerImpl implements AgentHooks {
     } else {
       let browser = this.env.BROWSER;
       if (!browser) throw new Error("Gadget export is not configured for this deployment.");
-      let bundle = this.getGadgetUiBundle(gadgetId, chatId);
+      let bundle = await this.getGadgetUiBundle(gadgetId, chatId);
       if (!bundle) throw new Error("This Gadget does not have a UI to export.");
       let title = this.getGadgetRecord(gadgetId).title;
       return renderGadgetInBrowser(browser, bundle.jsCode, title, exportGadget.dup(), format);
@@ -2621,13 +2729,7 @@ class OverseerImpl implements AgentHooks {
     handler: Fetcher<GadgetExportEntrypoint> | null;
     gadget: NativeRpcStub<any> | null;
   }> {
-    let {ydoc} = this.buildYDoc("current");
-    if (chatId !== undefined) {
-      this.getProposedChanges(chatId).forEach(({update}) => {
-        if (update !== undefined) Y.applyUpdateV2(ydoc, update);
-      });
-    }
-    let files = ydoc.getMap<Y.Text>(this.gadgetRootName(gadgetId));
+    let files = await this.readGadgetFiles(gadgetId, chatId);
     if (!files.has("server.js")) return {formats: [], handler: null, gadget: null};
 
     let handler = this.loadGadgetWorker(gadgetId, chatId)
@@ -3524,6 +3626,39 @@ class OverseerImpl implements AgentHooks {
     return meta;
   }
 
+  // In-flight chat mutations, keyed by chat, serialized by withChatLock().
+  #chatOpLocks = new Map<number, Promise<unknown>>();
+
+  // Serializes the chat-mutating operations that read chat state, await (git reads/writes), and
+  // write chat state back -- mergeChanges, updateChatFromMainline, revertChanges. The DO is
+  // single-threaded, but each `await` is an interleaving point: without the lock, two such
+  // operations could both read the same pins/messages and both write, e.g. double-applying a
+  // mainline merge's Yjs update. The lock only excludes these siblings; anything else that runs
+  // during the awaits (an agent turn starting, drafts, chat deletion) must still be caught by
+  // re-reading chat state after the last await -- see the revalidation steps in each caller.
+  async withChatLock<T>(chatId: number, fn: () => Promise<T>): Promise<T> {
+    let previous = this.#chatOpLocks.get(chatId) ?? Promise.resolve();
+    let run = previous.then(fn, fn);
+    // Track completion (success or failure) so the next operation queues behind this one, and
+    // clean up the map entry once no operation is pending.
+    let settled = run.then(() => {}, () => {});
+    this.#chatOpLocks.set(chatId, settled);
+    settled.then(() => {
+      if (this.#chatOpLocks.get(chatId) === settled) {
+        this.#chatOpLocks.delete(chatId);
+      }
+    });
+    return run;
+  }
+
+  // The sequence the chat's next message will get: the revalidation token for withChatLock()
+  // operations. Any concurrent mutation that could invalidate state read before an `await` --
+  // an agent turn's messages, a draft materialization, another operation's merge/revert/changes
+  // message -- necessarily appends to the log and advances this.
+  nextChatSequencePeek(chatId: number): number {
+    return this.storage.nextChatSequences.get(chatId)?.nextSequence ?? 0;
+  }
+
   // Invoke slash-command requests before committing their visible event and optional generated
   // message. A result without a message suppresses only the generated message, not the invocation.
   async #prepareChatMessage(
@@ -3662,6 +3797,12 @@ class OverseerImpl implements AgentHooks {
     let prepared = await this.#prepareChatMessage(
         initialMessage, (canonicalAttachments?.length ?? 0) > 0);
 
+    // Pin the chat's code base at creation: every chat's doc is seeded from the gadget heads as
+    // of this moment (see ChatCodeBase). Heads that advance later reach the chat only through
+    // updateChatFromMainline() -- the ordinary stale-chat path, even if the chat hasn't touched
+    // code yet.
+    let codeBase = await this.makeChatCodeBase();
+
     let chatId!: number;
     let timestamp = this.getChatTimestamp();
     this.ctx.storage.transactionSync(() => {
@@ -3671,6 +3812,7 @@ class OverseerImpl implements AgentHooks {
         title: "New Chat",   // filled in later by AI
         started: timestamp,
         lastActive: timestamp,
+        codeBase,
       };
       if (prepared.message !== undefined && userMeta.aiModel) {
         meta.activeAgent = userMeta.aiModel.profile;
@@ -5222,22 +5364,32 @@ class OverseerImpl implements AgentHooks {
     return bindings;
   }
 
-  // Create a minimal Yjs doc snapshot (no edit history) of one gadget's files at the given code
-  // version. Returns a gzip-compressed Yjs V2 encoded state update. The snapshot always uses the
-  // unnamed root "" (the canonical archive root), regardless of which root holds the gadget's
-  // files in the workspace doc, so archives stay compatible across gadgets.
-  async snapshotCode(gadgetId: WorkpieceId,
-                     version: number | "current" = "current"): Promise<Uint8Array> {
-    let {ydoc} = this.buildYDoc(version);
+  // Validate that a gadget head is publishable to a blueprint, returning it. "No code" means
+  // the head is absent (a permanent gadget created outside any chat, before its first accept)
+  // *or* an empty tree (an accepted creation with no files yet -- a legitimate head, just not a
+  // publishable one): either way the archive would be empty, which instantiation refuses.
+  async assertPublishableCommit(commitId: string | undefined): Promise<string> {
+    if (commitId !== undefined &&
+        (await this.gitStore.readCommitFiles(commitId)).size > 0) {
+      return commitId;
+    }
+    throw new Error("This gadget has no code to publish. Accept some code first.");
+  }
+
+  // Create a minimal Yjs doc snapshot (no edit history) of the given commit's files, for a
+  // blueprint archive. Returns a gzip-compressed Yjs V2 encoded state update. The snapshot
+  // always uses the unnamed root "" (the canonical archive root), regardless of which root holds
+  // the gadget's files in chat docs, so archives stay compatible across gadgets. (Blueprints of
+  // code-less gadgets cannot be created, so a commit is always in hand.)
+  async snapshotCode(commitId: string): Promise<Uint8Array> {
+    let files = await this.gitStore.readCommitFiles(commitId);
 
     // Create a clean doc with only final content (one insert per file, no history).
     let cleanDoc = new Y.Doc();
     let cleanMap = cleanDoc.getMap<Y.Text>();
-    let sourceMap = ydoc.getMap<Y.Text>(this.gadgetRootName(gadgetId));
-
-    for (let [file, content] of sourceMap) {
+    for (let [file, content] of files) {
       let text = cleanMap.set(file, new Y.Text());
-      text.insert(0, content.toString());
+      text.insert(0, content);
     }
 
     let encoded = Y.encodeStateAsUpdateV2(cleanDoc);
@@ -6585,16 +6737,10 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     await this.impl.deliverReadyExternalMessageResponses();
   }
 
-  #initializeEmptyCodeSnapshot(): void {
-    let ydoc = new Y.Doc();
-    ydoc.getMap<Y.Text>();
-
-    this.impl.storage.code.put({
-      version: 1,
-      timestamp: new Date(),
-      update: Y.encodeStateAsUpdateV2(ydoc),
-    });
-
+  // Initialize a brand-new workspace's storage. (Before git-backed code storage this also wrote
+  // an empty Yjs snapshot as legacy code version 1; workspaces born since have no legacy code
+  // log at all -- committed code exists only once a first commit lands in the git store.)
+  #initializeNewWorkspace(): void {
     this.impl.storage.codeVersion.put(1);
 
     // A workspace initialized by this version of the code is born at the current schema version;
@@ -6645,7 +6791,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
         this.impl.storage.ownerId.put(userId);
 
-        this.#initializeEmptyCodeSnapshot();
+        this.#initializeNewWorkspace();
       });
     }
 
@@ -6792,7 +6938,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       this.impl.storage.ownerId.put(callerId);
       this.impl.storage.title.put(input.title);
       this.impl.storage.ownerRegistrationPending.put(true);
-      this.#initializeEmptyCodeSnapshot();
+      this.#initializeNewWorkspace();
       ownerId = callerId;
     }
 
@@ -6903,32 +7049,36 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       this.impl.storage.gadgets.put(record);
     }
 
-    // Copy the blueprint's files into the gadget's files root. Root names don't transfer via Yjs
-    // updates -- the archive always uses the unnamed root "" while the destination gadget may own
-    // any root -- so we copy file-by-file rather than applying the archive update directly.
+    // Commit the blueprint's files as the gadget's initial (parentless) commit. Archives always
+    // use the doc's unnamed root "" (see snapshotCode); the file contents transfer as plain
+    // text, becoming the gadget's first committed tree. An empty archive is refused rather than
+    // instantiated as a code-less gadget: blueprints of such gadgets cannot be created (see
+    // createBlueprint), so one can only arrive corrupted or hand-crafted.
     let archiveDoc = new Y.Doc();
     Y.applyUpdateV2(archiveDoc, code);
-
-    let {ydoc} = this.impl.buildYDoc("current");
-    let updates: Uint8Array[] = [];
-    ydoc.on("updateV2", update => updates.push(update));
-    ydoc.transact(() => {
-      let root = ydoc.getMap<Y.Text>(this.impl.gadgetRootName(gadgetId));
-      for (let [file, content] of archiveDoc.getMap<Y.Text>()) {
-        let text = new Y.Text();
-        text.insert(0, content.toString());
-        root.set(file, text);
-      }
-    });
-    if (updates.length > 0) {
-      this.impl.updateCode(Y.mergeUpdatesV2(updates));
+    let files = new Map<string, string>();
+    for (let [file, content] of archiveDoc.getMap<Y.Text>()) {
+      files.set(file, content.toString());
     }
+    if (files.size === 0) {
+      throw new Error("This blueprint's code archive is empty.");
+    }
+    if (!this.impl.ownerId) {
+      throw new Error("Workspace has no owner.");
+    }
+
+    let owner = this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId));
+    let record = this.impl.getGadgetRecord(gadgetId);
+    record.commitId = await this.impl.gitStore.writeFilesAsCommit(files, {
+      parents: [],
+      author: commitIdentityForAuthor(await owner.whoami()),
+      message: `Instantiate blueprint: ${title}`,
+      timestamp: new Date(),
+    });
+    this.impl.storage.gadgets.put(record);
 
     // Mark gadget as non-provisional (it has code, so it should appear in the gadget list).
-    if (this.impl.ownerId) {
-      let owner = this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId));
-      await owner.setGadgetLastActive(this.ctx.id.toString(), new Date(), undefined);
-    }
+    await owner.setGadgetLastActive(this.ctx.id.toString(), new Date(), undefined);
   }
 
   async startGatekeeperSession(
@@ -7007,6 +7157,10 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let user = this.impl.users.get(this.impl.users.idFromString(resolveUserId));
     let userMeta = await user.getChatContext(config.modelId);
 
+    // Spawned agents' chats pin their code base like any other chat (see ChatCodeBase); whether
+    // the spawned agent can even see a gadget is governed by its binding config, not the pins.
+    let codeBase = await this.impl.makeChatCodeBase();
+
     let chatId = this.impl.nextChatId();
     let timestamp = this.impl.getChatTimestamp();
     let meta: AiChatMetadata = {
@@ -7015,6 +7169,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       started: timestamp,
       lastActive: timestamp,
       spawnerName: config.displayName,
+      codeBase,
     };
     if (!callable && userMeta.aiModel) {
       meta.activeAgent = userMeta.aiModel.profile;
@@ -7660,12 +7815,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     });
   }
 
-  async updateCode(update: Uint8Array, chatId?: number): Promise<void> {
-    if (chatId === undefined) {
-      this.impl.updateCode(update);
-      return;
-    }
-
+  async updateCode(update: Uint8Array, chatId: number): Promise<void> {
     let author = await this.#getClientProfile();
     let meta = this.impl.getChatMetaOrThrow(chatId);
 
@@ -7703,28 +7853,141 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.compactChatDraftUpdates(chatId, allUpdates);
   }
 
-  // --- Commit-backed code reads (not yet implemented) ---
-  //
-  // Declared by the Overseer interface as of the git-storage API change; the implementations land
-  // with the commit-backed code flow in the next change of this sequence. Throwing (rather than
-  // returning dummies) keeps any premature caller loud.
+  // --- Commit-backed code reads ---
 
-  async getCodeAtCommit(_commitId: string): Promise<{files: Record<string, string>}> {
-    throw new Error("getCodeAtCommit: not implemented until the commit-backed code flow lands");
+  async getCodeAtCommit(commitId: string): Promise<{files: Record<string, string>}> {
+    // Null prototype so a hostile filename like "__proto__" is an ordinary key.
+    let files: Record<string, string> = Object.create(null);
+    for (let [file, content] of await this.impl.gitStore.readCommitFiles(validateOid(commitId))) {
+      files[file] = content;
+    }
+    return {files};
   }
 
-  async getCommitLog(_fromCommit: string, _depth?: number): Promise<CommitInfo[]> {
-    throw new Error("getCommitLog: not implemented until the commit-backed code flow lands");
+  async getCommitLog(fromCommit: string, depth?: number): Promise<CommitInfo[]> {
+    if (depth !== undefined && (!Number.isInteger(depth) || depth <= 0)) {
+      throw new Error("Invalid depth.");
+    }
+    return await this.impl.gitStore.readCommitLog(validateOid(fromCommit), {depth});
   }
 
-  async getLegacyChatDocBase(_chatId: number): Promise<Uint8Array> {
-    throw new Error(
-        "getLegacyChatDocBase: not implemented until the commit-backed code flow lands");
+  async getLegacyChatDocBase(chatId: number): Promise<Uint8Array> {
+    let meta = this.impl.getChatMetaOrThrow(chatId);
+    if (meta.codeBase?.seedHash !== undefined) {
+      throw new Error(
+          "This chat's code doc base is commit-derived; derive the seed client-side instead.");
+    }
+
+    // The base the chat's still-proposed updates (and drafts) apply on top of: the legacy log at
+    // the chat's anchored version, plus every already-accepted update -- the pre-git model
+    // merged those into mainline *past* the anchored version, so the anchored doc alone predates
+    // them. (Re-application is idempotent when the anchor already includes some.)
+    let ydoc = this.impl.buildYDoc(this.impl.legacyChatBaseVersion(chatId)).ydoc;
+    let messages = [...this.impl.storage.chats.list({prefix: `${keyString(chatId)}.`})];
+    let statuses = chatChangeStatuses(messages);
+    for (let msg of messages) {
+      if (msg.type === "changes" && msg.update !== undefined &&
+          statuses.get(msg.sequence) === "merged") {
+        Y.applyUpdateV2(ydoc, msg.update);
+      }
+    }
+    return Y.encodeStateAsUpdateV2(ydoc);
   }
 
-  async updateChatFromMainline(_chatId: number): Promise<{conflictPaths: string[]}> {
-    throw new Error(
-        "updateChatFromMainline: not implemented until the commit-backed code flow lands");
+  async updateChatFromMainline(chatId: number): Promise<{conflictPaths: string[]}> {
+    let author = await this.#getClientProfile();
+    return await this.impl.withChatLock(chatId, () => this.#updateChatFromMainline(chatId, author));
+  }
+
+  async #updateChatFromMainline(chatId: number, author: AiChatAuthorInfo)
+      : Promise<{conflictPaths: string[]}> {
+    let meta = this.impl.assertChatNotActive(chatId);
+
+    // Live draft edits are part of the chat's current content, so fold them into a durable
+    // "changes" message first: the merge must take them as input, and its own update must be
+    // recorded after them.
+    let materialized = this.impl.materializeChatDraft(chatId, meta);
+    if (materialized) meta = materialized.meta;
+
+    // Everything read from here through the merge computation must still describe the chat when
+    // the results are written back below; the sequence peek is the revalidation token.
+    let sequenceToken = this.impl.nextChatSequencePeek(chatId);
+
+    // Pre-git-storage chats may have no pins at all; they merge like anything else, with each
+    // absent pin meaning "nothing merged yet" (an empty merge base).
+    let codeBase: ChatCodeBase = meta.codeBase ?? {gadgets: []};
+    let pins = new Map(codeBase.gadgets.map(pin => [pin.gadgetId, pin]));
+
+    // A pending gadget has no commits, so staleness is only about committed gadgets whose head
+    // moved past what this chat has merged (including gadgets the chat has never seen). Heads
+    // that advance *during* the merge below are fine without revalidation: each pin is advanced
+    // only to the commit actually merged, so the chat simply comes out still stale.
+    let stale = [...this.impl.storage.gadgets.list()].filter(record =>
+        record.commitId !== undefined &&
+        pins.get(record.id)?.mergedCommit !== record.commitId);
+    if (stale.length === 0) {
+      return {conflictPaths: []};
+    }
+
+    let ydoc = await this.impl.buildChatDoc(chatId, meta);
+    let updates: Uint8Array[] = [];
+    ydoc.on("updateV2", update => updates.push(update));
+
+    let conflictPaths: string[] = [];
+    for (let record of stale) {
+      let rootName = this.impl.gadgetRootName(record.id);
+      let pin = pins.get(record.id);
+      // The chat's last merged commit is the 3-way common ancestor -- explicitly known, so no
+      // merge-base discovery. Conflicting hunks keep inline diff3 markers for the user (or
+      // their agent) to clean up; Yjs merge semantics are deliberately not used across
+      // divergent bases.
+      let base = pin?.mergedCommit !== undefined
+          ? await this.impl.gitStore.readCommitFiles(pin.mergedCommit)
+          : new Map<string, string>();
+      let head = await this.impl.gitStore.readCommitFiles(record.commitId!);
+      let merged = threeWayMerge(base, head, readDocFiles(ydoc, rootName),
+          {base: "merged base", ours: "mainline", theirs: "this chat"});
+      writeDocFiles(ydoc, rootName, merged.files);
+      conflictPaths.push(...merged.conflictPaths.map(path => `${record.bindingName}/${path}`));
+
+      if (pin) {
+        pin.mergedCommit = record.commitId!;
+      } else {
+        codeBase.gadgets.push(
+            {gadgetId: record.id, filesRoot: rootName, mergedCommit: record.commitId!});
+      }
+    }
+    conflictPaths.sort();
+
+    // The awaits above are interleaving points. The chat lock excludes sibling mutations, but an
+    // agent turn could have started (its messages would interleave with ours) or new content
+    // could have been recorded; both necessarily append to the chat log. Re-read the chat state
+    // and refuse rather than write a merge computed against a stale doc. (Chat deletion is
+    // caught by the meta re-read throwing.)
+    let freshMeta = this.impl.assertChatNotActive(chatId);
+    if (this.impl.nextChatSequencePeek(chatId) !== sequenceToken) {
+      throw new Error("The chat changed while merging from mainline; please retry.");
+    }
+
+    // Persist the advanced pins before recording the message: addChatMessages re-reads and
+    // re-writes the chat meta (hasProposedChanges, lastActive), so it must see this state. The
+    // pins land on the freshly-read meta so concurrent changes to other fields survive.
+    freshMeta.codeBase = codeBase;
+    freshMeta.lastActive = this.impl.getChatTimestamp();
+    this.impl.storage.chatMeta.put(freshMeta);
+
+    // Always record the merge as a "changes" message, even when the chat's content already
+    // matched mainline (no update, no conflicts): the message is the durable record that the
+    // pins advanced, which the revert guard (revertChanges) and any future pin rollback depend
+    // on. Without it, reverting the chat's earlier proposals could silently regress content the
+    // advanced pins claim as merged.
+    this.impl.addChatMessages(chatId, author, [{
+      type: "changes",
+      ...(updates.length > 0 ? {update: Y.mergeUpdatesV2(updates)} : {}),
+      mainlineMerge: {conflictPaths},
+    }]);
+
+    return {conflictPaths};
   }
 
   async getGatekeeperById(id: number): Promise<GatekeeperClient<any>> {
@@ -8518,7 +8781,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
                      options?: { includeDraft?: boolean }): Promise<MergeChangesResult> {
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(null), this.impl.logger);
+    return await this.impl.withChatLock(chatId,
+        () => this.#mergeChanges(chatId, mergeThrough, userMeta, options));
+  }
 
+  // The body of mergeChanges(), running under the chat's operation lock (see withChatLock).
+  async #mergeChanges(chatId: number, mergeThrough: number | null, userMeta: UserChatContext,
+                      options?: { includeDraft?: boolean }): Promise<MergeChangesResult> {
     let meta = this.impl.assertChatNotActive(chatId);
     if (options?.includeDraft) {
       let result = this.impl.materializeChatDraft(chatId, meta);
@@ -8528,22 +8797,163 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       }
     }
 
-    // Note: the "stale" outcome is never produced yet. Chats have no commit pins until the
-    // commit-backed code flow lands; until then, CRDT merging keeps every accept applicable.
     if (mergeThrough === null) {
       return {outcome: "merged"};
     }
 
-    // Promote provisional gadgets whose creation is covered by this merge: accepting the chat's
-    // changes through `mergeThrough` makes them permanent workspace members. (Reap crash orphans
-    // first. An unstamped record that survives reconciliation -- a crashed turn's not-yet-resumed
-    // tail -- has no sequence and is simply not covered by this merge.) Each stamped creation
-    // sits on an unmerged, unreverted "changes" message at `pending.sequence` (a reverted
-    // creation's gadget would already be deleted, and a merged one already promoted), so any
-    // merge that promotes also has updates to merge below.
+    // Bound `mergeThrough` to recorded history. A future sequence would make later-recorded
+    // changes retroactively covered by this merge's message, which no fold or status rule is
+    // prepared for (see chatChangeStatuses).
+    if (!Number.isInteger(mergeThrough) || mergeThrough < 0 ||
+        mergeThrough >= this.impl.nextChatSequencePeek(chatId)) {
+      throw new Error("Invalid mergeThrough.");
+    }
+
+    // Reap crash-orphaned provisional records first: an unstamped record that survives
+    // reconciliation -- a crashed turn's not-yet-resumed tail -- has no sequence and is simply
+    // not covered by this merge.
     await this.impl.reconcilePendingGadgets(chatId);
+
+    // Everything read from here through the commit writes must still describe the chat when the
+    // mutation tail below runs; the sequence peek is the revalidation token.
+    let sequenceToken = this.impl.nextChatSequencePeek(chatId);
+
+    // Get unmerged updates for the thread, reduced to just what we're merging. Each covered
+    // gadget creation or binding addition sits on one of these "changes" messages (see
+    // addChatMessages), so an empty list also means there is nothing to promote.
+    let updates = this.impl.getProposedChanges(chatId);
+    while (updates.length > 0 && updates[updates.length - 1].sequence > mergeThrough) {
+      // We're not merging this one.
+      updates.pop();
+    }
+    if (updates.length === 0) {
+      // Nothing to merge, so this is a no-op.
+      return {outcome: "merged"};
+    }
+
+    // Message statuses drive two things below: the mainline-merge guard here, and excluding
+    // reverted creations from coverage. The map stays valid through the whole accept: the
+    // sequence-token revalidation after the awaits guarantees no message was recorded since.
+    let messages = [...this.impl.storage.chats.list({prefix: `${keyString(chatId)}.`})];
+    let statuses = chatChangeStatuses(messages);
+
+    // A partial accept must not exclude a still-proposed update-from-mainline batch: that batch's
+    // pin advancement is already in force, so an accept built without its update would pass the
+    // fast-forward check below while committing content that predates the mainline changes the
+    // pins claim as merged -- silently overwriting them. (Scanned over canonical history, like
+    // the guard in revertChanges, because getProposedChanges' compacted-prefix batch hides
+    // individual messages.)
+    for (let msg of messages) {
+      if (msg.type === "changes" && msg.mainlineMerge !== undefined &&
+          msg.sequence > mergeThrough && statuses.get(msg.sequence) === undefined) {
+        throw new Error("Cannot accept changes without also accepting the later update from " +
+            "mainline: accepting only the earlier changes would overwrite the mainline " +
+            "content that update brought in. Accept through the mainline update instead.");
+      }
+    }
+
+    // A pending record (or edge) whose stamp the log already marks reverted is dead, not
+    // covered: it survives only because a revert's awaited record deletion failed (see
+    // reconcilePendingGadgets, which retries best-effort -- including the call above).
+    // Committing or promoting it would resurrect a rejected gadget, so every coverage test
+    // below excludes it.
+    let revertedStamp = (pending: {sequence?: number} | undefined) =>
+        pending?.sequence !== undefined && statuses.get(pending.sequence) === "reverted";
+
+    // Detect whether the workspace has any accepted code yet (for gadget title generation
+    // below): no gadget has a head commit, and the legacy code log (whose version 1 was written
+    // at init time, when it exists at all) records no accepted code either.
+    let isFirstChange =
+        ![...this.impl.storage.gadgets.list()].some(gadget => gadget.commitId !== undefined) &&
+        [...this.impl.storage.code.list({limit: 1, start: 2})].length === 0;
+
+    // Flatten the chat's content as of `mergeThrough` and decide, per gadget, whether this chat
+    // changed it. "Changed" is measured against the chat's merged commit -- the mainline content
+    // the chat last saw -- so mainline moving on a gadget this chat never touched neither
+    // implicates the chat nor blocks the accept.
+    let ydoc = await this.impl.buildChatDoc(chatId, meta, mergeThrough);
+    let codeBase: ChatCodeBase = meta.codeBase ?? {gadgets: []};
+    let pins = new Map(codeBase.gadgets.map(pin => [pin.gadgetId, pin]));
+
+    // `baseHead` snapshots the head this accept fast-forwards from (also the value the post-await
+    // revalidation compares against -- a primitive, so it can't be confused by whatever object
+    // the storage layer hands back later).
+    let toCommit: {record: GadgetRecord, files: Map<string, string>, baseHead?: string}[] = [];
+    for (let record of Array.from(this.impl.storage.gadgets.list())) {
+      if (record.pending &&
+          (record.pending.chatId !== chatId || record.pending.sequence === undefined ||
+           record.pending.sequence > mergeThrough || revertedStamp(record.pending))) {
+        // Pending in another chat (its files exist only in that chat's proposed changes),
+        // pending in this chat but not covered by this merge, or an already-reverted creation
+        // awaiting cleanup.
+        continue;
+      }
+      let files = readDocFiles(ydoc, this.impl.gadgetRootName(record.id));
+      let mergedCommit = pins.get(record.id)?.mergedCommit;
+      let baseFiles = mergedCommit !== undefined
+          ? await this.impl.gitStore.readCommitFiles(mergedCommit)
+          : new Map<string, string>();
+      // A record still pending here is a covered creation (uncovered ones were skipped above),
+      // and a covered creation always gets its first commit -- an empty tree if the gadget has
+      // no files yet -- so promotion below can give every accepted gadget a head. Coverage must
+      // never be inferred from content equality: an empty gadget compares equal to the empty
+      // base, which is how creations used to be dropped from accepts.
+      if (filesEqual(files, baseFiles) && !record.pending) continue;
+
+      // Accepting is only ever a fast-forward: the chat must have already merged the gadget's
+      // current head. A stale chat is expected control flow (someone else's accept can land at
+      // any time), reported as a value, with no partial effects -- the caller runs
+      // updateChatFromMainline() and retries.
+      if (record.commitId !== mergedCommit) {
+        return {outcome: "stale"};
+      }
+      toCommit.push({record, files, baseHead: record.commitId});
+    }
+
+    // Write the commits (content-addressed object writes; harmless if the accept below turns out
+    // stale after all).
+    let identity = commitIdentityForAuthor(userMeta.profile);
+    let commits: {gadgetId: WorkpieceId, commitId: string}[] = [];
+    for (let {record, files, baseHead} of toCommit) {
+      commits.push({
+        gadgetId: record.id,
+        commitId: await this.impl.gitStore.writeFilesAsCommit(files, {
+          parents: baseHead !== undefined ? [baseHead] : [],
+          author: identity,
+          message: `Accept changes from chat: ${meta.title}`,
+          timestamp: new Date(),
+        }),
+      });
+    }
+
+    // Everything above this point awaited, so the chat and workspace may have moved in the
+    // meantime; re-validate before mutating. The chat lock excludes sibling merge/revert/
+    // update-from-mainline calls, but an accept from *another* chat can advance a head, an agent
+    // turn can start, and new messages can be recorded -- all detected here: heads against their
+    // snapshots, and the chat via a fresh meta read (throws if deleted, or if an agent started)
+    // plus the sequence token (anything that would invalidate the doc we flattened appends to
+    // the log). Everything from here on is synchronous, so the record, pin, and message writes
+    // land atomically under the output gate.
+    for (let {record, baseHead} of toCommit) {
+      let fresh = this.impl.storage.gadgets.get(record.id);
+      if (!fresh || fresh.commitId !== baseHead) {
+        return {outcome: "stale"};
+      }
+    }
+    let freshMeta = this.impl.assertChatNotActive(chatId);
+    if (this.impl.nextChatSequencePeek(chatId) !== sequenceToken) {
+      return {outcome: "stale"};
+    }
+
+    // Promote provisional gadgets whose creation is covered by this merge: accepting the chat's
+    // changes through `mergeThrough` makes them permanent workspace members. Each covered
+    // creation sits on an unmerged, unreverted "changes" message at `pending.sequence` (a
+    // merged one's gadget is already promoted, and a reverted one's is excluded here exactly as
+    // the toCommit loop excluded it), and is in `commits`, so every promoted gadget gets a head
+    // in the fast-forward step below -- possibly an empty tree.
     for (let gadget of this.impl.listPendingGadgets(chatId)) {
-      if (gadget.pending!.sequence !== undefined && gadget.pending!.sequence <= mergeThrough) {
+      if (gadget.pending!.sequence !== undefined && gadget.pending!.sequence <= mergeThrough &&
+          !revertedStamp(gadget.pending)) {
         delete gadget.pending;
         this.impl.storage.gadgets.put(gadget);
       }
@@ -8551,11 +8961,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     // Likewise promote provisional binding edges covered by this merge; this is also the moment
     // an edge becomes visible to mainline loads and the derived workspace default binding list.
+    // (Reverted additions only survive on a reverted creation's record -- the revert deletes
+    // covered edges synchronously otherwise -- but exclude them the same way for coherence.)
     for (let gadget of this.impl.storage.gadgets.list()) {
       let promoted = false;
       for (let edge of Object.values(gadget.bindings)) {
         if (edge.pending?.chatId === chatId && edge.pending.sequence !== undefined &&
-            edge.pending.sequence <= mergeThrough) {
+            edge.pending.sequence <= mergeThrough && !revertedStamp(edge.pending)) {
           delete edge.pending;
           promoted = true;
         }
@@ -8565,34 +8977,28 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       }
     }
 
-    // Get unmerged updates for the thread.
-    let updates = this.impl.getProposedChanges(chatId);
+    // Fast-forward each committed gadget's head, and advance the chat's own pins to match: the
+    // chat's content *is* the new head, so it is fully merged by construction, and a subsequent
+    // accept remains a plain fast-forward.
+    for (let {gadgetId, commitId} of commits) {
+      let record = this.impl.storage.gadgets.get(gadgetId)!;
+      record.commitId = commitId;
+      this.impl.storage.gadgets.put(record);
 
-    // Reduce it to just what we're merging.
-    while (updates.length > 0 && updates[updates.length - 1].sequence > mergeThrough) {
-      // We're not merging this one.
-      updates.pop();
+      let pin = pins.get(gadgetId);
+      if (pin) {
+        pin.mergedCommit = commitId;
+      } else {
+        // First accept of a gadget the chat itself created (or a pre-git chat with no pins):
+        // no seedCommit -- its content entered the chat as ordinary updates, not seed items.
+        codeBase.gadgets.push(
+            {gadgetId, filesRoot: this.impl.gadgetRootName(gadgetId), mergedCommit: commitId});
+      }
     }
 
-    if (updates.length === 0) {
-      // Nothing to merge, so this is a no-op.
-      return {outcome: "merged"};
-    }
-
-    // To detect if this is the first code change, we have to see if there are any changes listed
-    // in the `code` table other than the initial version 1 change created at init time. We can't
-    // just check `codeVersion` because there are other changes which increment it, like adding
-    // bindings.
-    let isFirstChange = [...this.impl.storage.code.list({limit: 1, start: 2})].length === 0;
-
-    // Batches that record only creations/binding additions carry no code update. If the merge
-    // covers nothing else, the code is unchanged, so don't write a new code version -- but still
-    // bump the version counter so cached workers reload with the promoted records visible.
-    let codeUpdates = updates.map(up => up.update)
-        .filter((up): up is Uint8Array => up !== undefined);
-    let version = codeUpdates.length > 0
-        ? this.impl.updateCode(Y.mergeUpdatesV2(codeUpdates))
-        : this.impl.bumpVersion();
+    // Bump the loader-cache counter so cached workers reload with the new heads (and promoted
+    // records) visible.
+    this.impl.bumpVersion();
     let timestamp = this.impl.getChatTimestamp();
 
     this.impl.storage.chats.put({
@@ -8603,20 +9009,24 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
       type: "merge",
       mergeThrough,
-      version,
-
-      // TODO(git-storage): Create commits on merge, fill this in.
-      commits: [],
+      commits,
     });
 
-    meta.lastActive = timestamp;
-    this.impl.storage.chatMeta.put(meta);
-    this.impl.recomputeHasProposedChanges(chatId, meta);
+    // The advanced pins land on the freshly-read meta so concurrent changes to other fields
+    // (e.g. a title rename during the awaits) survive. `codeBase` itself was derived from the
+    // entry-time meta, which is safe: only lock-holding operations mutate it.
+    if (commits.length > 0 || freshMeta.codeBase !== undefined) {
+      freshMeta.codeBase = codeBase;
+    }
+    freshMeta.lastActive = timestamp;
+    this.impl.storage.chatMeta.put(freshMeta);
+    this.impl.recomputeHasProposedChanges(chatId, freshMeta);
 
-    // Maybe generate gadget title if this was the first accepted code. (A merge that accepted no
-    // code -- creations/binding additions only -- doesn't count: it writes no code version, so
-    // the first *code* merge after it still sees isFirstChange and generates the title then.)
-    if (isFirstChange && codeUpdates.length > 0 && userMeta.quickModel) {
+    // Maybe generate gadget title if this was the first accepted code. (A merge covering only
+    // binding additions to existing gadgets doesn't count: it creates no commits, so the first
+    // merge with code -- including an accepted creation's empty first commit -- still sees
+    // isFirstChange and generates the title then.)
+    if (isFirstChange && commits.length > 0 && userMeta.quickModel) {
       this.impl.generateGadgetTitle(chatId, userMeta.quickModel, userMeta.profile);
     }
     this.impl.recordGadgetAnalytics({
@@ -8630,31 +9040,67 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async revertChanges(chatId: number, revertFrom: number): Promise<void> {
+    if (!Number.isInteger(revertFrom) || revertFrom < 0) {
+      throw new Error("Invalid revertFrom.");
+    }
+
     let author = await this.#getClientProfile();
+    await this.impl.withChatLock(chatId, () => this.#revertChanges(chatId, revertFrom, author));
+  }
 
-    let meta = this.impl.assertChatNotActive(chatId);
+  // The body of revertChanges(), running under the chat's operation lock (see withChatLock).
+  async #revertChanges(chatId: number, revertFrom: number, author: AiChatAuthorInfo)
+      : Promise<void> {
+    this.impl.assertChatNotActive(chatId);
 
-    // Delete provisional gadgets whose creation falls within the reverted range: rejecting the
-    // chat's changes rejects the gadgets they created. removeGadget() is the full deletion path
-    // (hooks, facet, registry entry); a pending gadget's files exist only in the chat's proposed
-    // changes, so its mainline root has nothing to clear. (Reap crash orphans first. An
-    // unstamped record that survives reconciliation -- a crashed turn's not-yet-resumed tail --
-    // has no sequence and is not covered by this revert.) Each stamped creation sits on an
-    // unmerged "changes" message at `pending.sequence`, so any revert that deletes a gadget also
-    // affects changes and proceeds past the no-op check below -- durably recording the rejection
-    // as a "revert" message, which is also how the agent learns of it on its next turn (revert
-    // messages are surfaced to the model during history replay).
+    // Reap crash orphans first: an unstamped record that survives reconciliation -- a crashed
+    // turn's not-yet-resumed tail -- has no sequence and is not covered by this revert. This is
+    // the only await before the revert lands; reconciliation is an idempotent repair, safe to
+    // run whether or not the revert below proceeds.
     await this.impl.reconcilePendingGadgets(chatId);
-    for (let gadget of this.impl.listPendingGadgets(chatId)) {
-      if (gadget.pending!.sequence !== undefined && gadget.pending!.sequence >= revertFrom) {
-        await this.impl.removeGadget(gadget.id);
+
+    // Everything from the meta re-read (which rechecks the agent after the await above) through
+    // the message and record writes below is synchronous, landing atomically under the output
+    // gate: nothing can interleave between what we examine here, the "changes" messages the
+    // revert message will cover, and the mutations recording the revert.
+    let meta = this.impl.assertChatNotActive(chatId);
+    let messages = [...this.impl.storage.chats.list({prefix: `${keyString(chatId)}.`})];
+    let statuses = chatChangeStatuses(messages);
+    let stillProposed = (msg: AiChatMessage) =>
+        msg.type === "changes" && msg.sequence >= revertFrom &&
+        statuses.get(msg.sequence) === undefined;
+
+    // A still-proposed mainline merge (see updateChatFromMainline) cannot be reverted: it
+    // advanced the chat's pins to commits whose content arrived in that very update, so erasing
+    // the update would leave the pins claiming content the chat no longer has -- and a later
+    // accept would then silently overwrite those mainline changes. Rolling pins back would need
+    // their pre-merge values, which aren't recorded; until they are, refuse loudly. (An
+    // *accepted* mainline merge is untouched by reverts, so it doesn't block anything. Scanned
+    // over canonical history rather than getProposedChanges, whose compacted-prefix batch hides
+    // individual messages.)
+    for (let msg of messages) {
+      if (msg.type === "changes" && msg.mainlineMerge !== undefined && stillProposed(msg)) {
+        throw new Error("Cannot revert changes that include an update from mainline: the " +
+            "update brought in other chats' accepted work, which the revert would silently " +
+            "discard. Edit or revert the files directly instead.");
       }
     }
 
-    // Likewise delete provisional binding edges whose addition falls within the reverted range.
-    // (Edges on a gadget deleted just above are already gone with it; this loop only sees
-    // surviving gadgets.)
+    if (!messages.some(stillProposed)) {
+      // Revert affects no changes (every "changes" message at or after revertFrom is already
+      // merged or reverted -- and any provisional gadget's stamped creation sits on a
+      // still-proposed message, so nothing needs deleting either): a no-op, recording nothing.
+      return;
+    }
+
+    // Delete provisional binding edges whose addition falls within the reverted range:
+    // rejecting the chat's changes rejects the edges they added. (Edges on a gadget doomed
+    // below go with its whole record instead.)
+    let doomed = this.impl.listPendingGadgets(chatId).filter(gadget =>
+        gadget.pending!.sequence !== undefined && gadget.pending!.sequence >= revertFrom);
+    let doomedIds = new Set(doomed.map(gadget => gadget.id));
     for (let gadget of this.impl.storage.gadgets.list()) {
+      if (doomedIds.has(gadget.id)) continue;
       let removed = false;
       for (let [name, edge] of Object.entries(gadget.bindings)) {
         if (edge.pending?.chatId === chatId && edge.pending.sequence !== undefined &&
@@ -8667,26 +9113,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         this.impl.storage.gadgets.put(gadget);
         this.impl.bumpVersion([gadget.id]);
       }
-    }
-
-    let unmerged: number[] = [];
-    for (let msg of this.impl.storage.chats.list({prefix: `${keyString(chatId)}.`})) {
-      if (msg.type === "changes") {
-        unmerged.push(msg.sequence);
-      } else if (msg.type === "merge") {
-        while (unmerged.length > 0 && unmerged[0] <= msg.mergeThrough) {
-          unmerged.shift();
-        }
-      } else if (msg.type === "revert") {
-        while (unmerged.length > 0 && unmerged[unmerged.length-1] >= msg.revertFrom) {
-          unmerged.pop();
-        }
-      }
-    }
-
-    if (unmerged.length === 0 || unmerged[unmerged.length-1] < revertFrom) {
-      // Revert affects no changes.
-      return;
     }
 
     let timestamp = this.impl.getChatTimestamp();
@@ -8706,6 +9132,17 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.storage.chatMeta.put(meta);
     this.impl.recomputeHasProposedChanges(chatId, meta);
     this.impl.proposedChangesChanged(chatId);
+
+    // Only now delete the provisional gadgets whose creation the revert rejected -- the revert
+    // message is also how the agent learns of the rejection on its next turn (revert messages
+    // are surfaced to the model during history replay). Deletion awaits (removeGadget is the
+    // full path: hooks, facet, registry entry; a pending gadget's files exist only in the
+    // chat's proposed changes, so its mainline root has nothing to clear), and a destructive
+    // change must never outrun its durable record: with the revert already recorded, a failure
+    // or crash here leaves records whose creation the log marks reverted, which the next
+    // reconcilePendingGadgets run reaps. This one does exactly that (the records' creations are
+    // now marked reverted), keeping the deletion path single.
+    await this.impl.reconcilePendingGadgets(chatId);
   }
 
   async deleteChat(chatId: number): Promise<void> {
@@ -8837,20 +9274,32 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async listBlueprints(): Promise<BlueprintGadgetSummary[]> {
     let result: BlueprintGadgetSummary[] = [];
-    for (let record of this.impl.storage.blueprints.list()) {
-      // Look up the timestamp of the exported code version.
-      let codeUpdate = this.impl.storage.code.get(record.codeVersion);
+    for (let record of Array.from(this.impl.storage.blueprints.list())) {
       result.push({
         id: record.id,
         title: record.metadata.title,
         description: record.metadata.description,
         version: record.metadata.version,
-        codeVersionDate: codeUpdate?.timestamp ?? record.metadata.lastUpdated,
+        codeVersionDate: await this.#blueprintCodeDate(record),
         screenshotUrl: blueprintScreenshotUrl(record.id, record.metadata),
         dirty: record.dirty,
       });
     }
     return result;
+  }
+
+  // The timestamp of the code exported into a blueprint: the exported commit's author date, or
+  // for legacy (pre-git-storage) records the legacy log entry's, falling back to the metadata's
+  // own last-updated time.
+  async #blueprintCodeDate(record: BlueprintGadgetRecord): Promise<Date> {
+    if (record.commitId !== undefined) {
+      return (await this.impl.gitStore.readCommitLog(record.commitId, {depth: 1}))[0].timestamp;
+    }
+    if (record.codeVersion !== undefined) {
+      let codeUpdate = this.impl.storage.code.get(record.codeVersion);
+      if (codeUpdate) return codeUpdate.timestamp;
+    }
+    return record.metadata.lastUpdated;
   }
 
   async updateBlueprint(blueprintId: string, options: {
@@ -8881,9 +9330,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       let gadgetId = this.impl.resolveGadgetId(record.gadgetId);
       record.metadata.bindings = this.impl.collectBindingMetadata(gadgetId);
       if (options.updateCode) {
-        record.codeVersion = this.impl.storage.codeVersion.get();
+        let commitId = await this.impl.assertPublishableCommit(
+            this.impl.getGadgetRecord(gadgetId).commitId);
+        record.commitId = commitId;
+        delete record.codeVersion;
         record.metadata.version++;
-        codeSnapshot = await this.impl.snapshotCode(gadgetId);
+        codeSnapshot = await this.impl.snapshotCode(commitId);
       }
     }
 
@@ -8915,9 +9367,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (!record) throw new Error("No such blueprint.");
     if (!record.dirty) return;  // nothing to retry
 
-    // Reconstruct the code snapshot at the original codeVersion, not the current code.
-    let codeSnapshot = await this.impl.snapshotCode(
-        this.impl.resolveGadgetId(record.gadgetId), record.codeVersion);
+    // Reconstruct the code snapshot at the originally exported commit, not the current code.
+    if (record.commitId === undefined) {
+      // A record with `codeVersion` instead predates git-backed code storage; one with neither
+      // shouldn't exist, but either way the fix is the same.
+      throw new Error("This blueprint predates git-backed code storage. Republish its code " +
+          "with updateBlueprint instead of retrying.");
+    }
+    let codeSnapshot = await this.impl.snapshotCode(record.commitId);
     await this.impl.propagateBlueprint(record, codeSnapshot);
   }
 
@@ -9207,7 +9664,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async setPinned(_pinned: boolean): Promise<void> { this.#deny(); }
   async deleteSelf(): Promise<void> { this.#deny(); }
   async createGadget(_title: string): Promise<RpcStub<GadgetClient>> { this.#deny(); }
-  async updateCode(_update: Uint8Array, _chatId?: number): Promise<void> { this.#deny(); }
+  async updateCode(_update: Uint8Array, _chatId: number): Promise<void> { this.#deny(); }
   async getCodeAtCommit(_commitId: string): Promise<{files: Record<string, string>}> {
     this.#deny();
   }
@@ -9525,7 +9982,11 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     let owner = this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId));
     let ownerProfile = await owner.whoami();
 
-    let codeVersion = this.impl.storage.codeVersion.get();
+    // The blueprint exports the gadget's committed code, keyed by its head commit. (Re-read the
+    // record after the awaits above so the head is current.) A blueprint of a code-less gadget
+    // would be useless, so refuse rather than publish an empty archive.
+    let commitId = await this.impl.assertPublishableCommit(
+        this.impl.getGadgetRecord(this.id).commitId);
     let now = new Date();
 
     let metadata: BlueprintMetadata = {
@@ -9548,13 +10009,13 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       id,
       metadata,
       gadgetId: this.id,
-      codeVersion,
+      commitId,
     };
 
     let screenshot = screenshotUpload ? validateBlueprintScreenshotUpload(screenshotUpload) : undefined;
 
-    // Snapshot current code and propagate to User DO, KV, R2.
-    let codeSnapshot = await this.impl.snapshotCode(this.id);
+    // Snapshot the committed code and propagate to User DO, KV, R2.
+    let codeSnapshot = await this.impl.snapshotCode(commitId);
     await this.impl.propagateBlueprint(record, codeSnapshot, screenshot);
 
     this.impl.recordGadgetAnalytics({
@@ -9563,15 +10024,16 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       blueprint_id: id,
     });
 
-    // Derive codeVersionDate from the code collection.
-    let codeUpdate = this.impl.storage.code.get(codeVersion);
+    // Derive codeVersionDate from the exported commit.
+    let codeVersionDate =
+        (await this.impl.gitStore.readCommitLog(commitId, {depth: 1}))[0].timestamp;
 
     return {
       id,
       title: metadata.title,
       description: metadata.description,
       version: metadata.version,
-      codeVersionDate: codeUpdate?.timestamp ?? now,
+      codeVersionDate,
       screenshotUrl: blueprintScreenshotUrl(id, metadata),
       dirty: record.dirty,
     };

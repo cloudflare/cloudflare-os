@@ -229,6 +229,11 @@ against Yjs:
   - `mergedCommit` — the most recent mainline commit whose content has been merged
     into the chat. Starts equal to `seedCommit`; advances on update-from-mainline.
   - Gadgets created within the chat have neither (both null).
+- The pins (and seed hash) are established **at chat creation**, one pin per committed
+  gadget, rather than lazily on first code involvement: clients need the pins before
+  they can build the doc their edits apply to, so a lazy scheme would need an extra
+  "establish now" RPC for the editor path. A head that advances between chat creation
+  and first use reaches the chat through update-from-mainline like any other staleness.
 - Session docs (`getSessionYDoc` in agent.ts, and the frontend's chat doc) are seeded
   by applying `seedDocFromFiles(readCommitFiles(seedCommit))` (verified against the
   chat's stored seed hash), then applying the chat's proposed updates + drafts as
@@ -246,6 +251,25 @@ against Yjs:
      `"merge"` message — all in one DO event (output gate makes storage atomic).
   - Objects are written **only** here (plus migration/import), so reverted chats leave
     zero garbage.
+  - `mergeThrough` is validated against recorded history (a future sequence would
+    retroactively claim later-recorded changes), and a partial accept may not exclude a
+    still-proposed update-from-mainline batch (its pin advancement is already in force;
+    accepting around it would overwrite the mainline content it delivered) — both are
+    thrown errors, unlike the stale outcome, since they indicate client bugs rather
+    than expected races.
+  - A covered creation **always gets a first commit — an empty tree if the gadget has
+    no files yet — and promotes**. Coverage is never inferred from content equality
+    (an empty gadget compares equal to the empty base, which used to drop creations
+    from accepts), and every promoted gadget has a head other chats' pins can see, so
+    `pending` keeps its single meaning: creation still proposed. (The alternative —
+    leaving a covered-but-empty creation pending — was tried and rejected: it made
+    "merged but still pending" a state every consumer of `pending` had to know about,
+    e.g. compaction's proposed-structure seeding and revert's deletion sweep.) One
+    exception: a pending record whose stamp the log already marks *reverted* — a
+    failed revert cleanup awaiting reconciliation — is excluded from coverage
+    entirely, so an accept can't resurrect a rejected gadget as an empty commit.
+    Blueprints of code-less gadgets (head absent *or* an empty tree) can't be
+    created, and empty blueprint archives are refused at instantiation.
 - **Update-from-mainline** (new Overseer operation):
   1. Per stale gadget: `threeWayMerge(readCommitFiles(mergedCommit),
      readCommitFiles(head), flatten(chatDoc))` — the last merged commit is the common
@@ -258,10 +282,51 @@ against Yjs:
      history remains anchored to it; the merge result is just more uncommitted change
      on top. A subsequent accept is a plain commit on head (assuming mainline didn't
      move again).
-  - Conflict markers stay in the files; surface `conflictPaths` in the message so the
-    UI/agent can point at them.
+  - Conflict markers stay in the files; surface `conflictPaths` in the message
+    (qualified as `GADGET_NAME/path`, since a chat can merge several gadgets at once)
+    so the UI/agent can point at them.
+  - Whenever pins advance, the `"changes"` message is recorded **even if the merge
+    produced no update** (chat content already matched mainline): the message is the
+    durable record of the advancement that the revert restriction below keys on.
+  - The "minimal per-file text diff" is a line-level multi-hunk diff, not a single
+    prefix/suffix hunk: a whole-middle replacement would orphan a concurrent
+    editor's edits sitting *between* two changed regions. The diff itself is the
+    diff3 package's own engine (`diff3/onp.js`, the module behind the merge's
+    diff3Merge), whose flat edit script folds into hunks. Hunks are applied
+    back-to-front; boundaries must never split a UTF-16 surrogate pair: Yjs encodes
+    update payloads as UTF-8, under which a lone surrogate becomes U+FFFD, so a
+    mid-pair boundary would make remote replicas decode different content than the
+    local doc (see applyTextEdit in yjs-files.ts). Line splitting (`splitLines` in
+    git-store.ts, shared with the diff3 merge) is lossless — only `\n` ends a line;
+    a bare `\r` or U+2028/U+2029 stays inside its line rather than becoming a
+    boundary the split can't retain.
 - **Revert** is unchanged (fold-level erasure; nothing to clean up in the object
-  store).
+  store) — with one new restriction: a *still-proposed* update-from-mainline batch
+  cannot be reverted, because it advanced the chat's `mergedCommit` pins and the
+  pins' prior values aren't recorded; erasing the update while the pins stand would
+  let a later accept silently overwrite the mainline changes it delivered. A richer
+  scheme (recording pre-merge pins on the message so reverts can roll them back) is
+  future work if the restriction chafes.
+- **Concurrency**: accept, update-from-mainline, and revert all read chat state, may
+  await, and write chat state back — and every `await` is an interleaving point even
+  in a single-threaded DO. A per-chat operation lock (`withChatLock`) serializes
+  these three against each other (two concurrent update-from-mainlines would
+  otherwise double-apply the merge as two CRDT insertions). Accept and
+  update-from-mainline re-read chat meta and re-check the chat's next-sequence token
+  after their last await to catch everything the lock doesn't cover (agent turns
+  starting, drafts materializing, chat deletion, other chats' accepts advancing
+  heads). Revert is instead **message-first**: after one idempotent
+  `reconcilePendingGadgets` await, everything through the revert message and edge
+  deletions is synchronous (atomic under the output gate), and the awaited
+  provisional-gadget deletions run *after* the message — a destructive change never
+  outruns its durable record, and a crash partway leaves records the log marks
+  reverted, which the next `reconcilePendingGadgets` reaps.
+- The merge/revert status of a `"changes"` message is computed by one shared rule
+  (`chatChangeStatuses` in agent-compaction.ts, mirroring `foldProposedChanges`):
+  strictly in log order (a marking message affects only changes recorded before it),
+  merges inclusive of `mergeThrough`, earliest marking wins. Agent replay, chat-doc
+  construction, and the accept/revert guards all use it, so the doc an accept commits
+  is always the doc the agent (and every reader) derived.
 - Mainline Yjs doc, the `code` log (for new writes), snapshots, and standalone
   editing paths are all retired.
 
@@ -312,6 +377,22 @@ against Yjs:
     they remain the CRDT base for in-flight chats.
 - Old `code` and `snapshots` collections: no new writes, retained read-only; deletion
   is a later cleanup change once in-flight chats have drained.
+- **The commit-backed backend (§3, already landed) is not deployable until this
+  migration lands.** Two concrete reasons: on an existing workspace, new chats pin an
+  empty code base (no gadget has a `commitId` yet) so agents see no code, and a legacy
+  chat's accept — commit-less gadget, pin-less chat — passes the fast-forward gate and
+  installs the chat's anchored content as the first commit, silently discarding legacy
+  mainline the anchor predates. The migration's synthesized commits and rewritten pins
+  are exactly what arm the stale gate for legacy chats: pin `mergedCommit` at the
+  synthesized commit of the same version `legacyChatBaseVersion` resolves, so accept
+  and update-from-mainline agree on the chat's base.
+- Migration test to include: a legacy chat whose *user-authored* updates carry
+  `observedCodeVersion` stamps **later** than the chat's anchor (allowed — user stamps
+  only seed the agent's version lock). Such updates can reference Yjs items the
+  anchored doc lacks; Yjs parks them as pending structs, so they silently vanish from
+  flattened content. Old readers built at "current" and never saw this; the anchored
+  `buildChatDoc` can. Verify the migration's pin choice (or an explicit fix) keeps
+  such a chat's accept from dropping those edits.
 
 ### 5. Protocol changes (`workshop-shared/src/api.ts`)
 

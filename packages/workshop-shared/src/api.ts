@@ -1678,9 +1678,10 @@ export interface Overseer extends RpcTarget {
    * Fetch the Yjs base doc, encoded as a whole-doc V2 update, for a chat that predates
    * commit-seeded chat docs (indicated by ChatCodeBase.seedHash being absent). Such a chat's Yjs
    * history is anchored to the retired workspace-wide code log, so its base cannot be re-derived
-   * from commits; this returns it in one shot instead. The chat's proposed changes and drafts
-   * apply on top, exactly as with a commit-derived seed. Chats created after the git-storage
-   * transition never need this.
+   * from commits; this returns it in one shot instead, with the chat's already-accepted updates
+   * folded in. The chat's recorded change updates and drafts apply on top exactly as with a
+   * commit-derived seed (see ChatCodeBase; re-applying updates the base already contains is a
+   * Yjs no-op). Chats created after the git-storage transition never need this.
    */
   getLegacyChatDocBase(chatId: number): Promise<Uint8Array>;
 
@@ -1921,6 +1922,13 @@ export interface Overseer extends RpcTarget {
    * mainline has advanced past any pin, nothing at all is merged -- no partial accepts -- and
    * the call returns a "stale" outcome (an expected result, not an exception; see
    * MergeChangesResult): call updateChatFromMainline(), resolve any conflicts, and retry.
+   *
+   * If updateChatFromMainline() was previously called in this session, mergeChanges() MUST include
+   * the resulting update (`mergeThrough` must be >= the sequence number of the change representing
+   * the update), since trying to merge prior to that would simply produce a "stale" result again.
+   * mergeChanges() will throw if it detects this situation.
+   *
+   * This also throws if `mergeThrough` is in the future.
    */
   mergeChanges(
       chatId: number, mergeThrough: number | null,
@@ -1935,19 +1943,28 @@ export interface Overseer extends RpcTarget {
    * `changes` message (see AiChatMessageBody.mainlineMerge), advancing the pin to head.
    * Conflicting hunks are left inline as 3-way conflict markers
    * (`<<<<<<<`/`|||||||`/`=======`/`>>>>>>>`) for the user or their agent to clean up; the
-   * affected paths are returned and also recorded on the message. Yjs merge semantics are
+   * affected paths -- each qualified by its gadget's binding name (`GADGET_NAME/path`) -- are
+   * returned in sorted order and also recorded on the message. Yjs merge semantics are
    * deliberately not used across divergent bases: CRDT merges of independently edited text
    * produce nonsense, whereas conflict markers are an explicit, fixable representation.
    *
    * Once the chat is up to date (and mainline hasn't moved again), mergeChanges() succeeds as a
    * plain fast-forward. Returns an empty `conflictPaths` when every file merged cleanly (or
    * there was nothing to merge).
+   *
+   * Whenever any pin advances, a `changes` message carrying `mainlineMerge` is recorded -- even
+   * when the chat's content already matched mainline and there is no `update` to deliver -- so
+   * the chat log always durably accounts for the advancement (see the revert restriction on
+   * AiChatMessageBody.mainlineMerge).
    */
   updateChatFromMainline(chatId: number): Promise<{conflictPaths: string[]}>;
 
   /**
    * Indicates that the user has requested that proposed changes starting from the given sequence
    * number in the chat thread be reverted.
+   *
+   * Throws if the range covers a still-proposed mainline merge (see
+   * AiChatMessageBody.mainlineMerge, which explains why such a batch cannot be erased).
    */
   revertChanges(chatId: number, revertFrom: number): Promise<void>;
 
@@ -2162,8 +2179,11 @@ export type AiChatMetadata = {
 
   /**
    * The chat's code-branch state: which commits seeded its code doc and how far mainline has
-   * been merged in. Absent until the chat first involves code. Delivered (and re-delivered on
-   * change, e.g. when updateChatFromMainline() advances a pin) via AiChatSubscriber.metadata().
+   * been merged in. Pinned at chat creation for chats created since git-backed code storage
+   * (heads that advance later reach the chat only through updateChatFromMainline(), the ordinary
+   * stale-chat path); absent on chats predating it until the migration rewrites them. Delivered
+   * (and re-delivered on change, e.g. when updateChatFromMainline() advances a pin) via
+   * AiChatSubscriber.metadata().
    */
   codeBase?: ChatCodeBase;
 };
@@ -2177,7 +2197,9 @@ export type AiChatMetadata = {
  * (Overseer.getCodeAtCommit(), cacheable by oid), build the deterministic seed update with
  * `seedDocFromFiles` from `@gadgets/workshop-shared/yjs-seed` -- all seedCommit-bearing pins in
  * a single call, keyed by filesRoot -- verify it against `seedHash`, then apply the chat's
- * proposed changes and drafts on top.
+ * recorded change updates and drafts on top. The seed never advances, so "recorded change
+ * updates" means every non-reverted `changes` message's update -- already-accepted ones
+ * included, not just still-proposed ones.
  */
 export type ChatCodeBase = {
   /** Per-gadget pins: every gadget seeded into the chat doc, plus any that joined later. */
@@ -2369,8 +2391,16 @@ export type AiChatMessageBody = {
   /**
    * Present when this batch was produced by Overseer.updateChatFromMainline(): `update` merges
    * mainline commits into the chat. `conflictPaths` lists the files whose 3-way merge was not
-   * clean, in sorted order; their merged contents carry inline conflict markers (or, for
+   * clean, in sorted order, each qualified by its gadget's binding name
+   * (`GADGET_NAME/path/to/file`); their merged contents carry inline conflict markers (or, for
    * delete-vs-modify, the surviving side's content) for the user or their agent to resolve.
+   * `update` is absent when the chat's content already matched the merged mainline commits;
+   * the batch then records only that the pins advanced.
+   *
+   * A batch carrying this cannot be reverted while still proposed (Overseer.revertChanges()
+   * refuses), and Overseer.mergeChanges() refuses to accept *around* one (`mergeThrough` below
+   * its sequence): the merge advanced the chat's pins, so erasing or excluding its content would
+   * let a later accept silently overwrite the mainline changes it delivered.
    */
   mainlineMerge?: {conflictPaths: string[]};
 

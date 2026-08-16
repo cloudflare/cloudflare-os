@@ -19,9 +19,9 @@ import type { AiGatewayLogRoute } from "./ai-gateway";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
 import type { ModelHandle } from "./ai-models";
 import {
-  buildCompactionState, buildSummaryPrompt, COMPACTION_SYSTEM_PROMPT, estimateProjectionTokens,
-  findCompactionBoundary, findProtectedFromSequence, getModelTokenLimits, isCompactionTurn,
-  protectRetainedReverts, shouldCompactChat,
+  buildCompactionState, buildSummaryPrompt, chatChangeStatuses, COMPACTION_SYSTEM_PROMPT,
+  estimateProjectionTokens, findCompactionBoundary, findProtectedFromSequence,
+  getModelTokenLimits, isCompactionTurn, protectRetainedReverts, shouldCompactChat,
   type CompactionProjectionMessage,
 } from "./agent-compaction";
 
@@ -267,7 +267,21 @@ export function makeStoredAssistantMessage(message: AssistantMessage): StoredAss
  */
 export interface AgentHooks {
   getChatAgentContext(chatId: number): AiChatAgentContext;
+
+  /**
+   * Legacy (pre-git-storage): build the workspace-wide Yjs doc from the retired code log. Only
+   * the session docs of chats that predate commit-seeded docs are built this way; see
+   * getChatSeedUpdate().
+   */
   buildYDoc(version: number | "current"): {ydoc: Y.Doc, version: number};
+
+  /**
+   * The deterministic seed update for a commit-seeded chat's session doc, verified against the
+   * chat's stored seed hash (see ChatCodeBase in the API), or undefined for a chat whose Yjs
+   * base is the legacy code log -- the session doc then falls back to buildYDoc() at the chat's
+   * observed version, exactly as before git storage.
+   */
+  getChatSeedUpdate(chatId: number): Promise<Uint8Array | undefined>;
 
   /**
    * Summarize the workspace's gadgets for the system prompt (see AgentGadgetInfo). Gadgets still
@@ -1223,11 +1237,20 @@ export async function runAgent(
   // replayed "changes" messages predate it.
   let gadgetInfos = hooks.listGadgetInfo(chatId);
 
+  // The deterministic seed for a commit-seeded chat's session doc, fetched up front because
+  // getSessionYDoc() must stay synchronous. Undefined for a chat whose Yjs base is the legacy
+  // code log; the version-lock machinery below then applies, exactly as before git storage.
+  let chatCodeSeed = await hooks.getChatSeedUpdate(chatId);
+
   // On first use, we'll build a copy of the Y.Doc, then reuse it for further tool calls in
   // this session. Each gadget's files live in the doc's root map named by
   // AgentGadgetInfo.rootName; file tools resolve their optional `workpiece` parameter to a root
   // via hooks.resolveWorkpieceRoot.
   let ydoc: Y.Doc | undefined;
+  // Legacy chats only: the code-log version the session doc is built at, latched from the chat's
+  // recorded observedCodeVersion stamps. Stays undefined for commit-seeded chats, whose base is
+  // pinned by ChatCodeBase instead -- which also keeps every stamp below conditional, so such
+  // chats never record observedCodeVersion at all.
   let versionLock = checkpoint?.observedCodeVersion;
   let capturedYdocChanges: Uint8Array[] = [];
   // Gadgets created this turn, awaiting attachment to the next flushed "changes" message (see
@@ -1269,9 +1292,17 @@ export async function runAgent(
   let rollingFileContents: Map<string, Map<string, string>> | undefined;
   let getSessionYDoc = () => {
     if (!ydoc) {
-      let build = hooks.buildYDoc(versionLock === undefined ? "current" : versionLock);
-      versionLock = build.version;
-      ydoc = build.ydoc;
+      if (chatCodeSeed !== undefined) {
+        // Commit-seeded chat: the base is the deterministic seed derived from the chat's pinned
+        // commits. Applying it as a remote update (rather than authoring it here) keeps the
+        // reserved seed clientID out of this doc; see yjs-seed in workshop-shared.
+        ydoc = new Y.Doc();
+        Y.applyUpdateV2(ydoc, chatCodeSeed);
+      } else {
+        let build = hooks.buildYDoc(versionLock === undefined ? "current" : versionLock);
+        versionLock = build.version;
+        ydoc = build.ydoc;
+      }
 
       ydoc.on("updateV2", (update, origin) => {
         capturedYdocChanges.push(update);
@@ -1464,30 +1495,9 @@ export async function runAgent(
   //    content.
   // 2. Let us know which *reads* are reading from reverted content, and therefore should be
   //    elided from the chat history for being no longer relevant.
-  // Indexed by `sequence - firstSequence`: with a checkpoint the tail no longer starts at zero, and
-  // a merge or revert can name a sequence below it.
-  let firstSequence = chatMessages[0]?.sequence ?? 0;
-  let chatMessageStatus: (undefined | "merged" | "reverted")[] =
-      Array.from({ length: chatMessages.length });
-  for (let msg of chatMessages) {
-    let from: number;
-    let through: number;
-    let status: "merged" | "reverted";
-    if (msg.type === "merge") {
-      from = firstSequence;
-      through = msg.mergeThrough;
-      status = "merged";
-    } else if (msg.type === "revert") {
-      from = Math.max(firstSequence, msg.revertFrom);
-      through = msg.sequence;
-      status = "reverted";
-    } else {
-      continue;
-    }
-    for (let sequence = from; sequence < through; ++sequence) {
-      chatMessageStatus[sequence - firstSequence] ??= status;
-    }
-  }
+  // The rule is shared with overseer.ts's chat-doc construction (buildChatDoc), so the doc an
+  // accept commits is always the doc this replay produced.
+  let chatMessageStatus = chatChangeStatuses(chatMessages);
 
   // We compute sequential change ID numbers for the purpose of telling the LLM about reverts.
   let nextChangeId = checkpoint?.nextChangeId ?? 0;
@@ -1691,7 +1701,7 @@ export async function runAgent(
                 // Note that if we get here, we know the tool succeeded originally, so for many
                 // branches below we can just return success unconditionally.
                 case "readFile": {
-                  if (chatMessageStatus[msg.sequence - firstSequence] === "reverted") {
+                  if (chatMessageStatus.get(msg.sequence) === "reverted") {
                     // It would be a total waste of tokens to actually include this file
                     // content in the chat history since it contains changes that were later
                     // reverted -- not to mention a waste of resources to compute the content
@@ -1892,7 +1902,7 @@ export async function runAgent(
           }
         }
 
-        if (chatMessageStatus[msg.sequence - firstSequence] !== "reverted") {
+        if (chatMessageStatus.get(msg.sequence) !== "reverted") {
           // A batch with no `update` records only creations/binding additions; there is nothing
           // to apply to the session doc (and no diff), but user-authored creations/additions
           // are still surfaced as observations below.
@@ -2174,10 +2184,12 @@ export async function runAgent(
     pendingAddedBindings = [];
     hooks.addChatMessages(chatId, author, [{
       type: "changes",
-      // Captured edits imply the session Y.Doc was built, so `versionLock` is set; stamping it
-      // records the base version the update applies to, which replay latches before rebuilding
-      // the session's code state.
-      ...(update !== undefined ? {update, observedCodeVersion: versionLock!} : {}),
+      // Legacy chats stamp the base version the update applies to, which replay latches before
+      // rebuilding the session's code state. Commit-seeded chats leave `versionLock` unset --
+      // their base is pinned by ChatCodeBase -- so no stamp is recorded.
+      ...(update !== undefined ? {update} : {}),
+      ...(update !== undefined && versionLock !== undefined
+          ? {observedCodeVersion: versionLock} : {}),
       ...(createdGadgets.length > 0 ? {createdGadgets} : {}),
       ...(addedBindings.length > 0 ? {addedBindings} : {}),
     }]);
@@ -2467,12 +2479,11 @@ export async function runAgent(
             throw new Error("File does not exist.");
           }
           filesRead.add(fileKey(resolved.workpieceId, filename));
-          return toolResult(text.toString(), {
-            observedCodeVersion: versionLock!
-          });
+          return toolResult(text.toString(),
+              versionLock !== undefined ? {observedCodeVersion: versionLock} : {});
         } catch (error) {
           toolCallNotes.set(toolCallId, {
-            observedCodeVersion: versionLock!,
+            ...(versionLock !== undefined ? {observedCodeVersion: versionLock} : {}),
             error: toolErrorText(error)
           });
           throw error;
@@ -2504,12 +2515,11 @@ export async function runAgent(
           // that it can make further edits without rewriting.
           filesRead.add(fileKey(resolved.workpieceId, filename));
 
-          return toolResult(jsonToolResultText({success: true, changeId: nextChangeId}), {
-            observedCodeVersion: versionLock!
-          });
+          return toolResult(jsonToolResultText({success: true, changeId: nextChangeId}),
+              versionLock !== undefined ? {observedCodeVersion: versionLock} : {});
         } catch (error) {
           toolCallNotes.set(toolCallId, {
-            observedCodeVersion: versionLock!,
+            ...(versionLock !== undefined ? {observedCodeVersion: versionLock} : {}),
             error: toolErrorText(error)
           });
           throw error;

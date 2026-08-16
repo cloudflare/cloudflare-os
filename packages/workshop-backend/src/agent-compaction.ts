@@ -122,6 +122,38 @@ export function foldProposedChanges(
 }
 
 /**
+ * Marks the messages of a chat log (or log tail) that lie in merged or reverted ranges: the
+ * single status rule shared by agent replay, chat-doc construction, and the merge/revert guards
+ * in overseer.ts. The semantics mirror foldProposedChanges: processing is strictly in log order,
+ * so a marking message affects only messages recorded *before* it; a merge accepts through
+ * `mergeThrough` inclusively; a revert discards from `revertFrom` up to (not including) the
+ * revert message itself; and the earliest marking wins. A "changes" message left unmarked is
+ * still proposed. Non-"changes" messages in a range are marked too: replay uses that to elide
+ * tool reads whose content was later reverted.
+ */
+export function chatChangeStatuses(
+    messages: Iterable<AiChatMessage>): Map<number, "merged" | "reverted"> {
+  let statuses = new Map<number, "merged" | "reverted">();
+  let seen: number[] = [];
+  let mark = (from: number, through: number, status: "merged" | "reverted") => {
+    for (let sequence of seen) {
+      if (sequence >= from && sequence <= through && !statuses.has(sequence)) {
+        statuses.set(sequence, status);
+      }
+    }
+  };
+  for (let msg of messages) {
+    if (msg.type === "merge") {
+      mark(0, msg.mergeThrough, "merged");
+    } else if (msg.type === "revert") {
+      mark(msg.revertFrom, msg.sequence - 1, "reverted");
+    }
+    seen.push(msg.sequence);
+  }
+  return statuses;
+}
+
+/**
  * Earliest turn a checkpoint cannot absorb, or undefined if none. A pending connection request
  * carries live accept/deny state that only its own message can answer, so the boundary stays behind
  * it. Provisional gadget creations and binding additions need no such protection: the checkpoint

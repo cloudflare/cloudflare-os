@@ -430,9 +430,22 @@ export function threeWayMerge(
   return { files, conflictPaths };
 }
 
-// Split into lines, each keeping its terminator, the same way isomorphic-git's mergeFile does --
-// diff3 operates on arrays of lines and join("") reassembles losslessly.
-const LINEBREAKS = /^.*(\r?\n|$)/gm;
+// A zero-width boundary after every "\n"; split() then keeps each terminator with its line.
+const LINE_BOUNDARY = /(?<=\n)/;
+
+/**
+ * Split `text` into lines, each keeping its trailing "\n", so `lines.join("") === text` always
+ * holds. Both consumers -- the diff3 merge below and applyTextEdit's minimal diff
+ * (yjs-files.ts) -- reassemble content from the pieces they compute over, so the split must be
+ * lossless above all: only "\n" ends a line, and a bare "\r" (or U+2028/U+2029) stays *inside*
+ * its line rather than acting as a boundary, which merely makes diffs and merges of such exotic
+ * line endings coarser -- whereas the obvious `/^.*$/m`-style split treats those characters as
+ * boundaries it cannot retain, silently corrupting any content that uses them. A boundary
+ * always follows "\n", so it can never split a UTF-16 surrogate pair.
+ */
+export function splitLines(text: string): string[] {
+  return text === "" ? [] : text.split(LINE_BOUNDARY);
+}
 
 // A conflict hunk at end-of-file may lack a trailing newline; give it one so the following
 // marker starts its own line. (isomorphic-git glues the marker onto the last line instead.)
@@ -442,8 +455,12 @@ function withFinalNewline(text: string): string {
 
 function mergeText(base: string, ours: string, theirs: string, labels: MergeLabels):
     { clean: boolean, text: string } {
+  // diff3 operates on arrays of lines; splitLines keeps each line's terminator, so join("")
+  // reassembles losslessly. (isomorphic-git's mergeFile splits with a regex that treats bare
+  // "\r"/U+2028/U+2029 as boundaries it then drops, corrupting content that uses them; ours
+  // keeps such characters inside their line instead.)
   let regions = diff3Merge(
-      ours.match(LINEBREAKS)!, base.match(LINEBREAKS)!, theirs.match(LINEBREAKS)!);
+      splitLines(ours), splitLines(base), splitLines(theirs));
 
   let clean = true;
   let text = "";
