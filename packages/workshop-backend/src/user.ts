@@ -1555,7 +1555,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * Persist a connected gatekeeper account that was established during sign-in (rather than via the
    * usual logged-in connectAccount flow). Used for providers like Cloudflare where signing in also
    * links the account for AI Gateway billing: the login callback resolves this user by verified
-   * email, then calls here to store the full-scope grant.
+   * email, then calls here to store the resulting grant. That grant covers billing only: sign-in
+   * requests no gadget-facing resources, so any later resource access is authorized separately.
    */
   async linkConnectedAccountFromLogin(
       account: Fetcher<GatekeeperUser>, vendorId: string, expiresAt?: Date): Promise<void> {

@@ -529,7 +529,10 @@ export interface AuthenticatedApi extends RpcTarget {
    *
    * `resourceUrlPatterns`, if given, limits the connection to the authorization needed for those
    * grantable resource types (those with `grantable`; see `SupportedResource`). If omitted,
-   * authorization for all of the vendor's resource types is requested.
+   * authorization for all of the vendor's resource types is requested. An empty array is meaningful
+   * and distinct from omitting it: it requests no resource authorization at all, which is how a
+   * caller connects an account for a non-resource purpose (e.g. billing) without asking the user to
+   * grant data access it will never use.
    */
   connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<{url: string}>;
 
