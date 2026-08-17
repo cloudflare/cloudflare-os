@@ -24,7 +24,7 @@ jobs:
       actions: write
       checks: write
       issues: write
-      pull-requests: read
+      pull-requests: write
     steps:
       - name: Skip Bonk review
         env:
