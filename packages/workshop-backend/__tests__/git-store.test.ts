@@ -77,6 +77,56 @@ describe("GitStore", () => {
     expect(await store.readCommitFiles(SECOND_COMMIT_OID)).toEqual(SECOND_FILES);
   });
 
+  it("reads per-file blob oids without content, deduplicated across commits", async () => {
+    let store = new GitStore(makeObjects());
+    await writeFixtureHistory(store);
+
+    let first = await store.commitFileOids(INITIAL_COMMIT_OID);
+    let second = await store.commitFileOids(SECOND_COMMIT_OID);
+    expect([...first.keys()].toSorted()).toEqual(["README.md", "client.js", "lib/util.js"]);
+    // Content addressing: unchanged files keep their blob oid across commits; changed ones don't.
+    expect(second.get("README.md")).toBe(first.get("README.md"));
+    expect(second.get("lib/util.js")).toBe(first.get("lib/util.js"));
+    expect(second.get("client.js")).not.toBe(first.get("client.js"));
+  });
+
+  it("diffs commits by path with changedPaths", async () => {
+    let store = new GitStore(makeObjects());
+    await writeFixtureHistory(store);
+    let third = await store.writeFilesAsCommit(new Map([
+      ["README.md", "# Test Gadget\n"],          // unchanged from SECOND
+      ["lib/util.js", "export const answer = 43;\n"],  // changed within a subtree
+      ["extra.txt", "new\n"],                    // added; client.js removed
+    ]), {
+      parents: [SECOND_COMMIT_OID],
+      author: ALICE,
+      message: "third commit",
+      timestamp: new Date(1700000200_000),
+    });
+
+    expect(await store.changedPaths(SECOND_COMMIT_OID, SECOND_COMMIT_OID)).toEqual(new Set());
+    expect(await store.changedPaths(INITIAL_COMMIT_OID, SECOND_COMMIT_OID))
+        .toEqual(new Set(["client.js"]));
+    expect(await store.changedPaths(SECOND_COMMIT_OID, third))
+        .toEqual(new Set(["client.js", "lib/util.js", "extra.txt"]));
+    // An undefined side is an empty tree, so a one-sided diff lists the whole tree.
+    expect(await store.changedPaths(undefined, INITIAL_COMMIT_OID))
+        .toEqual(new Set(INITIAL_FILES.keys()));
+    expect(await store.changedPaths(INITIAL_COMMIT_OID, undefined))
+        .toEqual(new Set(INITIAL_FILES.keys()));
+  });
+
+  it("reports blob-vs-tree replacements at both paths", async () => {
+    let store = new GitStore(makeObjects());
+    let blobShape = await store.writeFilesAsCommit(new Map([["x", "file\n"]]), {
+      parents: [], author: ALICE, message: "blob", timestamp: new Date(1700000000_000),
+    });
+    let treeShape = await store.writeFilesAsCommit(new Map([["x/y", "nested\n"]]), {
+      parents: [blobShape], author: ALICE, message: "tree", timestamp: new Date(1700000100_000),
+    });
+    expect(await store.changedPaths(blobShape, treeShape)).toEqual(new Set(["x", "x/y"]));
+  });
+
   it("walks commit ancestry with readCommitLog", async () => {
     let store = new GitStore(makeObjects());
     await writeFixtureHistory(store);

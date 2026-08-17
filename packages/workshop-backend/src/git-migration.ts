@@ -19,11 +19,15 @@
 //     code version at or below it, so the pinned state is exactly some commit's tree.
 // Versions where a gadget's flattened files are unchanged from its previous synthesized commit
 // are skipped for that gadget, so a gadget untouched by most of the log gets a short chain.
+// Every permanent gadget's chain is additionally rooted at a version-0 empty-tree commit, so
+// every permanent gadget leaves the migration with a head even if the log never gave it content
+// (the invariant chat pinning relies on; see GadgetRecord.commitId).
 //
-// Chats predating commit-seeded docs keep deriving their Yjs base from the retired log (see
-// ChatCodeBase.seedHash); the migration gives each a `codeBase` whose per-gadget `mergedCommit`
-// pins the synthesized commit at the same version its doc base anchors to -- what arms the
-// accept flow's fast-forward gate (and update-from-mainline's merge base) for legacy chats.
+// Chats predating commit-pinned docs keep deriving their Yjs base from the retired log (see
+// ChatCodeBase.legacy); the migration gives each a `codeBase` marked `legacy: true` whose
+// per-gadget `mergedCommit` pins the synthesized commit at the same version its doc base
+// anchors to -- what arms the accept flow's fast-forward gate (and update-from-mainline's merge
+// base) for legacy chats until their first merge graduates them.
 //
 // The migration runs in the Overseer constructor under blockConcurrencyWhile, gated by the
 // `version` singleton (see OverseerImpl.#migrateToGitStorage). It is re-runnable: object writes
@@ -143,7 +147,7 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
   let legacyMerges: LegacyMergeMessage[] = [];
   let chatAnchors = new Map<number, number>();
   for (let meta of Array.from(storage.chatMeta.list())) {
-    if (meta.codeBase?.seedHash !== undefined) continue;  // already commit-seeded
+    if (meta.codeBase !== undefined && meta.codeBase.legacy !== true) continue;  // commit-pinned
     let messages = [...storage.chats.list({ prefix: `${keyString(meta.id)}.` })];
     for (let msg of messages) {
       if (msg.type === "merge" && msg.version !== undefined) {
@@ -181,6 +185,31 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
   // Replay the log once, synthesizing each tracked gadget's chain at the chosen points.
 
   let commits = 0;
+
+  // Every permanent gadget's chain is rooted at a version-0 empty-tree commit, so every
+  // permanent gadget ends the migration with a head (the invariant the chat pinning flow
+  // relies on; see GadgetRecord.commitId) and every legacy chat's anchor -- including one
+  // predating the gadget's first content -- resolves to a pin (the chat's doc holds nothing
+  // for the root there, and the empty tree is exactly that state; without the pin, edits to
+  // such a root could never pass the accept gate once mainline moved). Pending gadgets are
+  // excluded: promotion by their own chat's accept writes their first commit. Blueprint
+  // resolution below likewise ignores version-0 floors, since an empty snapshot is not a
+  // valid blueprint.
+  for (let gadget of storage.gadgets.list()) {
+    if (gadget.pending) continue;
+    let state = tracked.get(gadget.id)!;
+    state.chain.push({
+      version: 0,
+      commitId: await gitStore.writeFilesAsCommit(new Map(), {
+        parents: [],
+        author: host.ownerIdentity,
+        message: "Import pre-git history (initial empty state)",
+        timestamp: gadget.created,
+      }),
+    });
+    commits++;
+  }
+
   let ydoc = new Y.Doc();
   for (let entry of storage.code.list()) {
     Y.applyUpdateV2(ydoc, entry.update);
@@ -188,9 +217,10 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
     for (let state of tracked.values()) {
       let files = readDocFiles(ydoc, state.root);
       if (filesEqual(files, state.files)) continue;
-      // A gadget that has never had content gets no root commit: a permanent gadget with no
-      // commits is a state the accept flow already supports (its first accept writes a
-      // parentless commit), whereas deletions after real content are history worth a commit.
+      // A chain still empty here belongs to a pending gadget or a deleted one tracked only for
+      // a blueprint pin; such a gadget that has never had content gets no commit at all (an
+      // empty state with no history is nothing worth recording), whereas deletions after real
+      // content are history worth a commit.
       if (files.size === 0 && state.chain.length === 0) continue;
       let parent = state.chain[state.chain.length - 1];
       let commitId = await gitStore.writeFilesAsCommit(files, {
@@ -233,11 +263,14 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
   // Live legacy chats' pins: mergedCommit at the chain floor of the same version the chat's doc
   // base anchors to (so accept's fast-forward gate and update-from-mainline's merge base agree
   // with the doc the chat actually builds). No seedCommit and no seedHash: the chat's Yjs base
-  // remains the legacy log (see getLegacyChatDocBase), not a commit-derived seed. Gadgets with
-  // no commit at the anchor (pending ones, or those with no content yet) get no pin, which reads
-  // as "nothing merged yet" everywhere pins are consumed.
+  // remains the legacy log (see getLegacyChatDocBase), which is exactly what the `legacy` flag
+  // declares -- the chat behaves this way until its first merge graduates it. Every permanent
+  // gadget has a floor (its chain is rooted at the version-0 empty commit, matching the doc's
+  // empty root at anchors predating the gadget's content); only pending gadgets get no pin,
+  // which reads as "nothing merged yet" everywhere pins are consumed -- accurate, since only
+  // their own chat's accept can promote them.
   for (let meta of Array.from(storage.chatMeta.list())) {
-    if (meta.codeBase?.seedHash !== undefined) continue;
+    if (meta.codeBase !== undefined && meta.codeBase.legacy !== true) continue;
     let anchor = chatAnchors.get(meta.id)!;
     let pins: ChatGadgetPin[] = [];
     for (let gadget of Array.from(storage.gadgets.list())) {
@@ -247,7 +280,7 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
         pins.push({ gadgetId: gadget.id, filesRoot: state.root, mergedCommit: floor.commitId });
       }
     }
-    meta.codeBase = { gadgets: pins };
+    meta.codeBase = { legacy: true, generation: meta.codeBase?.generation ?? 0, gadgets: pins };
     storage.chatMeta.put(meta);
   }
 
@@ -260,9 +293,11 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
     let state = gadgetId === undefined ? undefined : tracked.get(gadgetId);
     let floor = state === undefined
         ? undefined : chainFloor(state, floorLogVersion(record.codeVersion));
-    if (floor === undefined) {
-      // No content ever existed at that version (or the gadget is unresolvable) -- nothing to
-      // point at. Leave the legacy record; its readers keep their explicit legacy errors.
+    if (floor === undefined || floor.version === 0) {
+      // No content ever existed at that version (or the gadget is unresolvable) -- the floor is
+      // at best the synthesized empty root, and an empty snapshot is not a valid blueprint
+      // (instantiation refuses empty archives). Leave the legacy record; its readers keep
+      // their explicit legacy errors.
       logger.warn("blueprint record has no synthesizable commit", {
         event: "storage.migration.git.blueprint.unresolved", blueprintId: record.id,
       });

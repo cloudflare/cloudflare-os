@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ChatCodeBase, ChatGadgetPin, CommitIdentity, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ChatChangesPin, ChatCodeBase, ChatGadgetPin, CommitIdentity, CommitInfo, MergeChangesResult, UpdateCodeBase, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
@@ -10,7 +10,8 @@ import { createTypedStorage, collection, keyString } from "@gadgets/typed-storag
 import { GitStore, commitIdentityForAuthor, filesEqual, gitObjectsCollection, threeWayMerge }
   from "./git-store";
 import { migrateCodeLogToGit } from "./git-migration";
-import { seedDocFromFiles, seedUpdateHash } from "@gadgets/workshop-shared/yjs-seed";
+import { bindLiveDocClientId, seedClientIdForGadget, seedRootFromFiles, seedUpdateHash,
+  updateAuthorsInSeedBand } from "@gadgets/workshop-shared/yjs-seed";
 import { readDocFiles, writeDocFiles } from "./yjs-files";
 import * as Y from "yjs";
 import {
@@ -341,13 +342,17 @@ type GadgetRecord = {
   // mainline code (see git-store.ts and the `gitObjects` collection). This field is the gadget's
   // "ref": the store itself has no ref layer. It advances only in mergeChanges(), which requires
   // the accepting chat to have already merged this commit (accepts are fast-forward only), and is
-  // surfaced to clients as WorkpieceSummary.commitId. Absent only before the first accept: a
-  // gadget still pending in a chat (its files exist only in that chat's proposed changes), or a
-  // permanent gadget created outside any chat (createGadget with no chatId). Accepting a
-  // creation always writes a first commit -- an empty tree when the gadget has no files yet --
-  // so a promoted gadget always has a head other chats' pins can see. The first accept's
-  // fast-forward check still serializes competing chats in the absent state: whichever accept
-  // lands first sets the head, and every other chat's pin (absent != head) goes stale.
+  // surfaced to clients as WorkpieceSummary.commitId.
+  //
+  // Invariant: **every permanent gadget has a head**; `commitId` is absent only while the gadget
+  // is `pending` (its files exist only in the creating chat's proposed changes, and only that
+  // chat can promote it). A gadget with no code gets an *empty-tree* initial commit -- at
+  // permanent creation (createGadget with no chatId, blueprint instantiation) or synthesized by
+  // the git migration -- so there is always a commit for a chat's first edit to pin, and
+  // "rooted at nothing" is representable as an ordinary pin at the empty tree rather than as
+  // unpinned doc content, which nothing could safely reconcile once another chat's accept moved
+  // the head. Accepting a covered creation likewise always writes a first commit (an empty tree
+  // when the gadget has no files yet), so promotion establishes the invariant too.
   commitId?: string;
 
   // This gadget's bindings: binding name (as it appears in the gadget worker's `env`) -> binding
@@ -1774,10 +1779,12 @@ class OverseerImpl implements AgentHooks {
   // whose records are real and so reserve their name from creation. If `chatId` is given, the
   // gadget is provisional to that chat (see GadgetRecord.pending); the caller is responsible for
   // getting its creation recorded in the chat log so the pending record gets sequence-stamped
-  // (see addChatMessages()). `output` is the format declared by the blueprint being instantiated,
-  // if any.
+  // (see addChatMessages()). Otherwise the gadget is permanent and `initialCommitId` -- its
+  // empty-tree initial commit, written by the caller beforehand -- is required: every permanent
+  // gadget is born with a head (see GadgetRecord.commitId). `output` is the format declared by
+  // the blueprint being instantiated, if any.
   createGadget(title: string, bindingName: string, chatId?: number,
-               output?: BlueprintOutput): GadgetRecord {
+               output?: BlueprintOutput, initialCommitId?: string): GadgetRecord {
     title = title.trim();
     if (!title) {
       throw new Error("A gadget requires a non-empty title.");
@@ -1806,6 +1813,11 @@ class OverseerImpl implements AgentHooks {
     }
     if (chatId !== undefined) {
       record.pending = {chatId};
+    } else {
+      if (initialCommitId === undefined) {
+        throw new Error("A permanent gadget must be created with its initial commit.");
+      }
+      record.commitId = initialCommitId;
     }
     this.storage.gadgets.put(record);
     return record;
@@ -1923,9 +1935,11 @@ class OverseerImpl implements AgentHooks {
   // Auto-create the workspace's single gadget and record it as the default gadget. New workspaces
   // normally start with zero gadgets and the agent creates gadgets explicitly (never assigning
   // `defaultGadgetId`); the exception is blueprint instantiation, which still creates a fresh
-  // workspace containing one gadget and is the only remaining caller.
+  // workspace containing one gadget and is the only remaining caller. `commitId` is the gadget's
+  // initial commit, written by the caller beforehand: every permanent gadget is born with a head
+  // (see GadgetRecord.commitId).
   // TODO(multi-gadget): Remove once blueprint instantiation is reworked (plan phase 5).
-  ensureDefaultGadget(): void {
+  ensureDefaultGadget(commitId: string): void {
     if (this.defaultGadgetId !== undefined) return;
     let id = this.allocateWorkpieceId();
     // Set defaultGadgetId first so subscribers computing gadgetRootName() see the legacy names.
@@ -1938,6 +1952,7 @@ class OverseerImpl implements AgentHooks {
       // This only runs in a fresh workspace with no gadgets, so the name can't conflict.
       bindingName: "GADGET",
       bindings: {},
+      commitId,
     });
   }
 
@@ -2218,9 +2233,11 @@ class OverseerImpl implements AgentHooks {
   // Commit-backed chat code.
   //
   // Mainline code is git commits (see git-store.ts); a chat's Yjs doc holds its uncommitted
-  // changes on top of a fixed base. For chats created since git storage, the base is a
-  // deterministic seed derived from the commits pinned in AiChatMetadata.codeBase; for chats
-  // predating it, the base remains the legacy code log at the chat's observed version.
+  // changes. A gadget's root joins the doc only when its code is first modified in the chat --
+  // pinned at a commit and seeded from its tree (see ChatCodeBase) -- while unpinned gadgets
+  // track mainline head live. Accepting changes ends the chat's epoch: the doc is discarded and
+  // the pin set resets. Chats predating git storage instead base their doc on the legacy code
+  // log at the chat's observed version, until their first merge graduates them.
 
   // The version a legacy (pre-git-storage) chat's Yjs doc base is anchored to: the shared
   // maximum-referenced-version rule (see legacyChatBaseVersion in agent-compaction.ts, which
@@ -2233,80 +2250,128 @@ class OverseerImpl implements AgentHooks {
         this.storage.chats.list({prefix: `${keyString(chatId)}.`}));
   }
 
-  // Build the code-base pins and deterministic seed hash for a new chat: one pin per committed
-  // gadget, seeded at its current head. All of a chat's seeded roots must come from a single
-  // seedDocFromFiles call (see yjs-seed in workshop-shared), which is why the seed is derived
-  // here, together with the pins it covers, rather than per gadget.
-  async makeChatCodeBase(): Promise<ChatCodeBase> {
-    let pins: ChatGadgetPin[] = [];
-    let roots = new Map<string, ReadonlyMap<string, string>>();
-    for (let record of Array.from(this.storage.gadgets.list())) {
-      // A pending gadget never has a commit; every committed gadget is a permanent one.
-      if (record.commitId === undefined) continue;
-      let filesRoot = this.gadgetRootName(record.id);
-      pins.push({
-        gadgetId: record.id,
-        filesRoot,
-        seedCommit: record.commitId,
-        mergedCommit: record.commitId,
-      });
-      roots.set(filesRoot, await this.gitStore.readCommitFiles(record.commitId));
-    }
-    return {gadgets: pins, seedHash: await seedUpdateHash(seedDocFromFiles(roots))};
-  }
-
-  // Rebuild a commit-seeded chat's deterministic seed update from its pins, verifying it against
-  // the stored seed hash. Every participant (server sessions and browser editors) must derive
-  // byte-identical seeds for the chat's Yjs updates to compose, so a mismatch -- drifted seed
-  // derivation, e.g. from a Yjs upgrade -- fails loudly instead of corrupting the doc.
-  async chatSeedUpdate(codeBase: ChatCodeBase): Promise<Uint8Array> {
-    let roots = new Map<string, ReadonlyMap<string, string>>();
-    for (let pin of codeBase.gadgets) {
-      if (pin.seedCommit !== undefined) {
-        roots.set(pin.filesRoot, await this.gitStore.readCommitFiles(pin.seedCommit));
-      }
-    }
-    let seed = seedDocFromFiles(roots);
+  // Derive a logged pin's deterministic seed update from the commit it names, verifying it
+  // against the recorded seed hash. Every participant (server sessions and browser editors)
+  // must derive byte-identical seeds for the chat's Yjs updates to compose, so a mismatch --
+  // drifted seed derivation, e.g. from a Yjs upgrade -- fails loudly instead of corrupting the
+  // doc. Works for closed epochs' pins too: commits are immutable and the log pin carries its
+  // own hash (see ChatChangesPin). Also the AgentHooks implementation of the same name.
+  async derivePinSeed(pin: ChatChangesPin): Promise<Uint8Array> {
+    let seed = seedRootFromFiles(pin.filesRoot,
+        await this.gitStore.readCommitFiles(pin.baseCommit),
+        seedClientIdForGadget(pin.gadgetId));
     let hash = await seedUpdateHash(seed);
-    if (hash !== codeBase.seedHash) {
-      throw new Error(`Chat code seed derivation mismatch (derived ${hash}, chat expects ` +
-          `${codeBase.seedHash}); refusing to build a diverged chat doc.`);
+    if (hash !== pin.seedHash) {
+      throw new Error(`Chat code seed derivation mismatch (derived ${hash}, pin expects ` +
+          `${pin.seedHash}); refusing to build a diverged chat doc.`);
     }
     return seed;
   }
 
-  // AgentHooks implementation: the verified seed update for a commit-seeded chat's session doc,
-  // or undefined for a chat whose Yjs base is the legacy code log.
-  async getChatSeedUpdate(chatId: number): Promise<Uint8Array | undefined> {
-    let codeBase = this.storage.chatMeta.get(chatId)?.codeBase;
-    if (codeBase?.seedHash === undefined) return undefined;
-    return await this.chatSeedUpdate(codeBase);
+  // AgentHooks implementation: the chat's current code base, whose `legacy` flag selects the
+  // agent's legacy session-doc path and whose pins list the roots currently seeded.
+  getChatCodeBase(chatId: number): ChatCodeBase | undefined {
+    return this.storage.chatMeta.get(chatId)?.codeBase;
   }
 
-  // Rebuild a chat's code doc: its Yjs base (commit-derived seed, or the legacy log) plus every
-  // non-reverted "changes" update in the chat log -- both already-accepted and still-proposed
-  // updates, since the base never advances. With `through`, still-proposed updates after that
-  // sequence are excluded (already-accepted ones always apply: they are part of every later
-  // state). Note this does not include unmaterialized draft updates; callers that need drafts
-  // reflected materialize them first.
+  // AgentHooks implementation: the gadget's current head commit, or undefined if it has none
+  // (still pending, created outside chats and never accepted, or deleted).
+  getGadgetHead(gadgetId: WorkpieceId): string | undefined {
+    return this.storage.gadgets.get(gadgetId)?.commitId;
+  }
+
+  // AgentHooks implementation: read a commit's file map (see GitStore.readCommitFiles).
+  readCommitFiles(oid: string): Promise<Map<string, string>> {
+    return this.gitStore.readCommitFiles(oid);
+  }
+
+  // AgentHooks implementation: per-file oid diff between two commits (see GitStore.changedPaths).
+  changedPaths(a: string | undefined, b: string | undefined): Promise<Set<string>> {
+    return this.gitStore.changedPaths(a, b);
+  }
+
+  // Rebuild a chat's code doc from the chat log. The doc is epoch-scoped: a merge message with
+  // `epochBoundary` discards everything before it (the merged content lives in commits from
+  // then on), and within an epoch each non-reverted "changes" message contributes first the
+  // seeds of any pins it declares, then its update. A pre-graduation legacy chat -- one whose
+  // codeBase still carries `legacy` -- starts from the retired code log instead of empty; a
+  // *graduated* legacy chat's pre-graduation updates apply against the empty base and park as
+  // pending structs, which is harmless because its graduating boundary discards them anyway.
+  //
+  // With `through`, the doc is reconstructed *as the log stood at that sequence*: later
+  // messages -- including epoch boundaries and merge/revert markings -- haven't happened from
+  // the caller's viewpoint, so they are excluded outright (a boundary recorded after `through`
+  // must not wipe the snapshot it postdates). The caller must pass a `meta` consistent with
+  // `through` -- loadGadgetWorker snapshots both in the same synchronous step -- so that e.g. a
+  // legacy chat's graduating merge landing mid-load doesn't flip the base out from under a
+  // pre-graduation snapshot. Note this does not include unmaterialized draft updates; callers
+  // that need drafts reflected materialize them first.
   async buildChatDoc(chatId: number, meta: AiChatMetadata, through?: number): Promise<Y.Doc> {
-    let ydoc: Y.Doc;
-    if (meta.codeBase?.seedHash !== undefined) {
-      ydoc = new Y.Doc();
-      Y.applyUpdateV2(ydoc, await this.chatSeedUpdate(meta.codeBase));
-    } else {
-      ydoc = this.buildYDoc(this.legacyChatBaseVersion(chatId)).ydoc;
-    }
     let messages = [...this.storage.chats.list({prefix: `${keyString(chatId)}.`})];
+    if (through !== undefined) {
+      messages = messages.filter(msg => msg.sequence <= through);
+    }
+    // The legacy anchor's checkpoint comes from the *passed* meta's compactedTo, not a fresh
+    // read: a compaction advancing between the caller's snapshot and this build must not leak
+    // stamps from beyond `through` into the base. (For a current-meta caller the two agree.)
+    let makeBase = () => meta.codeBase?.legacy === true
+        ? this.buildYDoc(legacyChatBaseVersion(
+              meta.compactedTo === undefined
+                  ? undefined
+                  : this.storage.chatCompactions.get(compactionKey(chatId, meta.compactedTo)),
+              messages)).ydoc
+        : new Y.Doc();
+    let ydoc = makeBase();
     let statuses = chatChangeStatuses(messages);
     for (let msg of messages) {
-      if (msg.type !== "changes" || msg.update === undefined) continue;
-      let status = statuses.get(msg.sequence);
-      if (status === "reverted") continue;
-      if (through !== undefined && msg.sequence > through && status !== "merged") continue;
-      Y.applyUpdateV2(ydoc, msg.update);
+      if (msg.type === "merge" && msg.epochBoundary) {
+        ydoc.destroy();
+        ydoc = new Y.Doc();
+        continue;
+      }
+      if (msg.type !== "changes") continue;
+      if (statuses.get(msg.sequence) === "reverted") continue;
+      for (let pin of msg.pins ?? []) {
+        Y.applyUpdateV2(ydoc, await this.derivePinSeed(pin));
+      }
+      if (msg.update !== undefined) Y.applyUpdateV2(ydoc, msg.update);
     }
     return ydoc;
+  }
+
+  // Gadgets whose pin establishment is recorded by a surviving (non-reverted) "changes" message
+  // in the chat's current epoch. The complement -- meta pins missing from this set -- is what
+  // draft materialization must stamp onto its message (see materializeChatDraft), and what pin
+  // rollback removes when the drafts that established them are discarded.
+  declaredPinGadgets(chatId: number): Set<WorkpieceId> {
+    let messages = [...this.storage.chats.list({prefix: `${keyString(chatId)}.`})];
+    let statuses = chatChangeStatuses(messages);
+    let declared = new Set<WorkpieceId>();
+    for (let msg of messages) {
+      if (msg.type === "merge" && msg.epochBoundary) {
+        declared.clear();
+      } else if (msg.type === "changes" && statuses.get(msg.sequence) !== "reverted") {
+        for (let pin of msg.pins ?? []) declared.add(pin.gadgetId);
+      }
+    }
+    return declared;
+  }
+
+  // Meta pins (see ChatGadgetPin) whose establishment no surviving current-epoch "changes"
+  // message records yet, in log-pin form. A pin lands in `codeBase` atomically with the
+  // updateCode() draft that needed it; its durable log declaration lands when the drafts
+  // materialize. Legacy pins (mergedCommit-only) have no seed and are never declared.
+  undeclaredMetaPins(chatId: number, meta: AiChatMetadata): ChatChangesPin[] {
+    let pins = meta.codeBase?.gadgets ?? [];
+    if (!pins.some(pin => pin.seedCommit !== undefined)) return [];
+    let declared = this.declaredPinGadgets(chatId);
+    let out: ChatChangesPin[] = [];
+    for (let pin of pins) {
+      if (pin.seedCommit === undefined || declared.has(pin.gadgetId)) continue;
+      out.push({gadgetId: pin.gadgetId, filesRoot: pin.filesRoot,
+                baseCommit: pin.seedCommit, seedHash: pin.seedHash!});
+    }
+    return out;
   }
 
   makeBindingLoopback(target: BindingLoopbackTarget, caller: GatekeeperCaller) {
@@ -2521,6 +2586,12 @@ class OverseerImpl implements AgentHooks {
       throw new Error(AGENT_RUNNING_ERROR_MESSAGE);
     }
 
+    // Stamp any meta pins not yet declared in the log onto this message, closing the meta/log
+    // loop: updateCode() establishes a pin in codeBase atomically with the first draft that
+    // needed it, and this is where the establishment (and thus the seed the drafts build on)
+    // becomes durable log history alongside the drafts themselves.
+    let pins = this.undeclaredMetaPins(chatId, meta);
+
     let timestamp = this.getChatTimestamp();
     let sequence = this.nextChatSequence(chatId);
     this.storage.chats.put({
@@ -2530,10 +2601,11 @@ class OverseerImpl implements AgentHooks {
       author: this.normalizeDraftAuthor(updates),
       type: "changes",
       update: Y.mergeUpdatesV2(updates.map(update => update.update)),
+      ...(pins.length > 0 ? {pins} : {}),
       // Legacy chats record the base version the user's edits were captured against; agent
       // history replay seeds its version lock from this (see the "changes" replay case in
-      // agent.ts). Commit-seeded chats pin their base via codeBase instead and never stamp it.
-      ...(meta.codeBase?.seedHash === undefined
+      // agent.ts). Commit-pinned chats record `pins` instead and never stamp it.
+      ...(meta.codeBase?.legacy === true
           ? {observedCodeVersion: this.currentCodeBaseVersion()} : {}),
     });
 
@@ -2548,10 +2620,82 @@ class OverseerImpl implements AgentHooks {
     return {sequence, meta};
   }
 
-  // The body of Overseer.updateCode().
-  async updateCode(update: Uint8Array, chatId: number, author: AiChatAuthorInfo)
-      : Promise<void> {
+  // The body of Overseer.updateCode(): validate the client's claimed code base and record the
+  // draft update (see the API doc for the contract).
+  async updateCode(update: Uint8Array, chatId: number, base: UpdateCodeBase,
+                   author: AiChatAuthorInfo): Promise<void> {
+    this.getChatMetaOrThrow(chatId);  // fail fast; re-read after the awaits below
+
+    // A conforming editor doc is bound outside the reserved seed band (bindLiveDocClientId), so
+    // an in-band author means a broken client whose updates would collide with seeds.
+    if (updateAuthorsInSeedBand(update)) {
+      throw new Error("Code update authors under a reserved seed clientID; bind the editor " +
+          "doc with bindLiveDocClientId.");
+    }
+
+    // A pin declaration accompanies the first edit to a not-yet-pinned gadget: the client
+    // derived its seed locally from `baseCommit`, and this is where that base is checked
+    // against mainline. The git reads happen up front so that everything from the state re-read
+    // below through recording the draft is one synchronous step (atomic under the output gate).
+    let newPin: ChatGadgetPin | undefined;
+    if (base.pin !== undefined) {
+      let {gadgetId, baseCommit} = base.pin;
+      validateOid(baseCommit);
+      let head = this.getGadgetRecord(gadgetId).commitId;
+      if (head === undefined) {
+        // Only a pending gadget lacks a head (every permanent gadget has one, possibly the
+        // empty tree -- see GadgetRecord.commitId); a pending gadget's files live in its
+        // creating chat's doc as plain updates, so there is nothing to seed from.
+        throw new Error("Cannot pin a gadget that has no committed code.");
+      }
+      if (baseCommit !== head &&
+          !(await this.gitStore.readCommitLog(head, {depth: 1}))[0].parents
+              .includes(baseCommit)) {
+        // Tolerate racing exactly one merge: the client may have derived its seed from the head
+        // an accept advanced while the keystroke was in flight. Anything older is rejected.
+        throw new Error("Pin declaration does not match the gadget's current head.");
+      }
+      let filesRoot = this.gadgetRootName(gadgetId);
+      let seedHash = await seedUpdateHash(seedRootFromFiles(
+          filesRoot, await this.gitStore.readCommitFiles(baseCommit),
+          seedClientIdForGadget(gadgetId)));
+      newPin = {gadgetId, filesRoot, seedCommit: baseCommit, seedHash,
+                mergedCommit: baseCommit};
+
+      // Awaiting above is an interleaving point; make sure the head we validated still stands.
+      if (this.getGadgetRecord(gadgetId).commitId !== head) {
+        throw new Error("Pin declaration does not match the gadget's current head.");
+      }
+    }
+
     let meta = this.getChatMetaOrThrow(chatId);
+    let codeBase = meta.codeBase ?? {gadgets: [], generation: 0};
+
+    // The generation is the client's claim about which code base its doc was built on. A
+    // mismatch means a merge, revert, or draft discard invalidated that doc while these
+    // keystrokes were in flight; recording them would strand content in erased history, so the
+    // client discards them and rebuilds instead (see ChatCodeBase.generation).
+    if (base.generation !== codeBase.generation) {
+      throw new Error("The chat's code base changed (its changes were merged, reverted, or " +
+          "discarded); rebuild from fresh metadata.");
+    }
+
+    if (newPin !== undefined) {
+      let existing = codeBase.gadgets.find(pin => pin.gadgetId === newPin!.gadgetId);
+      if (existing !== undefined) {
+        if (existing.seedCommit !== newPin.seedCommit) {
+          // Another client pinned this gadget first, at a different base; this doc's seed
+          // diverges from the chat's, so its keystrokes must be discarded.
+          throw new Error("The gadget was concurrently pinned at a different commit; rebuild " +
+              "from fresh metadata.");
+        }
+        // Two clients raced to the identical declaration; the seeds are byte-identical.
+        newPin = undefined;
+      } else {
+        codeBase.gadgets.push(newPin);
+        meta.codeBase = codeBase;
+      }
+    }
 
     // Decide if we want to materialize existing drafts due to changing users. If two users are
     // typing at the same time we just attribute the edits to both of them, but if the previous
@@ -2587,7 +2731,8 @@ class OverseerImpl implements AgentHooks {
     this.compactChatDraftUpdates(chatId, allUpdates);
   }
 
-  // The body of Overseer.updateChatFromMainline().
+  // The body of Overseer.updateChatFromMainline(), running under the chat's operation lock
+  // (callers hold withChatLock).
   async updateChatFromMainline(chatId: number, author: AiChatAuthorInfo)
       : Promise<{conflictPaths: string[]}> {
     let meta = this.assertChatNotActive(chatId);
@@ -2602,49 +2747,47 @@ class OverseerImpl implements AgentHooks {
     // the results are written back below; the sequence peek is the revalidation token.
     let sequenceToken = this.nextChatSequencePeek(chatId);
 
-    // Pre-git-storage chats may have no pins at all; they merge like anything else, with each
-    // absent pin meaning "nothing merged yet" (an empty merge base).
-    let codeBase: ChatCodeBase = meta.codeBase ?? {gadgets: []};
-    let pins = new Map(codeBase.gadgets.map(pin => [pin.gadgetId, pin]));
-
-    // A pending gadget has no commits, so staleness is only about committed gadgets whose head
-    // moved past what this chat has merged (including gadgets the chat has never seen). Heads
-    // that advance *during* the merge below are fine without revalidation: each pin is advanced
-    // only to the commit actually merged, so the chat simply comes out still stale.
-    let stale = [...this.storage.gadgets.list()].filter(record =>
-        record.commitId !== undefined &&
-        pins.get(record.id)?.mergedCommit !== record.commitId);
+    // Only *pinned* gadgets can be stale: an unpinned gadget was never modified in this chat,
+    // so it tracks mainline head live and there is nothing to merge into. (Every permanent
+    // gadget has a head -- an empty tree before it has code (see GadgetRecord.commitId) -- so
+    // "modified in this chat" always means "pinned", possibly at that empty tree; legacy chats'
+    // migration-written pins anchor their merge base exactly the same way.) Pins whose gadget
+    // has been deleted are skipped -- there is no head to merge. Heads that advance *during*
+    // the merge below are fine without revalidation: each pin is advanced only to the commit
+    // actually merged, so the chat simply comes out still stale.
+    let codeBase: ChatCodeBase = meta.codeBase ?? {gadgets: [], generation: 0};
+    let stale: {record: GadgetRecord, pin: ChatGadgetPin}[] = [];
+    for (let pin of codeBase.gadgets) {
+      let record = this.storage.gadgets.get(pin.gadgetId);
+      if (record?.commitId !== undefined && record.commitId !== pin.mergedCommit) {
+        stale.push({record, pin});
+      }
+    }
     if (stale.length === 0) {
       return {conflictPaths: []};
     }
 
+    // The merge authors updates into the doc, so its clientID must stay outside the reserved
+    // seed band like any other live doc's.
     let ydoc = await this.buildChatDoc(chatId, meta);
+    bindLiveDocClientId(ydoc);
     let updates: Uint8Array[] = [];
     ydoc.on("updateV2", update => updates.push(update));
 
     let conflictPaths: string[] = [];
-    for (let record of stale) {
-      let rootName = this.gadgetRootName(record.id);
-      let pin = pins.get(record.id);
+    for (let {record, pin} of stale) {
       // The chat's last merged commit is the 3-way common ancestor -- explicitly known, so no
       // merge-base discovery. Conflicting hunks keep inline diff3 markers for the user (or
       // their agent) to clean up; Yjs merge semantics are deliberately not used across
       // divergent bases.
-      let base = pin?.mergedCommit !== undefined
-          ? await this.gitStore.readCommitFiles(pin.mergedCommit)
-          : new Map<string, string>();
+      let base = await this.gitStore.readCommitFiles(pin.mergedCommit);
       let head = await this.gitStore.readCommitFiles(record.commitId!);
-      let merged = threeWayMerge(base, head, readDocFiles(ydoc, rootName),
+      let merged = threeWayMerge(base, head, readDocFiles(ydoc, pin.filesRoot),
           {base: "merged base", ours: "mainline", theirs: "this chat"});
-      writeDocFiles(ydoc, rootName, merged.files);
+      writeDocFiles(ydoc, pin.filesRoot, merged.files);
       conflictPaths.push(...merged.conflictPaths.map(path => `${record.bindingName}/${path}`));
 
-      if (pin) {
-        pin.mergedCommit = record.commitId!;
-      } else {
-        codeBase.gadgets.push(
-            {gadgetId: record.id, filesRoot: rootName, mergedCommit: record.commitId!});
-      }
+      pin.mergedCommit = record.commitId!;
     }
     conflictPaths.sort();
 
@@ -2660,8 +2803,17 @@ class OverseerImpl implements AgentHooks {
 
     // Persist the advanced pins before recording the message: addChatMessages re-reads and
     // re-writes the chat meta (hasProposedChanges, lastActive), so it must see this state. The
-    // pins land on the freshly-read meta so concurrent changes to other fields survive.
-    freshMeta.codeBase = codeBase;
+    // advancement is applied to the freshly-read meta's own code base -- not by overwriting it
+    // with the entry-time snapshot -- because updateCode() runs outside the chat lock and
+    // may have established a *new* pin (with its draft) during the awaits above; overwriting
+    // would silently drop it while its draft survived. A pin we merged is always still present
+    // in the fresh read: only the lock-holding operations remove pins.
+    let freshCodeBase = freshMeta.codeBase ?? {gadgets: [], generation: 0};
+    for (let {pin} of stale) {
+      let freshPin = freshCodeBase.gadgets.find(p => p.gadgetId === pin.gadgetId);
+      if (freshPin !== undefined) freshPin.mergedCommit = pin.mergedCommit;
+    }
+    freshMeta.codeBase = freshCodeBase;
     freshMeta.lastActive = this.getChatTimestamp();
     this.storage.chatMeta.put(freshMeta);
 
@@ -2679,30 +2831,18 @@ class OverseerImpl implements AgentHooks {
     return {conflictPaths};
   }
 
-  // The body of Overseer.mergeChanges(), running under the chat's operation lock (see withChatLock).
-  async mergeChanges(chatId: number, mergeThrough: number | null, userMeta: UserChatContext,
-                     clientUserId: string, options?: { includeDraft?: boolean })
+
+  // The body of Overseer.mergeChanges(), running under the chat's operation lock (callers
+  // hold withChatLock). `clientUserId` feeds analytics only.
+  async mergeChanges(chatId: number, userMeta: UserChatContext, clientUserId: string)
                      : Promise<MergeChangesResult> {
     let meta = this.assertChatNotActive(chatId);
-    if (options?.includeDraft) {
-      let result = this.materializeChatDraft(chatId, meta);
-      if (result) {
-        mergeThrough = result.sequence;
-        meta = result.meta;
-      }
-    }
 
-    if (mergeThrough === null) {
-      return {outcome: "merged"};
-    }
-
-    // Bound `mergeThrough` to recorded history. A future sequence would make later-recorded
-    // changes retroactively covered by this merge's message, which no fold or status rule is
-    // prepared for (see chatChangeStatuses).
-    if (!Number.isInteger(mergeThrough) || mergeThrough < 0 ||
-        mergeThrough >= this.nextChatSequencePeek(chatId)) {
-      throw new Error("Invalid mergeThrough.");
-    }
+    // Always merge *everything* the chat proposes: sweep live drafts in first, then accept all
+    // proposed changes. Partial accepts are incoherent under the epoch reset below -- an
+    // excluded remainder would be rooted in the discarded doc and destroyed with it.
+    let result = this.materializeChatDraft(chatId, meta);
+    if (result) meta = result.meta;
 
     // Reap crash-orphaned provisional records first: an unstamped record that survives
     // reconciliation -- a crashed turn's not-yet-resumed tail -- has no sequence and is simply
@@ -2710,42 +2850,26 @@ class OverseerImpl implements AgentHooks {
     await this.reconcilePendingGadgets(chatId);
 
     // Everything read from here through the commit writes must still describe the chat when the
-    // mutation tail below runs; the sequence peek is the revalidation token.
+    // mutation tail below runs; the sequence peek is the revalidation token. The merge covers
+    // every message recorded so far, and `mergeThrough` records that durably (the fold and
+    // status rules still key on it; see chatChangeStatuses).
     let sequenceToken = this.nextChatSequencePeek(chatId);
+    let mergeThrough = sequenceToken - 1;
 
-    // Get unmerged updates for the thread, reduced to just what we're merging. Each covered
-    // gadget creation or binding addition sits on one of these "changes" messages (see
-    // addChatMessages), so an empty list also means there is nothing to promote.
+    // Get the proposed updates for the thread. Each covered gadget creation or binding addition
+    // sits on one of these "changes" messages (see addChatMessages), so an empty list also
+    // means there is nothing to promote.
     let updates = this.getProposedChanges(chatId);
-    while (updates.length > 0 && updates[updates.length - 1].sequence > mergeThrough) {
-      // We're not merging this one.
-      updates.pop();
-    }
     if (updates.length === 0) {
       // Nothing to merge, so this is a no-op.
       return {outcome: "merged"};
     }
 
-    // Message statuses drive two things below: the mainline-merge guard here, and excluding
-    // reverted creations from coverage. The map stays valid through the whole accept: the
-    // sequence-token revalidation after the awaits guarantees no message was recorded since.
+    // Message statuses drive excluding reverted creations from coverage below. The map stays
+    // valid through the whole accept: the sequence-token revalidation after the awaits
+    // guarantees no message was recorded since.
     let messages = [...this.storage.chats.list({prefix: `${keyString(chatId)}.`})];
     let statuses = chatChangeStatuses(messages);
-
-    // A partial accept must not exclude a still-proposed update-from-mainline batch: that batch's
-    // pin advancement is already in force, so an accept built without its update would pass the
-    // fast-forward check below while committing content that predates the mainline changes the
-    // pins claim as merged -- silently overwriting them. (Scanned over canonical history, like
-    // the guard in revertChanges, because getProposedChanges' compacted-prefix batch hides
-    // individual messages.)
-    for (let msg of messages) {
-      if (msg.type === "changes" && msg.mainlineMerge !== undefined &&
-          msg.sequence > mergeThrough && statuses.get(msg.sequence) === undefined) {
-        throw new Error("Cannot accept changes without also accepting the later update from " +
-            "mainline: accepting only the earlier changes would overwrite the mainline " +
-            "content that update brought in. Accept through the mainline update instead.");
-      }
-    }
 
     // A pending record (or edge) whose stamp the log already marks reverted is dead, not
     // covered: it survives only because a revert's awaited record deletion failed (see
@@ -2756,19 +2880,27 @@ class OverseerImpl implements AgentHooks {
         pending?.sequence !== undefined && statuses.get(pending.sequence) === "reverted";
 
     // Detect whether the workspace has any accepted code yet (for gadget title generation
-    // below): no gadget has a head commit, and the legacy code log (whose version 1 was written
-    // at init time, when it exists at all) records no accepted code either.
-    let isFirstChange =
-        ![...this.storage.gadgets.list()].some(gadget => gadget.commitId !== undefined) &&
-        [...this.storage.code.list({limit: 1, start: 2})].length === 0;
+    // below): the legacy code log (whose version 1 was written at init time, when it exists at
+    // all) records no accepted code, and no gadget's head holds any files. Emptiness is
+    // measured by tree content, not head presence: every permanent gadget has a head, an
+    // empty-tree commit before it has code (see GadgetRecord.commitId).
+    let isFirstChange = [...this.storage.code.list({limit: 1, start: 2})].length === 0;
+    if (isFirstChange) {
+      for (let gadget of this.storage.gadgets.list()) {
+        if (gadget.commitId !== undefined &&
+            (await this.gitStore.readCommitFiles(gadget.commitId)).size > 0) {
+          isFirstChange = false;
+          break;
+        }
+      }
+    }
 
     // Flatten the chat's content as of `mergeThrough` and decide, per gadget, whether this chat
     // changed it. "Changed" is measured against the chat's merged commit -- the mainline content
     // the chat last saw -- so mainline moving on a gadget this chat never touched neither
     // implicates the chat nor blocks the accept.
     let ydoc = await this.buildChatDoc(chatId, meta, mergeThrough);
-    let codeBase: ChatCodeBase = meta.codeBase ?? {gadgets: []};
-    let pins = new Map(codeBase.gadgets.map(pin => [pin.gadgetId, pin]));
+    let pins = new Map((meta.codeBase?.gadgets ?? []).map(pin => [pin.gadgetId, pin]));
 
     // `baseHead` snapshots the head this accept fast-forwards from (also the value the post-await
     // revalidation compares against -- a primitive, so it can't be confused by whatever object
@@ -2840,6 +2972,18 @@ class OverseerImpl implements AgentHooks {
       return {outcome: "stale"};
     }
 
+    // Drafts recorded during the awaits above are acknowledged content: updateCode() runs
+    // outside the chat lock, appends nothing to the chat log (so the sequence token can't see
+    // it), and validated those keystrokes against a generation the epoch reset below hasn't
+    // bumped yet -- but the reset would silently destroy them. Someone is actively typing, and
+    // silently sweeping a mid-keystroke state into the merge is as bad as losing it, so give
+    // up and let the user retry once the typing has settled. (The entry-time materialization
+    // left the draft store empty, so anything here arrived mid-accept; nothing has been
+    // mutated yet, so the drafts survive intact.)
+    if (this.getLatestChatDraftUpdate(chatId) !== undefined) {
+      throw new Error("The chat's code is being actively edited; please retry.");
+    }
+
     // Promote provisional gadgets whose creation is covered by this merge: accepting the chat's
     // changes through `mergeThrough` makes them permanent workspace members. Each covered
     // creation sits on an unmerged, unreverted "changes" message at `pending.sequence` (a
@@ -2872,23 +3016,11 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
-    // Fast-forward each committed gadget's head, and advance the chat's own pins to match: the
-    // chat's content *is* the new head, so it is fully merged by construction, and a subsequent
-    // accept remains a plain fast-forward.
+    // Fast-forward each committed gadget's head.
     for (let {gadgetId, commitId} of commits) {
       let record = this.storage.gadgets.get(gadgetId)!;
       record.commitId = commitId;
       this.storage.gadgets.put(record);
-
-      let pin = pins.get(gadgetId);
-      if (pin) {
-        pin.mergedCommit = commitId;
-      } else {
-        // First accept of a gadget the chat itself created (or a pre-git chat with no pins):
-        // no seedCommit -- its content entered the chat as ordinary updates, not seed items.
-        codeBase.gadgets.push(
-            {gadgetId, filesRoot: this.gadgetRootName(gadgetId), mergedCommit: commitId});
-      }
     }
 
     // Bump the loader-cache counter so cached workers reload with the new heads (and promoted
@@ -2896,25 +3028,39 @@ class OverseerImpl implements AgentHooks {
     this.bumpVersion();
     let timestamp = this.getChatTimestamp();
 
+    let mergeSequence = this.nextChatSequence(chatId);
     this.storage.chats.put({
       chatId,
-      sequence: this.nextChatSequence(chatId),
+      sequence: mergeSequence,
       timestamp,
       author: userMeta.profile,
 
       type: "merge",
       mergeThrough,
       commits,
+      // The merge closes the chat's epoch (see the reset below); doc reconstruction restarts
+      // here. Historical (pre-git) merges lack this, which is how replay tells them apart.
+      epochBoundary: true,
     });
 
-    // The advanced pins land on the freshly-read meta so concurrent changes to other fields
-    // (e.g. a title rename during the awaits) survive. `codeBase` itself was derived from the
-    // entry-time meta, which is safe: only lock-holding operations mutate it.
-    if (commits.length > 0 || freshMeta.codeBase !== undefined) {
-      freshMeta.codeBase = codeBase;
-    }
+    // Close the epoch: everything the chat proposed now lives in commits, so the chat's Yjs doc
+    // is discarded wholesale -- every pin evaporates and subsequent edits re-pin lazily against
+    // the new heads. A legacy chat graduates here (the `legacy` flag is dropped): its merged
+    // content is fully captured by the commits, so nothing references the legacy code log
+    // anymore. The generation bump makes any editor still typing into the discarded doc fail
+    // its next updateCode() and rebuild. (The draft sweep below is belt-and-braces: the check
+    // above already refused if any draft landed mid-accept, and everything since has been
+    // synchronous.) The reset lands on the freshly-read meta so concurrent changes to other
+    // fields (e.g. a title rename during the awaits) survive.
+    freshMeta.codeBase = {
+      gadgets: [],
+      generation: (freshMeta.codeBase?.generation ?? 0) + 1,
+      epoch: mergeSequence,
+    };
     freshMeta.lastActive = timestamp;
     this.storage.chatMeta.put(freshMeta);
+    this.deleteChatDraftUpdates(chatId);
+    this.emitChatDraftCleared(chatId);
     this.recomputeHasProposedChanges(chatId, freshMeta);
 
     // Maybe generate gadget title if this was the first accepted code. (A merge covering only
@@ -2934,7 +3080,8 @@ class OverseerImpl implements AgentHooks {
     return {outcome: "merged"};
   }
 
-  // The body of Overseer.revertChanges(), running under the chat's operation lock (see withChatLock).
+  // The body of Overseer.revertChanges(), running under the chat's operation lock (callers
+  // hold withChatLock).
   async revertChanges(chatId: number, revertFrom: number, author: AiChatAuthorInfo)
       : Promise<void> {
     this.assertChatNotActive(chatId);
@@ -2973,9 +3120,13 @@ class OverseerImpl implements AgentHooks {
     }
 
     if (!messages.some(stillProposed)) {
-      // Revert affects no changes (every "changes" message at or after revertFrom is already
-      // merged or reverted -- and any provisional gadget's stamped creation sits on a
-      // still-proposed message, so nothing needs deleting either): a no-op, recording nothing.
+      // Revert affects no materialized changes (every "changes" message at or after revertFrom
+      // is already merged or reverted -- and any provisional gadget's stamped creation sits on
+      // a still-proposed message, so nothing needs deleting either), so no revert message is
+      // recorded. Outstanding drafts are still strictly newer than every message -- inside the
+      // reverted range by definition -- so they are discarded exactly as a draft discard would
+      // (unlogged pins die with them, generation bump); with no drafts this is a full no-op.
+      this.discardChatDraftChanges(chatId);
       return;
     }
 
@@ -3013,6 +3164,31 @@ class OverseerImpl implements AgentHooks {
       revertFrom,
     });
 
+    // Roll back pins: a pin survives the revert iff its declaring message survives.
+    // `declaredPinGadgets` reads the log as it now stands -- including the revert message just
+    // written -- so pins declared only by reverted messages drop out, as do meta-only pins with
+    // no logged declaration at all (established by updateCode() for drafts that never
+    // materialized: those drafts die below, and nothing else roots in their seeds). Legacy pins
+    // (mergedCommit-only, no seed) are never declared and always survive. Unlike mergedCommit
+    // advancement -- whose prior value is unrecorded, hence the mainlineMerge refusal above --
+    // a declared pin's prior state is trivially "unpinned".
+    let codeBase = meta.codeBase ?? {gadgets: [], generation: 0};
+    let declared = this.declaredPinGadgets(chatId);
+    codeBase.gadgets = codeBase.gadgets.filter(pin =>
+        pin.seedCommit === undefined || declared.has(pin.gadgetId));
+
+    // Discard all outstanding drafts: they are strictly newer than every materialized message,
+    // so they fall inside the reverted range by definition -- and one recorded after a reverted
+    // pin declaration may be rooted in a seed the revert just made unreconstructable, which
+    // materializing would strand as permanently parked Yjs structs. The generation bump makes
+    // live editors -- whose docs still contain the reverted updates and possibly removed
+    // seeds -- discard local state and rebuild instead of submitting updates rooted in erased
+    // history.
+    codeBase.generation += 1;
+    meta.codeBase = codeBase;
+    this.deleteChatDraftUpdates(chatId);
+    this.emitChatDraftCleared(chatId);
+
     meta.lastActive = timestamp;
     this.rollbackChatCompaction(meta, revertFrom);
     this.storage.chatMeta.put(meta);
@@ -3032,12 +3208,26 @@ class OverseerImpl implements AgentHooks {
   }
 
   // The body of Overseer.discardChatDraftChanges().
-  async discardChatDraftChanges(chatId: number): Promise<void> {
+  discardChatDraftChanges(chatId: number): void {
     let meta = this.assertChatNotActive(chatId);
     let updates = this.listChatDraftUpdates(chatId);
     if (updates.length === 0) {
       return;
     }
+
+    // The second draft-discarding path (revertChanges is the other), with the same treatment:
+    // meta pins the drafts established but never declared in a materialized message die with
+    // them (nothing else roots in their seeds), and the generation bump makes editors whose
+    // docs contain the discarded keystrokes -- and possibly the removed seeds -- rebuild
+    // instead of submitting updates rooted in erased state. Any new draft-discarding path must
+    // do the same, or `codeBase` and the log disagree and queued client updates can still
+    // reference a removed seed.
+    let codeBase = meta.codeBase ?? {gadgets: [], generation: 0};
+    let declared = this.declaredPinGadgets(chatId);
+    codeBase.gadgets = codeBase.gadgets.filter(pin =>
+        pin.seedCommit === undefined || declared.has(pin.gadgetId));
+    codeBase.generation += 1;
+    meta.codeBase = codeBase;
 
     meta.lastActive = this.getChatTimestamp();
     this.storage.chatMeta.put(meta);
@@ -3045,6 +3235,19 @@ class OverseerImpl implements AgentHooks {
     this.emitChatDraftCleared(chatId);
     this.recomputeHasProposedChanges(chatId, meta);
     this.proposedChangesChanged(chatId);
+  }
+
+
+  // Whether a chat's doc holds this gadget's files: the gadget is pinned in the chat, has no
+  // committed code (chat-created gadgets live only in the doc), or the chat is a legacy one
+  // (whose doc holds the whole workspace). Otherwise the gadget tracks mainline head live, and
+  // chat context doesn't change what its code reads return. This is the one rule behind every
+  // chat-context read of gadget code -- previews (loadGadgetWorker), UI bundles, and the
+  // agent's file tools all follow the same split.
+  chatDocOwnsGadget(meta: AiChatMetadata, gadgetId: WorkpieceId): boolean {
+    return this.storage.gadgets.get(gadgetId)?.commitId === undefined ||
+        meta.codeBase?.legacy === true ||
+        (meta.codeBase?.gadgets ?? []).some(pin => pin.gadgetId === gadgetId);
   }
 
   // Load the dynamic worker representing the given gadget's committed (head-commit) code.
@@ -3056,17 +3259,29 @@ class OverseerImpl implements AgentHooks {
   loadGadgetWorker(gadgetId: WorkpieceId, chatId?: number): WorkerStub {
     let codeVersion = `${this.storage.codeVersion.get()}`;
     let sequence: number | undefined;
+    // Snapshotted in the same synchronous step as the cache key's sequence: the loader callback
+    // runs asynchronously, and buildChatDoc's as-of-`sequence` reconstruction needs the
+    // metadata as it stood then (a merge landing mid-load must not flip e.g. a legacy chat's
+    // base out from under the snapshot the key names).
+    let meta: AiChatMetadata | undefined;
     if (chatId !== undefined) {
+      meta = this.getChatMetaOrThrow(chatId);
       sequence = this.storage.nextChatSequences.get(chatId)?.nextSequence || 0;
       codeVersion += `.${chatId}.${sequence}`;
     }
 
     return this.env.LOADER.get(`${this.ctx.id}.${codeVersion}.${gadgetId}`, async () => {
+      // The snapshot meta above serves the as-of-`sequence` doc build; this re-read only keeps
+      // the old fail-on-deleted-chat behavior (don't cache a load for a chat deleted mid-load).
+      if (chatId !== undefined) this.getChatMetaOrThrow(chatId);
       let files: ReadonlyMap<string, string>;
-      if (chatId !== undefined) {
+      // An unpinned committed gadget tracks mainline head live, in chat context and out (see
+      // chatDocOwnsGadget). Head movement invalidates the cached load either way: every merge
+      // bumps the codeVersion counter in the cache key.
+      if (meta !== undefined && this.chatDocOwnsGadget(meta, gadgetId)) {
         // The cache key snapshotted the chat's next sequence, so exclude any batch recorded
         // after it (a fresh load with a fresh key sees those).
-        let ydoc = await this.buildChatDoc(chatId, this.getChatMetaOrThrow(chatId), sequence! - 1);
+        let ydoc = await this.buildChatDoc(chatId!, meta, sequence! - 1);
         files = readDocFiles(ydoc, this.gadgetRootName(gadgetId));
       } else {
         let commitId = this.storage.gadgets.get(gadgetId)?.commitId;
@@ -3222,12 +3437,14 @@ class OverseerImpl implements AgentHooks {
   }
 
   // The gadget's file tree as seen from `chatId` (its code doc; the caller is presumed to have
-  // materialized drafts, see checkChatExistsAndMaterializeDrafts) or from mainline (its head
-  // commit; a gadget with no commit yet has no mainline files).
+  // materialized drafts, see checkChatExistsAndMaterializeDrafts) or from mainline. A chat that
+  // doesn't own the gadget's code (see chatDocOwnsGadget) reads mainline too: the gadget's head
+  // commit, which a gadget with no commit yet doesn't have -- no files.
   async readGadgetFiles(gadgetId: WorkpieceId, chatId?: number)
       : Promise<ReadonlyMap<string, string>> {
-    if (chatId !== undefined) {
-      let ydoc = await this.buildChatDoc(chatId, this.getChatMetaOrThrow(chatId));
+    let meta = chatId !== undefined ? this.getChatMetaOrThrow(chatId) : undefined;
+    if (meta !== undefined && this.chatDocOwnsGadget(meta, gadgetId)) {
+      let ydoc = await this.buildChatDoc(chatId!, meta);
       return readDocFiles(ydoc, this.gadgetRootName(gadgetId));
     }
     let commitId = this.storage.gadgets.get(gadgetId)?.commitId;
@@ -4352,12 +4569,9 @@ class OverseerImpl implements AgentHooks {
     let prepared = await this.#prepareChatMessage(
         initialMessage, (canonicalAttachments?.length ?? 0) > 0);
 
-    // Pin the chat's code base at creation: every chat's doc is seeded from the gadget heads as
-    // of this moment (see ChatCodeBase). Heads that advance later reach the chat only through
-    // updateChatFromMainline() -- the ordinary stale-chat path, even if the chat hasn't touched
-    // code yet.
-    let codeBase = await this.makeChatCodeBase();
-
+    // No code base is established at creation: gadgets pin lazily, when their code is first
+    // modified in the chat (see ChatCodeBase). Until then the chat reads committed code live at
+    // each gadget's current head.
     let chatId!: number;
     let timestamp = this.getChatTimestamp();
     this.ctx.storage.transactionSync(() => {
@@ -4367,7 +4581,6 @@ class OverseerImpl implements AgentHooks {
         title: "New Chat",   // filled in later by AI
         started: timestamp,
         lastActive: timestamp,
-        codeBase,
       };
       if (prepared.message !== undefined && userMeta.aiModel) {
         meta.activeAgent = userMeta.aiModel.profile;
@@ -6180,6 +6393,44 @@ class OverseerImpl implements AgentHooks {
 
     for (let {modelData, ...msg} of msgs) {
       if (msg.type === "changes") {
+        // Reject updates authoring under a reserved seed-band clientID: session docs are bound
+        // out of band (see bindLiveDocClientId), so this only fires for a nonconforming
+        // producer, which must fail loudly rather than corrupt the chat's history with items a
+        // later seed would collide with.
+        if (msg.update !== undefined && updateAuthorsInSeedBand(msg.update)) {
+          throw new Error("Code update authors under a reserved seed clientID.");
+        }
+
+        // Re-validate and mirror pins the agent's writes established into the chat's live code
+        // base, in the same synchronous step that records the message (mirroring the
+        // pending-gadget sequence stamping below). The pin was established at the head current
+        // at edit time; if another chat's accept moved the head before this flush, the pin's
+        // seed no longer reflects mainline, and recording it would let a later accept overwrite
+        // that mainline content -- so the flush fails instead (rare, surfaces as a turn error).
+        if (msg.pins !== undefined) {
+          let codeBase = meta.codeBase ?? {gadgets: [], generation: 0};
+          for (let pin of msg.pins) {
+            if (this.storage.gadgets.get(pin.gadgetId)?.commitId !== pin.baseCommit) {
+              throw new Error("Pinned commit is no longer the gadget's head; mainline moved " +
+                  "while the changes were being made.");
+            }
+            let existing = codeBase.gadgets.find(p => p.gadgetId === pin.gadgetId);
+            if (existing !== undefined) {
+              // Already pinned -- e.g. a user's updateCode() pinned the same gadget while the
+              // turn ran. Identical bases derive identical seeds, so the establishment is
+              // shared; different bases would make the two writers' docs diverge.
+              if (existing.seedCommit !== pin.baseCommit) {
+                throw new Error("Gadget was concurrently pinned at a different commit.");
+              }
+              continue;
+            }
+            codeBase.gadgets.push({gadgetId: pin.gadgetId, filesRoot: pin.filesRoot,
+                seedCommit: pin.baseCommit, seedHash: pin.seedHash,
+                mergedCommit: pin.baseCommit});
+          }
+          meta.codeBase = codeBase;
+        }
+
         meta.hasProposedChanges = true;
         this.proposedChangesChanged(chatId);
       }
@@ -7588,27 +7839,18 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async initializeFromBlueprint(code: Uint8Array, title: string, output?: BlueprintOutput)
       : Promise<void> {
-    // Set the title. The default gadget (created just below) inherits it.
+    // Set the title. The default gadget (created below) inherits it.
     this.impl.storage.title.put(title);
 
-    // Blueprint instantiation still creates a fresh workspace containing one auto-created gadget,
-    // recorded as the default gadget (see ensureDefaultGadget).
-    this.impl.ensureDefaultGadget();
-    let gadgetId = this.impl.resolveGadgetId(undefined);
-
-    // The gadget inherits the blueprint's declared format, so it is named and drawn as a Document
-    // (or whatever it produces) rather than a generic app.
-    if (output) {
-      let record = this.impl.getGadgetRecord(gadgetId);
-      record.output = output;
-      this.impl.storage.gadgets.put(record);
-    }
-
-    // Commit the blueprint's files as the gadget's initial (parentless) commit. Archives always
-    // use the doc's unnamed root "" (see snapshotCode); the file contents transfer as plain
-    // text, becoming the gadget's first committed tree. An empty archive is refused rather than
-    // instantiated as a code-less gadget: blueprints of such gadgets cannot be created (see
-    // createBlueprint), so one can only arrive corrupted or hand-crafted.
+    // Decode the archive and write the gadget's initial (parentless) commit *before* creating
+    // the gadget record: every permanent gadget is born with a head (see GadgetRecord.commitId),
+    // so a failure here -- an empty archive, an unreachable owner -- must not leave a headless
+    // record behind. The commit is content-addressed and referenced by nothing until the record
+    // lands, so writing it first is safe. Archives always use the doc's unnamed root "" (see
+    // snapshotCode); the file contents transfer as plain text, becoming the gadget's first
+    // committed tree. An empty archive is refused rather than instantiated as a code-less
+    // gadget: blueprints of such gadgets cannot be created (see createBlueprint), so one can
+    // only arrive corrupted or hand-crafted.
     let archiveDoc = new Y.Doc();
     Y.applyUpdateV2(archiveDoc, code);
     let files = new Map<string, string>();
@@ -7621,16 +7863,25 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     if (!this.impl.ownerId) {
       throw new Error("Workspace has no owner.");
     }
-
     let owner = this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId));
-    let record = this.impl.getGadgetRecord(gadgetId);
-    record.commitId = await this.impl.gitStore.writeFilesAsCommit(files, {
+    let commitId = await this.impl.gitStore.writeFilesAsCommit(files, {
       parents: [],
       author: commitIdentityForAuthor(await owner.whoami()),
       message: `Instantiate blueprint: ${title}`,
       timestamp: new Date(),
     });
-    this.impl.storage.gadgets.put(record);
+
+    // Blueprint instantiation still creates a fresh workspace containing one auto-created gadget,
+    // recorded as the default gadget (see ensureDefaultGadget).
+    this.impl.ensureDefaultGadget(commitId);
+
+    // The gadget inherits the blueprint's declared format, so it is named and drawn as a Document
+    // (or whatever it produces) rather than a generic app.
+    if (output) {
+      let record = this.impl.getGadgetRecord(this.impl.resolveGadgetId(undefined));
+      record.output = output;
+      this.impl.storage.gadgets.put(record);
+    }
 
     // Mark gadget as non-provisional (it has code, so it should appear in the gadget list).
     await owner.setGadgetLastActive(this.ctx.id.toString(), new Date(), undefined);
@@ -7712,10 +7963,6 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let user = this.impl.users.get(this.impl.users.idFromString(resolveUserId));
     let userMeta = await user.getChatContext(config.modelId);
 
-    // Spawned agents' chats pin their code base like any other chat (see ChatCodeBase); whether
-    // the spawned agent can even see a gadget is governed by its binding config, not the pins.
-    let codeBase = await this.impl.makeChatCodeBase();
-
     let chatId = this.impl.nextChatId();
     let timestamp = this.impl.getChatTimestamp();
     let meta: AiChatMetadata = {
@@ -7724,7 +7971,6 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       started: timestamp,
       lastActive: timestamp,
       spawnerName: config.displayName,
-      codeBase,
     };
     if (!callable && userMeta.aiModel) {
       meta.activeAgent = userMeta.aiModel.profile;
@@ -8302,7 +8548,18 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     let record;
     if (chatId === undefined) {
-      record = this.impl.createGadget(title, bindingName);  // validates the title and name
+      // A permanent gadget is born with its head: an empty-tree initial commit (see
+      // GadgetRecord.commitId), giving a chat's first edit a commit to pin. Written before the
+      // record -- it is content-addressed and referenced by nothing yet, so a validation
+      // failure in createGadget below leaves no trace worth cleaning up.
+      let initialCommitId = await this.impl.gitStore.writeFilesAsCommit(new Map(), {
+        parents: [],
+        author: commitIdentityForAuthor(await this.#getClientProfile()),
+        message: `Create gadget: ${title}`,
+        timestamp: new Date(),
+      });
+      // (createGadget validates the title and name.)
+      record = this.impl.createGadget(title, bindingName, undefined, undefined, initialCommitId);
     } else {
       // Creating a gadget with a chat open is provisional to that chat, like code edits: record
       // the creation in the chat log as a "changes" message (with no code update) and mark
@@ -8370,9 +8627,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     });
   }
 
-  async updateCode(update: Uint8Array, chatId: number): Promise<void> {
+  async updateCode(update: Uint8Array, chatId: number, base: UpdateCodeBase): Promise<void> {
     let author = await this.#getClientProfile();
-    await this.impl.updateCode(update, chatId, author);
+    await this.impl.updateCode(update, chatId, base, author);
   }
 
   // --- Commit-backed code reads ---
@@ -8395,9 +8652,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async getLegacyChatDocBase(chatId: number): Promise<Uint8Array> {
     let meta = this.impl.getChatMetaOrThrow(chatId);
-    if (meta.codeBase?.seedHash !== undefined) {
+    if (meta.codeBase?.legacy !== true) {
       throw new Error(
-          "This chat's code doc base is commit-derived; derive the seed client-side instead.");
+          "This chat's code doc base is commit-derived; derive the seeds client-side instead.");
     }
 
     // The base the chat's still-proposed updates (and drafts) apply on top of: the legacy log at
@@ -9210,13 +9467,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.storage.chatMeta.put(meta);
   }
 
-  async mergeChanges(chatId: number, mergeThrough: number | null,
-                     options?: { includeDraft?: boolean }): Promise<MergeChangesResult> {
+  async mergeChanges(chatId: number): Promise<MergeChangesResult> {
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(null), this.impl.logger);
     return await this.impl.withChatLock(chatId,
-        () => this.impl.mergeChanges(chatId, mergeThrough, userMeta,
-            this.#clientUser.id.toString(), options));
+        () => this.impl.mergeChanges(chatId, userMeta, this.#clientUser.id.toString()));
   }
 
   async revertChanges(chatId: number, revertFrom: number): Promise<void> {
@@ -9740,7 +9995,9 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async setPinned(_pinned: boolean): Promise<void> { this.#deny(); }
   async deleteSelf(): Promise<void> { this.#deny(); }
   async createGadget(_title: string): Promise<RpcStub<GadgetClient>> { this.#deny(); }
-  async updateCode(_update: Uint8Array, _chatId: number): Promise<void> { this.#deny(); }
+  async updateCode(_update: Uint8Array, _chatId: number, _base: UpdateCodeBase): Promise<void> {
+    this.#deny();
+  }
   async getCodeAtCommit(_commitId: string): Promise<{files: Record<string, string>}> {
     this.#deny();
   }
@@ -9815,8 +10072,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async getChatAttachmentContent(_chatId: number, _id: string): Promise<Uint8Array> { this.#deny(); }
   async deleteChatAttachment(_id: string): Promise<void> { this.#deny(); }
   async setChatTitle(_chatId: number, _title: string): Promise<void> { this.#deny(); }
-  async mergeChanges(_chatId: number, _mergeThrough: number | null,
-                     _options?: { includeDraft?: boolean }): Promise<MergeChangesResult> {
+  async mergeChanges(_chatId: number): Promise<MergeChangesResult> {
     this.#deny();
   }
   async revertChanges(_chatId: number, _revertFrom: number): Promise<void> { this.#deny(); }

@@ -146,25 +146,30 @@ describe("migrateCodeLogToGit", () => {
     ws.addMessage(1, USER, { type: "merge", mergeThrough: 2, version: 7 });
 
     let { commits } = await migrateCodeLogToGit(ws.host());
-    expect(commits).toBe(2);
+    expect(commits).toBe(3);
 
     // The head is the merge-point chain's tip: v3 was neither a merge point nor a gap, so it
-    // folded into the v4 commit.
+    // folded into the v4 commit. The chain is rooted at the synthesized version-0 empty-tree
+    // commit (every permanent gadget has a head; see GadgetRecord.commitId).
     let head = ws.storage.gadgets.get(10)!.commitId!;
     expect(await ws.gitStore.readCommitFiles(head)).toEqual(new Map([
       ["app.js", "hello world\n"],
       ["extra.js", "more\n"],
     ]));
     let log = await ws.gitStore.readCommitLog(head);
-    expect(log.length).toBe(2);
+    expect(log.length).toBe(3);
     expect(log[0].parents).toEqual([log[1].oid]);
-    expect(log[1].parents).toEqual([]);
+    expect(log[1].parents).toEqual([log[2].oid]);
+    expect(log[2].parents).toEqual([]);
     expect(log[0].author).toEqual(OWNER);
     expect(log[0].timestamp).toEqual(new Date(T0 + 3 * MINUTE));
     expect(log[0].message).toContain("code versions 3-4");
     expect(log[1].message).toContain("code versions 1-2");
+    expect(log[2].message).toContain("initial empty state");
+    expect(log[2].timestamp).toEqual(new Date(T0));  // the gadget record's creation time
     expect(await ws.gitStore.readCommitFiles(log[1].oid))
         .toEqual(new Map([["app.js", "hello\n"]]));
+    expect(await ws.gitStore.readCommitFiles(log[2].oid)).toEqual(new Map());
 
     // Merge messages carry the commits synthesized at their recorded versions; the no-code
     // merge (version 7, no code entry) correctly backfills to none.
@@ -173,11 +178,14 @@ describe("migrateCodeLogToGit", () => {
     expect(merges[1].commits).toEqual([{ gadgetId: 10, commitId: head }]);
     expect(merges[2].commits).toEqual([]);
 
-    // The chat's anchor is its highest referenced version (7), which floors to v4's commit.
-    let codeBase = ws.storage.chatMeta.get(1)!.codeBase!;
-    expect(codeBase.seedHash).toBeUndefined();
-    expect(codeBase.gadgets).toEqual(
-        [{ gadgetId: 10, filesRoot: "10", mergedCommit: head }]);
+    // The chat's anchor is its highest referenced version (7), which floors to v4's commit. The
+    // `legacy` flag marks its Yjs base as the retired code log until its first merge graduates
+    // it; generation starts at 0 like any fresh code base.
+    expect(ws.storage.chatMeta.get(1)!.codeBase).toEqual({
+      legacy: true,
+      generation: 0,
+      gadgets: [{ gadgetId: 10, filesRoot: "10", mergedCommit: head }],
+    });
   });
 
   it("batches standalone-edit bursts by one-hour gaps", async () => {
@@ -191,11 +199,11 @@ describe("migrateCodeLogToGit", () => {
         doc => setFile(doc, "20", "a.js", "four\n"));                                    // v5
 
     let { commits } = await migrateCodeLogToGit(ws.host());
-    expect(commits).toBe(2);
+    expect(commits).toBe(3);
 
     let head = ws.storage.gadgets.get(20)!.commitId!;
     let log = await ws.gitStore.readCommitLog(head);
-    expect(log.length).toBe(2);
+    expect(log.length).toBe(3);  // empty root + one commit per burst
     // The burst v2-v4 (1-minute spacing) folds into one commit at the version before the gap;
     // the final version always commits.
     expect(await ws.gitStore.readCommitFiles(log[1].oid))
@@ -215,13 +223,14 @@ describe("migrateCodeLogToGit", () => {
     ws.addMessage(1, USER, { type: "merge", mergeThrough: 1, version: 3 });
 
     let { commits } = await migrateCodeLogToGit(ws.host());
-    expect(commits).toBe(2);
+    expect(commits).toBe(4);  // two empty roots, two content commits
 
-    // Each gadget's chain has exactly the commit where its own files changed.
+    // Each gadget's chain has exactly its empty root plus the commit where its own files
+    // changed.
     let left = ws.storage.gadgets.get(30)!.commitId!;
     let right = ws.storage.gadgets.get(40)!.commitId!;
-    expect((await ws.gitStore.readCommitLog(left)).length).toBe(1);
-    expect((await ws.gitStore.readCommitLog(right)).length).toBe(1);
+    expect((await ws.gitStore.readCommitLog(left)).length).toBe(2);
+    expect((await ws.gitStore.readCommitLog(right)).length).toBe(2);
 
     let merges = ws.mergeMessages(1);
     expect(merges[0].commits).toEqual([{ gadgetId: 30, commitId: left }]);
@@ -237,19 +246,20 @@ describe("migrateCodeLogToGit", () => {
   it("pins live chats at their anchored versions", async () => {
     let ws = new LegacyWorkspace();
     ws.addGadget(50, "APP");
+    ws.addGadget(55, "LATER");   // gains its first content only after chat 5's anchor
     ws.addChat(9);   // the chat whose merges advanced mainline
     ws.addChat(5);   // a live chat anchored mid-history
     ws.addChat(6);   // a live chat with no version references at all
-    ws.addChat(7);   // a commit-seeded chat: the migration must not touch it
+    ws.addChat(7);   // a commit-pinned chat: the migration must not touch it
 
     ws.edit(T0 + 1 * MINUTE, doc => setFile(doc, "50", "app.js", "one\n"));              // v2
     ws.addMessage(9, USER, { type: "merge", mergeThrough: 0, version: 2 });
-    ws.edit(T0 + 2 * MINUTE, doc => setFile(doc, "50", "app.js", "two\n"));              // v3
-    ws.addMessage(9, USER, { type: "merge", mergeThrough: 1, version: 3 });
-
     ws.addMessage(5, AGENT, { type: "changes", observedCodeVersion: 2 });
+    ws.edit(T0 + 2 * MINUTE, doc => setFile(doc, "50", "app.js", "two\n"));              // v3
+    ws.edit(T0 + 3 * MINUTE, doc => setFile(doc, "55", "later.js", "l\n"));              // v4
+    ws.addMessage(9, USER, { type: "merge", mergeThrough: 1, version: 4 });
 
-    let seededBase = { gadgets: [], seedHash: "0".repeat(64) };
+    let seededBase = { gadgets: [], generation: 2, epoch: 5 };
     let seeded = ws.storage.chatMeta.get(7)!;
     seeded.codeBase = seededBase;
     ws.storage.chatMeta.put(seeded);
@@ -258,14 +268,28 @@ describe("migrateCodeLogToGit", () => {
 
     let head = ws.storage.gadgets.get(50)!.commitId!;
     let log = await ws.gitStore.readCommitLog(head);
-    expect(log.length).toBe(2);
+    expect(log.length).toBe(3);  // empty root, v2, v3+v4 batch
+
+    let pinFor = (chatId: number, gadgetId: number) =>
+        ws.storage.chatMeta.get(chatId)!.codeBase!.gadgets
+            .find(pin => pin.gadgetId === gadgetId)!;
 
     // Chat 5 saw version 2; chat 6 never referenced a version, so it anchors at the tip; chat 9
     // merged through the tip. The commit-seeded chat's codeBase is untouched.
-    expect(ws.storage.chatMeta.get(5)!.codeBase!.gadgets[0].mergedCommit).toBe(log[1].oid);
-    expect(ws.storage.chatMeta.get(6)!.codeBase!.gadgets[0].mergedCommit).toBe(head);
-    expect(ws.storage.chatMeta.get(9)!.codeBase!.gadgets[0].mergedCommit).toBe(head);
+    expect(pinFor(5, 50).mergedCommit).toBe(log[1].oid);
+    expect(pinFor(6, 50).mergedCommit).toBe(head);
+    expect(pinFor(9, 50).mergedCommit).toBe(head);
     expect(ws.storage.chatMeta.get(7)!.codeBase).toEqual(seededBase);
+
+    // Gadget 55 had no content at chat 5's anchor, so the pin sits at its empty root -- the
+    // doc's exact state for that root there -- arming the accept gate instead of leaving the
+    // gadget unpinned (which would wedge the chat once mainline moved on it).
+    let laterHead = ws.storage.gadgets.get(55)!.commitId!;
+    let laterLog = await ws.gitStore.readCommitLog(laterHead);
+    expect(laterLog.length).toBe(2);
+    expect(pinFor(5, 55).mergedCommit).toBe(laterLog[1].oid);
+    expect(await ws.gitStore.readCommitFiles(laterLog[1].oid)).toEqual(new Map());
+    expect(pinFor(6, 55).mergedCommit).toBe(laterHead);
   });
 
   it("rewrites blueprint records to commits, including deleted gadgets'", async () => {
@@ -386,15 +410,26 @@ describe("migrateCodeLogToGit", () => {
     expect(ws.mergeMessages(1)[0].commits).toEqual([{ gadgetId: 10, commitId: head }]);
   });
 
-  it("is a no-op on a workspace with no legacy log", async () => {
+  it("gives a gadget the log never gave content an empty-tree head", async () => {
     let ws = new LegacyWorkspace();
-    // Simulate a workspace born after git storage: no code entries at all.
-    ws.storage.code.delete(1);
     ws.addGadget(10, "APP");
+    ws.addChat(1);
+    ws.addMessage(1, AGENT, { type: "changes", observedCodeVersion: 1 });
 
     let { commits } = await migrateCodeLogToGit(ws.host());
-    expect(commits).toBe(0);
-    expect(ws.storage.gadgets.get(10)!.commitId).toBeUndefined();
+    expect(commits).toBe(1);
+
+    // The head is the synthesized empty-tree initial commit (every permanent gadget has a
+    // head; see GadgetRecord.commitId)...
+    let head = ws.storage.gadgets.get(10)!.commitId!;
+    expect(await ws.gitStore.readCommitFiles(head)).toEqual(new Map());
+    expect((await ws.gitStore.readCommitLog(head)).length).toBe(1);
+
+    // ...and the legacy chat pins it there, arming the accept gate: edits to the empty gadget
+    // fast-forward from it, and a first commit landing from another chat reads as ordinary
+    // staleness rather than wedging the chat.
+    expect(ws.storage.chatMeta.get(1)!.codeBase!.gadgets).toEqual([
+      { gadgetId: 10, filesRoot: "10", mergedCommit: head }]);
   });
 });
 

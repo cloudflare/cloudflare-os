@@ -818,6 +818,15 @@ they can build the doc" / "an extra establish-now RPC"): establishment rides
   `chatChangeStatuses`). `epochBoundary` distinguishes new-model merges from
   pre-git historical merges (whose backfilled `commits` field alone cannot), so
   replay knows exactly which merges reset the doc.
+- **Drafts acknowledged mid-accept are never discarded by the reset.** `updateCode()`
+  runs outside the chat lock, appends nothing to the chat log (so the sequence-token
+  revalidation can't see it), and validates against a generation the reset hasn't
+  bumped yet — so a draft can land during the accept's awaits already acknowledged to
+  the client. The accept's synchronous tail checks for such drafts and **gives up**
+  with a retryable throw, leaving the drafts and the chat untouched: someone is
+  actively typing, and silently sweeping a mid-keystroke state into the merge would be
+  as wrong as losing it. The user retries once the typing settles. (This is the
+  correctness backstop behind the deferred "someone else is typing" heuristic below.)
 
 ### `updateChatFromMainline` — pinned-and-behind only
 
@@ -826,6 +835,38 @@ of pulling never-touched committed gadgets into the chat (absent pin + committed
 ⇒ stale) is deleted — under lazy pins, unpinned means "tracks head live", which is
 the point. Advancing `mergedCommit` on merged-in pins is unchanged, as is the
 restriction that a still-proposed mainlineMerge batch cannot be reverted.
+
+### Invariant: every permanent gadget has a head commit
+
+"Pinned-and-behind only" (and the whole first-edit-pins model) is sound only if a
+chat's first edit always has a commit to pin. So: **`GadgetRecord.commitId` is absent
+iff the gadget is pending** — a gadget with no code gets an **empty-tree initial
+commit**. "Rooted at nothing" is thereby an ordinary pin at the empty tree, not
+unpinned doc content.
+
+The alternative — permanent commit-less gadgets whose in-chat edits are plain,
+pin-less doc updates — was tried and rejected: once another chat's accept created the
+gadget's first commit, the pin-less chat could never pass the fast-forward gate, and
+every attempted repair (merging by detecting non-empty doc roots, seedless
+`mergedCommit`-only pins, treating "doc root has content" as the agent's
+doc-ownership test) amounted to inferring ownership from content — fragile against
+racing pin declarations, file deletions emptying a root, and `chatDocOwnsGadget`
+flipping to mainline the moment a head appeared. An explicit head closes all of it:
+first edits pin (the empty tree seeds an empty root — the deterministic seed of an
+empty file map), accept fast-forwards from it, and update-from-mainline's normal
+pinned path (base = the pinned empty tree) covers the gadget-gained-code-elsewhere
+race.
+
+Enforced at every permanent-creation site: `createGadget` without a chat writes the
+empty-tree commit before the record (and `OverseerImpl.createGadget` throws if a
+permanent creation arrives without an initial commit), blueprint instantiation writes
+the archive's tree as the initial commit *before* creating the record (so a failed
+instantiation can't leave a headless record), promotion already commits (possibly an
+empty tree) at accept, and the migration roots every permanent gadget's chain at a
+version-0 empty-tree commit (see the migration delta below). Pending gadgets remain
+head-less: only their own chat can promote them, and their plain-update edits replay
+correctly because a flushed write with no pin declaration is recognized as
+pending-era (see the agent replay note in "Known edge cases").
 
 ### Revert — rolls back pins, discards drafts, bumps the generation
 
@@ -849,6 +890,11 @@ restriction that a still-proposed mainlineMerge batch cannot be reverted.
 - Revert **bumps `codeBase.generation`** (see `updateCode` above), so live editors —
   whose docs still contain the reverted updates and possibly removed seeds — discard
   local state and rebuild instead of submitting updates rooted in erased history.
+- A revert that affects **no materialized changes** (everything at or after
+  `revertFrom` already merged or reverted) records no revert message — but outstanding
+  drafts are strictly newer than every message, hence inside the reverted range, so
+  they are still discarded exactly as `discardChatDraftChanges()` would (unlogged pins
+  dropped, generation bumped).
 
 ### Wire/API deltas (`workshop-shared/src/api.ts`)
 
@@ -867,6 +913,8 @@ restriction that a still-proposed mainlineMerge batch cannot be reverted.
   legacy pins remain `mergedCommit`-only under the chat-level `legacy` flag. (No
   seed-version field — deferred until a second algorithm exists, see the epochs
   section.)
+- `WorkpieceSummary.commitId`: absent only for pending gadgets (see the head-commit
+  invariant above); permanent gadgets always carry it.
 - `updateCode(update, chatId, base: {generation, pin?})` as above.
 - `mergeChanges(chatId)`; `MergeChangesResult` unchanged (`merged | stale`).
 - `"changes"` message: `pins?: {gadgetId, filesRoot, baseCommit, seedHash}[]` — the
@@ -882,8 +930,17 @@ restriction that a still-proposed mainlineMerge batch cannot be reverted.
 
 `git-migration.ts` writes `codeBase: {legacy: true, generation: 0, gadgets:
 <mergedCommit-only pins>}` for live legacy chats (shape change only; pin values
-unchanged). Everything else stands: legacy chats behave exactly as in Part 1 until
-their first merge, which graduates them.
+unchanged), and — for the head-commit invariant above — roots every permanent
+gadget's synthesized chain at a **version-0 empty-tree commit**: every permanent
+gadget leaves the migration with a head even if the log never gave it content, real
+history parents on the empty root, and legacy pins resolve at every anchor
+(`chainFloor` finds at least version 0, so a chat anchored before a gadget's first
+content pins at the empty tree — exactly the doc's state there — instead of getting
+no pin and wedging on the first out-of-chat commit). Pending gadgets get no root and
+no pins, as before; blueprint resolution ignores version-0 floors (an empty snapshot
+is not a valid blueprint, so those records keep their explicit legacy errors).
+Everything else stands: legacy chats behave exactly as in Part 1 until their first
+merge, which graduates them.
 
 ### Frontend
 
@@ -925,7 +982,30 @@ their first merge, which graduates them.
   `seedHash`) + epoch at the boundary; replay applies checkpoint pins'
   seeds before its update blobs. `acceptedChanges` becomes
   legacy-only (new-model chats never carry accepted updates across a boundary — the
-  epoch reset already dropped them).
+  epoch reset already dropped them), and an epoch boundary in the compacted span also
+  clears the checkpoint's `observedCodeVersion`: it is the legacy-graduation
+  discriminator agent replay keys `legacyBase` on, and carrying it across the
+  graduating boundary would resurrect the retired legacy doc under commit-derived
+  seeds.
+- **Epoch resets scope the agent's read-before-edit state**: `resetSessionEpoch`
+  clears `filesRead` along with the doc and pins — a root pinned in the new epoch
+  skips `editFile`'s freshness gate on the strength of a `filesRead` entry, which must
+  therefore never be a previous epoch's read.
+- **`buildChatDoc(through)` is as-of-`through`**: messages after `through` — including
+  epoch boundaries and merge/revert markings — are excluded outright (a boundary
+  recorded after the snapshot must not wipe it), and the caller passes a `meta`
+  consistent with `through` (`loadGadgetWorker` snapshots meta in the same synchronous
+  step as its cache key's sequence, so a graduating merge landing mid-load can't flip
+  a pre-graduation snapshot's legacy base). The legacy anchor's compaction checkpoint
+  likewise comes from the *passed* meta's `compactedTo`, not a fresh read — a
+  compaction advancing mid-load must not leak stamps from beyond `through` into the
+  base.
+- **Pending-era writes at replay** (agent path): a write to the chat's own pending
+  gadget records no pin (there is no head), but replay after the gadget's promotion
+  sees one. A *flushed* write with no pin declaration is recognized as pending-era —
+  no seeding; the root's content is plain doc updates — while a write with nothing
+  recorded after it is a crashed turn's tail and re-establishes a pin at the current
+  head, as the resumed turn's own write would.
 - **Blueprint-from-chat and preview loads** use `buildChatDoc`; they inherit
   epoch-aware reconstruction. Unpinned gadgets in a chat context read head — verify
   preview cache keys account for head movement now that a chat preview can track
@@ -992,8 +1072,10 @@ gate applies after commit 2.
      `bindLiveDocClientId` on its merge doc); revert + `discardChatDraftChanges`
      rework (pin rollback, draft discard, generation bump — both paths); agent
      read/elide/pin paths (session docs bound out-of-band); checkpoint pins (full
-     shape).
-   - Migration: `legacy: true` codeBase shape (with `generation`) + test updates.
+     shape); the head-commit invariant (empty-tree initial commits at both
+     permanent-creation sites).
+   - Migration: `legacy: true` codeBase shape (with `generation`), version-0
+     empty-tree chain roots (see the migration delta), + test updates.
    - Tests: golden bytes (per-root goldens, a two-pins-one-doc composition test,
      band allocation, a forced-reroll-lands-in-band re-enforcement test), pin
      lifecycle (establish/race/revert-rollback), generation races (merge-, revert-,

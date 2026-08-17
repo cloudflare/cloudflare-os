@@ -1,4 +1,6 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, ChatChangesPin, ChatCodeBase, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { bindLiveDocClientId, seedClientIdForGadget, seedRootFromFiles, seedUpdateHash }
+  from '@gadgets/workshop-shared/yjs-seed';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger } from "./observability";
@@ -129,8 +131,24 @@ export type CompactionCheckpoint = {
   /** The next change ID for replayed tool results. Change IDs remain sequential across boundaries. */
   nextChangeId: number;
 
-  /** The code version used as the replay base. Tool calls and changes batches can establish it. */
+  /**
+   * Legacy (pre-git-storage) chats: the code version used as the replay base. Tool calls and
+   * changes batches can establish it.
+   */
   observedCodeVersion?: number;
+
+  /**
+   * The pins active at the boundary, in full log-pin shape (seeds re-derivable and verifiable
+   * even after the live pins are gone; see ChatChangesPin). Replay applies their seeds before
+   * the update blobs below.
+   */
+  pins?: ChatChangesPin[];
+
+  /**
+   * Sequence of the merge message that opened the epoch the boundary lies in, mirroring
+   * ChatCodeBase.epoch; absent when the boundary is in the chat's first epoch.
+   */
+  epoch?: number;
 
   /**
    * Accepted Y.Doc updates from before the boundary, merged into one update. The chat stays pinned
@@ -270,18 +288,43 @@ export interface AgentHooks {
 
   /**
    * Legacy (pre-git-storage): build the workspace-wide Yjs doc from the retired code log. Only
-   * the session docs of chats that predate commit-seeded docs are built this way; see
-   * getChatSeedUpdate().
+   * the session docs of chats whose code base carries the `legacy` flag (see getChatCodeBase())
+   * are built this way.
    */
   buildYDoc(version: number | "current"): {ydoc: Y.Doc, version: number};
 
   /**
-   * The deterministic seed update for a commit-seeded chat's session doc, verified against the
-   * chat's stored seed hash (see ChatCodeBase in the API), or undefined for a chat whose Yjs
-   * base is the legacy code log -- the session doc then falls back to buildYDoc() at the chat's
-   * observed version, exactly as before git storage.
+   * The chat's current code base (AiChatMetadata.codeBase), read at turn start. Its `legacy`
+   * flag selects the legacy session-doc path above; otherwise the session doc starts empty and
+   * is populated by replaying the log's pins and updates (see ChatCodeBase).
    */
-  getChatSeedUpdate(chatId: number): Promise<Uint8Array | undefined>;
+  getChatCodeBase(chatId: number): ChatCodeBase | undefined;
+
+  /**
+   * The gadget's current head commit (WorkpieceSummary.commitId), or undefined if it has none:
+   * still pending in a chat, created outside chats and never accepted, or deleted. An unpinned
+   * gadget with a head is read at that head; one without a head lives only in the session doc.
+   */
+  getGadgetHead(gadgetId: WorkpieceId): string | undefined;
+
+  /**
+   * Read a commit's full file map from the workspace's git object store. Commits are immutable,
+   * so results are cacheable by oid (and the store's parse cache makes repeats cheap).
+   */
+  readCommitFiles(oid: string): Promise<Map<string, string>>;
+
+  /**
+   * The set of file paths whose content differs between two commits (either side undefined =
+   * empty tree), compared by blob oid without reading content. Drives read-staleness checks:
+   * elision of stamped reads and editFile's read-before-edit gate.
+   */
+  changedPaths(a: string | undefined, b: string | undefined): Promise<Set<string>>;
+
+  /**
+   * Derive a logged pin's deterministic seed update from the commit it names, verified against
+   * the pin's recorded seed hash (fails loudly on derivation drift; see ChatChangesPin).
+   */
+  derivePinSeed(pin: ChatChangesPin): Promise<Uint8Array>;
 
   /**
    * Summarize the workspace's gadgets for the system prompt (see AgentGadgetInfo). Gadgets still
@@ -684,7 +727,7 @@ Typically (but not always), you will need to use the \`executeCode\` tool to com
 `.trim();
 
 let READ_FILE_TOOL_DESCRIPTION = `
-Read the content of a file owned by one of the workspace's gadgets. Note that you will be informed any time a file changes, so it is not necessary to read a file again after you have already read it once. This cannot read chat attachments; attachments are provided directly in the conversation.
+Read the content of a file owned by one of the workspace's gadgets. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. This cannot read chat attachments; attachments are provided directly in the conversation.
 `.trim();
 
 let CREATE_GADGET_TOOL_DESCRIPTION = `
@@ -1237,10 +1280,31 @@ export async function runAgent(
   // replayed "changes" messages predate it.
   let gadgetInfos = hooks.listGadgetInfo(chatId);
 
-  // The deterministic seed for a commit-seeded chat's session doc, fetched up front because
-  // getSessionYDoc() must stay synchronous. Undefined for a chat whose Yjs base is the legacy
-  // code log; the version-lock machinery below then applies, exactly as before git storage.
-  let chatCodeSeed = await hooks.getChatSeedUpdate(chatId);
+  // The chat's session doc holds the *pinned* gadgets' code (each root seeded from its pin's
+  // commit) plus the chat's uncommitted changes; unpinned gadgets are read live at their head
+  // commit (see ChatCodeBase). `legacyBase` selects the pre-git construction instead -- the
+  // whole workspace doc from the retired code log -- for chats that still carry the `legacy`
+  // flag, and for a graduated chat's pre-graduation replay prefix, whose recorded reads need
+  // the legacy base to reproduce what the model saw; the graduating epoch boundary flips it
+  // off (see resetSessionEpoch below). The prefix scan detects that case by the
+  // observedCodeVersion stamps only legacy-era sessions ever wrote.
+  let legacyChat = hooks.getChatCodeBase(chatId)?.legacy === true;
+  let legacyBase = legacyChat || checkpoint?.observedCodeVersion !== undefined ||
+      (() => {
+        for (let msg of chatMessages) {
+          if (msg.type === "merge") {
+            if (msg.epochBoundary) break;
+            if (msg.version !== undefined) return true;
+          } else if (msg.type === "changes") {
+            if (msg.observedCodeVersion !== undefined) return true;
+          } else if (msg.type === "message") {
+            for (let call of msg.toolCalls ?? []) {
+              if (call.observedCodeVersion !== undefined) return true;
+            }
+          }
+        }
+        return false;
+      })();
 
   // On first use, we'll build a copy of the Y.Doc, then reuse it for further tool calls in
   // this session. Each gadget's files live in the doc's root map named by
@@ -1248,11 +1312,49 @@ export async function runAgent(
   // via hooks.resolveWorkpieceRoot.
   let ydoc: Y.Doc | undefined;
   // Legacy chats only: the code-log version the session doc is built at, latched from the chat's
-  // recorded observedCodeVersion stamps. Stays undefined for commit-seeded chats, whose base is
-  // pinned by ChatCodeBase instead -- which also keeps every stamp below conditional, so such
+  // recorded observedCodeVersion stamps. Stays undefined for commit-pinned chats, whose bases
+  // are the pins' commits instead -- which also keeps every stamp below conditional, so such
   // chats never record observedCodeVersion at all.
   let versionLock = checkpoint?.observedCodeVersion;
   let capturedYdocChanges: Uint8Array[] = [];
+
+  // Transaction origin marking seed applications on the session doc. Pin seeds must never ride
+  // the flushed "changes" update -- every participant derives the identical seed from the
+  // logged pin declaration instead -- so the capture listener skips updates with this origin.
+  const seedOrigin = {};
+
+  // Gadgets whose roots are seeded in the session doc's current epoch: pins replayed from the
+  // log plus pins established by this turn's writes. Reads of these roots come from the doc
+  // (never stale within an epoch); unpinned gadgets are read live at their head commit.
+  let pinnedGadgets = new Set<WorkpieceId>();
+
+  // Pins established by this turn's writes (or re-adopted from a crashed turn's unflushed
+  // tail), awaiting attachment to the next flushed "changes" message, whose `pins` field
+  // durably records them (addChatMessages re-validates each against the head at flush time and
+  // mirrors it into the chat's codeBase).
+  let pendingPins: ChatChangesPin[] = [];
+
+  // Per-gadget head observed by this turn's unpinned reads (and the system prompt's file
+  // lists), fixed at first observation so one turn sees a consistent tree even if mainline
+  // advances mid-turn.
+  let observedHeads = new Map<WorkpieceId, string>();
+  let observeHead = (gadgetId: WorkpieceId): string | undefined => {
+    let head = observedHeads.get(gadgetId) ?? hooks.getGadgetHead(gadgetId);
+    if (head !== undefined) observedHeads.set(gadgetId, head);
+    return head;
+  };
+
+  // Memoized per-file diff lookups: replay can check many reads stamped at the same commit.
+  let changedPathsCache = new Map<string, Promise<Set<string>>>();
+  let changedPaths = (a: string | undefined, b: string | undefined) => {
+    let key = `${a}:${b}`;
+    let cached = changedPathsCache.get(key);
+    if (!cached) {
+      cached = hooks.changedPaths(a, b);
+      changedPathsCache.set(key, cached);
+    }
+    return cached;
+  };
   // Gadgets created this turn, awaiting attachment to the next flushed "changes" message (see
   // flushCapturedYdocChanges and the createGadget tool) -- which is what durably records, and
   // sequence-stamps, each creation. Like captured edits, buffered creations from a turn that
@@ -1290,23 +1392,28 @@ export async function runAgent(
     return undefined;
   };
   let rollingFileContents: Map<string, Map<string, string>> | undefined;
+  let attachSessionDoc = (doc: Y.Doc) => {
+    // The session doc authors chat updates, so its clientID must stay outside the reserved
+    // seed band for its whole lifetime (see yjs-seed in workshop-shared).
+    bindLiveDocClientId(doc);
+    doc.on("updateV2", (update, origin) => {
+      if (origin !== seedOrigin) capturedYdocChanges.push(update);
+    });
+  };
   let getSessionYDoc = () => {
     if (!ydoc) {
-      if (chatCodeSeed !== undefined) {
-        // Commit-seeded chat: the base is the deterministic seed derived from the chat's pinned
-        // commits. Applying it as a remote update (rather than authoring it here) keeps the
-        // reserved seed clientID out of this doc; see yjs-seed in workshop-shared.
-        ydoc = new Y.Doc();
-        Y.applyUpdateV2(ydoc, chatCodeSeed);
-      } else {
+      if (legacyBase) {
         let build = hooks.buildYDoc(versionLock === undefined ? "current" : versionLock);
         versionLock = build.version;
         ydoc = build.ydoc;
+      } else {
+        // Commit-pinned chat: the doc starts empty, and each pinned root's seed arrives as a
+        // remote update -- during replay from logged pin declarations, or live when a write
+        // establishes a pin (see establishPin).
+        ydoc = new Y.Doc();
       }
 
-      ydoc.on("updateV2", (update, origin) => {
-        capturedYdocChanges.push(update);
-      });
+      attachSessionDoc(ydoc);
     }
     return ydoc;
   };
@@ -1442,10 +1549,13 @@ export async function runAgent(
   let bindingAdditionKey = (gadgetId: WorkpieceId, name: string) => `${gadgetId}:${name}`;
 
   // Track which files have been read in this session, keyed by (workpieceId, filename). Edits
-  // aren't allowed before reading. Deliberately not carried across a compaction boundary: an
+  // aren't allowed before reading. The value is the commit an unpinned read observed
+  // (AiToolCall.observedCommit), or undefined for reads served from the session doc; editFile's
+  // gate uses it to require that the read saw the file's *current* committed content before
+  // anchoring a pin at head. Deliberately not carried across a compaction boundary: an
   // edit has to quote the text it replaces, and a read the summary swallowed no longer tells the
   // agent what that text is, so re-reading is both required and correct.
-  let filesRead = new Set<string>();
+  let filesRead = new Map<string, string | undefined>();
   let fileKey = (workpieceId: WorkpieceId, filename: string) => `${workpieceId}:${filename}`;
 
   // Resolve a file tool's optional `workpiece` parameter -- the chat binding name of the target
@@ -1499,6 +1609,99 @@ export async function runAgent(
   // accept commits is always the doc this replay produced.
   let chatMessageStatus = chatChangeStatuses(chatMessages);
 
+  // An epochBoundary merge closed the chat's epoch: everything merged lives in commits from
+  // then on, the doc restarts empty, and roots re-seed lazily via new pins. Any unflushed tail
+  // from a turn that crashed before the merge is rooted in the discarded doc, so it dies here
+  // too -- the merge the user performed superseded it.
+  let resetSessionEpoch = () => {
+    if (ydoc) {
+      ydoc.destroy();
+      ydoc = undefined;
+    }
+    capturedYdocChanges = [];
+    rollingFileContents = undefined;
+    pinnedGadgets.clear();
+    pendingReplayEdits = [];
+    pendingPins = [];
+    // Read-before-edit knowledge is epoch-scoped: the doc those reads were served from is
+    // gone, and a root pinned in the new epoch skips editFile's freshness gate on the strength
+    // of a filesRead entry -- which must therefore never be a previous epoch's read.
+    filesRead.clear();
+    // A graduated legacy chat is an ordinary commit-pinned chat from its first boundary on:
+    // the legacy base is gone, and nothing past this point may stamp code versions.
+    legacyBase = false;
+    versionLock = undefined;
+  };
+
+  // Applies a logged pin during replay: derive + verify its seed, apply it to the session doc
+  // (advancing the rolling diff snapshots without producing a user-visible diff), and mark the
+  // root pinned. Idempotent: seeds are deterministic, and re-applying an identical update is a
+  // Yjs no-op -- which is what lets ensureReplayRootSeeded below seed a root *early*.
+  let applyReplayedPin = async (pin: ChatChangesPin) => {
+    applyReplayedChanges(await hooks.derivePinSeed(pin), false);
+    pinnedGadgets.add(pin.gadgetId);
+  };
+
+  // Seeds an unpinned root at the replay of the write that would have pinned it live. The pin
+  // declaration itself rides the write's *flush* -- a "changes" message recorded after the tool
+  // step's own message -- but replayed reads between the two need the seeded base in the doc.
+  // Seeding early from the upcoming declaration is safe because seed application is idempotent
+  // (above). Four cases by what the log holds after `sequence`:
+  // - an upcoming surviving declaration: seed from it now;
+  // - a *reverted* declaration: do nothing -- the range's reads are elided and its pending
+  //   edits are discharged by the (reverted) flush message, so the base is never needed;
+  // - a flush (any update-carrying "changes" message, which is what discharges pending edits
+  //   and what a live write's pin would have ridden) with *no* declaration: the write was made
+  //   while the gadget had no committed code -- it was still pending in this chat, its files
+  //   plain doc updates -- and the head seen now is its later promotion. Do not seed: the
+  //   root's content is already in the doc, and a seed would collide with it;
+  // - nothing at all: the turn crashed before flushing. Re-establish at the current head,
+  //   exactly as the resumed turn's own write would, and re-adopt the pin so it rides the next
+  //   flush (mirroring the re-adoption of unrecorded creations).
+  let ensureReplayRootSeeded = async (
+      workpieceId: WorkpieceId, rootName: string, sequence: number) => {
+    if (legacyBase || pinnedGadgets.has(workpieceId)) return;
+    let head = hooks.getGadgetHead(workpieceId);
+    if (head === undefined) return;  // no committed code: the root builds up from plain edits
+
+    let upcoming: ChatChangesPin | "reverted" | "flushed-unpinned" | undefined;
+    for (let msg of chatMessages) {
+      if (msg.sequence <= sequence) continue;
+      if (msg.type === "merge" && msg.epochBoundary) break;
+      if (msg.type !== "changes") continue;
+      let pin = (msg.pins ?? []).find(p => p.gadgetId === workpieceId);
+      if (pin !== undefined) {
+        upcoming = chatMessageStatus.get(msg.sequence) === "reverted" ? "reverted" : pin;
+        break;
+      }
+      if (msg.update !== undefined) {
+        upcoming = "flushed-unpinned";
+        break;
+      }
+    }
+
+    if (upcoming === "reverted" || upcoming === "flushed-unpinned") return;
+    if (upcoming !== undefined) {
+      await applyReplayedPin(upcoming);
+      return;
+    }
+    let seed = seedRootFromFiles(
+        rootName, await hooks.readCommitFiles(head), seedClientIdForGadget(workpieceId));
+    applyReplayedChanges(seed, false);
+    pinnedGadgets.add(workpieceId);
+    pendingPins.push({gadgetId: workpieceId, filesRoot: rootName, baseCommit: head,
+                      seedHash: await seedUpdateHash(seed)});
+  };
+
+  // The current base for judging whether a stamped read's content is stale (see the readFile
+  // replay case): the pin's seed commit for gadgets pinned since, else the live head.
+  let stampedReadBase = (workpieceId: WorkpieceId): string | undefined => {
+    for (let pin of hooks.getChatCodeBase(chatId)?.gadgets ?? []) {
+      if (pin.gadgetId === workpieceId && pin.seedCommit !== undefined) return pin.seedCommit;
+    }
+    return hooks.getGadgetHead(workpieceId);
+  };
+
   // We compute sequential change ID numbers for the purpose of telling the LLM about reverts.
   let nextChangeId = checkpoint?.nextChangeId ?? 0;
 
@@ -1531,8 +1734,13 @@ export async function runAgent(
   // callback holds) -- keep them in sync.
   let callbackNameCounter = 0;
 
-  // Rebuild the code the compacted prefix left behind. Accepted and proposed updates are stored
-  // separately so a later revert can drop only the proposed ones, but replay needs both.
+  // Rebuild the code the compacted prefix left behind: first the checkpoint's pins seed their
+  // roots, then the update blobs apply on top. Accepted and proposed updates are stored
+  // separately so a later revert can drop only the proposed ones, but replay needs both
+  // (accepted ones exist only for legacy chats -- an epoch boundary drops them).
+  for (let pin of checkpoint?.pins ?? []) {
+    await applyReplayedPin(pin);
+  }
   if (checkpoint?.acceptedChanges) applyReplayedChanges(checkpoint.acceptedChanges, false);
   if (checkpoint?.proposedChanges) applyReplayedChanges(checkpoint.proposedChanges, false);
 
@@ -1709,10 +1917,40 @@ export async function runAgent(
                     // needs to.
                     toolOutput = {
                       text: "This call succeeded when the agent first invoked it, but " +
-                          "the reuslts have been elided from the chat history because " +
+                          "the results have been elided from the chat history because " +
                           "the user later reverted the file to an earlier version.",
                       isError: true,
                     };
+                  } else if (toolCall.observedCommit !== undefined) {
+                    // The read was served from committed code (the workpiece was unpinned; see
+                    // the live tool). If the file has since changed relative to the gadget's
+                    // current base, the model's memory of it is stale: elide the content and
+                    // direct the agent to re-read. The file stays out of filesRead, so
+                    // editFile's gate rejects edits anchored to the elided read too.
+                    let {workpieceId} = hooks.resolveWorkpieceRoot(
+                        resolveToolWorkpieceId(toolCall.input.workpiece));
+                    let base = stampedReadBase(workpieceId);
+                    let stale = base === undefined ||
+                        (await changedPaths(toolCall.observedCommit, base))
+                            .has(toolCall.input.filename);
+                    if (stale) {
+                      toolOutput = {
+                        text: "This call succeeded when the agent first invoked it, but " +
+                            "the results have been elided from the chat history because " +
+                            "the file has since changed. Re-read the file to see its " +
+                            "current content.",
+                        isError: true,
+                      };
+                    } else {
+                      let value = (await hooks.readCommitFiles(toolCall.observedCommit))
+                          .get(toolCall.input.filename);
+                      if (value === undefined) {
+                        throw new Error("File missing from its observed commit.");
+                      }
+                      toolOutput = {text: value};
+                      filesRead.set(fileKey(workpieceId, toolCall.input.filename),
+                                    toolCall.observedCommit);
+                    }
                   } else {
                     let {workpieceId, rootName} =
                         hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(toolCall.input.workpiece));
@@ -1738,13 +1976,14 @@ export async function runAgent(
                     }
 
                     toolOutput = {text: value};
-                    filesRead.add(fileKey(workpieceId, toolCall.input.filename));
+                    filesRead.set(fileKey(workpieceId, toolCall.input.filename), undefined);
                   }
                   break;
                 }
                 case "writeFile": {
                   let {workpieceId, rootName} =
                       hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(toolCall.input.workpiece));
+                  await ensureReplayRootSeeded(workpieceId, rootName, msg.sequence);
                   pendingReplayEdits.push({
                     toolName: "writeFile",
                     rootName,
@@ -1752,20 +1991,23 @@ export async function runAgent(
                     content: toolCall.input.content,
                   });
                   toolOutput = {text: jsonToolResultText({success: true, changeId: nextChangeId})};
-                  filesRead.add(fileKey(workpieceId, toolCall.input.filename));
+                  filesRead.set(fileKey(workpieceId, toolCall.input.filename), undefined);
                   break;
                 }
-                case "editFile":
+                case "editFile": {
+                  let {workpieceId, rootName} =
+                      hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(toolCall.input.workpiece));
+                  await ensureReplayRootSeeded(workpieceId, rootName, msg.sequence);
                   pendingReplayEdits.push({
                     toolName: "editFile",
-                    rootName: hooks.resolveWorkpieceRoot(
-                        resolveToolWorkpieceId(toolCall.input.workpiece)).rootName,
+                    rootName,
                     filename: toolCall.input.filename,
                     textToReplace: toolCall.input.textToReplace,
                     replacement: toolCall.input.replacement,
                   });
                   toolOutput = {text: jsonToolResultText({success: true, changeId: nextChangeId})};
                   break;
+                }
                 case "describeBinding":
                   toolOutput = {
                     text: await resolveBindingDescription(
@@ -1903,6 +2145,11 @@ export async function runAgent(
         }
 
         if (chatMessageStatus.get(msg.sequence) !== "reverted") {
+          // Pins this batch establishes seed their roots before the update applies (a no-op
+          // for roots ensureReplayRootSeeded already seeded early; see there).
+          for (let pin of msg.pins ?? []) {
+            await applyReplayedPin(pin);
+          }
           // A batch with no `update` records only creations/binding additions; there is nothing
           // to apply to the session doc (and no diff), but user-authored creations/additions
           // are still surfaced as observations below.
@@ -1969,7 +2216,9 @@ export async function runAgent(
       }
 
       case "merge":
-        // No need to tell the agent about this.
+        // Nothing to tell the agent, but a boundary merge closed the chat's epoch: the session
+        // doc restarts empty and later pins re-seed lazily.
+        if (msg.epochBoundary) resetSessionEpoch();
         break;
 
       case "slashCommand":
@@ -2167,7 +2416,7 @@ export async function runAgent(
 
   let flushCapturedYdocChanges = () => {
     if (capturedYdocChanges.length === 0 && pendingCreatedGadgets.length === 0 &&
-        pendingAddedBindings.length === 0) {
+        pendingAddedBindings.length === 0 && pendingPins.length === 0) {
       return;
     }
 
@@ -2182,18 +2431,37 @@ export async function runAgent(
     pendingCreatedGadgets = [];
     let addedBindings = pendingAddedBindings;
     pendingAddedBindings = [];
+    let pins = pendingPins;
+    pendingPins = [];
     hooks.addChatMessages(chatId, author, [{
       type: "changes",
       // Legacy chats stamp the base version the update applies to, which replay latches before
-      // rebuilding the session's code state. Commit-seeded chats leave `versionLock` unset --
-      // their base is pinned by ChatCodeBase -- so no stamp is recorded.
+      // rebuilding the session's code state. Commit-pinned chats leave `versionLock` unset --
+      // their bases are the pins' commits, recorded in `pins` -- so no stamp is recorded.
       ...(update !== undefined ? {update} : {}),
       ...(update !== undefined && versionLock !== undefined
           ? {observedCodeVersion: versionLock} : {}),
+      ...(pins.length > 0 ? {pins} : {}),
       ...(createdGadgets.length > 0 ? {createdGadgets} : {}),
       ...(addedBindings.length > 0 ? {addedBindings} : {}),
     }]);
     ++nextChangeId;
+  };
+
+  // Establish a pin for an unpinned gadget at the current head -- always the head, never an
+  // older observed commit: a read that observed an older head is (or will be) elided, and a
+  // previously-elided read must not spring back to life as the anchor of a later write. The
+  // derived seed is applied as a remote update under seedOrigin, so it never rides the flushed
+  // update (clients derive the same seed from the logged pin); the pin itself rides the next
+  // flush's `pins`, which addChatMessages re-validates against the head at flush time -- the
+  // backstop for mid-turn head movement.
+  let establishPin = async (workpieceId: WorkpieceId, rootName: string, head: string) => {
+    let seed = seedRootFromFiles(
+        rootName, await hooks.readCommitFiles(head), seedClientIdForGadget(workpieceId));
+    let seedHash = await seedUpdateHash(seed);
+    Y.applyUpdateV2(getSessionYDoc(), seed, seedOrigin);
+    pinnedGadgets.add(workpieceId);
+    pendingPins.push({gadgetId: workpieceId, filesRoot: rootName, baseCommit: head, seedHash});
   };
 
   let agentContext = hooks.getChatAgentContext(chatId);
@@ -2268,8 +2536,20 @@ export async function runAgent(
           "This workspace does not contain any gadgets yet. Before writing any code, create a " +
           "gadget with the `createGadget` tool.";
     } else {
-      let sections = gadgetInfos.map(info => {
-        let files = [...getSessionYDoc().getMap<Y.Text>(info.rootName).keys()];
+      let sections: string[] = [];
+      for (let info of gadgetInfos) {
+        // The file list follows the same pinned/unpinned split as readFile: an unpinned gadget
+        // with committed code lists its head commit's files (the head fixed for this turn);
+        // pinned roots, gadgets with no committed code, and legacy chats list from the session
+        // doc.
+        let files: string[];
+        let unpinnedHead = !legacyBase && !pinnedGadgets.has(info.id)
+            ? observeHead(info.id) : undefined;
+        if (unpinnedHead !== undefined) {
+          files = [...(await hooks.readCommitFiles(unpinnedHead)).keys()];
+        } else {
+          files = [...getSessionYDoc().getMap<Y.Text>(info.rootName).keys()];
+        }
         let envName = chatNameFor(info.id);
         let lines = [envName !== undefined
             ? `## Gadget ${envName}: ${JSON.stringify(info.title)}`
@@ -2313,8 +2593,8 @@ export async function runAgent(
                     : ` — (no binding for this in your env)`);
           }));
         }
-        return lines.join("\n");
-      });
+        sections.push(lines.join("\n"));
+      }
       systemPromptWorkspace = `# This workspace's gadgets\n\n${sections.join("\n\n")}`;
     }
 
@@ -2474,11 +2754,29 @@ export async function runAgent(
         try {
           let resolved =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
+
+          // An unpinned gadget with committed code is read live at its head (fixed for the
+          // turn; see observeHead), stamping the commit so replay can detect staleness and
+          // elide. Pinned roots -- and gadgets with no committed code, whose files exist only
+          // in the chat doc -- read from the session doc, unstamped: the doc is never stale
+          // within an epoch.
+          if (!legacyBase && !pinnedGadgets.has(resolved.workpieceId)) {
+            let head = observeHead(resolved.workpieceId);
+            if (head !== undefined) {
+              let content = (await hooks.readCommitFiles(head)).get(filename);
+              if (content === undefined) {
+                throw new Error("File does not exist.");
+              }
+              filesRead.set(fileKey(resolved.workpieceId, filename), head);
+              return toolResult(content, {observedCommit: head});
+            }
+          }
+
           let text = getSessionYDoc().getMap<Y.Text>(resolved.rootName).get(filename);
           if (!text) {
             throw new Error("File does not exist.");
           }
-          filesRead.add(fileKey(resolved.workpieceId, filename));
+          filesRead.set(fileKey(resolved.workpieceId, filename), undefined);
           return toolResult(text.toString(),
               versionLock !== undefined ? {observedCodeVersion: versionLock} : {});
         } catch (error) {
@@ -2504,6 +2802,17 @@ export async function runAgent(
         try {
           let resolved =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
+
+          // The first write to an unpinned gadget with committed code pins it at the current
+          // head (a whole-file overwrite is coherent against any base, so no read gate here).
+          // Gadgets with no committed code stay unpinned; their files are plain doc content.
+          if (!legacyBase && !pinnedGadgets.has(resolved.workpieceId)) {
+            let head = hooks.getGadgetHead(resolved.workpieceId);
+            if (head !== undefined) {
+              await establishPin(resolved.workpieceId, resolved.rootName, head);
+            }
+          }
+
           applyPendingEditToYdoc(getSessionYDoc(), {
             toolName: "writeFile",
             rootName: resolved.rootName,
@@ -2513,7 +2822,7 @@ export async function runAgent(
 
           // The agent knows exactly what's in the file, so add it to the `filesRead` set so
           // that it can make further edits without rewriting.
-          filesRead.add(fileKey(resolved.workpieceId, filename));
+          filesRead.set(fileKey(resolved.workpieceId, filename), undefined);
 
           return toolResult(jsonToolResultText({success: true, changeId: nextChangeId}),
               versionLock !== undefined ? {observedCodeVersion: versionLock} : {});
@@ -2547,8 +2856,27 @@ export async function runAgent(
         try {
           let resolved =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
-          if (!filesRead.has(fileKey(resolved.workpieceId, filename))) {
+          let key = fileKey(resolved.workpieceId, filename);
+          if (!filesRead.has(key)) {
             throw new Error("You must read a file before you can edit it.");
+          }
+
+          // The first edit to an unpinned gadget with committed code pins it at the *current*
+          // head, so the prior read must have observed this file's content as it stands at
+          // that head -- a read of an older version (elided or not) does not satisfy the gate,
+          // even one that succeeded moments ago, because anchoring its content would silently
+          // overwrite whatever landed since.
+          if (!legacyBase && !pinnedGadgets.has(resolved.workpieceId)) {
+            let head = hooks.getGadgetHead(resolved.workpieceId);
+            if (head !== undefined) {
+              let observed = filesRead.get(key);
+              if (observed === undefined ||
+                  (await changedPaths(observed, head)).has(filename)) {
+                throw new Error("The file's committed content has changed since you read it. " +
+                    "Re-read the file and try again.");
+              }
+              await establishPin(resolved.workpieceId, resolved.rootName, head);
+            }
           }
 
           applyPendingEditToYdoc(getSessionYDoc(), {

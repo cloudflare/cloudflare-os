@@ -399,6 +399,65 @@ describe("compaction checkpoint state", () => {
     expect(next.proposedChanges).toBeUndefined();
     expect(next.acceptedChanges).toBeDefined();
   });
+
+  const pin7 = {gadgetId: 7, filesRoot: "7", baseCommit: "a".repeat(40), seedHash: "h1"};
+  const pin9 = {gadgetId: 9, filesRoot: "9", baseCommit: "b".repeat(40), seedHash: "h2"};
+
+  it("records the pins active at the boundary, dropping reverted declarations", () => {
+    let state = buildState([
+      record(0, agent, {type: "changes", update: update("a"), pins: [pin7]}),
+      record(1, agent, {type: "changes", update: update("b"), pins: [pin9]}),
+      record(2, user, {type: "revert", revertFrom: 1}),
+    ], 3);
+
+    expect(state.pins).toEqual([pin7]);
+    expect(state.epoch).toBeUndefined();
+  });
+
+  it("resets pins and accepted updates at an epoch boundary, recording the epoch", () => {
+    // A boundary merge discards the doc the accepted updates would complete (their content now
+    // lives in commits), so a checkpoint past one carries no acceptedChanges -- which is what
+    // keeps that field legacy-only: every new-model merge is a boundary.
+    let previous = {
+      chatId: 1, compactedTo: 1, summary: "earlier",
+      ...buildState([record(0, agent, {type: "changes", update: update("a"), pins: [pin7]})], 1),
+    };
+    expect(previous.pins).toEqual([pin7]);
+
+    let next = buildCompactionState([
+      record(1, user, {
+        type: "merge", mergeThrough: 1, commits: [{gadgetId: 7, commitId: "c".repeat(40)}],
+        epochBoundary: true,
+      }),
+      record(2, agent, {type: "changes", update: update("b"), pins: [pin9]}),
+    ], 3, initialBindings, previous);
+
+    expect(next.pins).toEqual([pin9]);
+    expect(next.epoch).toBe(1);
+    expect(next.acceptedChanges).toBeUndefined();
+    expect(filesIn(next.proposedChanges)).toEqual(["file.js"]);
+  });
+
+  it("drops observedCodeVersion at an epoch boundary (legacy graduation)", () => {
+    // A graduated legacy chat is an ordinary commit-pinned chat; a checkpoint carrying the
+    // legacy stamp across the graduating boundary would make the next turn's replay reactivate
+    // the retired legacy doc under the new epoch's commit-derived seeds (agent.ts keys
+    // `legacyBase` on the checkpoint's stamp).
+    let previous = {
+      chatId: 1, compactedTo: 1, summary: "earlier",
+      ...buildState([record(0, agent, {type: "changes", update: update("a"),
+                                       observedCodeVersion: 4})], 1),
+    };
+    expect(previous.observedCodeVersion).toBe(4);
+
+    let next = buildCompactionState([
+      record(1, user, {
+        type: "merge", mergeThrough: 1, commits: [{gadgetId: 7, commitId: "c".repeat(40)}],
+        epochBoundary: true,
+      }),
+    ], 2, initialBindings, previous);
+    expect(next.observedCodeVersion).toBeUndefined();
+  });
 });
 
 describe("summary prompt", () => {

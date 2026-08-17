@@ -29,7 +29,11 @@
 //   to the fs shim below.
 // - No GC. Dangling objects are only created by accepted merges, imports, and migration -- never
 //   by in-flight chats -- and are cheap. If GC is ever needed, the roots are enumerable: gadget
-//   records, blueprint gadget records, and live chats' pinned commits.
+//   records, blueprint gadget records, live chats' pinned commits, the pin declarations in chat
+//   logs and compaction checkpoints (closed epochs are reconstructed from them), and the
+//   `observedCommit` stamps on chats' readFile tool calls (which nothing else roots -- a future
+//   GC must either root them or the agent's elision path must tolerate a missing commit by
+//   eliding unconditionally).
 
 import {
   readBlob,
@@ -259,6 +263,63 @@ export class GitStore {
   }
 
   /**
+   * Reads a commit's tree as a `path -> blob oid` map (flattened like `readCommitFiles`, but
+   * without touching blob content). Content addressing makes this the cheap way to ask which
+   * files differ between two commits -- see `changedPaths`.
+   */
+  async commitFileOids(oid: string): Promise<Map<string, string>> {
+    let { commit } = await readCommit({ fs: this.#fs, gitdir: GITDIR, oid, cache: this.#cache });
+    let out = new Map<string, string>();
+    await this.#collectTreeOids(commit.tree, "", out);
+    return out;
+  }
+
+  /**
+   * The set of file paths whose content differs between two commits' trees (added, removed, or
+   * changed), compared by oid -- equal subtrees short-circuit without descending, and no blob
+   * content is ever read. `undefined` on either side means an empty tree, so a one-sided call
+   * lists a commit's whole tree.
+   */
+  async changedPaths(a: string | undefined, b: string | undefined): Promise<Set<string>> {
+    let changed = new Set<string>();
+    if (a === b) return changed;
+    let treeOf = async (oid: string | undefined) => oid === undefined ? undefined
+        : (await readCommit({ fs: this.#fs, gitdir: GITDIR, oid, cache: this.#cache }))
+            .commit.tree;
+    await this.#diffTrees(await treeOf(a), await treeOf(b), "", changed);
+    return changed;
+  }
+
+  // Accumulates the paths that differ between two trees (either may be absent = empty) into
+  // `out`. Entries are matched by name; a name that is a blob on one side and a tree on the
+  // other contributes every path under both sides.
+  async #diffTrees(aOid: string | undefined, bOid: string | undefined, prefix: string,
+                   out: Set<string>): Promise<void> {
+    if (aOid === bOid) return;
+    let entriesOf = async (oid: string | undefined) => {
+      if (oid === undefined) return new Map<string, TreeEntry>();
+      let { tree } = await readTree({ fs: this.#fs, gitdir: GITDIR, oid, cache: this.#cache });
+      return new Map(tree.map(entry => [entry.path, entry]));
+    };
+    let aEntries = await entriesOf(aOid);
+    let bEntries = await entriesOf(bOid);
+    for (let name of new Set([...aEntries.keys(), ...bEntries.keys()])) {
+      let a = aEntries.get(name);
+      let b = bEntries.get(name);
+      if (a?.oid === b?.oid && a?.type === b?.type) continue;
+      let path = prefix + name;
+      if (a?.type === "tree" || b?.type === "tree") {
+        // Descend the tree side(s); a blob opposite a tree is one more difference at `path`.
+        await this.#diffTrees(a?.type === "tree" ? a.oid : undefined,
+                              b?.type === "tree" ? b.oid : undefined, `${path}/`, out);
+        if (a?.type === "blob" || b?.type === "blob") out.add(path);
+      } else {
+        out.add(path);
+      }
+    }
+  }
+
+  /**
    * Walks the commit graph from `oid` (the commit itself first, then its ancestry), returning up
    * to `depth` commits' metadata. Traversal order for merge commits follows git log's default
    * (reverse chronological).
@@ -297,6 +358,25 @@ export class GitStore {
     }
     // isomorphic-git sorts entries into git's canonical tree order itself.
     return await writeTree({ fs: this.#fs, gitdir: GITDIR, tree: entries });
+  }
+
+  // The oid-level analog of #collectTreeFiles: flattens a tree to `path -> blob oid` without
+  // reading any blob. Applies the same mode restriction, so the two views can never disagree
+  // about which paths exist.
+  async #collectTreeOids(
+      treeOid: string, prefix: string, out: Map<string, string>): Promise<void> {
+    let { tree } = await readTree(
+        { fs: this.#fs, gitdir: GITDIR, oid: treeOid, cache: this.#cache });
+    for (let entry of tree) {
+      let path = prefix + entry.path;
+      if (entry.type === "tree") {
+        await this.#collectTreeOids(entry.oid, `${path}/`, out);
+      } else if (entry.type === "blob" && (entry.mode === "100644" || entry.mode === "100755")) {
+        out.set(path, entry.oid);
+      } else {
+        throw new Error(`unsupported tree entry at ${path}: mode ${entry.mode}`);
+      }
+    }
   }
 
   async #collectTreeFiles(

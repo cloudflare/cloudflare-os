@@ -412,10 +412,37 @@ export function buildCompactionState(
     }
   }
 
-  // Accepted updates are permanent, so they accumulate across checkpoints; proposed ones stay
-  // addressable by sequence until a merge accepts them or a revert drops them. A carried-forward
-  // prefix is addressed below every message in this span: the previous checkpoint already folded it,
-  // so nothing here can accept or revert part of it.
+  // Pins active at the boundary, and the epoch it lies in: seeded from the previous checkpoint
+  // and folded over the compacted span -- an epochBoundary merge resets both (the epoch reset
+  // discarded the doc those pins seeded), and a surviving "changes" message's declarations
+  // accumulate. Statuses are computed over the compacted span alone, which is sound because
+  // rollbackChatCompaction guarantees no revert in the tail reaches below the boundary.
+  let statuses = chatChangeStatuses(compacted);
+  let pins = new Map((previous?.pins ?? []).map(pin => [pin.gadgetId, pin] as const));
+  let epoch = previous?.epoch;
+  let boundaryCrossed = false;
+  for (let message of compacted) {
+    if (message.type === "merge" && message.epochBoundary) {
+      pins.clear();
+      epoch = message.sequence;
+      boundaryCrossed = true;
+      // A boundary also graduates a legacy chat: its legacy base is gone, and nothing after
+      // graduation stamps code versions. Carrying the stamp across the boundary would make the
+      // next turn's replay reactivate the retired legacy doc *under* the new epoch's
+      // commit-derived seeds (see `legacyBase` in agent.ts).
+      observedCodeVersion = undefined;
+    } else if (message.type === "changes" && statuses.get(message.sequence) !== "reverted") {
+      for (let pin of message.pins ?? []) pins.set(pin.gadgetId, pin);
+    }
+  }
+
+  // Proposed updates stay addressable by sequence until a merge accepts them or a revert drops
+  // them. A carried-forward prefix is addressed below every message in this span: the previous
+  // checkpoint already folded it, so nothing here can accept or revert part of it. Accepted
+  // updates exist to complete a *legacy* chat's doc (its base, the retired code log, never
+  // advances); an epoch boundary in the span discards the doc they would complete -- the merged
+  // content lives in commits -- so crossing one drops them, and a commit-pinned chat (whose
+  // every merge is a boundary) never carries any.
   let {proposed, accepted} = foldProposedChanges(
       compacted, previous?.proposedChanges ? [{sequence: -1, update: previous.proposedChanges}] : []);
   if (previous?.acceptedChanges) accepted.unshift(previous.acceptedChanges);
@@ -428,7 +455,10 @@ export function buildCompactionState(
     chatBindings: [...chatBindings],
     nextChangeId,
     observedCodeVersion,
-    acceptedChanges: accepted.length === 0 ? undefined : Y.mergeUpdatesV2(accepted),
+    pins: pins.size === 0 ? undefined : [...pins.values()],
+    epoch,
+    acceptedChanges: boundaryCrossed || accepted.length === 0
+        ? undefined : Y.mergeUpdatesV2(accepted),
     proposedChanges: stillProposed.length === 0 ? undefined : Y.mergeUpdatesV2(stillProposed),
   };
 }
