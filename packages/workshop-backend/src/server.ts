@@ -663,10 +663,12 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
         { props: { pendingId: pendingId.toString(), vendorId } });
     // For most providers, sign-in needs only minimal scopes to verify the user's email (the grant is
     // transient); capability scopes are requested later via an explicit connectAccount. Cloudflare is
-    // the exception: signing in with Cloudflare also links AI Gateway billing, so it requests the
-    // full (persistent) scope set up front and LoginConnectCallbackImpl persists the connection.
-    const scopes = vendorId === CLOUDFLARE_VENDOR_ID ? "full" : "auth";
-    const { url } = await vendor.connectAccount(callback, { scopes });
+    // the exception: signing in with Cloudflare also links AI Gateway billing, so it requests and
+    // persists the billing-only scope set up front.
+    const options = vendorId === CLOUDFLARE_VENDOR_ID
+      ? { scopes: "full" as const, resourceUrlPatterns: [] }
+      : { scopes: "auth" as const };
+    const { url } = await vendor.connectAccount(callback, options);
     // @ts-expect-error Cap'n Web RPC stubs and native RPC targets are compatible but the type
     //     system doesn't know this.
     return { url, attempt: new LoginAttemptImpl(pending) };
