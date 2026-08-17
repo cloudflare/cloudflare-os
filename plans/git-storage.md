@@ -579,3 +579,429 @@ with git. Worth considering as a follow-on change; not part of this plan.
 **Net**: this plan intentionally narrows Yjs's role to the point where an OT swap
 becomes a bounded, chat-local change rather than a rewrite. Decide after living with
 the git-backed model for a while.
+
+---
+
+# Part 2: Lazy per-gadget pinning
+
+Part 1 (above) is fully implemented on this branch but **not yet deployed anywhere**,
+so Part 2 may freely change anything Part 1 introduced — wire types, storage shapes,
+the seed algorithm, the migration — without compatibility shims. The only
+compatibility obligation is with the *pre-git* state: legacy chats, the legacy
+`code`/`snapshots` collections, and the migration path from them.
+
+## Problem with Part 1's eager pinning
+
+Every chat pins **all** committed gadgets' code at chat creation
+(`makeChatCodeBase()`, one pin per committed gadget, `seedCommit = mergedCommit =
+head`, plus a chat-wide seed hash). This is wrong in the common case where a thread
+never touches code:
+
+- A user chatting in thread A (e.g. filling in slide content) while code is modified
+  in thread B sees, back in thread A, the *old* code — their changes apparently
+  reverted. Worse, if thread B changed the storage schema, gadget previews in thread A
+  run old code against new storage: potential corruption.
+- The eager pin is also the most expensive part of chat creation: a full tree read of
+  every committed gadget just to hash a seed that usually never matters.
+
+## New model — locked decisions
+
+- **A gadget becomes pinned only when its code is first *modified* in the chat**,
+  independently per gadget. Unpinned gadgets always track mainline head — reads (agent
+  and UI) see current committed code, live.
+- **Pin establishment is declared by the editing client.** Every `updateCode()` call
+  carries the code-base **generation** it is rooted in (see the `updateCode` design
+  section), plus — when it is the first edit to an unpinned gadget — a pin
+  declaration naming the base commit the client's doc derives from. The server
+  validates the base is the gadget's tip **or a parent of the tip** (graceful
+  handling of racing one merge; anything older is rejected) and pins there. If a
+  conflicting pin already exists (race), the call **throws** and the client discards
+  its keystrokes — rare, loses at most a moment of typing.
+- **Agent reads of unpinned gadgets do not pin.** Each such read stamps the commit it
+  observed; if the gadget's code is not yet pinned, and it changes as a result of
+  activity in another thread (per-file check, see below), future turns **elide** that
+  read's content from the model context, replacing it with a note that the code has
+  changed and must be re-read. No diffs delivered — re-reading is simpler for the
+  model and this situation is rare.
+- **Accepting changes unpins everything and discards the chat's Y.Doc.** The chat's
+  life divides into **epochs** bounded by merge messages; each merge resets the code
+  base to empty (all content is now in commits) and subsequent edits re-pin lazily. A
+  client typing across a merge gets its post-merge `updateCode` rejected (generation
+  mismatch) and discards those keystrokes.
+- **`mergeChanges` loses `mergeThrough` *and* `includeDraft`** — it always merges all
+  proposed changes and always sweeps live drafts in. Not merely a simplification:
+  under epoch reset, an excluded remainder or an un-included draft would be rooted in
+  the discarded doc and destroyed, so partial accepts are incoherent in this model.
+- **Legacy (pre-git) chats graduate at their first merge.** The merge's commits fully
+  capture the chat's content, so the epoch reset applies to them identically; after it
+  they are ordinary new-model chats. This drains the legacy `code`/`snapshots`
+  dependency one merge at a time.
+- **Per-file staleness via blob oids, never content loads.** isomorphic-git's
+  `readTree` returns each entry's oid without touching blob content (exactly how
+  `#collectTreeFiles` already walks), so comparing two commits' file oids — with a
+  subtree-oid short-circuit — is cheap and uses only supported API. If this had
+  required hand-rolled tree parsing we would have compared commit ids instead; it
+  doesn't.
+
+## The two structural consequences (and their resolutions)
+
+### Epochs: "the base never advances" is repealed
+
+Part 1's invariant — a chat's Yjs base is immutable, so *every* non-reverted
+`"changes"` update (accepted ones included) applies forever — is load-bearing in four
+places: `buildChatDoc`, agent replay, the frontend's `computeChatDocUpdates`, and
+compaction checkpoints' `acceptedChanges`. Unpin-after-merge breaks it: updates from
+*closed* epochs are rooted in pins (and seeds) that no longer exist, yet replay still
+needs to reconstruct past epochs' docs (for `observeUserChanges` diffs, `readFile`
+recomputation, `buildChatDoc(through)`).
+
+**Resolution: pins become part of the chat log.** Each `"changes"` message records
+the pins it establishes (`pins: {gadgetId, filesRoot, baseCommit, seedHash}[]`). Doc
+reconstruction walks the log in order: an epoch-boundary merge message → discard the
+doc and start fresh; a pin declaration → derive that root's seed from
+`readCommitFiles(baseCommit)` and apply it; then apply the message's update. Commits
+are content-addressed and immutable, so reconstruction is deterministic. The log pin
+carries `seedHash` itself, so derivation drift fails loudly even for closed epochs,
+whose pins are long gone from metadata. There is deliberately **no seed-version
+field yet**: if the seed algorithm ever changes, a `seedVersion` will be added to
+pin records *then*, with absence permanently meaning version 1 — fully
+backwards-compatible by construction, since every record written until that day
+lacks the field and is version 1. (This per-pin gate is the successor of Part 1's
+per-chat seed-version note.) `AiChatMetadata.codeBase` remains as the authoritative
+*current-epoch* state (what validation and live clients key on), reconstructible from
+the log. Compaction checkpoints record the pins active at the boundary, in the same
+full shape (like they record `chatBindings`).
+
+**Seeds are always derived from the pinned commit, never taken from the client.** An
+`updateCode` payload contains only the client's own keystrokes under its own random
+clientID; the base content comes from the server's (or each client's) own derivation
+from the commit. This keeps trust clean: a client cannot misrepresent the base it
+claims to edit against, and the 3-way merge base is always genuinely the pinned tree.
+
+### Per-root seeds: the single-call constraint is repealed
+
+Part 1's `seedDocFromFiles` requires all of a chat's roots in one call (each call
+restarts the reserved clientID's clock at zero, so two seeds collide in one doc).
+Lazy pinning seeds roots **at different times** into the same doc.
+
+**Resolution: a reserved seed clientID band, excluded from live docs by
+construction.** `seedClientIdForGadget(id) = SEED_CLIENT_ID_BASE + gadgetId`, with
+gadget IDs asserted below the band's width (they are small per-workspace counters;
+the band is `[SEED_CLIENT_ID_BASE, SEED_CLIENT_ID_END)`, comfortably inside uint32).
+ClientIDs are then unique per root within a doc; each root is seeded at most once per
+epoch, and each epoch is a fresh doc, so clock-from-zero per seeding is sound.
+
+Note that Part 1's collision argument **does not carry over**: it relied on the seed
+being the *first* update a doc applies, so a doc that randomly collided with the
+reserved ID re-rolled before authoring anything. Lazy seeds are applied to docs that
+may already contain edits — if a live doc had randomly picked an ID inside the band
+and authored items under it, a later seed under that ID would overlap its clocks and
+be silently skipped as already-known: divergence, not a re-roll. So the band is kept
+out of live docs *by construction*, not probability:
+
+- Every first-party doc that authors chat updates binds its clientID through a
+  shared yjs-seed helper (`bindLiveDocClientId(doc)` or equivalent) that both
+  allocates an out-of-band ID up front **and enforces it for the doc's lifetime**:
+  Yjs re-rolls `doc.clientID` itself on detecting a concurrent collision
+  (Transaction.js:357-359, `generateNewClientId()` — unrestricted uint32), so a doc
+  can land inside the band *after* allocation. The helper hooks the doc (e.g.
+  `afterTransactionCleanup`, where Yjs's re-roll happens) and re-rolls out-of-band
+  whenever the ID is in-band, before any local authoring can occur under it.
+- "Every authoring doc" includes the **server's own**: agent session docs and the
+  `updateChatFromMainline` merge path, which authors updates into a `buildChatDoc`
+  result via `writeDocFiles` — not just browser editor docs. Seeds themselves are
+  only ever authored in throwaway docs, as in Part 1.
+- The server **rejects** any incoming update that authors under an in-band clientID —
+  `Y.parseUpdateMetaV2` exposes the update's per-client clock ranges cheaply — at both
+  ingestion points (`updateCode`, and `addChatMessages` for agent flushes). A
+  conforming client can never trip this; it exists so a nonconforming one fails
+  loudly instead of corrupting its chat.
+
+The chat-level `seedHash` is replaced by a **per-pin `seedHash`** (same fail-loud
+purpose, per seeding event; recorded on the log pin and checkpoint pins, not just
+current metadata — see above); golden-byte tests move to the per-root function.
+
+## Design deltas by area
+
+### `updateCode` — pin establishment, editor path
+
+New signature: `updateCode(update, chatId, base)` where `base` carries the chat's
+**generation** and optionally a pin declaration `{gadgetId, baseCommit}`.
+
+The generation is a validation token on `codeBase`, bumped by **every operation that
+invalidates client docs**: each merge (the epoch reset), each revert (which erases
+updates — and possibly pins — that a live doc may be rooted in), and
+`discardChatDraftChanges()` (which erases drafts and their unlogged pins the same
+way). It is deliberately
+not just the epoch: an epoch token would accept a post-revert update rooted in a
+removed pin's seed (same epoch, seed gone from the log's non-reverted set —
+unreconstructable content), and the server cannot tell which gadget an opaque Yjs
+update touches, so it cannot catch this per-gadget. Pin *additions* and
+update-from-mainline do not bump: existing docs stay valid under both (Yjs parks
+updates that arrive ahead of a seed and integrates them when it lands). Note the
+generation also converts a pre-existing silent-loss race — typing over just-reverted
+content leaves Yjs structs parked forever, in Part 1 and pre-git alike — into an
+explicit, client-visible discard.
+
+Server, in one synchronous step with recording the draft (atomic under the output
+gate):
+
+- Generation mismatch → throw. The client discards queued keystrokes and rebuilds
+  from fresh metadata (the merge- or revert-race case).
+- Pin declared, gadget unpinned → validate `baseCommit` is the gadget's tip or a
+  parent of the tip (one `readCommit`; note the validation git read happens *before*
+  the synchronous record step), then write the pin (with derived `seedHash`) into
+  `codeBase`.
+- Pin declared but a different pin exists → throw (client discards keystrokes).
+- Update authors under a reserved-band clientID → throw (see the seed-band
+  enforcement above).
+- Draft materialization (`materializeChatDraft`) stamps any meta-pins not yet
+  declared in the log onto the `"changes"` message it writes, closing the meta/log
+  loop.
+
+This answers Part 1's stated objection to laziness ("clients need the pins before
+they can build the doc" / "an extra establish-now RPC"): establishment rides
+`updateCode` itself, and the client derives the seed locally and optimistically.
+
+### Agent path — pin on first write, read live, elide stale reads
+
+- **Reads** (`readFile`): pinned root → session doc, unstamped (never stale within
+  the epoch), as today. Unpinned → `readCommitFiles(head)` via a hook, stamping a new
+  `AiToolCall.observedCommit` (40-hex) on the call; track the per-gadget observed
+  head in-turn. The system-prompt file list follows the same split. Amend the tool
+  description's promise that the agent "will be informed any time a file changes"
+  (agent.ts:633) — for unpinned gadgets the mechanism is now elision + re-read.
+- **Replay of stamped reads**: prefetch, per turn, the per-file oid diff
+  (`changedPaths`) between each distinct `observedCommit` and the gadget's current
+  base — head if still unpinned, `pin.seedCommit` if since pinned. File changed →
+  elide, substituting a note modeled on the existing reverted-read elision
+  (agent.ts:1650-1662; fix the "reuslts" typo while there), and do **not** add the
+  file to `filesRead`, so `editFile`'s read-before-edit gate forces the re-read. File
+  unchanged → recompute content from `readCommitFiles(observedCommit)`. Reads already
+  swallowed by a compaction summary are unrecoverable by this mechanism — accepted,
+  same as reverts today; `filesRead` already resets at boundaries.
+- **Writes** (`writeFile`/`editFile`) on an unpinned gadget establish the pin at the
+  **current head — always, regardless of past reads**. A read that observed an older
+  head is (or will be) elided, and a previously-elided read must not spring back to
+  life as the anchor of a later write; the pin therefore never derives from an
+  observed commit. Correspondingly, `editFile`'s read-before-edit gate tightens: the
+  prior read must have observed the file's *current* content — per-file oid check of
+  the read's `observedCommit` against head — so a read of an older version, elided or
+  not, does not satisfy it, and the tool errors telling the agent to re-read. Yes,
+  a merge landing in another thread between a read and an edit fails the edit
+  immediately after a successful read; that's correct — the error directs the agent
+  to re-read and try again. (`writeFile` requires no prior read and simply pins at
+  head; a whole-file overwrite is coherent against any base.) Note this also means
+  an edit's content is always consistent with its pin: the gate guarantees the file
+  the agent read is byte-identical at the pinned head, even if the read's
+  `observedCommit` is an older oid. Mechanics: the hook establishes the pin, applies
+  the derived seed to the session doc as a remote update under a **non-capture
+  transaction origin** (so seed items never ride the flushed update — clients derive
+  the same seed from the logged pin), then applies the edit. Newly established pins
+  accumulate in-turn and ride the next `flushCapturedYdocChanges` message's `pins`;
+  `addChatMessages` re-validates and mirrors them into `codeBase` in its existing
+  synchronous step (same pattern as pending-gadget sequence stamping).
+
+### Accept (`mergeChanges`) — always everything, then reset
+
+- Signature: `mergeChanges(chatId)`. Always materializes drafts first; merges all
+  proposed changes.
+- The per-touched-gadget fast-forward gate is unchanged in spirit
+  (`pin.mergedCommit == head`; chat-created gadgets: both absent). Pinned-but-
+  untouched gadgets don't gate — their pin simply evaporates in the reset.
+- The "cannot accept around a mainlineMerge batch" throw dies with `mergeThrough`.
+- After commits land and heads fast-forward: `codeBase = {gadgets: [], generation:
+  generation + 1, epoch: mergeSeq}` — dropping the `legacy` flag if present
+  (**legacy graduation**) — delete residual drafts, and write the merge message with
+  `epochBoundary: true` and a
+  server-computed `mergeThrough` (last covered sequence, still feeding
+  `chatChangeStatuses`). `epochBoundary` distinguishes new-model merges from
+  pre-git historical merges (whose backfilled `commits` field alone cannot), so
+  replay knows exactly which merges reset the doc.
+
+### `updateChatFromMainline` — pinned-and-behind only
+
+The stale set becomes *pinned gadgets whose `mergedCommit` ≠ head*. Part 1's behavior
+of pulling never-touched committed gadgets into the chat (absent pin + committed head
+⇒ stale) is deleted — under lazy pins, unpinned means "tracks head live", which is
+the point. Advancing `mergedCommit` on merged-in pins is unchanged, as is the
+restriction that a still-proposed mainlineMerge batch cannot be reverted.
+
+### Revert — rolls back pins, discards drafts, bumps the generation
+
+- Reverting messages that *declared* pins removes those pins from `codeBase`: unlike
+  `mergedCommit` advancement (whose prior value is unrecorded, hence the
+  mainlineMerge restriction), a declared pin's prior state is trivially "unpinned".
+  A pin survives a revert iff its declaring message survives — and a meta-pin with
+  *no* logged declaration (established by `updateCode` but whose drafts never
+  materialized) is removed too, since the drafts that motivated it die with the
+  revert (next bullet). The existing `discardChatDraftChanges()` (api.ts:1975) is a
+  second draft-discarding path and gets the same treatment: drop unlogged pins,
+  bump the generation.
+- Revert **discards all outstanding drafts** (`chatDraftUpdates`). Drafts are
+  provisional keystrokes strictly newer than every materialized message, so they fall
+  inside the reverted range by definition; and a draft recorded after a
+  pin-declaring message may be rooted in that pin's seed, which the revert just made
+  unreconstructable — materializing such a draft would strand its content as
+  permanently parked Yjs structs. Discarding is the only coherent option (refusing
+  the revert while drafts exist would block reverts unpredictably, since drafts can
+  linger until the next materialization trigger).
+- Revert **bumps `codeBase.generation`** (see `updateCode` above), so live editors —
+  whose docs still contain the reverted updates and possibly removed seeds — discard
+  local state and rebuild instead of submitting updates rooted in erased history.
+
+### Wire/API deltas (`workshop-shared/src/api.ts`)
+
+- `ChatCodeBase` → `{gadgets: ChatGadgetPin[], generation: number, epoch?: number,
+  legacy?: true}`. `generation` is the `updateCode` validation token (bumped by
+  merge, revert, and draft discard); `epoch` (the sequence of the merge message that
+  opened the current epoch, absent = since chat start) keys reconstruction.
+  Chat-level `seedHash` deleted; `legacy: true` (written by the migration) replaces
+  `seedHash === undefined` as the pre-git discriminator; new chats have **no**
+  `codeBase` until their first pin, and **an absent `codeBase` is defined as
+  `{gadgets: [], generation: 0}`** — both sides use that reading, so a new chat's
+  first `updateCode` passes `generation: 0` and validates against the absent record
+  (doc-comment this on `ChatCodeBase` itself; every bump-site therefore materializes
+  the record if absent).
+- `ChatGadgetPin`: `seedCommit` + per-pin `seedHash` required on new-model pins;
+  legacy pins remain `mergedCommit`-only under the chat-level `legacy` flag. (No
+  seed-version field — deferred until a second algorithm exists, see the epochs
+  section.)
+- `updateCode(update, chatId, base: {generation, pin?})` as above.
+- `mergeChanges(chatId)`; `MergeChangesResult` unchanged (`merged | stale`).
+- `"changes"` message: `pins?: {gadgetId, filesRoot, baseCommit, seedHash}[]` — the
+  log pin carries the fail-loud contract itself, since closed epochs are
+  reconstructed from these alone.
+- `"merge"` message: `epochBoundary?: true` (present on every newly written merge).
+- `readFile` `AiToolCall` variant: `observedCommit?: string`.
+- `getLegacyChatDocBase` re-documented against the `legacy` flag.
+- Kernel review bar as in Part 1: doc-comment every touched export, no mirrors,
+  minimal diffs.
+
+### Migration delta
+
+`git-migration.ts` writes `codeBase: {legacy: true, generation: 0, gadgets:
+<mergedCommit-only pins>}` for live legacy chats (shape change only; pin values
+unchanged). Everything else stands: legacy chats behave exactly as in Part 1 until
+their first merge, which graduates them.
+
+### Frontend
+
+- `GadgetCodeInterface`: chat doc = per-pin derived seeds (via the existing
+  oid-cached `getCodeAtCommit`) + current-epoch changes + drafts; keyed by
+  (generation, pin set) instead of `seedHash`; legacy path keyed on `legacy`.
+- Unpinned gadget in a chat: the existing read-only head view, plus the
+  **first-keystroke transition** — derive the pin seed locally, swap in an editable
+  doc, send `updateCode` with the pin declaration; on throw, discard local edits,
+  toast, drop back to the head view.
+- Generation mismatch on `updateCode` (a merge, revert, or draft discard raced a
+  typist): discard queued updates, surface "your last edits were discarded — the
+  chat's changes were merged (or reverted) concurrently", rebuild from fresh
+  metadata. Local doc construction keys on the generation (rebuild whenever it
+  moves).
+- Editable docs allocate their clientID via the shared out-of-band helper (see the
+  reserved seed band above).
+- Accept banner: no `mergeThrough` computation; the stale-outcome →
+  update-from-mainline dialog is unchanged.
+- Ordering subtlety to test: a peer can receive a `draftUpdate` referencing seed
+  items before it has applied the new pin's seed (metadata delivery race). Yjs parks
+  the update as pending structs and integrates it when the seed arrives — verify
+  with a test rather than assuming.
+
+## Known edge cases / watch-fors
+
+- **Crash between meta-pin and log-pin** (editor path): the pin lands in `codeBase`
+  atomically with the draft record; the log declaration lands at materialization.
+  Two paths discard drafts unmaterialized — revert and the existing
+  `discardChatDraftChanges()` — and both must drop the drafts' unlogged pins and
+  bump the generation (see the revert section); any new draft-discarding path must
+  do the same, or `codeBase` and the log disagree and queued client updates can
+  still reference a removed seed.
+- **Mid-turn head movement** (agent path): the pin is established at the head
+  current at edit time but made durable at flush, and head can move in between;
+  `addChatMessages`'s synchronous re-validation (pin base == head) is the backstop,
+  and a failure there fails the flush (rare, surfaces as a turn error).
+- **Compaction checkpoints**: record active pins (full log-pin shape, including
+  `seedHash`) + epoch at the boundary; replay applies checkpoint pins'
+  seeds before its update blobs. `acceptedChanges` becomes
+  legacy-only (new-model chats never carry accepted updates across a boundary — the
+  epoch reset already dropped them).
+- **Blueprint-from-chat and preview loads** use `buildChatDoc`; they inherit
+  epoch-aware reconstruction. Unpinned gadgets in a chat context read head — verify
+  preview cache keys account for head movement now that a chat preview can track
+  mainline.
+- **GC roots** (still no GC): `observedCommit` stamps reference commits nothing else
+  roots. Future GC must either root them or the elision path must tolerate a missing
+  commit by eliding unconditionally. Record this in the GC-roots enumeration note.
+- **`hasProposedChanges` / proposed-changes views**: post-merge these are empty by
+  construction; verify the fold rules (`foldProposedChanges`, `chatChangeStatuses`,
+  frontend `computeMessageStates`) all scope to the current epoch.
+
+## Deferred / follow-ups
+
+- **"Someone else is typing" merge guard**: `chatDraftUpdates` records carry author +
+  timestamp, so `mergeChanges` could refuse — as a distinct, retryable outcome — when
+  a draft from a different author landed within the last ~10s. Not airtight
+  (in-flight keystrokes are invisible); the generation-mismatch throw is the
+  correctness backstop. Ship the throw first; add the heuristic as a follow-up.
+- **Large repos / partial materialization**: decided **not** to build per-file
+  seeding now. Lazy pinning already keeps unpinned gadgets out of the doc entirely
+  (gadget-granularity laziness); within a pinned root, the whole tree still seeds.
+  The epoch/pins-in-log architecture would carry over to per-file pin declarations
+  (`{gadgetId, baseCommit, files}` gated on a seed-version field), but incremental
+  per-file seeding has a real concurrency wrinkle (deterministic clock continuation
+  vs. concurrent optimistic seeders). When large repos arrive, prefer the **OT swap**
+  (see "Future consideration" above): an OT op references its base by revision +
+  path, so base content never enters the history and the entire seeding apparatus —
+  deterministic clientIDs, per-pin hashes, golden-byte tests — is deleted rather than
+  extended. Large-repo support is the concrete trigger that OT section was waiting
+  for.
+
+## Commit sequence (Part 2)
+
+Two commits: **kernel**, then **frontend** — the split AGENTS.md asks for
+(`workshop-backend`/`workshop-shared` reviewable apart from UI). There is no
+API-first commit this time: Part 2's wire delta is signature tweaks and new fields,
+readable alongside its implementation, and a separate API commit would exist only to
+carry keep-compiling stubs the next commit deletes.
+
+**The frontend is expected to be broken (not even compiling) after commit 1** — do
+not spend any effort keeping it building or limping along, since commit 2 rewrites
+the affected paths anyway; transitional frontend shims are pure waste. Verify commit
+1 by filtering to the non-frontend packages, e.g. `pnpm --filter
+'!@gadgets/workshop-frontend' build` (and the workshop-backend test suite via `pnpm
+--filter @gadgets/workshop-backend test:run`); `pnpm lint` may likewise need the
+frontend excluded at that point. The full `pnpm build` / `pnpm test` / `pnpm lint`
+gate applies after commit 2.
+
+1. **Kernel** (workshop-shared + workshop-backend, including migration):
+   - yjs-seed: replace `seedDocFromFiles` with
+     `seedRootFromFiles(rootName, files, clientId)` + `seedClientIdForGadget`
+     (reserved band, bounds-asserted) + `bindLiveDocClientId` (out-of-band allocation
+     **and lifetime enforcement** against Yjs's own collision re-roll); rewrite the
+     module contract (one seed per root per doc-epoch, unique clientID per root,
+     live docs never author in-band).
+   - workshop-shared API: all wire deltas listed above (including `generation` and
+     the full log-pin shape), fully doc-commented.
+   - Backend: `commitFileOids`/`changedPaths` in git-store; delete
+     `makeChatCodeBase` + both call sites; epoch-aware doc reconstruction (shared
+     fold rule); `updateCode` validation (generation, pin, in-band-author rejection)
+     + pin establishment; `addChatMessages` pin mirroring + in-band-author
+     rejection; `mergeChanges` rewrite (reset + generation bump + graduation +
+     `epochBoundary`); `updateChatFromMainline` narrowing (with
+     `bindLiveDocClientId` on its merge doc); revert + `discardChatDraftChanges`
+     rework (pin rollback, draft discard, generation bump — both paths); agent
+     read/elide/pin paths (session docs bound out-of-band); checkpoint pins (full
+     shape).
+   - Migration: `legacy: true` codeBase shape (with `generation`) + test updates.
+   - Tests: golden bytes (per-root goldens, a two-pins-one-doc composition test,
+     band allocation, a forced-reroll-lands-in-band re-enforcement test), pin
+     lifecycle (establish/race/revert-rollback), generation races (merge-, revert-,
+     and draft-discard-vs-typist), draft discard on revert and on
+     `discardChatDraftChanges`, epoch replay across merges (including seed-hash
+     verification of a closed epoch's pins), elision matrix
+     (changed/unchanged/per-file/pinned-since), legacy graduation, tip-or-parent
+     validation, in-band clientID rejection.
+2. **Frontend**: doc layering by (generation, pins), `bindLiveDocClientId` on every
+   editable doc, first-keystroke pin flow, generation-mismatch discard UX, merge
+   simplification, pending-structs ordering test.
