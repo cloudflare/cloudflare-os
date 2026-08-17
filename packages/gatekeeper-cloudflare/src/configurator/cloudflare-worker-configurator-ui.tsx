@@ -25,8 +25,11 @@ export default {
           placeholder="Choose an account"
           loadOptions={query => ui.listAccounts(query)}
           onChange={accountId => {
+            // Both halves are required: `clearFields` only drops the Worker autocomplete's typed
+            // query, so without the explicit null the previous account's Worker stays selected and
+            // `resourceUrl` happily pairs it with the new account.
             clearFields("workerName");
-            setValues({ accountId });
+            setValues({ accountId, workerName: null });
           }}
         />
       </Field>
