@@ -452,6 +452,10 @@ describe("CloudflareObservabilityApi", () => {
 
     expect(page.events).toHaveLength(1);
     expect(page.count).toBeUndefined();
+    // The cursor comes from the provider's own last event even though we dropped it: deriving it
+    // from the survivors would end pagination early whenever a page's tail was foreign, hiding the
+    // caller's own older events. An event id is an opaque position, not log content.
+    expect(page.nextCursor).toBe("foreign");
     // Kept deliberately: it describes what our query cost, not how much telemetry matched it.
     expect(page.statistics.rowsRead).toBe(9000);
   });
@@ -744,6 +748,79 @@ describe("CloudflareObservabilityApi", () => {
     expect(bodies[2]).toMatchObject({ chart: true, ignoreSeries: false, granularity: 20 });
     expect(aggregateOnly.statistics.abrLevel).toBe(2);
     expect(aggregateOnly.calculations[0].aggregates[0]).toMatchObject({ interval: 2, sampleInterval: 4 });
+  });
+
+  it("constrains a Worker-scoped calculation to that Worker", async () => {
+    // An aggregate is the one read with no second line of defence: `#scopeEvents` can re-check
+    // events after the fact, but a median or a `uniq` computed across services cannot be un-mixed.
+    // So the injected `$metadata.service` filter is the *only* thing keeping a Worker binding's
+    // aggregate from summarizing the whole account, and it is asserted here for that reason.
+    let requestBody: { parameters: { filters: unknown[] } } | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return Response.json({
+        success: true,
+        result: {
+          statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 10 },
+          calculations: [{
+            calculation: "count",
+            aggregates: [{ value: 10, count: 5, interval: 2, sampleInterval: 4 }],
+            series: [],
+          }],
+        },
+      });
+    }));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
+
+    await api.calculate({
+      calculations: [{ operator: "count" }],
+      filter: {
+        kind: "filter", key: "$metadata.level", operation: "eq", type: "string", value: "error",
+      },
+    });
+
+    // The Worker condition leads, and the caller's own filter cannot displace or reorder it.
+    expect(requestBody?.parameters.filters).toEqual([
+      expect.objectContaining({ key: "$metadata.service", operation: "eq", value: "api-worker" }),
+      expect.objectContaining({ key: "$metadata.level", value: "error" }),
+    ]);
+  });
+
+  it("keeps the Worker condition when a calculation groups by service", async () => {
+    // A caller that groups by `$metadata.service` must not thereby widen the query: the injected
+    // condition still has to be present, so the only group that can come back is this Worker's.
+    let requestBody: { parameters: { filters: unknown[]; groupBys?: unknown } } | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return Response.json({
+        success: true,
+        result: {
+          statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 10 },
+          calculations: [{
+            calculation: "count",
+            aggregates: [{
+              value: 10, count: 5, interval: 2, sampleInterval: 4,
+              groups: [{ key: "$metadata.service", value: "api-worker" }],
+            }],
+            series: [],
+          }],
+        },
+      });
+    }));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
+
+    await api.calculate({
+      calculations: [{ operator: "count" }],
+      groupBys: [{ value: "$metadata.service", type: "string" }],
+    });
+
+    expect(requestBody?.parameters.filters).toEqual([
+      expect.objectContaining({ key: "$metadata.service", operation: "eq", value: "api-worker" }),
+    ]);
+    // The group-by really was sent, so the filter above is what keeps the result to one service
+    // rather than the group-by having been quietly dropped.
+    expect(requestBody?.parameters.groupBys)
+      .toEqual([{ value: "$metadata.service", type: "string" }]);
   });
 
   it("rejects a calculation response missing the arrays its type guarantees", async () => {
