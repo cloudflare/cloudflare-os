@@ -503,6 +503,11 @@ export interface CloudflareObservabilitySession {
    * Calculate aggregate metrics and optional grouped time series over matching telemetry. Discover
    * field names and types first; use aliases when ordering grouped results or requesting multiple
    * calculations.
+   *
+   * On a Worker binding this is scoped by the same immutable `$metadata.service` condition as every
+   * other read, but unlike events the result cannot be re-checked afterwards -- an aggregate
+   * computed across services could not be un-mixed. Treat a surprisingly large aggregate as a
+   * question to raise with the user rather than a fact about the bound Worker.
    */
   calculate(query: CloudflareObservabilityCalculationQuery):
     Promise<CloudflareObservabilityCalculationResult>;
