@@ -332,9 +332,18 @@ against Yjs:
 
 ### 4. Migration (Overseer constructor, `version` singleton)
 
-- Runs in the Overseer DO constructor, triggered by bumping the `version` singleton,
-  like previous storage migrations. Idempotent in structure (content-addressed object
-  writes are naturally re-runnable; record updates happen after object writes).
+- Runs in the Overseer DO constructor, triggered by bumping the `version` singleton
+  (1 -> 2; new workspaces are born at 2), like previous storage migrations — but unlike
+  them it awaits (git object writes, the owner-identity fetch), so it runs under
+  `ctx.blockConcurrencyWhile`, with agent-turn resumption chained after it via `.then()`
+  (resuming earlier would let turns interleave with the migration's rewrites of the very
+  chat state they read; running it *inside* the callback would make the resumed turns'
+  work inherit the critical section — the microtask continuation still beats any blocked
+  event's delivery). A failure aborts the DO; the next wake retries. Idempotent in
+  structure (content-addressed object writes are naturally re-runnable; record updates
+  happen after object writes, and the version stamp is written last). Implemented as
+  `migrateCodeLogToGit()` in `git-migration.ts`, expressed against the storage schema and
+  small callbacks so tests drive it over synthetic logs on mock storage.
 - Per gadget root, replay the `code` update log (using existing `replayUpdates`
   snapshot support) and synthesize a commit chain:
   - Materialize a commit at **every code version recorded by a `merge` message** in
@@ -344,11 +353,19 @@ against Yjs:
   - **Plus** any version where the gap to the *next* `CodeUpdate` timestamp is ≥ 1
     hour (batching keystroke bursts from old standalone editing, which bypassed
     merges), **plus** the final version, **plus** every persisted pinned version
-    (next bullet).
+    (next bullet). Pinned versions are first resolved to the last code-log version at
+    or below them, so the pinned state is exactly some commit's tree: legacy versions
+    came from the shared change counter, which non-code changes (binding edits,
+    creation-only merges) also consumed, so a persisted version need not have a code
+    entry of its own. (A merge-message `version` becomes a commit point only when it
+    *is* a code entry; a counter-only merge version correctly backfills to
+    `commits: []`.)
   - Skip versions where the gadget's flattened files are unchanged from its previous
     synthesized commit (most updates touch one gadget; others' chains stay short).
-  - Commit timestamps from `CodeUpdate.timestamp`; author = workspace owner identity;
-    generated message (e.g. `"history import"` with the version range).
+  - Commit timestamps from `CodeUpdate.timestamp`; author = workspace owner identity
+    (fetched via `whoamiIfExists()`, degrading to a placeholder rather than blocking
+    the migration on an unreachable or deleted owner account); generated message
+    (`"Import pre-git history (code versions X-Y)"`).
 - **Backfill `commits` on historical `merge` messages**: rewrite each stored merge
   message, setting `commits` to the synthesized commits at its recorded `version`
   (the gadgets whose files changed there; empty when the merge changed no code).
@@ -393,6 +410,18 @@ against Yjs:
   flattened content. Old readers built at "current" and never saw this; the anchored
   `buildChatDoc` can. Verify the migration's pin choice (or an explicit fix) keeps
   such a chat's accept from dropping those edits.
+  - **Resolution (the explicit fix)**: the anchor rule became "maximum referenced
+    version" rather than "first stamp" — the shared `legacyChatBaseVersion()` in
+    agent-compaction.ts takes the max over the active checkpoint's stamp, tool-call and
+    changes-message `observedCodeVersion`s, and merge messages' `version`s. A Yjs
+    update applies cleanly to any doc state including the one it was built against, so
+    the max is the smallest base that can represent every recorded update. Merge
+    versions are included so a chat whose own accept was the last mainline movement
+    pins at the tip it created (no spurious update-from-mainline round). The overseer's
+    chat-doc construction and the migration's pin choice both use this one rule. (The
+    agent's own replay latch is unchanged: its session doc may still anchor lower, a
+    pre-existing quirk, but accept commits the buildChatDoc flatten, which now loses
+    nothing.)
 
 ### 5. Protocol changes (`workshop-shared/src/api.ts`)
 

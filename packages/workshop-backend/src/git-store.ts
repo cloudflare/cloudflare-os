@@ -349,6 +349,16 @@ function buildTreeNode(files: ReadonlyMap<string, string>): TreeNode {
   return root;
 }
 
+/** Compares two flattened file maps for identical content. */
+export function filesEqual(
+    a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>): boolean {
+  if (a.size !== b.size) return false;
+  for (let [name, content] of a) {
+    if (b.get(name) !== content) return false;
+  }
+  return true;
+}
+
 // =======================================================================================
 // Three-way merge
 

@@ -154,6 +154,46 @@ export function chatChangeStatuses(
 }
 
 /**
+ * The code-log version a legacy (pre-git-storage) chat's Yjs doc base is anchored to: the
+ * maximum over every version the chat's history references -- the active compaction checkpoint's
+ * stamp, `observedCodeVersion` on tool calls and "changes" messages, and legacy merge messages'
+ * `version`. A chat that references no version reads the legacy log's tip ("current"), which is
+ * stable now that the log is read-only.
+ *
+ * The *maximum* matters, not the first stamp (the agent's own version-lock latch): a Yjs update
+ * applies cleanly to any doc state that includes the state it was built against, and every update
+ * in the log was built against the doc at *some* referenced version, so the max is the smallest
+ * base that can represent them all. Anchoring lower silently loses content: a user draft
+ * materialized while mainline was ahead of the agent's latch (its stamp is the then-current
+ * version) can reference Yjs items the lower-anchored doc lacks, which Yjs then parks as pending
+ * structs -- the edits just vanish from the flattened files. Merge versions are included so a
+ * chat whose own accept was the last mainline movement anchors at the tip it created, keeping
+ * the migration's pins (see git-migration.ts) fast-forwardable without a spurious
+ * update-from-mainline round.
+ *
+ * Shared by the overseer's chat-doc construction (buildChatDoc / getLegacyChatDocBase) and the
+ * git-storage migration's pin choice, which must agree on the chat's base.
+ */
+export function legacyChatBaseVersion(
+    checkpoint: CompactionCheckpoint | undefined,
+    messages: Iterable<AiChatMessage>): number | "current" {
+  let anchor = checkpoint?.observedCodeVersion;
+  let bump = (version: number | undefined) => {
+    if (version !== undefined && (anchor === undefined || version > anchor)) anchor = version;
+  };
+  for (let msg of messages) {
+    if (msg.type === "message") {
+      for (let call of msg.toolCalls ?? []) bump(call.observedCodeVersion);
+    } else if (msg.type === "changes") {
+      bump(msg.observedCodeVersion);
+    } else if (msg.type === "merge") {
+      bump(msg.version);
+    }
+  }
+  return anchor ?? "current";
+}
+
+/**
  * Earliest turn a checkpoint cannot absorb, or undefined if none. A pending connection request
  * carries live accept/deny state that only its own message can answer, so the boundary stays behind
  * it. Provisional gadget creations and binding additions need no such protection: the checkpoint

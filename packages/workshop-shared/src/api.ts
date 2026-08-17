@@ -2181,9 +2181,10 @@ export type AiChatMetadata = {
    * The chat's code-branch state: which commits seeded its code doc and how far mainline has
    * been merged in. Pinned at chat creation for chats created since git-backed code storage
    * (heads that advance later reach the chat only through updateChatFromMainline(), the ordinary
-   * stale-chat path); absent on chats predating it until the migration rewrites them. Delivered
-   * (and re-delivered on change, e.g. when updateChatFromMainline() advances a pin) via
-   * AiChatSubscriber.metadata().
+   * stale-chat path). Chats predating it were given pins by the git-storage migration --
+   * mergedCommit only, with no seedHash, since their Yjs base remains the legacy code log (see
+   * getLegacyChatDocBase()). Delivered (and re-delivered on change, e.g. when
+   * updateChatFromMainline() advances a pin) via AiChatSubscriber.metadata().
    */
   codeBase?: ChatCodeBase;
 };

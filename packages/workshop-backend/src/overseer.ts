@@ -1,14 +1,15 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ChatCodeBase, ChatGadgetPin, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ChatCodeBase, ChatGadgetPin, CommitIdentity, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
 } from "cloudflare:workers";
 import { createTypedStorage, collection, keyString } from "@gadgets/typed-storage";
-import { GitStore, commitIdentityForAuthor, gitObjectsCollection, threeWayMerge }
+import { GitStore, commitIdentityForAuthor, filesEqual, gitObjectsCollection, threeWayMerge }
   from "./git-store";
+import { migrateCodeLogToGit } from "./git-migration";
 import { seedDocFromFiles, seedUpdateHash } from "@gadgets/workshop-shared/yjs-seed";
 import { readDocFiles, writeDocFiles } from "./yjs-files";
 import * as Y from "yjs";
@@ -26,8 +27,8 @@ import {
 } from "./ai-gateway";
 import { AgentGadgetInfo, AgentHooks, AiChatAgentContext, ChatBindingEntry, SeedBindingInfo, runAgent, makeStorableArgs, summarizeArgs, type AiChatMessageBodyWithModelData, type CompactionCheckpoint, type StoredAssistantMessage } from "./agent";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
-import { chatChangeStatuses, foldProposedChanges, isCompactionTurn, type ChangeBatch }
-  from "./agent-compaction";
+import { chatChangeStatuses, foldProposedChanges, isCompactionTurn, legacyChatBaseVersion,
+  type ChangeBatch } from "./agent-compaction";
 import { ambientGatekeeperMode } from "./provisioning-policy";
 import { listFeaturedBlueprintsFromKv, readBlueprintContent, readBlueprintKvRecord, sanitizeBlueprintOutput } from "./blueprint-archive";
 import { WebFetchEnv } from "./web-fetch";
@@ -801,7 +802,12 @@ type CodeUpdate = {
   update: Uint8Array;
 };
 
-function makeOverseerStorage(storage: DurableObjectStorage) {
+/**
+ * The Overseer's storage schema. Exported for the git-migration tests, which drive
+ * migrateCodeLogToGit() over synthetic legacy workspaces built on mock storage with the real
+ * schema.
+ */
+export function makeOverseerStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     singletons: {
       // Initialized on first startup.
@@ -820,6 +826,11 @@ function makeOverseerStorage(storage: DurableObjectStorage) {
       //       binding-map seeds are derived), and agent-spawner configs hold the new
       //       `env: Record<name, WorkpieceId>` form (old `env?: string[]` allowlists rewritten,
       //       in both the creationSpec and the class stub's baked-in props).
+      //   2 = git-backed code: mainline code lives in `gitObjects` as commits synthesized from
+      //       the legacy `code` log (see git-migration.ts); gadget records carry a `commitId`,
+      //       blueprint records reference commits, historical merge messages carry `commits`,
+      //       and legacy chats' metadata pins mergedCommit per gadget. The `code`/`snapshots`
+      //       collections are read-only from this version on.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1077,7 +1088,8 @@ function makeOverseerStorage(storage: DurableObjectStorage) {
   });
 }
 
-type OverseerStorage = ReturnType<typeof makeOverseerStorage>;
+/** The Overseer's typed storage. See makeOverseerStorage. */
+export type OverseerStorage = ReturnType<typeof makeOverseerStorage>;
 
 // Validates a client-supplied commit oid before it reaches the git store.
 function validateOid(oid: string): string {
@@ -1085,15 +1097,6 @@ function validateOid(oid: string): string {
     throw new Error("Invalid commit id.");
   }
   return oid;
-}
-
-// Compares two flattened file maps for identical content.
-function filesEqual(a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>): boolean {
-  if (a.size !== b.size) return false;
-  for (let [name, content] of a) {
-    if (b.get(name) !== content) return false;
-  }
-  return true;
 }
 
 // Common internals that several interfaces implemented by the Overseer need to use. Can't just
@@ -1472,7 +1475,8 @@ class OverseerImpl implements AgentHooks {
     // Run any pending storage migration before anything else can touch storage. This must happen
     // in the constructor (not just open()) because the DO also wakes via constructor-driven
     // agent-turn restoration below, hook deliveries, and [restore]()-based persistent callbacks.
-    // The migration is fully synchronous, so nothing can observe pre-migration state.
+    // This migration is fully synchronous, so nothing can observe pre-migration state; the
+    // git-storage migration below is the asynchronous one, shielded by blockConcurrencyWhile.
     this.#migrateStorage();
     this.defaultGadgetId = this.storage.defaultGadgetId.get();
 
@@ -1491,15 +1495,36 @@ class OverseerImpl implements AgentHooks {
       remove: () => this.markOutputsDirty(),
     });
 
-    // Resume any agent turns that were left running by a previous instance of this DO (i.e. were
-    // interrupted by a server restart).
-    for (let record of Array.from(this.storage.activeAgents.list())) {
-      // Make sure to register the running agent synchronously so that if we were called at the
-      // start of the alarm handler, it'll recognize that agents are running and wait for them.
-      this.#registerRunningAgent(record.chatId);
+    if (this.storage.version.get() === 1) {
+      // The workspace predates git-backed code storage (version 2, see the `version` singleton):
+      // synthesize commits from the legacy code log before anything else runs. This migration
+      // awaits (git object writes, the owner-identity fetch), which a constructor cannot, so it
+      // runs under blockConcurrencyWhile: no event -- including the alarm handler -- is
+      // delivered until it completes, and a failure aborts the DO so the next wake retries.
+      // Agent resumption waits for it (resuming earlier would let turns interleave with the
+      // migration's rewrites of the very chat state they read) but runs *after* the critical
+      // section ends, via .then() rather than inside the callback, so the resumed turns' work
+      // doesn't inherit it. The continuation is a microtask, so it still runs before any
+      // blocked event (including the alarm handler) is delivered. On failure there is nothing
+      // to do -- blockConcurrencyWhile has already aborted the DO -- but the rejection must be
+      // consumed so it doesn't also surface as an unhandled rejection.
+      this.ctx.blockConcurrencyWhile(() => this.#migrateToGitStorage())
+          .then(() => this.#resumeInterruptedAgents(), () => {});
+    } else {
+      this.#resumeInterruptedAgents();
+    }
+  }
 
-      // Also create the LiveChatContext synchronously, so that cancellations are immediately
-      // respected.
+  // Resume any agent turns that were left running by a previous instance of this DO (i.e. were
+  // interrupted by a server restart). Called synchronously from the constructor (or, when a
+  // storage migration must run first, as soon as its blockConcurrencyWhile completes -- before
+  // any blocked event is delivered) so that if we were called at the start of the alarm handler,
+  // it'll recognize that agents are running and wait for them.
+  #resumeInterruptedAgents(): void {
+    for (let record of Array.from(this.storage.activeAgents.list())) {
+      // Register the running agent immediately (see above), and create the LiveChatContext
+      // synchronously, so that cancellations are immediately respected.
+      this.#registerRunningAgent(record.chatId);
       let liveChat = this.#getLiveChat(record.chatId);
 
       this.#resumeAgent(record, liveChat);
@@ -1522,6 +1547,45 @@ class OverseerImpl implements AgentHooks {
         this.#deliverWaitingExternalMessageResponse(thread.id);
       }
     }
+  }
+
+  // Runs the git-storage migration (see git-migration.ts) and stamps schema version 2. The
+  // version stamp is written last: storage writes persist in order, so a crash mid-migration
+  // leaves the version at 1 and the next construction redoes the whole (re-runnable) migration.
+  async #migrateToGitStorage(): Promise<void> {
+    let startedAt = Date.now();
+    let { commits } = await migrateCodeLogToGit({
+      storage: this.storage,
+      gitStore: this.gitStore,
+      ownerIdentity: await this.#ownerCommitIdentity(),
+      defaultGadgetId: this.defaultGadgetId,
+      gadgetRootName: (id) => this.gadgetRootName(id),
+      getActiveChatCompaction: (chatId) => this.getActiveChatCompaction(chatId),
+    });
+    this.storage.version.put(2);
+    this.logger.info("migrated workspace code to git storage", {
+      event: "storage.migration.git.completed",
+      durationMs: Date.now() - startedAt, commitCount: commits,
+    });
+  }
+
+  // The workspace owner's commit identity, for commits synthesized by the git-storage migration.
+  // Degrades to a placeholder rather than failing: identity on synthesized history is cosmetic,
+  // and blocking the migration on the owner's User DO would leave the workspace unusable for as
+  // long as that DO is unreachable (or its account gone).
+  async #ownerCommitIdentity(): Promise<CommitIdentity> {
+    try {
+      if (this.ownerId !== undefined) {
+        let profile = await this.users.get(this.users.idFromString(this.ownerId))
+            .whoamiIfExists();
+        if (profile) return commitIdentityForAuthor(profile);
+      }
+    } catch (err) {
+      this.logger.warn("failed to resolve owner identity for history import", {
+        event: "storage.migration.git.owner-identity.failed", error: err,
+      });
+    }
+    return { name: "Workspace owner", email: "owner@localhost" };
   }
 
   // =======================================================================================
@@ -2158,23 +2222,15 @@ class OverseerImpl implements AgentHooks {
   // deterministic seed derived from the commits pinned in AiChatMetadata.codeBase; for chats
   // predating it, the base remains the legacy code log at the chat's observed version.
 
-  // The version a legacy (pre-git-storage) chat's Yjs doc base is anchored to, per the same
-  // latch rule agent replay uses: the active compaction checkpoint's stamp wins, else the first
-  // observedCodeVersion recorded in the log. A chat with no stamps reads the legacy log's tip,
-  // which is stable now that the log is read-only.
+  // The version a legacy (pre-git-storage) chat's Yjs doc base is anchored to: the shared
+  // maximum-referenced-version rule (see legacyChatBaseVersion in agent-compaction.ts, which
+  // explains why the max -- not the agent's first-stamp latch -- is the only base that loses no
+  // recorded update's content). The git-storage migration pinned each legacy chat's mergedCommit
+  // at this same version's synthesized commit, so accept and update-from-mainline agree with the
+  // doc built here.
   legacyChatBaseVersion(chatId: number): number | "current" {
-    let checkpoint = this.getActiveChatCompaction(chatId);
-    if (checkpoint?.observedCodeVersion !== undefined) return checkpoint.observedCodeVersion;
-    for (let msg of this.storage.chats.list({prefix: `${keyString(chatId)}.`})) {
-      if (msg.type === "message") {
-        for (let call of msg.toolCalls ?? []) {
-          if (call.observedCodeVersion !== undefined) return call.observedCodeVersion;
-        }
-      } else if (msg.type === "changes" && msg.observedCodeVersion !== undefined) {
-        return msg.observedCodeVersion;
-      }
-    }
-    return "current";
+    return legacyChatBaseVersion(this.getActiveChatCompaction(chatId),
+        this.storage.chats.list({prefix: `${keyString(chatId)}.`}));
   }
 
   // Build the code-base pins and deterministic seed hash for a new chat: one pin per committed
@@ -6745,7 +6801,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
     // A workspace initialized by this version of the code is born at the current schema version;
     // there is nothing to migrate.
-    this.impl.storage.version.put(1);
+    this.impl.storage.version.put(2);
   }
 
   /**
