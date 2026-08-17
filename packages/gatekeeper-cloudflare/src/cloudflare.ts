@@ -1,13 +1,50 @@
-import { WorkerEntrypoint, DurableObject } from "cloudflare:workers";
+import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, GatekeeperUserVerifier, VendorDescription,
   GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription,
-  SupportedResource, ResourceConfiguratorFrame, stripTrailingSlashes,
+  SupportedResource, ResourceConfiguratorFrame, ResourceDescription, ApprovalQueue, ActionKind,
+  stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
-import { getOAuthConfig, buildAuthorizeUrl, generatePkce, exchangeCode, refreshTokens, AUTH_SCOPES, FULL_SCOPES } from "./oauth";
+import {
+  getOAuthConfig, buildAuthorizeUrl, generatePkce, exchangeCode, refreshTokens,
+  AUTH_SCOPES, BILLING_SCOPES, FULL_SCOPES, persistentScopesForResources,
+} from "./oauth";
 import { fetchIdentity } from "./cloudflare-api";
+import {
+  OBSERVABILITY_RESOURCES,
+  ACCOUNT_OBSERVABILITY_RESOURCE,
+  WORKER_OBSERVABILITY_RESOURCE,
+  grantedObservabilityResourcePatterns,
+  accountObservabilityUrl,
+  workerObservabilityUrl,
+  parseObservabilityResourceUrl,
+} from "./resources.js";
+import { CloudflareObservabilityApi, CloudflareObservabilityApiError } from "./observability-api.js";
+import {
+  CloudflareAccountConfiguratorUI,
+  CloudflareWorkerConfiguratorUI,
+} from "./cloudflare-configurators.js";
+import ACCOUNT_CONFIGURATOR_HTML from "./generated/cloudflare-account-configurator-ui.txt";
+import WORKER_CONFIGURATOR_HTML from "./generated/cloudflare-worker-configurator-ui.txt";
+import type {
+  CloudflareObservabilityCalculationQuery,
+  CloudflareObservabilityCalculationResult,
+  CloudflareObservabilityDiscoveryOptions,
+  CloudflareObservabilityEventsPage,
+  CloudflareObservabilityEventsQuery,
+  CloudflareObservabilityInvocationsPage,
+  CloudflareObservabilityInvocationsQuery,
+  CloudflareObservabilityKey,
+  CloudflareObservabilitySession,
+  CloudflareObservabilityTrace,
+  CloudflareObservabilityTraceOptions,
+  CloudflareObservabilityTracesPage,
+  CloudflareObservabilityTracesQuery,
+  CloudflareObservabilityValue,
+  CloudflareObservabilityValueType,
+} from "./types.js";
 import { VENDOR_ID } from "./vendor.js";
 import TYPES_CODE from "./types.txt";
 import { obsContext } from "./observability.js";
@@ -167,15 +204,16 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     const userObjectId = this.ctx.exports.UserAccount.newUniqueId();
     const initiationNonce = generateNonce();
     const authOnly = options?.scopes === "auth";
-    const scopes = authOnly ? AUTH_SCOPES : FULL_SCOPES;
+    const scopes = authOnly
+      ? AUTH_SCOPES
+      : persistentScopesForResources(options?.resourceUrlPatterns);
     await this.ctx.exports.UserAccount.get(userObjectId)
         .setCallback(callback, initiationNonce, scopes, authOnly);
     return { url: `${getBaseUrl(this.env)}/${userObjectId.toString()}/${initiationNonce}` };
   }
 
-  /** No gadget/agent resource types yet — the Cloudflare gatekeeper currently provides auth only. */
   async getSupportedResources(): Promise<SupportedResource[]> {
-    return [];
+    return OBSERVABILITY_RESOURCES;
   }
 
   async getTypeScriptTypes(): Promise<string> {
@@ -191,13 +229,13 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string,
-                    scopes?: string[], ephemeral?: boolean) {
+                    scopes: string[], ephemeral?: boolean) {
     if (!this.ctx.storage.kv.get<string>("refreshToken")) {
       this.ctx.storage.setAlarm(Date.now() + 3600 * 1000);
     }
     this.ctx.storage.kv.put("callback", callback);
     // Scopes to request (auth-only for sign-in, or the full capability set). Reused on reconnect.
-    if (scopes) this.ctx.storage.kv.put<string[]>("scopes", scopes);
+    this.ctx.storage.kv.put<string[]>("scopes", scopes);
     // Auth-only sign-in grants are transient: dropped shortly after the email is read.
     this.ctx.storage.kv.put<boolean>("ephemeral", ephemeral ?? false);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
@@ -207,13 +245,19 @@ export class UserAccount extends DurableObject<Env> {
     });
   }
 
-  async prepareReconnect(initiationNonce: string) {
+  async prepareReconnect(initiationNonce: string, scopes: string[]) {
     this.ctx.storage.kv.put<boolean>("reconnecting", true);
+    this.ctx.storage.kv.put<string[]>("scopes", scopes);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
       stage: "initiation",
     });
+  }
+
+  async getGrantedScopes(): Promise<string[]> {
+    // Accounts connected before resource grants existed had exactly the billing scopes.
+    return this.ctx.storage.kv.get<string[]>("grantedScopes") ?? [...BILLING_SCOPES];
   }
 
   /**
@@ -261,6 +305,10 @@ export class UserAccount extends DurableObject<Env> {
       token: tokens.accessToken,
       expires: Date.now() + tokens.expiresIn * 1000,
     });
+    this.ctx.storage.kv.put<string[]>(
+      "grantedScopes",
+      tokens.scopes ?? this.ctx.storage.kv.get<string[]>("scopes") ?? FULL_SCOPES,
+    );
 
     const reconnecting = this.ctx.storage.kv.get<boolean>("reconnecting");
     if (reconnecting) {
@@ -312,6 +360,9 @@ export class UserAccount extends DurableObject<Env> {
     if (refreshed.refreshToken) {
       this.ctx.storage.kv.put<string>("refreshToken", refreshed.refreshToken);
     }
+    if (refreshed.scopes) {
+      this.ctx.storage.kv.put<string[]>("grantedScopes", refreshed.scopes);
+    }
     const token: StoredAccessToken = {
       token: refreshed.accessToken,
       expires: Date.now() + refreshed.expiresIn * 1000,
@@ -345,12 +396,16 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async describe(): Promise<AccountDescription> {
-    const token = await this.#account().getAccessToken();
+    const account = this.#account();
+    const tokenPromise = account.getAccessToken();
+    const grantedScopesPromise = account.getGrantedScopes();
+    const token = await tokenPromise;
     const identity = token ? await fetchIdentity(token) : null;
     return {
       displayName: identity?.displayName,
       uniqueName: identity?.email,
       avatar: { url: CLOUDFLARE_LOGO_URL },
+      grantedResourceUrlPatterns: grantedObservabilityResourcePatterns(await grantedScopesPromise),
     };
   }
 
@@ -361,8 +416,15 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return identity?.email ?? null;
   }
 
-  async ensureResources(_resourceUrlPatterns: string[]): Promise<{url?: string}> {
-    return {};
+  async ensureResources(resourceUrlPatterns: string[]): Promise<{url?: string}> {
+    const account = this.#account();
+    const grantedPatterns = new Set(grantedObservabilityResourcePatterns(await account.getGrantedScopes()));
+    if (resourceUrlPatterns.every(pattern => grantedPatterns.has(pattern))) return {};
+
+    const union = [...new Set([...grantedPatterns, ...resourceUrlPatterns])];
+    const initiationNonce = generateNonce();
+    await account.prepareReconnect(initiationNonce, persistentScopesForResources(union));
+    return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
   async getUsableAccessToken(): Promise<string | null> {
@@ -370,18 +432,37 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
-    return [];
+    return OBSERVABILITY_RESOURCES;
   }
 
-  async getGatekeeperClassFor(_url: string): Promise<{
+  async getGatekeeperClassFor(url: string): Promise<{
     class: DurableObjectClass<Gatekeeper<any>>;
     resource: SupportedResource;
   }> {
-    throw new Error("The Cloudflare gatekeeper does not provide any resources yet.");
+    const parsed = parseObservabilityResourceUrl(url);
+    return {
+      class: this.ctx.exports.CloudflareObservabilityGatekeeper({
+        props: { userObjectId: this.ctx.props.userObjectId, ...parsed },
+      }),
+      resource: parsed.workerName ? WORKER_OBSERVABILITY_RESOURCE : ACCOUNT_OBSERVABILITY_RESOURCE,
+    };
   }
 
-  async startResourceConfigurator(_resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
-    throw new Error("The Cloudflare gatekeeper does not provide any resources yet.");
+  async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    const getToken = () => this.#account().getAccessToken();
+    if (resourceUrlPattern === ACCOUNT_OBSERVABILITY_RESOURCE.urlPattern) {
+      return {
+        iframeHtml: ACCOUNT_CONFIGURATOR_HTML,
+        ui: new RpcStub(new CloudflareAccountConfiguratorUI(getToken)),
+      };
+    }
+    if (resourceUrlPattern === WORKER_OBSERVABILITY_RESOURCE.urlPattern) {
+      return {
+        iframeHtml: WORKER_CONFIGURATOR_HTML,
+        ui: new RpcStub(new CloudflareWorkerConfiguratorUI(getToken)),
+      };
+    }
+    throw new Error(`Unsupported Cloudflare resource configurator type: ${resourceUrlPattern}`);
   }
 
   async revoke(): Promise<void> {
@@ -390,24 +471,200 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 
   async reconnect(): Promise<{ url: string }> {
     const initiationNonce = generateNonce();
-    await this.#account().prepareReconnect(initiationNonce);
+    const scopes = await this.#account().getGrantedScopes();
+    await this.#account().prepareReconnect(initiationNonce, scopes);
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
-  /**
-   * Mint a verifier representing this account. The Cloudflare gatekeeper currently exposes no
-   * resource bindings (getGatekeeperClassFor always throws), so it is never an in-scope binding and
-   * this verifier is never consulted by the observer flow — but getVerifier is part of the
-   * GatekeeperUser contract, so it must exist. Returns a trivial verifier with no identity.
-   */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
-    return this.ctx.exports.CloudflareVerifier({});
+    return this.ctx.exports.CloudflareVerifier({
+      props: { userObjectId: this.ctx.props.userObjectId },
+    });
   }
 }
 
-// The Cloudflare gatekeeper provides no resources, so no observer verification is performed.
+/** Vendor-specific verifier methods trusted only after the overseer's same-vendor handoff. */
+export interface CloudflareVerifierApi extends GatekeeperUserVerifier {
+  /** Check whether this connected Cloudflare account can read the bound telemetry resource. */
+  hasObservabilityAccess(accountId: string, workerName?: string): Promise<boolean>;
+}
+
+/** Verifies an observer's access using that observer's own Cloudflare credentials. */
 @validateRpc()
-export class CloudflareVerifier extends WorkerEntrypoint<Env> implements GatekeeperUserVerifier {
-  verify(): void {}
+export class CloudflareVerifier extends WorkerEntrypoint<Env, GatekeeperUserImplProps>
+    implements CloudflareVerifierApi {
+  async hasObservabilityAccess(accountId: string, workerName?: string): Promise<boolean> {
+    const id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
+    const account = this.ctx.exports.UserAccount.get(id);
+    try {
+      await new CloudflareObservabilityApi(
+        () => account.getAccessToken(), accountId, workerName,
+      ).listKeys({ limit: 1 });
+      return true;
+    } catch (error) {
+      if (error instanceof CloudflareObservabilityApiError &&
+          (error.status === 401 || error.status === 403)) return false;
+      throw error;
+    }
+  }
+}
+
+type CloudflareObservabilityGatekeeperProps = {
+  userObjectId: string;
+  accountId: string;
+  workerName?: string;
+};
+
+@validateRpc()
+class CloudflareObservabilitySessionImpl extends RpcTarget
+    implements CloudflareObservabilitySession {
+  readonly #api: CloudflareObservabilityApi;
+  readonly #queue: RpcStub<ApprovalQueue>;
+  readonly #target: string;
+
+  constructor(
+    api: CloudflareObservabilityApi,
+    queue: RpcStub<ApprovalQueue>,
+    target: string,
+  ) {
+    super();
+    this.#api = api;
+    this.#queue = queue;
+    this.#target = target.slice(0, 120);
+  }
+
+  [Symbol.dispose](): void { this.#queue[Symbol.dispose](); }
+
+  #queryDescription(options?: CloudflareObservabilityDiscoveryOptions): string {
+    const timeframe = options?.timeframe
+      ? `${options.timeframe.from.toISOString()} to ${options.timeframe.to.toISOString()}`
+      : "the last hour";
+    return `${this.#target}; timeframe ${timeframe}; filter ${options?.filter ? "yes" : "no"}; ` +
+      `search ${options?.search ? "yes" : "no"}`;
+  }
+
+  #resultDescription(
+    count: number,
+    noun: string,
+    statistics?: CloudflareObservabilityCalculationResult["statistics"],
+  ): string {
+    return `returned ${count} ${noun}` +
+      (statistics ? `; ${statistics.rowsRead} rows and ${statistics.bytesRead} bytes scanned` : "");
+  }
+
+  async #observe<T>(
+    title: string,
+    options: CloudflareObservabilityDiscoveryOptions | undefined,
+    read: () => Promise<T>,
+    description: (result: T) => string,
+  ): Promise<T> {
+    const result = await read();
+    await this.#queue.authorizeObservation({
+      title,
+      description: `${this.#queryDescription(options)}; ${description(result)}.`,
+    });
+    return result;
+  }
+
+  async listKeys(options?: CloudflareObservabilityDiscoveryOptions): Promise<CloudflareObservabilityKey[]> {
+    return this.#observe("Discover Workers telemetry fields", options,
+      () => this.#api.listKeys(options),
+      result => this.#resultDescription(result.length, "fields"));
+  }
+
+  async listValues(key: string, type: CloudflareObservabilityValueType,
+                   options?: CloudflareObservabilityDiscoveryOptions): Promise<CloudflareObservabilityValue[]> {
+    return this.#observe("Discover Workers telemetry values", options,
+      () => this.#api.listValues(key, type, options),
+      result => this.#resultDescription(result.length, "values"));
+  }
+
+  async listEvents(query?: CloudflareObservabilityEventsQuery): Promise<CloudflareObservabilityEventsPage> {
+    return this.#observe("Read Workers events", query, () => this.#api.listEvents(query), result =>
+      this.#resultDescription(result.events.length, "events", result.statistics));
+  }
+
+  async listInvocations(query?: CloudflareObservabilityInvocationsQuery): Promise<CloudflareObservabilityInvocationsPage> {
+    return this.#observe("Read Worker invocations", query, () => this.#api.listInvocations(query), result =>
+      this.#resultDescription(result.invocations.length, "invocations", result.statistics));
+  }
+
+  async listTraces(query?: CloudflareObservabilityTracesQuery): Promise<CloudflareObservabilityTracesPage> {
+    return this.#observe("Read Worker traces", query, () => this.#api.listTraces(query), result =>
+      this.#resultDescription(result.traces.length, "trace summaries", result.statistics));
+  }
+
+  async getTrace(traceId: string, options?: CloudflareObservabilityTraceOptions): Promise<CloudflareObservabilityTrace> {
+    return this.#observe("Read Worker trace", options, () => this.#api.getTrace(traceId, options), result =>
+      this.#resultDescription(
+        result.count, `trace events${result.truncated ? " (truncated)" : ""}`, result.statistics,
+      ));
+  }
+
+  async calculate(query: CloudflareObservabilityCalculationQuery): Promise<CloudflareObservabilityCalculationResult> {
+    return this.#observe("Calculate Workers metrics", query, () => this.#api.calculate(query), result =>
+      this.#resultDescription(result.calculations.length, "calculations", result.statistics));
+  }
+}
+
+@validateRpc()
+export class CloudflareObservabilityGatekeeper
+    extends DurableObject<Env, CloudflareObservabilityGatekeeperProps>
+    implements Gatekeeper<CloudflareObservabilitySession> {
+  #account() {
+    const id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
+    return this.ctx.exports.UserAccount.get(id);
+  }
+
+  #api(): CloudflareObservabilityApi {
+    const account = this.#account();
+    return new CloudflareObservabilityApi(
+      () => account.getAccessToken(),
+      this.ctx.props.accountId,
+      this.ctx.props.workerName,
+    );
+  }
+
+  async describe(): Promise<ResourceDescription> {
+    const workerName = this.ctx.props.workerName;
+    return {
+      url: workerName
+        ? workerObservabilityUrl(this.ctx.props.accountId, workerName)
+        : accountObservabilityUrl(this.ctx.props.accountId),
+      title: workerName ? `${workerName} observability` : "Workers Observability",
+      snippet: workerName
+        ? `Read logs, invocations, metrics, and traces for ${workerName}.`
+        : "Read logs, invocations, metrics, and traces across this Cloudflare account.",
+      suggestedBindingName: workerName ? "WORKER_OBSERVABILITY" : "CLOUDFLARE_OBSERVABILITY",
+      tsType: "CloudflareObservabilitySession",
+    };
+  }
+
+  async getTypeScriptTypes(): Promise<string> { return TYPES_CODE; }
+  async getAutoApprovableActions(): Promise<ActionKind[]> { return []; }
+
+  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<CloudflareObservabilitySession> {
+    const target = this.ctx.props.workerName
+      ? `Worker ${this.ctx.props.workerName}`
+      : `Cloudflare account ${this.ctx.props.accountId}`;
+    return new CloudflareObservabilitySessionImpl(this.#api(), approvalQueue.dup(), target);
+  }
+
+  async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
+    // The overseer only hands a verifier back to its own vendor, making this strategy-B ACL check
+    // authoritative for the one account or Worker represented by the binding.
+    const verifier = user as unknown as Fetcher<CloudflareVerifierApi>;
+    if (!(await verifier.hasObservabilityAccess(this.ctx.props.accountId, this.ctx.props.workerName))) {
+      throw new Error("This collaborator does not have access to the bound Workers telemetry.");
+    }
+  }
+
+  async removeObserver(_id: string): Promise<void> {
+    // Strategy B verifies on each admission and retains no observer state to remove.
+  }
+
+  async applyAction(_action: number): Promise<void> { throw new Error("This resource is read-only."); }
+  async rejectAction(_action: number): Promise<void> { throw new Error("This resource is read-only."); }
+  async revertAction(_action: number): Promise<void> { throw new Error("This resource is read-only."); }
 }

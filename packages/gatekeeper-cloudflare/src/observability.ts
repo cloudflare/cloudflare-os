@@ -5,6 +5,7 @@ export type CloudflareObservabilityFields = {
   path: string;
   status: number;
   statusText: string;
+  attempt: number;
   vendorId: string;
 };
 

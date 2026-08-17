@@ -5,18 +5,22 @@
   "main": "./src/cloudflare.ts",
   "scripts": {
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
-    "deploy": "wrangler deploy",
-    "build": "tsc",
+    "build:configurator": "node ../../scripts/build-gatekeeper-configurator.mjs .",
+    "deploy": "pnpm run build:configurator && wrangler deploy",
+    "build": "pnpm run build:configurator && tsc",
+    "test": "vitest run",
     "clean": "rm -rf dist"
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
+    "@gadgets/configurator-ui": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:"
   },
   "devDependencies": {
     "typescript": "catalog:",
+    "vitest": "catalog:",
     "wrangler": "catalog:"
   }
 }

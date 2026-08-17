@@ -7,19 +7,29 @@
 const CF_OAUTH_AUTH_URL = "https://dash.cloudflare.com/oauth2/auth";
 const CF_OAUTH_TOKEN_URL = "https://dash.cloudflare.com/oauth2/token";
 
+import { observabilityScopesForResources } from "./resources.js";
+
 /**
- * Scopes for sign-in + the AI Gateway billing/BYOK flow: read account details and route inference
+ * Scopes for the AI Gateway billing/BYOK flow: read account details and route inference
  * through the user's own AI Gateway. We deliberately do NOT request "openid" — the dashboard OAuth
  * client isn't permitted it; identity comes from user-details.read (the /user API). offline_access
  * yields a refresh token; account-settings.read is required to enumerate the user's account(s).
  */
-export const FULL_SCOPES = [
+export const BILLING_SCOPES = [
   "offline_access",
   "aig.read",
   "aig.run",
   "user-details.read",
   "account-settings.read",
 ];
+
+/** All persistent scopes, used only when no resource selection was supplied. */
+export const FULL_SCOPES = [...BILLING_SCOPES, ...observabilityScopesForResources()];
+
+/** Persistent billing scopes plus the explicitly selected gadget resources. */
+export function persistentScopesForResources(resourceUrlPatterns?: string[]): string[] {
+  return [...BILLING_SCOPES, ...observabilityScopesForResources(resourceUrlPatterns)];
+}
 
 /**
  * Minimal scopes for sign-in only: a refresh token + the /user identity read. Used in "auth" mode
@@ -86,6 +96,7 @@ export interface TokenResponse {
   refreshToken?: string;
   expiresIn: number;
   tokenType?: string;
+  scopes?: string[];
 }
 
 interface RawTokenResponse {
@@ -93,6 +104,7 @@ interface RawTokenResponse {
   refresh_token?: string;
   expires_in?: number;
   token_type?: string;
+  scope?: string;
 }
 
 function basicAuth(config: CloudflareOAuthConfig): string {
@@ -139,5 +151,6 @@ async function redeem(config: CloudflareOAuthConfig, body: URLSearchParams): Pro
     refreshToken: data.refresh_token,
     expiresIn: data.expires_in ?? 3600,
     tokenType: data.token_type,
+    scopes: data.scope?.split(/\s+/).filter(Boolean),
   };
 }
