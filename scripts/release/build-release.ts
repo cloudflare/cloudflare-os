@@ -4,69 +4,72 @@
 // would upload it (dry-run + outdir, with the repo's pinned wrangler), plus the Access-mode
 // workshop-frontend asset build, plus the release manifest that describes it all.
 //
-// Output layout (mirrored to R2 by upload-release.mjs):
+// Output layout (mirrored to R2 by upload-release.ts):
 //   <out>/manifest.json                    the release manifest (upload LAST — its presence
 //                                          marks the release complete)
 //   <out>/modules/<sha256>                 worker module blobs, content-addressed
 //   <out>/assets/<cfHash>                  static asset blobs, content-addressed
 //
-// Usage: node scripts/release/build-release.mjs --out <dir> [--release-id <id>]
+// Usage: node scripts/release/build-release.ts --out <dir> [--release-id <id>]
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
-  collectAssets, collectModules, stableStringify,
-} from "./hash-lib.mjs";
+  collectAssets, collectModules, stableStringify, type CollectedAssets,
+} from "./hash-lib.ts";
 import {
   findDeployablePackages, generateManifest, readDeployInputs, readWranglerConfig,
-} from "./manifest-lib.mjs";
+  type WorkerBuild,
+} from "./manifest-lib.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PACKAGES_DIR = join(ROOT, "packages");
 const FRONTEND_DIR = join(PACKAGES_DIR, "workshop-frontend");
 
-function parseArgs(argv) {
-  const args = { out: undefined, releaseId: undefined };
+function parseArgs(argv: string[]): { out: string; releaseId: string | undefined } {
+  let out: string | undefined;
+  let releaseId: string | undefined;
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--out") args.out = resolve(argv[++i]);
-    else if (argv[i] === "--release-id") args.releaseId = argv[++i];
+    if (argv[i] === "--out") out = resolve(argv[++i]);
+    else if (argv[i] === "--release-id") releaseId = argv[++i];
     else throw new Error(`unknown argument: ${argv[i]}`);
   }
-  if (!args.out) throw new Error("--out <dir> is required");
-  return args;
+  if (!out) throw new Error("--out <dir> is required");
+  return { out, releaseId };
 }
 
-function run(command, argv, options = {}) {
+function run(command: string, argv: string[], options: ExecFileSyncOptions = {}) {
   console.log(`running: ${command} ${argv.join(" ")} ${options.cwd ? `(in ${options.cwd})` : ""}`);
   execFileSync(command, argv, { stdio: "inherit", cwd: ROOT, ...options });
 }
 
-function gitCommit() {
+function gitCommit(): string {
   return process.env.CI_COMMIT_SHA
       || execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
 }
 
-function defaultReleaseId(commit) {
+function defaultReleaseId(commit: string): string {
   // CI: GitLab pipeline IID + short SHA. Local: timestamped dev release, unique per build so
   // every upload stays immutable in R2. "Latest" is decided by the deploy service from upload
   // time, and the commit is in the manifest's `commit` field. Kept short: worker version tags
   // (`gd:<id>:<fp8>`) have a hard 25-char cap downstream.
   //
   // CI_PIPELINE_IID (per-project, monotonic), NOT CI_PIPELINE_ID (instance-global): run numbers
-  // are compared by promote-release.mjs's supersededBy() guard, so they must form one monotonic
+  // are compared by promote-release.ts's supersededBy() guard, so they must form one monotonic
   // sequence from a single publisher.
   const runNumber = process.env.CI_PIPELINE_IID;
   if (runNumber) return `r${runNumber.padStart(6, "0")}-${commit.slice(0, 7)}`;
   return `dev-${Math.floor(Date.now() / 1000).toString(36)}`;
 }
 
-function pinnedWranglerVersion() {
+function pinnedWranglerVersion(): string {
   const pkg = JSON.parse(
-      readFileSync(join(ROOT, "node_modules", "wrangler", "package.json"), "utf8"));
+      readFileSync(join(ROOT, "node_modules", "wrangler", "package.json"), "utf8")) as
+      { version: string };
   return pkg.version;
 }
 
@@ -76,7 +79,7 @@ function pinnedWranglerVersion() {
 // Through vp rather than a package script: `build` is a task, so there is no script to run, and the
 // task declares VITE_* as fingerprinted env — a release built at a different flag value is a cache
 // miss rather than a stale replay.
-function buildFrontend() {
+function buildFrontend(): CollectedAssets {
   const env = { ...process.env, VITE_CF_ACCESS_MODE: "true" };
   run("pnpm", ["exec", "vp", "run", "-F", "@gadgets/workshop-frontend", "build"], { env });
   return collectAssets(join(FRONTEND_DIR, "dist"));
@@ -107,7 +110,7 @@ function main() {
   // 2. Bundle every deployable package the way `wrangler deploy` would, without uploading.
   //    Run from each package dir so custom build commands (capnweb-validate) resolve their bins.
   const bundleDir = mkdtempSync(join(tmpdir(), "gadgets-release-"));
-  const workers = [];
+  const workers: WorkerBuild[] = [];
   for (const pkg of findDeployablePackages(PACKAGES_DIR)) {
     const outDir = join(bundleDir, pkg.name);
     run("pnpm", ["exec", "wrangler", "deploy", "--dry-run", "--outdir", outDir],

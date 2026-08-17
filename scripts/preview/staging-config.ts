@@ -5,7 +5,7 @@
 // gitignored (.gitignore) — they are build output, regenerated on every `preview.ts`
 // invocation.
 //
-// This is the preview-side counterpart of scripts/release/manifest-lib.mjs: same 18 deployable
+// This is the preview-side counterpart of scripts/release/manifest-lib.ts: same 18 deployable
 // packages, same binding topology, but resolved to concrete staging values instead of the
 // manifest's `$PLACEHOLDER` templates. Where the deploy service would substitute
 // `$PUBLIC_BASE_URL`, a preview substitutes the router preview's workers.dev URL.
@@ -27,66 +27,10 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-// The release manifest generator is still JS, so the shapes it also reads are declared below
-// rather than imported. When it becomes TypeScript they belong there, shared by both generators.
-import { findDeployablePackages, readWranglerConfig } from "../release/manifest-lib.mjs";
-
-/** A `{ binding: "NAME" }`-shaped wrangler binding declaration. */
-export interface BindingDecl {
-  binding: string;
-}
-
-/** A service binding declaration in a wrangler config. */
-export interface ServiceBinding {
-  /** Binding name the calling worker reads. */
-  binding: string;
-  /** Name of the worker being called. */
-  service: string;
-  /** RPC entrypoint on the target, when the caller uses one rather than plain HTTP. */
-  entrypoint?: string;
-  /** Props handed to the target worker on every call. */
-  props?: Record<string, unknown>;
-}
-
-/** Workers observability settings. */
-export interface ObservabilityConfig {
-  /** Whether observability is on. */
-  enabled: boolean;
-  /** Fraction of requests sampled. */
-  head_sampling_rate?: number;
-  /** Nested log settings. */
-  logs?: {
-    enabled?: boolean;
-    invocation_logs?: boolean;
-    head_sampling_rate?: number;
-  };
-}
-
-/**
- * The subset of a deployable worker's `wrangler.jsonc` this generator reads. Deliberately partial:
- * every other key is carried through untouched by the `structuredClone` in
- * {@link buildPreviewConfigs}.
- */
-export interface WranglerConfig {
-  /** Worker name as deployed by `wrangler deploy` from this package. */
-  name?: string;
-  /** Workers observability settings; previews turn invocation logs on. */
-  observability?: ObservabilityConfig;
-  /** KV namespace bindings. Stripped to binding-only so Wrangler provisions per preview. */
-  kv_namespaces?: BindingDecl[];
-  /** R2 bucket bindings. Stripped to binding-only, as above. */
-  r2_buckets?: BindingDecl[];
-  /** Worker Loader bindings (the Gadget sandbox). */
-  worker_loaders?: BindingDecl[];
-  /** Service bindings; rewritten to name sibling previews. */
-  services?: ServiceBinding[];
-  /** Browser Rendering binding (Gadget PDF exports). */
-  browser?: BindingDecl;
-  /** Artifacts binding — closed beta. */
-  artifacts?: BindingDecl;
-  /** Plain-text vars, extended with each worker's preview-specific values. */
-  vars?: Record<string, unknown>;
-}
+import {
+  findDeployablePackages, readWranglerConfig,
+  type BindingDecl, type ObservabilityConfig, type ServiceBinding, type WranglerConfig,
+} from "../release/manifest-lib.ts";
 
 /**
  * A service binding in a preview config. `preview_id` is what points a binding at a *sibling*
@@ -201,7 +145,7 @@ export function isGatekeeper(pkgName: string): boolean {
 
 /**
  * The vendor id a gatekeeper is reached by: `gatekeeper-mcp-portal` -> `mcp-portal`. Matches
- * manifest-lib.mjs's shortName, and hence the `/gatekeeper/<short>` path the router serves.
+ * manifest-lib.ts's shortName, and hence the `/gatekeeper/<short>` path the router serves.
  */
 export function gatekeeperShortName(pkgName: string): string {
   return pkgName.slice(GATEKEEPER_PREFIX.length);
@@ -374,7 +318,7 @@ function backendGatekeeperServices(gatekeepers: string[], baseUrl: string): Prev
     entrypoint: "GatekeeperVendor",
     // The Context gatekeeper namespaces each workshop's shared data by a "sharingDomain" carried
     // in its binding props (packages/gatekeeper-context/src/domain.ts). Using the preview's own
-    // origin — as manifest-lib.mjs does with $PUBLIC_BASE_URL — keeps each preview's collections
+    // origin — as manifest-lib.ts does with $PUBLIC_BASE_URL — keeps each preview's collections
     // isolated from every other preview sharing the baseline gatekeeper.
     ...(pkgName === "gatekeeper-context" ? { props: { sharingDomain: baseUrl } } : {}),
   }));
@@ -396,7 +340,7 @@ function applyGatekeeper(
 ): void {
   config.vars = {
     ...config.vars,
-    // Every gatekeeper is mounted under the router's origin, exactly as manifest-lib.mjs
+    // Every gatekeeper is mounted under the router's origin, exactly as manifest-lib.ts
     // templates it for real instances ($PUBLIC_BASE_URL/gatekeeper/<short>).
     BASE_URL: `${baseUrl}/gatekeeper/${gatekeeperShortName(pkgName)}`,
   };
@@ -421,7 +365,7 @@ function applyBackend(
   config: StagingConfig,
   { baseUrl, gatekeepers }: PreviewContext,
 ): void {
-  // Injected rather than read from wrangler.jsonc, mirroring what manifest-lib.mjs hardcodes for
+  // Injected rather than read from wrangler.jsonc, mirroring what manifest-lib.ts hardcodes for
   // every deployed backend (webFetch's toMarkdown conversion depends on it).
   config.ai = { binding: "WORKERS_AI" };
   config.services = backendGatekeeperServices(gatekeepers, baseUrl);

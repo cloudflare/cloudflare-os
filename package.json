@@ -6,21 +6,21 @@
   "packageManager": "pnpm@11.17.0+sha512.cca3cea332ad254bb84145f966d19f4879615210346fc92c79a047f23a0d7b3cca3c3792f0076ba1f1831d277efbcf0a9119b31a9a60eca7fb3d6231f331ef72",
   "scripts": {
     "build": "vp run -r --cache build",
-    "run-local": "node scripts/run-local.mjs",
-    "test": "node --test 'scripts/**/*.test.js' 'scripts/**/*.test.ts' && vp run --filter '!cloudflare-os' --cache test",
+    "run-local": "node scripts/run-local.ts",
+    "test": "node --test 'scripts/**/*.test.ts' && vp run --filter '!cloudflare-os' --cache test",
     "preview:config": "node scripts/preview/preview.ts config",
     "preview:deploy": "node scripts/preview/preview.ts deploy",
     "preview:delete": "node scripts/preview/preview.ts delete",
     "preview:sweep": "node scripts/preview/preview.ts sweep",
     "dev-client": "cd packages/workshop-frontend && pnpm run dev",
-    "dev-server": "node run-dev-server.js",
+    "dev-server": "node scripts/run-dev-server.ts",
     "clean": "vp run -r clean",
     "lint:check": "vp lint",
     "lint:fix": "vp lint --fix",
     "types:check": "pnpm run build",
     "types:scripts": "tsc -p scripts/tsconfig.json",
     "lint": "pnpm run lint:check && pnpm run types:scripts && pnpm run types:check",
-    "types:generate": "node scripts/generate-worker-types.mjs"
+    "types:generate": "node scripts/generate-worker-types.ts"
   },
   "devDependencies": {
     "@types/node": "26.1.0",

@@ -7,7 +7,7 @@ const require = createRequire(import.meta.url);
 const vitePlusRequire = createRequire(require.resolve("vite-plus/package.json"));
 // Test against Vite+'s pinned oxlint without adding a second direct dependency that can drift.
 const { RuleTester } = await import(
-  pathToFileURL(vitePlusRequire.resolve("oxlint/plugins-dev")),
+  pathToFileURL(vitePlusRequire.resolve("oxlint/plugins-dev")).href,
 );
 
 RuleTester.describe = describe;

@@ -12,12 +12,42 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, extname, sep } from "node:path";
 
-export function sha256Hex(bytes) {
+/** A worker module as collected from a dry-run bundle, before the manifest strips `bytes`. */
+export interface CollectedModule {
+  /** Module path relative to the bundle directory, POSIX-separated. */
+  name: string;
+  /** Module type the script-upload API understands (`esm`, `text`, `wasm`, `data`). */
+  type: ModuleType;
+  /** Full SHA-256 of the contents, hex — the module's content address. */
+  sha256: string;
+  /** Byte length. */
+  size: number;
+  /** The contents. Stripped before the module reaches the manifest. */
+  bytes: Buffer;
+}
+
+/** One static asset's entry in the assets-upload-session manifest. */
+export interface AssetManifestEntry {
+  /** The Workers static-asset content key (see {@link cfAssetHash}). */
+  hash: string;
+  /** Byte length. */
+  size: number;
+}
+
+/** A built static-asset directory: the upload-session manifest plus deduped blobs. */
+export interface CollectedAssets {
+  /** `{ "/path": { hash, size } }`, in the exact shape the assets-upload-session API takes. */
+  manifest: Record<string, AssetManifestEntry>;
+  /** Deduped contents, keyed by content hash, for content-addressed storage. */
+  blobs: Map<string, { bytes: Buffer; size: number }>;
+}
+
+export function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
 /** The Workers static-asset content key (see header comment). */
-export function cfAssetHash(bytes, filePath) {
+export function cfAssetHash(bytes: Uint8Array, filePath: string): string {
   const base64 = Buffer.from(bytes).toString("base64");
   const extension = extname(filePath).slice(1);
   return createHash("sha256").update(base64 + extension, "utf8").digest("hex").slice(0, 32);
@@ -32,10 +62,13 @@ const MODULE_TYPE_BY_EXTENSION = {
   ".svg": "text",
   ".wasm": "wasm",
   ".bin": "data",
-};
+} as const satisfies Record<string, string>;
+
+/** Module type recorded in the manifest, as understood by the script-upload API. */
+export type ModuleType = (typeof MODULE_TYPE_BY_EXTENSION)[keyof typeof MODULE_TYPE_BY_EXTENSION];
 
 // Files `wrangler deploy --dry-run --outdir` writes that are not uploadable modules.
-function isNonModuleFile(name) {
+function isNonModuleFile(name: string): boolean {
   return name.endsWith(".map") || name === "README.md";
 }
 
@@ -45,12 +78,16 @@ function isNonModuleFile(name) {
  * `{ name, type, sha256, size, bytes }`. Fails closed: an extension we don't recognize means a
  * bundle shape this pipeline has never seen, and needs an explicit decision rather than a guess.
  */
-export function collectModules(outDir) {
-  const unsorted = [];
+export function collectModules(outDir: string): {
+  mainModule: string;
+  modules: CollectedModule[];
+} {
+  const unsorted: CollectedModule[] = [];
   for (const file of walkFiles(outDir)) {
     const name = relative(outDir, file).split(sep).join("/");
     if (isNonModuleFile(name)) continue;
-    const type = MODULE_TYPE_BY_EXTENSION[extname(name)];
+    const type: ModuleType | undefined =
+        MODULE_TYPE_BY_EXTENSION[extname(name) as keyof typeof MODULE_TYPE_BY_EXTENSION];
     if (!type) {
       throw new Error(`unrecognized module file in dry-run output: ${name} (${outDir})`);
     }
@@ -73,9 +110,9 @@ export function collectModules(outDir) {
  *  - manifest: { "/path": { hash, size } } in the exact shape the assets-upload-session API takes
  *  - blobs: Map<hash, { bytes, size }> for content-addressed storage
  */
-export function collectAssets(distDir) {
-  const manifest = {};
-  const blobs = new Map();
+export function collectAssets(distDir: string): CollectedAssets {
+  const manifest: Record<string, AssetManifestEntry> = {};
+  const blobs = new Map<string, { bytes: Buffer; size: number }>();
   for (const file of walkFiles(distDir)) {
     const path = "/" + relative(distDir, file).split(sep).join("/");
     const bytes = readFileSync(file);
@@ -86,8 +123,8 @@ export function collectAssets(distDir) {
   return { manifest, blobs };
 }
 
-function walkFiles(dir) {
-  const out = [];
+function walkFiles(dir: string): string[] {
+  const out: string[] = [];
   for (const name of readdirSync(dir).toSorted()) {
     const path = join(dir, name);
     if (statSync(path).isDirectory()) {
@@ -103,16 +140,16 @@ function walkFiles(dir) {
  * JSON.stringify with all object keys sorted, so manifests diff cleanly and the golden-manifest
  * test is byte-stable. Arrays keep their order (migration history is ordered!).
  */
-export function stableStringify(value, indent = 2) {
+export function stableStringify(value: unknown, indent = 2): string {
   return JSON.stringify(sortKeysDeep(value), null, indent);
 }
 
-function sortKeysDeep(value) {
+function sortKeysDeep(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortKeysDeep);
   if (value && typeof value === "object") {
-    const out = {};
+    const out: Record<string, unknown> = {};
     for (const key of Object.keys(value).toSorted()) {
-      out[key] = sortKeysDeep(value[key]);
+      out[key] = sortKeysDeep((value as Record<string, unknown>)[key]);
     }
     return out;
   }

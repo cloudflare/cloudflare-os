@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import {
   getDevServerConfig,
   getWranglerPortFromBackendHost,
-} from "./dev-server-config.js";
+} from "./dev-server-config.ts";
 
 describe("getWranglerPortFromBackendHost", () => {
   it("extracts a port from a localhost backend host", () => {

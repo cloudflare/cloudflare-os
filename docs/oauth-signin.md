@@ -68,7 +68,7 @@ OAuth app with its own redirect URI:
 - GitHub: `${PUBLIC_BASE_URL}/gatekeeper/github/oauth`
 - Cloudflare: `${PUBLIC_BASE_URL}/gatekeeper/cloudflare/oauth`
 
-In local dev, `run-dev-server.js` seeds each gatekeeper's `CLIENT_ID`/`CLIENT_SECRET` from
+In local dev, `run-dev-server.ts` seeds each gatekeeper's `CLIENT_ID`/`CLIENT_SECRET` from
 `GOOGLE_*` / `GITHUB_*` / `CLOUDFLARE_OAUTH_*` shell vars.
 
 ## Storage / bindings

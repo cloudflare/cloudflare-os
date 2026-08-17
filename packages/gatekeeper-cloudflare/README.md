@@ -53,7 +53,7 @@ CLIENT_ID=your-client-id-here
 CLIENT_SECRET=your-client-secret-here
 ```
 
-In local dev, `run-dev-server.js` will also seed these from `CLOUDFLARE_OAUTH_CLIENT_ID` /
+In local dev, `run-dev-server.ts` will also seed these from `CLOUDFLARE_OAUTH_CLIENT_ID` /
 `CLOUDFLARE_OAUTH_CLIENT_SECRET` if you'd rather set them in the root `.dev.vars`. A per-package
 `.env` takes precedence and keeps the credential with the gatekeeper that uses it.
 

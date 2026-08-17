@@ -137,7 +137,7 @@ export default defineConfig({
         },
       },
       {
-        files: ['scripts/**/*.ts', 'scripts/**/*.mjs', '*.js', '*.mjs'],
+        files: ['scripts/**/*.ts', 'scripts/**/*.mjs'],
         env: {
           node: true,
           es2024: true,

@@ -2,11 +2,12 @@
 // name is derived, and the shape of the configs built from the repo's REAL wrangler.jsonc files.
 // Deploying them is not covered here — that needs an account.
 //
-// Same spirit as release-manifest.test.js: adding a deployable package, or changing how one is
+// Same spirit as release/manifest-lib.test.ts: adding a deployable package, or changing how one is
 // bound, has to be a conscious decision rather than something a preview silently drops.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { BindingDecl } from "../release/manifest-lib.ts";
 import {
   MAX_PREVIEW_NAME_LENGTH,
   R2_MAX_BUCKET_NAME_LENGTH,
@@ -23,7 +24,6 @@ import {
   resolveTarget,
   routerPreviewUrl,
   slugifyPreviewName,
-  type BindingDecl,
   type PreviewOverrides,
   type StagingConfig,
 } from "./staging-config.ts";

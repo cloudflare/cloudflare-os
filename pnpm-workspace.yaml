@@ -9,7 +9,7 @@ catalog:
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
   capnweb-validate: 0.2.4
   # Exact: TypeScript 7 (tsgo). Type-checking runs on the native compiler. Build-time
-  # transpilers that need the JS compiler API (scripts/build-gatekeeper-configurator.mjs)
+  # transpilers that need the JS compiler API (scripts/build-gatekeeper-configurator.ts)
   # use the root "typescript6" npm alias instead; capnweb-validate ships its own
   # JS-based compiler dependency since 0.2.4.
   typescript: 7.0.2

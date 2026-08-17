@@ -7,7 +7,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   cfAssetHash, collectAssets, collectModules, sha256Hex, stableStringify,
-} from "./release/hash-lib.mjs";
+} from "./hash-lib.ts";
 
 const TESTDATA = join(dirname(fileURLToPath(import.meta.url)), "testdata");
 

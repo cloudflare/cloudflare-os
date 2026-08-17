@@ -1,10 +1,10 @@
-// The promote guard's pure logic (scripts/release/promote-release.mjs): which release ids are
+// The promote guard's pure logic (scripts/release/promote-release.ts): which release ids are
 // order-comparable, and when an already-published release supersedes the candidate. The R2
 // round trip itself is exercised by the deploy e2e pipeline, not here.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ciRunNumber, supersededBy } from "./release/promote-release.mjs";
+import { ciRunNumber, supersededBy } from "./promote-release.ts";
 
 test("ciRunNumber parses CI ids and rejects everything else", () => {
   assert.equal(ciRunNumber("r000123-abc1234"), 123);

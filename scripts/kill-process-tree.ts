@@ -16,11 +16,11 @@ import { execFile, spawn } from "node:child_process";
 
 // The pids a child-lister prints for one parent. Resolves empty when the parent has no children or
 // the lister reports failure -- `pgrep` exits 1 for "no matches", which is not an error here.
-function listChildren(command, args) {
-  return new Promise(resolve => {
+function listChildren(command: string, args: string[]): Promise<number[]> {
+  return new Promise<number[]>(resolve => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"] });
     let output = "";
-    child.stdout.on("data", chunk => { output += chunk.toString("ascii"); });
+    child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString("ascii"); });
     // `error` fires instead of `close` when the lister binary is missing.
     child.on("error", () => resolve([]));
     child.on("close", code => {
@@ -33,15 +33,15 @@ function listChildren(command, args) {
   });
 }
 
-function childListerFor(pid) {
+function childListerFor(pid: number): [string, string[]] {
   return process.platform === "darwin"
     ? ["pgrep", ["-P", String(pid)]]
     : ["ps", ["-o", "pid=", "--ppid", String(pid)]];
 }
 
 // Every pid in `pid`'s tree, `pid` included, collected breadth-first.
-async function collectTree(pid) {
-  const collected = new Set([pid]);
+async function collectTree(pid: number): Promise<number[]> {
+  const collected = new Set<number>([pid]);
   let frontier = [pid];
   while (frontier.length > 0) {
     const listed = await Promise.all(
@@ -52,17 +52,20 @@ async function collectTree(pid) {
   return [...collected];
 }
 
-function signalPid(pid, signal) {
+function signalPid(pid: number, signal: NodeJS.Signals): void {
   try {
     process.kill(pid, signal);
   } catch (error) {
     // Already gone, which is the outcome we wanted.
-    if (error.code !== "ESRCH") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
   }
 }
 
 /** Sends `signal` to `pid` and every descendant it has. */
-export async function killProcessTree(pid, signal = "SIGTERM") {
+export async function killProcessTree(
+  pid: number,
+  signal: NodeJS.Signals = "SIGTERM",
+): Promise<void> {
   // Upstream's fix for their #31, tightened: their parseInt guard still let through 0, negatives
   // and partially-numeric strings like "12abc", and a bad pid reaching `process.kill` is far worse
   // than an error, since kill(0) and negative values address entire process groups.
@@ -70,7 +73,7 @@ export async function killProcessTree(pid, signal = "SIGTERM") {
 
   if (process.platform === "win32") {
     // `/T` kills the tree for us. An argv array rather than upstream's interpolated `exec` string.
-    await new Promise(resolve => {
+    await new Promise<void>(resolve => {
       execFile("taskkill", ["/pid", String(pid), "/T", "/F"], () => resolve());
     });
     return;

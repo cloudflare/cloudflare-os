@@ -26,7 +26,7 @@ const deployScripts = readdirSync("packages", { withFileTypes: true })
  * zero and still deploys.
  *
  * Both are conditional on the command mentioning vp or a builder, so neither fires on a `deploy`
- * that runs no codegen whatsoever. build-gatekeeper-configurator.test.js requires that positively,
+ * that runs no codegen whatsoever. build-gatekeeper-configurator.test.ts requires that positively,
  * for the packages where it is a requirement.
  */
 describe("deploy scripts", () => {
@@ -53,7 +53,7 @@ describe("deploy scripts", () => {
   // shadows the declaration, and under vp the variable is stripped and the wrong value ships.
   it("reaches codegen through its task rather than invoking the builder", () => {
     for (const { name, path, command } of deployScripts) {
-      for (const builder of ["build-gatekeeper-configurator.mjs", "build-app.mjs"]) {
+      for (const builder of ["build-gatekeeper-configurator.ts", "build-app.mjs"]) {
         assert.ok(
           !command.includes(builder),
           `${name} (${path}) invokes ${builder} directly while deploying: ${command}\n` +

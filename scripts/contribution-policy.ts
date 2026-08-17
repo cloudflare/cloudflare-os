@@ -1,3 +1,81 @@
+// Loaded by .github/workflows/contribution-policy.yml through actions/github-script, whose
+// runtime is node24 — so Node strips the types here exactly as it does for the scripts run
+// directly. The GitHub API shapes below are written structurally rather than imported: the real
+// types live in @octokit/plugin-rest-endpoint-methods, which this repository does not depend on.
+
+/** The pull request fields the automatic checks read. A structural subset of the API response. */
+export interface PolicyPullRequest {
+  /** `open` or `closed`. Anything but `open` is left alone. */
+  state: string;
+  /** The author's relationship to the repository; the trusted set is exempt. */
+  author_association: string;
+  /** The author. */
+  user?: { login?: string } | null;
+  /** Labels on the pull request; the override label exempts it. */
+  labels?: { name: string }[];
+  /** The description, where the confirmation checkboxes live. */
+  body?: string | null;
+  /** Lines added. */
+  additions: number;
+  /** Lines removed. */
+  deletions: number;
+}
+
+/** An issue comment, reduced to what {@link findAutomationComment} matches on. */
+export interface AutomationComment {
+  /** Comment id, used to update it in place. */
+  id: number;
+  /** Comment author; only this automation's own comments are trusted. */
+  user?: { login?: string } | null;
+  /** Comment body, searched for the automation marker. */
+  body?: string | null;
+}
+
+/** Identifies one pull request to the API. */
+interface PullRequestRef {
+  owner: string;
+  repo: string;
+  pull_number: number;
+}
+
+/** The subset of actions/github-script's authenticated API client this module calls. */
+export interface GitHubClient {
+  rest: {
+    pulls: {
+      get(args: PullRequestRef): Promise<{ data: PolicyPullRequest }>;
+      update(args: PullRequestRef & { state: string }): Promise<unknown>;
+    };
+    repos: {
+      getCollaboratorPermissionLevel(args: { owner: string; repo: string; username: string }):
+          Promise<{ data: { permission: string } }>;
+    };
+    issues: {
+      listComments: unknown;
+      createComment(args: { owner: string; repo: string; issue_number: number; body: string }):
+          Promise<unknown>;
+      updateComment(args: { owner: string; repo: string; comment_id: number; body: string }):
+          Promise<unknown>;
+    };
+  };
+  paginate: {
+    iterator(route: unknown, args: unknown): AsyncIterable<{ data: AutomationComment[] }>;
+  };
+}
+
+/** The GitHub Actions event context fields this module reads. */
+export interface ActionsContext {
+  /** The repository the event fired for. */
+  repo: { owner: string; repo: string };
+  /** The issue (i.e. pull request) number. */
+  issue: { number: number };
+}
+
+/** The actions/github-script logging helper, reduced to what this module calls. */
+export interface ActionsCore {
+  /** Emits an annotation on the workflow run. */
+  notice(message: string): void;
+}
+
 const AUTOMATION_COMMENT_MARKER = "<!-- contribution-policy-automation -->";
 const MAX_CHANGED_LINES = 30;
 const MAX_COMMENT_PAGES = 5;
@@ -25,10 +103,10 @@ const REQUIRED_CONFIRMATIONS = [
  * An empty result means the automation should take no action, not that maintainers
  * have accepted the change.
  *
- * @param {object} pullRequest GitHub pull request API response.
- * @returns {string[]} Human-readable policy violations.
+ * @param pullRequest GitHub pull request API response.
+ * @returns Human-readable policy violations.
  */
-export function getContributionPolicyViolations(pullRequest) {
+export function getContributionPolicyViolations(pullRequest: PolicyPullRequest): string[] {
   if (
     pullRequest.state !== "open" ||
     TRUSTED_ASSOCIATIONS.has(pullRequest.author_association) ||
@@ -57,12 +135,14 @@ export function getContributionPolicyViolations(pullRequest) {
  * Enforces the contribution policy using the GitHub API client provided by
  * actions/github-script.
  *
- * @param {object} options GitHub Actions runtime dependencies.
- * @param {object} options.github Authenticated GitHub API client.
- * @param {object} options.context GitHub Actions event context.
- * @param {object} options.core GitHub Actions logging helper.
+ * @param options GitHub Actions runtime dependencies: the authenticated API client, the event
+ *     context, and the logging helper.
  */
-export async function enforceContributionPolicy({ github, context, core }) {
+export async function enforceContributionPolicy({ github, context, core }: {
+  github: GitHubClient;
+  context: ActionsContext;
+  core: ActionsCore;
+}): Promise<void> {
   const { owner, repo } = context.repo;
   const pullNumber = context.issue.number;
   const pullRequestArgs = {
@@ -123,7 +203,7 @@ export async function enforceContributionPolicy({ github, context, core }) {
   core.notice(`Closed pull request #${pullNumber} for contribution policy violations.`);
 }
 
-function hasCheckedConfirmation(body, marker) {
+function hasCheckedConfirmation(body: string, marker: string): boolean {
   const escapedMarker = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(
     `^[ \\t]*-[ \\t]*\\[[xX]\\][ \\t]*<!--[ \\t]*${escapedMarker}[ \\t]*-->`,
@@ -131,7 +211,10 @@ function hasCheckedConfirmation(body, marker) {
   ).test(body);
 }
 
-async function findAutomationComment(github, args) {
+async function findAutomationComment(
+  github: GitHubClient,
+  args: { owner: string; repo: string; issue_number: number; per_page: number },
+): Promise<AutomationComment | undefined> {
   let pageCount = 0;
 
   for await (const { data: comments } of github.paginate.iterator(
@@ -150,7 +233,7 @@ async function findAutomationComment(github, args) {
   return undefined;
 }
 
-function formatAutomationComment(violations) {
+function formatAutomationComment(violations: string[]): string {
   const details = violations.map((violation) => `- ${violation}`).join("\n");
 
   return `${AUTOMATION_COMMENT_MARKER}

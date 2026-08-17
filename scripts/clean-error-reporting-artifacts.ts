@@ -15,12 +15,12 @@ import { join, resolve } from "node:path";
 
 const packageDir = resolve(process.argv[2] ?? ".");
 
-async function removeReportingArtifacts(dir) {
-  let names;
+async function removeReportingArtifacts(dir: string): Promise<void> {
+  let names: string[];
   try {
     names = await readdir(dir);
   } catch (error) {
-    if (error?.code === "ENOENT") return;
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return;
     throw error;
   }
   await Promise.all(names

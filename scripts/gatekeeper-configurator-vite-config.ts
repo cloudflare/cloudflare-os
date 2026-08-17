@@ -45,13 +45,13 @@ const gatekeeperConfiguratorConfig = {
     tasks: {
       // Uncached: a cache hit restores archived outputs but never deletes files, so the sourcemap
       // artifacts of an enabled-reporting build would survive a later disabled-reporting cache hit
-      // (see clean-error-reporting-artifacts.mjs). This runs every time, before the cache lookup.
+      // (see clean-error-reporting-artifacts.ts). This runs every time, before the cache lookup.
       "clean:error-reporting-artifacts": {
-        command: "node ../../scripts/clean-error-reporting-artifacts.mjs .",
+        command: "node ../../scripts/clean-error-reporting-artifacts.ts .",
         cache: false,
       },
       "build:configurator": {
-        command: "node ../../scripts/build-gatekeeper-configurator.mjs .",
+        command: "node ../../scripts/build-gatekeeper-configurator.ts .",
         dependsOn: ["clean:error-reporting-artifacts"],
         input: [
           { auto: true },
@@ -64,7 +64,7 @@ const gatekeeperConfiguratorConfig = {
           { pattern: "!**/src/generated/**", base: "workspace" } satisfies GlobWithBase,
         ],
         output: ["src/generated/**"],
-        // Read via `loadEnv` in build-gatekeeper-configurator.mjs and baked into the generated
+        // Read via `loadEnv` in build-gatekeeper-configurator.ts and baked into the generated
         // HTML, so it belongs in the fingerprint.
         env: ["VITE_FRONTEND_ERROR_REPORTING"],
       },

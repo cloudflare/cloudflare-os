@@ -1,27 +1,27 @@
 // Golden test for the release manifest generator, run against the repo's REAL wrangler.jsonc
 // configs (with fixture bundles/assets substituted for actual builds, so no compilation is
 // needed). A deliberate consequence: changing any deployable package's wrangler.jsonc fails this
-// test until scripts/testdata/golden-manifest.json is regenerated — forcing a conscious decision
+// test until testdata/golden-manifest.json is regenerated — forcing a conscious decision
 // about how the change reaches customer instances.
 //
-// Regenerate with: UPDATE_GOLDEN=1 node --test scripts/release-manifest.test.js
+// Regenerate with: UPDATE_GOLDEN=1 node --test scripts/release/manifest-lib.test.ts
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { collectAssets, collectModules, stableStringify } from "./release/hash-lib.mjs";
+import { collectAssets, collectModules, stableStringify } from "./hash-lib.ts";
 import {
   findDeployablePackages, generateManifest, readDeployInputs, readWranglerConfig,
-} from "./release/manifest-lib.mjs";
+} from "./manifest-lib.ts";
 
-const SCRIPTS = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(SCRIPTS, "..");
-const TESTDATA = join(SCRIPTS, "testdata");
+const RELEASE = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(RELEASE, "..", "..");
+const TESTDATA = join(RELEASE, "testdata");
 const GOLDEN_PATH = join(TESTDATA, "golden-manifest.json");
 
-// Placeholder syntax the deploy-side renderer understands. Closed list — see manifest-lib.mjs.
+// Placeholder syntax the deploy-side renderer understands. Closed list — see manifest-lib.ts.
 const PLACEHOLDER_RE =
     /^\$(ACCOUNT_ID|PUBLIC_BASE_URL|KV_[A-Z0-9_]+_ID|R2_[A-Z0-9_]+_NAME|WORKER_NAME\([a-z0-9-]+\)|SECRET\([A-Z0-9_]+\))/;
 
@@ -29,7 +29,7 @@ function buildTestManifest() {
   const workers = findDeployablePackages(join(ROOT, "packages")).map((pkg) => {
     const bundleDir = join(TESTDATA, "fixture-bundles", pkg.name);
     assert.ok(existsSync(bundleDir),
-        `missing fixture bundle for new deployable package: add scripts/testdata/` +
+        `missing fixture bundle for new deployable package: add scripts/release/testdata/` +
         `fixture-bundles/${pkg.name}/ with a single .js module`);
     const { mainModule, modules } = collectModules(bundleDir);
     return {
@@ -64,12 +64,12 @@ test("manifest generated from real configs matches the golden file", () => {
   assert.deepEqual(JSON.parse(rendered), JSON.parse(readFileSync(GOLDEN_PATH, "utf8")),
       "manifest changed. If the wrangler.jsonc change is intentional, verify the deploy " +
       "service handles it, then regenerate: UPDATE_GOLDEN=1 node --test " +
-      "scripts/release-manifest.test.js");
+      "scripts/release/manifest-lib.test.ts");
 });
 
 test("every $-token in binding templates and vars uses known placeholder syntax", () => {
   const manifest = buildTestManifest();
-  const check = (value, where) => {
+  const check = (value: unknown, where: string): void => {
     if (typeof value === "string") {
       for (const match of value.matchAll(/\$[A-Z_]+[A-Za-z0-9_()-]*/g)) {
         assert.match(match[0], PLACEHOLDER_RE, `unknown placeholder ${match[0]} in ${where}`);
@@ -110,11 +110,12 @@ test("worker entries carry the deploy contract", () => {
   assert.deepEqual(
       backend.bindings.find((b) => b.name === "WORKERS_AI"),
       { type: "ai", name: "WORKERS_AI" });
+  assert.ok(backend.gatekeeperBindingExpansion);
   assert.equal(backend.gatekeeperBindingExpansion.entrypoint, "GatekeeperVendor");
   assert.equal(backend.vars.PUBLIC_BASE_URL, "$PUBLIC_BASE_URL");
   // Full ordered migration history, verbatim from wrangler.jsonc.
   assert.equal(backend.migrations[0].tag, "v0");
-  assert.ok(backend.migrations[0].new_sqlite_classes.includes("UserDurableObject"));
+  assert.ok(backend.migrations[0].new_sqlite_classes?.includes("UserDurableObject"));
 
   // Router: serves the access asset variant, binds the backend by templated worker name.
   const router = workers["router"];
@@ -122,7 +123,8 @@ test("worker entries carry the deploy contract", () => {
       router.bindings.find((b) => b.name === "WORKSHOP_BACKEND"),
       { type: "service", name: "WORKSHOP_BACKEND", service: "$WORKER_NAME(workshop-backend)" });
   assert.ok(router.bindings.some((b) => b.type === "assets" && b.name === "ASSETS"));
-  assert.ok(router.assetsConfig.run_worker_first.includes("/gatekeeper/*"));
+  assert.ok(router.assetsConfig);
+  assert.ok(router.assetsConfig.run_worker_first?.includes("/gatekeeper/*"));
   assert.equal(router.assetsConfig.not_found_handling, "single-page-application");
   assert.deepEqual(Object.keys(router.assetsConfig.variants), ["access"]);
   for (const variant of Object.values(router.assetsConfig.variants)) {
@@ -138,7 +140,7 @@ test("worker entries carry the deploy contract", () => {
   assert.equal(google.shortName, "google");
   assert.equal(google.vars.BASE_URL, "$PUBLIC_BASE_URL/gatekeeper/google");
   assert.ok(google.installable);
-  assert.deepEqual(google.inputs.map((i) => i.name), ["CLIENT_ID", "CLIENT_SECRET"]);
+  assert.deepEqual(google.inputs?.map((i) => i.name), ["CLIENT_ID", "CLIENT_SECRET"]);
   assert.deepEqual(
       google.bindings.find((b) => b.name === "CLIENT_SECRET"),
       { type: "secret_text", name: "CLIENT_SECRET", text: "$SECRET(CLIENT_SECRET)" });

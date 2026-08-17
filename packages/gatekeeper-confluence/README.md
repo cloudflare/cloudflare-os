@@ -80,7 +80,7 @@ CONFLUENCE_CLIENT_ID=your-client-id
 CONFLUENCE_CLIENT_SECRET=your-client-secret
 ```
 
-`run-dev-server.js` maps `CONFLUENCE_CLIENT_ID` / `CONFLUENCE_CLIENT_SECRET` into the Worker's
+`run-dev-server.ts` maps `CONFLUENCE_CLIENT_ID` / `CONFLUENCE_CLIENT_SECRET` into the Worker's
 `CLIENT_ID` / `CLIENT_SECRET` vars. For production, set `CLIENT_ID` and `CLIENT_SECRET` as secrets
 on the deployed Worker and set `BASE_URL` to the public gatekeeper URL.
 

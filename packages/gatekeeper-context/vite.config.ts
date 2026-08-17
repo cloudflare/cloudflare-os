@@ -16,7 +16,7 @@ export default defineConfig({
       // survive a later disabled-reporting cache hit and could be collected as if they matched the
       // current bundle. This runs every time, before the cache lookup.
       'clean:error-reporting-artifacts': {
-        command: 'node ../../scripts/clean-error-reporting-artifacts.mjs .',
+        command: 'node ../../scripts/clean-error-reporting-artifacts.ts .',
         cache: false,
       },
       // A task rather than a package.json script so `input` can be stated explicitly: automatic

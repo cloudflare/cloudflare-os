@@ -33,7 +33,7 @@ flow.
 ## Configuration
 
 The gatekeeper Worker reads `CLIENT_ID` and `CLIENT_SECRET`. In local development these are seeded
-from shell/`.dev.vars` variables by `run-dev-server.js`:
+from shell/`.dev.vars` variables by `run-dev-server.ts`:
 
 ```
 SUPABASE_CLIENT_ID=<oauth app client id>

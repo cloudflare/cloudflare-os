@@ -7,7 +7,7 @@
   "compatibility_date": "2025-11-01",
   "compatibility_flags": ["enable_ctx_exports"],
 
-  // Gatekeeper service bindings are dynamically added by run-dev-server.js.
+  // Gatekeeper service bindings are dynamically added by run-dev-server.ts.
   "services": [
     {
       "binding": "WORKSHOP_BACKEND",

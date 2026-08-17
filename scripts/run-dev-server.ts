@@ -14,22 +14,32 @@
 import {
   existsSync, readFileSync, writeFileSync, readdirSync, statSync, realpathSync,
 } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { connect } from "node:net";
 import { constants } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
-import { getDevServerConfig } from "./scripts/dev-server-config.js";
-import { killProcessTree } from "./scripts/kill-process-tree.js";
+import { getDevServerConfig } from "./dev-server-config.ts";
+import { killProcessTree } from "./kill-process-tree.ts";
+import type { ServiceBinding, WranglerBuild } from "./release/manifest-lib.ts";
 
-const ROOT = dirname(fileURLToPath(import.meta.url));
+const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(SCRIPTS_DIR, "..");
 const PACKAGES_DIR = join(ROOT, "packages");
 const WORKSHOP_BACKEND_DIR = join(PACKAGES_DIR, "workshop-backend");
 
+/** A gatekeeper package as {@link findGatekeepers} discovers it. */
+interface Gatekeeper {
+  /** Package directory name, which is also the worker name. */
+  name: string;
+  /** Absolute path to the package directory. */
+  dir: string;
+}
+
 // Load a root `.dev.vars` file (KEY=VALUE lines) into process.env for local development. Existing
 // shell environment values take precedence. This file is gitignored and may hold local secrets.
-function loadDevVars() {
+function loadDevVars(): void {
   const path = join(ROOT, ".dev.vars");
   if (!existsSync(path)) return;
   for (const rawLine of readFileSync(path, "utf8").split("\n")) {
@@ -56,20 +66,20 @@ const useWorkersAi = process.argv.includes("--use-workers-ai-binding");
 // Vite on :3000 and no `vite build` is required to start the dev server.
 const serveFrontendAssets = process.argv.includes("--serve-frontend-assets");
 
-let backendHost;
-let wranglerPort;
+let backendHost: string;
+let wranglerPort: string | null;
 try {
   ({ backendHost, wranglerPort } = getDevServerConfig(
       process.argv.slice(2), process.env.VITE_BACKEND_HOST));
 } catch (err) {
-  console.error(err.message);
+  console.error((err as Error).message);
   process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
 // Discover gatekeeper packages.
 // ---------------------------------------------------------------------------
-function findGatekeepers(parentDir) {
+function findGatekeepers(parentDir: string): Gatekeeper[] {
   try {
     return readdirSync(parentDir)
         .filter(name => name.startsWith("gatekeeper-"))
@@ -99,14 +109,14 @@ const DEFAULT_WRANGLER_PORT = 8787;
 
 // Watchers rebuild each gatekeeper's generated UI (src/generated/*) on source change; wrangler dev's
 // `watch_dir: src` then re-bundles the worker. Deferred ones start once Wrangler is listening.
-const devWatchers = [];
-const deferredWatchers = [];
+const devWatchers: ChildProcess[] = [];
+const deferredWatchers: (() => void)[] = [];
 let stoppingDevWatchers = false;
-let wranglerChild = null;
+let wranglerChild: ChildProcess | null = null;
 
 // Resolve once something accepts a TCP connection on `port`, or once `timeoutMs` has elapsed.
-function waitForPort(port, timeoutMs) {
-  return new Promise(resolve => {
+function waitForPort(port: number, timeoutMs: number): Promise<void> {
+  return new Promise<void>(resolve => {
     const deadline = Date.now() + timeoutMs;
     const attempt = () => {
       const socket = connect({ port, host: "127.0.0.1" });
@@ -125,7 +135,7 @@ function waitForPort(port, timeoutMs) {
 }
 
 // Spawn a persistent watcher.
-function spawnDevWatcher(label, command, args) {
+function spawnDevWatcher(label: string, command: string, args: string[]): void {
   const watcher = spawn(command, args, { stdio: "inherit", cwd: ROOT });
   watcher.on("exit", (code, signal) => {
     if (stoppingDevWatchers) return;
@@ -136,12 +146,12 @@ function spawnDevWatcher(label, command, args) {
 
 // No-op once shutdown has begun: reaching the port deadline just as the user hits Ctrl-C must not
 // spawn a watcher that nothing is left to kill.
-function startDeferredWatchers() {
+function startDeferredWatchers(): void {
   if (stoppingDevWatchers) return;
   for (const start of deferredWatchers.splice(0)) start();
 }
 
-function stopDevWatchers() {
+function stopDevWatchers(): void {
   stoppingDevWatchers = true;
   deferredWatchers.length = 0;
   for (const watcher of devWatchers) watcher.kill();
@@ -153,12 +163,12 @@ process.on("exit", stopDevWatchers);
 // `node build-app.mjs --watch` wrapper leaves holding CPU and file watches after we are gone. Must
 // not call stopDevWatchers() first: killing a wrapper reparents its children away from it, and the
 // tree walk can no longer find them.
-async function stopDevWatchersDeep() {
+async function stopDevWatchersDeep(): Promise<void> {
   stoppingDevWatchers = true;
   deferredWatchers.length = 0;
   await Promise.all(devWatchers
-      .filter(watcher => watcher.exitCode === null && watcher.signalCode === null && watcher.pid)
-      .map(watcher => killProcessTree(watcher.pid).catch(() => {})));
+      .filter(watcher => watcher.exitCode === null && watcher.signalCode === null)
+      .map(watcher => watcher.pid ? killProcessTree(watcher.pid).catch(() => {}) : null));
 }
 
 // Shutdown is driven by Wrangler's exit. Ctrl-C reaches the whole process group, so Wrangler is
@@ -169,9 +179,9 @@ async function stopDevWatchersDeep() {
 const FORCE_KILL_GRACE_MS = 10_000;
 let receivedShutdownSignals = 0;
 let forcingShutdown = false;
-let shutdownExitCode = null;
+let shutdownExitCode: number | null = null;
 
-async function forceKillWrangler(exitCode) {
+async function forceKillWrangler(exitCode: number): Promise<void> {
   if (forcingShutdown) return;
   forcingShutdown = true;
   if (wranglerChild?.exitCode === null && wranglerChild.signalCode === null && wranglerChild.pid) {
@@ -180,7 +190,7 @@ async function forceKillWrangler(exitCode) {
   process.exit(exitCode);
 }
 
-async function onShutdownSignal(signal, exitCode) {
+async function onShutdownSignal(signal: NodeJS.Signals, exitCode: number): Promise<void> {
   receivedShutdownSignals++;
   shutdownExitCode ??= exitCode;
   if (receivedShutdownSignals > 1) return forceKillWrangler(exitCode);
@@ -206,13 +216,13 @@ process.on("SIGTERM", () => onShutdownSignal("SIGTERM", 143));
 // The pre-flight builds still running. Kept separate from `devWatchers`, whose `exit` handler runs
 // on every shutdown path; these need killing on two paths only: when a sibling build has failed,
 // and on a SIGTERM that arrives while they are still running.
-const preflightBuilds = new Set();
+const preflightBuilds = new Set<ChildProcess>();
 let stoppingPreflightBuilds = false;
 
 // Two of the three builds are `pnpm exec vp run ...`, so this has to reach each one's `vp`/`vite`
 // descendants -- a bare kill() would signal only the wrapper and leave them writing. Awaited by
 // callers: process.exit() would cut the tree walk short.
-async function stopPreflightBuilds() {
+async function stopPreflightBuilds(): Promise<void> {
   stoppingPreflightBuilds = true;
   await Promise.all([...preflightBuilds].map(child =>
       child.pid ? killProcessTree(child.pid).catch(() => {}) : null));
@@ -220,8 +230,8 @@ async function stopPreflightBuilds() {
 
 // Run a one-shot build to completion. A promise rather than execFileSync so the pre-flight builds
 // can overlap.
-function runBuild(label, command, args, cwd) {
-  return new Promise((resolve, reject) => {
+function runBuild(label: string, command: string, args: string[], cwd: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { stdio: "inherit", cwd });
     preflightBuilds.add(child);
     child.on("error", error => {
@@ -267,7 +277,7 @@ try {
   // The SIGTERM handler killing the builds also lands here, as the rejection of whichever build
   // died first. The handler owns teardown and the exit code (143), so park and let it exit.
   if (stoppingPreflightBuilds) await new Promise(() => {});
-  console.error(err.message);
+  console.error((err as Error).message);
   // The siblings of the build that failed are still running. Left alone they would outlive this
   // process, writing their outputs after startup has reported failure and colliding with an
   // immediate re-run.
@@ -278,7 +288,7 @@ try {
 // Watchers start only after those builds finish. Both watch modes run a full build before they
 // begin watching, so starting one earlier would put two processes on the same src/generated files.
 for (const gk of gatekeepers) {
-  // Configurator UI (compiled by build-gatekeeper-configurator.mjs). The pre-flight already ran this
+  // Configurator UI (compiled by build-gatekeeper-configurator.ts). The pre-flight already ran this
   // same build, so each watcher's own initial build is a no-op write -- and it is what keeps the
   // watcher self-contained: it reads the sources itself, immediately before it starts watching them,
   // so an edit made while the watchers are still spawning is either in that build or seen by the
@@ -288,7 +298,7 @@ for (const gk of gatekeepers) {
     spawnDevWatcher(
       `configurator UI watcher for ${gk.name}`,
       process.execPath,
-      [join(ROOT, "scripts", "build-gatekeeper-configurator.mjs"), gk.dir, "--watch", "--quiet"],
+      [join(SCRIPTS_DIR, "build-gatekeeper-configurator.ts"), gk.dir, "--watch", "--quiet"],
     );
   }
 
@@ -309,7 +319,7 @@ for (const gk of gatekeepers) {
 }
 
 // Helper: "gatekeeper-github" -> "GATEKEEPER_GITHUB"
-function bindingName(gk) {
+function bindingName(gk: Gatekeeper): string {
   return gk.name.toUpperCase().replaceAll("-", "_");
 }
 
@@ -329,7 +339,7 @@ function bindingName(gk) {
 
 // Absolute path to the JS entry point behind `node_modules/.bin/<bin>`, or null if it cannot be
 // found. Resolved from the package's own node_modules so pnpm's per-package layout is respected.
-function resolveBinEntry(pkgDir, bin) {
+function resolveBinEntry(pkgDir: string, bin: string): string | null {
   try {
     const manifestPath = realpathSync(join(pkgDir, "node_modules", bin, "package.json"));
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
@@ -346,14 +356,14 @@ function resolveBinEntry(pkgDir, bin) {
 // command: inside them POSIX shells still expand `$` and backticks and collapse `\\`, cmd still
 // expands `%`, and an embedded quote or a trailing backslash would break the quoting itself.
 // Unsafe paths keep the committed `pnpm exec` form -- slower, but correct for any path.
-function shellSafe(path) {
+function shellSafe(path: string): boolean {
   return !/[$`%"]|\\\\|\\$/.test(path);
 }
 
 // `pnpm run <script>` is expanded to the script body (so any `pnpm exec` inside it is rewritten
 // too), then each `pnpm exec <bin>` becomes a direct `node <entry>`. Wrangler runs the result
 // through a shell, so a body chained with `&&` stays valid.
-function withoutPnpmIndirection(pkgDir, command, depth = 0) {
+function withoutPnpmIndirection(pkgDir: string, command: string, depth = 0): string {
   const runScript = /^pnpm run ([\w:.@-]+)$/.exec(command.trim())?.[1];
   if (runScript && depth < 2) {
     try {
@@ -374,7 +384,7 @@ function withoutPnpmIndirection(pkgDir, command, depth = 0) {
 // Dev build settings for a worker: an explicit cwd (this script starts a multi-config Wrangler from
 // the repo root, so the committed relative paths would otherwise resolve against the wrong
 // directory) and the de-indirected command.
-function devBuildConfig(build, pkgDir) {
+function devBuildConfig(build: WranglerBuild | undefined, pkgDir: string): WranglerBuild {
   const dev = { ...build, cwd: pkgDir };
   if (typeof dev.command !== "string") return dev;
 
@@ -409,7 +419,7 @@ function devBuildConfig(build, pkgDir) {
 // ---------------------------------------------------------------------------
 
 // Maps a gatekeeper name to the shared env vars whose values seed its CLIENT_ID / CLIENT_SECRET.
-const SHARED_GATEKEEPER_CREDS = {
+const SHARED_GATEKEEPER_CREDS: Record<string, { id: string; secret: string }> = {
   "gatekeeper-github": { id: "GITHUB_CLIENT_ID", secret: "GITHUB_CLIENT_SECRET" },
   "gatekeeper-google": { id: "GOOGLE_CLIENT_ID", secret: "GOOGLE_CLIENT_SECRET" },
   "gatekeeper-cloudflare": { id: "CLOUDFLARE_OAUTH_CLIENT_ID", secret: "CLOUDFLARE_OAUTH_CLIENT_SECRET" },
@@ -427,7 +437,7 @@ const SHARED_GATEKEEPER_CREDS = {
 // tracked file, and a URL committed there becomes the default for everyone who deploys this repo.
 // `.dev.vars` is gitignored, so it cannot leave the machine. Secrets travel the same way
 // `CLIENT_SECRET` already does, via SHARED_GATEKEEPER_CREDS above.
-const PASSTHROUGH_GATEKEEPER_VARS = {
+const PASSTHROUGH_GATEKEEPER_VARS: Record<string, string[]> = {
   "gatekeeper-mcp-portal": [
     "MCP_PORTAL_URL", "MCP_PORTAL_NAME", "MCP_PORTAL_AUTH", "MCP_PORTAL_TOKEN",
     "MCP_PORTAL_TRUST_ANNOTATIONS", "MCP_ALLOW_INSECURE",
@@ -495,7 +505,7 @@ for (const gk of gatekeepers) {
   }
 
   for (const gk of gatekeepers) {
-    const binding = {
+    const binding: ServiceBinding = {
       binding: bindingName(gk),
       service: gk.name,
       entrypoint: "GatekeeperVendor",
@@ -546,7 +556,7 @@ if (wranglerPort) {
   args.push("--port", wranglerPort);
 } else {
   console.warn(
-      "VITE_BACKEND_HOST did not include a port, so run-dev-server.js could not derive " +
+      "VITE_BACKEND_HOST did not include a port, so run-dev-server.ts could not derive " +
       "a Wrangler --port override.");
 }
 console.log(`\nStarting: wrangler dev ${args.join(" ")}\n`);

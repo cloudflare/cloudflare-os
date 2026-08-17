@@ -5,7 +5,12 @@ import { describe, it } from "node:test";
 import {
   enforceContributionPolicy,
   getContributionPolicyViolations,
-} from "./contribution-policy.js";
+  type ActionsContext,
+  type ActionsCore,
+  type AutomationComment,
+  type GitHubClient,
+  type PolicyPullRequest,
+} from "./contribution-policy.ts";
 
 const pullRequestTemplate = readFileSync(
   new URL("../.github/pull_request_template.md", import.meta.url),
@@ -17,7 +22,18 @@ const contributionPolicyWorkflow = readFileSync(
 );
 const compliantBody = pullRequestTemplate.replaceAll("- [ ]", "- [x]");
 
-function makePullRequest(overrides = {}) {
+/**
+ * The fixture pull request: every field the policy reads, plus the two the API sends that it
+ * deliberately does not consult — `draft` and `merged`, each asserted by a test below.
+ */
+interface FixturePullRequest extends PolicyPullRequest {
+  /** Whether the pull request is a draft. Drafts are checked like any other. */
+  draft?: boolean;
+  /** Whether it was merged. Only `state` decides; a merged one is closed. */
+  merged?: boolean;
+}
+
+function makePullRequest(overrides: Partial<FixturePullRequest> = {}): FixturePullRequest {
   return {
     additions: 10,
     author_association: "NONE",
@@ -125,10 +141,11 @@ describe("getContributionPolicyViolations", () => {
     ]);
   });
 
-  for (const [description, pullRequest] of [
+  const exempt: [string, Partial<FixturePullRequest>][] = [
     ["closed", { state: "closed" }],
     ["merged", { merged: true, state: "closed" }],
-  ]) {
+  ];
+  for (const [description, pullRequest] of exempt) {
     it(`exempts ${description} pull requests`, () => {
       const violations = getContributionPolicyViolations(
         makePullRequest({ additions: 100, body: "", ...pullRequest }),
@@ -171,7 +188,7 @@ describe("contribution policy workflow", () => {
 
 describe("enforceContributionPolicy", () => {
   it("comments and closes a pull request with policy violations", async () => {
-    const calls = [];
+    const calls: RecordedCall[] = [];
     const github = makeGitHub(makePullRequest({ additions: 31 }), [], calls);
 
     await enforceContributionPolicy({ github, context, core });
@@ -180,11 +197,12 @@ describe("enforceContributionPolicy", () => {
       "createComment",
       "closePullRequest",
     ]);
+    assert.ok(calls[0].body, "the comment carried no body");
     assert.match(calls[0].body, /patch changes 36 lines/);
   });
 
   it("updates its existing comment before closing again", async () => {
-    const calls = [];
+    const calls: RecordedCall[] = [];
     const comments = [{
       body: "<!-- contribution-policy-automation -->\nOld explanation",
       id: 456,
@@ -202,7 +220,7 @@ describe("enforceContributionPolicy", () => {
   });
 
   it("does not trust another author's automation marker", async () => {
-    const calls = [];
+    const calls: RecordedCall[] = [];
     const comments = [{
       body: "<!-- contribution-policy-automation -->\nSpoofed explanation",
       id: 789,
@@ -219,7 +237,7 @@ describe("enforceContributionPolicy", () => {
   });
 
   it("does nothing when the automatic checks pass", async () => {
-    const calls = [];
+    const calls: RecordedCall[] = [];
     const github = makeGitHub(makePullRequest(), [], calls);
 
     await enforceContributionPolicy({ github, context, core });
@@ -228,7 +246,7 @@ describe("enforceContributionPolicy", () => {
   });
 
   it("does not close a pull request whose contributor-associated author can push", async () => {
-    const calls = [];
+    const calls: RecordedCall[] = [];
     const github = makeGitHub(
       makePullRequest({ additions: 100, author_association: "CONTRIBUTOR", body: "" }),
       [],
@@ -242,7 +260,7 @@ describe("enforceContributionPolicy", () => {
   });
 
   it("still closes a pull request whose contributor-associated author cannot push", async () => {
-    const calls = [];
+    const calls: RecordedCall[] = [];
     const github = makeGitHub(
       makePullRequest({ additions: 100, author_association: "CONTRIBUTOR", body: "" }),
       [],
@@ -258,7 +276,7 @@ describe("enforceContributionPolicy", () => {
   });
 
   it("does not close a pull request corrected during evaluation", async () => {
-    const calls = [];
+    const calls: RecordedCall[] = [];
     const github = makeGitHub(
       [makePullRequest({ body: "" }), makePullRequest()],
       [],
@@ -271,7 +289,7 @@ describe("enforceContributionPolicy", () => {
   });
 
   it("does not comment on a pull request closed during evaluation", async () => {
-    const calls = [];
+    const calls: RecordedCall[] = [];
     const github = makeGitHub(
       [
         makePullRequest({ body: "" }),
@@ -287,14 +305,31 @@ describe("enforceContributionPolicy", () => {
   });
 });
 
-const context = {
+const context: ActionsContext = {
   issue: { number: 123 },
   repo: { owner: "cloudflare", repo: "cloudflare-os" },
 };
 
-const core = { notice() {} };
+const core: ActionsCore = { notice() {} };
 
-function makeGitHub(pullRequest, comments, calls, { authorPermission = "read" } = {}) {
+/** One call the fake client recorded, as `{ operation, ...args }`. */
+interface RecordedCall {
+  /** Which operation was called. `closePullRequest` is `pulls.update`. */
+  operation: "createComment" | "updateComment" | "closePullRequest";
+  /** The comment body, for the two comment operations. */
+  body?: string;
+  /** The comment updated in place, for `updateComment`. */
+  comment_id?: number;
+  /** Whatever else the call carried: owner, repo, issue_number, pull_number, state. */
+  [key: string]: unknown;
+}
+
+function makeGitHub(
+  pullRequest: FixturePullRequest | FixturePullRequest[],
+  comments: AutomationComment[],
+  calls: RecordedCall[],
+  { authorPermission = "read" }: { authorPermission?: string } = {},
+): GitHubClient {
   const pullRequests = Array.isArray(pullRequest) ? pullRequest : [pullRequest];
   let pullRequestIndex = 0;
   const paginate = async () => comments;

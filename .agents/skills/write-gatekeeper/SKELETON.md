@@ -605,7 +605,7 @@ script sharing a name. Build this one package with `pnpm exec vp run -F <package
 `pnpm --filter` cannot see a task, so `pnpm --filter <package-name> build` reports nothing to run;
 the workspace-wide `pnpm build` picks it up as usual. `deploy` goes through the task rather than
 calling
-`build-gatekeeper-configurator.mjs` itself, so the codegen command lives in one place and cannot
+`build-gatekeeper-configurator.ts` itself, so the codegen command lives in one place and cannot
 drift from the task that declares its env — `wrangler deploy` stays outside vp, since it has side
 effects and needs real credentials.
 

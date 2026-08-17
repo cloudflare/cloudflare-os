@@ -31,7 +31,7 @@ jobs:
           script: |
             const { pathToFileURL } = await import("node:url");
             const policyUrl = pathToFileURL(
-              `${process.env.GITHUB_WORKSPACE}/scripts/contribution-policy.js`,
+              `${process.env.GITHUB_WORKSPACE}/scripts/contribution-policy.ts`,
             );
             const { enforceContributionPolicy } = await import(policyUrl.href);
             await enforceContributionPolicy({ github, context, core });

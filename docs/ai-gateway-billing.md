@@ -46,7 +46,7 @@ PUBLIC_BASE_URL=https://your-host
 AUTH_GATEKEEPERS=cloudflare       # allow Cloudflare sign-in/connect (plus any others)
 
 # The Cloudflare gatekeeper's OAuth app (client id/secret live on the gatekeeper Worker; in dev
-# they're seeded from these shell vars by run-dev-server.js):
+# they're seeded from these shell vars by run-dev-server.ts):
 CLOUDFLARE_OAUTH_CLIENT_ID=...
 CLOUDFLARE_OAUTH_CLIENT_SECRET=...
 

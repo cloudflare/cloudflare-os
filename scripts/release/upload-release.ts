@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Mirrors a built release directory (see build-release.mjs) to R2 via the S3 API.
+// Mirrors a built release directory (see build-release.ts) to R2 via the S3 API.
 //
 // Blobs are content-addressed, so unchanged files dedupe across releases: each key is HEAD'd
 // first and skipped if present. The manifest is uploaded LAST — its presence under
@@ -8,35 +8,36 @@
 // leaves a manifest pointing at missing blobs.
 //
 // With --candidate the manifest lands under candidates/<id>/manifest.json instead — invisible
-// to the deploy service (which scans only releases/) until promote-release.mjs copies it over
+// to the deploy service (which scans only releases/) until promote-release.ts copies it over
 // after the e2e gate passes. Blob handling is identical either way.
 //
 // Env: R2_ENDPOINT (https://<account>.r2.cloudflarestorage.com), R2_BUCKET,
 //      R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
-// Usage: node scripts/release/upload-release.mjs --release <dir> [--candidate]
+// Usage: node scripts/release/upload-release.ts --release <dir> [--candidate]
 
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AwsClient } from "aws4fetch";
-import { assetR2Key, moduleR2Key } from "./manifest-lib.mjs";
+import { assetR2Key, moduleR2Key, type ReleaseManifest } from "./manifest-lib.ts";
 
 const UPLOAD_CONCURRENCY = 8;
 
-function requireEnv(name) {
+function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`missing required environment variable: ${name}`);
   return value;
 }
 
-function parseArgs(argv) {
-  const args = { release: undefined, candidate: false };
+function parseArgs(argv: string[]): { release: string; candidate: boolean } {
+  let release: string | undefined;
+  let candidate = false;
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--release") args.release = resolve(argv[++i]);
-    else if (argv[i] === "--candidate") args.candidate = true;
+    if (argv[i] === "--release") release = resolve(argv[++i]);
+    else if (argv[i] === "--candidate") candidate = true;
     else throw new Error(`unknown argument: ${argv[i]}`);
   }
-  if (!args.release) throw new Error("--release <dir> is required");
-  return args;
+  if (!release) throw new Error("--release <dir> is required");
+  return { release, candidate };
 }
 
 async function main() {
@@ -49,9 +50,10 @@ async function main() {
     service: "s3",
     region: "auto",
   });
-  const keyUrl = (key) => `${endpoint}/${bucket}/${key}`;
+  const keyUrl = (key: string) => `${endpoint}/${bucket}/${key}`;
 
-  const manifest = JSON.parse(readFileSync(join(args.release, "manifest.json"), "utf8"));
+  const manifest = JSON.parse(
+      readFileSync(join(args.release, "manifest.json"), "utf8")) as ReleaseManifest;
 
   const blobs = [
     ...readdirSync(join(args.release, "modules")).map((sha256) => ({

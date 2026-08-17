@@ -2,7 +2,7 @@
 
 // Promotes an e2e-verified candidate release: copies candidates/<id>/manifest.json to
 // releases/<id>/manifest.json. The blobs are already in place — content-addressed and uploaded
-// by upload-release.mjs before its manifest PUT — so publishing is this single manifest copy.
+// by upload-release.ts before its manifest PUT — so publishing is this single manifest copy.
 // The copy is all-or-nothing (manifest-last protocol: the deploy service scans only releases/),
 // but NOT isolated: the newer-release guard below is check-then-act, so concurrent promotions
 // could still interleave between its LIST and the copy. The caller must serialize runs of this
@@ -21,21 +21,21 @@
 //
 // Env: R2_ENDPOINT (https://<account>.r2.cloudflarestorage.com), R2_BUCKET,
 //      R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
-// Usage: node scripts/release/promote-release.mjs --release-id <id>
+// Usage: node scripts/release/promote-release.ts --release-id <id>
 
 import { pathToFileURL } from "node:url";
 import { AwsClient } from "aws4fetch";
 
 /** The CI run number of an `r<run#>-<sha>` release id, or null for any other id shape
  *  (dev-<ts> releases carry no ordering claim). */
-export function ciRunNumber(releaseId) {
+export function ciRunNumber(releaseId: string): number | null {
   const match = /^r(\d+)-/.exec(releaseId);
   return match ? Number(match[1]) : null;
 }
 
 /** The already-published CI release id that supersedes this candidate, or null. Non-CI ids
  *  (either side) never participate: only run numbers are comparable. */
-export function supersededBy(candidateId, publishedIds) {
+export function supersededBy(candidateId: string, publishedIds: Iterable<string>): string | null {
   const candidateRun = ciRunNumber(candidateId);
   if (candidateRun === null) return null;
   for (const id of publishedIds) {
@@ -45,27 +45,30 @@ export function supersededBy(candidateId, publishedIds) {
   return null;
 }
 
-function requireEnv(name) {
+function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`missing required environment variable: ${name}`);
   return value;
 }
 
-function parseArgs(argv) {
-  const args = { releaseId: undefined };
+function parseArgs(argv: string[]): { releaseId: string } {
+  let releaseId: string | undefined;
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--release-id") args.releaseId = argv[++i];
+    if (argv[i] === "--release-id") releaseId = argv[++i];
     else throw new Error(`unknown argument: ${argv[i]}`);
   }
-  if (!args.releaseId) throw new Error("--release-id <id> is required");
-  return args;
+  if (!releaseId) throw new Error("--release-id <id> is required");
+  return { releaseId };
 }
 
 // Key names only (paginated ListObjectsV2, 1000 keys per round trip); manifest bodies are
 // never fetched.
-async function listPublishedReleaseIds(client, keyUrl) {
-  const ids = [];
-  let token;
+async function listPublishedReleaseIds(
+  client: AwsClient,
+  keyUrl: (key: string) => string,
+): Promise<string[]> {
+  const ids: string[] = [];
+  let token: string | undefined;
   do {
     const params = new URLSearchParams({ "list-type": "2", prefix: "releases/" });
     if (token) params.set("continuation-token", token);
@@ -92,7 +95,7 @@ async function main() {
     service: "s3",
     region: "auto",
   });
-  const keyUrl = (key) => `${endpoint}/${bucket}/${key}`;
+  const keyUrl = (key: string) => `${endpoint}/${bucket}/${key}`;
 
   const publishedKey = `releases/${args.releaseId}/manifest.json`;
   const candidateKey = `candidates/${args.releaseId}/manifest.json`;

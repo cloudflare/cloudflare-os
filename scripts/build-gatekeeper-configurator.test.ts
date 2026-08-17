@@ -5,21 +5,25 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { after, before, describe, it } from "node:test";
-import ts from "typescript6"; // JS compiler API (decodeMappings); see build-gatekeeper-configurator.mjs
+import ts from "typescript6"; // JS compiler API (decodeMappings); see build-gatekeeper-configurator.ts
 
 const execFileAsync = promisify(execFile);
-const builder = resolve("scripts/build-gatekeeper-configurator.mjs");
+const builder = resolve("scripts/build-gatekeeper-configurator.ts");
 const configuratorSource =
   'import { h } from "@gadgets/configurator-ui";\n' +
   'export default { render() { throw new Error("mapped configurator failure"); return <div />; } };\n';
-let fixtureDir;
-let disabledFixtureDir;
-let devModeFixtureDir;
-let devEnvWithoutDevFlagFixtureDir;
+let fixtureDir: string;
+let disabledFixtureDir: string;
+let devModeFixtureDir: string;
+let devEnvWithoutDevFlagFixtureDir: string;
 
 // `envFile` is the `.env.*` file that enables reporting, so which one is written decides which build
 // mode picks it up. `staleArtifacts` pre-seeds the outputs a reporting-disabled build must remove.
-async function createFixture(prefix, { envFile, builderArgs = [], staleArtifacts = false } = {}) {
+async function createFixture(prefix: string, { envFile, builderArgs = [], staleArtifacts = false }: {
+  envFile?: string;
+  builderArgs?: string[];
+  staleArtifacts?: boolean;
+} = {}): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), prefix));
   await mkdir(join(directory, "src", "configurator"), { recursive: true });
   await mkdir(join(directory, "node_modules", "capnweb", "dist"), { recursive: true });
@@ -38,7 +42,7 @@ async function createFixture(prefix, { envFile, builderArgs = [], staleArtifacts
   return directory;
 }
 
-async function readRuntime(directory) {
+async function readRuntime(directory: string): Promise<string> {
   const html = await readFile(join(directory, "src", "generated", "test-ui.txt"), "utf8");
   const match = html.match(
     /<script type="module" src="data:text\/javascript;charset=utf-8,([^"]+)"/);
@@ -46,13 +50,20 @@ async function readRuntime(directory) {
   return decodeURIComponent(match[1]);
 }
 
-function readConfiguratorModule(runtime) {
+function readConfiguratorModule(runtime: string): string {
   const match = runtime.match(/new Function\(("(?:\\.|[^"\\])*")\)/);
   assert.ok(match, "generated runtime should embed the configurator module");
   return JSON.parse(match[1]);
 }
 
-function readRuntimeFunctions(runtime, ...names) {
+/**
+ * The named functions from the generated runtime, evaluated in isolation. Typed loosely on purpose:
+ * these are read back out of build output, so their real signatures live in the builder.
+ */
+function readRuntimeFunctions(
+  runtime: string,
+  ...names: string[]
+): Record<string, (...args: any[]) => any> {
   const constants = [...runtime.matchAll(/^const [A-Z_]+ = .*;$/gm)].map(match => match[0]);
   const definitions = names.map(name => {
     const match = runtime.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
@@ -65,9 +76,39 @@ function readRuntimeFunctions(runtime, ...names) {
     `${constants.join("\n")}\n${definitions.join("\n")}\nreturn { ${names.join(", ")} };`)();
 }
 
-function originalPositionFor(sourceMap, line, column) {
-  const mapping = [...ts.decodeMappings(sourceMap.mappings)]
-    .findLast(candidate =>
+/** The source map the builder writes beside each configurator artifact. */
+interface RawSourceMap {
+  /** The original file names the mappings index into. */
+  sources: string[];
+  /** The VLQ-encoded mappings. */
+  mappings: string;
+}
+
+/**
+ * One mapping as `ts.decodeMappings` yields it. The three source fields are present together or
+ * not at all — a mapping with no source describes generated-only output — which is what the
+ * predicate in {@link originalPositionFor} narrows on.
+ */
+interface DecodedMapping {
+  generatedLine: number;
+  generatedCharacter: number;
+  sourceIndex?: number;
+  sourceLine?: number;
+  sourceCharacter?: number;
+}
+
+// `decodeMappings` is part of TypeScript's internal API, so it is absent from the public types.
+const decodeMappings = (ts as unknown as {
+  decodeMappings(mappings: string): Iterable<DecodedMapping>;
+}).decodeMappings;
+
+function originalPositionFor(sourceMap: RawSourceMap, line: number, column: number): {
+  source: string;
+  line: number;
+  column: number;
+} {
+  const mapping = [...decodeMappings(sourceMap.mappings)]
+    .findLast((candidate): candidate is Required<DecodedMapping> =>
       candidate.sourceIndex !== undefined &&
       candidate.generatedLine === line - 1 &&
       candidate.generatedCharacter <= column - 1);
@@ -99,20 +140,20 @@ describe("generated configurator error reporting", () => {
   it("maps executed configurator failures to the original TSX position", async () => {
     const runtime = await readRuntime(fixtureDir);
     const moduleCode = readConfiguratorModule(runtime);
-    let stack;
+    let stack: string | undefined;
     try {
       // The generated source is trusted build output and production executes it the same way.
       // oxlint-disable-next-line no-new-func
       const configuratorModule = new Function(moduleCode)();
       configuratorModule.render();
     } catch (error) {
-      stack = error.stack;
+      stack = (error as Error).stack;
     }
 
     assert.ok(stack, "configurator fixture should throw");
     const frame = stack.match(/app:\/\/\/gatekeeper\/[^/]+\/configurator\/test-ui\.js:(\d+):(\d+)/);
     assert.ok(frame, "stack should contain the configurator virtual source URL");
-    const sourceMap = JSON.parse(
+    const sourceMap: RawSourceMap = JSON.parse(
       await readFile(join(fixtureDir, "src", "generated", "test-ui.js.map"), "utf8"));
     const originalPosition = originalPositionFor(sourceMap, Number(frame[1]), Number(frame[2]));
     const errorOffset = configuratorSource.indexOf("new Error");
@@ -279,7 +320,7 @@ describe("generated configurator option sanitizing", () => {
  * end of the next JSDoc -- taking the only `env` declaration in the file with it, so the assertion
  * below would compare the builder's reads against nothing at all and still pass.
  */
-function stripComments(source) {
+function stripComments(source: string): string {
   let out = "";
   let index = 0;
   while (index < source.length) {
@@ -303,10 +344,10 @@ function stripComments(source) {
 }
 
 /** The declaration of `task` in a Vite+ `tasks` map, from its `{` to the matching `}`. */
-function taskDeclaration(configSource, task) {
+function taskDeclaration(configSource: string, task: string): string | null {
   const source = stripComments(configSource);
   const opening = source.match(new RegExp(String.raw`["']${task}["']\s*:\s*\{`));
-  if (!opening) return null;
+  if (!opening || opening.index === undefined) return null;
   const start = opening.index + opening[0].length - 1;
   let depth = 0;
   for (let index = start; index < source.length; index++) {
@@ -360,8 +401,8 @@ describe("configurator builder env declarations", () => {
  * `buildConfiguratorUIs()` itself reads. Derived rather than listed so a new gatekeeper is covered
  * the day it lands, which is the one most likely to be wired up wrong.
  */
-async function configuratorPackages() {
-  const names = [];
+async function configuratorPackages(): Promise<string[]> {
+  const names: string[] = [];
   for (const entry of await readdir("packages", { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const sources =
@@ -373,7 +414,7 @@ async function configuratorPackages() {
 
 /**
  * The declaration above is worth nothing to a package that never reaches the task, and
- * `env-passthrough.test.js` cannot see that: it discovers reads per directory, and these packages
+ * `env-passthrough.test.ts` cannot see that: it discovers reads per directory, and these packages
  * contain none -- the read lives in the shared builder under `scripts/`.
  *
  * Without the task there is no `env`, so `pnpm build` (`vp run -r --cache build`) runs a plain
@@ -397,7 +438,7 @@ describe("configurator task wiring", () => {
     }
   });
 
-  // deploy-scripts.test.js holds the two general deploy invariants. Both pass vacuously on a
+  // deploy-scripts.test.ts holds the two general deploy invariants. Both pass vacuously on a
   // `deploy` that never runs the codegen at all -- it contains no `vp run` to want `--no-cache`
   // and no builder filename to reject -- so the configurator-specific third one lives here.
   it("runs the codegen task from every configurator gatekeeper's deploy", async () => {

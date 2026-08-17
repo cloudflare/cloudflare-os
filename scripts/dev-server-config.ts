@@ -1,11 +1,15 @@
-export function getWranglerPortFromBackendHost(backendHost) {
+/**
+ * The port a `VITE_BACKEND_HOST` names, as a string, or null when it names no port. Throws on a
+ * value that is not a bare `host[:port]`.
+ */
+export function getWranglerPortFromBackendHost(backendHost: string): string | null {
   const trimmed = backendHost.trim();
   if (!trimmed) return null;
   if (trimmed.includes("://")) {
     throw new Error("VITE_BACKEND_HOST must include a valid host with an optional port.");
   }
 
-  let url;
+  let url: URL;
   try {
     url = new URL(`http://${trimmed}`);
   } catch {
@@ -25,8 +29,15 @@ export function getWranglerPortFromBackendHost(backendHost) {
   return url.port;
 }
 
-export function getDevServerConfig(args, envBackendHost) {
-  let commandLinePort = null;
+/**
+ * Resolve where the dev server's backend lives: an explicit `--port` wins, else
+ * `VITE_BACKEND_HOST`, else `localhost:8787`.
+ */
+export function getDevServerConfig(args: readonly string[], envBackendHost?: string): {
+  backendHost: string;
+  wranglerPort: string | null;
+} {
+  let commandLinePort: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];

@@ -21,7 +21,7 @@ packages/workshop-backend/src/generated/browser-export-runtime.txt
 .wrangler/
 .env
 
-# Local dev secrets (loaded by run-dev-server.js)
+# Local dev secrets (loaded by run-dev-server.ts)
 .dev.vars*
 
 # Site-specific deployment configs.

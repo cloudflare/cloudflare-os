@@ -29,7 +29,18 @@ import { describe, it } from "node:test";
  *   external  — read outside any vp task (release/dev tooling invoked directly), so vp never
  *               filters it.
  */
-const EXPECTED = {
+interface ExpectedArea {
+  /** Matched by an `env` pattern on the task that reads it. */
+  forwarded?: string[];
+  /** Read by a `cache: false` task, which runs with the full ambient environment. */
+  uncached?: string[];
+  /** Set explicitly by the spawning process, never inherited. */
+  injected?: string[];
+  /** Read outside any vp task. */
+  external?: string[];
+}
+
+const EXPECTED: Record<string, ExpectedArea> = {
   "packages/gatekeeper-context": {
     forwarded: ["VITE_FRONTEND_ERROR_REPORTING"],
     injected: ["GATEKEEPER_APP_UNMINIFIED"],
@@ -53,9 +64,9 @@ const EXPECTED = {
   "packages/workshop-backend": {
     uncached: ["FORMAT_BLUEPRINTS_DIR"],
   },
-  // `build-gatekeeper-configurator.mjs` is covered in detail by
-  // build-gatekeeper-configurator.test.js, which pins its reads against the shared task's `env`.
-  // `build-release.mjs`, `run-local.mjs` and `preview/` are invoked directly, never as vp tasks.
+  // `build-gatekeeper-configurator.ts` is covered in detail by
+  // build-gatekeeper-configurator.test.ts, which pins its reads against the shared task's `env`.
+  // `build-release.ts`, `run-local.ts` and `preview/` are invoked directly, never as vp tasks.
   scripts: {
     forwarded: ["VITE_FRONTEND_ERROR_REPORTING"],
     external: [
@@ -92,8 +103,8 @@ const READ_PATTERNS = [
 const DESTRUCTURE_PATTERN =
   new RegExp(String.raw`\{([^{}]*)\}\s*=\s*(?:${ENV_OBJECTS})`, "g");
 
-function sourceFiles(directory) {
-  const out = [];
+function sourceFiles(directory: string): string[] {
+  const out: string[] = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (SKIP.test(path)) continue;
@@ -112,9 +123,9 @@ function sourceFiles(directory) {
  * line whose string happens to contain it. Reading a *declaration* out of a comment is the dangerous
  * direction, so only that side strips.
  */
-function readsUnder(directory) {
-  const names = new Set();
-  const add = name => {
+function readsUnder(directory: string): Set<string> {
+  const names = new Set<string>();
+  const add = (name: string) => {
     if (/^[A-Z][A-Z0-9_]*$/.test(name) && !VITE_BUILTINS.has(name)) names.add(name);
   };
   for (const file of sourceFiles(directory)) {
@@ -134,11 +145,12 @@ function readsUnder(directory) {
 // Comments in these files quote the very syntax being searched for — workshop-backend's explains why
 // it is `cache: false` "rather than `env: ['FORMAT_BLUEPRINTS_DIR']`" — so scanning raw source both
 // reads declarations out of prose and lets a deleted one keep passing. Strip comments first.
-const stripComments = source => source.replaceAll(/\/\*[\s\S]*?\*\//g, "").replaceAll(/\/\/.*$/gm, "");
+const stripComments = (source: string) =>
+  source.replaceAll(/\/\*[\s\S]*?\*\//g, "").replaceAll(/\/\/.*$/gm, "");
 
 /** The `env` patterns declared by any task in `directory`'s Vite+ config, and its `cache: false`. */
-function declarationsIn(directory) {
-  const patterns = new Set();
+function declarationsIn(directory: string): { patterns: Set<string>; hasUncachedTask: boolean } {
+  const patterns = new Set<string>();
   let hasUncachedTask = false;
   for (const file of readdirSync(directory).filter(name => /^vite.*\.config\.ts$/.test(name))) {
     const source = stripComments(readFileSync(join(directory, file), "utf8"));
@@ -150,7 +162,7 @@ function declarationsIn(directory) {
   return { patterns, hasUncachedTask };
 }
 
-const matches = (name, pattern) =>
+const matches = (name: string, pattern: string) =>
   new RegExp(`^${pattern.split("*").map(part => part.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`)
     .test(name);
 
@@ -194,7 +206,7 @@ describe("build-time env passthrough", () => {
   it("declares every forwarded variable on the task that reads it", () => {
     for (const [area, groups] of Object.entries(EXPECTED)) {
       // `scripts/` holds no package config; its one forwarded read is pinned by
-      // build-gatekeeper-configurator.test.js against the shared task's `env`.
+      // build-gatekeeper-configurator.test.ts against the shared task's `env`.
       if (area === "scripts") continue;
       const { patterns } = declarationsIn(area);
       for (const name of groups.forwarded ?? []) {

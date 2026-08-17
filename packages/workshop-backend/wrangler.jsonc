@@ -39,7 +39,7 @@
   },
 
   // Gatekeeper service bindings and the Workers AI binding are dynamically
-  // added by run-dev-server.js (for dev) and generate-wrangler-prod.js (for
+  // added by run-dev-server.ts (for dev) and generate-wrangler-prod.js (for
   // production).
 
   "migrations": [
