@@ -2548,6 +2548,505 @@ class OverseerImpl implements AgentHooks {
     return {sequence, meta};
   }
 
+  // The body of Overseer.updateCode().
+  async updateCode(update: Uint8Array, chatId: number, author: AiChatAuthorInfo)
+      : Promise<void> {
+    let meta = this.getChatMetaOrThrow(chatId);
+
+    // Decide if we want to materialize existing drafts due to changing users. If two users are
+    // typing at the same time we just attribute the edits to both of them, but if the previous
+    // user hasn't typed for a while and a new user starts typing then we materialize the previous
+    // user's changes. That said, we cannot materialize anything while an agent is active because
+    // it'll confuse the agent.
+    let existingUpdates = this.listChatDraftUpdates(chatId);
+    if (existingUpdates.length > 0) {
+      let latest = existingUpdates[existingUpdates.length - 1];
+      if (!this.sameChatAuthor(latest.author, author)) {
+        let elapsed = Date.now() - latest.timestamp.getTime();
+        if (!meta.activeAgent && elapsed > CHAT_DRAFT_AUTHOR_SPLIT_MS) {
+          let result = this.materializeChatDraft(chatId, meta);
+          if (result) {
+            meta = result.meta;
+          }
+          existingUpdates = [];
+        }
+      }
+    }
+
+    let timestamp = this.getChatTimestamp();
+    let newRecord: ChatDraftUpdateRecord = {chatId, timestamp, author, update};
+    this.storage.chatDraftUpdates.put(newRecord);
+
+    meta.lastActive = timestamp;
+    this.storage.chatMeta.put(meta);
+    this.recomputeHasProposedChanges(chatId, meta);
+
+    let allUpdates = [...existingUpdates, newRecord];
+    let displayAuthor = this.normalizeDraftAuthor(allUpdates);
+    this.emitChatDraftUpdate(chatId, timestamp, displayAuthor, update);
+    this.compactChatDraftUpdates(chatId, allUpdates);
+  }
+
+  // The body of Overseer.updateChatFromMainline().
+  async updateChatFromMainline(chatId: number, author: AiChatAuthorInfo)
+      : Promise<{conflictPaths: string[]}> {
+    let meta = this.assertChatNotActive(chatId);
+
+    // Live draft edits are part of the chat's current content, so fold them into a durable
+    // "changes" message first: the merge must take them as input, and its own update must be
+    // recorded after them.
+    let materialized = this.materializeChatDraft(chatId, meta);
+    if (materialized) meta = materialized.meta;
+
+    // Everything read from here through the merge computation must still describe the chat when
+    // the results are written back below; the sequence peek is the revalidation token.
+    let sequenceToken = this.nextChatSequencePeek(chatId);
+
+    // Pre-git-storage chats may have no pins at all; they merge like anything else, with each
+    // absent pin meaning "nothing merged yet" (an empty merge base).
+    let codeBase: ChatCodeBase = meta.codeBase ?? {gadgets: []};
+    let pins = new Map(codeBase.gadgets.map(pin => [pin.gadgetId, pin]));
+
+    // A pending gadget has no commits, so staleness is only about committed gadgets whose head
+    // moved past what this chat has merged (including gadgets the chat has never seen). Heads
+    // that advance *during* the merge below are fine without revalidation: each pin is advanced
+    // only to the commit actually merged, so the chat simply comes out still stale.
+    let stale = [...this.storage.gadgets.list()].filter(record =>
+        record.commitId !== undefined &&
+        pins.get(record.id)?.mergedCommit !== record.commitId);
+    if (stale.length === 0) {
+      return {conflictPaths: []};
+    }
+
+    let ydoc = await this.buildChatDoc(chatId, meta);
+    let updates: Uint8Array[] = [];
+    ydoc.on("updateV2", update => updates.push(update));
+
+    let conflictPaths: string[] = [];
+    for (let record of stale) {
+      let rootName = this.gadgetRootName(record.id);
+      let pin = pins.get(record.id);
+      // The chat's last merged commit is the 3-way common ancestor -- explicitly known, so no
+      // merge-base discovery. Conflicting hunks keep inline diff3 markers for the user (or
+      // their agent) to clean up; Yjs merge semantics are deliberately not used across
+      // divergent bases.
+      let base = pin?.mergedCommit !== undefined
+          ? await this.gitStore.readCommitFiles(pin.mergedCommit)
+          : new Map<string, string>();
+      let head = await this.gitStore.readCommitFiles(record.commitId!);
+      let merged = threeWayMerge(base, head, readDocFiles(ydoc, rootName),
+          {base: "merged base", ours: "mainline", theirs: "this chat"});
+      writeDocFiles(ydoc, rootName, merged.files);
+      conflictPaths.push(...merged.conflictPaths.map(path => `${record.bindingName}/${path}`));
+
+      if (pin) {
+        pin.mergedCommit = record.commitId!;
+      } else {
+        codeBase.gadgets.push(
+            {gadgetId: record.id, filesRoot: rootName, mergedCommit: record.commitId!});
+      }
+    }
+    conflictPaths.sort();
+
+    // The awaits above are interleaving points. The chat lock excludes sibling mutations, but an
+    // agent turn could have started (its messages would interleave with ours) or new content
+    // could have been recorded; both necessarily append to the chat log. Re-read the chat state
+    // and refuse rather than write a merge computed against a stale doc. (Chat deletion is
+    // caught by the meta re-read throwing.)
+    let freshMeta = this.assertChatNotActive(chatId);
+    if (this.nextChatSequencePeek(chatId) !== sequenceToken) {
+      throw new Error("The chat changed while merging from mainline; please retry.");
+    }
+
+    // Persist the advanced pins before recording the message: addChatMessages re-reads and
+    // re-writes the chat meta (hasProposedChanges, lastActive), so it must see this state. The
+    // pins land on the freshly-read meta so concurrent changes to other fields survive.
+    freshMeta.codeBase = codeBase;
+    freshMeta.lastActive = this.getChatTimestamp();
+    this.storage.chatMeta.put(freshMeta);
+
+    // Always record the merge as a "changes" message, even when the chat's content already
+    // matched mainline (no update, no conflicts): the message is the durable record that the
+    // pins advanced, which the revert guard (revertChanges) and any future pin rollback depend
+    // on. Without it, reverting the chat's earlier proposals could silently regress content the
+    // advanced pins claim as merged.
+    this.addChatMessages(chatId, author, [{
+      type: "changes",
+      ...(updates.length > 0 ? {update: Y.mergeUpdatesV2(updates)} : {}),
+      mainlineMerge: {conflictPaths},
+    }]);
+
+    return {conflictPaths};
+  }
+
+  // The body of Overseer.mergeChanges(), running under the chat's operation lock (see withChatLock).
+  async mergeChanges(chatId: number, mergeThrough: number | null, userMeta: UserChatContext,
+                     clientUserId: string, options?: { includeDraft?: boolean })
+                     : Promise<MergeChangesResult> {
+    let meta = this.assertChatNotActive(chatId);
+    if (options?.includeDraft) {
+      let result = this.materializeChatDraft(chatId, meta);
+      if (result) {
+        mergeThrough = result.sequence;
+        meta = result.meta;
+      }
+    }
+
+    if (mergeThrough === null) {
+      return {outcome: "merged"};
+    }
+
+    // Bound `mergeThrough` to recorded history. A future sequence would make later-recorded
+    // changes retroactively covered by this merge's message, which no fold or status rule is
+    // prepared for (see chatChangeStatuses).
+    if (!Number.isInteger(mergeThrough) || mergeThrough < 0 ||
+        mergeThrough >= this.nextChatSequencePeek(chatId)) {
+      throw new Error("Invalid mergeThrough.");
+    }
+
+    // Reap crash-orphaned provisional records first: an unstamped record that survives
+    // reconciliation -- a crashed turn's not-yet-resumed tail -- has no sequence and is simply
+    // not covered by this merge.
+    await this.reconcilePendingGadgets(chatId);
+
+    // Everything read from here through the commit writes must still describe the chat when the
+    // mutation tail below runs; the sequence peek is the revalidation token.
+    let sequenceToken = this.nextChatSequencePeek(chatId);
+
+    // Get unmerged updates for the thread, reduced to just what we're merging. Each covered
+    // gadget creation or binding addition sits on one of these "changes" messages (see
+    // addChatMessages), so an empty list also means there is nothing to promote.
+    let updates = this.getProposedChanges(chatId);
+    while (updates.length > 0 && updates[updates.length - 1].sequence > mergeThrough) {
+      // We're not merging this one.
+      updates.pop();
+    }
+    if (updates.length === 0) {
+      // Nothing to merge, so this is a no-op.
+      return {outcome: "merged"};
+    }
+
+    // Message statuses drive two things below: the mainline-merge guard here, and excluding
+    // reverted creations from coverage. The map stays valid through the whole accept: the
+    // sequence-token revalidation after the awaits guarantees no message was recorded since.
+    let messages = [...this.storage.chats.list({prefix: `${keyString(chatId)}.`})];
+    let statuses = chatChangeStatuses(messages);
+
+    // A partial accept must not exclude a still-proposed update-from-mainline batch: that batch's
+    // pin advancement is already in force, so an accept built without its update would pass the
+    // fast-forward check below while committing content that predates the mainline changes the
+    // pins claim as merged -- silently overwriting them. (Scanned over canonical history, like
+    // the guard in revertChanges, because getProposedChanges' compacted-prefix batch hides
+    // individual messages.)
+    for (let msg of messages) {
+      if (msg.type === "changes" && msg.mainlineMerge !== undefined &&
+          msg.sequence > mergeThrough && statuses.get(msg.sequence) === undefined) {
+        throw new Error("Cannot accept changes without also accepting the later update from " +
+            "mainline: accepting only the earlier changes would overwrite the mainline " +
+            "content that update brought in. Accept through the mainline update instead.");
+      }
+    }
+
+    // A pending record (or edge) whose stamp the log already marks reverted is dead, not
+    // covered: it survives only because a revert's awaited record deletion failed (see
+    // reconcilePendingGadgets, which retries best-effort -- including the call above).
+    // Committing or promoting it would resurrect a rejected gadget, so every coverage test
+    // below excludes it.
+    let revertedStamp = (pending: {sequence?: number} | undefined) =>
+        pending?.sequence !== undefined && statuses.get(pending.sequence) === "reverted";
+
+    // Detect whether the workspace has any accepted code yet (for gadget title generation
+    // below): no gadget has a head commit, and the legacy code log (whose version 1 was written
+    // at init time, when it exists at all) records no accepted code either.
+    let isFirstChange =
+        ![...this.storage.gadgets.list()].some(gadget => gadget.commitId !== undefined) &&
+        [...this.storage.code.list({limit: 1, start: 2})].length === 0;
+
+    // Flatten the chat's content as of `mergeThrough` and decide, per gadget, whether this chat
+    // changed it. "Changed" is measured against the chat's merged commit -- the mainline content
+    // the chat last saw -- so mainline moving on a gadget this chat never touched neither
+    // implicates the chat nor blocks the accept.
+    let ydoc = await this.buildChatDoc(chatId, meta, mergeThrough);
+    let codeBase: ChatCodeBase = meta.codeBase ?? {gadgets: []};
+    let pins = new Map(codeBase.gadgets.map(pin => [pin.gadgetId, pin]));
+
+    // `baseHead` snapshots the head this accept fast-forwards from (also the value the post-await
+    // revalidation compares against -- a primitive, so it can't be confused by whatever object
+    // the storage layer hands back later).
+    let toCommit: {record: GadgetRecord, files: Map<string, string>, baseHead?: string}[] = [];
+    for (let record of Array.from(this.storage.gadgets.list())) {
+      if (record.pending &&
+          (record.pending.chatId !== chatId || record.pending.sequence === undefined ||
+           record.pending.sequence > mergeThrough || revertedStamp(record.pending))) {
+        // Pending in another chat (its files exist only in that chat's proposed changes),
+        // pending in this chat but not covered by this merge, or an already-reverted creation
+        // awaiting cleanup.
+        continue;
+      }
+      let files = readDocFiles(ydoc, this.gadgetRootName(record.id));
+      let mergedCommit = pins.get(record.id)?.mergedCommit;
+      let baseFiles = mergedCommit !== undefined
+          ? await this.gitStore.readCommitFiles(mergedCommit)
+          : new Map<string, string>();
+      // A record still pending here is a covered creation (uncovered ones were skipped above),
+      // and a covered creation always gets its first commit -- an empty tree if the gadget has
+      // no files yet -- so promotion below can give every accepted gadget a head. Coverage must
+      // never be inferred from content equality: an empty gadget compares equal to the empty
+      // base, which is how creations used to be dropped from accepts.
+      if (filesEqual(files, baseFiles) && !record.pending) continue;
+
+      // Accepting is only ever a fast-forward: the chat must have already merged the gadget's
+      // current head. A stale chat is expected control flow (someone else's accept can land at
+      // any time), reported as a value, with no partial effects -- the caller runs
+      // updateChatFromMainline() and retries.
+      if (record.commitId !== mergedCommit) {
+        return {outcome: "stale"};
+      }
+      toCommit.push({record, files, baseHead: record.commitId});
+    }
+
+    // Write the commits (content-addressed object writes; harmless if the accept below turns out
+    // stale after all).
+    let identity = commitIdentityForAuthor(userMeta.profile);
+    let commits: {gadgetId: WorkpieceId, commitId: string}[] = [];
+    for (let {record, files, baseHead} of toCommit) {
+      commits.push({
+        gadgetId: record.id,
+        commitId: await this.gitStore.writeFilesAsCommit(files, {
+          parents: baseHead !== undefined ? [baseHead] : [],
+          author: identity,
+          message: `Accept changes from chat: ${meta.title}`,
+          timestamp: new Date(),
+        }),
+      });
+    }
+
+    // Everything above this point awaited, so the chat and workspace may have moved in the
+    // meantime; re-validate before mutating. The chat lock excludes sibling merge/revert/
+    // update-from-mainline calls, but an accept from *another* chat can advance a head, an agent
+    // turn can start, and new messages can be recorded -- all detected here: heads against their
+    // snapshots, and the chat via a fresh meta read (throws if deleted, or if an agent started)
+    // plus the sequence token (anything that would invalidate the doc we flattened appends to
+    // the log). Everything from here on is synchronous, so the record, pin, and message writes
+    // land atomically under the output gate.
+    for (let {record, baseHead} of toCommit) {
+      let fresh = this.storage.gadgets.get(record.id);
+      if (!fresh || fresh.commitId !== baseHead) {
+        return {outcome: "stale"};
+      }
+    }
+    let freshMeta = this.assertChatNotActive(chatId);
+    if (this.nextChatSequencePeek(chatId) !== sequenceToken) {
+      return {outcome: "stale"};
+    }
+
+    // Promote provisional gadgets whose creation is covered by this merge: accepting the chat's
+    // changes through `mergeThrough` makes them permanent workspace members. Each covered
+    // creation sits on an unmerged, unreverted "changes" message at `pending.sequence` (a
+    // merged one's gadget is already promoted, and a reverted one's is excluded here exactly as
+    // the toCommit loop excluded it), and is in `commits`, so every promoted gadget gets a head
+    // in the fast-forward step below -- possibly an empty tree.
+    for (let gadget of this.listPendingGadgets(chatId)) {
+      if (gadget.pending!.sequence !== undefined && gadget.pending!.sequence <= mergeThrough &&
+          !revertedStamp(gadget.pending)) {
+        delete gadget.pending;
+        this.storage.gadgets.put(gadget);
+      }
+    }
+
+    // Likewise promote provisional binding edges covered by this merge; this is also the moment
+    // an edge becomes visible to mainline loads and the derived workspace default binding list.
+    // (Reverted additions only survive on a reverted creation's record -- the revert deletes
+    // covered edges synchronously otherwise -- but exclude them the same way for coherence.)
+    for (let gadget of this.storage.gadgets.list()) {
+      let promoted = false;
+      for (let edge of Object.values(gadget.bindings)) {
+        if (edge.pending?.chatId === chatId && edge.pending.sequence !== undefined &&
+            edge.pending.sequence <= mergeThrough && !revertedStamp(edge.pending)) {
+          delete edge.pending;
+          promoted = true;
+        }
+      }
+      if (promoted) {
+        this.storage.gadgets.put(gadget);
+      }
+    }
+
+    // Fast-forward each committed gadget's head, and advance the chat's own pins to match: the
+    // chat's content *is* the new head, so it is fully merged by construction, and a subsequent
+    // accept remains a plain fast-forward.
+    for (let {gadgetId, commitId} of commits) {
+      let record = this.storage.gadgets.get(gadgetId)!;
+      record.commitId = commitId;
+      this.storage.gadgets.put(record);
+
+      let pin = pins.get(gadgetId);
+      if (pin) {
+        pin.mergedCommit = commitId;
+      } else {
+        // First accept of a gadget the chat itself created (or a pre-git chat with no pins):
+        // no seedCommit -- its content entered the chat as ordinary updates, not seed items.
+        codeBase.gadgets.push(
+            {gadgetId, filesRoot: this.gadgetRootName(gadgetId), mergedCommit: commitId});
+      }
+    }
+
+    // Bump the loader-cache counter so cached workers reload with the new heads (and promoted
+    // records) visible.
+    this.bumpVersion();
+    let timestamp = this.getChatTimestamp();
+
+    this.storage.chats.put({
+      chatId,
+      sequence: this.nextChatSequence(chatId),
+      timestamp,
+      author: userMeta.profile,
+
+      type: "merge",
+      mergeThrough,
+      commits,
+    });
+
+    // The advanced pins land on the freshly-read meta so concurrent changes to other fields
+    // (e.g. a title rename during the awaits) survive. `codeBase` itself was derived from the
+    // entry-time meta, which is safe: only lock-holding operations mutate it.
+    if (commits.length > 0 || freshMeta.codeBase !== undefined) {
+      freshMeta.codeBase = codeBase;
+    }
+    freshMeta.lastActive = timestamp;
+    this.storage.chatMeta.put(freshMeta);
+    this.recomputeHasProposedChanges(chatId, freshMeta);
+
+    // Maybe generate gadget title if this was the first accepted code. (A merge covering only
+    // binding additions to existing gadgets doesn't count: it creates no commits, so the first
+    // merge with code -- including an accepted creation's empty first commit -- still sees
+    // isFirstChange and generates the title then.)
+    if (isFirstChange && commits.length > 0 && userMeta.quickModel) {
+      this.generateGadgetTitle(chatId, userMeta.quickModel, userMeta.profile);
+    }
+    this.recordGadgetAnalytics({
+      event_name: "gadget_interaction",
+      user_id: clientUserId,
+      chat_id: chatId,
+      interaction_type: "code_merged",
+    });
+
+    return {outcome: "merged"};
+  }
+
+  // The body of Overseer.revertChanges(), running under the chat's operation lock (see withChatLock).
+  async revertChanges(chatId: number, revertFrom: number, author: AiChatAuthorInfo)
+      : Promise<void> {
+    this.assertChatNotActive(chatId);
+
+    // Reap crash orphans first: an unstamped record that survives reconciliation -- a crashed
+    // turn's not-yet-resumed tail -- has no sequence and is not covered by this revert. This is
+    // the only await before the revert lands; reconciliation is an idempotent repair, safe to
+    // run whether or not the revert below proceeds.
+    await this.reconcilePendingGadgets(chatId);
+
+    // Everything from the meta re-read (which rechecks the agent after the await above) through
+    // the message and record writes below is synchronous, landing atomically under the output
+    // gate: nothing can interleave between what we examine here, the "changes" messages the
+    // revert message will cover, and the mutations recording the revert.
+    let meta = this.assertChatNotActive(chatId);
+    let messages = [...this.storage.chats.list({prefix: `${keyString(chatId)}.`})];
+    let statuses = chatChangeStatuses(messages);
+    let stillProposed = (msg: AiChatMessage) =>
+        msg.type === "changes" && msg.sequence >= revertFrom &&
+        statuses.get(msg.sequence) === undefined;
+
+    // A still-proposed mainline merge (see updateChatFromMainline) cannot be reverted: it
+    // advanced the chat's pins to commits whose content arrived in that very update, so erasing
+    // the update would leave the pins claiming content the chat no longer has -- and a later
+    // accept would then silently overwrite those mainline changes. Rolling pins back would need
+    // their pre-merge values, which aren't recorded; until they are, refuse loudly. (An
+    // *accepted* mainline merge is untouched by reverts, so it doesn't block anything. Scanned
+    // over canonical history rather than getProposedChanges, whose compacted-prefix batch hides
+    // individual messages.)
+    for (let msg of messages) {
+      if (msg.type === "changes" && msg.mainlineMerge !== undefined && stillProposed(msg)) {
+        throw new Error("Cannot revert changes that include an update from mainline: the " +
+            "update brought in other chats' accepted work, which the revert would silently " +
+            "discard. Edit or revert the files directly instead.");
+      }
+    }
+
+    if (!messages.some(stillProposed)) {
+      // Revert affects no changes (every "changes" message at or after revertFrom is already
+      // merged or reverted -- and any provisional gadget's stamped creation sits on a
+      // still-proposed message, so nothing needs deleting either): a no-op, recording nothing.
+      return;
+    }
+
+    // Delete provisional binding edges whose addition falls within the reverted range:
+    // rejecting the chat's changes rejects the edges they added. (Edges on a gadget doomed
+    // below go with its whole record instead.)
+    let doomed = this.listPendingGadgets(chatId).filter(gadget =>
+        gadget.pending!.sequence !== undefined && gadget.pending!.sequence >= revertFrom);
+    let doomedIds = new Set(doomed.map(gadget => gadget.id));
+    for (let gadget of this.storage.gadgets.list()) {
+      if (doomedIds.has(gadget.id)) continue;
+      let removed = false;
+      for (let [name, edge] of Object.entries(gadget.bindings)) {
+        if (edge.pending?.chatId === chatId && edge.pending.sequence !== undefined &&
+            edge.pending.sequence >= revertFrom) {
+          delete gadget.bindings[name];
+          removed = true;
+        }
+      }
+      if (removed) {
+        this.storage.gadgets.put(gadget);
+        this.bumpVersion([gadget.id]);
+      }
+    }
+
+    let timestamp = this.getChatTimestamp();
+
+    this.storage.chats.put({
+      chatId,
+      sequence: this.nextChatSequence(chatId),
+      timestamp,
+      author,
+
+      type: "revert",
+      revertFrom,
+    });
+
+    meta.lastActive = timestamp;
+    this.rollbackChatCompaction(meta, revertFrom);
+    this.storage.chatMeta.put(meta);
+    this.recomputeHasProposedChanges(chatId, meta);
+    this.proposedChangesChanged(chatId);
+
+    // Only now delete the provisional gadgets whose creation the revert rejected -- the revert
+    // message is also how the agent learns of the rejection on its next turn (revert messages
+    // are surfaced to the model during history replay). Deletion awaits (removeGadget is the
+    // full path: hooks, facet, registry entry; a pending gadget's files exist only in the
+    // chat's proposed changes, so its mainline root has nothing to clear), and a destructive
+    // change must never outrun its durable record: with the revert already recorded, a failure
+    // or crash here leaves records whose creation the log marks reverted, which the next
+    // reconcilePendingGadgets run reaps. This one does exactly that (the records' creations are
+    // now marked reverted), keeping the deletion path single.
+    await this.reconcilePendingGadgets(chatId);
+  }
+
+  // The body of Overseer.discardChatDraftChanges().
+  async discardChatDraftChanges(chatId: number): Promise<void> {
+    let meta = this.assertChatNotActive(chatId);
+    let updates = this.listChatDraftUpdates(chatId);
+    if (updates.length === 0) {
+      return;
+    }
+
+    meta.lastActive = this.getChatTimestamp();
+    this.storage.chatMeta.put(meta);
+    this.deleteChatDraftUpdates(chatId, updates);
+    this.emitChatDraftCleared(chatId);
+    this.recomputeHasProposedChanges(chatId, meta);
+    this.proposedChangesChanged(chatId);
+  }
+
   // Load the dynamic worker representing the given gadget's committed (head-commit) code.
   // Returns the dynamic WorkerStub (which can be used to get any entrypoint).
   //
@@ -7873,40 +8372,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async updateCode(update: Uint8Array, chatId: number): Promise<void> {
     let author = await this.#getClientProfile();
-    let meta = this.impl.getChatMetaOrThrow(chatId);
-
-    // Decide if we want to materialize existing drafts due to changing users. If two users are
-    // typing at the same time we just attribute the edits to both of them, but if the previous
-    // user hasn't typed for a while and a new user starts typing then we materialize the previous
-    // user's changes. That said, we cannot materialize anything while an agent is active because
-    // it'll confuse the agent.
-    let existingUpdates = this.impl.listChatDraftUpdates(chatId);
-    if (existingUpdates.length > 0) {
-      let latest = existingUpdates[existingUpdates.length - 1];
-      if (!this.impl.sameChatAuthor(latest.author, author)) {
-        let elapsed = Date.now() - latest.timestamp.getTime();
-        if (!meta.activeAgent && elapsed > CHAT_DRAFT_AUTHOR_SPLIT_MS) {
-          let result = this.impl.materializeChatDraft(chatId, meta);
-          if (result) {
-            meta = result.meta;
-          }
-          existingUpdates = [];
-        }
-      }
-    }
-
-    let timestamp = this.impl.getChatTimestamp();
-    let newRecord: ChatDraftUpdateRecord = {chatId, timestamp, author, update};
-    this.impl.storage.chatDraftUpdates.put(newRecord);
-
-    meta.lastActive = timestamp;
-    this.impl.storage.chatMeta.put(meta);
-    this.impl.recomputeHasProposedChanges(chatId, meta);
-
-    let allUpdates = [...existingUpdates, newRecord];
-    let displayAuthor = this.impl.normalizeDraftAuthor(allUpdates);
-    this.impl.emitChatDraftUpdate(chatId, timestamp, displayAuthor, update);
-    this.impl.compactChatDraftUpdates(chatId, allUpdates);
+    await this.impl.updateCode(update, chatId, author);
   }
 
   // --- Commit-backed code reads ---
@@ -7952,98 +8418,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async updateChatFromMainline(chatId: number): Promise<{conflictPaths: string[]}> {
     let author = await this.#getClientProfile();
-    return await this.impl.withChatLock(chatId, () => this.#updateChatFromMainline(chatId, author));
-  }
-
-  async #updateChatFromMainline(chatId: number, author: AiChatAuthorInfo)
-      : Promise<{conflictPaths: string[]}> {
-    let meta = this.impl.assertChatNotActive(chatId);
-
-    // Live draft edits are part of the chat's current content, so fold them into a durable
-    // "changes" message first: the merge must take them as input, and its own update must be
-    // recorded after them.
-    let materialized = this.impl.materializeChatDraft(chatId, meta);
-    if (materialized) meta = materialized.meta;
-
-    // Everything read from here through the merge computation must still describe the chat when
-    // the results are written back below; the sequence peek is the revalidation token.
-    let sequenceToken = this.impl.nextChatSequencePeek(chatId);
-
-    // Pre-git-storage chats may have no pins at all; they merge like anything else, with each
-    // absent pin meaning "nothing merged yet" (an empty merge base).
-    let codeBase: ChatCodeBase = meta.codeBase ?? {gadgets: []};
-    let pins = new Map(codeBase.gadgets.map(pin => [pin.gadgetId, pin]));
-
-    // A pending gadget has no commits, so staleness is only about committed gadgets whose head
-    // moved past what this chat has merged (including gadgets the chat has never seen). Heads
-    // that advance *during* the merge below are fine without revalidation: each pin is advanced
-    // only to the commit actually merged, so the chat simply comes out still stale.
-    let stale = [...this.impl.storage.gadgets.list()].filter(record =>
-        record.commitId !== undefined &&
-        pins.get(record.id)?.mergedCommit !== record.commitId);
-    if (stale.length === 0) {
-      return {conflictPaths: []};
-    }
-
-    let ydoc = await this.impl.buildChatDoc(chatId, meta);
-    let updates: Uint8Array[] = [];
-    ydoc.on("updateV2", update => updates.push(update));
-
-    let conflictPaths: string[] = [];
-    for (let record of stale) {
-      let rootName = this.impl.gadgetRootName(record.id);
-      let pin = pins.get(record.id);
-      // The chat's last merged commit is the 3-way common ancestor -- explicitly known, so no
-      // merge-base discovery. Conflicting hunks keep inline diff3 markers for the user (or
-      // their agent) to clean up; Yjs merge semantics are deliberately not used across
-      // divergent bases.
-      let base = pin?.mergedCommit !== undefined
-          ? await this.impl.gitStore.readCommitFiles(pin.mergedCommit)
-          : new Map<string, string>();
-      let head = await this.impl.gitStore.readCommitFiles(record.commitId!);
-      let merged = threeWayMerge(base, head, readDocFiles(ydoc, rootName),
-          {base: "merged base", ours: "mainline", theirs: "this chat"});
-      writeDocFiles(ydoc, rootName, merged.files);
-      conflictPaths.push(...merged.conflictPaths.map(path => `${record.bindingName}/${path}`));
-
-      if (pin) {
-        pin.mergedCommit = record.commitId!;
-      } else {
-        codeBase.gadgets.push(
-            {gadgetId: record.id, filesRoot: rootName, mergedCommit: record.commitId!});
-      }
-    }
-    conflictPaths.sort();
-
-    // The awaits above are interleaving points. The chat lock excludes sibling mutations, but an
-    // agent turn could have started (its messages would interleave with ours) or new content
-    // could have been recorded; both necessarily append to the chat log. Re-read the chat state
-    // and refuse rather than write a merge computed against a stale doc. (Chat deletion is
-    // caught by the meta re-read throwing.)
-    let freshMeta = this.impl.assertChatNotActive(chatId);
-    if (this.impl.nextChatSequencePeek(chatId) !== sequenceToken) {
-      throw new Error("The chat changed while merging from mainline; please retry.");
-    }
-
-    // Persist the advanced pins before recording the message: addChatMessages re-reads and
-    // re-writes the chat meta (hasProposedChanges, lastActive), so it must see this state. The
-    // pins land on the freshly-read meta so concurrent changes to other fields survive.
-    freshMeta.codeBase = codeBase;
-    freshMeta.lastActive = this.impl.getChatTimestamp();
-    this.impl.storage.chatMeta.put(freshMeta);
-
-    // Always record the merge as a "changes" message, even when the chat's content already
-    // matched mainline (no update, no conflicts): the message is the durable record that the
-    // pins advanced, which the revert guard (revertChanges) and any future pin rollback depend
-    // on. Without it, reverting the chat's earlier proposals could silently regress content the
-    // advanced pins claim as merged.
-    this.impl.addChatMessages(chatId, author, [{
-      type: "changes",
-      ...(updates.length > 0 ? {update: Y.mergeUpdatesV2(updates)} : {}),
-      mainlineMerge: {conflictPaths},
-    }]);
-
-    return {conflictPaths};
+    return await this.impl.withChatLock(chatId,
+        () => this.impl.updateChatFromMainline(chatId, author));
   }
 
   async getGatekeeperById(id: number): Promise<GatekeeperClient<any>> {
@@ -8839,261 +9215,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(null), this.impl.logger);
     return await this.impl.withChatLock(chatId,
-        () => this.#mergeChanges(chatId, mergeThrough, userMeta, options));
-  }
-
-  // The body of mergeChanges(), running under the chat's operation lock (see withChatLock).
-  async #mergeChanges(chatId: number, mergeThrough: number | null, userMeta: UserChatContext,
-                      options?: { includeDraft?: boolean }): Promise<MergeChangesResult> {
-    let meta = this.impl.assertChatNotActive(chatId);
-    if (options?.includeDraft) {
-      let result = this.impl.materializeChatDraft(chatId, meta);
-      if (result) {
-        mergeThrough = result.sequence;
-        meta = result.meta;
-      }
-    }
-
-    if (mergeThrough === null) {
-      return {outcome: "merged"};
-    }
-
-    // Bound `mergeThrough` to recorded history. A future sequence would make later-recorded
-    // changes retroactively covered by this merge's message, which no fold or status rule is
-    // prepared for (see chatChangeStatuses).
-    if (!Number.isInteger(mergeThrough) || mergeThrough < 0 ||
-        mergeThrough >= this.impl.nextChatSequencePeek(chatId)) {
-      throw new Error("Invalid mergeThrough.");
-    }
-
-    // Reap crash-orphaned provisional records first: an unstamped record that survives
-    // reconciliation -- a crashed turn's not-yet-resumed tail -- has no sequence and is simply
-    // not covered by this merge.
-    await this.impl.reconcilePendingGadgets(chatId);
-
-    // Everything read from here through the commit writes must still describe the chat when the
-    // mutation tail below runs; the sequence peek is the revalidation token.
-    let sequenceToken = this.impl.nextChatSequencePeek(chatId);
-
-    // Get unmerged updates for the thread, reduced to just what we're merging. Each covered
-    // gadget creation or binding addition sits on one of these "changes" messages (see
-    // addChatMessages), so an empty list also means there is nothing to promote.
-    let updates = this.impl.getProposedChanges(chatId);
-    while (updates.length > 0 && updates[updates.length - 1].sequence > mergeThrough) {
-      // We're not merging this one.
-      updates.pop();
-    }
-    if (updates.length === 0) {
-      // Nothing to merge, so this is a no-op.
-      return {outcome: "merged"};
-    }
-
-    // Message statuses drive two things below: the mainline-merge guard here, and excluding
-    // reverted creations from coverage. The map stays valid through the whole accept: the
-    // sequence-token revalidation after the awaits guarantees no message was recorded since.
-    let messages = [...this.impl.storage.chats.list({prefix: `${keyString(chatId)}.`})];
-    let statuses = chatChangeStatuses(messages);
-
-    // A partial accept must not exclude a still-proposed update-from-mainline batch: that batch's
-    // pin advancement is already in force, so an accept built without its update would pass the
-    // fast-forward check below while committing content that predates the mainline changes the
-    // pins claim as merged -- silently overwriting them. (Scanned over canonical history, like
-    // the guard in revertChanges, because getProposedChanges' compacted-prefix batch hides
-    // individual messages.)
-    for (let msg of messages) {
-      if (msg.type === "changes" && msg.mainlineMerge !== undefined &&
-          msg.sequence > mergeThrough && statuses.get(msg.sequence) === undefined) {
-        throw new Error("Cannot accept changes without also accepting the later update from " +
-            "mainline: accepting only the earlier changes would overwrite the mainline " +
-            "content that update brought in. Accept through the mainline update instead.");
-      }
-    }
-
-    // A pending record (or edge) whose stamp the log already marks reverted is dead, not
-    // covered: it survives only because a revert's awaited record deletion failed (see
-    // reconcilePendingGadgets, which retries best-effort -- including the call above).
-    // Committing or promoting it would resurrect a rejected gadget, so every coverage test
-    // below excludes it.
-    let revertedStamp = (pending: {sequence?: number} | undefined) =>
-        pending?.sequence !== undefined && statuses.get(pending.sequence) === "reverted";
-
-    // Detect whether the workspace has any accepted code yet (for gadget title generation
-    // below): no gadget has a head commit, and the legacy code log (whose version 1 was written
-    // at init time, when it exists at all) records no accepted code either.
-    let isFirstChange =
-        ![...this.impl.storage.gadgets.list()].some(gadget => gadget.commitId !== undefined) &&
-        [...this.impl.storage.code.list({limit: 1, start: 2})].length === 0;
-
-    // Flatten the chat's content as of `mergeThrough` and decide, per gadget, whether this chat
-    // changed it. "Changed" is measured against the chat's merged commit -- the mainline content
-    // the chat last saw -- so mainline moving on a gadget this chat never touched neither
-    // implicates the chat nor blocks the accept.
-    let ydoc = await this.impl.buildChatDoc(chatId, meta, mergeThrough);
-    let codeBase: ChatCodeBase = meta.codeBase ?? {gadgets: []};
-    let pins = new Map(codeBase.gadgets.map(pin => [pin.gadgetId, pin]));
-
-    // `baseHead` snapshots the head this accept fast-forwards from (also the value the post-await
-    // revalidation compares against -- a primitive, so it can't be confused by whatever object
-    // the storage layer hands back later).
-    let toCommit: {record: GadgetRecord, files: Map<string, string>, baseHead?: string}[] = [];
-    for (let record of Array.from(this.impl.storage.gadgets.list())) {
-      if (record.pending &&
-          (record.pending.chatId !== chatId || record.pending.sequence === undefined ||
-           record.pending.sequence > mergeThrough || revertedStamp(record.pending))) {
-        // Pending in another chat (its files exist only in that chat's proposed changes),
-        // pending in this chat but not covered by this merge, or an already-reverted creation
-        // awaiting cleanup.
-        continue;
-      }
-      let files = readDocFiles(ydoc, this.impl.gadgetRootName(record.id));
-      let mergedCommit = pins.get(record.id)?.mergedCommit;
-      let baseFiles = mergedCommit !== undefined
-          ? await this.impl.gitStore.readCommitFiles(mergedCommit)
-          : new Map<string, string>();
-      // A record still pending here is a covered creation (uncovered ones were skipped above),
-      // and a covered creation always gets its first commit -- an empty tree if the gadget has
-      // no files yet -- so promotion below can give every accepted gadget a head. Coverage must
-      // never be inferred from content equality: an empty gadget compares equal to the empty
-      // base, which is how creations used to be dropped from accepts.
-      if (filesEqual(files, baseFiles) && !record.pending) continue;
-
-      // Accepting is only ever a fast-forward: the chat must have already merged the gadget's
-      // current head. A stale chat is expected control flow (someone else's accept can land at
-      // any time), reported as a value, with no partial effects -- the caller runs
-      // updateChatFromMainline() and retries.
-      if (record.commitId !== mergedCommit) {
-        return {outcome: "stale"};
-      }
-      toCommit.push({record, files, baseHead: record.commitId});
-    }
-
-    // Write the commits (content-addressed object writes; harmless if the accept below turns out
-    // stale after all).
-    let identity = commitIdentityForAuthor(userMeta.profile);
-    let commits: {gadgetId: WorkpieceId, commitId: string}[] = [];
-    for (let {record, files, baseHead} of toCommit) {
-      commits.push({
-        gadgetId: record.id,
-        commitId: await this.impl.gitStore.writeFilesAsCommit(files, {
-          parents: baseHead !== undefined ? [baseHead] : [],
-          author: identity,
-          message: `Accept changes from chat: ${meta.title}`,
-          timestamp: new Date(),
-        }),
-      });
-    }
-
-    // Everything above this point awaited, so the chat and workspace may have moved in the
-    // meantime; re-validate before mutating. The chat lock excludes sibling merge/revert/
-    // update-from-mainline calls, but an accept from *another* chat can advance a head, an agent
-    // turn can start, and new messages can be recorded -- all detected here: heads against their
-    // snapshots, and the chat via a fresh meta read (throws if deleted, or if an agent started)
-    // plus the sequence token (anything that would invalidate the doc we flattened appends to
-    // the log). Everything from here on is synchronous, so the record, pin, and message writes
-    // land atomically under the output gate.
-    for (let {record, baseHead} of toCommit) {
-      let fresh = this.impl.storage.gadgets.get(record.id);
-      if (!fresh || fresh.commitId !== baseHead) {
-        return {outcome: "stale"};
-      }
-    }
-    let freshMeta = this.impl.assertChatNotActive(chatId);
-    if (this.impl.nextChatSequencePeek(chatId) !== sequenceToken) {
-      return {outcome: "stale"};
-    }
-
-    // Promote provisional gadgets whose creation is covered by this merge: accepting the chat's
-    // changes through `mergeThrough` makes them permanent workspace members. Each covered
-    // creation sits on an unmerged, unreverted "changes" message at `pending.sequence` (a
-    // merged one's gadget is already promoted, and a reverted one's is excluded here exactly as
-    // the toCommit loop excluded it), and is in `commits`, so every promoted gadget gets a head
-    // in the fast-forward step below -- possibly an empty tree.
-    for (let gadget of this.impl.listPendingGadgets(chatId)) {
-      if (gadget.pending!.sequence !== undefined && gadget.pending!.sequence <= mergeThrough &&
-          !revertedStamp(gadget.pending)) {
-        delete gadget.pending;
-        this.impl.storage.gadgets.put(gadget);
-      }
-    }
-
-    // Likewise promote provisional binding edges covered by this merge; this is also the moment
-    // an edge becomes visible to mainline loads and the derived workspace default binding list.
-    // (Reverted additions only survive on a reverted creation's record -- the revert deletes
-    // covered edges synchronously otherwise -- but exclude them the same way for coherence.)
-    for (let gadget of this.impl.storage.gadgets.list()) {
-      let promoted = false;
-      for (let edge of Object.values(gadget.bindings)) {
-        if (edge.pending?.chatId === chatId && edge.pending.sequence !== undefined &&
-            edge.pending.sequence <= mergeThrough && !revertedStamp(edge.pending)) {
-          delete edge.pending;
-          promoted = true;
-        }
-      }
-      if (promoted) {
-        this.impl.storage.gadgets.put(gadget);
-      }
-    }
-
-    // Fast-forward each committed gadget's head, and advance the chat's own pins to match: the
-    // chat's content *is* the new head, so it is fully merged by construction, and a subsequent
-    // accept remains a plain fast-forward.
-    for (let {gadgetId, commitId} of commits) {
-      let record = this.impl.storage.gadgets.get(gadgetId)!;
-      record.commitId = commitId;
-      this.impl.storage.gadgets.put(record);
-
-      let pin = pins.get(gadgetId);
-      if (pin) {
-        pin.mergedCommit = commitId;
-      } else {
-        // First accept of a gadget the chat itself created (or a pre-git chat with no pins):
-        // no seedCommit -- its content entered the chat as ordinary updates, not seed items.
-        codeBase.gadgets.push(
-            {gadgetId, filesRoot: this.impl.gadgetRootName(gadgetId), mergedCommit: commitId});
-      }
-    }
-
-    // Bump the loader-cache counter so cached workers reload with the new heads (and promoted
-    // records) visible.
-    this.impl.bumpVersion();
-    let timestamp = this.impl.getChatTimestamp();
-
-    this.impl.storage.chats.put({
-      chatId,
-      sequence: this.impl.nextChatSequence(chatId),
-      timestamp,
-      author: userMeta.profile,
-
-      type: "merge",
-      mergeThrough,
-      commits,
-    });
-
-    // The advanced pins land on the freshly-read meta so concurrent changes to other fields
-    // (e.g. a title rename during the awaits) survive. `codeBase` itself was derived from the
-    // entry-time meta, which is safe: only lock-holding operations mutate it.
-    if (commits.length > 0 || freshMeta.codeBase !== undefined) {
-      freshMeta.codeBase = codeBase;
-    }
-    freshMeta.lastActive = timestamp;
-    this.impl.storage.chatMeta.put(freshMeta);
-    this.impl.recomputeHasProposedChanges(chatId, freshMeta);
-
-    // Maybe generate gadget title if this was the first accepted code. (A merge covering only
-    // binding additions to existing gadgets doesn't count: it creates no commits, so the first
-    // merge with code -- including an accepted creation's empty first commit -- still sees
-    // isFirstChange and generates the title then.)
-    if (isFirstChange && commits.length > 0 && userMeta.quickModel) {
-      this.impl.generateGadgetTitle(chatId, userMeta.quickModel, userMeta.profile);
-    }
-    this.impl.recordGadgetAnalytics({
-      event_name: "gadget_interaction",
-      user_id: this.#clientUser.id.toString(),
-      chat_id: chatId,
-      interaction_type: "code_merged",
-    });
-
-    return {outcome: "merged"};
+        () => this.impl.mergeChanges(chatId, mergeThrough, userMeta,
+            this.#clientUser.id.toString(), options));
   }
 
   async revertChanges(chatId: number, revertFrom: number): Promise<void> {
@@ -9102,104 +9225,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
 
     let author = await this.#getClientProfile();
-    await this.impl.withChatLock(chatId, () => this.#revertChanges(chatId, revertFrom, author));
-  }
-
-  // The body of revertChanges(), running under the chat's operation lock (see withChatLock).
-  async #revertChanges(chatId: number, revertFrom: number, author: AiChatAuthorInfo)
-      : Promise<void> {
-    this.impl.assertChatNotActive(chatId);
-
-    // Reap crash orphans first: an unstamped record that survives reconciliation -- a crashed
-    // turn's not-yet-resumed tail -- has no sequence and is not covered by this revert. This is
-    // the only await before the revert lands; reconciliation is an idempotent repair, safe to
-    // run whether or not the revert below proceeds.
-    await this.impl.reconcilePendingGadgets(chatId);
-
-    // Everything from the meta re-read (which rechecks the agent after the await above) through
-    // the message and record writes below is synchronous, landing atomically under the output
-    // gate: nothing can interleave between what we examine here, the "changes" messages the
-    // revert message will cover, and the mutations recording the revert.
-    let meta = this.impl.assertChatNotActive(chatId);
-    let messages = [...this.impl.storage.chats.list({prefix: `${keyString(chatId)}.`})];
-    let statuses = chatChangeStatuses(messages);
-    let stillProposed = (msg: AiChatMessage) =>
-        msg.type === "changes" && msg.sequence >= revertFrom &&
-        statuses.get(msg.sequence) === undefined;
-
-    // A still-proposed mainline merge (see updateChatFromMainline) cannot be reverted: it
-    // advanced the chat's pins to commits whose content arrived in that very update, so erasing
-    // the update would leave the pins claiming content the chat no longer has -- and a later
-    // accept would then silently overwrite those mainline changes. Rolling pins back would need
-    // their pre-merge values, which aren't recorded; until they are, refuse loudly. (An
-    // *accepted* mainline merge is untouched by reverts, so it doesn't block anything. Scanned
-    // over canonical history rather than getProposedChanges, whose compacted-prefix batch hides
-    // individual messages.)
-    for (let msg of messages) {
-      if (msg.type === "changes" && msg.mainlineMerge !== undefined && stillProposed(msg)) {
-        throw new Error("Cannot revert changes that include an update from mainline: the " +
-            "update brought in other chats' accepted work, which the revert would silently " +
-            "discard. Edit or revert the files directly instead.");
-      }
-    }
-
-    if (!messages.some(stillProposed)) {
-      // Revert affects no changes (every "changes" message at or after revertFrom is already
-      // merged or reverted -- and any provisional gadget's stamped creation sits on a
-      // still-proposed message, so nothing needs deleting either): a no-op, recording nothing.
-      return;
-    }
-
-    // Delete provisional binding edges whose addition falls within the reverted range:
-    // rejecting the chat's changes rejects the edges they added. (Edges on a gadget doomed
-    // below go with its whole record instead.)
-    let doomed = this.impl.listPendingGadgets(chatId).filter(gadget =>
-        gadget.pending!.sequence !== undefined && gadget.pending!.sequence >= revertFrom);
-    let doomedIds = new Set(doomed.map(gadget => gadget.id));
-    for (let gadget of this.impl.storage.gadgets.list()) {
-      if (doomedIds.has(gadget.id)) continue;
-      let removed = false;
-      for (let [name, edge] of Object.entries(gadget.bindings)) {
-        if (edge.pending?.chatId === chatId && edge.pending.sequence !== undefined &&
-            edge.pending.sequence >= revertFrom) {
-          delete gadget.bindings[name];
-          removed = true;
-        }
-      }
-      if (removed) {
-        this.impl.storage.gadgets.put(gadget);
-        this.impl.bumpVersion([gadget.id]);
-      }
-    }
-
-    let timestamp = this.impl.getChatTimestamp();
-
-    this.impl.storage.chats.put({
-      chatId,
-      sequence: this.impl.nextChatSequence(chatId),
-      timestamp,
-      author,
-
-      type: "revert",
-      revertFrom,
-    });
-
-    meta.lastActive = timestamp;
-    this.impl.rollbackChatCompaction(meta, revertFrom);
-    this.impl.storage.chatMeta.put(meta);
-    this.impl.recomputeHasProposedChanges(chatId, meta);
-    this.impl.proposedChangesChanged(chatId);
-
-    // Only now delete the provisional gadgets whose creation the revert rejected -- the revert
-    // message is also how the agent learns of the rejection on its next turn (revert messages
-    // are surfaced to the model during history replay). Deletion awaits (removeGadget is the
-    // full path: hooks, facet, registry entry; a pending gadget's files exist only in the
-    // chat's proposed changes, so its mainline root has nothing to clear), and a destructive
-    // change must never outrun its durable record: with the revert already recorded, a failure
-    // or crash here leaves records whose creation the log marks reverted, which the next
-    // reconcilePendingGadgets run reaps. This one does exactly that (the records' creations are
-    // now marked reverted), keeping the deletion path single.
-    await this.impl.reconcilePendingGadgets(chatId);
+    await this.impl.withChatLock(chatId,
+        () => this.impl.revertChanges(chatId, revertFrom, author));
   }
 
   async deleteChat(chatId: number): Promise<void> {
@@ -9309,18 +9336,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async discardChatDraftChanges(chatId: number): Promise<void> {
-    let meta = this.impl.assertChatNotActive(chatId);
-    let updates = this.impl.listChatDraftUpdates(chatId);
-    if (updates.length === 0) {
-      return;
-    }
-
-    meta.lastActive = this.impl.getChatTimestamp();
-    this.impl.storage.chatMeta.put(meta);
-    this.impl.deleteChatDraftUpdates(chatId, updates);
-    this.impl.emitChatDraftCleared(chatId);
-    this.impl.recomputeHasProposedChanges(chatId, meta);
-    this.impl.proposedChangesChanged(chatId);
+    // Under the chat lock: the discard drops unlogged pins, and interleaving one of the
+    // lock-holding operations' awaits could otherwise drop a pin whose seed a message they are
+    // about to record (e.g. a mainline merge) is rooted in.
+    await this.impl.withChatLock(chatId, async () => this.impl.discardChatDraftChanges(chatId));
   }
 
   subscribeToConsoleLogs(subscriber: RpcStub<ConsoleLogSubscriber>): Promise<RpcStub<{}>> {
