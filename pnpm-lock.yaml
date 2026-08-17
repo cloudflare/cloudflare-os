@@ -37,6 +37,9 @@ importers:
 
   .:
     devDependencies:
+      '@types/node':
+        specifier: 26.1.0
+        version: 26.1.0
       aws4fetch:
         specifier: ^1.0.20
         version: 1.0.20

@@ -13,7 +13,9 @@ env:
   NODE_VERSION: "24.19.0"
 
 jobs:
-  # Parallel to `test` so lint and test failures surface on the same run; type checking lives in Build.
+  # Parallel to `test` so lint and test failures surface on the same run. Package type checking
+  # lives in Build; `scripts/` is checked here instead, because it is deliberately kept off
+  # `pnpm build`'s hot path (see AGENTS.md) and this is the cheap job.
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -38,6 +40,9 @@ jobs:
 
       - name: Lint
         run: pnpm lint:check
+
+      - name: Type-check scripts/
+        run: pnpm types:scripts
 
   test:
     name: Build and test

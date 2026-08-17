@@ -31,6 +31,9 @@ wrangler.staging.jsonc
 # Site-specific dev server configs.
 wrangler.dev.jsonc
 
+# Scratch output from scripts/preview (the PR-preview comment body).
+/output/
+
 # macOS
 .DS_Store
 

@@ -1,0 +1,23 @@
+// Type-checks `scripts/` — the repo's build/release/dev tooling, which no package tsconfig
+// includes. Nothing here is compiled: every module runs directly under `node`, which strips the
+// types. `erasableSyntaxOnly` is what keeps that a guarantee.
+//
+// Checked by `pnpm types:scripts` in CI's lint job, deliberately NOT by `pnpm build` (hot-path and no need)
+// `scripts/oxlint-plugin.mjs` stays JS because oxlint's plugin runtime loads it, not
+// Node's module loader.
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    // Node resolves these specifiers for real, unlike the packages' bundled "bundler" mode, so
+    // imports name the file on disk (`./staging-config.ts`) and need the extension allowed.
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "types": ["node"],
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    // The root sets allowJs; oxlint-plugin.mjs stays untyped.
+    "checkJs": false
+  },
+  "include": ["**/*.ts"]
+}

@@ -1,0 +1,257 @@
+name: Preview
+
+# Per-PR preview deployments, on the Cloudflare account named by the CLOUDFLARE_ACCOUNT_ID
+# repository variable.
+#
+# SECURITY — read this before changing the triggers.
+#
+# Deploying a preview needs a Cloudflare API token that can create Workers, KV namespaces and R2
+# buckets on a Cloudflare-owned account. This repository is public, so anyone can open a pull
+# request. The load-bearing control is the TRIGGER, not any `if:` below: on a public repository
+# GitHub structurally withholds repository secrets from `pull_request` runs whose head is a fork,
+# so `secrets.CLOUDFLARE_API_TOKEN` interpolates to the empty string there and no fork PR can
+# deploy anything. That is the same guarantee workers-sdk's deploy-previews.yml relies on.
+#
+# Therefore: `pull_request` only. Never `pull_request_target`, never `workflow_run`, never
+# `issue_comment` — each of those runs privileged with the secret available while the code, the
+# PR number, or the artifact naming it comes from an untrusted contributor.
+#
+# The `if:` conditions and the in-job guard are defence in depth, each fail-closed, and exist so
+# that a future edit which weakens the trigger still does not leak the token. They are not what
+# makes this safe today.
+#
+# The `cache: pnpm` below is deliberate and is not a poisoning path: a fork PR's Actions cache is
+# scoped to `refs/pull/<n>/merge` and cannot be read from another PR or from `main`.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  schedule:
+    # Nightly, off the hour. GitHub has no equivalent of GitLab's `environment.auto_stop_in`, so
+    # this is what stops abandoned previews from leaking a KV pair and an R2 bucket each.
+    - cron: "37 4 * * *"
+  workflow_dispatch:
+
+# Escalated per job. The preview jobs need no write scope at all beyond the sticky comment.
+permissions: {}
+
+env:
+  NODE_VERSION: "24.19.0"
+
+jobs:
+  deploy:
+    name: Deploy preview
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) &&
+      github.event.pull_request.user.type != 'Bot' &&
+      github.head_ref != 'main' &&
+      github.repository_owner == 'cloudflare'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      # Never cancel: a half-applied preview is worse than a slow one, since the tiers are
+      # deployed in sequence and an interrupted run leaves the instance wired to stale previews.
+      group: preview-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # First, before any step can reference a secret. Catches a future edit that flips the
+      # trigger to `pull_request_target`, and a branch pushed by a since-demoted account or a bot.
+      - name: Verify the pull request is from a maintainer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          permission=$(gh api "repos/$GH_REPO/collaborators/$PR_AUTHOR/permission" \
+            --jq '.permission')
+          if [[ ! "$permission" =~ ^(admin|maintain|write)$ ]]; then
+            echo "$PR_AUTHOR has '$permission' on $GH_REPO; previews require write access."
+            exit 1
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Ahead of setup-node, which shells out to `pnpm store path` to find the directory it caches.
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Deploy preview
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_WORKERS_DEV_HOST: ${{ vars.PREVIEW_WORKERS_DEV_HOST }}
+          # Secrets, not vars: these three are uploaded to the backend's Previews settings with
+          # `wrangler preview secret bulk`, and never written into a config file — Wrangler prints
+          # the values it finds in one, and this log is public.
+          PREVIEW_ADMINS: ${{ secrets.PREVIEW_ADMINS }}
+          CF_ACCESS_AUD: ${{ secrets.CF_ACCESS_AUD }}
+          CF_ACCESS_ISS: ${{ secrets.CF_ACCESS_ISS }}
+          # AI Gateway, so a preview's chats use server-managed keys rather than asking each user
+          # for their own. Optional as a group: with CF_AI_GATEWAY unset the preview is BYOK, but
+          # once it is set the account id and the Run + Read token are required.
+          CF_AI_GATEWAY: ${{ secrets.CF_AI_GATEWAY }}
+          # This is delibaretely set to CF_OS_AI_GATEWAY_ACCOUNT_ID (gets uploaded as CF_AI_GATEWAY_ACCOUNT_ID)
+          CF_AI_GATEWAY_ACCOUNT_ID: ${{ secrets.CF_OS_AI_GATEWAY_ACCOUNT_ID }}
+          CF_AI_GATEWAY_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_API_TOKEN }}
+          CF_AI_GATEWAY_PROVIDERS: ${{ secrets.CF_AI_GATEWAY_PROVIDERS }}
+          CF_AI_GATEWAY_WAI_DIRECT: ${{ secrets.CF_AI_GATEWAY_WAI_DIRECT }}
+          # Together these are the preview name, which is the first label of its hostname: a preview
+          # reads as `pr123-my-branch-router.<subdomain>.workers.dev`. The number is what keeps two
+          # branches that slugify alike from sharing one instance, and is how the nightly sweep
+          # matches a live preview back to its pull request. The cleanup job below passes both too.
+          PREVIEW_NAME: ${{ github.head_ref }}
+          PREVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/preview/preview.ts deploy
+
+      # In this same job, deliberately: handing the comment to a privileged second workflow is
+      # the pattern workers-sdk deleted, because the privileged half read the PR number out of an
+      # artifact the unprivileged half had named.
+      - name: Comment the preview URL
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MARKER: "<!-- preview-deployment -->"
+        run: |
+          {
+            printf '%s\n\n' "$MARKER"
+            cat output/preview-comment.md
+          } > output/preview-comment-body.md
+          jq -n --rawfile body output/preview-comment-body.md '{body: $body}' \
+            > output/preview-comment.json
+
+          # No `| head -1`: the shell runs with `pipefail`, and gh would take a SIGPIPE.
+          matches=$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" --paginate --jq '
+            first(.[]
+              | select(.user.login == "github-actions[bot]")
+              | select(.body | startswith(env.MARKER))
+              | .id)')
+          id=${matches%%$'\n'*}
+
+          if [[ -n "$id" ]]; then
+            gh api --silent --method PATCH "repos/$GH_REPO/issues/comments/$id" \
+              --input output/preview-comment.json
+          else
+            gh api --silent --method POST "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+              --input output/preview-comment.json
+          fi
+
+  cleanup:
+    name: Delete preview
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) &&
+      github.event.pull_request.user.type != 'Bot' &&
+      github.head_ref != 'main' &&
+      github.repository_owner == 'cloudflare'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: preview-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - name: Verify the pull request is from a maintainer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          permission=$(gh api "repos/$GH_REPO/collaborators/$PR_AUTHOR/permission" \
+            --jq '.permission')
+          if [[ ! "$permission" =~ ^(admin|maintain|write)$ ]]; then
+            echo "$PR_AUTHOR has '$permission' on $GH_REPO; previews require write access."
+            exit 1
+          fi
+
+      # The PR's own head commit, not the default branch: the teardown has to read the package list
+      # and wrangler configs that *created* these previews
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
+          persist-credentials: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Delete preview
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_WORKERS_DEV_HOST: ${{ vars.PREVIEW_WORKERS_DEV_HOST }}
+          # The same pair the deploy job passed, which is what names the preview. GitHub sets both on
+          # the closed event too. No admin or Access secret is needed to tear one down.
+          PREVIEW_NAME: ${{ github.head_ref }}
+          PREVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/preview/preview.ts delete
+
+  sweep:
+    name: Sweep abandoned previews
+    if: >-
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      github.repository_owner == 'cloudflare'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: preview-sweep
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Sweep previews whose PR is closed, or older than 7 days
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_WORKERS_DEV_HOST: ${{ vars.PREVIEW_WORKERS_DEV_HOST }}
+          # Reads one pull request per number parsed out of a live preview's name.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/preview/preview.ts sweep
