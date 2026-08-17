@@ -433,7 +433,9 @@ export type ResourceConfiguratorFrame = GatekeeperUiFrame;
  * Options for GatekeeperVendor.connectAccount(). `scopes` selects the access tier (see that
  * method). `resourceUrlPatterns`, if given, limits the connection to the authorization needed for
  * those grantable resource types; if omitted, authorization for all the vendor's resource types
- * is requested.
+ * is requested. An **empty array is meaningful and distinct from omitting it**: it requests no
+ * resource authorization at all, which is how a caller connects an account for a non-resource
+ * purpose (e.g. billing) without asking the user to grant data access it will never use.
  */
 export type GatekeeperConnectOptions = {
   scopes?: "auth" | "full";
@@ -470,7 +472,9 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
    *
    * `options.resourceUrlPatterns`, if given, limits the connection to the authorization needed for
    * those grantable resource types. If omitted, authorization for all of the vendor's resource
-   * types is requested.
+   * types is requested. An empty array is not the same as omitting it: it requests no resource
+   * authorization, so a vendor must treat `[]` as "none" rather than falling back to "all" -- doing
+   * otherwise would silently over-request access the user was never shown a reason for.
    */
   connectAccount(callback: Fetcher<GatekeeperConnectCallback>,
                  options?: GatekeeperConnectOptions): Promise<{url: string}>;
