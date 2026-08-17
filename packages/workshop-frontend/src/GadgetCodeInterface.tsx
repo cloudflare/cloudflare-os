@@ -2,6 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } fr
 import { useKumoToastManager } from '@cloudflare/kumo'
 import { DownloadSimple } from '@phosphor-icons/react'
 import { Overseer } from '@gadgets/workshop-shared/api'
+import { seedDocFromFiles, seedUpdateHash } from '@gadgets/workshop-shared/yjs-seed'
 import { RpcStub } from 'capnweb'
 import * as Y from 'yjs'
 import FileSidebar from './FileSidebar'
@@ -9,26 +10,41 @@ import type { FileChangeStatus, FileSidebarHandle } from './FileSidebar'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import CodeEditor from './CodeEditor'
 import CodeDiffEditor from './CodeDiffEditor'
-import type { StreamingProposedChanges } from './ChatInterface'
+import type { ChatCodeChanges, SelectedChatCodeInfo, StreamingProposedChanges } from './ChatInterface'
+import { reportIssue } from './errorReporting'
 import { saveTextToFile } from './fileTransfers'
 
-// TODO(git-storage): OUT OF SERVICE: the git-storage API change removed subscribeToCode()
-// (committed code is becoming git commits, with Yjs representing only a chat's uncommitted
-// changes), so this component's mainline doc is never populated and it renders its loading state
-// indefinitely. It is rebuilt on commit-seeded chat docs later in this change sequence.
+// The code view over git-backed gadget code.
+//
+// Committed code is git commits; the gadget's head commit (`headCommitId`, from
+// WorkpieceSummary.commitId) is fetched with Overseer.getCodeAtCommit() -- immutable, so cached
+// by oid -- and is both the read-only view outside any chat and the "original" side of in-chat
+// diffs. A chat's uncommitted changes are a Yjs doc layered on a fixed base the browser derives
+// itself: the deterministic seed built from the chat's pinned commits (see ChatCodeBase in the
+// API and `seedDocFromFiles` in @gadgets/workshop-shared/yjs-seed, verified against the chat's
+// stored seed hash), or, for chats predating commit-seeded docs, the server-provided legacy base
+// (Overseer.getLegacyChatDocBase()). The chat's recorded change updates (`chatChanges`), live
+// drafts, and streaming agent edits apply on top, and the user's own edits are recorded as chat
+// drafts via Overseer.updateCode(). There is no standalone (out-of-chat) editing: gadget heads
+// only advance when a chat's changes are accepted.
 
 interface GadgetCodeInterfaceProps {
   overseer: RpcStub<Overseer>
   // Name of the Y.Doc root map holding the selected workpiece's files (see
-  // WorkpieceSummary.filesRoot). The Yjs doc is shared by the whole workspace; this selects which
+  // WorkpieceSummary.filesRoot). Chat code docs span the whole workspace; this selects which
   // workpiece's files the editor shows.
   filesRoot: string
+  // The selected workpiece's head commit (WorkpieceSummary.commitId). Absent while the gadget has
+  // no accepted code (e.g. still pending in a chat), which reads as an empty committed file set.
+  headCommitId?: string
   height?: string | number
-  // TODO(git-storage): Formerly fired on local mainline edits; unobserved while the component is
-  // out of service.
-  onCodeChange?: () => void
   selectedChatId?: number | null
-  proposedChanges?: Uint8Array
+  // The selected chat's code-base pins, once known (see SelectedChatCodeInfo). Required to build
+  // the chat's doc base; the view stays in its loading state until it arrives.
+  chatCode?: SelectedChatCodeInfo
+  // The selected chat's recorded code changes (see ChatCodeChanges). `undefined` until the chat's
+  // history has loaded.
+  chatChanges?: ChatCodeChanges
   draftProposedChanges?: StreamingProposedChanges
   streamingProposedChanges?: StreamingProposedChanges
   // The file the agent is currently streaming edits into, if it is in this workpiece's root.
@@ -36,6 +52,55 @@ interface GadgetCodeInterfaceProps {
   isAgentActive: boolean
   isVisible?: boolean
   onHasCodeChange?: (hasCode: boolean) => void
+}
+
+const EMPTY_FILES: ReadonlyMap<string, string> = new Map()
+
+// Commit trees are immutable, so their file maps are cached by oid for the page's lifetime --
+// across chat switches, workpiece switches, and component remounts. Failures are evicted so a
+// later attempt retries.
+const commitFilesCache = new Map<string, Promise<ReadonlyMap<string, string>>>()
+
+function fetchCommitFiles(
+  overseer: RpcStub<Overseer>, commitId: string,
+): Promise<ReadonlyMap<string, string>> {
+  let cached = commitFilesCache.get(commitId)
+  if (!cached) {
+    cached = overseer.getCodeAtCommit(commitId).then(({ files }) => {
+      const map = new Map<string, string>()
+      for (const [name, content] of Object.entries(files)) {
+        map.set(name, content)
+      }
+      return map as ReadonlyMap<string, string>
+    })
+    cached.catch(() => commitFilesCache.delete(commitId))
+    commitFilesCache.set(commitId, cached)
+  }
+  return cached
+}
+
+// Builds the chat doc's base update for a commit-seeded chat: the deterministic whole-doc seed
+// from every seedCommit-bearing pin (a single seedDocFromFiles call, as the seed contract
+// requires), verified against the chat's stored seed hash. A mismatch means this client derives
+// a different seed than the chat was created with (e.g. a Yjs upgrade changed the encoding), and
+// editing a diverged doc would corrupt it -- so fail loudly instead.
+async function deriveSeedUpdate(
+  overseer: RpcStub<Overseer>,
+  codeBase: NonNullable<SelectedChatCodeInfo['codeBase']>,
+): Promise<Uint8Array> {
+  const roots = new Map<string, ReadonlyMap<string, string>>()
+  for (const pin of codeBase.gadgets) {
+    if (pin.seedCommit !== undefined) {
+      roots.set(pin.filesRoot, await fetchCommitFiles(overseer, pin.seedCommit))
+    }
+  }
+  const seed = seedDocFromFiles(roots)
+  const hash = await seedUpdateHash(seed)
+  if (hash !== codeBase.seedHash) {
+    throw new Error(
+      `Chat code seed derivation mismatch (derived ${hash}, chat expects ${codeBase.seedHash})`)
+  }
+  return seed
 }
 
 function didFileChange(originalMap: Y.Map<Y.Text>, previewMap: Y.Map<Y.Text>, filename: string) {
@@ -104,17 +169,97 @@ type QueuedCodeUpdate = {
   update: Uint8Array
 }
 
-export default function GadgetCodeInterface({ overseer, filesRoot, height = '100%', selectedChatId = null, proposedChanges, draftProposedChanges, streamingProposedChanges, streamingActiveFile, isAgentActive, isVisible = true, onHasCodeChange }: GadgetCodeInterfaceProps) {
+export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId, height = '100%', selectedChatId = null, chatCode, chatChanges, draftProposedChanges, streamingProposedChanges, streamingActiveFile, isAgentActive, isVisible = true, onHasCodeChange }: GadgetCodeInterfaceProps) {
   const toasts = useKumoToastManager()
   const branchMode = selectedChatId !== null
 
-  // Yjs document and files map - persistent across reconnections. The doc holds the whole
-  // workspace (sync is whole-doc; updates may span workpieces); `filesRoot` selects the current
-  // workpiece's file map within it. Y.Doc.getMap() returns the same instance for the same name,
-  // so re-pointing the ref on every render is cheap and idempotent.
-  const ydocRef = useRef<Y.Doc>(new Y.Doc())
-  const filesMapRef = useRef<Y.Map<Y.Text>>(ydocRef.current.getMap(filesRoot))
-  filesMapRef.current = ydocRef.current.getMap(filesRoot)
+  // The committed head's file map, fetched by oid (see fetchCommitFiles). `commitId` records
+  // which commit the entry is for, so a switch to a different gadget or a head advance reads as
+  // "loading" rather than briefly showing the previous commit's files.
+  const [headFilesState, setHeadFilesState] =
+    useState<{ commitId: string, files: ReadonlyMap<string, string> } | null>(null)
+  // A failed head fetch renders an error state with a retry (fetchCommitFiles evicts failures
+  // from its cache, so bumping the token genuinely refetches); without this the pane would sit
+  // in its loading state forever, since nothing else re-triggers the fetch.
+  const [headLoadFailed, setHeadLoadFailed] = useState(false)
+  const [headRetryToken, setHeadRetryToken] = useState(0)
+  useEffect(() => {
+    setHeadLoadFailed(false)
+    if (headCommitId === undefined) return
+    let cancelled = false
+    fetchCommitFiles(overseer, headCommitId)
+      .then(files => {
+        if (!cancelled) setHeadFilesState({ commitId: headCommitId, files })
+      })
+      .catch(err => {
+        if (cancelled) return
+        console.error('Failed to load committed code:', err)
+        reportIssue('code-view.head-commit', err, { handled: true })
+        setHeadLoadFailed(true)
+      })
+    return () => { cancelled = true }
+  }, [headCommitId, overseer, headRetryToken])
+
+  // The committed files currently applicable: an absent head reads as an empty committed file
+  // set (the gadget has no accepted code yet); null while the head's tree is still loading.
+  const headFiles: ReadonlyMap<string, string> | null = headCommitId === undefined
+    ? EMPTY_FILES
+    : headFilesState !== null && headFilesState.commitId === headCommitId
+      ? headFilesState.files
+      : null
+
+  // A local Y.Doc holding the committed files, purely as display state: the read-only view
+  // outside any chat and the "original" side of in-chat diffs. Never synced anywhere, so its
+  // (random) identity doesn't matter; rebuilt whenever the head or the selected root changes.
+  const headDoc = useMemo(() => {
+    const doc = new Y.Doc()
+    if (headFiles !== null && headFiles.size > 0) {
+      const map = doc.getMap<Y.Text>(filesRoot)
+      doc.transact(() => {
+        for (const [name, content] of headFiles) {
+          map.set(name, new Y.Text(content))
+        }
+      })
+    }
+    return doc
+  }, [headFiles, filesRoot])
+  const headFilesMapRef = useRef<Y.Map<Y.Text>>(headDoc.getMap(filesRoot))
+  headFilesMapRef.current = headDoc.getMap(filesRoot)
+
+  // The chat doc's base update: the commit-derived deterministic seed, or the server-provided
+  // legacy base for chats predating commit-seeded docs (see the note at the top of this file).
+  // Both are fixed for the life of the chat, so this is fetched once per chat selection.
+  // `chatBaseError` marks a failed derivation (most seriously a seed-hash mismatch); the view
+  // renders an error state rather than an editable doc that would diverge.
+  const [chatBase, setChatBase] = useState<{ chatId: number, update: Uint8Array } | null>(null)
+  const [chatBaseError, setChatBaseError] = useState(false)
+  const chatCodeRef = useRef(chatCode)
+  chatCodeRef.current = chatCode
+  // The seed is a pure function of the seedCommit-bearing pins, which are immutable for the life
+  // of the chat, so the stored hash (or its absence, marking a legacy chat) is the only input
+  // that matters for keying the fetch; the pins themselves are read through the ref.
+  const chatSeedHash = chatCode?.codeBase?.seedHash
+  const chatCodeKnown = chatCode !== undefined
+  useEffect(() => {
+    setChatBase(null)
+    setChatBaseError(false)
+    if (selectedChatId === null || !chatCodeKnown) return
+    let cancelled = false
+    ;(async () => {
+      const codeBase = chatCodeRef.current?.codeBase
+      const update = codeBase?.seedHash !== undefined
+        ? await deriveSeedUpdate(overseer, codeBase)
+        : await overseer.getLegacyChatDocBase(selectedChatId)
+      if (!cancelled) setChatBase({ chatId: selectedChatId, update })
+    })().catch(err => {
+      if (cancelled) return
+      console.error('Failed to build the chat code doc base:', err)
+      reportIssue('code-view.chat-base', err, { handled: true })
+      setChatBaseError(true)
+    })
+    return () => { cancelled = true }
+  }, [selectedChatId, chatCodeKnown, chatSeedHash, overseer])
+  const chatBaseReady = chatBase !== null && chatBase.chatId === selectedChatId
 
   // Updates originating locally are enqueued to this array.
   const updateQueueRef = useRef<QueuedCodeUpdate[]>([]);
@@ -122,18 +267,19 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
   // Track whether we're currently sending updates to prevent concurrent sends
   const isSendingRef = useRef<boolean>(false)
 
-  // React state for UI. `isReady`/`loading`/`committedDocVersion` never leave their initial
-  // values while the component is out of service (see the note at the top of this file).
-  const [fileNames, setFileNames] = useState<string[]>([])
+  // React state for UI
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const fileSidebarRef = useRef<FileSidebarHandle | null>(null)
-  const [isReady] = useState(false)
-  const [loading] = useState(true)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
-  const [committedDocVersion] = useState(0)
   const [, setEditableDocVersion] = useState(0)
 
-  // Branch and preview docs layered on top of committed mainline code.
+  // Sorted committed file list (the base layer of the sidebar; in-chat additions arrive through
+  // previewFileNames below).
+  const fileNames = useMemo(
+    () => headFiles !== null ? Array.from(headFiles.keys()).toSorted() : [],
+    [headFiles])
+
+  // Branch and preview docs layered on top of the chat doc base.
   const durableBranchYdocRef = useRef<Y.Doc | null>(null)
   const editableYdocRef = useRef<Y.Doc | null>(null)
   const editableFilesMapRef = useRef<Y.Map<Y.Text> | null>(null)
@@ -141,8 +287,8 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
   const streamingFilesMapRef = useRef<Y.Map<Y.Text> | null>(null)
   const editableDraftCursorRef = useRef(0)
   const editableDraftUpdatesRef = useRef<Uint8Array[] | undefined>(undefined)
-  const editableBaseProposedRef = useRef<Uint8Array | undefined>(undefined)
-  const editableCommittedVersionRef = useRef(0)
+  const editableBaseChangesRef = useRef<Uint8Array | undefined>(undefined)
+  const editableChatBaseRef = useRef<{ chatId: number, update: Uint8Array } | null>(null)
   const editableChatIdRef = useRef<number | null>(null)
   // The files root the editable/streaming docs' map refs were derived from; a root switch forces
   // a rebuild so the refs point into the newly-selected workpiece's map.
@@ -189,30 +335,6 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
     hasUserSwitchedFilesThisTurnRef.current = false
   }, [filesRoot])
 
-  // Set up Y.Map observer to sync file list to React state
-  useEffect(() => {
-    const filesMap = ydocRef.current.getMap<Y.Text>(filesRoot)
-
-    const updateFileList = () => {
-      const names = Array.from(filesMap.keys()).toSorted()
-      setFileNames(names)
-    }
-
-    // Initial sync
-    updateFileList()
-
-    // Observe changes to the map
-    const observer = (_event: Y.YMapEvent<Y.Text>) => {
-      updateFileList()
-    }
-
-    filesMap.observe(observer)
-
-    return () => {
-      filesMap.unobserve(observer)
-    }
-  }, [filesRoot])
-
   // Auto-select first file when files appear and nothing is selected.
   useEffect(() => {
     if (activeFile !== null) return
@@ -227,14 +349,14 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
     }
   }, [fileNames, activeFile, previewFileNames])
 
-  // Avoid reporting an empty state before the first code sync is ready.
+  // Avoid reporting an empty state before the committed files have loaded.
   const onHasCodeChangeRef = useRef(onHasCodeChange)
   onHasCodeChangeRef.current = onHasCodeChange
   useEffect(() => {
-    if (isReady) {
-      onHasCodeChangeRef.current?.(fileNames.length > 0)
+    if (headFiles !== null) {
+      onHasCodeChangeRef.current?.(headFiles.size > 0)
     }
-  }, [isReady, fileNames.length])
+  }, [headFiles])
 
   // Select the file currently being edited by the agent, unless the user has
   // manually switched files during this turn.
@@ -246,14 +368,14 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
       return
     }
 
-    if (filesMapRef.current.has(target) || previewMap?.has(target)) {
+    if (headFilesMapRef.current.has(target) || previewMap?.has(target)) {
       setActiveFile(target)
     }
   }, [isAgentActive, previewFileNames, selectedChatId, streamingActiveFile])
 
   const replaceChangedFiles = useCallback((previewMap: Y.Map<Y.Text> | null) => {
     setChangedFiles(prev => {
-      const next = previewMap ? computeChangedFiles(filesMapRef.current, previewMap) : new Set<string>()
+      const next = previewMap ? computeChangedFiles(headFilesMapRef.current, previewMap) : new Set<string>()
       return areSetsEqual(prev, next) ? prev : next
     })
   }, [])
@@ -266,7 +388,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
 
       let next = prev
       for (const filename of filenames) {
-        const changed = didFileChange(filesMapRef.current, previewMap, filename)
+        const changed = didFileChange(headFilesMapRef.current, previewMap, filename)
         const alreadyChanged = next.has(filename)
         if (changed === alreadyChanged) continue
 
@@ -351,38 +473,32 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
     }
   }, [])
 
+  // The committed head is immutable per doc (headDoc is rebuilt when the head advances), so the
+  // "original side changed" signal is simply a new headDoc: recompute the changed-files set
+  // against whichever preview map is showing.
   useEffect(() => {
-    const originalMap = ydocRef.current.getMap<Y.Text>(filesRoot)
-    const observer = (events: Y.YEvent<any>[]) => {
-      const previewMap = streamingFilesMapRef.current ?? editableFilesMapRef.current
-      if (!previewMap) {
-        return
-      }
-
-      const touchedFiles = getTouchedFilesFromEvents(events, originalMap)
-      if (touchedFiles.size > 0) {
-        updateChangedFilesForNames(previewMap, touchedFiles)
-      }
+    const previewMap = streamingFilesMapRef.current ?? editableFilesMapRef.current
+    if (previewMap) {
+      replaceChangedFiles(previewMap)
     }
-
-    originalMap.observeDeep(observer)
-    return () => {
-      originalMap.unobserveDeep(observer)
-    }
-  }, [filesRoot, updateChangedFilesForNames])
+  }, [headDoc, replaceChangedFiles])
 
   // Build the durable branch doc and editable draft doc whenever the selected chat or
-  // server-backed branch state changes.
+  // server-backed branch state changes. The durable doc is the chat's server-recorded state --
+  // its fixed base (chatBase) plus its recorded change updates -- and the editable doc layers
+  // drafts and not-yet-acknowledged local edits on top.
   useEffect(() => {
-    if (!branchMode) {
+    if (!branchMode || !chatBaseReady || chatChanges === undefined) {
+      // Not in a chat, or the chat's base/history hasn't loaded yet (the view shows its loading
+      // state until both have).
       observeEditableDoc(null)
       durableBranchYdocRef.current = null
       editableYdocRef.current = null
       editableFilesMapRef.current = null
       editableDraftCursorRef.current = 0
       editableDraftUpdatesRef.current = undefined
-      editableBaseProposedRef.current = undefined
-      editableCommittedVersionRef.current = 0
+      editableBaseChangesRef.current = undefined
+      editableChatBaseRef.current = null
       editableChatIdRef.current = null
       if (!streamingYdocRef.current) {
         observePreviewMap(null)
@@ -392,9 +508,9 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
     }
 
     const durableDoc = new Y.Doc()
-    Y.applyUpdateV2(durableDoc, Y.encodeStateAsUpdateV2(ydocRef.current))
-    if (proposedChanges) {
-      Y.applyUpdateV2(durableDoc, proposedChanges, 'server')
+    Y.applyUpdateV2(durableDoc, chatBase!.update, 'server')
+    if (chatChanges.update) {
+      Y.applyUpdateV2(durableDoc, chatChanges.update, 'server')
     }
     durableBranchYdocRef.current = durableDoc
 
@@ -403,8 +519,8 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
     const shouldRebuildEditable = !editableYdocRef.current
       || editableChatIdRef.current !== selectedChatId
       || editableRootRef.current !== filesRoot
-      || editableBaseProposedRef.current !== proposedChanges
-      || editableCommittedVersionRef.current !== committedDocVersion
+      || editableChatBaseRef.current !== chatBase
+      || editableBaseChangesRef.current !== chatChanges.update
       || editableDraftCursorRef.current > draftUpdateCount
 
     if (shouldRebuildEditable) {
@@ -424,8 +540,8 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
       observeEditableDoc(editableDoc)
       editableDraftCursorRef.current = draftUpdateCount
       editableDraftUpdatesRef.current = draftUpdates
-      editableBaseProposedRef.current = proposedChanges
-      editableCommittedVersionRef.current = committedDocVersion
+      editableBaseChangesRef.current = chatChanges.update
+      editableChatBaseRef.current = chatBase
       editableChatIdRef.current = selectedChatId
       editableRootRef.current = filesRoot
       setEditableDocVersion((prev) => prev + 1)
@@ -446,12 +562,13 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
     }
   }, [
     branchMode,
-    committedDocVersion,
+    chatBase,
+    chatBaseReady,
+    chatChanges,
     draftProposedChanges?.count,
     draftProposedChanges?.updates,
     filesRoot,
     observePreviewMap,
-    proposedChanges,
     replaceChangedFiles,
     selectedChatId,
   ])
@@ -459,7 +576,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
   // Incrementally apply streaming updates to a persistent streaming Y.Doc.
   // Only new updates (beyond the cursor) are applied each frame.
   const streamingCursorRef = useRef(0)
-  const streamingBaseProposedRef = useRef<Uint8Array | undefined>(undefined)
+  const streamingBaseChangesRef = useRef<Uint8Array | undefined>(undefined)
   const streamingUpdatesRef = useRef<Uint8Array[] | undefined>(undefined)
   const streamingBaseDocRef = useRef<Y.Doc | null>(null)
 
@@ -471,11 +588,18 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
       streamingYdocRef.current = null
       streamingFilesMapRef.current = null
       streamingCursorRef.current = 0
-      streamingBaseProposedRef.current = undefined
+      streamingBaseChangesRef.current = undefined
       streamingUpdatesRef.current = undefined
       streamingBaseDocRef.current = null
       observePreviewMap(branchMode ? editableFilesMapRef.current : null)
       replaceChangedFiles(branchMode ? editableFilesMapRef.current : null)
+      return
+    }
+
+    // Streaming edits only ever happen within a chat; until the chat's durable doc is built,
+    // there is nothing to layer them on (the view shows its loading state anyway).
+    const baseDoc = durableBranchYdocRef.current
+    if (!baseDoc) {
       return
     }
 
@@ -484,21 +608,18 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
     // Rebuild streaming doc if not yet initialized, if the durable base changed, if the selected
     // workpiece root changed, or if the stream history was replaced (chat switch or codeReset).
     if (!streamingYdocRef.current
-        || streamingBaseProposedRef.current !== proposedChanges
-        || streamingBaseDocRef.current !== durableBranchYdocRef.current
+        || streamingBaseChangesRef.current !== chatChanges?.update
+        || streamingBaseDocRef.current !== baseDoc
         || streamingRootRef.current !== filesRoot
         || streamingUpdatesRef.current !== streamingUpdates
         || streamingCursorRef.current > streamingUpdateCount) {
       const streamingDoc = new Y.Doc()
-      const baseState = branchMode && durableBranchYdocRef.current
-        ? Y.encodeStateAsUpdateV2(durableBranchYdocRef.current)
-        : Y.encodeStateAsUpdateV2(ydocRef.current)
-      Y.applyUpdateV2(streamingDoc, baseState)
+      Y.applyUpdateV2(streamingDoc, Y.encodeStateAsUpdateV2(baseDoc))
       streamingYdocRef.current = streamingDoc
       streamingFilesMapRef.current = streamingDoc.getMap<Y.Text>(filesRoot)
-      streamingBaseProposedRef.current = proposedChanges
+      streamingBaseChangesRef.current = chatChanges?.update
       streamingUpdatesRef.current = streamingUpdates
-      streamingBaseDocRef.current = durableBranchYdocRef.current
+      streamingBaseDocRef.current = baseDoc
       streamingRootRef.current = filesRoot
       streamingCursorRef.current = 0
       rebuiltStreamingDoc = true
@@ -513,7 +634,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
       observePreviewMap(streamingFilesMapRef.current)
       replaceChangedFiles(streamingFilesMapRef.current)
     }
-  }, [branchMode, committedDocVersion, filesRoot, observePreviewMap, proposedChanges, replaceChangedFiles, selectedChatId, streamingProposedChanges?.count, streamingProposedChanges?.updates])
+  }, [branchMode, chatChanges?.update, filesRoot, observePreviewMap, replaceChangedFiles, selectedChatId, streamingProposedChanges?.count, streamingProposedChanges?.updates])
 
   // Helper to send updates to server based on what it's missing
   // Uses a loop to ensure all changes get sent, with only one send in flight at a time
@@ -581,9 +702,11 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
     setActiveFile(filename)
   }
 
-  // Handle file creation
+  // Handle file creation. All editing happens within a chat: outside one (or while an agent is
+  // streaming) the sidebar's mutating affordances are locked, so these handlers only ever act on
+  // the editable branch doc.
   const handleFileCreate = (filename: string) => {
-    const filesMap = branchMode ? editableFilesMapRef.current : filesMapRef.current
+    const filesMap = branchMode ? editableFilesMapRef.current : null
     if (!filesMap) {
       return
     }
@@ -602,7 +725,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
 
   // Handle file deletion
   const handleFileDelete = (filename: string) => {
-    const filesMap = branchMode ? editableFilesMapRef.current : filesMapRef.current
+    const filesMap = branchMode ? editableFilesMapRef.current : null
     if (!filesMap) {
       return
     }
@@ -626,7 +749,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
 
   // Handle file renaming
   const handleFileRename = (oldName: string, newName: string) => {
-    const filesMap = branchMode ? editableFilesMapRef.current : filesMapRef.current
+    const filesMap = branchMode ? editableFilesMapRef.current : null
     if (!filesMap) {
       return
     }
@@ -658,9 +781,12 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
     toasts.add({ title: `Renamed file: ${oldName} \u2192 ${newName}`, variant: 'success' })
   }
 
-  // Get the Y.Text for the active file (original version)
-  const activeFileYText = activeFile ? filesMapRef.current.get(activeFile) || null : null
-  const isEditingLocked = branchMode && streamingProposedChanges !== undefined
+  // Get the Y.Text for the active file (committed version -- the read-only view outside chats
+  // and the "original" side of in-chat diffs)
+  const activeFileYText = activeFile ? headFilesMapRef.current.get(activeFile) || null : null
+  // Editing is locked outside a chat (committed code only changes through a chat's accept) and
+  // while an agent is streaming edits into the chat.
+  const isEditingLocked = !branchMode || streamingProposedChanges !== undefined
 
   // Get the modified Y.Text when in diff mode
   const previewFilesMap = streamingFilesMapRef.current ?? (branchMode ? editableFilesMapRef.current : null)
@@ -674,7 +800,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
       return previewMap.get(filename) ?? null
     }
 
-    return filesMapRef.current.get(filename) ?? null
+    return headFilesMapRef.current.get(filename) ?? null
   }, [branchMode])
 
   const handleFileDownload = useCallback((filename: string) => {
@@ -696,17 +822,73 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
       : fileNames
   }, [fileNames, isDiffMode, previewFilesMap, previewFileNames])
 
+  // `headDoc` is a dependency because the original side is read through headFilesMapRef, whose
+  // content changes exactly when headDoc is rebuilt: without it, a head advance that alters file
+  // contents but not the changed-files *set* (e.g. a draft-added file now also existing on
+  // mainline, "added" -> "modified") could leave stale statuses.
   const fileChangeStatuses = useMemo(() => {
     return isDiffMode && previewFilesMap
-      ? computeFileChangeStatuses(filesMapRef.current, previewFilesMap, displayedFiles, changedFiles)
+      ? computeFileChangeStatuses(headFilesMapRef.current, previewFilesMap, displayedFiles, changedFiles)
       : undefined
-  }, [changedFiles, displayedFiles, isDiffMode, previewFilesMap])
+  }, [changedFiles, displayedFiles, headDoc, isDiffMode, previewFilesMap])
   const activeFileDownloadable = activeFile ? displayedFiles.includes(activeFile) : false
-  const activeFileModeLabel = isEditingLocked
-    ? 'Reviewing changes in'
-    : isDiffMode
-      ? 'Editing changes in'
-      : 'Editing'
+  const activeFileModeLabel = !branchMode
+    ? 'Viewing'
+    : isEditingLocked
+      ? 'Reviewing changes in'
+      : 'Editing changes in'
+
+  // Outside a chat, ready means the committed files have loaded; within one, the chat's doc base
+  // and recorded changes must be in too (the branch-docs effect builds the editable doc from them
+  // one render later, which CodeDiffEditor tolerates as a transiently detached binding).
+  const isReady = headFiles !== null &&
+    (!branchMode || (chatBaseReady && chatChanges !== undefined))
+  const loading = !isReady && !chatBaseError
+
+  // Repair the file selection when the active file stops existing everywhere it could live --
+  // e.g. a head advance (another chat's accept) deleted it, or the user left the chat whose
+  // draft created it. Clearing the selection lets the auto-select effect pick a remaining file,
+  // instead of showing a nonexistent filename over a blank editor. Only while ready: mid-load
+  // both sides are transiently empty, and clobbering the selection then would lose it across
+  // every ordinary reload.
+  useEffect(() => {
+    if (!isReady || activeFile === null) return
+    const previewMap = streamingFilesMapRef.current ?? (branchMode ? editableFilesMapRef.current : null)
+    if (!headFilesMapRef.current.has(activeFile) && !previewMap?.has(activeFile)) {
+      setActiveFile(null)
+    }
+  }, [activeFile, branchMode, fileNames, headDoc, isReady, previewFileNames])
+
+  if (headLoadFailed && headFiles === null) {
+    return (
+      <div
+        className="flex flex-col justify-center items-center gap-3 px-6 text-center"
+        style={{ height }}
+      >
+        <p className="m-0 text-sm text-kumo-danger">
+          Failed to load this gadget&apos;s code.
+        </p>
+        <WorkshopButton
+          tone="secondary"
+          className="!h-8"
+          onClick={() => setHeadRetryToken(token => token + 1)}
+        >
+          Try again
+        </WorkshopButton>
+      </div>
+    )
+  }
+
+  if (chatBaseError) {
+    return (
+      <div
+        className="flex justify-center items-center px-6 text-center text-kumo-danger text-sm"
+        style={{ height }}
+      >
+        Failed to load this conversation&apos;s code changes. Try reloading the page.
+      </div>
+    )
+  }
 
   if (loading) {
     return (
@@ -766,25 +948,29 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
             </div>
           )}
           <div className="min-h-0 flex-1">
-            {isReady && !loading && displayedFiles.length === 0 ? (
+            {displayedFiles.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center bg-kumo-base px-6 text-center">
                 <div className="max-w-[360px]">
                   <p className="m-0 text-[15px] leading-[22px] font-semibold tracking-[-0.3px] text-kumo-default">
                     No files yet
                   </p>
                   <p className="mt-1.5 mb-0 text-[13px] leading-[19px] tracking-[-0.25px] text-kumo-subtle">
-                    Keep building with the agent in chat and files will appear here as it works, or create one yourself.
+                    {branchMode
+                      ? 'Keep building with the agent in chat and files will appear here as it works, or create one yourself.'
+                      : 'Open a conversation and build with the agent, and its accepted files will appear here.'}
                   </p>
-                  <div className="mt-4 flex justify-center">
-                    <WorkshopButton
-                      onClick={() => fileSidebarRef.current?.openCreateModal()}
-                      disabled={isEditingLocked}
-                      tone="primary"
-                      className="!h-8"
-                    >
-                      New file
-                    </WorkshopButton>
-                  </div>
+                  {branchMode && (
+                    <div className="mt-4 flex justify-center">
+                      <WorkshopButton
+                        onClick={() => fileSidebarRef.current?.openCreateModal()}
+                        disabled={isEditingLocked}
+                        tone="primary"
+                        className="!h-8"
+                      >
+                        New file
+                      </WorkshopButton>
+                    </div>
+                  )}
                 </div>
               </div>
             ) : isDiffMode ? (
@@ -796,10 +982,12 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
                 height="100%"
               />
             ) : (
+              // Outside any chat the committed head is shown read-only: committed code only
+              // changes through a chat's accepted changes.
               <CodeEditor
                 filename={activeFile}
-                ytext={isDiffMode ? activeFileModifiedYText : activeFileYText}
-                isReady={isReady}
+                ytext={activeFileYText}
+                isReady={false}
                 height="100%"
               />
             )}

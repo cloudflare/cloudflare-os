@@ -16,6 +16,7 @@ import {
 } from "react";
 import { reportIssue } from './errorReporting'
 import {
+  Dialog,
   DropdownMenu,
   Popover,
   Tooltip,
@@ -78,6 +79,7 @@ import {
   SlashCommandRequest,
   ChatAttachmentHandle,
   ChatAttachmentRef,
+  ChatCodeBase,
   WorkpieceId,
   BlueprintOutput,
   MessageFormatRef,
@@ -135,6 +137,26 @@ import {
 export interface StreamingProposedChanges {
   updates: Uint8Array[];
   count: number;
+}
+
+/**
+ * The selected chat's recorded code changes: every non-reverted "changes" update -- accepted
+ * ones included, not just still-proposed ones -- merged into one Yjs update. The chat doc's base
+ * never advances (see ChatCodeBase in the API), so the full doc is base + these + drafts.
+ * `undefined` while no chat is selected or its history hasn't loaded; `update` absent when the
+ * chat has recorded no code changes.
+ */
+export interface ChatCodeChanges {
+  update?: Uint8Array;
+}
+
+/**
+ * The selected chat's code-base pins, delivered once its metadata is known. The wrapper
+ * distinguishes "metadata not loaded yet" (no object) from "chat predates commit-seeded docs"
+ * (object with `codeBase` absent or hash-less -- see Overseer.getLegacyChatDocBase()).
+ */
+export interface SelectedChatCodeInfo {
+  codeBase?: ChatCodeBase;
 }
 
 type CreatedGadgetCardInfo = {
@@ -4211,6 +4233,45 @@ export function computeMessageStates(
   };
 }
 
+/**
+ * The Yjs updates that rebuild a chat's code doc on top of its fixed base (commit-derived seed or
+ * legacy base -- see ChatCodeBase): every non-reverted "changes" update in order, *accepted ones
+ * included* (the base never advances, so accepted updates are still part of every later doc
+ * state). The oldest loaded compaction boundary stands in for the pages before it -- its
+ * acceptedChanges blob unconditionally (accepted changes can't be reverted), its proposedChanges
+ * blob unless a loaded revert reached across the boundary -- and drops out once those pages load,
+ * exactly like computeMessageStates' active-changes seeding. (Re-applying an update a legacy base
+ * already contains is harmless: Yjs update application is idempotent.)
+ */
+export function computeChatDocUpdates(
+  messages: AiChatMessage[],
+  compacted?: CompactionBoundary,
+): Uint8Array[] {
+  const { changeStatus } = computeMessageStates(messages, compacted);
+  const updates: Uint8Array[] = [];
+
+  if (compacted && (messages.length === 0 || messages[0].sequence >= compacted.to)) {
+    if (compacted.acceptedChanges !== undefined) {
+      updates.push(compacted.acceptedChanges);
+    }
+    // The boundary's proposed-changes entry is folded in at sequence `to - 1` by
+    // computeMessageStates, so a revert reaching across the boundary marks that sequence.
+    if (compacted.proposedChanges !== undefined &&
+        changeStatus.get(compacted.to - 1) !== "reverted") {
+      updates.push(compacted.proposedChanges);
+    }
+  }
+
+  for (const msg of messages) {
+    if (msg.type === "changes" && msg.update !== undefined &&
+        changeStatus.get(msg.sequence) !== "reverted") {
+      updates.push(msg.update);
+    }
+  }
+
+  return updates;
+}
+
 function inferSelectedModelFromMessages(messages: AiChatMessage[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
@@ -4249,7 +4310,11 @@ interface ChatInterfaceProps {
     chatId: number | null,
     options?: { replace?: boolean },
   ) => void;
-  onProposedChangesChange?: (proposedChanges: Uint8Array | undefined) => void;
+  // The selected chat's recorded code changes (see ChatCodeChanges). Layered by the code view on
+  // top of the chat's commit-derived (or legacy) doc base.
+  onChatChangesChange?: (changes: ChatCodeChanges | undefined) => void;
+  // The selected chat's code-base pins, once its metadata is known (see SelectedChatCodeInfo).
+  onSelectedChatCodeBaseChange?: (info: SelectedChatCodeInfo | undefined) => void;
   onDraftProposedChangesChange?: (
     updates: StreamingProposedChanges | undefined,
   ) => void;
@@ -4440,7 +4505,8 @@ function ChatInterface({
   overseer,
   selectedChatId,
   onNavigateToChat,
-  onProposedChangesChange,
+  onChatChangesChange,
+  onSelectedChatCodeBaseChange,
   onDraftProposedChangesChange,
   onStreamingProposedChangesChange,
   onStreamingActiveFileChange,
@@ -4511,6 +4577,10 @@ function ChatInterface({
   const [discardingChangesChatIds, setDiscardingChangesChatIds] = useState(
     () => new Set<number>(),
   );
+  // Chat whose accept came back "stale" (mainline advanced past its pins), awaiting the user's
+  // decision in the update-from-mainline dialog.
+  const [staleAcceptChatId, setStaleAcceptChatId] = useState<number | null>(null);
+  const [isUpdatingFromMainline, setIsUpdatingFromMainline] = useState(false);
 
   const [expandedToolCalls, setExpandedToolCalls] = useState<Set<string>>(
     new Set(),
@@ -5026,6 +5096,7 @@ function ChatInterface({
   }, [selectedChatId, scrollMessagesToBottom]);
   useEffect(() => {
     setDiscardChangesTarget(null);
+    setStaleAcceptChatId(null);
   }, [selectedChatId]);
 
   // Initialize title input when selecting a chat
@@ -5061,55 +5132,56 @@ function ChatInterface({
     selectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);
 
-  // Notify parent when proposed changes change for the selected chat.
-  // Only recomputes when proposedChangesVersion changes (i.e. a "changes", "merge",
-  // or "revert" message arrives), NOT on every message.
+  // Notify parent when the selected chat's recorded code changes change (see ChatCodeChanges).
+  // Only recomputes when proposedChangesVersion changes (i.e. a "changes" or "revert" message
+  // arrives, or a history page loads), NOT on every message. "merge" messages don't bump it: they
+  // reclassify changes from proposed to accepted, and the doc applies both.
   useEffect(() => {
-    if (!currentChatMetadata?.hasProposedChanges) {
-      onProposedChangesChange?.(undefined);
+    if (selectedChatId === null || !cacheRef.current.messages.has(selectedChatId)) {
+      // No chat selected, or its history hasn't loaded yet -- the code view can't build the
+      // chat's doc until it has.
+      onChatChangesChange?.(undefined);
       return;
     }
 
     // Read messages directly from the cache (always current) rather than using the
     // memoized currentMessages, so we don't need it as a dependency.
-    const messages =
-      selectedChatId !== null
-        ? (cacheRef.current.messages.get(selectedChatId) || []).filter(
-            (msg) => msg !== undefined,
-          )
-        : [];
-    const { activeChanges } = computeMessageStates(
+    const messages = (cacheRef.current.messages.get(selectedChatId) || []).filter(
+      (msg) => msg !== undefined,
+    );
+    const updates = computeChatDocUpdates(
       messages,
-      selectedChatId !== null
-        ? cacheRef.current.compacted.get(selectedChatId)?.[0]
-        : undefined,
+      cacheRef.current.compacted.get(selectedChatId)?.[0],
     );
 
-    if (activeChanges.length === 0) {
-      onProposedChangesChange?.(undefined);
-      return;
-    }
-
-    const updatePayloads = activeChanges
-      .map((c) => c.update)
-      .filter((u): u is Uint8Array => u !== undefined);
-
-    // Creation/binding-only batches carry no code update; preserve the "proposed changes exist"
-    // signal with an empty update in that case.
-    const mergedUpdate =
-      updatePayloads.length === 1
-        ? updatePayloads[0]
-        : updatePayloads.length > 0
-          ? Y.mergeUpdatesV2(updatePayloads)
-          : Y.encodeStateAsUpdateV2(new Y.Doc());
-
-    onProposedChangesChange?.(mergedUpdate);
+    onChatChangesChange?.({
+      update: updates.length === 0
+        ? undefined
+        : updates.length === 1 ? updates[0] : Y.mergeUpdatesV2(updates),
+    });
   }, [
-    currentChatMetadata?.hasProposedChanges,
     proposedChangesVersion,
     selectedChatId,
-    onProposedChangesChange,
+    onChatChangesChange,
   ]);
+
+  // Notify parent of the selected chat's code-base pins once its metadata is known. Metadata is
+  // re-delivered on every chat change (title, lastActive, ...), so dedup on content to avoid
+  // churning the code view's props.
+  const onSelectedChatCodeBaseChangeRef = useRef(onSelectedChatCodeBaseChange);
+  onSelectedChatCodeBaseChangeRef.current = onSelectedChatCodeBaseChange;
+  const lastCodeBaseSignatureRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const info = selectedChatId !== null && currentChatMetadata
+      ? { codeBase: currentChatMetadata.codeBase }
+      : undefined;
+    const signature = info === undefined
+      ? undefined
+      : `${selectedChatId}:${JSON.stringify(info.codeBase ?? null)}`;
+    if (signature === lastCodeBaseSignatureRef.current) return;
+    lastCodeBaseSignatureRef.current = signature;
+    onSelectedChatCodeBaseChangeRef.current?.(info);
+  }, [selectedChatId, currentChatMetadata]);
 
   useEffect(() => {
     onStreamingProposedChangesChange?.(currentStreamingState);
@@ -5735,7 +5807,9 @@ function ChatInterface({
     }
   };
 
-  // Handle merging changes up to a specific sequence number
+  // Handle merging changes up to a specific sequence number. Accepting is only ever a
+  // fast-forward; a "stale" outcome (mainline advanced past the chat's pins) is expected control
+  // flow that opens the update-from-mainline dialog rather than an error.
   const handleMergeChanges = async (
     mergeThrough: number | null,
     options?: { includeDraft?: boolean },
@@ -5743,11 +5817,47 @@ function ChatInterface({
     if (selectedChatId === null) return;
 
     try {
-      await overseer.mergeChanges(selectedChatId, mergeThrough, options);
+      const result = await overseer.mergeChanges(selectedChatId, mergeThrough, options);
+      if (result.outcome === "stale") {
+        setStaleAcceptChatId(selectedChatId);
+        return;
+      }
       toasts.add({ title: "Changes accepted", variant: "success" });
     } catch (err) {
       console.error("Failed to accept changes:", err);
       toasts.add({ title: "Failed to accept changes", variant: "error" });
+    }
+  };
+
+  // Merge mainline commits that landed after this chat's pins into the chat's uncommitted state
+  // (see Overseer.updateChatFromMainline()). Offered when an accept comes back stale. Conflicts
+  // are left inline as 3-way markers for the user (or their agent) to resolve; once the chat is
+  // clean, accepting again is a plain fast-forward.
+  const handleUpdateFromMainline = async () => {
+    if (staleAcceptChatId === null) return;
+    const chatId = staleAcceptChatId;
+    setIsUpdatingFromMainline(true);
+    try {
+      const { conflictPaths } = await overseer.updateChatFromMainline(chatId);
+      setStaleAcceptChatId(null);
+      if (conflictPaths.length > 0) {
+        toasts.add({
+          title: `Updated this draft with the gadget's latest changes. ` +
+            `${conflictPaths.length} ${conflictPaths.length === 1 ? "file has" : "files have"} ` +
+            `conflicts marked in the code -- resolve them (or ask the agent to), then accept again.`,
+          variant: "warning",
+        });
+      } else {
+        toasts.add({
+          title: "Updated this draft with the gadget's latest changes. Review and accept again.",
+          variant: "success",
+        });
+      }
+    } catch (err) {
+      console.error("Failed to update from mainline:", err);
+      toasts.add({ title: "Failed to bring in the latest changes", variant: "error" });
+    } finally {
+      setIsUpdatingFromMainline(false);
     }
   };
 
@@ -5797,7 +5907,12 @@ function ChatInterface({
       toasts.add({ title: "Pending changes discarded", variant: "success" });
     } catch (err) {
       console.error("Failed to discard pending changes:", err);
-      toasts.add({ title: "Failed to discard pending changes", variant: "error" });
+      // See handleRevertChanges: the server's refusals are instructive, so surface them.
+      toasts.add({
+        title: err instanceof Error && err.message
+          ? err.message : "Failed to discard pending changes",
+        variant: "error",
+      });
     } finally {
       setDiscardingChangesChatIds((chatIds) => {
         const next = new Set(chatIds);
@@ -5891,7 +6006,12 @@ function ChatInterface({
       toasts.add({ title: "Draft rewound", variant: "success" });
     } catch (err) {
       console.error("Failed to rewind draft:", err);
-      toasts.add({ title: "Failed to rewind draft", variant: "error" });
+      // The server's refusals here are instructive (e.g. a still-proposed update-from-mainline
+      // batch can't be reverted), so surface them rather than a generic failure.
+      toasts.add({
+        title: err instanceof Error && err.message ? err.message : "Failed to rewind draft",
+        variant: "error",
+      });
     }
   }, [overseer, selectedChatId, toasts]);
 
@@ -7148,14 +7268,29 @@ function ChatInterface({
                         // createdGadgets over a no-op update, so label it as a creation rather
                         // than as saved edits.
                         const createdGadgets = entry.message.createdGadgets ?? [];
-                        const label = createdGadgets.length > 0
+                        // An update-from-mainline batch merged other chats' accepted work into
+                        // this draft (see Overseer.updateChatFromMainline()); label it as such,
+                        // including how many files still carry conflict markers.
+                        const mainlineMerge = entry.message.mainlineMerge;
+                        const conflictCount = mainlineMerge?.conflictPaths.length ?? 0;
+                        const label = mainlineMerge
+                          ? `${actor} brought the gadget's latest changes into this draft${
+                              conflictCount > 0
+                                ? ` — ${conflictCount} ${conflictCount === 1 ? "file has" : "files have"} conflicts marked in the code`
+                                : ""}`
+                          : createdGadgets.length > 0
                           ? `${actor} created ${createdGadgets.length === 1 ? "gadget" : "gadgets"} ${
                               createdGadgets.map((g) => `“${g.title}”`).join(", ")}`
                           : `${actor} saved edits`;
-                        const discardLabel = getSavedEditsDiscardLabel(
-                          entry.message.sequence === lastDurablePendingChange?.sequence,
-                          createdGadgets.map((g) => g.title),
-                        );
+                        // A still-proposed mainline merge can't be reverted: it advanced the
+                        // chat's pins, and erasing it would let a later accept silently overwrite
+                        // the mainline content it brought in (the server refuses too).
+                        const discardLabel = mainlineMerge
+                          ? "This update can't be discarded: it brought in changes already accepted elsewhere. Edit the files instead."
+                          : getSavedEditsDiscardLabel(
+                              entry.message.sequence === lastDurablePendingChange?.sequence,
+                              createdGadgets.map((g) => g.title),
+                            );
                         return (
                           <div key={entry.key} className={`${entryTopClass} group/savedChanges max-w-[860px] py-1 text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle`}>
                             <div className="flex items-center gap-3 px-1.5 py-1">
@@ -7169,7 +7304,7 @@ function ChatInterface({
                                 <Tooltip content={discardLabel} asChild>
                                   <button
                                     type="button"
-                                    disabled={isAgentActive}
+                                    disabled={isAgentActive || mainlineMerge !== undefined}
                                     onClick={() => handleRevertChanges(entry.message.sequence)}
                                     className="flex cursor-pointer items-center rounded-md p-1 text-kumo-inactive transition-[color,opacity,transform] duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40"
                                     aria-label={discardLabel}
@@ -7921,6 +8056,68 @@ function ChatInterface({
           )}
         </div>
       ) : null}
+
+      {/* An accept came back stale: mainline advanced past this chat's pins, so the changes can
+          only land after merging the gadget's current version into the chat first. */}
+      <Dialog.Root
+        open={staleAcceptChatId !== null}
+        onOpenChange={(nextOpen) => {
+          if (!isUpdatingFromMainline && !nextOpen) setStaleAcceptChatId(null);
+        }}
+      >
+        <Dialog
+          className="!z-[1000] !w-[min(440px,calc(100vw-32px))] overflow-hidden bg-kumo-base p-0 !top-[20%] !-translate-y-0"
+          size="sm"
+        >
+          <div className="flex items-start justify-between gap-4 border-b border-kumo-line px-5 py-4">
+            <div className="min-w-0">
+              <Dialog.Title className="text-[15px] leading-5 font-medium tracking-[-0.3px] text-kumo-default">
+                The gadget changed since this draft started
+              </Dialog.Title>
+              <Dialog.Description className="mt-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
+                Someone else&apos;s changes were accepted in the meantime, so this draft&apos;s
+                changes can&apos;t be applied as-is. Bring the latest changes into this draft
+                first; any conflicts will be marked in the code for you (or the agent) to resolve
+                before accepting again.
+              </Dialog.Description>
+            </div>
+            <Dialog.Close
+              render={(props) => (
+                <WorkshopIconButton
+                  {...props}
+                  className="!h-7 !w-7"
+                  disabled={isUpdatingFromMainline}
+                  aria-label="Close"
+                >
+                  <X size={16} />
+                </WorkshopIconButton>
+              )}
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-2 border-t border-kumo-line bg-kumo-base px-5 py-3">
+            <Dialog.Close
+              render={(props) => (
+                <WorkshopButton
+                  {...props}
+                  className="!h-9"
+                  disabled={isUpdatingFromMainline}
+                >
+                  Not now
+                </WorkshopButton>
+              )}
+            />
+            <WorkshopButton
+              tone="primary"
+              onClick={() => { void handleUpdateFromMainline(); }}
+              disabled={isUpdatingFromMainline}
+              className="!h-9 min-w-[64px]"
+            >
+              {isUpdatingFromMainline ? "Updating..." : "Bring in latest changes"}
+            </WorkshopButton>
+          </div>
+        </Dialog>
+      </Dialog.Root>
 
       <DeleteConfirmationDialog
         open={deleteTarget !== null}

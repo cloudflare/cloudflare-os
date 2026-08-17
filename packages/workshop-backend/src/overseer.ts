@@ -8642,6 +8642,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         to: checkpoint.compactedTo,
         summary: checkpoint.summary,
         proposedChanges: checkpoint.proposedChanges,
+        acceptedChanges: checkpoint.acceptedChanges,
       },
     };
   }

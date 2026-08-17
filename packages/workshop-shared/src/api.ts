@@ -2289,6 +2289,15 @@ export type AiChatHistoryPage = {
      * changes without loading the messages that recorded them.
      */
     proposedChanges?: Uint8Array;
+
+    /**
+     * Changes already accepted before `to`, merged into one update. A chat doc's base never
+     * advances (see ChatCodeBase), so accepted updates still apply on top of it when the doc is
+     * rebuilt; together with `proposedChanges` this completes the doc without loading the
+     * compacted pages. Unlike `proposedChanges`, this can never be reverted: accepted changes
+     * are committed.
+     */
+    acceptedChanges?: Uint8Array;
   };
 };
 

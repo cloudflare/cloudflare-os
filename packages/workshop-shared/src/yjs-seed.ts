@@ -67,7 +67,11 @@ export function seedDocFromFiles(
  * corrupting the doc.
  */
 export async function seedUpdateHash(seed: Uint8Array): Promise<string> {
-  let digest = new Uint8Array(await crypto.subtle.digest("SHA-256", seed));
+  // The cast satisfies DOM's stricter BufferSource typing (it rejects Uint8Array<ArrayBufferLike>
+  // because the backing buffer could be a SharedArrayBuffer -- never the case for an encoded Yjs
+  // update); workers-types has no such split. This module compiles under both.
+  let digest = new Uint8Array(
+      await crypto.subtle.digest("SHA-256", seed as Uint8Array<ArrayBuffer>));
   // Manual hex: Uint8Array.prototype.toHex isn't available across all browsers yet, and this
   // must run in both.
   return [...digest].map(byte => byte.toString(16).padStart(2, "0")).join("");

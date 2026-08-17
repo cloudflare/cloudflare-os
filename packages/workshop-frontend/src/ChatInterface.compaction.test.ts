@@ -3,7 +3,8 @@
 import { describe, expect, it } from "vitest";
 import type { AiChatMessage, AiChatMessageBody } from "@gadgets/workshop-shared/api";
 import {
-  buildChatDisplayEntries, computeMessageStates, type CompactionBoundary,
+  buildChatDisplayEntries, computeChatDocUpdates, computeMessageStates,
+  type CompactionBoundary,
 } from "./ChatInterface";
 
 const AUTHOR = { type: "agent", id: "test-model", name: "Test" } as const;
@@ -24,13 +25,16 @@ function revert(sequence: number, revertFrom: number): AiChatMessage {
   return message(sequence, { type: "revert", revertFrom });
 }
 
-function boundary(to: number, proposedChanges?: Uint8Array): CompactionBoundary {
-  return { to, summary: "Earlier work", proposedChanges };
+function boundary(
+  to: number, proposedChanges?: Uint8Array, acceptedChanges?: Uint8Array,
+): CompactionBoundary {
+  return { to, summary: "Earlier work", proposedChanges, acceptedChanges };
 }
 
 const PRE_BOUNDARY = new Uint8Array([1, 2, 3]);
 const LOADED = new Uint8Array([4, 5, 6]);
 const OLDER = new Uint8Array([7, 8, 9]);
+const ACCEPTED = new Uint8Array([10, 11, 12]);
 
 describe("computeMessageStates compaction seeding", () => {
   it("counts the boundary's proposed changes as one entry below the oldest loaded message", () => {
@@ -92,6 +96,72 @@ describe("computeMessageStates compaction seeding", () => {
     );
 
     expect(changeStatus.get(10)).toBe("merged");
+  });
+});
+
+// The chat doc's base never advances (see ChatCodeBase), so rebuilding the doc must apply every
+// non-reverted update -- accepted ones included -- with the oldest loaded boundary's blobs
+// standing in for the compacted pages.
+describe("computeChatDocUpdates", () => {
+  it("applies accepted and proposed updates alike, in order", () => {
+    const updates = computeChatDocUpdates([
+      changes(10, LOADED),
+      merge(11, 10),
+      changes(12, OLDER),
+    ]);
+
+    expect(updates).toEqual([LOADED, OLDER]);
+  });
+
+  it("skips reverted updates", () => {
+    const updates = computeChatDocUpdates([
+      changes(10, LOADED),
+      revert(11, 10),
+      changes(12, OLDER),
+    ]);
+
+    expect(updates).toEqual([OLDER]);
+  });
+
+  it("seeds from the boundary's accepted and proposed blobs, oldest first", () => {
+    const updates = computeChatDocUpdates(
+      [changes(10, LOADED)],
+      boundary(10, PRE_BOUNDARY, ACCEPTED),
+    );
+
+    expect(updates).toEqual([ACCEPTED, PRE_BOUNDARY, LOADED]);
+  });
+
+  // Accepted changes are committed and can never be reverted, so a revert reaching across the
+  // boundary erases only the proposed blob.
+  it("keeps the boundary's accepted blob when a revert reaches across it", () => {
+    const updates = computeChatDocUpdates(
+      [changes(10, LOADED), revert(11, 0)],
+      boundary(10, PRE_BOUNDARY, ACCEPTED),
+    );
+
+    expect(updates).toEqual([ACCEPTED]);
+  });
+
+  it("drops the boundary blobs once the messages before it have loaded", () => {
+    const updates = computeChatDocUpdates(
+      [changes(5, OLDER), changes(10, LOADED)],
+      boundary(10, PRE_BOUNDARY, ACCEPTED),
+    );
+
+    expect(updates).toEqual([OLDER, LOADED]);
+  });
+
+  it("keeps a creation-only batch out of the update list", () => {
+    const updates = computeChatDocUpdates([
+      message(10, {
+        type: "changes",
+        createdGadgets: [{ gadgetId: 1, title: "New", bindingName: "NEW" }],
+      }),
+      changes(11, LOADED),
+    ]);
+
+    expect(updates).toEqual([LOADED]);
   });
 });
 
