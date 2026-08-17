@@ -2537,7 +2537,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   getGadgetUiBundle(gadgetId: WorkpieceId, chatId?: number): UiBundle | null {
-    this.prepareGadgetChat(chatId);
+    this.checkChatExistsAndMaterializeDrafts(chatId);
 
     let {ydoc} = this.buildYDoc("current");
     if (chatId !== undefined) {
@@ -2552,35 +2552,35 @@ class OverseerImpl implements AgentHooks {
 
   async getGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number)
       : Promise<GadgetExportFormat[]> {
-    this.prepareGadgetChat(chatId);
-    return (await this.#resolveGadgetExportFormats(gadgetId, chatId)).formats;
+    this.checkChatExistsAndMaterializeDrafts(chatId);
+    let resolved = await this.#resolveGadgetExportFormats(gadgetId, chatId);
+    resolved.gadget[Symbol.dispose]();
+    return resolved.formats;
   }
 
   async exportGadget(gadgetId: WorkpieceId, formatId: string, chatId?: number)
       : Promise<ReadableStream<Uint8Array>> {
-    this.prepareGadgetChat(chatId);
-    let {formats, handler} = await this.#resolveGadgetExportFormats(gadgetId, chatId);
+    this.checkChatExistsAndMaterializeDrafts(chatId);
+    let {formats, handler, gadget} = await this.#resolveGadgetExportFormats(gadgetId, chatId);
+    using exportGadget = gadget;
     let format = formats.find(candidate => candidate.id === formatId);
     if (!format) throw new Error(`This Gadget does not support export format: ${formatId}`);
 
     if (format.mode === "server") {
       if (!handler) throw new Error("The Gadget export handler is unavailable.");
-      using gadget = await this.getGadgetFacet(gadgetId, chatId);
-      // Cap'n Web and native RPC stubs interoperate at runtime, but their types do not yet.
       return await exportServerFormat(() =>
-        handler.export(gadget as unknown as NativeRpcStub<any>, format.id));
+        handler.export(exportGadget, format.id));
+    } else {
+      let browser = this.env.BROWSER;
+      if (!browser) throw new Error("Gadget export is not configured for this deployment.");
+      let bundle = this.getGadgetUiBundle(gadgetId, chatId);
+      if (!bundle) throw new Error("This Gadget does not have a UI to export.");
+      let title = this.getGadgetRecord(gadgetId).title;
+      return renderGadgetInBrowser(browser, bundle.jsCode, title, exportGadget.move(), format);
     }
-
-    let browser = this.env.BROWSER;
-    if (!browser) throw new Error("Gadget export is not configured for this deployment.");
-    let bundle = this.getGadgetUiBundle(gadgetId, chatId);
-    if (!bundle) throw new Error("This Gadget does not have a UI to export.");
-    let browserGadget = await this.getGadgetFacet(gadgetId, chatId);
-    let title = this.getGadgetRecord(gadgetId).title;
-    return renderGadgetInBrowser(browser, bundle.jsCode, title, browserGadget, format);
   }
 
-  prepareGadgetChat(chatId?: number): void {
+  checkChatExistsAndMaterializeDrafts(chatId?: number): void {
     if (chatId !== undefined) {
       let meta = this.getChatMetaOrThrow(chatId);
       if (!meta.activeAgent) this.materializeChatDraft(chatId, meta);
@@ -2590,16 +2590,22 @@ class OverseerImpl implements AgentHooks {
   async #resolveGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number): Promise<{
     formats: GadgetExportFormat[];
     handler: Fetcher<GadgetExportEntrypoint> | null;
+    gadget: NativeRpcStub<any>;
   }> {
     let handler = this.loadGadgetWorker(gadgetId, chatId)
       .getEntrypoint<GadgetExportEntrypoint>(GADGET_EXPORT_ENTRYPOINT);
-    using gadget = await this.getGadgetFacet(gadgetId, chatId);
-    // Cap'n Web and native RPC stubs interoperate at runtime, but their types do not yet.
-    let formats = await readCustomExportFormats(
-        handler, gadget as unknown as NativeRpcStub<any>);
-    return formats === null
-      ? {formats: defaultExportFormats(), handler: null}
-      : {formats, handler};
+    // getGadgetFacet() wraps this native stub for Cap'n Web's type system, but this path invokes
+    // native Worker RPC and needs its actual runtime type.
+    let gadget = await this.getGadgetFacet(gadgetId, chatId) as unknown as NativeRpcStub<any>;
+    try {
+      let formats = await readCustomExportFormats(handler, gadget);
+      return formats === null
+        ? {formats: defaultExportFormats(), handler: null, gadget}
+        : {formats, handler, gadget};
+    } catch (error) {
+      gadget[Symbol.dispose]();
+      throw error;
+    }
   }
 
   // Load a WorkerEntrypoint exported by the gadget, used to implement a hook.

@@ -11,7 +11,6 @@ import {
   sendToBrowser,
   setDocumentTitle,
   waitForClientModule,
-  waitForDomSettled,
 } from "./generated/browser-export-page.js";
 import { createExportDeadline, limitExportStream, MAX_EXPORT_BYTES } from "./export-limits";
 
@@ -22,8 +21,6 @@ type BrowserExportLogFields = {
 
 const logger = createLogger<BrowserExportLogFields>({ component: "workshop.browser-export" });
 
-/** Quiet period indicating that the client has finished its initial DOM updates. */
-const DOM_SETTLE_MS = 250;
 /** Budget for releasing the browser session once an export has settled. */
 const BROWSER_CLOSE_TIMEOUT_MS = 10_000;
 /** Maximum number of pending Worker-to-browser RPC messages. */
@@ -236,7 +233,6 @@ export async function renderGadgetInBrowser(
       await page.evaluate(waitForClientModule);
       const frame = page.mainFrame() as FrameWithIsolatedRealm;
       const isolatedRealm = frame.isolatedRealm();
-      await isolatedRealm.evaluate(waitForDomSettled, DOM_SETTLE_MS);
       await isolatedRealm.evaluate(setDocumentTitle, documentTitle);
       switch (format.contentType) {
         case "application/pdf":

@@ -490,12 +490,6 @@ Note that there is no index.html. Instead, client.js must build the entire UI us
 
 Make Gadget UIs responsive and usable on both desktop and phones by default.
 
-Every Gadget UI can be exported to HTML or PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. Browser-mode PDF exports render using print media; HTML, PNG, and JPEG exports render using screen media. When asked to support or improve PDF export, use standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the output remains readable.
-
-During a browser-mode export, the client context is initialized with another special global variable named \`gadgetExportFormatId\`. This variable is only defined during export; during normal interactive rendering, referencing it directly throws a \`ReferenceError\`. Guard access with \`typeof gadgetExportFormatId !== "undefined"\` or read \`globalThis.gadgetExportFormatId\`. Use \`gadgetExportFormatId\` when the Gadget supports multiple HTML, PDF, PNG, or JPEG export variants. Do not declare or import \`gadgetExportFormatId\` in client.js.
-
-To add, replace, or disable export formats, server.js may export a class named \`ExportHandler\`, which must extend \`WorkerEntrypoint\`. Its \`getExportFormats(gadget)\` method returns the complete list of formats, and its \`export(gadget, id)\` method returns a \`ReadableStream<Uint8Array>\` for formats whose mode is \`"server"\`. Read any needed Gadget state before \`export()\` returns; do not capture the borrowed \`gadget\` parameter in the returned stream. If \`getExportFormats(gadget)\` returns only browser-mode formats, do not implement \`export(gadget, id)\`. \`export\` is valid as a JavaScript class method name; write it directly as \`async export(gadget, id)\`, without quoting it or using a computed property. Browser mode supports \`text/html\`, \`application/pdf\`, \`image/png\`, and \`image/jpeg\`; server mode supports any media type. Each format must contain a unique non-empty \`id\`, a \`label\`, a \`mode\`, a \`contentType\`, and a \`fileExtension\` beginning with a dot. Returning an empty list disables export. The Workshop supplies default HTML and PDF formats only when server.js does not export \`ExportHandler\` at all.
-
 Both the client and server run inside a strictly isolated sandbox. They cannot make requests to the Internet, e.g. by calling \`fetch()\`. Instead, a Gadget communicates with the outside world strictly through its "bindings", that is, the Cloudflare Workers \`env\` API, which code in the Durable Object class can access as \`this.env\`.
 
 Note that the iframe sandbox on the client side prohibits modal popup boxes like alert() and confirm(), so do not use those.
@@ -547,6 +541,61 @@ If you need \`RpcTarget\` in server.js, you can import it from "cloudflare:worke
 * If the user asks for a game or any sort of app where multiple users might collaborate, make sure multiple clients can connect at once and broadcast real-time updates to each other.
 * Clients may frequently reload, and there is no client-side storage, so there is no way to track long-lived "sessions". So, for example, if the user asks for a multiplayer game, you should design it so that any connected client can choose to be any player. If it's turn-based, you can just let any client make any move. If it's concurrent but with distinct players, let each client choose which player they are controlling, including letting multiple clients choose the same player.
 * If a Gadget contains a README.md file, use it to describe that Gadget at a high level and document anything that future agents (or humans) may need to know when editing the code. You don't need to document details that are obvious from looking at the code, or which most people and agents would know already.
+
+## Exporting files from Gadgets
+
+Every Gadget UI can be exported to HTML or PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. Browser-mode PDF exports render using print media; HTML, PNG, and JPEG exports render using screen media. When asked to support or improve PDF export, use standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the output remains readable.
+
+During a browser-mode export, client.js is initialized with another special global variable named \`gadgetExportFormatId\`. This variable is only defined during export; during normal interactive rendering, referencing it directly throws a \`ReferenceError\`. Guard access with \`typeof gadgetExportFormatId !== "undefined"\` or read \`globalThis.gadgetExportFormatId\`. Use \`gadgetExportFormatId\` when the Gadget supports multiple HTML, PDF, PNG, or JPEG export variants. Do not declare or import \`gadgetExportFormatId\` in client.js.
+
+The Workshop waits for client.js, including any top-level \`await\`, to finish before capturing a browser-mode export. Use top-level \`await\` when the initial UI must load data or otherwise complete asynchronous rendering before capture. For example:
+
+\`\`\`
+let report = await gadget.getReport();
+let exportFormat = globalThis.gadgetExportFormatId;
+document.body.className = exportFormat === "compact-pdf" ? "compact" : "interactive";
+document.body.append(renderReport(report));
+\`\`\`
+
+To add, replace, or disable export formats, server.js may export a class named \`ExportHandler\`, which must extend \`WorkerEntrypoint\`. Its \`getExportFormats(gadget)\` method returns the complete list of formats, and its \`export(gadget, id)\` method returns a \`ReadableStream<Uint8Array>\` for formats whose mode is \`"server"\`. Read any needed Gadget state before \`export()\` returns; do not capture the borrowed \`gadget\` parameter in the returned stream. If \`getExportFormats(gadget)\` returns only browser-mode formats, do not implement \`export(gadget, id)\`. \`export\` is valid as a JavaScript class method name; write it directly as \`async export(gadget, id)\`, without quoting it or using a computed property. Browser mode supports \`text/html\`, \`application/pdf\`, \`image/png\`, and \`image/jpeg\`; server mode supports any media type. Each format must contain a unique non-empty \`id\`, a \`label\`, a \`mode\`, a \`contentType\`, and a \`fileExtension\` beginning with a dot. Returning an empty list disables export. The Workshop supplies default HTML and PDF formats only when server.js does not export \`ExportHandler\` at all.
+
+For example, this replaces the defaults with one browser-mode PDF variant and one server-generated CSV format:
+
+\`\`\`
+import { WorkerEntrypoint } from "cloudflare:workers";
+
+export class ExportHandler extends WorkerEntrypoint {
+  async getExportFormats(gadget) {
+    return [
+      {
+        id: "pdf",
+        label: "PDF",
+        mode: "browser",
+        contentType: "application/pdf",
+        fileExtension: ".pdf",
+      },
+      {
+        id: "csv",
+        label: "CSV",
+        mode: "server",
+        contentType: "text/csv",
+        fileExtension: ".csv",
+      },
+    ];
+  }
+
+  async export(gadget, id) {
+    if (id !== "csv") throw new Error(\`Unknown export format: \${id}\`);
+    let csv = await gadget.getCsv();
+    return new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(csv));
+        controller.close();
+      },
+    });
+  }
+}
+\`\`\`
 
 # Persistent Stubs and \`ctx.restore()\`
 

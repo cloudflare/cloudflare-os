@@ -39,28 +39,6 @@ export async function waitForClientModule(): Promise<void> {
 
 // Functions that run in the isolated realm:
 
-/** Waits until the rendered DOM has remained unchanged for the requested interval. */
-export function waitForDomSettled(quietMs: number): Promise<void> {
-  return new Promise(resolve => {
-    let timer: ReturnType<typeof setTimeout>;
-    const observer = new MutationObserver(() => {
-      clearTimeout(timer);
-      timer = setTimeout(finish, quietMs);
-    });
-    function finish() {
-      observer.disconnect();
-      resolve();
-    }
-    observer.observe(document.documentElement, {
-      subtree: true,
-      childList: true,
-      attributes: true,
-      characterData: true,
-    });
-    timer = setTimeout(finish, quietMs);
-  });
-}
-
 /** Assigns the title used by PDF viewers and the static HTML snapshot. */
 export function setDocumentTitle(title: string): void {
   document.title = title;
