@@ -15,6 +15,7 @@ const logger = createWorkshopLogger("workshop.ai.gateway.billing");
 interface CfEnvelope<T> {
   success: boolean;
   result?: T;
+  result_info?: { per_page?: number; total_count?: number };
 }
 
 export interface CloudflareAccount {
@@ -22,7 +23,7 @@ export interface CloudflareAccount {
   accountName: string;
 }
 
-async function cfGet<T>(token: string, path: string): Promise<T | null> {
+async function cfRequest<T>(token: string, path: string): Promise<CfEnvelope<T> | null> {
   const resp = await fetch(`${API_BASE}${path}`, {
     headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
   });
@@ -35,14 +36,41 @@ async function cfGet<T>(token: string, path: string): Promise<T | null> {
   }
   const data = await resp.json() as CfEnvelope<T>;
   if (!data.success || data.result === undefined) return null;
-  return data.result;
+  return data;
 }
 
-/** List the accounts the token can access. Requires the `account-settings.read` OAuth scope. */
+async function cfGet<T>(token: string, path: string): Promise<T | null> {
+  return (await cfRequest<T>(token, path))?.result ?? null;
+}
+
+// `/accounts` is paginated and defaults to 20 per page, so an unpaginated GET hides every account
+// after the first 20 and the user cannot pick one of them to bill.
+const ACCOUNTS_PER_PAGE = 50;
+// Bounds the walk at 500 accounts, since the loop is driven by the provider's own paging.
+const MAX_ACCOUNT_PAGES = 10;
+
+/** List every account the token can access. Requires the `account-settings.read` OAuth scope. */
 export async function listAccounts(token: string): Promise<CloudflareAccount[]> {
-  const result = await cfGet<Array<{ id: string; name: string }>>(token, "/accounts");
-  if (!result) return [];
-  return result.map((a) => ({ accountId: a.id, accountName: a.name }));
+  let accounts: CloudflareAccount[] = [];
+  for (let page = 1; page <= MAX_ACCOUNT_PAGES; page++) {
+    let query = new URLSearchParams({
+      page: String(page),
+      per_page: String(ACCOUNTS_PER_PAGE),
+    });
+    let envelope = await cfRequest<Array<{ id: string; name: string }>>(
+      token, `/accounts?${query}`,
+    );
+    // A page that fails mid-walk yields what was gathered: a partial list beats none, and cfRequest
+    // has already logged the failure.
+    if (!envelope?.result) break;
+    let result = envelope.result;
+    accounts.push(...result.map((a) => ({ accountId: a.id, accountName: a.name })));
+    let perPage = envelope.result_info?.per_page ?? ACCOUNTS_PER_PAGE;
+    if (result.length < perPage) break;
+    let total = envelope.result_info?.total_count;
+    if (total !== undefined && accounts.length >= total) break;
+  }
+  return accounts;
 }
 
 /**

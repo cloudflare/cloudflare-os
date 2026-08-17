@@ -2,10 +2,14 @@ import { createObservabilityContext } from "@gadgets/backend-utils/observability
 
 /** Observability fields emitted by the Cloudflare gatekeeper. */
 export type CloudflareObservabilityFields = {
+  accountsListed: number;
   path: string;
+  /** Cloudflare error codes from a failed provider response. Codes only -- never the messages. */
+  providerCodes: string;
   status: number;
   statusText: string;
   attempt: number;
+  totalCount: number;
   vendorId: string;
 };
 

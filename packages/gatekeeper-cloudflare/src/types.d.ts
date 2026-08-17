@@ -50,7 +50,7 @@ export type CloudflareObservabilityTimeframe = {
 
 /** A comparison operation supported by Workers Observability filters. */
 export type CloudflareObservabilityFilterOperation =
-  | "includes" | "not_includes" | "starts_with" | "ends_with" | "regex"
+  | "includes" | "not_includes" | "starts_with" | "regex"
   | "exists" | "is_null" | "in" | "not_in"
   | "eq" | "neq" | "gt" | "gte" | "lt" | "lte";
 
@@ -58,6 +58,7 @@ export type CloudflareObservabilityFilterOperation =
  * A recursive filter expression. Discover exact field names and types with `listKeys()` rather than
  * guessing them. To apply multiple conditions, provide one `group` expression containing the leaf
  * filters and choose `and` or `or`. Omit `value` only for operations such as `exists` and `is_null`.
+ * A filter may nest up to three levels deep and contain at most 100 conditions in total.
  *
  * @example
  * { kind: "filter", key: "$metadata.level", operation: "eq", type: "string", value: "error" }
@@ -75,7 +76,14 @@ export type CloudflareObservabilityFilterOperation =
 export type CloudflareObservabilityFilter = {
   /** Discriminator for one field comparison. */
   kind: "filter";
-  /** Exact indexed field name returned by `listKeys()`. */
+  /**
+   * Exact indexed field name returned by `listKeys()`.
+   *
+   * Note that your own structured log fields are indexed under their bare name, even though
+   * `listEvents()` returns them nested under `source`: a field logged as `{event: "x"}` is filtered
+   * as `event`. `source.event` is accepted as an alias for convenience, but `listKeys()` reports the
+   * indexed name and is the reliable source.
+   */
   key: string;
   operation: CloudflareObservabilityFilterOperation;
   /** Must match the type reported by `listKeys()`. */
@@ -104,8 +112,9 @@ export type CloudflareObservabilityDiscoveryOptions = {
   timeframe?: CloudflareObservabilityTimeframe;
   /** One leaf or group expression. Combine multiple conditions inside a group. */
   filter?: CloudflareObservabilityFilter;
+  /** Free-text match across event content; narrows which events the result is drawn from. */
   search?: CloudflareObservabilitySearch;
-  /** Maximum results, from 1 through 1000. */
+  /** Maximum results, from 1 through 1000. Defaults to 100. */
   limit?: number;
 };
 
@@ -115,8 +124,8 @@ export type CloudflareObservabilityKey = {
   key: string;
   /** Primitive type indexed for this field. */
   type: CloudflareObservabilityValueType;
-  /** Unix epoch milliseconds when this field was most recently observed. */
-  lastSeenAt: number;
+  /** Unix epoch milliseconds when this field was most recently observed, when reported. */
+  lastSeenAt?: number;
 };
 
 /** One field value returned by `listValues()`. */
@@ -127,8 +136,8 @@ export type CloudflareObservabilityValue = {
   type: CloudflareObservabilityValueType;
   /** One observed field value. */
   value: string | number | boolean;
-  /** Cloudflare telemetry dataset containing the value. */
-  dataset: string;
+  /** Cloudflare telemetry dataset containing the value, when reported. */
+  dataset?: string;
 };
 
 /** Query cost and execution details reported by Workers Observability. */
@@ -182,6 +191,29 @@ export type CloudflareObservabilityMetadata = {
   region?: string;
   /** Operation name for a trace span. */
   spanName?: string;
+  /** Name of the transaction the event belongs to. */
+  transactionName?: string;
+  /** Message with variable parts removed, for grouping similar logs. */
+  messageTemplate?: string;
+  /** Error text with variable parts removed, for grouping similar errors. */
+  errorTemplate?: string;
+  /** Stable grouping hash Cloudflare derives for similar events. */
+  fingerprint?: string;
+  /** Cloudflare account tag associated with the event. */
+  account?: string;
+  /** Reported latency in milliseconds. */
+  latency?: number;
+  /** End-to-end duration of the event's trace, in milliseconds. */
+  traceDuration?: number;
+  /** Event or span start as Unix epoch milliseconds. */
+  startTime?: number;
+  /** Event or span end as Unix epoch milliseconds. */
+  endTime?: number;
+  /**
+   * Fields Cloudflare indexes that are not named above. Discover them with `listKeys()`; a value
+   * read this way is `unknown`, so narrow it before use.
+   */
+  [key: string]: unknown;
 };
 
 /** One record from Cloudflare's broad telemetry events view. */
@@ -190,11 +222,20 @@ export type CloudflareObservabilityEvent = {
   dataset: string;
   /** Unix epoch milliseconds; render with `new Date(timestamp).toISOString()`. */
   timestamp: number;
-  /** Original structured event payload. */
+  /**
+   * The original structured payload of the log, exactly as it was emitted.
+   *
+   * These fields are indexed — and so must be filtered, grouped, and aggregated — under their **bare**
+   * name, without this `source.` prefix: a field logged as `{event: "x"}` appears here as
+   * `source.event` but is queried as `event`. `listKeys()` reports the queryable names.
+   */
   source: CloudflareObservabilityJson;
   /** Common indexed fields used for filtering and correlation. */
   $metadata: CloudflareObservabilityMetadata;
-  /** Additional Worker-specific structured fields, when present. */
+  /**
+   * Worker-specific structured fields, when present. Commonly includes `wallTimeMs`, `cpuTimeMs`,
+   * `outcome`, `eventType`, and `scriptName`; confirm with `listKeys()` before relying on one.
+   */
   $workers?: CloudflareObservabilityJson;
 };
 
@@ -202,15 +243,19 @@ export type CloudflareObservabilityEvent = {
 export type CloudflareObservabilityEventsQuery = CloudflareObservabilityDiscoveryOptions & {
   /** Opaque `nextCursor` from the preceding page. */
   cursor?: string;
-  /** Use `next` with `nextCursor`; omit both fields for the first page. */
-  direction?: "next" | "prev";
+  /** Pass `next` together with `cursor`; omit both fields for the first page. */
+  direction?: "next";
 };
 
 /** A page from the telemetry events view. Continue with `nextCursor` and `direction: "next"`. */
 export type CloudflareObservabilityEventsPage = {
   /** Events in this page, constrained to the granted binding. */
   events: CloudflareObservabilityEvent[];
-  /** Provider-reported matching count, when available; not necessarily exact when `abrLevel > 1`. */
+  /**
+   * Provider-reported count of events matching the query, when available. Already constrained to
+   * this binding. Not necessarily exact when `abrLevel > 1`, and not a count of `events` in this
+   * page — use `events.length` for that.
+   */
   count?: number;
   /** Opaque cursor for the next page. */
   nextCursor?: string;
@@ -308,15 +353,20 @@ export type CloudflareObservabilityTrace = {
  * { operator: "p99", key: "$metadata.duration", keyType: "number", alias: "p99Duration" }
  */
 export type CloudflareObservabilityCalculation = {
-  /** Aggregate function to apply. */
+  /** Counts matching events and needs no field. */
+  operator: "count";
+  /** Stable result name used by `orderBy` and returned calculation metadata. */
+  alias?: string;
+} | {
+  /** Aggregate function to apply to `key`. */
   operator:
-    | "count" | "uniq" | "max" | "min" | "sum" | "avg" | "median"
+    | "uniq" | "max" | "min" | "sum" | "avg" | "median"
     | "p001" | "p01" | "p05" | "p10" | "p25" | "p75" | "p90"
     | "p95" | "p99" | "p999" | "stddev" | "variance";
-  /** Indexed field to aggregate; omit for `count`. */
-  key?: string;
+  /** Indexed field to aggregate. */
+  key: string;
   /** Indexed type of `key`; use the type returned by `listKeys()`. */
-  keyType?: CloudflareObservabilityValueType;
+  keyType: CloudflareObservabilityValueType;
   /** Stable result name used by `orderBy` and returned calculation metadata. */
   alias?: string;
 };
@@ -335,7 +385,10 @@ export type CloudflareObservabilityCalculationQuery = CloudflareObservabilityDis
   groupBys?: CloudflareObservabilityGroupBy[];
   /** Sort grouped results by a calculation alias. */
   orderBy?: { value: string; order?: "asc" | "desc" };
-  /** Provider time-bucket granularity. Supplying it enables time-series results by default. */
+  /**
+   * Number of time-series buckets to divide the timeframe into — a count, not a duration. Supplying
+   * it enables time-series results by default.
+   */
   granularity?: number;
   /** Include time-series results. Defaults to true when `granularity` is provided, otherwise false. */
   includeSeries?: boolean;

@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CloudflareObservabilityApi,
+  observabilityFieldKey,
   scopeObservabilityFilters,
   type ObservabilityFilter,
 } from "../src/observability-api";
+import { CloudflareObservabilityApiError } from "../src/observability-parse";
 
 const ACCOUNT_ID = "0123456789abcdef0123456789abcdef";
 const TEST_NOW = new Date("2026-08-14T12:00:00Z");
@@ -303,11 +305,31 @@ describe("CloudflareObservabilityApi", () => {
     await expect(api.listKeys()).rejects.toThrow("response is too large");
   });
 
-  it("uses endpoint-specific keys and values request shapes", async () => {
+  it("answers a constrained discovery call from a filtered events sample", async () => {
+    // The provider's `keys` and `values` endpoints ignore the `filters` array entirely -- verified
+    // against a live account -- so a Worker-scoped binding cannot use them: they would answer with
+    // every field name and value in the whole account. Discovery is instead derived from an events
+    // query, which does honour filters.
     const bodies: unknown[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      urls.push(String(input));
       bodies.push(JSON.parse(String(init?.body)));
-      return Response.json({ success: true, result: [] });
+      return Response.json({
+        success: true,
+        result: {
+          statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 10 },
+          events: {
+            count: 1,
+            events: [{
+              dataset: "cloudflare-workers",
+              timestamp: 1,
+              source: { route: "/health" },
+              $metadata: { id: "e1", service: "api-worker", level: "info" },
+            }],
+          },
+        },
+      });
     }));
     const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
     const timeframe = {
@@ -315,33 +337,33 @@ describe("CloudflareObservabilityApi", () => {
       to: new Date("2026-08-14T10:00:00Z"),
     };
 
-    await api.listKeys({ timeframe });
-    await api.listValues("$metadata.service", "string", { timeframe });
+    const keys = await api.listKeys({ timeframe });
+    const values = await api.listValues("$metadata.service", "string", { timeframe });
 
-    expect(bodies[0]).toMatchObject({
-      from: timeframe.from.valueOf(),
-      to: timeframe.to.valueOf(),
-      filters: [{
-        kind: "group",
-        filterCombination: "and",
-        filters: [{ key: "$metadata.service", operation: "eq", value: "api-worker" }],
-      }],
-    });
-    expect(bodies[0]).not.toHaveProperty("filterCombination");
-    expect(bodies[0]).not.toHaveProperty("timeframe");
-    expect(bodies[1]).toMatchObject({
-      timeframe: { from: timeframe.from.valueOf(), to: timeframe.to.valueOf() },
-      key: "$metadata.service",
-      type: "string",
-      filters: [{
-        kind: "group",
-        filterCombination: "and",
-        filters: [{ key: "$metadata.service", operation: "eq", value: "api-worker" }],
-      }],
-    });
-    expect(bodies[1]).not.toHaveProperty("filterCombination");
-    expect(bodies[1]).not.toHaveProperty("from");
-    expect(bodies[1]).not.toHaveProperty("to");
+    // Both reads are events queries carrying the binding's scope filter, not `keys`/`values` calls.
+    expect(urls).toEqual([
+      expect.stringContaining("/telemetry/query"),
+      expect.stringContaining("/telemetry/query"),
+    ]);
+    for (const body of bodies) {
+      expect(body).toMatchObject({
+        view: "events",
+        timeframe: { from: timeframe.from.valueOf(), to: timeframe.to.valueOf() },
+        parameters: {
+          filters: [{ key: "$metadata.service", operation: "eq", value: "api-worker" }],
+        },
+      });
+    }
+
+    // The field names come from walking the sampled events, so only this Worker's fields appear --
+    // reported under the name each field is *indexed* under, which for the caller's own log payload
+    // is the bare name rather than the `source.` path the event envelope returns it at.
+    expect(keys).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "$metadata.service", type: "string" }),
+      expect.objectContaining({ key: "route", type: "string" }),
+    ]));
+    expect(keys.map(entry => entry.key)).not.toContain("source.route");
+    expect(values).toEqual([expect.objectContaining({ value: "api-worker" })]);
   });
 
   it("filters foreign events from Worker-scoped invocations and cursors", async () => {
@@ -368,8 +390,14 @@ describe("CloudflareObservabilityApi", () => {
       requestId: "mixed",
       events: [expect.objectContaining({ $metadata: expect.objectContaining({ id: "own-cursor" }) })],
     }]);
-    expect(page.nextCursor).toBe("own-cursor");
-    expect(JSON.stringify(page)).not.toContain("foreign");
+    // The cursor is the provider's own position -- the oldest event it returned, foreign or not.
+    // Deriving it from the surviving events instead would stall pagination the moment a page came
+    // back entirely foreign: the cursor would be null and the caller would stop early, hiding its own
+    // older events. An event id is an opaque position within one account the user already owns; the
+    // log content is what must not cross the Worker scope, and none of it does.
+    expect(page.nextCursor).toBe("foreign-cursor");
+    expect(JSON.stringify(page.invocations)).not.toContain("foreign");
+    expect(JSON.stringify(page.invocations)).not.toContain("other-worker");
   });
 
   it("rejects trace summaries for Worker-scoped bindings before fetching", async () => {
@@ -435,6 +463,49 @@ describe("CloudflareObservabilityApi", () => {
     expect(String(error)).not.toContain("secret");
   });
 
+  it("carries the provider's error codes so a failure can be logged without its message", async () => {
+    // The message may quote a caller-supplied filter value back at us. Filter values are kept out of
+    // the audit trail on purpose (see `summarizeFilter`), so the request log names the codes instead
+    // and the message travels only to the caller who caused it.
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      success: false,
+      errors: [
+        { code: 7003, message: "Could not route to /accounts/tenant-secret/..." },
+        { code: 7000, message: "No route for that URI" },
+      ],
+    }, { status: 400 })));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
+
+    const error = await api.listKeys().catch(caught => caught);
+    expect(error).toBeInstanceOf(CloudflareObservabilityApiError);
+    expect(error.codes).toEqual([7003, 7000]);
+    expect(String(error)).toContain("No route for that URI");
+  });
+
+  it("reports no codes when the provider supplies none", async () => {
+    // `codes.length === 0` is what makes the request log fall back to our own safe message, so a
+    // provider error without codes must not be mistaken for one with them.
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      success: false,
+      errors: [{ message: "plain failure" }],
+    }, { status: 400 })));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
+
+    const error = await api.listKeys().catch(caught => caught);
+    expect(error.codes).toEqual([]);
+  });
+
+  it("bounds the codes it retains", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      success: false,
+      errors: Array.from({ length: 9 }, (_, index) => ({ code: index, message: `m${index}` })),
+    }, { status: 400 })));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
+
+    const error = await api.listKeys().catch(caught => caught);
+    expect(error.codes).toEqual([0, 1, 2]);
+  });
+
   it("retries one transient read then returns the result", async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(Response.json({ success: false }, {
@@ -446,6 +517,104 @@ describe("CloudflareObservabilityApi", () => {
 
     await expect(api.listKeys()).resolves.toEqual([]);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry when the provider asks for longer than the budget allows", async () => {
+    // A 429 with a long `Retry-After` cannot be satisfied inside a request: retrying sooner only earns
+    // a second 429, and honouring it would hold an agent past any useful deadline. Fail fast instead.
+    const fetchSpy = vi.fn(async () => Response.json({ success: false }, {
+      status: 429, headers: { "retry-after": "30" },
+    }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
+
+    await expect(api.listKeys()).rejects.toMatchObject({ status: 429 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a status that is not retryable", async () => {
+    const fetchSpy = vi.fn(async () => Response.json({ success: false }, { status: 403 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
+
+    await expect(api.listKeys()).rejects.toMatchObject({ status: 403 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the access token as a bearer credential and nothing else", async () => {
+    let headers: Headers | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      headers = new Headers(init?.headers);
+      return Response.json({ success: true, result: [] });
+    }));
+    const api = new CloudflareObservabilityApi(async () => "the-token", ACCOUNT_ID);
+
+    await api.listKeys();
+
+    expect(headers!.get("authorization")).toBe("Bearer the-token");
+    // A cookie or an `X-Auth-Key`/`X-Auth-Email` pair would be ambient account-wide authority rather
+    // than the scoped OAuth grant this binding is limited to.
+    expect(headers!.get("cookie")).toBeNull();
+    expect(headers!.get("x-auth-key")).toBeNull();
+    expect(headers!.get("x-auth-email")).toBeNull();
+  });
+
+  it("reads the token per request, so a refresh takes effect without a new binding", async () => {
+    const tokens = ["first", "second"];
+    const seen: (string | null)[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers).get("authorization"));
+      return Response.json({ success: true, result: [] });
+    }));
+    const api = new CloudflareObservabilityApi(async () => tokens.shift() ?? null, ACCOUNT_ID);
+
+    await api.listKeys();
+    await api.listKeys();
+
+    expect(seen).toEqual(["Bearer first", "Bearer second"]);
+  });
+
+  it("uses the real discovery endpoints for an unfiltered account-wide read", async () => {
+    // The inverse of the derived-discovery case: with nothing to constrain, the provider's own `keys`
+    // and `values` endpoints are both correct and far cheaper than sampling events.
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      urls.push(String(input));
+      return Response.json({ success: true, result: [] });
+    }));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
+
+    await api.listKeys();
+    await api.listValues("$metadata.service", "string");
+
+    expect(urls).toEqual([
+      expect.stringContaining("/telemetry/keys"),
+      expect.stringContaining("/telemetry/values"),
+    ]);
+  });
+
+  it("derives discovery for an account binding as soon as the caller supplies a filter", async () => {
+    // `keys`/`values` ignore the `filters` array, so answering a filtered discovery call from them
+    // would silently widen it back to the whole account and mislead the agent about its own data.
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      urls.push(String(input));
+      return Response.json({
+        success: true,
+        result: {
+          statistics: { elapsed: 0.01, rows_read: 0, bytes_read: 0 },
+          events: { count: 0, events: [] },
+        },
+      });
+    }));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
+    const filter: ObservabilityFilter = {
+      kind: "filter", key: "$metadata.level", operation: "eq", type: "string", value: "error",
+    };
+
+    await api.listKeys({ filter });
+
+    expect(urls).toEqual([expect.stringContaining("/telemetry/query")]);
   });
 
   it("rejects invalid result limits before fetching", async () => {
@@ -572,5 +741,162 @@ describe("CloudflareObservabilityApi", () => {
     expect(trace.events).toHaveLength(100);
     expect(trace.truncated).toBe(false);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("indexed field names", () => {
+  // Cloudflare indexes a caller's structured log fields under their bare name and only nests them
+  // beneath `source` when returning them: `logger.warn(msg, {event: "x"})` is queried as `event`.
+  // Confirmed two ways against the live API -- `/telemetry/keys` reports `event`/`component`/`level`
+  // and no `source.*` key at all -- and by the docs' "Logging structured JSON objects" table, where
+  // `console.log({user_id: 123})` is filterable as `user_id`.
+  //
+  // This is a regression guard for a real failure: discovery reported `source.event`, an agent
+  // filtered on exactly what it had discovered, and the provider accepted the unknown key, matched
+  // nothing, and returned an empty page with no error -- after scanning the full timeframe.
+  const eventWithLogFields = {
+    dataset: "cloudflare-workers",
+    timestamp: 1,
+    source: {
+      level: "warn",
+      component: "workshop.server",
+      event: "user_do.reset.surfaced",
+      exception: { name: "Error" },
+    },
+    $metadata: { id: "e1", service: "api-worker", level: "warn" },
+  };
+
+  function stubEvents(): { bodies: unknown[] } {
+    const bodies: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({
+        success: true,
+        result: {
+          statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 10 },
+          events: { count: 1, events: [eventWithLogFields] },
+        },
+      });
+    }));
+    return { bodies };
+  }
+
+  it("maps a returned envelope path to the name the field is indexed under", () => {
+    expect(observabilityFieldKey("source.event")).toBe("event");
+    expect(observabilityFieldKey("source.exception.name")).toBe("exception.name");
+    // Namespaces that really are addressed by their dotted path are left alone.
+    expect(observabilityFieldKey("$metadata.service")).toBe("$metadata.service");
+    expect(observabilityFieldKey("$workers.cpuTimeMs")).toBe("$workers.cpuTimeMs");
+    expect(observabilityFieldKey("event")).toBe("event");
+    // Only the leading segment is a prefix; an inner `source.` is part of the field name.
+    expect(observabilityFieldKey("outer.source.event")).toBe("outer.source.event");
+  });
+
+  it("derives discoverable keys under their indexed names", async () => {
+    stubEvents();
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
+
+    const keys = (await api.listKeys()).map(entry => entry.key);
+
+    expect(keys).toEqual(expect.arrayContaining([
+      "event", "component", "level", "exception.name", "$metadata.service",
+    ]));
+    expect(keys.filter(key => key.startsWith("source."))).toEqual([]);
+  });
+
+  it("finds values for a field discovered under its indexed name", async () => {
+    stubEvents();
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
+
+    // The exact round trip that failed: discover `event`, then ask for its values.
+    const values = await api.listValues("event", "string");
+
+    expect(values).toEqual([expect.objectContaining({
+      key: "event", value: "user_do.reset.surfaced",
+    })]);
+  });
+
+  it("accepts the envelope path as an alias when reading values", async () => {
+    stubEvents();
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
+
+    // An agent that copied the path out of a `listEvents` result gets the same answer, reported
+    // under the indexed name so the two spellings cannot diverge in later calls.
+    const values = await api.listValues("source.event", "string");
+
+    expect(values).toEqual([expect.objectContaining({
+      key: "event", value: "user_do.reset.surfaced",
+    })]);
+  });
+
+  it("rewrites a caller filter's envelope paths before sending them", async () => {
+    const { bodies } = stubEvents();
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
+
+    await api.listEvents({
+      filter: {
+        kind: "group",
+        filterCombination: "and",
+        filters: [
+          { kind: "filter", key: "source.event", operation: "eq", type: "string", value: "x" },
+          { kind: "filter", key: "$metadata.level", operation: "eq", type: "string", value: "warn" },
+        ],
+      },
+    });
+
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({
+      parameters: {
+        filters: [
+          // The binding's own scope condition is never rewritten.
+          { key: "$metadata.service", operation: "eq", value: "api-worker" },
+          {
+            kind: "group",
+            filters: [
+              { key: "event", operation: "eq", value: "x" },
+              { key: "$metadata.level", operation: "eq", value: "warn" },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it("rewrites envelope paths in calculations and group-bys", async () => {
+    const bodies: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({
+        success: true,
+        result: {
+          statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 10 },
+          calculations: [],
+        },
+      });
+    }));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
+
+    await api.calculate({
+      calculations: [{ operator: "uniq", key: "source.event", keyType: "string", alias: "kinds" }],
+      groupBys: [{ value: "source.component", type: "string" }],
+    });
+
+    expect(bodies[0]).toMatchObject({
+      parameters: {
+        calculations: [{ operator: "uniq", key: "event", keyType: "string", alias: "kinds" }],
+        groupBys: [{ value: "component", type: "string" }],
+      },
+    });
+  });
+
+  it("keeps a scope filter alongside a rewritten caller key", () => {
+    const filter: ObservabilityFilter = {
+      kind: "filter", key: "source.event", operation: "eq", type: "string", value: "x",
+    };
+
+    expect(scopeObservabilityFilters("api-worker", filter)).toEqual([
+      { kind: "filter", key: "$metadata.service", operation: "eq", type: "string", value: "api-worker" },
+      { kind: "filter", key: "event", operation: "eq", type: "string", value: "x" },
+    ]);
   });
 });

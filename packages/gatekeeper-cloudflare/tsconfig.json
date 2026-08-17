@@ -2,7 +2,7 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "ESNext.Disposable"],
+    "lib": ["ESNext"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "jsx": "react",
@@ -13,6 +13,6 @@
       "@gadgets/configurator-ui": ["../configurator-ui/src/index.ts"]
     }
   },
-  "include": ["src"],
-  "exclude": ["dist", "node_modules"]
+  "include": ["src", "__tests__/**/*.ts"],
+  "exclude": ["dist", "node_modules", ".wrangler"]
 }

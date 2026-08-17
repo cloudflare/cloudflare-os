@@ -1,4 +1,4 @@
-import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
+import { WorkerEntrypoint, DurableObject, RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, GatekeeperUserVerifier, VendorDescription,
@@ -9,7 +9,7 @@ import {
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import {
   getOAuthConfig, buildAuthorizeUrl, generatePkce, exchangeCode, refreshTokens,
-  AUTH_SCOPES, BILLING_SCOPES, FULL_SCOPES, persistentScopesForResources,
+  AUTH_SCOPES, BILLING_SCOPES, persistentScopesForResources,
 } from "./oauth";
 import { fetchIdentity } from "./cloudflare-api";
 import {
@@ -21,30 +21,15 @@ import {
   workerObservabilityUrl,
   parseObservabilityResourceUrl,
 } from "./resources.js";
-import { CloudflareObservabilityApi, CloudflareObservabilityApiError } from "./observability-api.js";
+import { CloudflareObservabilityApi, deniesAccess } from "./observability-api.js";
+import { CloudflareObservabilitySessionImpl } from "./observability-session.js";
 import {
   CloudflareAccountConfiguratorUI,
   CloudflareWorkerConfiguratorUI,
 } from "./cloudflare-configurators.js";
 import ACCOUNT_CONFIGURATOR_HTML from "./generated/cloudflare-account-configurator-ui.txt";
 import WORKER_CONFIGURATOR_HTML from "./generated/cloudflare-worker-configurator-ui.txt";
-import type {
-  CloudflareObservabilityCalculationQuery,
-  CloudflareObservabilityCalculationResult,
-  CloudflareObservabilityDiscoveryOptions,
-  CloudflareObservabilityEventsPage,
-  CloudflareObservabilityEventsQuery,
-  CloudflareObservabilityInvocationsPage,
-  CloudflareObservabilityInvocationsQuery,
-  CloudflareObservabilityKey,
-  CloudflareObservabilitySession,
-  CloudflareObservabilityTrace,
-  CloudflareObservabilityTraceOptions,
-  CloudflareObservabilityTracesPage,
-  CloudflareObservabilityTracesQuery,
-  CloudflareObservabilityValue,
-  CloudflareObservabilityValueType,
-} from "./types.js";
+import type { CloudflareObservabilitySession } from "./types.js";
 import { VENDOR_ID } from "./vendor.js";
 import TYPES_CODE from "./types.txt";
 import { obsContext } from "./observability.js";
@@ -279,7 +264,9 @@ export class UserAccount extends DurableObject<Env> {
       stage: "oauth",
       verifier,
     });
-    const scopes = this.ctx.storage.kv.get<string[]>("scopes") ?? FULL_SCOPES;
+    // Fail closed: a missing `scopes` key is legacy or corrupted state, so request only the billing
+    // set rather than silently asking for observability the user never chose.
+    const scopes = this.ctx.storage.kv.get<string[]>("scopes") ?? [...BILLING_SCOPES];
     return { oauthNonce, challenge, scopes };
   }
 
@@ -306,9 +293,12 @@ export class UserAccount extends DurableObject<Env> {
       token: tokens.accessToken,
       expires: Date.now() + tokens.expiresIn * 1000,
     });
+    // Fail closed for the same reason as `beginOAuthFlow`: recording the full scope list here when
+    // the provider omitted `scope` would advertise an observability grant that was never made, and
+    // `ensureResources` would then short-circuit into a binding that 403s with no way to fix it.
     this.ctx.storage.kv.put<string[]>(
       "grantedScopes",
-      tokens.scopes ?? this.ctx.storage.kv.get<string[]>("scopes") ?? FULL_SCOPES,
+      tokens.scopes ?? this.ctx.storage.kv.get<string[]>("scopes") ?? [...BILLING_SCOPES],
     );
 
     const reconnecting = this.ctx.storage.kv.get<boolean>("reconnecting");
@@ -398,15 +388,17 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 
   async describe(): Promise<AccountDescription> {
     const account = this.#account();
-    const tokenPromise = account.getAccessToken();
-    const grantedScopesPromise = account.getGrantedScopes();
-    const token = await tokenPromise;
+    // Both reads start before either is awaited, and settle together so a failure in one cannot
+    // abandon the other as an unhandled rejection.
+    const [token, grantedScopes] = await Promise.all([
+      account.getAccessToken(), account.getGrantedScopes(),
+    ]);
     const identity = token ? await fetchIdentity(token) : null;
     return {
       displayName: identity?.displayName,
       uniqueName: identity?.email,
       avatar: { url: CLOUDFLARE_LOGO_URL },
-      grantedResourceUrlPatterns: grantedObservabilityResourcePatterns(await grantedScopesPromise),
+      grantedResourceUrlPatterns: grantedObservabilityResourcePatterns(grantedScopes),
     };
   }
 
@@ -504,8 +496,12 @@ export class CloudflareVerifier extends WorkerEntrypoint<Env, GatekeeperUserImpl
       ).listKeys({ limit: 1 });
       return true;
     } catch (error) {
-      if (error instanceof CloudflareObservabilityApiError &&
-          (error.status === 401 || error.status === 403)) return false;
+      if (deniesAccess(error)) {
+        logger.info("observer denied access to bound telemetry", {
+          event: "observer.denied", status: error.status,
+        });
+        return false;
+      }
       throw error;
     }
   }
@@ -516,98 +512,6 @@ type CloudflareObservabilityGatekeeperProps = {
   accountId: string;
   workerName?: string;
 };
-
-@validateRpc()
-class CloudflareObservabilitySessionImpl extends RpcTarget
-    implements CloudflareObservabilitySession {
-  readonly #api: CloudflareObservabilityApi;
-  readonly #queue: RpcStub<ApprovalQueue>;
-  readonly #target: string;
-
-  constructor(
-    api: CloudflareObservabilityApi,
-    queue: RpcStub<ApprovalQueue>,
-    target: string,
-  ) {
-    super();
-    this.#api = api;
-    this.#queue = queue;
-    this.#target = target.slice(0, 120);
-  }
-
-  [Symbol.dispose](): void { this.#queue[Symbol.dispose](); }
-
-  #queryDescription(options?: CloudflareObservabilityDiscoveryOptions): string {
-    const timeframe = options?.timeframe
-      ? `${options.timeframe.from.toISOString()} to ${options.timeframe.to.toISOString()}`
-      : "the last hour";
-    return `${this.#target}; timeframe ${timeframe}; filter ${options?.filter ? "yes" : "no"}; ` +
-      `search ${options?.search ? "yes" : "no"}`;
-  }
-
-  #resultDescription(
-    count: number,
-    noun: string,
-    statistics?: CloudflareObservabilityCalculationResult["statistics"],
-  ): string {
-    return `returned ${count} ${noun}` +
-      (statistics ? `; ${statistics.rowsRead} rows and ${statistics.bytesRead} bytes scanned` : "");
-  }
-
-  async #observe<T>(
-    title: string,
-    options: CloudflareObservabilityDiscoveryOptions | undefined,
-    read: () => Promise<T>,
-    description: (result: T) => string,
-  ): Promise<T> {
-    const result = await read();
-    await this.#queue.authorizeObservation({
-      title,
-      description: `${this.#queryDescription(options)}; ${description(result)}.`,
-    });
-    return result;
-  }
-
-  async listKeys(options?: CloudflareObservabilityDiscoveryOptions): Promise<CloudflareObservabilityKey[]> {
-    return this.#observe("Discover Workers telemetry fields", options,
-      () => this.#api.listKeys(options),
-      result => this.#resultDescription(result.length, "fields"));
-  }
-
-  async listValues(key: string, type: CloudflareObservabilityValueType,
-                   options?: CloudflareObservabilityDiscoveryOptions): Promise<CloudflareObservabilityValue[]> {
-    return this.#observe("Discover Workers telemetry values", options,
-      () => this.#api.listValues(key, type, options),
-      result => this.#resultDescription(result.length, "values"));
-  }
-
-  async listEvents(query?: CloudflareObservabilityEventsQuery): Promise<CloudflareObservabilityEventsPage> {
-    return this.#observe("Read Workers events", query, () => this.#api.listEvents(query), result =>
-      this.#resultDescription(result.events.length, "events", result.statistics));
-  }
-
-  async listInvocations(query?: CloudflareObservabilityInvocationsQuery): Promise<CloudflareObservabilityInvocationsPage> {
-    return this.#observe("Read Worker invocations", query, () => this.#api.listInvocations(query), result =>
-      this.#resultDescription(result.invocations.length, "invocations", result.statistics));
-  }
-
-  async listTraces(query?: CloudflareObservabilityTracesQuery): Promise<CloudflareObservabilityTracesPage> {
-    return this.#observe("Read Worker traces", query, () => this.#api.listTraces(query), result =>
-      this.#resultDescription(result.traces.length, "trace summaries", result.statistics));
-  }
-
-  async getTrace(traceId: string, options?: CloudflareObservabilityTraceOptions): Promise<CloudflareObservabilityTrace> {
-    return this.#observe("Read Worker trace", options, () => this.#api.getTrace(traceId, options), result =>
-      this.#resultDescription(
-        result.count, `trace events${result.truncated ? " (truncated)" : ""}`, result.statistics,
-      ));
-  }
-
-  async calculate(query: CloudflareObservabilityCalculationQuery): Promise<CloudflareObservabilityCalculationResult> {
-    return this.#observe("Calculate Workers metrics", query, () => this.#api.calculate(query), result =>
-      this.#resultDescription(result.calculations.length, "calculations", result.statistics));
-  }
-}
 
 @validateRpc()
 export class CloudflareObservabilityGatekeeper

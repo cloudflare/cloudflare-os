@@ -28,8 +28,61 @@ Workers telemetry is retained by Cloudflare for at most seven days. Queries defa
 and the Worker picker searches the full retention window. Suggested bindings are
 `CLOUDFLARE_OBSERVABILITY` for account access and `WORKER_OBSERVABILITY` for one Worker.
 
+### Sharing a gadget that reads telemetry
+
+A binding is not transferable. When a gadget with an observability binding is shared, each
+collaborator is admitted only if **their own** connected Cloudflare account can read that resource
+(`addObserver` checks it against their credentials, not the owner's). A collaborator without access is
+refused, and a verification that fails for any other reason — a 5xx, a transport error — is also a
+refusal rather than an admission.
+
+### Why discovery sometimes costs a query
+
+Cloudflare's `telemetry/keys` and `telemetry/values` endpoints ignore the `filters` array they accept:
+verified against a live account, they answer for the whole account no matter what is passed. A
+Worker-scoped binding therefore cannot use them — they would disclose every field name and value in
+the account. Whenever a discovery call has to be constrained (a Worker binding, or any caller-supplied
+filter), the answer is derived instead from a filtered `telemetry/query` events sample, which the
+provider does filter correctly. Unconstrained account-wide discovery still uses the cheap endpoints.
+
+> Unresolved: whether the `workers-observability.read` scope alone is accepted, or whether Cloudflare
+> requires the Workers Observability **Write** permission to read telemetry. This has not been
+> verified against a live token; if reads 403 on a correctly-scoped grant, that is the first thing to
+> check.
+
+### Two names for one field
+
+A log's own structured fields are returned nested under `source` but are **indexed under their bare
+name**: `logger.warn(msg, {event: "x"})` comes back as `source.event` and is queried as `event`.
+Confirmed both ways — `telemetry/keys` on a live account reports `event`/`component`/`level` and no
+`source.*` key at all, and the [Workers Logs
+docs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) show
+`console.log({user_id: 123})` being filtered as `user_id`.
+
+This matters because the provider accepts an unknown filter key, matches nothing, and returns an empty
+page with no error. So discovery reports indexed names (`observability-discovery.ts`), and
+`observabilityFieldKey` additionally accepts a `source.`-prefixed key as an alias wherever a caller
+names a field — filters, `calculations`, `groupBys`, `listValues` — because copying a path out of a
+`listEvents` result is the obvious thing to do and used to fail silently.
+
 `openid` is intentionally **not** requested — the Cloudflare dashboard OAuth client isn't permitted
 that scope; identity comes from the `/user` API (`user-details.read`).
+
+### Why an error's text never reaches the log
+
+`summarizeFilter` deliberately keeps filter *values* out of the audit trail — they are caller text.
+But a provider error message can quote that same value straight back, so logging the message would
+readmit through the error path exactly what the audit path excludes. `CloudflareObservabilityApiError`
+therefore carries Cloudflare's numeric `codes` alongside the message: the request log names the
+codes, and the message travels only to the caller who caused it.
+
+### Listing accounts is a walk, not a request
+
+`/accounts` is paginated and defaults to **20** per page, so a single GET silently returns a truncated
+list — an account past the first page simply cannot be picked, with nothing to indicate why. The
+account picker's substring match also stays client-side: `name` is the only documented server-side
+filter and whether it matches exactly or by substring is not specified, so pushing it down would trade
+a visible truncation for an invisible one.
 
 ## Setting Up Cloudflare OAuth Credentials
 

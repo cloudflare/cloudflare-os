@@ -23,9 +23,6 @@ export const BILLING_SCOPES = [
   "account-settings.read",
 ];
 
-/** All persistent scopes, used only when no resource selection was supplied. */
-export const FULL_SCOPES = [...BILLING_SCOPES, ...observabilityScopesForResources()];
-
 /** Persistent billing scopes plus the explicitly selected gadget resources. */
 export function persistentScopesForResources(resourceUrlPatterns?: string[]): string[] {
   return [...BILLING_SCOPES, ...observabilityScopesForResources(resourceUrlPatterns)];

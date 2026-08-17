@@ -6,7 +6,6 @@ import type {
   CloudflareObservabilityEventsPage,
   CloudflareObservabilityEventsQuery,
   CloudflareObservabilityFilter,
-  CloudflareObservabilityInvocation,
   CloudflareObservabilityInvocationsPage,
   CloudflareObservabilityInvocationsQuery,
   CloudflareObservabilityKey,
@@ -15,21 +14,57 @@ import type {
   CloudflareObservabilityTraceOptions,
   CloudflareObservabilityTracesPage,
   CloudflareObservabilityTracesQuery,
-  CloudflareObservabilityTraceSummary,
   CloudflareObservabilityValue,
   CloudflareObservabilityValueType,
 } from "./types.js";
 import { obsContext } from "./observability.js";
 import { VENDOR_ID } from "./vendor.js";
 import { assertCloudflareAccountId } from "./resources.js";
+import { deriveKeys, deriveValues } from "./observability-discovery.js";
+import {
+  CloudflareObservabilityApiError,
+  invalidResponse,
+  isFiniteNumber,
+  isRecord,
+  parseCalculations,
+  parseEventsContainer,
+  parseInvocationsContainer,
+  parseKeys,
+  parseStatistics,
+  parseTraceSummaries,
+  parseValues,
+} from "./observability-parse.js";
+
+export { CloudflareObservabilityApiError };
+
+// Statuses that mean "this credential cannot read this resource". Cloudflare answers an account the
+// caller cannot reach with 403 or 404, and an unknown account tag with 400.
+const ACCESS_DENIED_STATUSES = new Set([400, 401, 403, 404]);
+
+/**
+ * Whether a failure means the credential lacks access, rather than the read having failed. Anything
+ * else -- a 5xx, a transport error -- is our problem, not the caller's, and must never be reported as
+ * a denial: mapping it to "denied" would be a silent authorization decision, and mapping it to
+ * "allowed" would admit an unauthorized reader.
+ */
+export function deniesAccess(error: unknown): error is CloudflareObservabilityApiError {
+  return error instanceof CloudflareObservabilityApiError &&
+    ACCESS_DENIED_STATUSES.has(error.status);
+}
 
 export type ObservabilityFilter = CloudflareObservabilityFilter;
 
-const MAX_CALLER_FILTER_DEPTH = 2;
+/**
+ * Nesting levels allowed in a caller's filter expression, counting the expression itself as level 1.
+ * The scope wrapper puts it inside one more group, so the wire payload is one level deeper. Bounds
+ * both the recursion here and what the provider is asked to parse.
+ */
+const MAX_CALLER_FILTER_DEPTH = 3;
+/** Total filter nodes allowed in a caller's expression, so a huge flat OR is rejected too. */
 const MAX_CALLER_FILTER_NODES = 100;
 
 function validateFilterExpression(expression: ObservabilityFilter): void {
-  const pending: Array<{ filter: ObservabilityFilter; depth: number }> = [{ filter: expression, depth: 0 }];
+  const pending: Array<{ filter: ObservabilityFilter; depth: number }> = [{ filter: expression, depth: 1 }];
   let nodes = 0;
   while (pending.length > 0) {
     const current = pending.pop()!;
@@ -44,6 +79,41 @@ function validateFilterExpression(expression: ObservabilityFilter): void {
   }
 }
 
+/** The envelope prefix `listEvents` nests a caller's own log fields under. See the note below. */
+const SOURCE_ENVELOPE_PREFIX = "source.";
+
+/**
+ * Map a field reference from the shape an event is *returned* in to the name it is *indexed* under.
+ *
+ * `listEvents` returns a caller's structured log fields nested under `source`, but they are filterable
+ * only by their bare name (see `observability-discovery.ts`), so copying a path out of a result and
+ * filtering on it would otherwise match nothing and report no error. Accepting both spellings cannot
+ * widen a query: the binding's own `$metadata.service` condition is a separate `AND` term that is
+ * never rewritten, and an extra condition on any other field can only narrow.
+ */
+export function observabilityFieldKey(key: string): string {
+  return key.startsWith(SOURCE_ENVELOPE_PREFIX) ? key.slice(SOURCE_ENVELOPE_PREFIX.length) : key;
+}
+
+/**
+ * Rewrite every key in a caller expression to its indexed name. Depth and node count are already
+ * bounded by `validateFilterExpression`, which every caller runs first, so this recursion is finite.
+ */
+function normalizeFilterKeys(expression: ObservabilityFilter): ObservabilityFilter {
+  if (expression.kind === "group") {
+    return {
+      kind: "group",
+      filterCombination: expression.filterCombination,
+      filters: expression.filters.map(normalizeFilterKeys),
+    };
+  }
+  return { ...expression, key: observabilityFieldKey(expression.key) };
+}
+
+/**
+ * Prepend the binding's immutable Worker condition to a caller filter. The provider honours these on
+ * the `query` endpoint, and `#scopeEvents` re-checks the result regardless.
+ */
 export function scopeObservabilityFilters(
   workerName: string | undefined,
   expression?: ObservabilityFilter,
@@ -60,7 +130,7 @@ export function scopeObservabilityFilters(
       value: workerName,
     });
   }
-  if (expression) filters.push(expression);
+  if (expression) filters.push(normalizeFilterKeys(expression));
   return filters;
 }
 
@@ -70,33 +140,31 @@ const DEFAULT_TIMEFRAME_MS = 60 * 60 * 1000;
 const MAX_TIMEFRAME_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_RESULT_LIMIT = 1000;
+const DEFAULT_RESULT_LIMIT = 100;
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_RETRY_DELAY_MS = 2_000;
+// The default pause before the single retry, used whenever the provider gave no usable `Retry-After`.
+const RETRY_DELAY_MS = 250;
 const TRACE_PAGE_SIZE = 100;
 const MAX_TRACE_PAGES = 3;
+// A bounded whole-operation budget for `getTrace`, which is the only method that issues more than one
+// request. Without it three pages of request timeout plus retries could hold an agent for minutes.
+const MAX_TRACE_DURATION_MS = 60_000;
+// Events sampled to answer a discovery call that has to be constrained. Large enough to surface the
+// long tail of indexed fields, small enough to stay one page.
+const DISCOVERY_SAMPLE_SIZE = 500;
 const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
 
 const logger = obsContext.createLogger({
   component: "gatekeeper.cloudflare.observability-api", vendorId: VENDOR_ID,
 });
 
-type RawStatistics = {
-  elapsed: number;
-  rows_read: number;
-  bytes_read: number;
-  abr_level?: number;
-};
-
-type RawQueryResult = {
-  statistics: RawStatistics;
-  events?: { count?: number; events?: CloudflareObservabilityEvent[] };
-  invocations?: Record<string, CloudflareObservabilityEvent[]>;
-  traces?: Array<Omit<CloudflareObservabilityTraceSummary, "services"> & { service: string[] }>;
-  calculations?: CloudflareObservabilityCalculationResult["calculations"];
-};
-
-type QueryResult = Omit<RawQueryResult, "statistics"> & {
+type QueryResult = {
   statistics: CloudflareObservabilityStatistics;
+  events?: unknown;
+  invocations?: unknown;
+  traces?: unknown;
+  calculations?: unknown;
 };
 
 type QueryOptions = CloudflareObservabilityDiscoveryOptions & {
@@ -110,17 +178,12 @@ type QueryOptions = CloudflareObservabilityDiscoveryOptions & {
 };
 
 type EventsPageResult = {
+  /** The caller-visible page. `nextCursor` is the provider's cursor, never a post-filtered one. */
   page: CloudflareObservabilityEventsPage;
+  /** Events the provider returned before scope re-checking, for bounding a paginated read. */
   rawCount: number;
-  rawCursor?: string;
   totalCount?: number;
 };
-
-export class CloudflareObservabilityApiError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
-  }
-}
 
 function timeframe(value?: { from: Date; to: Date }): { from: number; to: number } {
   const to = value?.to.valueOf() ?? Date.now();
@@ -137,41 +200,16 @@ function timeframe(value?: { from: Date; to: Date }): { from: number; to: number
   return { from, to };
 }
 
-function statistics(value: unknown): CloudflareObservabilityStatistics {
-  if (!isRecord(value) || !isFiniteNumber(value.elapsed) ||
-      !isFiniteNumber(value.rows_read) || !isFiniteNumber(value.bytes_read) ||
-      (value.abr_level !== undefined && !isFiniteNumber(value.abr_level))) {
-    throw invalidResponse();
-  }
-  return {
-    elapsed: value.elapsed,
-    rowsRead: value.rows_read,
-    bytesRead: value.bytes_read,
-    abrLevel: value.abr_level,
-  };
-}
-
-function validatedLimit(value: number | undefined): number | undefined {
-  if (value !== undefined && (!Number.isInteger(value) || value < 1 || value > MAX_RESULT_LIMIT)) {
+function validatedLimit(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_RESULT_LIMIT;
+  if (!Number.isInteger(value) || value < 1 || value > MAX_RESULT_LIMIT) {
     throw new Error(`The observability limit must be an integer from 1 to ${MAX_RESULT_LIMIT}.`);
   }
   return value;
 }
 
-function invalidResponse(): CloudflareObservabilityApiError {
-  return new CloudflareObservabilityApiError(502, "Cloudflare returned an invalid Workers Observability response.");
-}
-
 function invalidResponseStatus(response: Response): number {
   return response.ok ? 502 : response.status;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
 }
 
 function isTimeout(error: unknown): boolean {
@@ -226,7 +264,12 @@ function providerError(data: unknown, status: number): CloudflareObservabilityAp
       .flatMap(error => isRecord(error) &&
         typeof error.message === "string" ? [error.message.slice(0, 200)] : [])
       .slice(0, 3);
-    if (messages.length > 0) return new CloudflareObservabilityApiError(status, messages.join("; "));
+    const codes = data.errors
+      .flatMap(error => isRecord(error) && isFiniteNumber(error.code) ? [error.code] : [])
+      .slice(0, 3);
+    if (messages.length > 0) {
+      return new CloudflareObservabilityApiError(status, messages.join("; "), codes);
+    }
   }
   return new CloudflareObservabilityApiError(
     status,
@@ -234,15 +277,19 @@ function providerError(data: unknown, status: number): CloudflareObservabilityAp
   );
 }
 
-function retryDelay(response: Response): number {
+/**
+ * How long to wait before one retry, or null when the provider asked for longer than the budget
+ * allows. Retrying a 429 sooner than `Retry-After` only guarantees a second 429, so we fail fast and
+ * let the caller decide instead of burning the request.
+ */
+function retryDelay(response: Response): number | null {
   const value = response.headers.get("retry-after");
-  if (!value) return 250;
+  if (!value) return RETRY_DELAY_MS;
   const seconds = Number(value);
-  if (Number.isFinite(seconds)) return Math.min(Math.max(seconds * 1000, 0), MAX_RETRY_DELAY_MS);
-  const date = Date.parse(value);
-  return Number.isFinite(date)
-    ? Math.min(Math.max(date - Date.now(), 0), MAX_RETRY_DELAY_MS)
-    : 250;
+  const requested = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - Date.now();
+  if (!Number.isFinite(requested)) return RETRY_DELAY_MS;
+  if (requested > MAX_RETRY_DELAY_MS) return null;
+  return Math.max(requested, 0);
 }
 
 async function wait(milliseconds: number): Promise<void> {
@@ -290,36 +337,47 @@ export class CloudflareObservabilityApi {
         return data.result;
       } catch (caught) {
         const timedOut = isTimeout(caught);
+        // A connection reset or DNS failure is not an `AbortError` and not a typed provider error, so
+        // normalize it here rather than letting a raw TypeError reach callers that switch on status.
         const error = timedOut
           ? new CloudflareObservabilityApiError(504, "Cloudflare Workers Observability request timed out.")
-          : caught;
-        const status = error instanceof CloudflareObservabilityApiError
-          ? error.status
-          : response?.status ?? 0;
+          : caught instanceof CloudflareObservabilityApiError
+            ? caught
+            : new CloudflareObservabilityApiError(
+              502, "Could not reach the Cloudflare Workers Observability API.");
+        // The provider's own message is deliberately absent here: Cloudflare can echo a
+        // caller-supplied filter value back in an error, and filter values are kept out of the audit
+        // trail for exactly that reason (see `summarizeFilter`). Cloudflare's numeric codes identify
+        // the failure without carrying caller text. Our own messages are safe, so a timeout or
+        // transport failure is still logged in full.
         logger.warn("Workers Observability request failed", {
-          event: "observability.request.failed", path, status, attempt, error,
+          event: "observability.request.failed", path, status: error.status, attempt,
+          ...(error.codes.length > 0
+            ? { providerCodes: error.codes.join(",") }
+            : { error }),
         });
-        if (attempt === 1 && (timedOut || (response && RETRYABLE_STATUSES.has(response.status)))) {
-          await wait(timedOut || !response ? 250 : retryDelay(response));
-          continue;
-        }
-        throw error;
+        if (attempt === 2) throw error;
+        // A timeout or transport failure gets one fast retry; a provider status only retries when it
+        // is retryable and its own backoff hint fits the budget. Timeouts are checked first because a
+        // body-read timeout arrives with an already-successful status, which is not itself retryable.
+        const delay = timedOut || response === undefined
+          ? RETRY_DELAY_MS
+          : RETRYABLE_STATUSES.has(response.status) ? retryDelay(response) : null;
+        if (delay === null) throw error;
+        await wait(delay);
       }
     }
     throw new Error("Unreachable Workers Observability retry state.");
   }
 
-  #discoveryParameters(options?: CloudflareObservabilityDiscoveryOptions) {
-    const filters = scopeObservabilityFilters(this.workerName, options?.filter);
-    return {
-      datasets: DATASETS,
-      filters: filters.length === 0 ? [] : [{
-        kind: "group" as const,
-        filterCombination: "and" as const,
-        filters,
-      }],
-      needle: options?.search,
-    };
+  /**
+   * Drop anything the binding must not disclose. The provider honours the scope filter on the
+   * `query` endpoint, so this normally removes nothing; it is the authoritative check regardless,
+   * because a filter the provider silently ignored would otherwise leak another Worker's telemetry.
+   */
+  #scopeEvents(events: CloudflareObservabilityEvent[]): CloudflareObservabilityEvent[] {
+    if (!this.workerName) return events;
+    return events.filter(event => event.$metadata.service === this.workerName);
   }
 
   async #query(
@@ -329,8 +387,9 @@ export class CloudflareObservabilityApi {
     const limit = validatedLimit(options?.limit);
     const includeSeries = options?.includeSeries ?? options?.granularity !== undefined;
     const result = await this.#request("query", {
-      queryId: `gadgets-${crypto.randomUUID()}`,
+      queryId: `gadgets-${view}`,
       view,
+      // Keeps this query out of the user's saved-query history; it is a read, not a saved view.
       dry: true,
       timeframe: timeframe(options?.timeframe),
       limit,
@@ -342,26 +401,67 @@ export class CloudflareObservabilityApi {
         datasets: DATASETS,
         filterCombination: "and",
         filters: scopeObservabilityFilters(this.workerName, options?.filter),
-        needle: options?.search,
-        calculations: options?.calculations,
-        groupBys: options?.groupBys,
-        orderBy: options?.orderBy,
+        needle: options?.search && {
+          value: options.search.value,
+          isRegex: options.search.isRegex,
+          matchCase: options.search.matchCase,
+        },
+        // Rebuilt field-by-field rather than forwarded: extra properties are allowed to survive
+        // RPC validation, and this is a trust boundary into the provider's query parser.
+        calculations: options?.calculations?.map(calculation => calculation.operator === "count"
+          ? { operator: calculation.operator, alias: calculation.alias }
+          : {
+            operator: calculation.operator,
+            key: observabilityFieldKey(calculation.key),
+            keyType: calculation.keyType,
+            alias: calculation.alias,
+          }),
+        groupBys: options?.groupBys?.map(
+          ({ value, type }) => ({ value: observabilityFieldKey(value), type })),
+        orderBy: options?.orderBy && {
+          value: options.orderBy.value, order: options.orderBy.order,
+        },
         limit,
       },
     });
     if (!isRecord(result)) throw invalidResponse();
-    return { ...(result as RawQueryResult), statistics: statistics(result.statistics) };
+    return {
+      statistics: parseStatistics(result.statistics),
+      events: result.events,
+      invocations: result.invocations,
+      traces: result.traces,
+      calculations: result.calculations,
+    };
+  }
+
+  /**
+   * Whether a discovery call has to be answered from an events sample rather than the dedicated
+   * endpoints. `/keys` and `/values` ignore the filters they are sent (verified against the live
+   * API; see `observability-discovery.ts`), so any request that must be *constrained* -- by this
+   * binding's Worker scope or by a caller filter -- cannot be answered there.
+   */
+  #requiresDerivedDiscovery(options?: CloudflareObservabilityDiscoveryOptions): boolean {
+    return this.workerName !== undefined || options?.filter !== undefined;
+  }
+
+  async #discoverySample(
+    options?: CloudflareObservabilityDiscoveryOptions,
+  ): Promise<CloudflareObservabilityEvent[]> {
+    const { page } = await this.#listEventsPage({ ...options, limit: DISCOVERY_SAMPLE_SIZE });
+    return page.events;
   }
 
   async listKeys(options?: CloudflareObservabilityDiscoveryOptions): Promise<CloudflareObservabilityKey[]> {
-    const range = timeframe(options?.timeframe);
-    const result = await this.#request("keys", {
-      ...range,
-      ...this.#discoveryParameters(options),
-      limit: validatedLimit(options?.limit),
-    });
-    if (!Array.isArray(result)) throw invalidResponse();
-    return result as CloudflareObservabilityKey[];
+    const limit = validatedLimit(options?.limit);
+    if (this.#requiresDerivedDiscovery(options)) {
+      return deriveKeys(await this.#discoverySample(options), limit);
+    }
+    return parseKeys(await this.#request("keys", {
+      ...timeframe(options?.timeframe),
+      datasets: DATASETS,
+      needle: options?.search,
+      limit,
+    }));
   }
 
   async listValues(
@@ -369,37 +469,36 @@ export class CloudflareObservabilityApi {
     type: CloudflareObservabilityValueType,
     options?: CloudflareObservabilityDiscoveryOptions,
   ): Promise<CloudflareObservabilityValue[]> {
-    const result = await this.#request("values", {
+    const limit = validatedLimit(options?.limit);
+    const field = observabilityFieldKey(key);
+    if (this.#requiresDerivedDiscovery(options)) {
+      return deriveValues(await this.#discoverySample(options), field, type, limit);
+    }
+    return parseValues(await this.#request("values", {
       timeframe: timeframe(options?.timeframe),
-      ...this.#discoveryParameters(options),
-      key,
+      datasets: DATASETS,
+      needle: options?.search,
+      key: field,
       type,
-      limit: validatedLimit(options?.limit),
-    });
-    if (!Array.isArray(result)) throw invalidResponse();
-    return result as CloudflareObservabilityValue[];
+      limit,
+    }));
   }
 
   async #listEventsPage(options?: CloudflareObservabilityEventsQuery): Promise<EventsPageResult> {
     const result = await this.#query("events", options);
-    if (result.events !== undefined &&
-        (!isRecord(result.events) ||
-         (result.events.events !== undefined && !Array.isArray(result.events.events)))) {
-      throw invalidResponse();
-    }
-    const rawEvents = result.events?.events ?? [];
-    const events = rawEvents.filter(event =>
-      !this.workerName || event.$metadata.service === this.workerName);
+    const { count, events: rawEvents } = parseEventsContainer(result.events);
     return {
       page: {
-        events,
-        count: this.workerName ? events.length : result.events?.count,
-        nextCursor: events.at(-1)?.$metadata.id,
+        events: this.#scopeEvents(rawEvents),
+        // The provider applied the scope filter itself, so its count is already scoped.
+        count,
+        // Derived from the provider's own events, not the scoped ones: a page whose events all
+        // belonged to another service would otherwise end pagination while data remained.
+        nextCursor: rawEvents.at(-1)?.$metadata.id,
         statistics: result.statistics,
       },
       rawCount: rawEvents.length,
-      rawCursor: rawEvents.at(-1)?.$metadata.id,
-      totalCount: result.events?.count,
+      totalCount: count,
     };
   }
 
@@ -411,20 +510,19 @@ export class CloudflareObservabilityApi {
     options?: CloudflareObservabilityInvocationsQuery,
   ): Promise<CloudflareObservabilityInvocationsPage> {
     const result = await this.#query("invocations", options);
-    if (result.invocations !== undefined &&
-        (!isRecord(result.invocations) || Array.isArray(result.invocations) ||
-         Object.values(result.invocations).some(events => !Array.isArray(events)))) {
-      throw invalidResponse();
-    }
-    const invocations: CloudflareObservabilityInvocation[] = Object.entries(result.invocations ?? {})
-      .map(([requestId, events]) => ({
-        requestId,
-        events: events.filter(event => !this.workerName || event.$metadata.service === this.workerName),
-      }))
+    const groups = parseInvocationsContainer(result.invocations);
+    // The provider returns a request-ID map, so iteration order is not a page order. Take the oldest
+    // event as the cursor: results run newest-first, so that is the page's continuation point.
+    const oldest = groups
+      .flatMap(group => group.events)
+      .reduce<CloudflareObservabilityEvent | undefined>(
+        (last, event) => !last || event.timestamp < last.timestamp ? event : last, undefined);
+    const invocations = groups
+      .map(({ requestId, events }) => ({ requestId, events: this.#scopeEvents(events) }))
       .filter(invocation => invocation.events.length > 0);
     return {
       invocations,
-      nextCursor: invocations.at(-1)?.events.at(-1)?.$metadata.id,
+      nextCursor: oldest?.$metadata.id,
       statistics: result.statistics,
     };
   }
@@ -434,11 +532,7 @@ export class CloudflareObservabilityApi {
       throw new Error("Trace summaries are available only from an account-scoped observability binding.");
     }
     const result = await this.#query("traces", options);
-    if (result.traces !== undefined && !Array.isArray(result.traces)) throw invalidResponse();
-    const traces = (result.traces ?? []).map(({ service, ...trace }) => ({
-      ...trace,
-      services: service,
-    }));
+    const traces = parseTraceSummaries(result.traces);
     return {
       traces,
       nextCursor: traces.at(-1)?.traceId,
@@ -457,15 +551,16 @@ export class CloudflareObservabilityApi {
       type: "string",
       value: traceId,
     };
+    const deadline = Date.now() + MAX_TRACE_DURATION_MS;
     const events: CloudflareObservabilityEvent[] = [];
     let cursor: string | undefined;
     let truncated = false;
     let rawEventsRead = 0;
     let totalCount: number | undefined;
-    let combinedStatistics: CloudflareObservabilityStatistics = {
-      elapsed: 0, rowsRead: 0, bytesRead: 0,
-    };
+    let statistics: CloudflareObservabilityStatistics = { elapsed: 0, rowsRead: 0, bytesRead: 0 };
     for (let pageNumber = 0; pageNumber < MAX_TRACE_PAGES; pageNumber++) {
+      // The enforced fields follow the spread so a caller option cannot override the trace filter,
+      // the page size, or the cursor.
       const result = await this.#listEventsPage({
         ...options,
         filter,
@@ -476,34 +571,36 @@ export class CloudflareObservabilityApi {
       events.push(...page.events);
       rawEventsRead += result.rawCount;
       totalCount = result.totalCount ?? totalCount;
-      combinedStatistics = {
-        elapsed: combinedStatistics.elapsed + page.statistics.elapsed,
-        rowsRead: combinedStatistics.rowsRead + page.statistics.rowsRead,
-        bytesRead: combinedStatistics.bytesRead + page.statistics.bytesRead,
-        abrLevel: page.statistics.abrLevel ?? combinedStatistics.abrLevel,
+      statistics = {
+        elapsed: statistics.elapsed + page.statistics.elapsed,
+        rowsRead: statistics.rowsRead + page.statistics.rowsRead,
+        bytesRead: statistics.bytesRead + page.statistics.bytesRead,
+        abrLevel: page.statistics.abrLevel ?? statistics.abrLevel,
       };
       if (totalCount !== undefined && rawEventsRead >= totalCount) break;
-      if (result.rawCount < TRACE_PAGE_SIZE || !result.rawCursor || result.rawCursor === cursor) break;
-      cursor = result.rawCursor;
-      if (pageNumber === MAX_TRACE_PAGES - 1) {
-        truncated = totalCount === undefined || rawEventsRead < totalCount;
+      const exhausted = result.rawCount < TRACE_PAGE_SIZE || !page.nextCursor ||
+        page.nextCursor === cursor;
+      if (exhausted) break;
+      cursor = page.nextCursor;
+      // Any bound we stop on other than "read everything" may have omitted matching events.
+      if (pageNumber === MAX_TRACE_PAGES - 1 || Date.now() >= deadline) {
+        truncated = true;
+        break;
       }
     }
     if (events.length === 0) {
-      throw new Error(`Trace ${traceId} was not found in the requested timeframe.`);
+      throw new CloudflareObservabilityApiError(
+        404, `Trace ${traceId} was not found in the requested timeframe.`);
     }
-    return { traceId, events, count: events.length, truncated, statistics: combinedStatistics };
+    return { traceId, events, count: events.length, truncated, statistics };
   }
 
   async calculate(
     options: CloudflareObservabilityCalculationQuery,
   ): Promise<CloudflareObservabilityCalculationResult> {
     const result = await this.#query("calculations", options);
-    if (result.calculations !== undefined && !Array.isArray(result.calculations)) {
-      throw invalidResponse();
-    }
     return {
-      calculations: result.calculations ?? [],
+      calculations: parseCalculations(result.calculations),
       statistics: result.statistics,
     };
   }
