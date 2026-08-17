@@ -91,9 +91,16 @@ export function formatAlwaysAvailableResourcesPrompt(resources: Array<{
 }>): string {
   let lines = resources.map(resource =>
     `- ${resource.title}: \`env.${resource.name}\`${formatAgentCatalogPrompt(resource.catalog)}`);
+  // Only describe the catalogs when a resource actually published entries, so a deployment whose
+  // resources offer none doesn't get told to consult a list that isn't there.
+  let catalogs = resources.some(resource => resource.catalog?.entries.length)
+    ? ` Check the entries listed above before starting a task and use a relevant one even when the ` +
+      `user did not name it. A catalog marked \`"truncated":true\` is partial, so reach what it ` +
+      `omits through the binding's own search or listing methods.`
+    : ``;
   return `The following resources are always available as bindings in your env for use with the ` +
     `executeCode tool (you don't need to request them):\n${lines.join("\n")}\n` +
     `When one is relevant, use describeBinding with the binding's name to learn its API before ` +
-    `using it. If a Gadget's persistent code needs one, wire it into that gadget with ` +
+    `using it.${catalogs} If a Gadget's persistent code needs one, wire it into that gadget with ` +
     `setGadgetBinding.`;
 }

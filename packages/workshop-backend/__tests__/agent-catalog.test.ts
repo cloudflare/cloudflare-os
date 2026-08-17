@@ -80,6 +80,17 @@ describe("normalizeAgentCatalog", () => {
     // A resource with no catalog gets just its env line, nothing inlined.
     expect(message).toContain("- Empty: `env.EMPTY`");
     expect(message).not.toContain("- Empty: `env.EMPTY`\n{");
+    expect(message).toContain("Check the entries listed above before starting a task");
+    expect(message).toContain('A catalog marked `"truncated":true` is partial');
+  });
+
+  it("describes the catalogs only when a resource published entries", () => {
+    let message = formatAlwaysAvailableResourcesPrompt([
+      {title: "Empty", name: "EMPTY", catalog: null},
+    ]);
+
+    expect(message).toContain("- Empty: `env.EMPTY`");
+    expect(message).not.toContain("Check the entries listed above");
   });
 });
 
