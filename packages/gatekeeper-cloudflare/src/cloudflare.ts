@@ -191,10 +191,11 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
       url: "https://cloudflare.com",
       logo: { url: CLOUDFLARE_LOGO_URL },
       color: "#fbece0",
-      tagline: "Sign in with Cloudflare",
+      tagline: "Sign in, use AI Gateway, and inspect Workers Observability",
       description:
-          "Sign in with your Cloudflare account. Usage beyond the free tier can be billed to your " +
-          "own Cloudflare AI Gateway credits.",
+          "Sign in with your Cloudflare account and use your own Cloudflare AI Gateway credits for " +
+          "usage beyond the free tier. You can also connect Workers Observability to inspect logs, " +
+          "invocations, traces, and aggregate metrics.",
       providesAuth: true,
     };
   }
