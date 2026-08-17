@@ -9,6 +9,7 @@
     "clean": "rm -rf dist src/generated"
   },
   "dependencies": {
+    "@gadgets/backend-utils": "workspace:*",
     "@gadgets/configurator-ui": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",

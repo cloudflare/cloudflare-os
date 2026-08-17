@@ -1,6 +1,11 @@
 import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
+import {
+  SerialTaskQueue,
+  displayReason,
+  validateApplyThroughArgs,
+} from "@gadgets/backend-utils/gatekeeper-action";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, stripTrailingSlashes } from '@gadgets/workshop-shared/gatekeeper';
+import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, stripTrailingSlashes, type ApplyActionsThroughResult } from '@gadgets/workshop-shared/gatekeeper';
 import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleVerifiedEmail, GmailApi, GmailMessageRaw, GmailOutboundMessage, GoogleAccessToken, normalizeEmailRecipients, revokeGoogleToken } from "./google-api";
 import {
   GmailSession, GmailThread, GmailMessage,
@@ -1184,11 +1189,29 @@ class PendingActionStore<Action> {
     return `pending:action:${id}`;
   }
 
+  #stagedKey(id: number): string {
+    return `pending:staged:${id}`;
+  }
+
+  /**
+   * Record a new action. It is "staged" until markSubmitted(): the record overlays reads like a
+   * pending one, but applyActionsThrough() must not apply it before its submitAction() completes.
+   */
   submit(action: Action): number {
     let id = this.#kv.get<number>("pending:nextActionId") ?? 1;
     this.#kv.put("pending:nextActionId", id + 1);
     this.#kv.put(this.#actionKey(id), action);
+    this.#kv.put(this.#stagedKey(id), true);
     return id;
+  }
+
+  /** The overseer accepted the submission; a decision frontier may now cover this action. */
+  markSubmitted(id: number): void {
+    this.#kv.delete(this.#stagedKey(id));
+  }
+
+  isStaged(id: number): boolean {
+    return this.#kv.get(this.#stagedKey(id)) !== undefined;
   }
 
   get(id: number): Action | undefined {
@@ -1208,6 +1231,7 @@ class PendingActionStore<Action> {
 
   remove(id: number): void {
     this.#kv.delete(this.#actionKey(id));
+    this.#kv.delete(this.#stagedKey(id));
   }
 }
 
@@ -1419,6 +1443,7 @@ async function submitGmailAction(
     ctx.pendingActions.remove(actionId);
     throw err;
   }
+  ctx.pendingActions.markSubmitted(actionId);
 }
 
 // ── GmailThreadCursorImpl ───────────────────────────────────────────
@@ -1898,7 +1923,35 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
   }
 
   /** --------------------------------------------------------------------------- */
-  async applyAction(actionId: number): Promise<void> {
+  #actionResolution = new SerialTaskQueue();
+
+  applyActionsThrough(actionId: number, vetoes: number[]): Promise<ApplyActionsThroughResult> {
+    return this.#actionResolution.run(async () => {
+      const vetoSet = validateApplyThroughArgs(actionId, vetoes);
+      const pendingActions = new PendingActionStore<GmailAction>(this.ctx.storage.kv);
+      for (const veto of vetoSet) pendingActions.remove(veto);
+      for (const {id} of pendingActions.list()) {
+        if (id > actionId) break;
+        if (pendingActions.isStaged(id)) continue; // submitAction() has not completed
+        try {
+          await this.#applyAction(id);
+        } catch (error) {
+          logger.warn("failed to apply Gmail action", {event: "action.apply.failed", error});
+          return {stopped: {
+            at: id,
+            reason: displayReason(error, "Gmail could not apply this action"),
+          }};
+        }
+      }
+      return {};
+    });
+  }
+
+  applyAction(actionId: number): Promise<void> {
+    return this.#actionResolution.run(() => this.#applyAction(actionId));
+  }
+
+  async #applyAction(actionId: number): Promise<void> {
     const pendingActions = new PendingActionStore<GmailAction>(this.ctx.storage.kv);
     const action = pendingActions.get(actionId);
     if (!action) throw new Error(`Unknown pending Gmail action: ${actionId}`);
@@ -1945,12 +1998,14 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     pendingActions.remove(actionId);
   }
 
-  async rejectAction(actionId: number): Promise<void | {restart?: boolean}> {
-    const pendingActions = new PendingActionStore<GmailAction>(this.ctx.storage.kv);
-    if (!pendingActions.get(actionId)) {
-      throw new Error(`Unknown pending Gmail action: ${actionId}`);
-    }
-    pendingActions.remove(actionId);
+  rejectAction(actionId: number): Promise<void> {
+    return this.#actionResolution.run(async () => {
+      const pendingActions = new PendingActionStore<GmailAction>(this.ctx.storage.kv);
+      if (!pendingActions.get(actionId)) {
+        throw new Error(`Unknown pending Gmail action: ${actionId}`);
+      }
+      pendingActions.remove(actionId);
+    });
   }
 
   revertAction(action: number):
@@ -1984,6 +2039,8 @@ type GoogleDocActionBase = {
   submittedAt: number;
   baseRevisionId: string;
   invalidatedReason?: string;
+  /** The vetoed action whose rejection made this edit unreplayable, when attributable. */
+  invalidatedBy?: number;
 }
 
 type GoogleDocReplaceAction = GoogleDocActionBase & {
@@ -2100,9 +2157,11 @@ function invalidateGoogleDocAction(
   pendingActions: PendingActionStore<GoogleDocAction>,
   pending: GoogleDocPendingAction,
   reason: string,
+  vetoedBy?: number,
 ): void {
   if (!pending.action.invalidatedReason) {
     pending.action.invalidatedReason = reason;
+    if (vetoedBy !== undefined) pending.action.invalidatedBy = vetoedBy;
     pendingActions.put(pending.id, pending.action);
   }
 }
@@ -2112,6 +2171,7 @@ function invalidateUnreplayableGoogleDocActions(
   baseMarkdown: string,
   pending: GoogleDocPendingAction[],
   context: string,
+  vetoedBy?: number,
 ): {markdown: string, pendingActions: GoogleDocAction[]} {
   let markdown = baseMarkdown;
   let replayedActions: GoogleDocAction[] = [];
@@ -2128,7 +2188,8 @@ function invalidateUnreplayableGoogleDocActions(
           pendingActions,
           pending[i],
           `${context}: ${errorMessage(error)} This edit was dropped from the document. ` +
-          `Reject it and retry if it is still needed.`);
+          `Reject it and retry if it is still needed.`,
+          vetoedBy);
       continue;
     }
     replayedActions.push(action);
@@ -2225,7 +2286,72 @@ export class GoogleDocGatekeeperImpl
         this.#simulationCache);
   }
 
-  async applyAction(actionId: number): Promise<void> {
+  #actionResolution = new SerialTaskQueue();
+
+  applyActionsThrough(actionId: number, vetoes: number[]): Promise<ApplyActionsThroughResult> {
+    return this.#actionResolution.run(() => this.#applyActionsThrough(actionId, vetoes));
+  }
+
+  async #applyActionsThrough(actionId: number, vetoes: number[]): Promise<ApplyActionsThroughResult> {
+    let vetoSet = validateApplyThroughArgs(actionId, vetoes);
+    let pendingActions = new PendingActionStore<GoogleDocAction>(this.ctx.storage.kv);
+
+    // Vetoes first. Removing a still-active edit can leave later edits unreplayable; replay the
+    // remainder against the last known document snapshot so those soft-invalidations are recorded
+    // with the vetoing edit's id and can be reported below. (Without a stored snapshot the read
+    // path will invalidate them lazily, unattributed — the contract permits that.)
+    let firstActiveVeto: number | undefined;
+    for (let veto of vetoSet) {
+      let record = pendingActions.list().find(({id}) => id === veto);
+      if (!record) continue;
+      if (!record.action.invalidatedReason) firstActiveVeto ??= veto;
+      pendingActions.remove(veto);
+    }
+    if (firstActiveVeto !== undefined) {
+      this.#simulationCache.current = undefined;
+      let snapshot = await this.ctx.storage.get<DocSnapshot>("docSnapshot");
+      if (snapshot) {
+        invalidateUnreplayableGoogleDocActions(
+            pendingActions,
+            snapshot.markdown,
+            pendingActions.list(),
+            `Pending Google Doc edits could not be replayed after edit ${firstActiveVeto} was rejected`,
+            firstActiveVeto);
+      }
+      await this.ctx.storage.delete("docSnapshot");
+    }
+
+    let invalidatedByVeto = pendingActions.list()
+        .filter(({action}) => action.invalidatedBy !== undefined && vetoSet.has(action.invalidatedBy))
+        .map(({id, action}) => ({action: id, invalidatedBy: action.invalidatedBy!}));
+    let invalidations = invalidatedByVeto.length > 0 ? {invalidatedByVeto} : {};
+
+    for (let {id} of pendingActions.list()) {
+      if (id > actionId) break;
+      if (pendingActions.isStaged(id)) continue; // submitAction() has not completed
+      try {
+        // Ascending order satisfies the legacy method's strict in-order gate; already-invalidated
+        // edits resolve as no-op drops, exactly as they do on the single-action path.
+        await this.#applyAction(id);
+      } catch (error) {
+        logger.warn("failed to apply Google Doc action", {event: "action.apply.failed", error});
+        return {
+          ...invalidations,
+          stopped: {
+            at: id,
+            reason: displayReason(error, "Google Docs could not apply this edit"),
+          },
+        };
+      }
+    }
+    return invalidations;
+  }
+
+  applyAction(actionId: number): Promise<void> {
+    return this.#actionResolution.run(() => this.#applyAction(actionId));
+  }
+
+  async #applyAction(actionId: number): Promise<void> {
     let pendingActions = new PendingActionStore<GoogleDocAction>(this.ctx.storage.kv);
     let pending = pendingActions.list();
     let pendingIndex = pending.findIndex(({id}) => id === actionId);
@@ -2294,23 +2420,25 @@ export class GoogleDocGatekeeperImpl
     }
   }
 
-  async rejectAction(actionId: number): Promise<void | {restart?: boolean}> {
-    let pendingActions = new PendingActionStore<GoogleDocAction>(this.ctx.storage.kv);
-    let pending = pendingActions.list();
-    let index = pending.findIndex(({id}) => id === actionId);
-    if (index === -1) {
-      throw new Error(`Unknown pending Google Doc action: ${actionId}`);
-    }
+  rejectAction(actionId: number): Promise<void | {restart?: boolean}> {
+    return this.#actionResolution.run(async () => {
+      let pendingActions = new PendingActionStore<GoogleDocAction>(this.ctx.storage.kv);
+      let pending = pendingActions.list();
+      let index = pending.findIndex(({id}) => id === actionId);
+      if (index === -1) {
+        throw new Error(`Unknown pending Google Doc action: ${actionId}`);
+      }
 
-    let wasActive = !pending[index].action.invalidatedReason;
+      let wasActive = !pending[index].action.invalidatedReason;
 
-    pendingActions.remove(actionId);
-    this.#simulationCache.current = undefined;
-    await this.ctx.storage.delete("docSnapshot");
+      pendingActions.remove(actionId);
+      this.#simulationCache.current = undefined;
+      await this.ctx.storage.delete("docSnapshot");
 
-    if (wasActive && index < pending.length - 1) {
-      return {restart: true};
-    }
+      if (wasActive && index < pending.length - 1) {
+        return {restart: true};
+      }
+    });
   }
 
   revertAction(action: number):
@@ -2490,6 +2618,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       this.#simulationCache.current = undefined;
       throw error;
     }
+    this.#pendingActions.markSubmitted(actionId);
   }
 
   async appendText(markdown: string): Promise<void> {
@@ -2521,6 +2650,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       this.#simulationCache.current = undefined;
       throw error;
     }
+    this.#pendingActions.markSubmitted(actionId);
   }
 }
 
@@ -2900,7 +3030,35 @@ export class GoogleCalendarGatekeeperImpl
     );
   }
 
-  async applyAction(actionId: number): Promise<void> {
+  #actionResolution = new SerialTaskQueue();
+
+  applyActionsThrough(actionId: number, vetoes: number[]): Promise<ApplyActionsThroughResult> {
+    return this.#actionResolution.run(async () => {
+      const vetoSet = validateApplyThroughArgs(actionId, vetoes);
+      const pendingActions = new PendingActionStore<GoogleCalendarAction>(this.ctx.storage.kv);
+      for (const veto of vetoSet) pendingActions.remove(veto);
+      for (const {id} of pendingActions.list()) {
+        if (id > actionId) break;
+        if (pendingActions.isStaged(id)) continue; // submitAction() has not completed
+        try {
+          await this.#applyAction(id);
+        } catch (error) {
+          logger.warn("failed to apply Google Calendar action", {event: "action.apply.failed", error});
+          return {stopped: {
+            at: id,
+            reason: displayReason(error, "Google Calendar could not apply this action"),
+          }};
+        }
+      }
+      return {};
+    });
+  }
+
+  applyAction(actionId: number): Promise<void> {
+    return this.#actionResolution.run(() => this.#applyAction(actionId));
+  }
+
+  async #applyAction(actionId: number): Promise<void> {
     let pendingActions = new PendingActionStore<GoogleCalendarAction>(this.ctx.storage.kv);
     let action = pendingActions.get(actionId);
     if (!action) {
@@ -2943,9 +3101,11 @@ export class GoogleCalendarGatekeeperImpl
     }
   }
 
-  async rejectAction(actionId: number): Promise<void | {restart?: boolean}> {
-    let pendingActions = new PendingActionStore<GoogleCalendarAction>(this.ctx.storage.kv);
-    pendingActions.remove(actionId);
+  rejectAction(actionId: number): Promise<void> {
+    return this.#actionResolution.run(async () => {
+      let pendingActions = new PendingActionStore<GoogleCalendarAction>(this.ctx.storage.kv);
+      pendingActions.remove(actionId);
+    });
   }
 
   async revertAction(actionId: number)
@@ -3205,6 +3365,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
       this.#pendingActions.remove(actionId);
       throw error;
     }
+    this.#pendingActions.markSubmitted(actionId);
   }
 
   async updateEvent(
@@ -3249,6 +3410,7 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
       this.#pendingActions.remove(actionId);
       throw error;
     }
+    this.#pendingActions.markSubmitted(actionId);
   }
 }
 

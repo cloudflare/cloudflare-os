@@ -1,4 +1,9 @@
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import {
+  SerialTaskQueue,
+  displayReason,
+  validateApplyThroughArgs,
+} from "@gadgets/backend-utils/gatekeeper-action";
 import { validateRpc, skipRpcValidation } from "capnweb-validate";
 import {
   ApprovalQueue,
@@ -14,6 +19,7 @@ import {
   type ResourceConfiguratorFrame,
   type ResourceDescription,
   type SupportedResource,
+  type ApplyActionsThroughResult,
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
@@ -821,6 +827,8 @@ type StoredActionRecord = {
   state: ActionState;
   appliedAt?: number;
   rejectedAt?: number;
+  /** Directly-vetoed action whose rejection invalidated this one. Absent on a direct veto. */
+  invalidatedByVeto?: number;
   revert?: RevertInfo;
 };
 
@@ -1666,10 +1674,14 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
       this.ctx.storage.kv.delete(this.#actionKey(action.approvalId));
       throw error;
     }
-    const record = this.#requireRecord(action.approvalId);
-    record.state = "pending";
-    this.ctx.storage.kv.put(this.#actionKey(action.approvalId), record);
-    this.#invalidatePendingCache();
+    // Only now may the action be applied: the overseer has accepted it. Read the live record
+    // only -- a concurrent veto cascade may have retired it meanwhile, and it must stay retired.
+    const record = this.ctx.storage.kv.get<StoredActionRecord>(this.#actionKey(action.approvalId));
+    if (record?.state === "staged") {
+      record.state = "pending";
+      this.ctx.storage.kv.put(this.#actionKey(action.approvalId), record);
+      this.#invalidatePendingCache();
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1719,7 +1731,52 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     return realId;
   }
 
-  async applyAction(actionId: number): Promise<void> {
+  #actionResolution = new SerialTaskQueue();
+
+  applyActionsThrough(actionId: number, vetoes: number[]): Promise<ApplyActionsThroughResult> {
+    return this.#actionResolution.run(() => this.#applyActionsThrough(actionId, vetoes));
+  }
+
+  async #applyActionsThrough(actionId: number, vetoes: number[]): Promise<ApplyActionsThroughResult> {
+    const vetoSet = validateApplyThroughArgs(actionId, vetoes);
+    for (const veto of vetoSet) this.#rejectRecord(veto);
+
+    // Attribution persists on retired records, so a repeated request re-reports it.
+    const invalidatedByVeto = [...this.ctx.storage.kv.list<StoredActionRecord>({ prefix: "retiredAction:" })]
+      .map(([, record]) => record)
+      .filter(record => record.invalidatedByVeto !== undefined && vetoSet.has(record.invalidatedByVeto))
+      .map(record => ({ action: record.action.approvalId, invalidatedBy: record.invalidatedByVeto! }))
+      .toSorted((a, b) => a.action - b.action);
+    const invalidations = invalidatedByVeto.length > 0 ? { invalidatedByVeto } : {};
+
+    // "failed" is retryable here exactly as on the legacy path; "staged" must wait for its
+    // submitAction() to complete.
+    const live = [...this.ctx.storage.kv.list<StoredActionRecord>({ prefix: "action:" })]
+      .map(([, record]) => record)
+      .filter(record => record.state === "pending" || record.state === "failed")
+      .toSorted((a, b) => a.action.approvalId - b.action.approvalId);
+    for (const record of live) {
+      if (record.action.approvalId > actionId) break;
+      try {
+        await this.#applyAction(record.action.approvalId);
+      } catch (error) {
+        return {
+          ...invalidations,
+          stopped: {
+            at: record.action.approvalId,
+            reason: displayReason(error, "Spotify could not apply this action"),
+          },
+        };
+      }
+    }
+    return invalidations;
+  }
+
+  applyAction(actionId: number): Promise<void> {
+    return this.#actionResolution.run(() => this.#applyAction(actionId));
+  }
+
+  async #applyAction(actionId: number): Promise<void> {
     const record = this.#requireRecord(actionId);
     // "failed" is retryable (a prior apply threw); the overseer may call applyAction again.
     if (record.state !== "pending" && record.state !== "staged" && record.state !== "failed") {
@@ -1813,10 +1870,11 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     }
   }
 
-  async rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
-    // Be lenient: a reject for an action we don't have pending (already applied/rejected, or a
-    // stale queue entry from a prior session) is treated as a no-op success so the overseer can
-    // always clear it from its queue. Throwing here would leave such entries stuck.
+  // Reject a record. Rejecting a playlist creation cascades one hop to its dependents (the
+  // provisional playlist will never exist), recording which veto invalidated each so repeated
+  // requests can re-report the attribution. Lenient on settled/unknown records: a stale veto is a
+  // no-op so the overseer can always clear its queue.
+  #rejectRecord(actionId: number): void {
     const record = this.#getRecord(actionId);
     if (!record || (record.state !== "pending" && record.state !== "staged" && record.state !== "failed")) {
       return;
@@ -1824,10 +1882,10 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     const action = record.action;
     record.state = "rejected";
     record.rejectedAt = Date.now();
+    delete record.invalidatedByVeto;
     this.#retire(actionId, record);
 
     if (action.type === "playlistCreate") {
-      // The provisional playlist will never exist; reject everything that depended on it.
       for (const dependent of this.#listPending()) {
         if ((isPlaylistTrackAction(dependent) || dependent.type === "playlistDetails" ||
              dependent.type === "playlistUnfollow" || dependent.type === "playlistFollow") &&
@@ -1835,15 +1893,31 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
           const depRecord = this.#requireRecord(dependent.approvalId);
           depRecord.state = "rejected";
           depRecord.rejectedAt = Date.now();
+          depRecord.invalidatedByVeto = actionId;
           this.#retire(dependent.approvalId, depRecord);
         }
       }
       this.ctx.storage.kv.delete(this.#provisionalKey(action.provisionalId));
-      return { restart: true };
     }
   }
 
-  async revertAction(actionId: number): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
+  rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
+    return this.#actionResolution.run(async () => {
+      const record = this.#getRecord(actionId);
+      const wasRejectable = record !== undefined &&
+          (record.state === "pending" || record.state === "staged" || record.state === "failed");
+      this.#rejectRecord(actionId);
+      if (wasRejectable && record.action.type === "playlistCreate") {
+        return { restart: true };
+      }
+    });
+  }
+
+  revertAction(actionId: number): Promise<void | { message?: string; canRetry?: boolean }> {
+    return this.#actionResolution.run(() => this.#revertAction(actionId));
+  }
+
+  async #revertAction(actionId: number): Promise<void | { message?: string; canRetry?: boolean }> {
     const record = this.#requireRecord(actionId);
     if (record.state !== "approved") {
       return { message: "This action has not been applied, so there is nothing to revert.", canRetry: false };

@@ -603,6 +603,9 @@ importers:
 
   packages/gatekeeper-spotify:
     dependencies:
+      '@gadgets/backend-utils':
+        specifier: workspace:*
+        version: link:../backend-utils
       '@gadgets/configurator-ui':
         specifier: workspace:*
         version: link:../configurator-ui
