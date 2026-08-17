@@ -28,7 +28,7 @@ export default {
        * writes into the same package tracking hashes as its input, which vp declines to cache.
        */
       build: {
-        command: ['node build-browser-runtime.mjs', 'tsc'],
+        command: ['node build-browser-runtime.mjs', 'tsc --project tsconfig.browser.json', 'tsc'],
         dependsOn: ['build:format-blueprints'],
         cache: false,
       },
