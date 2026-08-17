@@ -18,6 +18,8 @@ import { spawnSync } from "node:child_process";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBinEntry } from "./bin-entry.ts";
+import { pnpmCommand } from "./pnpm-command.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packagesDir = join(root, "packages");
@@ -122,15 +124,26 @@ async function generateOne(pkgDir: string): Promise<void> {
 
   try {
     const runtimeOnlyConfig = runtimeOnlyConfigs.get(pkgDir);
-    const args = ["exec", "wrangler", "types", outPath];
+    const args = ["types", outPath];
     if (runtimeOnlyConfig) {
       args.push("--config", runtimeOnlyConfig, "--include-env", "false");
     }
+    // Reached directly where wrangler resolves, which also avoids `pnpm exec` being unspawnable on
+    // Windows; packages without their own copy (mcp-shared) fall back through pnpm-command.ts.
+    const wranglerEntry = resolveBinEntry(pkgDir, "wrangler");
+    const [command, argv]: [string, string[]] = wranglerEntry
+      ? [process.execPath, [wranglerEntry, ...args]]
+      : pnpmCommand(["exec", "wrangler", ...args]);
     const result = spawnSync(
-      "pnpm",
-      args,
+      command,
+      argv,
       { cwd: pkgDir, encoding: "utf8", env: process.env },
     );
+    // A failure to spawn leaves `status` null with no output, which the check below would report as
+    // a wrangler failure with two blank lines. Surface the real cause instead.
+    if (result.error) {
+      throw new Error(`could not run wrangler in ${rel}: ${result.error.message}`);
+    }
     if (result.status !== 0) {
       console.error(result.stdout);
       console.error(result.stderr);

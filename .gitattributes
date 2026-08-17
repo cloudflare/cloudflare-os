@@ -1,0 +1,7 @@
+# Every checkout gets LF, on every platform.
+# Mantainers are mostly on macOS/Linux, where this is the default but on Windows
+# `core.autocrlf=true` is the default, and a CRLF working copy breaks anything comparing
+# file bytes: the release-manifest golden test hashes scripts/release/testdata fixtures, and
+# `types:generate --check` diffs each committed worker-configuration.d.ts against freshly generated
+# output.
+* text=auto eol=lf

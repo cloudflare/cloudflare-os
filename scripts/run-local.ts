@@ -22,6 +22,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getDevServerConfig } from "./dev-server-config.ts";
+import { pnpmCommand } from "./pnpm-command.ts";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const STAMP_PATH = join(ROOT, ".run-local-stamp");
@@ -121,21 +122,22 @@ const outputsPresent = existsSync(FRONTEND_DIST) && existsSync(TYPED_STORAGE_DIS
 const needsBuild = stamp !== sourceHash || !outputsPresent;
 const needsInstall = needsBuild || !existsSync(NODE_MODULES);
 
-function run(cmd: string, args: string[]): void {
-  console.log(`\n> ${cmd} ${args.join(" ")}`);
-  execFileSync(cmd, args, { stdio: "inherit", cwd: ROOT });
+function runPnpm(args: string[]): void {
+  console.log(`\n> pnpm ${args.join(" ")}`);
+  const [command, argv] = pnpmCommand(args);
+  execFileSync(command, argv, { stdio: "inherit", cwd: ROOT });
 }
 
 if (needsInstall) {
-  run("pnpm", ["install"]);
+  runPnpm(["install"]);
 } else {
   console.log("Dependencies up to date; skipping install.");
 }
 
 if (needsBuild) {
   // Build only what's required to run locally (no full-repo type-check / no frontend tsc).
-  run("pnpm", ["--filter", "@gadgets/typed-storage", "build"]);
-  run("pnpm", ["--filter", "@gadgets/workshop-frontend", "exec", "vite", "build"]);
+  runPnpm(["--filter", "@gadgets/typed-storage", "build"]);
+  runPnpm(["--filter", "@gadgets/workshop-frontend", "exec", "vite", "build"]);
 
   // Record the stamp only after a successful build so an interrupted build retries next time.
   writeFileSync(STAMP_PATH, sourceHash + "\n");

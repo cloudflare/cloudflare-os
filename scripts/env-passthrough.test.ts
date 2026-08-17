@@ -167,9 +167,11 @@ const matches = (name: string, pattern: string) =>
     .test(name);
 
 describe("build-time env passthrough", () => {
+  // These double as the keys compared against EXPECTED, so they are built with `/` rather than
+  // `join`, whose separator is platform-dependent. Forward slashes still resolve as paths on Windows.
   const areas = ["scripts", ...readdirSync("packages", { withFileTypes: true })
     .filter(entry => entry.isDirectory())
-    .map(entry => join("packages", entry.name))];
+    .map(entry => `packages/${entry.name}`)];
 
   it("uses only known categories", () => {
     for (const [area, groups] of Object.entries(EXPECTED)) {

@@ -12,7 +12,7 @@
 //   VITE_BACKEND_HOST=localhost:9000  Also pass --port 9000 to wrangler dev.
 
 import {
-  existsSync, readFileSync, writeFileSync, readdirSync, statSync, realpathSync,
+  existsSync, readFileSync, writeFileSync, readdirSync, statSync,
 } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { connect } from "node:net";
@@ -20,8 +20,10 @@ import { constants } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
+import { resolveBinEntry } from "./bin-entry.ts";
 import { getDevServerConfig } from "./dev-server-config.ts";
 import { killProcessTree } from "./kill-process-tree.ts";
+import { pnpmCommand } from "./pnpm-command.ts";
 import type { ServiceBinding, WranglerBuild } from "./release/manifest-lib.ts";
 
 const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -268,10 +270,10 @@ try {
       [join(WORKSHOP_BACKEND_DIR, "scripts", "build-format-blueprints.mjs")],
       WORKSHOP_BACKEND_DIR,
     ),
-    runBuild("configurator UIs", "pnpm",
-        ["exec", "vp", "run", "-r", "--cache", "build:configurator", "--dev"], ROOT),
-    runBuild("gatekeeper app UIs", "pnpm",
-        ["exec", "vp", "run", "-r", "--cache", "build:app:dev"], ROOT),
+    runBuild("configurator UIs",
+        ...pnpmCommand(["exec", "vp", "run", "-r", "--cache", "build:configurator", "--dev"]), ROOT),
+    runBuild("gatekeeper app UIs",
+        ...pnpmCommand(["exec", "vp", "run", "-r", "--cache", "build:app:dev"]), ROOT),
   ]);
 } catch (err) {
   // The SIGTERM handler killing the builds also lands here, as the rejection of whichever build
@@ -336,21 +338,6 @@ function bindingName(gk: Gatekeeper): string {
 // resolve is left exactly as written, so the committed wrangler.jsonc stays the source of truth and
 // an unrecognised command still works, just at the original speed.
 // ---------------------------------------------------------------------------
-
-// Absolute path to the JS entry point behind `node_modules/.bin/<bin>`, or null if it cannot be
-// found. Resolved from the package's own node_modules so pnpm's per-package layout is respected.
-function resolveBinEntry(pkgDir: string, bin: string): string | null {
-  try {
-    const manifestPath = realpathSync(join(pkgDir, "node_modules", bin, "package.json"));
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    const relative = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.[bin];
-    if (!relative) return null;
-    const entry = join(dirname(manifestPath), relative);
-    return existsSync(entry) ? entry : null;
-  } catch {
-    return null;
-  }
-}
 
 // Whether wrapping `path` in plain double quotes is safe in the shell that runs the rewritten
 // command: inside them POSIX shells still expand `$` and backticks and collapse `\\`, cmd still
@@ -564,9 +551,9 @@ console.log(`\nStarting: wrangler dev ${args.join(" ")}\n`);
 // Reached directly for the same reason the generated custom builds are; falls back to `pnpm exec` if
 // it cannot be resolved.
 const wranglerEntry = resolveBinEntry(ROOT, "wrangler");
-const [wranglerCommand, wranglerArgv] = wranglerEntry
+const [wranglerCommand, wranglerArgv]: [string, string[]] = wranglerEntry
   ? [process.execPath, [wranglerEntry, "dev", ...args]]
-  : ["pnpm", ["exec", "wrangler", "dev", ...args]];
+  : pnpmCommand(["exec", "wrangler", "dev", ...args]);
 
 // `spawn`, not `execFileSync`, so the deferred watchers can start once the server is up. It stays in
 // this process group with the terminal attached, so Ctrl-C reaches it as before.

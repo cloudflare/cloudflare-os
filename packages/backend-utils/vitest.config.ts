@@ -52,6 +52,6 @@ export default defineConfig({
     include: ["__tests__/*.test.ts"],
     // Asserts the pool actually started; only one file here imports `cloudflare:workers`, so the
     // rest would pass under a Node fallback without noticing.
-    setupFiles: ["../../test-setup/assert-workerd.ts"],
+    setupFiles: ["../../scripts/assert-workerd.ts"],
   },
 });
