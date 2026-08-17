@@ -1,10 +1,17 @@
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import {
+  SerialTaskQueue,
+  displayReason,
+  validateApplyThroughArgs,
+  type VetoInvalidation,
+} from "@gadgets/backend-utils/gatekeeper-action";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   ApprovalQueue,
   stripTrailingSlashes,
   type ActionDescription,
   type AccountDescription,
+  type ApplyActionsThroughResult,
   type Cursor,
   type Gatekeeper,
   type GatekeeperConnectCallback,
@@ -141,7 +148,7 @@ type StoredProvisionalResource = {
   realId?: string;
 };
 
-type StoredActionState = "staged" | "pending" | "approved" | "rejected";
+export type StoredActionState = "staged" | "pending" | "approved" | "rejected";
 
 type GitHubRevertInfo =
   | {
@@ -242,7 +249,7 @@ type MergePullRequestAction = BaseAction & {
   options?: GitHubPullRequestMergeOptions;
 };
 
-type GitHubAction =
+export type GitHubAction =
   | CreateIssueAction
   | CreatePullRequestAction
   | SetTitleAction
@@ -255,13 +262,125 @@ type GitHubAction =
   | ReplyToDiffCommentAction
   | MergePullRequestAction;
 
-type StoredActionRecord = {
+export type StoredActionRecord = {
   action: GitHubAction;
   state: StoredActionState;
   appliedAt?: number;
   rejectedAt?: number;
+  /** Directly-vetoed action whose rejection invalidated this one. Absent on a direct veto. */
+  invalidatedByVeto?: number;
   revertInfo?: GitHubRevertInfo;
 };
+
+function dependsOnResource(action: GitHubAction, kind: EntityKind, provisionalId: string): boolean {
+  switch (action.type) {
+    case "createIssue":
+    case "createPullRequest":
+      return action.provisionalId === provisionalId;
+    case "setTitle":
+    case "setBody":
+    case "addLabels":
+    case "removeLabels":
+    case "changeState":
+    case "postComment":
+      return action.targetKind === kind && action.targetId === provisionalId;
+    case "postReview":
+    case "replyToDiffComment":
+    case "mergePullRequest":
+      return kind === "pull" && action.pullId === provisionalId;
+  }
+}
+
+function replyRoots(action: GitHubAction): string[] {
+  if (action.type === "postReview") {
+    return (action.review.diffComments ?? []).map(comment => comment.provisionalCommentId);
+  }
+  return action.type === "replyToDiffComment" ? [action.provisionalCommentId] : [];
+}
+
+/** State changes produced by applying a set of vetoes to GitHub action records. */
+export interface ResolvedActionVetoes {
+  /** Records changed by this resolution attempt. */
+  changed: StoredActionRecord[];
+
+  /** Records directly vetoed by this request, including previously-vetoed roots. */
+  directlyRejected: StoredActionRecord[];
+
+  /** Persisted dependency invalidations attributable to this request's vetoes, ascending. */
+  invalidatedByVeto?: VetoInvalidation[];
+}
+
+/** Apply direct vetoes and GitHub's known resource and reply dependencies to stored records. */
+export function resolveActionVetoes(
+  records: StoredActionRecord[], vetoes: Set<number>, rejectedAt: number,
+): ResolvedActionVetoes {
+  const byId = new Map(records.map(record => [record.action.approvalId, record]));
+  const changed = new Map<number, StoredActionRecord>();
+  const directlyRejected: StoredActionRecord[] = [];
+
+  for (const id of vetoes) {
+    const record = byId.get(id);
+    if (!record || record.state === "approved") continue;
+    const wasDirect = record.state === "rejected" && record.invalidatedByVeto === undefined;
+    record.state = "rejected";
+    record.rejectedAt ??= rejectedAt;
+    delete record.invalidatedByVeto;
+    directlyRejected.push(record);
+    if (!wasDirect) changed.set(id, record);
+  }
+
+  const rejectDependency = (record: StoredActionRecord, rootId: number) => {
+    if (record.state !== "pending" && record.state !== "staged") return false;
+    record.state = "rejected";
+    record.rejectedAt = rejectedAt;
+    record.invalidatedByVeto = rootId;
+    changed.set(record.action.approvalId, record);
+    return true;
+  };
+
+  for (const root of directlyRejected) {
+    const rootId = root.action.approvalId;
+    if (root.action.type === "createIssue" || root.action.type === "createPullRequest") {
+      const kind = root.action.type === "createIssue" ? "issue" : "pull";
+      for (const candidate of records) {
+        if (!vetoes.has(candidate.action.approvalId) &&
+            dependsOnResource(candidate.action, kind, root.action.provisionalId)) {
+          rejectDependency(candidate, rootId);
+        }
+      }
+    }
+
+    const queue = replyRoots(root.action);
+    const seen = new Set(queue);
+    while (queue.length > 0) {
+      const commentId = queue.shift()!;
+      for (const candidate of records) {
+        const action = candidate.action;
+        if (action.type !== "replyToDiffComment" || action.commentId !== commentId ||
+            vetoes.has(action.approvalId)) continue;
+        if (rejectDependency(candidate, rootId) ||
+            (candidate.state === "rejected" && candidate.invalidatedByVeto === rootId)) {
+          if (!seen.has(action.provisionalCommentId)) {
+            seen.add(action.provisionalCommentId);
+            queue.push(action.provisionalCommentId);
+          }
+        }
+      }
+    }
+  }
+
+  const invalidations: VetoInvalidation[] = records
+    .filter(record => record.state === "rejected" && record.invalidatedByVeto !== undefined &&
+      vetoes.has(record.invalidatedByVeto))
+    .map(record => ({ action: record.action.approvalId, invalidatedBy: record.invalidatedByVeto! }))
+    .toSorted((a, b) => a.action - b.action);
+
+  return {
+    changed: [...changed.values()],
+    directlyRejected,
+    ...(invalidations.length > 0 && { invalidatedByVeto: invalidations }),
+  };
+}
 
 const NONCE_BYTES = 32;
 const INITIATION_NONCE_LIFETIME_MS = 10 * 60 * 1000;
@@ -1382,6 +1501,7 @@ export class GitHubVerifier extends WorkerEntrypoint<Env, GitHubVerifierProps>
 export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImplProps>
   implements Gatekeeper<GitHubRepoSession | GitHubIssue | GitHubPullRequest> {
 
+  #actionResolution = new SerialTaskQueue();
   #pendingActionsCache?: GitHubAction[];
 
   #userAccount() {
@@ -1881,6 +2001,17 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       ?? this.ctx.storage.kv.get<StoredActionRecord>(this.#retiredActionRecordKey(approvalId));
   }
 
+  #listActionRecords(): StoredActionRecord[] {
+    const records = new Map<number, StoredActionRecord>();
+    for (const [, record] of this.ctx.storage.kv.list<StoredActionRecord>({ prefix: "retiredAction:" })) {
+      records.set(record.action.approvalId, record);
+    }
+    for (const [, record] of this.ctx.storage.kv.list<StoredActionRecord>({ prefix: "action:" })) {
+      records.set(record.action.approvalId, record);
+    }
+    return [...records.values()].toSorted((a, b) => a.action.approvalId - b.action.approvalId);
+  }
+
   #requireActionRecord(approvalId: number): StoredActionRecord {
     const record = this.#getActionRecord(approvalId);
     if (!record) {
@@ -1889,8 +2020,11 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     return record;
   }
 
+  // Both record-mutation chokepoints invalidate the in-memory pending overlay so no caller can
+  // change a record and leave stale simulation state behind.
   #putActionRecord(approvalId: number, record: StoredActionRecord): void {
     this.ctx.storage.kv.put(this.#actionRecordKey(approvalId), record);
+    this.#pendingActionsCache = undefined;
   }
 
   #putRetiredActionRecord(approvalId: number, record: StoredActionRecord): void {
@@ -1900,6 +2034,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   #retireActionRecord(approvalId: number, record: StoredActionRecord): void {
     this.ctx.storage.kv.delete(this.#actionRecordKey(approvalId));
     this.#putRetiredActionRecord(approvalId, record);
+    this.#pendingActionsCache = undefined;
   }
 
   #stageAction(action: GitHubAction): void {
@@ -1907,7 +2042,6 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       action,
       state: "staged",
     });
-    this.#pendingActionsCache = undefined;
   }
 
   #listPendingActions(): GitHubAction[] {
@@ -1923,10 +2057,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   #markActionPending(action: GitHubAction): void {
-    const record = this.#requireActionRecord(action.approvalId);
+    const record = this.#getLiveActionRecord(action.approvalId);
+    if (record?.state !== "staged") return;
     record.state = "pending";
     this.#putActionRecord(action.approvalId, record);
-    this.#pendingActionsCache = undefined;
     if (action.type === "createIssue" || action.type === "createPullRequest") {
       this.ctx.storage.kv.put<StoredProvisionalResource>(`provisional:${action.provisionalId}`, {
         kind: action.type === "createIssue" ? "issue" : "pull",
@@ -1942,67 +2076,6 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       record.revertInfo = revertInfo;
     }
     this.#retireActionRecord(action.approvalId, record);
-    this.#pendingActionsCache = undefined;
-  }
-
-  #markActionRejected(action: GitHubAction): void {
-    const record = this.#requireActionRecord(action.approvalId);
-    record.state = "rejected";
-    record.rejectedAt = Date.now();
-    this.#retireActionRecord(action.approvalId, record);
-    this.#pendingActionsCache = undefined;
-  }
-
-  #actionDependsOnResource(action: GitHubAction, kind: EntityKind, provisionalId: string): boolean {
-    switch (action.type) {
-      case "createIssue":
-      case "createPullRequest":
-        return action.provisionalId === provisionalId;
-      case "setTitle":
-      case "setBody":
-      case "addLabels":
-      case "removeLabels":
-      case "changeState":
-      case "postComment":
-        return action.targetKind === kind && action.targetId === provisionalId;
-      case "postReview":
-      case "replyToDiffComment":
-      case "mergePullRequest":
-        return kind === "pull" && action.pullId === provisionalId;
-    }
-  }
-
-  #rejectActionsForResource(kind: EntityKind, provisionalId: string): void {
-    for (const pending of this.#listPendingActions()) {
-      if (this.#actionDependsOnResource(pending, kind, provisionalId)) {
-        this.#markActionRejected(pending);
-      }
-    }
-  }
-
-  #rejectReplyDependencyChain(rootCommentIds: string[]): void {
-    const pendingActions = this.#listPendingActions();
-    const pendingReplies = pendingActions.filter(
-      (action): action is ReplyToDiffCommentAction => action.type === "replyToDiffComment",
-    );
-    const queue = [...rootCommentIds];
-    const seen = new Set<string>(rootCommentIds);
-
-    while (queue.length > 0) {
-      const current = queue.shift();
-      if (!current) {
-        break;
-      }
-      for (const reply of pendingReplies) {
-        if (reply.commentId === current) {
-          this.#markActionRejected(reply);
-          if (!seen.has(reply.provisionalCommentId)) {
-            seen.add(reply.provisionalCommentId);
-            queue.push(reply.provisionalCommentId);
-          }
-        }
-      }
-    }
   }
 
   #getProvisionalResource(id: string): StoredProvisionalResource | undefined {
@@ -3251,7 +3324,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     }
   }
 
-  async applyAction(actionId: number): Promise<void> {
+  async #applyAction(actionId: number): Promise<void> {
     const record = this.#requireActionRecord(actionId);
     if (record.state !== "pending" && record.state !== "staged") {
       throw new Error(`GitHub action ${actionId} is no longer pending.`);
@@ -3440,6 +3513,51 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     }
   }
 
+  async #applyActionsThrough(
+    actionId: number, vetoes: number[],
+  ): Promise<ApplyActionsThroughResult> {
+    const vetoSet = validateApplyThroughArgs(actionId, vetoes);
+    const resolution = resolveActionVetoes(this.#listActionRecords(), vetoSet, Date.now());
+    for (const record of resolution.changed) {
+      this.#retireActionRecord(record.action.approvalId, record);
+    }
+    for (const record of resolution.directlyRejected) {
+      const action = record.action;
+      if (action.type === "createIssue" || action.type === "createPullRequest") {
+        this.ctx.storage.kv.delete(`provisional:${action.provisionalId}`);
+      }
+    }
+    if (resolution.changed.length > 0) this.#clearCaches();
+
+    for (const record of this.#listActionRecords()) {
+      if (record.action.approvalId > actionId) break;
+      // A "staged" record's submitAction() has not completed; the contract forbids applying it.
+      if (record.state !== "pending") continue;
+      try {
+        await this.#applyAction(record.action.approvalId);
+      } catch (error) {
+        logger.warn("failed to apply action", {
+          event: "action.apply.failed",
+          actionId: record.action.approvalId,
+          error,
+        });
+        return {
+          stopped: {
+            at: record.action.approvalId,
+            reason: displayReason(error, "GitHub could not apply this action"),
+          },
+          ...(resolution.invalidatedByVeto && {
+            invalidatedByVeto: resolution.invalidatedByVeto,
+          }),
+        };
+      }
+    }
+
+    return resolution.invalidatedByVeto
+      ? { invalidatedByVeto: resolution.invalidatedByVeto }
+      : {};
+  }
+
   async #resolveReplyTarget(commentId: string): Promise<number> {
     const pendingReplies = new Map(
       this.#listPendingActions()
@@ -3478,32 +3596,28 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     return comment.in_reply_to_id ?? comment.id;
   }
 
-  async rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
+  #rejectAction(actionId: number): void | { restart?: boolean } {
     const record = this.#requireActionRecord(actionId);
     const action = record.action;
     if (record.state !== "pending" && record.state !== "staged") {
       throw new Error(`GitHub action ${actionId} is no longer pending.`);
     }
 
-    this.#markActionRejected(action);
+    const resolution = resolveActionVetoes(this.#listActionRecords(), new Set([actionId]), Date.now());
+    for (const changed of resolution.changed) {
+      this.#retireActionRecord(changed.action.approvalId, changed);
+    }
     if (action.type === "createIssue" || action.type === "createPullRequest") {
-      this.#rejectActionsForResource(action.type === "createIssue" ? "issue" : "pull", action.provisionalId);
       this.ctx.storage.kv.delete(`provisional:${action.provisionalId}`);
       this.#clearCaches();
       return { restart: true };
-    }
-
-    if (action.type === "postReview") {
-      this.#rejectReplyDependencyChain((action.review.diffComments ?? []).map(comment => comment.provisionalCommentId));
-    } else if (action.type === "replyToDiffComment") {
-      this.#rejectReplyDependencyChain([action.provisionalCommentId]);
     }
 
     this.#clearCaches();
     return;
   }
 
-  async revertAction(actionId: number): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
+  async #revertAction(actionId: number): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
     const record = this.#requireActionRecord(actionId);
     const action = record.action;
     const revertInfo = record.revertInfo;
@@ -3565,6 +3679,22 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           canRetry: false,
         };
     }
+  }
+
+  applyActionsThrough(actionId: number, vetoes: number[]) {
+    return this.#actionResolution.run(() => this.#applyActionsThrough(actionId, vetoes));
+  }
+
+  applyAction(actionId: number): Promise<void> {
+    return this.#actionResolution.run(() => this.#applyAction(actionId));
+  }
+
+  rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
+    return this.#actionResolution.run(() => this.#rejectAction(actionId));
+  }
+
+  revertAction(actionId: number) {
+    return this.#actionResolution.run(() => this.#revertAction(actionId));
   }
 
   async repoMetadata(): Promise<GitHubRepoMetadata> {

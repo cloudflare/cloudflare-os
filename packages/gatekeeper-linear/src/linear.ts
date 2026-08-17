@@ -1,4 +1,10 @@
 import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
+import {
+  InvalidationLog,
+  SerialTaskQueue,
+  displayReason,
+  validateApplyThroughArgs,
+} from "@gadgets/backend-utils/gatekeeper-action";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   GatekeeperUser,
@@ -15,6 +21,7 @@ import {
   AccountDescription,
   SupportedResource,
   ResourceConfiguratorFrame,
+  type ApplyActionsThroughResult,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   Cursor,
@@ -902,7 +909,11 @@ export class LinearVerifier extends WorkerEntrypoint<Env, LinearVerifierProps>
 // ---------------------------------------------------------------------------
 // Action records — stored in the gatekeeper DO and applied/reverted on approval.
 
-type ActionStatus = "pending" | "applied";
+/**
+ * "staged" means submitAction() has not completed yet: the record overlays reads like a pending
+ * one, but applyActionsThrough() must not apply it.
+ */
+type ActionStatus = "staged" | "pending" | "applied";
 
 // A display-level patch merged into a RawIssue when simulating a pending updateIssue action.
 // Captured at submit time (with resolved display objects) so reads need no extra lookups.
@@ -950,6 +961,13 @@ type LinearGatekeeperImplProps = {
 @validateRpc()
 export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImplProps>
     implements Gatekeeper<LinearWorkspace | LinearTeam | LinearIssue> {
+
+  #actionResolution = new SerialTaskQueue();
+
+  /** Durable attribution of veto-cascade invalidations, re-reported on repeated requests. */
+  #invalidations() {
+    return new InvalidationLog(this.ctx.storage.kv);
+  }
 
   // ---- private API access (token never leaves the DO) ----
 
@@ -1114,13 +1132,27 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     description: ActionDescriptionDraft,
   ): Promise<void> {
     const id = this.#nextCounter("action");
-    this.ctx.storage.kv.put<StoredAction>(`action:${id}`, { ...action, id, status: "pending" } as StoredAction);
+    this.ctx.storage.kv.put<StoredAction>(`action:${id}`, { ...action, id, status: "staged" } as StoredAction);
     this.#invalidatePendingActions();
-    await approvalQueue.submitAction(id, {
-      title: description.title,
-      description: description.body,
-      implementsRevert: description.implementsRevert,
-    });
+    try {
+      await approvalQueue.submitAction(id, {
+        title: description.title,
+        description: description.body,
+        implementsRevert: description.implementsRevert,
+      });
+    } catch (err) {
+      this.ctx.storage.kv.delete(`action:${id}`);
+      this.#invalidatePendingActions();
+      throw err;
+    }
+    // Only now may the action be applied: the overseer has accepted it, so a decision frontier can
+    // legitimately cover it. A concurrent veto cascade may have deleted the record meanwhile.
+    const record = this.ctx.storage.kv.get<StoredAction>(`action:${id}`);
+    if (record?.status === "staged") {
+      record.status = "pending";
+      this.ctx.storage.kv.put<StoredAction>(`action:${id}`, record);
+      this.#invalidatePendingActions();
+    }
   }
 
   // ---- simulation: overlay pending (submitted-but-not-applied) actions onto reads ----
@@ -1131,9 +1163,10 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
 
   #pendingActions(): StoredAction[] {
     if (!this.#pendingActionsCache) {
+      // Includes staged (submitted-but-unaccepted) actions: read overlays must reflect both.
       this.#pendingActionsCache = [...this.ctx.storage.kv.list<StoredAction>({ prefix: "action:" })]
         .map(([, value]) => value)
-        .filter(a => a.status === "pending")
+        .filter(a => a.status === "pending" || a.status === "staged")
         .toSorted((a, b) => a.id - b.id);
     }
     return this.#pendingActionsCache;
@@ -1523,7 +1556,7 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     this.ctx.storage.kv.delete(this.#observerKey(id));
   }
 
-  async applyAction(actionId: number): Promise<void> {
+  async #applyAction(actionId: number): Promise<void> {
     const action = this.ctx.storage.kv.get<StoredAction>(`action:${actionId}`);
     if (!action) throw new Error(`Unknown action: ${actionId}`);
 
@@ -1597,8 +1630,9 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
 
   // Recursively drop every pending action that depends on a rejected provisional issue: edits and
   // comments targeting it (issueRef), and sub-issues / re-parents pointing at it (input.parentId).
-  // Sub-issues are themselves creates, so recurse into their provisional ids.
-  #cascadeRejectProvisional(provisionalId: string): void {
+  // Sub-issues are themselves creates, so recurse into their provisional ids. Each drop records
+  // which veto invalidated it so repeated requests can re-report the attribution.
+  #cascadeRejectProvisional(provisionalId: string, vetoedBy: number): void {
     this.#invalidatePendingActions();
     this.ctx.storage.kv.delete(`provisional:${provisionalId}`);
     for (const dep of this.#pendingActions()) {
@@ -1607,41 +1641,91 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
         (dep.kind === "createIssue" || dep.kind === "updateIssue") && dep.input.parentId === provisionalId;
       if (!targetsRef && !targetsParent) continue;
       this.ctx.storage.kv.delete(`action:${dep.id}`);
-      if (dep.kind === "createIssue") this.#cascadeRejectProvisional(dep.provisionalId);
+      this.#invalidations().record(dep.id, vetoedBy);
+      if (dep.kind === "createIssue") this.#cascadeRejectProvisional(dep.provisionalId, vetoedBy);
     }
     this.#invalidatePendingActions();
   }
 
-  async rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
+  // Rejecting a label create invalidates any pending addLabels/removeLabels that referenced its
+  // provisional id (they could never resolve to a real label). Drop them, recording attribution.
+  #cascadeRejectLabel(provisionalLabelId: string, vetoedBy: number): void {
+    for (const dep of this.#pendingActions()) {
+      if ((dep.kind === "addLabels" || dep.kind === "removeLabels") &&
+          dep.labelIds.includes(provisionalLabelId)) {
+        this.ctx.storage.kv.delete(`action:${dep.id}`);
+        this.#invalidations().record(dep.id, vetoedBy);
+      }
+    }
+    this.#invalidatePendingActions();
+  }
+
+  // Delete a vetoed record and cascade to the actions its rejection invalidates. Settled records
+  // are left alone.
+  #rejectRecord(actionId: number): void {
     const action = this.ctx.storage.kv.get<StoredAction>(`action:${actionId}`);
+    if (!action || action.status === "applied") return;
     this.ctx.storage.kv.delete(`action:${actionId}`);
     this.#invalidatePendingActions();
-    if (!action) return;
 
     // Rejecting a create invalidates every action queued against its provisional id, which can
-    // never be applied. Drop them all and ask the Overseer to restart the gadget.
+    // never be applied.
     if (action.kind === "createIssue") {
-      this.#cascadeRejectProvisional(action.provisionalId);
-      return { restart: true };
-    }
-
-    // Rejecting a label create invalidates any pending addLabels/removeLabels that referenced its
-    // provisional id (they could never resolve to a real label). Drop them. No restart needed —
-    // createLabel returns no handle the gadget holds.
-    if (action.kind === "createLabel") {
-      const provisionalLabelId = action.synthetic.id;
-      for (const dep of this.#pendingActions()) {
-        if ((dep.kind === "addLabels" || dep.kind === "removeLabels") &&
-            dep.labelIds.includes(provisionalLabelId)) {
-          this.ctx.storage.kv.delete(`action:${dep.id}`);
-        }
-      }
-      this.#invalidatePendingActions();
+      this.#cascadeRejectProvisional(action.provisionalId, actionId);
+    } else if (action.kind === "createLabel") {
+      this.#cascadeRejectLabel(action.synthetic.id, actionId);
     }
   }
 
-  async revertAction(actionId: number):
-      Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
+  async #rejectAction(actionId: number): Promise<void> {
+    this.#rejectRecord(actionId);
+  }
+
+  async #applyActionsThrough(actionId: number, vetoes: number[]): Promise<ApplyActionsThroughResult> {
+    const vetoSet = validateApplyThroughArgs(actionId, vetoes);
+    for (const veto of vetoSet) this.#rejectRecord(veto);
+    const log = this.#invalidations();
+    log.prune(vetoSet, this.#pendingActions()[0]?.id ?? Infinity);
+
+    const invalidatedByVeto = log.attributedTo(vetoSet);
+    const invalidations = invalidatedByVeto.length > 0 ? { invalidatedByVeto } : {};
+    for (const record of this.#pendingActions()) {
+      if (record.id > actionId) break;
+      if (record.status !== "pending") continue; // staged: submitAction() has not completed
+      try {
+        await this.#applyAction(record.id);
+      } catch (error) {
+        logger.warn("failed to apply action", { event: "action.apply.failed", error });
+        return {
+          ...invalidations,
+          stopped: {
+            at: record.id,
+            reason: displayReason(error, "Linear could not apply this action"),
+          },
+        };
+      }
+    }
+    return invalidations;
+  }
+
+  applyActionsThrough(actionId: number, vetoes: number[]): Promise<ApplyActionsThroughResult> {
+    return this.#actionResolution.run(() => this.#applyActionsThrough(actionId, vetoes));
+  }
+
+  applyAction(actionId: number): Promise<void> {
+    return this.#actionResolution.run(() => this.#applyAction(actionId));
+  }
+
+  rejectAction(actionId: number): Promise<void> {
+    return this.#actionResolution.run(() => this.#rejectAction(actionId));
+  }
+
+  revertAction(actionId: number): Promise<void | { message?: string; canRetry?: boolean }> {
+    return this.#actionResolution.run(() => this.#revertAction(actionId));
+  }
+
+  async #revertAction(actionId: number):
+      Promise<void | { message?: string; canRetry?: boolean }> {
     const action = this.ctx.storage.kv.get<StoredAction>(`action:${actionId}`);
     if (!action) throw new Error(`Unknown action: ${actionId}`);
 
