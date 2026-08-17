@@ -371,13 +371,34 @@ export class CloudflareObservabilityApi {
   }
 
   /**
-   * Drop anything the binding must not disclose. The provider honours the scope filter on the
-   * `query` endpoint, so this normally removes nothing; it is the authoritative check regardless,
-   * because a filter the provider silently ignored would otherwise leak another Worker's telemetry.
+   * Drop anything the binding must not disclose, reporting whether anything was dropped.
+   *
+   * The provider honours the scope filter on the `query` endpoint, so this normally removes nothing.
+   * It is the authoritative check regardless, because a filter the provider silently ignored would
+   * otherwise leak another Worker's telemetry -- and this provider has three separate documented
+   * behaviours that return wrong-but-plausible data with no error, so "it accepted the filter" is
+   * not evidence it applied it.
+   *
+   * `dropped` is what the rest of the module keys its distrust off: a single foreign event proves the
+   * filter was not applied, which invalidates every *other* value on the same response that we
+   * cannot re-derive ourselves -- see `#listEventsPage`. It is deliberately not a hard failure. The
+   * events we return are filtered and therefore safe, and this provider has surprised us often
+   * enough that converting a hypothetical disclosure into a guaranteed outage is the worse trade.
    */
-  #scopeEvents(events: CloudflareObservabilityEvent[]): CloudflareObservabilityEvent[] {
-    if (!this.workerName) return events;
-    return events.filter(event => event.$metadata.service === this.workerName);
+  #scopeEvents(
+    events: CloudflareObservabilityEvent[],
+  ): { events: CloudflareObservabilityEvent[]; dropped: boolean } {
+    if (!this.workerName) return { events, dropped: false };
+    const scoped = events.filter(event => event.$metadata.service === this.workerName);
+    if (scoped.length !== events.length) {
+      // An operational alarm, not a routine event: it means the provider's filtering changed under
+      // us and every aggregate this binding can return has silently widened.
+      logger.error("Cloudflare did not honour the Worker observability scope filter", {
+        event: "observability.scope.filter.ignored",
+        droppedEvents: events.length - scoped.length,
+      });
+    }
+    return { events: scoped, dropped: scoped.length !== events.length };
   }
 
   async #query(
@@ -487,18 +508,25 @@ export class CloudflareObservabilityApi {
   async #listEventsPage(options?: CloudflareObservabilityEventsQuery): Promise<EventsPageResult> {
     const result = await this.#query("events", options);
     const { count, events: rawEvents } = parseEventsContainer(result.events);
+    const { events, dropped } = this.#scopeEvents(rawEvents);
     return {
       page: {
-        events: this.#scopeEvents(rawEvents),
-        // The provider applied the scope filter itself, so its count is already scoped.
-        count,
+        events,
+        // The provider's own count, which is only scoped if it applied the filter. `dropped` proves
+        // it did not, and a count of the whole account's matching telemetry is exactly the kind of
+        // volume this binding must not disclose -- so it is withheld rather than reported wrong.
+        // Declared optional for this reason; `events.length` is always available to the caller.
+        count: dropped ? undefined : count,
         // Derived from the provider's own events, not the scoped ones: a page whose events all
         // belonged to another service would otherwise end pagination while data remained.
         nextCursor: rawEvents.at(-1)?.$metadata.id,
+        // Kept even when `dropped`: this describes what our own query cost, not how much telemetry
+        // matched it, and callers are told to read it for cost. It does widen with an unhonoured
+        // filter, which is why the drop is logged as an error rather than silently absorbed.
         statistics: result.statistics,
       },
       rawCount: rawEvents.length,
-      totalCount: count,
+      totalCount: dropped ? undefined : count,
     };
   }
 
@@ -518,7 +546,7 @@ export class CloudflareObservabilityApi {
       .reduce<CloudflareObservabilityEvent | undefined>(
         (last, event) => !last || event.timestamp < last.timestamp ? event : last, undefined);
     const invocations = groups
-      .map(({ requestId, events }) => ({ requestId, events: this.#scopeEvents(events) }))
+      .map(({ requestId, events }) => ({ requestId, events: this.#scopeEvents(events).events }))
       .filter(invocation => invocation.events.length > 0);
     return {
       invocations,
@@ -595,6 +623,25 @@ export class CloudflareObservabilityApi {
     return { traceId, events, count: events.length, truncated, statistics };
   }
 
+  /**
+   * Aggregate over the matched telemetry.
+   *
+   * Unlike every other read here, a Worker-scoped binding's safety rests *solely* on the
+   * `$metadata.service` filter injected by `scopeObservabilityFilters`. An aggregate cannot be
+   * re-checked the way `#scopeEvents` re-checks events: there is no way to un-mix a median or a
+   * `uniq` that was computed across services. So if the provider ever stopped honouring the filter,
+   * this would widen silently, and the `dropped` alarm on the events path is the only thing that
+   * would say so.
+   *
+   * That asymmetry is accepted rather than overlooked. `query` honouring filters is verified against
+   * a live account and is already load-bearing elsewhere (it is why `observability-discovery.ts`
+   * exists at all), and the alternatives are worse: refusing aggregates to Worker bindings removes
+   * the most valuable question the tier can answer, and recomputing them from a sampled page would
+   * return confidently wrong numbers. The scopable-but-unverifiable fix -- grouping by
+   * `$metadata.service` and keeping this binding's own group, whose value *is* the scoped answer --
+   * is deliberately left out of this change: it rewrites `limit`/`orderBy` semantics for every
+   * caller and needs its own review.
+   */
   async calculate(
     options: CloudflareObservabilityCalculationQuery,
   ): Promise<CloudflareObservabilityCalculationResult> {

@@ -429,6 +429,67 @@ describe("CloudflareObservabilityApi", () => {
     expect(JSON.stringify(trace)).not.toContain("foreign");
   });
 
+  it("withholds the provider count when it demonstrably ignored the scope filter", async () => {
+    // A foreign event proves the filter was not applied, which makes the provider's count a count of
+    // the whole account's matching telemetry -- the volume a Worker binding must not learn. The
+    // events are still returned, because those we filtered ourselves.
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      success: true,
+      result: {
+        statistics: { elapsed: 0.01, rows_read: 9000, bytes_read: 90000 },
+        events: { count: 5000, events: [
+          { dataset: "cloudflare-workers", timestamp: 1, source: {}, $metadata: { id: "own", service: "api-worker" } },
+          { dataset: "cloudflare-workers", timestamp: 2, source: {}, $metadata: { id: "foreign", service: "other-worker" } },
+        ] },
+      },
+    })));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
+
+    const page = await api.listEvents();
+
+    expect(page.events).toHaveLength(1);
+    expect(page.count).toBeUndefined();
+    // Kept deliberately: it describes what our query cost, not how much telemetry matched it.
+    expect(page.statistics.rowsRead).toBe(9000);
+  });
+
+  it("reports the provider count when the scope filter was honoured", async () => {
+    // The counterpart to the test above: withholding the count whenever a Worker binding is in play
+    // would lose a genuinely useful figure on the normal path.
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      success: true,
+      result: {
+        statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 10 },
+        events: { count: 42, events: [
+          { dataset: "cloudflare-workers", timestamp: 1, source: {}, $metadata: { id: "own", service: "api-worker" } },
+        ] },
+      },
+    })));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, "api-worker");
+
+    expect((await api.listEvents()).count).toBe(42);
+  });
+
+  it("keeps reporting the provider count for an account-scoped binding", async () => {
+    // No Worker scope means no filter to ignore, so there is nothing to distrust.
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      success: true,
+      result: {
+        statistics: { elapsed: 0.01, rows_read: 2, bytes_read: 20 },
+        events: { count: 7, events: [
+          { dataset: "cloudflare-workers", timestamp: 1, source: {}, $metadata: { id: "a", service: "one" } },
+          { dataset: "cloudflare-workers", timestamp: 2, source: {}, $metadata: { id: "b", service: "two" } },
+        ] },
+      },
+    })));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
+
+    const page = await api.listEvents();
+
+    expect(page.events).toHaveLength(2);
+    expect(page.count).toBe(7);
+  });
+
   it("turns non-JSON provider failures into body-safe typed errors", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>secret upstream page</html>", {
       status: 502,
@@ -652,6 +713,110 @@ describe("CloudflareObservabilityApi", () => {
     expect(bodies[2]).toMatchObject({ chart: true, ignoreSeries: false, granularity: 20 });
     expect(aggregateOnly.statistics.abrLevel).toBe(2);
     expect(aggregateOnly.calculations[0].aggregates[0]).toMatchObject({ interval: 2, sampleInterval: 4 });
+  });
+
+  it("rejects a calculation response missing the arrays its type guarantees", async () => {
+    // `aggregates` and `series` are non-optional, so passing this through would hand the agent an
+    // object whose type promises arrays that are absent -- a raw TypeError inside gadget code where a
+    // typed 502 belongs. This exact payload used to be accepted.
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      success: true,
+      result: {
+        statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 1 },
+        calculations: [{ calculation: "count" }],
+      },
+    })));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
+
+    await expect(api.calculate({ calculations: [{ operator: "count" }] }))
+      .rejects.toMatchObject({ status: 502 });
+  });
+
+  it("rejects non-numeric aggregate leaves", async () => {
+    // The agent formats and reasons over these as numbers.
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      success: true,
+      result: {
+        statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 1 },
+        calculations: [{
+          calculation: "count",
+          aggregates: [{ value: "12", count: 1, interval: 1, sampleInterval: 1 }],
+          series: [],
+        }],
+      },
+    })));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
+
+    await expect(api.calculate({ calculations: [{ operator: "count" }] }))
+      .rejects.toMatchObject({ status: 502 });
+  });
+
+  it("rejects a malformed series bucket", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      success: true,
+      result: {
+        statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 1 },
+        calculations: [{
+          calculation: "count",
+          aggregates: [],
+          series: [{ time: "2026-08-17T00:00:00Z", data: [{ value: 1 }] }],
+        }],
+      },
+    })));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
+
+    await expect(api.calculate({ calculations: [{ operator: "count" }] }))
+      .rejects.toMatchObject({ status: 502 });
+  });
+
+  it("keeps validated group identity on aggregates", async () => {
+    // `groups` is how a caller tells which slice an aggregate belongs to, so it is narrowed rather
+    // than passed through -- and it has to survive that narrowing intact.
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      success: true,
+      result: {
+        statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 1 },
+        calculations: [{
+          calculation: "count",
+          alias: "hits",
+          aggregates: [{
+            value: 3, count: 3, interval: 1, sampleInterval: 1,
+            groups: [{ key: "$metadata.service", value: "api-worker" }],
+          }],
+          series: [{
+            time: "2026-08-17T00:00:00Z",
+            data: [{ value: 1, count: 1, interval: 1, sampleInterval: 1 }],
+          }],
+        }],
+      },
+    })));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
+
+    const result = await api.calculate({ calculations: [{ operator: "count" }] });
+
+    expect(result.calculations[0].alias).toBe("hits");
+    expect(result.calculations[0].aggregates[0].groups)
+      .toEqual([{ key: "$metadata.service", value: "api-worker" }]);
+    expect(result.calculations[0].series[0].data[0].value).toBe(1);
+  });
+
+  it("drops unknown properties from a calculation response", async () => {
+    // Same reason the request side rebuilds field-by-field: extra properties survive RPC validation,
+    // and this is a trust boundary.
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      success: true,
+      result: {
+        statistics: { elapsed: 0.01, rows_read: 1, bytes_read: 1 },
+        calculations: [{
+          calculation: "count", aggregates: [], series: [], internalCursor: "secret",
+        }],
+      },
+    })));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
+
+    const result = await api.calculate({ calculations: [{ operator: "count" }] });
+
+    expect(JSON.stringify(result)).not.toContain("secret");
   });
 
   it("paginates trace events to a bounded result", async () => {

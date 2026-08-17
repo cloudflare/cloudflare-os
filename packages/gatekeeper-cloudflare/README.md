@@ -36,6 +36,25 @@ collaborator is admitted only if **their own** connected Cloudflare account can 
 refused, and a verification that fails for any other reason — a 5xx, a transport error — is also a
 refusal rather than an admission.
 
+### What a Worker binding trusts, and what it re-checks
+
+The scope filter is prepended to every query, but a filter the provider *accepted* is not evidence it
+*applied* it — three separate behaviours here return wrong-but-plausible data with no error. So events
+are re-filtered on the way out, and a single foreign event is treated as proof the filter was dropped:
+the provider's `count` is withheld (it would be a count of the whole account's matching telemetry) and
+the event is logged at `error`. `statistics` is kept, because it describes what our query cost rather
+than how much matched, and callers are told to read it for cost.
+
+The re-check is deliberately not a hard failure. The events returned are filtered and therefore safe,
+and this provider has surprised us often enough that turning a hypothetical disclosure into a
+guaranteed outage would be the worse trade.
+
+`calculate()` is the exception, and knowingly so: an aggregate cannot be un-mixed, so there is no
+second line of defence to add. It rests entirely on the injected filter. The fix that would work —
+grouping by `$metadata.service` and keeping this binding's own group, whose value *is* the correctly
+scoped answer even for a median — changes `limit` and `orderBy` semantics for every caller, so it is a
+follow-up rather than a footnote.
+
 ### Why discovery sometimes costs a query
 
 Cloudflare's `telemetry/keys` and `telemetry/values` endpoints ignore the `filters` array they accept:
