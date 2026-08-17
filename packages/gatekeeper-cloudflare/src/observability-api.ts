@@ -268,7 +268,8 @@ function providerError(data: unknown, status: number): CloudflareObservabilityAp
       .flatMap(error => isRecord(error) && isFiniteNumber(error.code) ? [error.code] : [])
       .slice(0, 3);
     if (messages.length > 0) {
-      return new CloudflareObservabilityApiError(status, messages.join("; "), codes);
+      // `true`: this message is Cloudflare's, so it must not be logged.
+      return new CloudflareObservabilityApiError(status, messages.join("; "), codes, true);
     }
   }
   return new CloudflareObservabilityApiError(
@@ -350,11 +351,15 @@ export class CloudflareObservabilityApi {
         // trail for exactly that reason (see `summarizeFilter`). Cloudflare's numeric codes identify
         // the failure without carrying caller text. Our own messages are safe, so a timeout or
         // transport failure is still logged in full.
+        //
+        // The discriminator is provenance, not `codes.length`: Cloudflare can return a message with
+        // no numeric code at all, and keying on the codes would have logged exactly the text this is
+        // meant to withhold. When a provider error carries no codes, the status is all that is left,
+        // and that is the fail-closed answer.
         logger.warn("Workers Observability request failed", {
           event: "observability.request.failed", path, status: error.status, attempt,
-          ...(error.codes.length > 0
-            ? { providerCodes: error.codes.join(",") }
-            : { error }),
+          ...(error.codes.length > 0 ? { providerCodes: error.codes.join(",") } : {}),
+          ...(error.fromProvider ? {} : { error }),
         });
         if (attempt === 2) throw error;
         // A timeout or transport failure gets one fast retry; a provider status only retries when it

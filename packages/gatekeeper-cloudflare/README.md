@@ -95,6 +95,11 @@ readmit through the error path exactly what the audit path excludes. `Cloudflare
 therefore carries Cloudflare's numeric `codes` alongside the message: the request log names the
 codes, and the message travels only to the caller who caused it.
 
+The codes are not the discriminator, though — Cloudflare can return a message with no numeric code
+at all, so the error records separately whether the message is *its* or *ours*, and only ours is
+logged. A provider failure carrying no codes is therefore logged as a bare status, which is the
+fail-closed answer: the status still says what happened without quoting anyone's filter back.
+
 ### Listing accounts is a walk, not a request
 
 `/accounts` is paginated and defaults to **20** per page, so a single GET silently returns a truncated

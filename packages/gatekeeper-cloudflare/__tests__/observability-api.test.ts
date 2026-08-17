@@ -17,6 +17,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // `restoreMocks` is not enabled, so a `console` spy set up by one test would otherwise stay
+  // installed and swallow the output of every test after it.
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -543,17 +546,45 @@ describe("CloudflareObservabilityApi", () => {
     expect(String(error)).toContain("No route for that URI");
   });
 
-  it("reports no codes when the provider supplies none", async () => {
-    // `codes.length === 0` is what makes the request log fall back to our own safe message, so a
-    // provider error without codes must not be mistaken for one with them.
+  it("keeps an uncoded provider message out of the log but returns it to the caller", async () => {
+    // Regression: the log used to be gated on `codes.length`, so a provider message with no numeric
+    // code -- which Cloudflare does return -- fell through to `{ error }` and was logged in full,
+    // stack included. The message must still reach the caller who caused it; only the log withholds.
+    const warnings: unknown[] = [];
+    vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => void warnings.push(...args));
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
       success: false,
-      errors: [{ message: "plain failure" }],
+      errors: [{ message: "invalid filter value: alice@example.com" }],
     }, { status: 400 })));
     const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
 
     const error = await api.listKeys().catch(caught => caught);
+
     expect(error.codes).toEqual([]);
+    expect(error.fromProvider).toBe(true);
+    // The caller still gets the diagnostic.
+    expect(error.message).toContain("alice@example.com");
+    // The audit trail does not -- not in `error`, and not in `errorStack` either.
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(JSON.stringify(warnings)).not.toContain("alice@example.com");
+    expect(warnings[0]).toMatchObject({ event: "observability.request.failed", status: 400 });
+  });
+
+  it("logs its own message in full when the failure is not the provider's", async () => {
+    // The counterpart: withholding is scoped to provider text, so a transport failure -- whose
+    // message we author -- must still be logged, or the fix would have blinded the audit trail.
+    const warnings: unknown[] = [];
+    vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => void warnings.push(...args));
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("network down"); }));
+    const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
+
+    // A transport failure earns a retry, whose backoff has to be driven under fake timers.
+    const pending = api.listKeys().catch(caught => caught);
+    await vi.runAllTimersAsync();
+    const error = await pending;
+
+    expect(error.fromProvider).toBe(false);
+    expect(JSON.stringify(warnings)).toContain("Could not reach the Cloudflare Workers Observability API.");
   });
 
   it("bounds the codes it retains", async () => {

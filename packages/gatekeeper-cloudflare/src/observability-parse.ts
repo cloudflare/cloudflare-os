@@ -23,7 +23,8 @@ import type {
  * `message` may contain provider text, which is fine to return to the caller who caused it but must
  * not reach logs: Cloudflare can echo a caller-supplied filter value back in an error, and filter
  * values are deliberately kept out of the audit trail (see `summarizeFilter`). `codes` exists so a
- * failure can be logged precisely without logging the message.
+ * failure can be logged precisely without logging the message, and `fromProvider` is what tells the
+ * two apart -- the absence of codes does not, since Cloudflare may return a message with no code.
  */
 export class CloudflareObservabilityApiError extends Error {
   constructor(
@@ -31,6 +32,12 @@ export class CloudflareObservabilityApiError extends Error {
     message: string,
     /** Cloudflare's own numeric error codes, when the response carried any. */
     readonly codes: readonly number[] = [],
+    /**
+     * Whether `message` was authored by Cloudflare rather than by us. Only a provider-derived
+     * message needs withholding from logs, so any new construction that copies provider text must
+     * set this; our own messages are safe to log in full.
+     */
+    readonly fromProvider: boolean = false,
   ) {
     super(message);
   }
