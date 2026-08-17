@@ -54,7 +54,13 @@ function stubProvider() {
         rootSpanName: "fetch", rootTransactionName: "GET /", service: ["api-worker"], spans: 1,
       }];
     }
-    if (body.view === "calculations") result.calculations = [{ calculation: "count" }];
+    if (body.view === "calculations") {
+      result.calculations = [{
+        calculation: "count",
+        aggregates: [{ value: 1, count: 1, interval: 1, sampleInterval: 1 }],
+        series: [],
+      }];
+    }
     if (body.key !== undefined) {
       return Response.json({ success: true, result: [{ key: body.key, type: "string", value: "x", dataset: "cloudflare-workers" }] });
     }

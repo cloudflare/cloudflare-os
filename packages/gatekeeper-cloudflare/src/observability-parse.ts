@@ -7,6 +7,7 @@
 // every element is narrowed here before any caller — or any filter — touches it.
 
 import type {
+  CloudflareObservabilityAggregate,
   CloudflareObservabilityCalculationSeries,
   CloudflareObservabilityEvent,
   CloudflareObservabilityKey,
@@ -182,13 +183,62 @@ export function parseTraceSummaries(value: unknown): CloudflareObservabilityTrac
   });
 }
 
+/**
+ * Narrow aggregate results.
+ *
+ * `aggregates` and `series` are declared non-optional, so a cast would hand the agent an object whose
+ * type guarantees arrays that are not there -- turning a malformed provider response into a raw
+ * `TypeError` inside gadget code instead of the typed 502 this module exists to produce. The numeric
+ * leaves are checked for the same reason: `value`/`count` reach the agent as numbers it will format
+ * and reason about.
+ */
 export function parseCalculations(value: unknown): CloudflareObservabilityCalculationSeries[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw invalidResponse();
   return value.map(entry => {
-    if (!isRecord(entry) || typeof entry.calculation !== "string") throw invalidResponse();
-    // Aggregate and series payloads are numeric leaves the agent only reads, so they pass through
-    // once the envelope is known-good.
-    return entry as CloudflareObservabilityCalculationSeries;
+    if (!isRecord(entry) || typeof entry.calculation !== "string" ||
+        !Array.isArray(entry.series)) {
+      throw invalidResponse();
+    }
+    return {
+      calculation: entry.calculation,
+      alias: optionalString(entry.alias),
+      aggregates: parseAggregates(entry.aggregates),
+      series: entry.series.map(bucket => {
+        if (!isRecord(bucket) || typeof bucket.time !== "string") throw invalidResponse();
+        return { time: bucket.time, data: parseAggregates(bucket.data) };
+      }),
+    };
+  });
+}
+
+function parseAggregates(value: unknown): CloudflareObservabilityAggregate[] {
+  if (!Array.isArray(value)) throw invalidResponse();
+  return value.map(entry => {
+    if (!isRecord(entry) || !isFiniteNumber(entry.value) || !isFiniteNumber(entry.count) ||
+        !isFiniteNumber(entry.interval) || !isFiniteNumber(entry.sampleInterval)) {
+      throw invalidResponse();
+    }
+    return {
+      value: entry.value,
+      count: entry.count,
+      interval: entry.interval,
+      sampleInterval: entry.sampleInterval,
+      // Group identity, so it is validated rather than passed through: a Worker-scoped caller may
+      // read it to tell which service an aggregate belongs to.
+      groups: entry.groups === undefined ? undefined : parseAggregateGroups(entry.groups),
+    };
+  });
+}
+
+function parseAggregateGroups(
+  value: unknown,
+): NonNullable<CloudflareObservabilityAggregate["groups"]> {
+  if (!Array.isArray(value)) throw invalidResponse();
+  return value.map(entry => {
+    if (!isRecord(entry) || typeof entry.key !== "string" || !isPrimitive(entry.value)) {
+      throw invalidResponse();
+    }
+    return { key: entry.key, value: entry.value };
   });
 }
