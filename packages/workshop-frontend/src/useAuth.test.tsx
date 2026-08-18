@@ -33,6 +33,30 @@ function stubPublicApi(author?: AiChatAuthorInfo): RpcStub<PublicApi> {
   } as unknown as RpcStub<PublicApi>
 }
 
+/**
+ * A public API whose `whoami` stays pending until released, for the window in which an answer can
+ * arrive after a logout or a newer authentication has superseded it.
+ *
+ * Each authentication gets its own deferred, so `release(nth, ...)` can answer an earlier lookup
+ * after a later one — the ordering a shared promise could not express.
+ */
+function deferredPublicApi(): {
+  api: RpcStub<PublicApi>
+  release: (nth: number, author: AiChatAuthorInfo) => void
+} {
+  const releases: ((author: AiChatAuthorInfo) => void)[] = []
+  const authenticate = () => {
+    let release: (author: AiChatAuthorInfo) => void = () => {}
+    const pending = new Promise<AiChatAuthorInfo>((resolve) => { release = resolve })
+    releases.push(release)
+    return { whoami: () => pending, [Symbol.dispose]: () => {} }
+  }
+  return {
+    api: { authenticate, authenticateFromCfAccess: authenticate } as unknown as RpcStub<PublicApi>,
+    release: (nth, author) => releases[nth](author),
+  }
+}
+
 type Controls = { login: (token: string) => void; logout: () => void }
 
 describe('useAuth error reporting identity', () => {
@@ -122,6 +146,37 @@ describe('useAuth error reporting identity', () => {
     act(() => controls.logout())
 
     expect(setReportedUserId).toHaveBeenLastCalledWith(undefined)
+  })
+
+  it('ignores a lookup that resolves after logout', async () => {
+    localStorage.setItem('authToken', 'stored-token')
+    const { api, release } = deferredPublicApi()
+    const { controls } = await mount(api)
+
+    act(() => controls.logout())
+    expect(setReportedUserId).toHaveBeenLastCalledWith(undefined)
+
+    // Disposing the stub is not a defence: capnweb does not guarantee that disposal rejects a call
+    // already in flight, so a slow lookup could otherwise name a user who has just signed out.
+    await act(async () => release(0, person))
+
+    expect(setReportedUserId).not.toHaveBeenCalledWith('person@example.com')
+    expect(setReportedUserId).toHaveBeenLastCalledWith(undefined)
+  })
+
+  it('ignores a lookup superseded by a newer authentication', async () => {
+    localStorage.setItem('authToken', 'stored-token')
+    const { api, release } = deferredPublicApi()
+    const { controls } = await mount(api)
+    await act(async () => controls.login('fresh-token'))
+
+    // The newer authentication supersedes the first lookup, so answering that one last must not let
+    // it win. Only the generation distinguishes them; arrival order alone would pick the stale id.
+    await act(async () => release(0, { ...person, id: 'stale@example.com' }))
+    expect(setReportedUserId).not.toHaveBeenCalledWith('stale@example.com')
+
+    await act(async () => release(1, person))
+    expect(setReportedUserId).toHaveBeenLastCalledWith('person@example.com')
   })
 
   it('does not name a person for an author that is not a user account', async () => {
