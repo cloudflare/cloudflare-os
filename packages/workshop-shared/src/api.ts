@@ -25,6 +25,7 @@
 
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { AccountDescription, ActionKind, ActionDescription, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
+import type { CodeOp } from "./code-op.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
 export const SERVICE_SALT = new Uint8Array([
@@ -161,8 +162,8 @@ export type ConnectedAccountsFilter = GatekeeperVendorFilter & {
  * Identifies a workpiece within a workspace. A workpiece is a numbered thing the user (or agent)
  * is working on inside the workspace -- currently a gadget or a gatekeeper (connection), with
  * more types expected later. All workpiece types share one sequential per-workspace ID namespace,
- * so a bare number unambiguously identifies a workpiece of any type, and derived names (Yjs file
- * roots, facet names) can never collide across types.
+ * so a bare number unambiguously identifies a workpiece of any type, and derived names (facet
+ * names) can never collide across types.
  */
 export type WorkpieceId = number;
 
@@ -1578,9 +1579,10 @@ export type AgentSpawnerConfig = {
  * Interface to a workspace's Overseer, used to display the Gadget Workshop shell UI around that
  * workspace. Workspace-level concerns live here: the gadget registry, committed code (git
  * commits in the workspace's shared object store, each gadget's head recorded in
- * WorkpieceSummary.commitId), per-chat uncommitted changes (a Yjs doc per chat, seeded from
- * commits; see ChatCodeBase), chats, actions/hooks, sharing, and blueprint listing. Per-gadget
- * operations live on the GadgetClient sub-capability (see createGadget()/getGadget()).
+ * WorkpieceSummary.commitId), per-chat uncommitted changes (a revisioned stream of code ops per
+ * chat, composed on top of commits; see ChatCodeBase), chats, actions/hooks, sharing, and
+ * blueprint listing. Per-gadget operations live on the GadgetClient sub-capability (see
+ * createGadget()/getGadget()).
  */
 export interface Overseer extends RpcTarget {
   /** Get metadata describing this workspace. */
@@ -1662,8 +1664,8 @@ export interface Overseer extends RpcTarget {
    *
    * Commits are immutable, so responses are cacheable client-side by oid. This is how committed
    * code is viewed when no chat's uncommitted state applies (outside any chat, or for a gadget
-   * the chat has no pin for, which tracks mainline head live) -- no Yjs doc is involved at
-   * all -- and how a chat doc's per-pin seed inputs are fetched (see ChatCodeBase).
+   * the chat has no pin for, which tracks mainline head live), and how a chat's per-pin base
+   * content is fetched (see ChatCodeBase).
    */
   getCodeAtCommit(commitId: string): Promise<{files: Record<string, string>}>;
 
@@ -1676,48 +1678,74 @@ export interface Overseer extends RpcTarget {
   getCommitLog(fromCommit: string, depth?: number): Promise<CommitInfo[]>;
 
   /**
-   * Fetch the Yjs base doc, encoded as a whole-doc V2 update, for a chat that predates
-   * commit-seeded chat docs (indicated by ChatCodeBase.legacy). Such a chat's Yjs history is
-   * anchored to the retired workspace-wide code log, so its base cannot be re-derived from
-   * commits; this returns it in one shot instead, with the chat's already-accepted updates
-   * folded in. The chat's recorded change updates and drafts apply on top exactly as with
-   * commit-derived seeds (see ChatCodeBase; re-applying updates the base already contains is a
-   * Yjs no-op). A legacy chat graduates out of this at its first merge (the epoch reset applies
-   * to it like any other chat -- see mergeChanges()); chats created after the git-storage
-   * transition never need this at all.
+   * Submit one code op on a chat's branch. All editing happens within some chat, and this is the
+   * only way to edit: there is no way to write committed code directly -- gadget heads only
+   * advance when a chat's changes are accepted (see mergeChanges()).
+   *
+   * `submission.op` is expressed against the chat's content as of
+   * `(submission.generation, submission.revision)`: the submitter has applied every accepted row
+   * of that generation's op stream up to and including that revision (see ChatCodeBase). The
+   * server transforms the op over any rows accepted since, validates it, appends it as the next
+   * row, and broadcasts it (AiChatSubscriber.opApplied()); the returned `(generation, revision)`
+   * is where it landed. Validation is two-stage (see `@gadgets/workshop-shared/code-op`):
+   * structural well-formedness before any transform, then content checks (exact lengths,
+   * code-point boundaries) against the content the transformed op actually applies to.
+   *
+   * `submission.pins` must carry one declaration per *permanent* gadget the op touches that is
+   * not yet pinned in the chat (a buffer composed while disconnected can first-touch several at
+   * once), each naming the head commit the client's content derives from. The server validates
+   * each base is the gadget's current head or a parent of it (tolerating a race with one
+   * concurrent merge; anything older is rejected) and establishes the pin atomically with the
+   * row. A declaration identical to the existing pin is accepted idempotently; a genuinely
+   * different `baseCommit` (a rare race between two first editors) throws. A gadget still
+   * pending in this chat is the one exception: it has no head commit to pin (see
+   * WorkpieceSummary.commitId), so its ops are submitted with no declaration and build its
+   * content up from nothing (see ChatCodeBase).
+   *
+   * Retries and ordering: `submission.clientId` names the client's editing session and
+   * `submission.seq` numbers its submissions from 1. The server remembers, per client session
+   * of the authenticated user, the last accepted seq, where it landed, and a digest of the
+   * submission -- a record independent of the rows themselves, so recognition survives
+   * materialization, epoch resets, and destructive bumps. A submission whose seq equals the
+   * record is a retry of that already-accepted op: the server verifies the digest and returns
+   * the recorded landing spot without re-applying. A transport failure must therefore be
+   * retried with the *same* seq and an identical payload, never re-composed (OT, unlike a CRDT,
+   * does not tolerate double-application); a same-seq submission whose content differs is a
+   * client bug and is rejected -- loudly, rather than acknowledging content that was never
+   * applied. A seq one past the record (or 1 from a session the user has never used) is the
+   * next op; anything else is rejected (discard local edits and rebuild under a fresh
+   * clientId). Only the last op's landing spot is remembered, so a client must keep at most one
+   * submission in flight -- the seq rule makes that a checked invariant rather than a
+   * convention.
+   *
+   * Records are scoped to the authenticated user, so a clientId carries no authority: other
+   * collaborators see it in AiChatSubscriber.opApplied() echoes, but cannot use it to advance
+   * or consume another user's sequence. And records are never pruned -- they are tiny, one per
+   * session that ever submitted, and live until the chat is deleted -- because recognition must
+   * not be time-bounded: an unknown session's `seq: 1` is accepted as a fresh first op, so
+   * expiring records would let a sufficiently delayed retry of a session's first op re-apply
+   * as new.
+   *
+   * While an agent turn is active, the call throws a retryable error: keep the queued op and
+   * resubmit after the turn ends. (The UI already locks editing during turns; this backstops
+   * races.)
+   *
+   * The straggler bridge: a submission still rooted in the *previous* generation, when that
+   * generation was closed by a merge (a content-preserving bump; see ChatCodeBase.generation),
+   * is transformed across the boundary and lands in the current generation -- the ack names
+   * where -- so typing straight through someone's accept is seamless. A bridged submission's pin
+   * declarations are ignored and derived server-side from the merge's recorded boundary (they
+   * describe a world that no longer exists), and the bridge rejects an op touching a gadget in
+   * ChatCodeBase.prior.discontinuousGadgets (the reset visibly changed its content) or a gadget
+   * whose current-generation pin sits at a different base than the boundary's.
+   *
+   * Every other rejection is final for the client's local state: a generation ended by a
+   * destructive bump (revert, draft discard, turn abort), a base older than the server's
+   * retained transform window, or an invalid op all mean the client must discard its local
+   * edits and rebuild from fresh metadata.
    */
-  getLegacyChatDocBase(chatId: number): Promise<Uint8Array>;
-
-  /**
-   * Record a live draft edit on a chat's branch.
-   *
-   * `update` is a Yjs V2 update against the chat's code doc (see ChatCodeBase for how that doc
-   * is derived). Draft updates are keystroke-level provisional state: they are broadcast to
-   * other clients via AiChatSubscriber.draftUpdate() and later materialized into a durable
-   * `changes` message (see finalizeChatDraft() / mergeChanges()).
-   *
-   * `base` states which code base the client's doc is rooted in, and the server throws rather
-   * than record an update rooted anywhere else:
-   *
-   * - `base.generation` must equal the chat's current ChatCodeBase.generation. A mismatch means
-   *   a merge, revert, or draft discard invalidated the client's doc while these keystrokes were
-   *   in flight; the client must discard them and rebuild from fresh metadata.
-   * - `base.pin` declares a new pin: it must accompany the first edit to a gadget not yet pinned
-   *   in the chat (see ChatGadgetPin), naming the commit the client's locally-derived seed came
-   *   from. The server validates that `baseCommit` is the gadget's current head or a parent of
-   *   the head (tolerating a race with one concurrent merge; anything older is rejected), and
-   *   records the pin -- with the seed hash it derives itself; the seed's *content* is never
-   *   taken from the client -- atomically with the draft. If the gadget is already pinned at a
-   *   different commit (a rare race between two first editors), the call throws and the client
-   *   discards its keystrokes.
-   *
-   * The update must not author under a reserved seed-band clientID (see
-   * `@gadgets/workshop-shared/yjs-seed`); editors bind their docs with `bindLiveDocClientId`.
-   *
-   * All editing happens within some chat. There is no way to write committed code directly:
-   * gadget heads only advance when a chat's changes are accepted (see mergeChanges()).
-   */
-  updateCode(update: Uint8Array, chatId: number, base: UpdateCodeBase): Promise<void>;
+  submitCodeOp(chatId: number, submission: CodeOpSubmission)
+      : Promise<{generation: number, revision: number}>;
 
   /** Get an existing gatekeeper by workpiece ID. Throws if the ID doesn't exist. */
   getGatekeeperById(id: WorkpieceId): Promise<GatekeeperClient<any>>;
@@ -1933,10 +1961,10 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Indicates that the user has requested that the chat's proposed changes be merged into the
-   * mainline. Always merges *everything* the chat proposes: any current live draft is first
-   * materialized, and there is no way to accept a subset -- under the epoch reset below, an
-   * excluded remainder would be rooted in a discarded doc and destroyed, so partial accepts are
-   * incoherent by construction.
+   * mainline. Always merges *everything* the chat proposes: op rows not yet materialized into a
+   * `changes` message are swept in first, and there is no way to accept a subset -- under the
+   * epoch reset below, an excluded remainder would be rooted in a discarded stream and
+   * destroyed, so partial accepts are incoherent by construction.
    *
    * Accepting is only ever a fast-forward: every gadget touched by the merged changes must have
    * its chat pin equal to the gadget's current head commit (see ChatGadgetPin.mergedCommit). If
@@ -1945,11 +1973,12 @@ export interface Overseer extends RpcTarget {
    * MergeChangesResult): call updateChatFromMainline(), resolve any conflicts, and retry.
    *
    * A successful merge closes the chat's current **epoch**: all merged content now lives in
-   * commits, so the chat's code base resets to empty (every pin evaporates, the Yjs doc is
-   * discarded, ChatCodeBase.generation is bumped, and the merge message records
-   * `epochBoundary`). Subsequent edits re-pin lazily against the new heads. A pre-git chat
-   * (ChatCodeBase.legacy) graduates at its first merge: the reset applies identically, and
-   * afterwards it is an ordinary commit-pinned chat.
+   * commits, so the chat's code base resets to empty (every pin evaporates, the op stream
+   * restarts at revision 0 under a new generation, and the merge message records
+   * `epochBoundary`). Subsequent edits re-pin lazily against the new heads. The generation bump
+   * is content-preserving: ChatCodeBase.prior names the closed stream, and submissions still
+   * rooted in it ride submitCodeOp()'s straggler bridge rather than being discarded, so a
+   * client typing through someone's accept loses nothing.
    */
   mergeChanges(chatId: number): Promise<MergeChangesResult>;
 
@@ -1961,23 +1990,23 @@ export interface Overseer extends RpcTarget {
    * permanent gadget has a head to pin, an empty-tree commit before it has code, so "modified"
    * always means "pinned"; see WorkpieceSummary.commitId). For each pinned
    * gadget whose ChatGadgetPin.mergedCommit is behind the gadget's current head, the
-   * server computes a 3-way text merge (base = the pinned commit's tree, ours = the head tree,
-   * theirs = the chat's current files) and delivers the result *into the chat* as a normal
-   * `changes` message (see AiChatMessageBody.mainlineMerge), advancing the pin to head.
-   * Conflicting hunks are left inline as 3-way conflict markers
-   * (`<<<<<<<`/`|||||||`/`=======`/`>>>>>>>`) for the user or their agent to clean up; the
+   * server computes a 3-way text merge (base = the last merged commit's tree, ours = the head
+   * tree, theirs = the chat's current files) and applies the result to the chat as an ordinary
+   * op row -- broadcast via AiChatSubscriber.opApplied(), so concurrent editors transform
+   * against it like any other remote op -- recorded in a `changes` message carrying
+   * `mainlineMerge`, advancing the pin to head. Conflicting hunks are left inline as 3-way
+   * conflict markers (`<<<<<<<`/`|||||||`/`=======`/`>>>>>>>`) for the user or their agent to
+   * clean up -- an explicit, fixable representation rather than a silent auto-merge; the
    * affected paths -- each qualified by its gadget's binding name (`GADGET_NAME/path`) -- are
-   * returned in sorted order and also recorded on the message. Yjs merge semantics are
-   * deliberately not used across divergent bases: CRDT merges of independently edited text
-   * produce nonsense, whereas conflict markers are an explicit, fixable representation.
+   * returned in sorted order and also recorded on the message.
    *
    * Once the chat is up to date (and mainline hasn't moved again), mergeChanges() succeeds as a
    * plain fast-forward. Returns an empty `conflictPaths` when every file merged cleanly (or
    * there was nothing to merge).
    *
    * Whenever any pin advances, a `changes` message carrying `mainlineMerge` is recorded -- even
-   * when the chat's content already matched mainline and there is no `update` to deliver -- so
-   * the chat log always durably accounts for the advancement (see the revert restriction on
+   * when the chat's content already matched mainline and there is no op to deliver -- so the
+   * chat log always durably accounts for the advancement (see the revert restriction on
    * AiChatMessageBody.mainlineMerge).
    */
   updateChatFromMainline(chatId: number): Promise<{conflictPaths: string[]}>;
@@ -1987,29 +2016,37 @@ export interface Overseer extends RpcTarget {
    * number in the chat thread be reverted.
    *
    * Throws if the range covers a still-proposed mainline merge (see
-   * AiChatMessageBody.mainlineMerge, which explains why such a batch cannot be erased).
+   * AiChatMessageBody.mainlineMerge, which explains why such a batch cannot be erased), or if
+   * `revertFrom` precedes the chat's conversion boundary (see
+   * AiChatMessageBody.conversionBoundary: the conversion op is all-or-nothing, so a revert may
+   * start at or after it, never inside the legacy history it collapsed).
    *
    * Pins declared by reverted messages are removed from ChatCodeBase (a pin survives a revert
-   * iff its declaring message survives), and any outstanding draft updates are discarded: drafts
-   * are strictly newer than every materialized message, so they fall inside the reverted range
-   * by definition -- and one recorded after a reverted pin declaration may be rooted in a seed
-   * the revert just made unreconstructable. Because live editors' docs still contain the erased
-   * updates (and possibly removed seeds), ChatCodeBase.generation is bumped: their queued
-   * updateCode() calls fail and they rebuild instead of corrupting the chat.
+   * iff its declaring message survives), and op rows not yet materialized into a message are
+   * erased along with the reverted range: rows are strictly newer than every materialized
+   * message, so they fall inside it by definition. Erasing already-applied ops invalidates every
+   * client's local state -- content they may have transformed against is gone -- so
+   * ChatCodeBase.generation is bumped destructively: queued submitCodeOp() calls fail and
+   * clients rebuild instead of corrupting the chat.
    */
   revertChanges(chatId: number, revertFrom: number): Promise<void>;
 
   /**
-   * Materialize the current live draft for the chat into one durable `changes` message without
-   * merging it into the mainline.
+   * Materialize the chat's op rows not yet covered by a durable `changes` message into one,
+   * without merging anything into the mainline. (Materialization also happens automatically: at
+   * agent turn start, at accept, and when the live row window grows past a size/age threshold.
+   * It invalidates nothing -- the message's `watermark` tells clients which rows it absorbed.)
    */
   finalizeChatDraft(chatId: number): Promise<void>;
 
   /**
-   * Discard the current live draft for the chat without affecting any durable `changes`
-   * messages. Pins the drafts established that were never declared in a materialized message
-   * are removed with them, and ChatCodeBase.generation is bumped (exactly as with
-   * revertChanges(): live docs containing the discarded keystrokes must rebuild).
+   * Discard the chat's op rows not yet materialized into a durable `changes` message, without
+   * affecting any messages. Pins those rows established that were never declared in a
+   * materialized message are removed with them, and ChatCodeBase.generation is bumped
+   * destructively (exactly as with revertChanges(): clients' content contains the erased rows
+   * and must be rebuilt). A straggling retry of an erased row is still recognized by its
+   * client's per-session record and receives its recorded landing spot instead of being applied
+   * twice (see submitCodeOp()).
    */
   discardChatDraftChanges(chatId: number): Promise<void>;
 
@@ -2190,7 +2227,7 @@ export type AiChatMetadata = {
 
   /**
    * If true, this chat thread has proposed changes which have not been accepted yet,
-   * including any live draft edits that have not yet been materialized into a durable
+   * including any live op rows that have not yet been materialized into a durable
    * `changes` message.
    */
   hasProposedChanges?: boolean;
@@ -2215,105 +2252,120 @@ export type AiChatMetadata = {
 
   /**
    * The chat's code-branch state for its *current epoch*: which gadgets are pinned (and where),
-   * plus the generation token updateCode() validates against. Authoritative but
-   * reconstructible: pin establishment and epoch boundaries are also recorded in the chat log
-   * (see the `pins` field of "changes" messages and the merge message's `epochBoundary`), which
-   * is what closed epochs are replayed from. Delivered (and re-delivered on change, e.g. when a
-   * pin is established or updateChatFromMainline() advances one) via
+   * plus the stream position and generation token submitCodeOp() validates against.
+   * Authoritative but reconstructible: pin establishment and epoch boundaries are also recorded
+   * in the chat log (see the `pins` field of "changes" messages and the merge message's
+   * `epochBoundary`), which is what closed epochs are replayed from. Delivered (and re-delivered
+   * when its shape changes -- a pin established or advanced, a generation bump -- but not on
+   * every accepted row: clients track `revision` live via AiChatSubscriber.opApplied()) via
    * AiChatSubscriber.metadata().
    *
    * Absent until something first needs it; an absent record is defined as
-   * `{gadgets: [], generation: 0}` and both sides use that reading -- a new chat's first
-   * updateCode() passes `generation: 0` and validates against the absent record.
+   * `{pins: [], generation: 0, revision: 0}` and both sides use that reading -- a new chat's
+   * first submitCodeOp() passes `generation: 0, revision: 0` and validates against the absent
+   * record.
    */
   codeBase?: ChatCodeBase;
 };
 
 /**
  * A chat's code-branch state (see AiChatMetadata.codeBase). A chat behaves as a branch: its
- * Y.Doc holds uncommitted changes, and accepting fast-forwards each touched gadget's head (see
- * Overseer.mergeChanges()). A gadget joins the doc only when its code is first *modified* in
- * the chat -- at that moment it is pinned at a commit and its root is seeded from that commit's
- * tree. Unpinned gadgets are not in the doc at all: they always track mainline head, live, and
- * are read via Overseer.getCodeAtCommit().
+ * uncommitted changes are one revisioned stream of code ops (see
+ * `@gadgets/workshop-shared/code-op`) composed on top of pinned commits, and accepting
+ * fast-forwards each touched gadget's head (see Overseer.mergeChanges()). A gadget joins the
+ * stream only when its code is first *modified* in the chat -- at that moment it is pinned at a
+ * commit, whose tree its ops compose on top of. Unpinned gadgets always track mainline head,
+ * live, and are read via Overseer.getCodeAtCommit(). One exception: a gadget created within
+ * this chat and still pending has no head commit to pin, so it stays pinless while its ops
+ * build its content up from nothing (every file starts with a `set`); the merge that promotes
+ * it ends the epoch anyway, and in later epochs it pins like any other permanent gadget.
  *
- * Clients derive the chat doc themselves: per pin, fetch the seedCommit tree
- * (Overseer.getCodeAtCommit(), cacheable by oid), build the deterministic per-root seed with
- * `seedRootFromFiles(filesRoot, files, seedClientIdForGadget(gadgetId))` from
- * `@gadgets/workshop-shared/yjs-seed`, verify it against the pin's `seedHash`, and apply it;
- * then apply the current epoch's non-reverted `changes` updates and drafts on top. Accepting
- * changes ends the epoch: the doc is discarded wholesale and the pin set resets to empty.
+ * Clients derive the chat's content themselves: per pin, fetch the base tree
+ * (Overseer.getCodeAtCommit(baseCommit), cacheable by oid); apply the current epoch's
+ * non-reverted `changes` messages' ops in log order; then apply the rows not yet materialized
+ * into a message, delivered in revision order via AiChatSubscriber.opApplied(). Accepting
+ * changes ends the epoch: the pin set resets to empty and the op stream restarts.
  */
 export type ChatCodeBase = {
-  /** Per-gadget pins: every gadget whose code has been modified in the current epoch. */
-  gadgets: ChatGadgetPin[];
+  /** Per-gadget pins: every permanent gadget whose code has been modified in the current epoch. */
+  pins: ChatGadgetPin[];
 
   /**
-   * Validation token for updateCode(), bumped by every operation that invalidates client docs:
-   * each merge (the epoch reset), each revert (which erases updates -- and possibly pins -- a
-   * live doc may be rooted in), and each draft discard (same, for unlogged pins). Pin additions
-   * and updateChatFromMainline() do *not* bump: existing docs stay valid under both (Yjs parks
-   * updates that arrive ahead of a seed and integrates them when it lands). Deliberately finer
-   * than `epoch`: an epoch token would accept a post-revert update rooted in a removed pin's
-   * seed, which nothing could ever reconstruct.
+   * Identifies the chat's current op stream: the token submitCodeOp() validates against, bumped
+   * by every operation that invalidates the stream clients are rooted in. Bumps come in two
+   * classes. **Content-preserving** (a merge's epoch reset): the stream identity changes but
+   * the content carries over -- `prior` names the closed stream and in-flight submissions ride
+   * submitCodeOp()'s straggler bridge. **Destructive** (a revert, draft discard, or agent turn
+   * abort erased already-applied rows): content other clients may have transformed against is
+   * gone, so they must discard local state and rebuild. Pin additions and
+   * updateChatFromMainline() do *not* bump -- they only append rows.
    */
   generation: number;
 
   /**
-   * Sequence of the merge message that opened the current epoch; absent when no merge has
-   * happened yet (the epoch runs from chat start). Keys doc reconstruction: only `changes`
-   * messages after this point are part of the current doc.
+   * Sequence of the message that opened the current epoch: an `epochBoundary` merge message, or
+   * a migrated chat's `conversionBoundary` changes message. Absent when the epoch runs from
+   * chat start. Keys content reconstruction: only `changes` messages after this point are part
+   * of the current content.
    */
   epoch?: number;
 
   /**
-   * Present on chats predating git-backed code storage (written by the migration): the chat's
-   * Yjs base is the retired workspace-wide code log, fetched via
-   * Overseer.getLegacyChatDocBase(), rather than derivable from commit-seeded pins (whose pins
-   * here are mergedCommit-only). Cleared -- permanently -- by the chat's first merge, whose
-   * epoch reset graduates it into an ordinary commit-pinned chat.
+   * Revision of the most recently accepted row of the current generation's op stream (rows are
+   * numbered sequentially from 1; 0 means none yet). Restarts with each generation, so
+   * `(generation, revision)` identifies a point in the chat's uncommitted-change stream; this
+   * field is a snapshot as of this metadata delivery, and clients track the live position via
+   * AiChatSubscriber.opApplied().
    */
-  legacy?: true;
+  revision: number;
+
+  /**
+   * Present after a content-preserving generation bump (a merge's epoch reset): names the
+   * closed generation so clients can hand off to the new one without losing anything. A client
+   * still processing generation `prior.generation` first applies its remaining opApplied rows
+   * -- its stream is complete once seen through `finalRevision` -- and then switches. Content
+   * is byte-identical across the boundary for every gadget except those listed in
+   * `discontinuousGadgets`, which must be rebuilt from head (dropping pending local ops that
+   * touch them; the server would reject those as bridge-ineligible anyway). Absent after a
+   * destructive bump, whose closed stream is not processable anyway.
+   */
+  prior?: {
+    /** The closed generation. */
+    generation: number;
+
+    /** The closed generation's terminal revision: its stream is complete through here. */
+    finalRevision: number;
+
+    /**
+     * Gadgets whose chat content did not carry across the epoch reset: their pin evaporated
+     * while its content differed from the new head (the gadget was pinned but had no net change
+     * to commit, and mainline had moved past its pin). Usually empty.
+     */
+    discontinuousGadgets: WorkpieceId[];
+  };
 };
 
 /**
  * One gadget's commit pins within a chat (see ChatCodeBase). A pin exists only for gadgets
  * whose code has been modified in the chat's current epoch; it is established by the first
- * modification (updateCode()'s pin declaration, or the agent's first write) and lives until the
- * epoch ends or the declaring message is reverted.
+ * modification (a submitCodeOp() pin declaration, or the agent's first write, which pins at the
+ * then-current head) and lives until the epoch ends or the declaring message is reverted.
  */
 export type ChatGadgetPin = {
   /** The pinned gadget. */
   gadgetId: WorkpieceId;
 
   /**
-   * The gadget's root map name in the chat's code doc, denormalized from
-   * WorkpieceSummary.filesRoot so the pin remains interpretable even after the gadget is
-   * deleted from the workspace.
+   * The commit whose tree the chat's uncommitted ops for this gadget compose on top of.
+   * Immutable for the life of the pin: every op recorded for this gadget since is expressed
+   * against content rooted here, so the base moving would invalidate them all. (Mainline
+   * movement is merged into the chat as ordinary ops, advancing `mergedCommit` -- never this.)
    */
-  filesRoot: string;
-
-  /**
-   * The commit whose tree seeded this gadget's root in the chat's code doc. Immutable for the
-   * life of the pin: the deterministic seed is derived from it (see `seedHash`), so every Yjs
-   * update recorded against this root since builds on the item IDs it established. Present
-   * (with `seedHash`) on every pin established since lazy pinning; absent only on a legacy
-   * chat's migration-written pins (see ChatCodeBase.legacy), whose Yjs base is the legacy code
-   * log rather than a commit-derived seed.
-   */
-  seedCommit?: string;
-
-  /**
-   * SHA-256 (64-hex) of this pin's seed update bytes (see `seedUpdateHash` in
-   * `@gadgets/workshop-shared/yjs-seed`). Every participant must derive a byte-identical seed
-   * for the chat's Yjs updates to compose; a client that derives a different hash must fail
-   * loudly rather than edit a diverged doc. Present exactly when `seedCommit` is.
-   */
-  seedHash?: string;
+  baseCommit: string;
 
   /**
    * The most recent mainline commit whose content has been merged into the chat for this gadget.
-   * Starts equal to seedCommit and advances on updateChatFromMainline(). Accepting the chat's
+   * Starts equal to baseCommit and advances on updateChatFromMainline(). Accepting the chat's
    * changes requires this to equal the gadget's current head (WorkpieceSummary.commitId); a
    * difference means the chat is stale and the UI should offer updating from mainline.
    */
@@ -2321,50 +2373,76 @@ export type ChatGadgetPin = {
 };
 
 /**
- * The code base a client's updateCode() call is rooted in: the chat's current generation, plus
- * a pin declaration when this is the first edit to a not-yet-pinned gadget. See
- * Overseer.updateCode() for the validation rules.
+ * One client code-op submission (see Overseer.submitCodeOp() for the full validation and retry
+ * contract).
  */
-export type UpdateCodeBase = {
-  /** The ChatCodeBase.generation the client's doc was built against. */
+export type CodeOpSubmission = {
+  /**
+   * The generation of the chat's op stream the submission is rooted in (see
+   * ChatCodeBase.generation).
+   */
   generation: number;
 
-  /** Pin declaration accompanying the first edit to a gadget not yet pinned in the chat. */
-  pin?: {
-    /** The gadget being pinned. */
-    gadgetId: WorkpieceId;
+  /**
+   * The revision within `generation` the op is expressed against: the submitter has applied
+   * every accepted row up to and including this one (0 = none). The server transforms the op
+   * over any rows accepted since.
+   */
+  revision: number;
 
-    /**
-     * The commit the client's locally-derived seed came from: the gadget's head as the client
-     * saw it. Must be the current head or a parent of it (see Overseer.updateCode()).
-     */
-    baseCommit: string;
-  };
+  /**
+   * Identifies the client's editing session: a client-generated random token (e.g. a UUID),
+   * minted fresh each time the client builds or rebuilds its local editing state and never
+   * shared between concurrent sessions (two tabs are two clients). Together with `seq` this
+   * makes submissions idempotent -- the server remembers each client session's last accepted
+   * seq and its landing spot. Dedupe records are scoped to the authenticated user, so the token
+   * only needs to be unique among the user's own sessions, and its visibility to other
+   * subscribers (AiChatSubscriber.opApplied() echoes it) grants them nothing. See
+   * Overseer.submitCodeOp() for the full contract.
+   */
+  clientId: string;
+
+  /**
+   * This submission's sequence number within the client session, starting at 1 and incrementing
+   * by 1 per op. Retry a transport failure with the same seq and an identical payload -- never
+   * renumber or re-compose a submitted op; the server digests each accepted submission and
+   * rejects a reused seq whose content differs. Because the server remembers only the last
+   * accepted seq per client, at most one submission may be in flight at a time (see
+   * Overseer.submitCodeOp()).
+   */
+  seq: number;
+
+  /**
+   * Pin declarations, one per permanent gadget this op touches that is not yet pinned in the
+   * chat (a gadget still pending in the chat is never pinned or declared). See
+   * Overseer.submitCodeOp() for the validation rules and ChatChangesPin for the shape's durable
+   * role.
+   */
+  pins?: ChatChangesPin[];
+
+  /** The change itself. */
+  op: CodeOp;
 };
 
 /**
- * A pin establishment as durably recorded in the chat log (the `pins` field of a "changes"
- * message) and in compaction checkpoints. Unlike ChatGadgetPin -- which tracks the *current*
- * state including mergedCommit advancement -- this is the immutable record of the
- * establishment itself, and is what closed epochs' docs are reconstructed from: derive the seed
- * from `baseCommit` (as described on ChatCodeBase), verify it against `seedHash`, apply it, and
- * then apply the message's own update.
+ * A pin establishment: the moment a gadget's code is first modified in a chat's epoch, fixing
+ * the commit its uncommitted ops compose on top of. This is both the declaration a client
+ * submits with such a first modification (CodeOpSubmission.pins) and the immutable durable
+ * record of the establishment in the chat log (the `pins` field of a "changes" message) and in
+ * compaction checkpoints. The durable record is what closed epochs' content is reconstructed
+ * from: establish the gadget's base content from `baseCommit`, then apply the epoch's ops in
+ * order. Unlike ChatGadgetPin -- the *current* state, whose mergedCommit advances -- this never
+ * changes once recorded.
  */
 export type ChatChangesPin = {
   /** The pinned gadget. */
   gadgetId: WorkpieceId;
 
-  /** The gadget's root map name, denormalized like ChatGadgetPin.filesRoot. */
-  filesRoot: string;
-
-  /** The commit whose tree the root was seeded from (ChatGadgetPin.seedCommit at that moment). */
-  baseCommit: string;
-
   /**
-   * SHA-256 (64-hex) of the seed update bytes, recorded here -- not just on the live pin -- so
-   * derivation drift fails loudly even for epochs whose pins are long gone from metadata.
+   * The commit whose tree the gadget's chat content composes on top of
+   * (ChatGadgetPin.baseCommit, at establishment).
    */
-  seedHash: string;
+  baseCommit: string;
 };
 
 /**
@@ -2402,20 +2480,12 @@ export type AiChatHistoryPage = {
     summary: string;
 
     /**
-     * Changes still proposed before `to`, merged into one update, so the client can show pending
-     * changes without loading the messages that recorded them.
+     * Changes still proposed before `to`, composed into one code op, so the client can show
+     * pending changes without loading the messages that recorded them. Composes over the base
+     * trees of the pins the compacted messages established (which remain in ChatCodeBase.pins),
+     * before any later messages' ops.
      */
-    proposedChanges?: Uint8Array;
-
-    /**
-     * Legacy (pre-git-storage) chats only: changes already accepted before `to`, merged into one
-     * update. A legacy chat's doc base is the retired code log, which never advances, so its
-     * accepted updates still apply on top when the doc is rebuilt; together with
-     * `proposedChanges` this completes the doc without loading the compacted pages. Commit-pinned
-     * chats never carry accepted updates across a boundary -- accepting resets the epoch and
-     * discards the doc (see ChatCodeBase) -- so this is absent for them.
-     */
-    acceptedChanges?: Uint8Array;
+    proposedOp?: CodeOp;
   };
 };
 
@@ -2501,37 +2571,53 @@ export type AiChatMessageBody = {
   type: "changes";
 
   /**
-   * The code changes themselves, as a Yjs-encoded (V2) update against the chat's code doc (see
-   * ChatCodeBase). Absent when the batch records only gadget creations and/or binding additions
-   * with no accompanying code edits.
+   * The code changes themselves, composed from the op rows this batch materialized (see
+   * `watermark`). Applies to the chat content produced by the current epoch's earlier messages,
+   * with this message's own `pins` established first (see ChatChangesPin). Absent when the
+   * batch records only gadget creations and/or binding additions with no accompanying code
+   * edits -- and on pre-conversion messages, whose retired Yjs payload is no longer delivered
+   * (see `conversionBoundary`).
    */
-  update?: Uint8Array;
+  op?: CodeOp;
 
   /**
-   * Legacy (pre-git-storage): the workspace-wide code version that `update` was built against,
-   * from when mainline was a Yjs log rather than commits. Retained because history replay of
-   * chats from that era still needs each update's base version (see
-   * AiToolCall.observedCodeVersion). Chats with commit-pinned docs record `pins` instead and
-   * never record this.
+   * Historical (pre-conversion): the workspace-wide code version this message's original Yjs
+   * update was built against, from when mainline was a Yjs log rather than commits. The update
+   * itself is no longer delivered -- the migration's conversion boundary supersedes it -- so
+   * this stamp survives only as stored data on old messages and drives nothing.
    */
   observedCodeVersion?: number;
 
   /**
-   * Pins this batch establishes: for each gadget listed, this message's `update` is the first
-   * in the epoch to modify that gadget's code, and the root was seeded from `baseCommit`
-   * immediately before applying it. Doc reconstruction applies each listed pin's derived seed,
-   * then the update (see ChatChangesPin). Recorded by draft materialization (for pins
-   * updateCode() established) and by agent flushes (for pins the agent's writes established).
+   * Pins this batch establishes: for each gadget listed, this message's `op` contains the
+   * epoch's first modification of that gadget's code, composed on top of the pinned commit's
+   * tree. Content reconstruction establishes each listed pin's base before applying the op (see
+   * ChatChangesPin). Recorded by materialization (for pins submitCodeOp() established) and by
+   * agent turn flushes (for pins the agent's writes established).
    */
   pins?: ChatChangesPin[];
 
   /**
-   * Present when this batch was produced by Overseer.updateChatFromMainline(): `update` merges
+   * The op-stream rows this batch materialized: this message's `op` is the composition of
+   * generation `opsGeneration`'s rows from just past the previous materialization's watermark
+   * through `throughRevision`, so the generation's `changes` messages collectively represent
+   * every row up to `throughRevision` and only later rows are still replayed to new
+   * subscribers. On receiving the message, clients drop their local copies of the covered rows
+   * -- and a client that already applied them must not apply `op` on top: the message re-records
+   * content those rows already delivered, it does not add to it. Generation-qualified because
+   * revisions restart per generation: a delayed message must never clear another generation's
+   * rows. Absent when the batch materialized no rows (e.g. it records only creations/bindings),
+   * and on pre-conversion messages.
+   */
+  watermark?: {opsGeneration: number, throughRevision: number};
+
+  /**
+   * Present when this batch was produced by Overseer.updateChatFromMainline(): `op` merges
    * mainline commits into the chat. `conflictPaths` lists the files whose 3-way merge was not
    * clean, in sorted order, each qualified by its gadget's binding name
    * (`GADGET_NAME/path/to/file`); their merged contents carry inline conflict markers (or, for
    * delete-vs-modify, the surviving side's content) for the user or their agent to resolve.
-   * `update` is absent when the chat's content already matched the merged mainline commits;
+   * `op` is absent when the chat's content already matched the merged mainline commits;
    * the batch then records only that the pins advanced.
    *
    * A batch carrying this cannot be reverted while still proposed (Overseer.revertChanges()
@@ -2542,8 +2628,22 @@ export type AiChatMessageBody = {
   mainlineMerge?: {conflictPaths: string[]};
 
   /**
+   * Present on the synthetic message the git-storage migration wrote to convert this chat from
+   * the legacy (pre-git, Yjs-based) representation: its `op` collapses every uncommitted legacy
+   * edit -- outstanding drafts included -- into one diff against the chat's pinned commits. For
+   * replay and content reconstruction it acts as an epoch boundary that re-seeds at (pin bases
+   * + this op): messages before it are text-only history whose code payloads are unrecoverable
+   * and no longer delivered. Present -- with an empty `op` and no `pins` -- even when the chat
+   * had nothing to convert, because the boundary itself is load-bearing (ChatCodeBase.epoch
+   * points at it). Overseer.revertChanges() refuses a `revertFrom` before this message: the
+   * conversion op is all-or-nothing, so partial reverts of legacy history are impossible by
+   * construction.
+   */
+  conversionBoundary?: true;
+
+  /**
    * Gadgets created as part of this batch of changes (by the agent's `createGadget` tool, or by
-   * the user via Overseer.createGadget() with a chat open -- in the latter case `update` is
+   * the user via Overseer.createGadget() with a chat open -- in the latter case `op` is
    * omitted). Like the code changes themselves, the creations are provisional: a merge
    * through this message makes them permanent, and a revert covering it deletes them. Titles are
    * denormalized for display, since a reverted creation's registry record is gone. `bindingName`
@@ -2556,7 +2656,7 @@ export type AiChatMessageBody = {
   /**
    * Binding edges added to gadgets as part of this batch of changes (by the agent's
    * setGadgetBinding tool, or by the user binding a connection with a chat open -- in the latter
-   * case `update` is omitted). Like `createdGadgets`, the additions are
+   * case `op` is omitted). Like `createdGadgets`, the additions are
    * provisional: the edge is visible only from this chat until a merge through this message
    * makes it permanent, and a revert covering it deletes the edge. `name` is the binding's name
    * within the gadget identified by `gadgetId`; `target` is the bound workpiece.
@@ -2574,9 +2674,8 @@ export type AiChatMessageBody = {
   mergeThrough: number;
 
   /**
-   * Legacy (pre-git-storage): the workspace-wide code version at which the merge was applied,
-   * from when mainline was a Yjs log. Merges of chats with commit-pinned docs record `commits`
-   * instead.
+   * Historical (pre-git-storage): the workspace-wide code version at which the merge was
+   * applied, from when mainline was a Yjs log. Modern merges record `commits` instead.
    */
   version?: number;
 
@@ -2592,17 +2691,18 @@ export type AiChatMessageBody = {
 
   /**
    * Present on every merge written since lazy per-gadget pinning: this merge closed the chat's
-   * epoch -- the chat's code base reset to empty and its Yjs doc was discarded, so doc
-   * reconstruction starts fresh here (see ChatCodeBase). Absent only on historical (pre-git)
-   * merges, which predate epochs; their backfilled `commits` alone cannot distinguish the two.
+   * epoch -- the chat's code base reset to empty and its op stream restarted under a new
+   * generation, so content reconstruction starts fresh here (see ChatCodeBase). Absent only on
+   * historical (pre-git) merges, which predate epochs; their backfilled `commits` alone cannot
+   * distinguish the two.
    */
   epochBoundary?: true;
 } | {
   /**
    * Indicates that at this point in the chat, the user chose to revert all changes starting at the
    * given sequence number through the end of the chat as of that time. These changes are
-   * completely erased from the Yjs history. Subsequent changes will be based only on what existed
-   * before this point, and any later merge will not include the reverted changes.
+   * completely erased from the chat's uncommitted state. Subsequent changes will be based only on
+   * what existed before this point, and any later merge will not include the reverted changes.
    */
   type: "revert";
   revertFrom: number;
@@ -2783,13 +2883,14 @@ export type AiToolCall = {
   toolCallId: string;
 
   /**
-   * Legacy (pre-git-storage): if present, this tool observed the code at the given
+   * Historical (pre-conversion): if present, this tool observed the code at the given
    * workspace-wide version number, from when mainline was a Yjs log rather than commits. Once an
    * agent observed code at a particular version, the server stayed at that version for the rest
    * of the thread, to avoid confusing the agent. ("changes" messages record the base version of
-   * their code updates the same way; see AiChatMessageBody.) Retained because replaying chats
-   * from that era still depends on these stamps; chats with commit-seeded docs pin commits at
-   * the chat level instead (see ChatCodeBase) and never record this.
+   * their code updates the same way; see AiChatMessageBody.) The git-storage migration converted
+   * every chat to a commit-pinned op stream (see ChatCodeBase) and replay elides pre-conversion
+   * reads rather than recomputing them, so this stamp survives only as stored data on old
+   * messages and drives nothing.
    */
   observedCodeVersion?: number;
 
@@ -2805,13 +2906,13 @@ export type AiToolCall = {
   input: {workpiece?: string, filename: string};
 
   /**
-   * Present when the read was served from committed code rather than the chat's doc: the
-   * workpiece was not pinned in the chat (see ChatGadgetPin), so the agent read the file at the
-   * mainline head commit observed here. History replay uses the stamp to detect staleness: if
-   * this file has since changed relative to the gadget's current base (its head if still
-   * unpinned, its pin's seedCommit if pinned since), the read's content is elided from the
+   * Present when the read was served from committed code rather than the chat's uncommitted
+   * content: the workpiece was not pinned in the chat (see ChatGadgetPin), so the agent read the
+   * file at the mainline head commit observed here. History replay uses the stamp to detect
+   * staleness: if this file has since changed relative to the gadget's current base (its head if
+   * still unpinned, its pin's baseCommit if pinned since), the read's content is elided from the
    * model's context and the agent is told to re-read. Reads of pinned workpieces come from the
-   * chat doc, which is never stale within an epoch, and carry no stamp.
+   * chat's content, which is never stale within an epoch, and carry no stamp.
    */
   observedCommit?: string;
 } | {
@@ -3148,8 +3249,9 @@ export type AiChatStreamEvent = {
 } | {
   /**
    * For the executeCode tool specifically, we stream the code as the AI writes it. (For all other
-   * tool calls, the tool inputs are not streamed -- though writeFile and editFile separately
-   * stream codeUpdate messages.)
+   * tool calls, the tool inputs are not streamed -- though writeFile and editFile edits are
+   * delivered live via AiChatSubscriber.opApplied(), as durable op rows rather than provisional
+   * events.)
    */
   type: "toolCodeDelta";
   toolCallId: string;
@@ -3186,11 +3288,6 @@ export type AiChatStreamEvent = {
   type: "toolOutputDelta";
   toolCallId: string;
   delta: string;
-} | {
-  type: "codeReset";
-} | {
-  type: "codeUpdate";
-  update: Uint8Array;
 };
 
 /** Interface implemented by the client to receive action-log upserts. */
@@ -3224,14 +3321,27 @@ export interface AiChatSubscriber {
   message(msg: AiChatMessage): void;
 
   /**
-   * Delivers one persisted live-draft update for a chat branch. Subscriptions replay all currently
-   * stored draft updates for a chat so newly-joined clients can reconstruct the editable branch
-   * state without a separate fetch.
+   * Delivers one accepted row of a chat's code-op stream: a human submitCodeOp(), an agent tool
+   * edit (this doubles as the agent's live streaming preview -- there are no separate streaming
+   * code events), or an updateChatFromMainline() merge. Rows must be applied in revision order
+   * within a generation; a gap means events were lost and the client should rebuild from fresh
+   * metadata and history. On a generation switch, first finish the old generation's remaining
+   * rows -- complete once seen through ChatCodeBase.prior.finalRevision -- before re-basing onto
+   * the new stream (see ChatCodeBase.prior), and ignore stray events only for generations fully
+   * left behind. Subscriptions replay all currently retained (not-yet-materialized) rows of each
+   * chat so newly-joined clients can reconstruct uncommitted state without a separate fetch;
+   * rows a `changes` message has since absorbed are dropped via the message's `watermark`
+   * instead (there is no separate "cleared" event).
+   *
+   * Rows produced by submitCodeOp() echo the submitter's identity as `submission` (the
+   * CodeOpSubmission's clientId and seq), so the submitting client recognizes its own op -- in
+   * the live feed and in subscribe-replay alike, without depending on ack/broadcast ordering --
+   * and drops its in-flight buffer instead of re-applying. The echo is informational only
+   * (dedupe records are scoped to the authenticated user, so another user gains nothing from
+   * it); server-authored rows (agent edits, mainline merges) omit it.
    */
-  draftUpdate(chatId: number, timestamp: Date, author: AiChatAuthorInfo, update: Uint8Array): void;
-
-  /** Indicates that all persisted live-draft updates for the given chat were cleared. */
-  draftCleared(chatId: number): void;
+  opApplied(chatId: number, generation: number, revision: number, author: AiChatAuthorInfo,
+            op: CodeOp, submission?: {clientId: string, seq: number}): void;
 
   /** Delivers one provisional streaming event. Clients may ignore event types they don't support. */
   stream(chatId: number, event: AiChatStreamEvent): void;
@@ -3282,13 +3392,6 @@ export type WorkpieceSummary = {
    * from. Absent means a generic app. The UI names and draws the workpiece from this.
    */
   output?: BlueprintOutput;
-
-  /**
-   * The name of the Y.Doc root map that holds this workpiece's files within a chat's code doc,
-   * if it owns files (see ChatCodeBase). For most gadgets this is the decimal workpiece ID; the
-   * gadget migrated from before multi-gadget support keeps the legacy unnamed root "".
-   */
-  filesRoot?: string;
 
   /**
    * The gadget's head commit (40-hex oid) in the workspace's git object store -- i.e. its
