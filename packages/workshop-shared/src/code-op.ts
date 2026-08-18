@@ -391,6 +391,40 @@ function diffTextOp(before: string, after: string): TextOp {
   return ChangeSet.of(specs, before.length, "\n").toJSON();
 }
 
+/**
+ * Builds the TextOp that replaces `replaced` -- the document's exact text at
+ * `[from, from + replaced.length)` -- with `insert`, in a document of length `docLength`. The
+ * producer-side alternative to diffing when the replaced span is already known (editFile matched
+ * it): no diff is run. A match is often padded with unchanged context to disambiguate it, so the
+ * common prefix and suffix of `replaced` and `insert` are trimmed -- never splitting a UTF-16
+ * surrogate pair -- and the op reports only the text that actually changed. Equal `replaced` and
+ * `insert` yield the identity op; an out-of-range span throws (`ChangeSet.of` rejects it at
+ * construction).
+ */
+export function replaceSpanOp(
+    docLength: number, from: number, replaced: string, insert: string): TextOp {
+  let maxTrim = Math.min(replaced.length, insert.length);
+  let pre = 0;
+  while (pre < maxTrim && replaced.charCodeAt(pre) === insert.charCodeAt(pre)) pre++;
+  // Back off a prefix ending on a high surrogate: the boundary could otherwise split a pair in
+  // the document or in the insert. The prefix chars are equal in both strings, so one
+  // (conservative) check covers both.
+  if (pre > 0 && isHighSurrogate(replaced.charCodeAt(pre - 1))) pre--;
+  let suf = 0;
+  while (suf < maxTrim - pre && replaced.charCodeAt(replaced.length - 1 - suf) ===
+      insert.charCodeAt(insert.length - 1 - suf)) {
+    suf++;
+  }
+  // Likewise, back off a retained suffix starting on a low surrogate.
+  if (suf > 0 && isLowSurrogate(replaced.charCodeAt(replaced.length - suf))) suf--;
+
+  let trimmedInsert = insert.slice(pre, insert.length - suf);
+  let spec = { from: from + pre, to: from + replaced.length - suf, insert: trimmedInsert };
+  let specs = spec.from === spec.to && trimmedInsert === "" ? [] : [spec];
+  // The explicit "\n" line separator: see diffTextOp above.
+  return ChangeSet.of(specs, docLength, "\n").toJSON();
+}
+
 // =======================================================================================
 // Inspection
 

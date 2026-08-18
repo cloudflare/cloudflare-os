@@ -8,6 +8,7 @@ import {
   changedGadgets,
   composeCodeOp,
   diffFiles,
+  replaceSpanOp,
   transformCodeOp,
   validateCodeOpContent,
   validateCodeOpSchema,
@@ -344,6 +345,85 @@ describe("diffFiles", () => {
     let op = diffFiles(before, after);
     validateCodeOpContent(op, before);
     expect(toPlain(applyCodeOp(before, op))).toEqual(toPlain(after));
+  });
+});
+
+describe("replaceSpanOp", () => {
+  // Validates the op against a one-file document, applies it, and asserts the result equals the
+  // plain string splice the span replacement describes.
+  function applySpan(doc: string, from: number, replaced: string, insert: string): TextOp {
+    expect(doc.slice(from, from + replaced.length)).toBe(replaced);  // test self-check
+    let edit = replaceSpanOp(doc.length, from, replaced, insert);
+    let op: CodeOp = { 1: [["f.txt", { edit }]] };
+    let before = content({ 1: { "f.txt": doc } });
+    validateCodeOpSchema(op);
+    validateCodeOpContent(op, before);
+    expect(applyCodeOp(before, op).get(1)!.get("f.txt"))
+        .toBe(doc.slice(0, from) + insert + doc.slice(from + replaced.length));
+    return edit;
+  }
+
+  it("trims unchanged disambiguation context down to the changed text", () => {
+    // The model padded the match with "return " and ";" to disambiguate; only "1" changed.
+    let doc = "function foo() { return 1; }";
+    let edit = applySpan(doc, doc.indexOf("return 1;"), "return 1;", "return 2;");
+    expect(edit).toEqual(makeEdit(doc.length, [{ from: 24, to: 25, insert: "2" }]));
+  });
+
+  it("emits pure insertions and deletions from padded matches", () => {
+    let insertion = applySpan("ab-ab", 3, "ab", "aXb");
+    expect(insertion).toEqual(makeEdit(5, [{ from: 4, to: 4, insert: "X" }]));
+
+    let deletion = applySpan("aXbab", 0, "aXb", "ab");
+    expect(deletion).toEqual(makeEdit(5, [{ from: 1, to: 2, insert: "" }]));
+  });
+
+  it("handles span edges and whole-document replacement", () => {
+    applySpan("abc", 0, "abc", "xyz");            // whole document
+    expect(applySpan("abc", 0, "a", "A")).toEqual(makeEdit(3, [{ from: 0, to: 1, insert: "A" }]));
+    expect(applySpan("abc", 2, "c", "C")).toEqual(makeEdit(3, [{ from: 2, to: 3, insert: "C" }]));
+    applySpan("", 0, "", "hello");                // insertion into an empty document
+  });
+
+  it("yields the identity op when nothing changed", () => {
+    expect(replaceSpanOp(10, 3, "same", "same")).toEqual([10]);
+    expect(replaceSpanOp(4, 4, "", "")).toEqual([4]);
+  });
+
+  it("preserves multi-line inserts with exotic separators", () => {
+    let insert = "x\r\ny\rz\u2028w\nv";
+    applySpan("start[MID]end", 5, "[MID]", insert);
+  });
+
+  it("never lets trimming split a surrogate pair", () => {
+    // Prefix back-off: 😀 (D83D DE00) and 😂 (D83D DE02) share their high surrogate.
+    expect(applySpan("😀x", 0, "😀x", "😂x"))
+        .toEqual(makeEdit(3, [{ from: 0, to: 2, insert: "😂" }]));
+    // Suffix back-off: 𐐀 (D801 DC00) and 𝐀 (D835 DC00) share their low surrogate.
+    expect(applySpan("a𐐀", 1, "𐐀", "𝐀"))
+        .toEqual(makeEdit(3, [{ from: 1, to: 3, insert: "𝐀" }]));
+  });
+
+  it("fuzz: padded random spans validate and apply over astral-heavy text", () => {
+    let rng = makeRng(11);
+    for (let i = 0; i < 1500; i++) {
+      let prefix = randomText(rng, 6);
+      let core = randomText(rng, 6);
+      let suffix = randomText(rng, 6);
+      let doc = prefix + core + suffix;
+      // Replace `core` (padding included in the match or not) with random text sharing random
+      // context, exercising the trim against every ALPHABET exotic.
+      let pad = rng() < 0.5;
+      let from = pad ? 0 : prefix.length;
+      let replaced = pad ? doc : core;
+      let insert = (pad ? prefix : "") + randomText(rng, 6) + (pad ? suffix : "");
+      applySpan(doc, from, replaced, insert);
+    }
+  });
+
+  it("rejects out-of-range spans at construction", () => {
+    expect(() => replaceSpanOp(3, 2, "cd", "x")).toThrow();
+    expect(() => replaceSpanOp(3, 4, "", "x")).toThrow();
   });
 });
 

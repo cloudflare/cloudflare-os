@@ -1,7 +1,7 @@
 import {SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT, type AiChatMessage, type AiModelConfig}
   from "@gadgets/workshop-shared/api";
+import {composeCodeOp, type CodeOp} from "@gadgets/workshop-shared/code-op";
 import type {Api, Message, Model} from "@earendil-works/pi-ai";
-import * as Y from "yjs";
 import type {ChatBindingEntry, CompactionCheckpoint} from "./agent";
 import {zeroUsage} from "./ai-invoke";
 
@@ -86,30 +86,28 @@ export function startsAgentTurn(message: AiChatMessage): boolean {
 }
 
 /**
- * One batch of code changes, addressed by the chat sequence that recorded it. `update` is absent for
+ * One batch of code changes, addressed by the chat sequence that recorded it. `op` is absent for
  * a batch that records only gadget creations or binding additions.
  */
-export type ChangeBatch = {sequence: number, update?: Uint8Array};
+export type ChangeBatch = {sequence: number, op?: CodeOp};
 
 /**
  * Folds `merge` and `revert` over a chat log. A merge accepts through `mergeThrough` inclusively; a
  * revert discards from `revertFrom` onward. `seed` carries batches already proposed before the log
- * begins, as a checkpoint records. Returns the batches still proposed, oldest first, plus the
- * updates the merges accepted -- the single rule both the proposed-changes view and a new checkpoint
- * are derived from.
+ * begins, as a checkpoint records. Returns the batches still proposed, oldest first -- the single
+ * rule both the proposed-changes view and a new checkpoint are derived from. (Accepted batches are
+ * simply dropped: every accepted batch's content lives in commits from its epoch-closing merge on,
+ * so nothing replays it.)
  */
 export function foldProposedChanges(
-    messages: Iterable<AiChatMessage>, seed: readonly ChangeBatch[] = [])
-    : {proposed: ChangeBatch[], accepted: Uint8Array[]} {
+    messages: Iterable<AiChatMessage>, seed: readonly ChangeBatch[] = []): ChangeBatch[] {
   let proposed = [...seed];
-  let accepted: Uint8Array[] = [];
   for (let message of messages) {
     if (message.type === "changes") {
-      proposed.push({sequence: message.sequence, update: message.update});
+      proposed.push({sequence: message.sequence, op: message.op});
     } else if (message.type === "merge") {
       while (proposed.length > 0 && proposed[0].sequence <= message.mergeThrough) {
-        let {update} = proposed.shift()!;
-        if (update !== undefined) accepted.push(update);
+        proposed.shift();
       }
     } else if (message.type === "revert") {
       while (proposed.length > 0 &&
@@ -118,7 +116,7 @@ export function foldProposedChanges(
       }
     }
   }
-  return {proposed, accepted};
+  return proposed;
 }
 
 /**
@@ -171,8 +169,8 @@ export function chatChangeStatuses(
  * the migration's pins (see git-migration.ts) fast-forwardable without a spurious
  * update-from-mainline round.
  *
- * Shared by the overseer's chat-doc construction (buildChatDoc / getLegacyChatDocBase) and the
- * git-storage migration's pin choice, which must agree on the chat's base.
+ * Used by the git-storage migration's conversion anchor (the version its conversion op's pins
+ * resolve at). Migration-internal: nothing else reads the legacy log anymore.
  */
 export function legacyChatBaseVersion(
     checkpoint: CompactionCheckpoint | undefined,
@@ -374,7 +372,6 @@ export function buildCompactionState(
   let chatBindings = new Map(previous?.chatBindings ?? initialBindings);
   let callbackNameCounter = 0;
   let nextChangeId = previous?.nextChangeId ?? 0;
-  let observedCodeVersion = previous?.observedCodeVersion;
 
   for (let message of compacted) {
     if (message.type === "message") {
@@ -384,7 +381,6 @@ export function buildCompactionState(
         }
       }
       for (let call of message.toolCalls ?? []) {
-        observedCodeVersion ??= call.observedCodeVersion;
         if (call.error) continue;
         if (call.toolName === "createGadget" && call.output !== undefined) {
           chatBindings.set(call.input.bindingName, {type: "workpiece", id: call.output.gadgetId});
@@ -407,58 +403,52 @@ export function buildCompactionState(
           chatBindings.set(bindingName, {type: "workpiece", id: gadgetId});
         }
       }
-      observedCodeVersion ??= message.observedCodeVersion;
       ++nextChangeId;
     }
   }
 
   // Pins active at the boundary, and the epoch it lies in: seeded from the previous checkpoint
-  // and folded over the compacted span -- an epochBoundary merge resets both (the epoch reset
-  // discarded the doc those pins seeded), and a surviving "changes" message's declarations
-  // accumulate. Statuses are computed over the compacted span alone, which is sound because
-  // rollbackChatCompaction guarantees no revert in the tail reaches below the boundary.
+  // and folded over the compacted span -- an epoch boundary (an epochBoundary merge, or a
+  // migrated chat's conversionBoundary changes message) resets both, and a surviving "changes"
+  // message's declarations accumulate. Statuses are computed over the compacted span alone,
+  // which is sound because rollbackChatCompaction guarantees no revert in the tail reaches
+  // below the boundary.
   let statuses = chatChangeStatuses(compacted);
   let pins = new Map((previous?.pins ?? []).map(pin => [pin.gadgetId, pin] as const));
   let epoch = previous?.epoch;
-  let boundaryCrossed = false;
   for (let message of compacted) {
     if (message.type === "merge" && message.epochBoundary) {
       pins.clear();
       epoch = message.sequence;
-      boundaryCrossed = true;
-      // A boundary also graduates a legacy chat: its legacy base is gone, and nothing after
-      // graduation stamps code versions. Carrying the stamp across the boundary would make the
-      // next turn's replay reactivate the retired legacy doc *under* the new epoch's
-      // commit-derived seeds (see `legacyBase` in agent.ts).
-      observedCodeVersion = undefined;
     } else if (message.type === "changes" && statuses.get(message.sequence) !== "reverted") {
+      if (message.conversionBoundary) {
+        pins.clear();
+        epoch = message.sequence;
+      }
       for (let pin of message.pins ?? []) pins.set(pin.gadgetId, pin);
     }
   }
 
-  // Proposed updates stay addressable by sequence until a merge accepts them or a revert drops
-  // them. A carried-forward prefix is addressed below every message in this span: the previous
-  // checkpoint already folded it, so nothing here can accept or revert part of it. Accepted
-  // updates exist to complete a *legacy* chat's doc (its base, the retired code log, never
-  // advances); an epoch boundary in the span discards the doc they would complete -- the merged
-  // content lives in commits -- so crossing one drops them, and a commit-pinned chat (whose
-  // every merge is a boundary) never carries any.
-  let {proposed, accepted} = foldProposedChanges(
-      compacted, previous?.proposedChanges ? [{sequence: -1, update: previous.proposedChanges}] : []);
-  if (previous?.acceptedChanges) accepted.unshift(previous.acceptedChanges);
-  let stillProposed: Uint8Array[] = [];
+  // Proposed ops stay addressable by sequence until a merge accepts them or a revert drops
+  // them; the checkpoint carries their composition so replay needn't load the compacted
+  // messages. A carried-forward prefix is addressed below every message in this span: the
+  // previous checkpoint already folded it, so nothing here can accept or revert part of it.
+  // Composition is bounded by content size, not edit count, so `proposedOp` can't grow with
+  // history the way merged CRDT updates could.
+  let proposed = foldProposedChanges(
+      compacted,
+      previous?.proposedOp !== undefined ? [{sequence: -1, op: previous.proposedOp}] : []);
+  let proposedOp: CodeOp | undefined;
   for (let batch of proposed) {
-    if (batch.update !== undefined) stillProposed.push(batch.update);
+    if (batch.op === undefined) continue;
+    proposedOp = proposedOp === undefined ? batch.op : composeCodeOp(proposedOp, batch.op);
   }
 
   return {
     chatBindings: [...chatBindings],
     nextChangeId,
-    observedCodeVersion,
     pins: pins.size === 0 ? undefined : [...pins.values()],
     epoch,
-    acceptedChanges: boundaryCrossed || accepted.length === 0
-        ? undefined : Y.mergeUpdatesV2(accepted),
-    proposedChanges: stillProposed.length === 0 ? undefined : Y.mergeUpdatesV2(stillProposed),
+    proposedOp,
   };
 }

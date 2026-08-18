@@ -34,10 +34,6 @@
     "./theme": {
       "types": "./src/theme.ts",
       "import": "./src/theme.ts"
-    },
-    "./yjs-seed": {
-      "types": "./src/yjs-seed.ts",
-      "import": "./src/yjs-seed.ts"
     }
   },
   "scripts": {
@@ -49,8 +45,7 @@
     "@cloudflare/workers-types": "^5.20260808.1",
     "@codemirror/state": "^6.7.1",
     "capnweb": "catalog:",
-    "fast-diff": "^1.3.0",
-    "yjs": "^13.6.31"
+    "fast-diff": "^1.3.0"
   },
   "devDependencies": {
     "typescript": "catalog:"
