@@ -35,7 +35,7 @@ import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker"
 import { completeAgentCatalogSnapshot, normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
 import { SharingManager, SharingCaller, CollaboratorRecord, ShareKeyRecord } from "./sharing";
-import { AutoApprovalDrainer } from "./auto-approval";
+import { ActionSyncDriver, ManualApproval } from "./action-sync";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext, traced } from "./observability";
 import { wrapDoStubForTelemetry } from "./do-telemetry";
@@ -522,6 +522,25 @@ export type ActionRecord = {
   description: ActionDescription;
   resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
   autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
+
+  /**
+   * Display-safe reason the most recent application attempt stopped at this action. Only present
+   * while the action remains pending; cleared when it applies or is rejected.
+   */
+  failure?: string;
+
+  /**
+   * Workspace action ID of the rejected action whose veto invalidated this one. Only set when
+   * `state` is "rejected" and the rejection came from a gatekeeper dependency cascade.
+   */
+  cascadedFrom?: number;
+
+  /**
+   * Present while the user's rejection has not yet been delivered to the gatekeeper as a veto.
+   * The sync driver clears it on delivery. Absent on records rejected before this field existed,
+   * so legacy rejections are never re-delivered.
+   */
+  vetoPending?: true;
 } | {
   type: "observation";
   description: ObservationDescription;
@@ -730,6 +749,8 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         description: record.description,
         resolvedBy: record.resolvedBy,
         autoApproved: record.autoApproved,
+        cascadedFrom: record.cascadedFrom,
+        failure: record.failure,
       };
     case "bindHook":
       return {
@@ -1117,7 +1138,7 @@ class OverseerImpl implements AgentHooks {
   #liveChats = new Map<number, LiveChatContext>();
   #chatSubscribers: Set<RpcStub<AiChatSubscriber>> = new Set();
 
-  #autoApprovalDrainer: AutoApprovalDrainer;
+  #actionSync: ActionSyncDriver;
 
   #preparingChatMessages = new Map<number, Promise<void>>();
 
@@ -1403,10 +1424,8 @@ class OverseerImpl implements AgentHooks {
     this.#migrateStorage();
     this.defaultGadgetId = this.storage.defaultGadgetId.get();
 
-    this.#autoApprovalDrainer = new AutoApprovalDrainer(
-        this.storage,
-        (record, resolvedBy, autoApproved) =>
-            this.applyPendingAction(record, resolvedBy, autoApproved));
+    this.#actionSync = new ActionSyncDriver(
+        this.storage, gatekeeperId => this.getGatekeeperFacet(gatekeeperId));
 
     // Mirror every gadget-registry change into the owner's outputs index. Subscribing here makes
     // the registry the single chokepoint, so creation, acceptance, renaming, reverting and
@@ -2567,35 +2586,18 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  // Apply a single pending action: invoke the gatekeeper, mark it approved, and persist (the put
-  // auto-notifies subscribeToActions). Shared by manual approval (`approveAction`) and the
-  // auto-approval drain (`drainAutoApprovals`). The caller is responsible for validating that the
-  // record is still pending before calling.
-  //
-  // `resolvedBy`/`autoApproved` are required (not defaulted) so that no apply path can omit how the
-  // gate was cleared: this is the single chokepoint where an action transitions to "approved", so
-  // requiring them here guarantees the audit log always records the resolving user and whether it
-  // was applied automatically. For an auto-approval, `resolvedBy` is the user who enabled the rule.
-  async applyPendingAction(record: ActionRecord & {type: "action"},
-                           resolvedBy: AiChatAuthorInfo, autoApproved: boolean): Promise<void> {
-    let gatekeeper = this.getGatekeeperFacet(record.gatekeeperId);
-    await gatekeeper.applyAction(record.action);
-    record.state = "approved";
-    record.appliedAt = new Date();
-    record.resolvedBy = resolvedBy;
-    record.autoApproved = autoApproved;
-    this.storage.actions.put(record);
+  // Reconcile the gatekeeper's pending actions through one batch applyActionsThrough call: staged
+  // manual approvals, then auto-eligible actions (stopping at the first manual gate -- nothing is
+  // silently applied past one), then any deliverable staged vetoes. Resolves with the workspace
+  // record ids the pass decided. Delegates to the single-flight driver, which coalesces concurrent
+  // requests for the same gatekeeper (the DO's input gate is open across the RPC await).
+  syncActions(gatekeeperId: number, manualApproval?: ManualApproval): Promise<number[]> {
+    return this.#actionSync.sync(gatekeeperId, manualApproval);
   }
 
-  // Apply all currently-eligible pending actions of the given gatekeeper, in ascending id order.
-  // Stops at the first pending action that is NOT auto-eligible (i.e. a manual gate) or that throws
-  // while applying -- it is never skipped ahead of. This preserves in-order application and the
-  // invariant that nothing is silently applied past a human gate.
-  //
-  // Delegates to the single-flight drainer, which guards against concurrent drains for the same
-  // gatekeeper double-applying an action (the DO's input gate is open across the apply await).
-  drainAutoApprovals(gatekeeperId: number): Promise<void> {
-    return this.#autoApprovalDrainer.drain(gatekeeperId);
+  // Resolves once no sync pass is in flight for the gatekeeper (see ActionSyncDriver.settled).
+  settledActionSync(gatekeeperId: number): Promise<void> {
+    return this.#actionSync.settled(gatekeeperId);
   }
 
   // Blocks other messages and agent turns for this chat until the returned object is disposed.
@@ -2996,7 +2998,7 @@ class OverseerImpl implements AgentHooks {
     }
 
     if (willAutoApprove) {
-      this.ctx.waitUntil(this.drainAutoApprovals(gatekeeperId));
+      this.ctx.waitUntil(this.syncActions(gatekeeperId));
     }
   }
 
@@ -7749,17 +7751,33 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Resolve the approver's identity before applying, so a failed profile fetch can't leave the
     // action applied in the world but still "pending" in storage.
     let profile = await this.#getClientProfile();
-    await this.impl.applyPendingAction(action, profile, false);
 
-    // If this was an awaited agent action, resume only after all awaited actions in the turn are
-    // approved. If applyPendingAction throws, the action stays pending and the turn stays suspended.
-    if (action.caller.from === "agent" && action.description.awaitDecision) {
-      await this.#maybeResumeAfterActionDecision(action.caller.chatId);
+    // Approving is a decision frontier: the sync pass applies this action AND every earlier
+    // undecided action from the same gatekeeper (attributed to this approver), then continues
+    // through any auto-eligible actions the cleared gate unblocked.
+    let decided = await this.impl.syncActions(
+        action.gatekeeperId, {frontier: action.action, resolvedBy: profile});
+
+    let fresh = this.impl.storage.actions.get(id);
+    if (fresh?.type === "action" && fresh.state === "pending") {
+      // The gatekeeper stopped at (or before) this action; surface the display-safe reason so the
+      // user can resolve the problem and retry. The action stays pending.
+      throw new Error(fresh.failure ?? `Failed to apply action: ${id}`);
     }
 
-    // Clearing this manual gate may unblock later auto-eligible pending actions on the same
-    // gatekeeper, so cascade a drain (in-order) once this one is applied.
-    this.impl.ctx.waitUntil(this.impl.drainAutoApprovals(action.gatekeeperId));
+    // Resume turns suspended on awaitDecision whose awaited actions this pass decided -- the batch
+    // may have covered earlier actions from other chats, not just the approved one.
+    let chatIds = new Set<number>();
+    for (let recordId of decided) {
+      let record = this.impl.storage.actions.get(recordId);
+      if (record?.type === "action" && record.caller.from === "agent" &&
+          record.description.awaitDecision) {
+        chatIds.add(record.caller.chatId);
+      }
+    }
+    for (let chatId of chatIds) {
+      await this.#maybeResumeAfterActionDecision(chatId);
+    }
   }
 
   async listHooks(): Promise<BoundHookInfo[]> {
@@ -7894,18 +7912,29 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       throw new Error(`Can't reject an observation: ${id}`);
     }
 
-    let gatekeeper = this.impl.getGatekeeperFacet(action.gatekeeperId);
-
-    // Resolve the rejecter's identity before notifying the gatekeeper, so a failed profile fetch
-    // can't leave the action rejected with the gatekeeper but still "pending" in storage.
+    // Resolve the rejecter's identity first, so a failed profile fetch can't leave the action
+    // half-rejected.
     let profile = await this.#getClientProfile();
 
-    await gatekeeper.rejectAction(action.action);
+    // A rejection must never interleave with an in-flight sync pass that might be applying this
+    // very action; wait it out, then re-check.
+    await this.impl.settledActionSync(action.gatekeeperId);
+    let fresh = this.impl.storage.actions.get(id);
+    if (fresh?.type !== "action" || fresh.state !== "pending") {
+      throw new Error(`Action is not pending: ${id}`);
+    }
 
-    action.state = "rejected";
-    action.appliedAt = new Date();
-    action.resolvedBy = profile;
-    this.impl.storage.actions.put(action);
+    // The rejection is decided here and now; delivery to the gatekeeper is a staged veto. It goes
+    // out with the next sync pass whose frontier covers it -- immediately below, if every earlier
+    // action is already decided, otherwise once the actions below it are.
+    fresh.state = "rejected";
+    fresh.appliedAt = new Date();
+    fresh.resolvedBy = profile;
+    fresh.vetoPending = true;
+    delete fresh.failure;
+    this.impl.storage.actions.put(fresh);
+
+    this.impl.ctx.waitUntil(this.impl.syncActions(action.gatekeeperId));
 
     // Deny leaves the turn ended, like denyConnectionRequest. The rejected record also prevents a
     // sibling approval from resuming this turn.
@@ -7929,7 +7958,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       enabledBy: profile,
     });
     // Apply the currently-visible pending action(s) with this tag right away.
-    this.impl.ctx.waitUntil(this.impl.drainAutoApprovals(gatekeeperId));
+    this.impl.ctx.waitUntil(this.impl.syncActions(gatekeeperId));
   }
 
   // Remove the auto-approval rule for `tag` on the given gatekeeper, so future matching actions
