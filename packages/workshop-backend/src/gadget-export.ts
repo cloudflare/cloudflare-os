@@ -106,7 +106,7 @@ export function validateExportFormats(value: unknown): GadgetExportFormat[] {
   return result.data;
 }
 
-/** Reads custom formats, returning null only when the named entrypoint is absent. */
+/** Reads custom formats, returning null when the named entrypoint appears to be absent. */
 export async function readCustomExportFormats<Gadget>(
   handler: {getExportFormats(gadget: Gadget): Promise<unknown>},
   gadget: Gadget,
@@ -115,8 +115,15 @@ export async function readCustomExportFormats<Gadget>(
   try {
     return validateExportFormats(await deadline.race(handler.getExportFormats(gadget)));
   } catch (error) {
+    // TODO: Local dev doesn't match production here. This appears to be a
+    // runtime bug. When the entrypoint is missing in local dev, the first error
+    // message is returned. In production, "internal error; reference = ..." is
+    // returned instead. Until the runtime provides a more descriptive error
+    // message, we assume that all internal errors mean that the entrypoint is
+    // missing.
     if (error instanceof Error &&
-        error.message === `Worker has no such entrypoint: ${GADGET_EXPORT_ENTRYPOINT}`) {
+        (error.message === `Worker has no such entrypoint: ${GADGET_EXPORT_ENTRYPOINT}` ||
+          error.message.startsWith("internal error"))) {
       return null;
     }
     throw error;

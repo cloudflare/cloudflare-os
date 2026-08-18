@@ -90,7 +90,7 @@ describe("Gadget export formats", () => {
     }])).toThrow("invalid content type");
   });
 
-  it("uses defaults only for an absent entrypoint and propagates handler failures", async () => {
+  it("uses defaults for missing-entrypoint errors and propagates other failures", async () => {
     const missing = {
       async getExportFormats() {
         throw new Error("Worker has no such entrypoint: ExportHandler");
@@ -104,6 +104,13 @@ describe("Gadget export formats", () => {
       },
     };
     await expect(readCustomExportFormats(broken, {})).rejects.toThrow("handler failed");
+
+    const internalError = {
+      async getExportFormats() {
+        throw new Error("internal error; reference = 9fcjmb0apkauhvfiron4rfaj");
+      },
+    };
+    await expect(readCustomExportFormats(internalError, {})).resolves.toBeNull();
   });
 
   it("times out format discovery", async () => {
