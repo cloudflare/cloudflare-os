@@ -53,8 +53,8 @@ through logs and errors, then everything else.
   to the Workshop host, which validates the known frame window with origin `null`. Frontend reports
   never convey authority.
 - A report's `reportedUserId` is client-supplied and unverified; reject any change that reads it as
-  identity or authority. `pageLocation` is origin and pathname only, stripped at the boundary because
-  a share link's fragment is a bearer capability.
+  identity or authority. `pageLocation` is origin and pathname only, rebuilt at the boundary rather
+  than trimmed: a share link's fragment is a bearer capability and an `href` retains credentials.
 - Automatic error capture belongs only in trusted first-party surfaces, never in gadget or
   user-authored code.
 

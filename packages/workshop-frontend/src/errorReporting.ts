@@ -1,6 +1,7 @@
 import {
   MAX_STRING_CHARS,
   extractFrontendFrameReport,
+  normalizePageLocation,
   serializeException,
   type ErrorExceptionV1,
   type FrontendBrowserFacts,
@@ -47,18 +48,16 @@ type BrowserReporter = Readonly<{
 let currentReportedUserId: string | undefined
 
 /**
- * Returns the current location with query and fragment removed, or '' when it cannot be read.
+ * Returns the current page's origin and pathname, or '' when there is nothing safe to report.
  *
- * A share link carries a bearer capability in its fragment, so a report must never carry one out
- * of the tab. A failure resolves to '' rather than throwing, because the caller's catch would
- * otherwise discard an entire report over a single missing field.
+ * Shares `normalizePageLocation` with the backend boundary rather than trimming the URL here: a
+ * share link carries a bearer capability in its fragment and an `href` retains any credentials, so
+ * both ends need the same grammar and only one of them should define it. A failure resolves to ''
+ * rather than throwing, because the caller's catch would discard an entire report over one field.
  */
 function getPageLocation(): string {
   try {
-    const url = new URL(window.location.href)
-    url.search = ''
-    url.hash = ''
-    return url.href
+    return normalizePageLocation(window.location.href) ?? ''
   } catch {
     return ''
   }
