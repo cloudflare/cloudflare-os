@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   FRONTEND_ERROR_MESSAGE_TYPE,
   MAX_MESSAGE_CHARS,
+  MAX_STRING_CHARS,
   MAX_STACK_CHARS,
   extractFrontendFrameReport,
   normalizeFrontendErrorReport,
@@ -55,7 +56,8 @@ describe("normalizeFrontendErrorReport", () => {
   it("reconstructs only the final HTTP allowlist", () => {
     const decoded = normalizeFrontendErrorReport({
       ...report,
-      userId: "secret",
+      pageLocation: "https://workshop.example/workspace/123",
+      userId: "person@example.com",
       attributes: { prompt: "secret" },
       routeTemplate: "/gadget/:id",
       chatId: "chat-123",
@@ -63,12 +65,58 @@ describe("normalizeFrontendErrorReport", () => {
     });
     expect(decoded).toEqual({
       ...report,
+      pageLocation: "https://workshop.example/workspace/123",
+      userId: "person@example.com",
       browser: { family: "Chromium", mobile: false },
     });
-    expect(decoded).not.toHaveProperty("userId");
     expect(decoded).not.toHaveProperty("attributes");
     expect(decoded).not.toHaveProperty("routeTemplate");
     expect(decoded).not.toHaveProperty("chatId");
+  });
+
+  it("bounds page and user context", () => {
+    const decoded = normalizeFrontendErrorReport({
+      ...report,
+      pageLocation: "p".repeat(300),
+      userId: "u".repeat(300),
+    });
+
+    expect(decoded).toEqual({
+      ...report,
+      pageLocation: "p".repeat(256),
+      userId: "u".repeat(256),
+      truncated: true,
+    });
+  });
+
+  it("keeps only the part of a page location before a query or fragment", () => {
+    const decoded = normalizeFrontendErrorReport({
+      ...report,
+      pageLocation: "https://workshop.example/workspace/123?token=secret#share=capability",
+    });
+
+    expect(decoded).toEqual({
+      ...report,
+      pageLocation: "https://workshop.example/workspace/123",
+    });
+  });
+
+  it("does not mark a report truncated for the query string it strips", () => {
+    const decoded = normalizeFrontendErrorReport({
+      ...report,
+      pageLocation: `https://workshop.example/p?${"q".repeat(400)}`,
+    });
+
+    expect(decoded).toEqual({ ...report, pageLocation: "https://workshop.example/p" });
+  });
+
+  it("keeps context sitting exactly on the bound without marking it truncated", () => {
+    const prefix = "https://workshop.example/";
+    const pageLocation = prefix + "p".repeat(MAX_STRING_CHARS - prefix.length);
+    const userId = "u".repeat(MAX_STRING_CHARS);
+
+    expect(normalizeFrontendErrorReport({ ...report, pageLocation, userId }))
+      .toEqual({ ...report, pageLocation, userId });
   });
 
   it("normalizes malformed fields instead of losing the report", () => {

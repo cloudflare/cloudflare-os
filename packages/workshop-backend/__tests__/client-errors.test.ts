@@ -9,6 +9,8 @@ const validReport = {
   captureMechanism: "react",
   surface: "workshop",
   sessionId: "session-12345678",
+  pageLocation: "https://workshop.example/workspace/123",
+  userId: "person@example.com",
   exception: { type: "Error", message: "boom", stack: "Error: boom" },
 };
 
@@ -107,7 +109,7 @@ describe("handleClientErrorRequest", () => {
 
   it("assigns server occurrence metadata and dispatches a normalized event", async () => {
     const { env, ctx, report, limit, waits } = setup();
-    const req = request({ ...validReport, userId: "must-not-pass" }, {
+    const req = request(validReport, {
       headers: {
         origin: "https://workshop.example",
         "content-type": "application/json",
@@ -123,11 +125,36 @@ describe("handleClientErrorRequest", () => {
       handled: false,
       occurrenceId: expect.stringMatching(/^[0-9a-f-]{36}$/),
       occurredAt: expect.any(String),
-      attributes: expect.objectContaining({ captureMechanism: "react", surface: "workshop" }),
+      attributes: expect.objectContaining({
+        captureMechanism: "react",
+        surface: "workshop",
+        pageLocation: "https://workshop.example/workspace/123",
+        userId: "person@example.com",
+      }),
     }));
-    expect(report.mock.calls[0][0]).not.toHaveProperty("userId");
     expect(waits).toHaveLength(1);
     await Promise.all(waits);
+  });
+
+  it("forwards the client's unverified user claim without vetting it", async () => {
+    const { env, ctx, report } = setup();
+    const claimed = { ...validReport, userId: "someone-elses@example.com" };
+
+    expect((await handleClientErrorRequest(request(claimed), env, ctx)).status).toBe(204);
+    // The endpoint has no credential, so this value is a claim. It travels as a diagnostic
+    // attribute and must never be read to make a decision.
+    expect(report.mock.calls[0][0].attributes)
+      .toMatchObject({ userId: "someone-elses@example.com" });
+  });
+
+  it("omits page and user attributes when the report carries neither", async () => {
+    const { env, ctx, report } = setup();
+    const anonymous = { ...validReport, userId: undefined, pageLocation: undefined };
+
+    expect((await handleClientErrorRequest(request(anonymous), env, ctx)).status).toBe(204);
+    const { attributes } = report.mock.calls[0][0];
+    expect(attributes).not.toHaveProperty("userId");
+    expect(attributes).not.toHaveProperty("pageLocation");
   });
 
   it("rate-limits distinct verified Access users independently behind one IP", async () => {

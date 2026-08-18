@@ -138,7 +138,10 @@ IMPORTANT: Frontend error reporting is a separate, opt-in path:
   send bounded reports with `postMessage`; the host accepts them only from the known frame window
   with origin `null`, adds host-owned surface/vendor context, and performs the same-origin POST.
   Do not add direct cross-origin reporting from a gatekeeper Worker domain.
-- Frontend reports and frame metadata are diagnostic only and never convey identity or authority.
-  Install automatic capture only in trusted first-party surfaces, never gadget/user-authored code.
+- Frontend reports never convey authority. `userId` is supplied by the client and unverified, so it
+  is a diagnostic label only and must never be read to make a decision. `pageLocation` is origin and
+  pathname only, stripped in `normalizeFrontendErrorReport` rather than trusted from producers,
+  because a share link's fragment is a bearer capability.
+- Install automatic capture only in trusted first-party surfaces, never gadget/user-authored code.
   Exception messages and stacks reach the external Reporter, so never intentionally put secrets,
   prompts, tokens, headers, or request/response bodies in thrown errors or report metadata.

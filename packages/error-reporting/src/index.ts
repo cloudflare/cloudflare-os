@@ -81,6 +81,16 @@ export type FrontendErrorReportV1 = Readonly<{
   captureMechanism: FrontendCaptureMechanism;
   surface: FrontendErrorSurface;
   sessionId?: string;
+  /**
+   * Origin and pathname of the host page where the failure was captured. Query and fragment are
+   * excluded so URL-borne secrets never leave the tab, notably the `#share=` bearer capability.
+   */
+  pageLocation?: string;
+  /**
+   * Diagnostic user identifier supplied by the client. Not authoritative: it is an unverified
+   * claim, and nothing may read it to make a decision or grant access.
+   */
+  userId?: string;
   exception?: ErrorExceptionV1;
   gadgetId?: string;
   gatekeeperVendorId?: string;
@@ -132,6 +142,20 @@ function boundedString(
   const result = clipped(value, maximum);
   if (result.truncated) mark();
   return result.value;
+}
+
+/**
+ * Bounds a captured page location, keeping only the part before any query or fragment.
+ *
+ * The Workshop producer already sends origin and pathname only, but this is the trust boundary:
+ * a share link carries a bearer capability in its fragment, so query and fragment are dropped
+ * here rather than relying on every present and future producer to have dropped them.
+ */
+function boundedPageLocation(value: unknown, mark: () => void): string | undefined {
+  if (typeof value !== "string") return undefined;
+  // Strip before bounding so a long query never consumes the budget for the part we keep, and so
+  // a policy strip is not reported as a truncated value.
+  return boundedString(value.split(/[?#]/)[0], MAX_STRING_CHARS, mark);
 }
 
 function boundedContent(
@@ -207,6 +231,8 @@ export function normalizeFrontendErrorReport(input: unknown): FrontendErrorRepor
     if (!frame) return null;
     const surfaceValue = ownValue(input, "surface");
     const sessionId = boundedString(ownValue(input, "sessionId"), MAX_STRING_CHARS, mark);
+    const pageLocation = boundedPageLocation(ownValue(input, "pageLocation"), mark);
+    const userId = boundedString(ownValue(input, "userId"), MAX_STRING_CHARS, mark);
     const gadgetId = boundedString(ownValue(input, "gadgetId"), MAX_STRING_CHARS, mark);
     const gatekeeperVendorId = boundedString(
       ownValue(input, "gatekeeperVendorId"), MAX_STRING_CHARS, mark,
@@ -217,6 +243,8 @@ export function normalizeFrontendErrorReport(input: unknown): FrontendErrorRepor
       ...frame,
       surface: allowlistedString(surfaceValue, surfaces) ?? "workshop",
       ...(sessionId && { sessionId }),
+      ...(pageLocation && { pageLocation }),
+      ...(userId && { userId }),
       ...(gadgetId !== undefined && { gadgetId }),
       ...(gatekeeperVendorId !== undefined && { gatekeeperVendorId }),
       ...(browser && { browser }),
