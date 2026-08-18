@@ -92,6 +92,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props)
             render={(
               <WorkshopIconButton
                 aria-label="Export Gadget"
+                disabled={exportingId !== null}
               >
                 <DownloadSimple size={17} />
               </WorkshopIconButton>

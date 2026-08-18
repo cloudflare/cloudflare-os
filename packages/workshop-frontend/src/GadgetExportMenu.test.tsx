@@ -47,7 +47,9 @@ vi.mock('@cloudflare/kumo', () => {
   )
   return {
     DropdownMenu,
-    Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
+    Tooltip: ({ children, content }: { children: ReactNode; content: ReactNode }) => (
+      <div data-tooltip={content}>{children}</div>
+    ),
     useKumoToastManager: () => ({ add: mocks.toast }),
   }
 })
@@ -134,6 +136,42 @@ describe('GadgetExportMenu', () => {
       'Report.csv',
       { description: 'CSV', contentType: 'text/csv', extension: '.csv' },
     )
+  })
+
+  it('disables the export button and updates its tooltip while exporting', async () => {
+    let finishExport!: () => void
+    const pendingExport = new Promise<void>(resolve => { finishExport = resolve })
+    const format: GadgetExportFormat = {
+      id: 'csv',
+      label: 'CSV',
+      mode: 'server',
+      contentType: 'text/csv',
+      fileExtension: '.csv',
+    }
+    const client = gadget({
+      getExportFormats: vi.fn<(chatId?: number) => Promise<GadgetExportFormat[]>>(
+        async () => [format],
+      ),
+    })
+    mocks.saveStreamToFile.mockReturnValue(pendingExport)
+
+    await act(async () => {
+      root.render(<GadgetExportMenu gadget={client} gadgetTitle="Report" />)
+    })
+    await act(async () => { button('open export menu')?.click() })
+    await act(async () => { button('CSV')?.click() })
+
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Export Gadget"]')
+    expect(trigger?.disabled).toBe(true)
+    expect(trigger?.closest('[data-tooltip]')?.getAttribute('data-tooltip')).toBe('Exporting to CSV')
+
+    await act(async () => {
+      finishExport()
+      await pendingExport
+    })
+
+    expect(trigger?.disabled).toBe(false)
+    expect(trigger?.closest('[data-tooltip]')?.getAttribute('data-tooltip')).toBe('Export Gadget')
   })
 
   it('shows an empty state without hiding or disabling the export button', async () => {
