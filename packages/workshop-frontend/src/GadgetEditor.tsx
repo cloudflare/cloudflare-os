@@ -45,7 +45,6 @@ import ChatInterface, {
   type StreamingProposedChanges,
   type ActiveFileTarget,
   type ChatCodeChanges,
-  type SelectedChatCodeInfo,
 } from './ChatInterface'
 import { formatOf } from './components/format/formats'
 import { FormatGlyph } from './components/format/FormatVisuals'
@@ -592,11 +591,10 @@ export default function GadgetEditor() {
   // ── code / chat state ────────────────────────────────────────────────────────
   const [uiReloadTrigger, setUiReloadTrigger] = useState(0)
   const [autoApproveReloadTrigger, setAutoApproveReloadTrigger] = useState(0)
-  // The selected chat's recorded code changes and code-base pins (see ChatCodeChanges /
-  // SelectedChatCodeInfo in ChatInterface), plumbed from the chat subscription into the code view,
-  // which layers them over the chat's commit-derived doc base.
+  // The selected chat's code-branch snapshot (see ChatCodeChanges in ChatInterface): its code
+  // base and the current epoch's recorded changes, plumbed from the chat subscription into the
+  // code view, which layers them over the per-pin commit-derived doc base.
   const [chatChanges, setChatChanges] = useState<ChatCodeChanges | undefined>(undefined)
-  const [selectedChatCode, setSelectedChatCode] = useState<SelectedChatCodeInfo | undefined>(undefined)
   const [draftProposedChanges, setDraftProposedChanges] = useState<StreamingProposedChanges | undefined>(undefined)
   const [streamingProposedChanges, setStreamingProposedChanges] = useState<StreamingProposedChanges | undefined>(undefined)
   const [streamingActiveFileState, setStreamingActiveFileState] = useState<{
@@ -986,7 +984,6 @@ export default function GadgetEditor() {
 
   useEffect(() => {
     setChatChanges(undefined)
-    setSelectedChatCode(undefined)
     setDraftProposedChanges(undefined)
     setStreamingProposedChanges(undefined)
     setStreamingActiveFileState(null)
@@ -1498,7 +1495,6 @@ export default function GadgetEditor() {
                   selectedChatId={effectiveSelectedChatId}
                   onNavigateToChat={navigateToChat}
                   onChatChangesChange={setChatChanges}
-                  onSelectedChatCodeBaseChange={setSelectedChatCode}
                   onDraftProposedChangesChange={setDraftProposedChanges}
                   onStreamingProposedChangesChange={updates => setStreamingProposedChanges(updates)}
                   onStreamingActiveFileChange={handleStreamingActiveFileChange}
@@ -1691,14 +1687,14 @@ export default function GadgetEditor() {
             </div>
 
             <div className={activeTab === 'code' ? 'h-full' : 'hidden'}>
-              {overseer && selectedFilesRoot !== undefined ? (
+              {overseer && selectedGadgetSummary && selectedFilesRoot !== undefined ? (
                 <GadgetCodeInterface
                   overseer={overseer.stub}
+                  workpieceId={selectedGadgetSummary.id}
                   filesRoot={selectedFilesRoot}
-                  headCommitId={selectedGadgetSummary?.commitId}
+                  headCommitId={selectedGadgetSummary.commitId}
                   height={RIGHT_CONTENT_H}
                   selectedChatId={effectiveSelectedChatId}
-                  chatCode={selectedChatCode}
                   chatChanges={chatChanges}
                   draftProposedChanges={draftProposedChanges}
                   streamingProposedChanges={streamingProposedChanges}

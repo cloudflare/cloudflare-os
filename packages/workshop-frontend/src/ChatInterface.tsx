@@ -140,22 +140,18 @@ export interface StreamingProposedChanges {
 }
 
 /**
- * The selected chat's recorded code changes: every non-reverted "changes" update -- accepted
- * ones included, not just still-proposed ones -- merged into one Yjs update. The chat doc's base
- * never advances (see ChatCodeBase in the API), so the full doc is base + these + drafts.
- * `undefined` while no chat is selected or its history hasn't loaded; `update` absent when the
- * chat has recorded no code changes.
+ * The selected chat's code-branch state, as one consistent snapshot: the chat's current
+ * ChatCodeBase (pins, generation, epoch -- `codeBase` absent when the chat has none yet, which
+ * reads as `{gadgets: [], generation: 0}`) together with every non-reverted "changes" update
+ * recorded in the epoch that codeBase names, merged into one Yjs update. The two are always
+ * derived together -- the code view builds its doc as per-pin seeds (or the legacy base, see
+ * ChatCodeBase.legacy) + `update` + drafts, and pairing a stale epoch's updates with a fresh
+ * epoch's pins (or vice versa) would transiently build nonsense. `undefined` while no chat is
+ * selected or its metadata/history hasn't loaded; `update` absent when the chat has recorded no
+ * code changes this epoch.
  */
 export interface ChatCodeChanges {
   update?: Uint8Array;
-}
-
-/**
- * The selected chat's code-base pins, delivered once its metadata is known. The wrapper
- * distinguishes "metadata not loaded yet" (no object) from "chat predates commit-seeded docs"
- * (object with `codeBase` absent or hash-less -- see Overseer.getLegacyChatDocBase()).
- */
-export interface SelectedChatCodeInfo {
   codeBase?: ChatCodeBase;
 }
 
@@ -4234,23 +4230,34 @@ export function computeMessageStates(
 }
 
 /**
- * The Yjs updates that rebuild a chat's code doc on top of its fixed base (commit-derived seed or
- * legacy base -- see ChatCodeBase): every non-reverted "changes" update in order, *accepted ones
- * included* (the base never advances, so accepted updates are still part of every later doc
- * state). The oldest loaded compaction boundary stands in for the pages before it -- its
- * acceptedChanges blob unconditionally (accepted changes can't be reverted), its proposedChanges
- * blob unless a loaded revert reached across the boundary -- and drops out once those pages load,
- * exactly like computeMessageStates' active-changes seeding. (Re-applying an update a legacy base
- * already contains is harmless: Yjs update application is idempotent.)
+ * The Yjs updates that rebuild a chat's code doc on top of its current epoch's base (per-pin
+ * commit-derived seeds, or the legacy base -- see ChatCodeBase): every non-reverted "changes"
+ * update recorded *in the current epoch*, in order. `epoch` is the chat's current
+ * ChatCodeBase.epoch -- the sequence of the merge that opened the epoch -- and everything at or
+ * below it is excluded: accepting changes discards the chat's doc (the merged content lives in
+ * commits from then on), so earlier epochs' updates are rooted in seeds the doc no longer
+ * contains. Keying the cutoff on the metadata's epoch rather than on loaded merge messages keeps
+ * this consistent with the seeds the code view derives from the same metadata's pins. Within the
+ * epoch, accepted updates are included alike -- a legacy (pre-graduation) chat's base never
+ * advances, and epoch-opening merges of commit-pinned chats reset `epoch` itself.
+ *
+ * The oldest loaded compaction boundary stands in for the pages before it -- its acceptedChanges
+ * blob unconditionally (accepted changes can't be reverted), its proposedChanges blob unless a
+ * loaded revert reached across the boundary -- and drops out once those pages load, exactly like
+ * computeMessageStates' active-changes seeding. Both blobs fold in at sequence `to - 1`, so an
+ * epoch at or above that excludes them like any other pre-epoch content. (Re-applying an update
+ * a legacy base already contains is harmless: Yjs update application is idempotent.)
  */
 export function computeChatDocUpdates(
   messages: AiChatMessage[],
   compacted?: CompactionBoundary,
+  epoch?: number,
 ): Uint8Array[] {
   const { changeStatus } = computeMessageStates(messages, compacted);
   const updates: Uint8Array[] = [];
 
-  if (compacted && (messages.length === 0 || messages[0].sequence >= compacted.to)) {
+  if (compacted && (messages.length === 0 || messages[0].sequence >= compacted.to) &&
+      (epoch === undefined || compacted.to - 1 > epoch)) {
     if (compacted.acceptedChanges !== undefined) {
       updates.push(compacted.acceptedChanges);
     }
@@ -4264,6 +4271,7 @@ export function computeChatDocUpdates(
 
   for (const msg of messages) {
     if (msg.type === "changes" && msg.update !== undefined &&
+        (epoch === undefined || msg.sequence > epoch) &&
         changeStatus.get(msg.sequence) !== "reverted") {
       updates.push(msg.update);
     }
@@ -4310,11 +4318,10 @@ interface ChatInterfaceProps {
     chatId: number | null,
     options?: { replace?: boolean },
   ) => void;
-  // The selected chat's recorded code changes (see ChatCodeChanges). Layered by the code view on
-  // top of the chat's commit-derived (or legacy) doc base.
+  // The selected chat's code-branch snapshot (see ChatCodeChanges): its code base and the
+  // current epoch's recorded changes, delivered together so the code view always layers a
+  // consistent pair.
   onChatChangesChange?: (changes: ChatCodeChanges | undefined) => void;
-  // The selected chat's code-base pins, once its metadata is known (see SelectedChatCodeInfo).
-  onSelectedChatCodeBaseChange?: (info: SelectedChatCodeInfo | undefined) => void;
   onDraftProposedChangesChange?: (
     updates: StreamingProposedChanges | undefined,
   ) => void;
@@ -4506,7 +4513,6 @@ function ChatInterface({
   selectedChatId,
   onNavigateToChat,
   onChatChangesChange,
-  onSelectedChatCodeBaseChange,
   onDraftProposedChangesChange,
   onStreamingProposedChangesChange,
   onStreamingActiveFileChange,
@@ -5132,56 +5138,49 @@ function ChatInterface({
     selectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);
 
-  // Notify parent when the selected chat's recorded code changes change (see ChatCodeChanges).
-  // Only recomputes when proposedChangesVersion changes (i.e. a "changes" or "revert" message
-  // arrives, or a history page loads), NOT on every message. "merge" messages don't bump it: they
-  // reclassify changes from proposed to accepted, and the doc applies both.
+  // Notify parent when the selected chat's code-branch snapshot changes (see ChatCodeChanges):
+  // its ChatCodeBase plus the current epoch's recorded changes, derived together so the code
+  // view never pairs one's stale value with the other's fresh one. Recomputes when
+  // proposedChangesVersion changes (i.e. a "changes" or "revert" message arrives, or a history
+  // page loads) or when the codeBase's *content* changes -- metadata is redelivered on every
+  // chat activity (title, lastActive, ...), so it is deduped by signature. "merge" messages bump
+  // neither directly: the epoch reset they perform arrives through the metadata's codeBase
+  // (advanced epoch, cleared pins, bumped generation), redelivered with the merge.
+  const currentCodeBaseSignature = currentChatMetadata
+    ? JSON.stringify(currentChatMetadata.codeBase ?? null) : undefined;
   useEffect(() => {
-    if (selectedChatId === null || !cacheRef.current.messages.has(selectedChatId)) {
-      // No chat selected, or its history hasn't loaded yet -- the code view can't build the
-      // chat's doc until it has.
+    if (selectedChatId === null || currentCodeBaseSignature === undefined ||
+        !cacheRef.current.messages.has(selectedChatId)) {
+      // No chat selected, or its metadata or history hasn't loaded yet -- the code view can't
+      // build the chat's doc until both have.
       onChatChangesChange?.(undefined);
       return;
     }
 
-    // Read messages directly from the cache (always current) rather than using the
-    // memoized currentMessages, so we don't need it as a dependency.
+    // Read messages and metadata directly from the cache (always current) rather than using the
+    // memoized currentMessages, so we don't need them as dependencies.
     const messages = (cacheRef.current.messages.get(selectedChatId) || []).filter(
       (msg) => msg !== undefined,
     );
+    const codeBase = cacheRef.current.chats.get(selectedChatId)?.codeBase;
     const updates = computeChatDocUpdates(
       messages,
       cacheRef.current.compacted.get(selectedChatId)?.[0],
+      codeBase?.epoch,
     );
 
     onChatChangesChange?.({
       update: updates.length === 0
         ? undefined
         : updates.length === 1 ? updates[0] : Y.mergeUpdatesV2(updates),
+      codeBase,
     });
   }, [
     proposedChangesVersion,
     selectedChatId,
+    currentCodeBaseSignature,
     onChatChangesChange,
   ]);
-
-  // Notify parent of the selected chat's code-base pins once its metadata is known. Metadata is
-  // re-delivered on every chat change (title, lastActive, ...), so dedup on content to avoid
-  // churning the code view's props.
-  const onSelectedChatCodeBaseChangeRef = useRef(onSelectedChatCodeBaseChange);
-  onSelectedChatCodeBaseChangeRef.current = onSelectedChatCodeBaseChange;
-  const lastCodeBaseSignatureRef = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    const info = selectedChatId !== null && currentChatMetadata
-      ? { codeBase: currentChatMetadata.codeBase }
-      : undefined;
-    const signature = info === undefined
-      ? undefined
-      : `${selectedChatId}:${JSON.stringify(info.codeBase ?? null)}`;
-    if (signature === lastCodeBaseSignatureRef.current) return;
-    lastCodeBaseSignatureRef.current = signature;
-    onSelectedChatCodeBaseChangeRef.current?.(info);
-  }, [selectedChatId, currentChatMetadata]);
 
   useEffect(() => {
     onStreamingProposedChangesChange?.(currentStreamingState);
@@ -5247,6 +5246,21 @@ function ChatInterface({
           ? prevChat?.compactedTo !== undefined
           : !cacheRef.current.compacted.get(chat.id)?.some(({to}) => to === chat.compactedTo))) {
         refreshBoundaryRef.current(chat.id);
+      }
+
+      // Every server-side generation bump (merge, revert, draft discard -- see
+      // ChatCodeBase.generation) deletes all stored drafts in the same atomic step, so any
+      // drafts cached here when the bump becomes visible necessarily predate it and are rooted
+      // in erased history. Drop them now rather than waiting for draftCleared(): its delivery
+      // order relative to this metadata is not guaranteed, and a code-doc rebuild that paired
+      // the new generation with the stale drafts would seed erased Yjs structs that new edits
+      // -- accepted under the new generation -- could reference forever. Post-bump drafts are
+      // only ever emitted after the bump's metadata, so none are lost; the resubscribe path
+      // replays current drafts before its metadata catch-up, where this can drop them, which
+      // costs at most their provisional display until the next draft or materialization.
+      if (prevChat !== undefined &&
+          (prevChat.codeBase?.generation ?? 0) !== (chat.codeBase?.generation ?? 0)) {
+        draftRef.current.delete(chat.id);
       }
 
       cacheRef.current.chats.set(chat.id, chat);
@@ -5330,9 +5344,10 @@ function ChatInterface({
       }
 
       // Only trigger proposed-changes recomputation for message types that affect the code.
-      // "merge" is excluded: it reclassifies changes from proposed to committed but doesn't
-      // change the total code (committed + proposed). The hasProposedChanges metadata
-      // dependency handles the transition when all changes are merged.
+      // "merge" is excluded: the epoch reset it performs reaches the doc through the metadata's
+      // codeBase.epoch (redelivered with the merge), which the chat-doc effect above depends on
+      // -- recomputing here as well would race the metadata and transiently pair the old epoch's
+      // updates with the new epoch's (empty) pin set.
       if (msg.type === "changes" || msg.type === "revert") {
         setProposedChangesVersion((prev) => prev + 1);
       }
@@ -5807,17 +5822,16 @@ function ChatInterface({
     }
   };
 
-  // Handle merging changes up to a specific sequence number. Accepting is only ever a
-  // fast-forward; a "stale" outcome (mainline advanced past the chat's pins) is expected control
-  // flow that opens the update-from-mainline dialog rather than an error.
-  const handleMergeChanges = async (
-    mergeThrough: number | null,
-    options?: { includeDraft?: boolean },
-  ) => {
+  // Handle accepting the chat's proposed changes. A merge always takes everything the chat
+  // proposes -- live drafts are swept in and there is no partial accept (see
+  // Overseer.mergeChanges()). Accepting is only ever a fast-forward; a "stale" outcome (mainline
+  // advanced past the chat's pins) is expected control flow that opens the update-from-mainline
+  // dialog rather than an error.
+  const handleMergeChanges = async () => {
     if (selectedChatId === null) return;
 
     try {
-      const result = await overseer.mergeChanges(selectedChatId, mergeThrough, options);
+      const result = await overseer.mergeChanges(selectedChatId);
       if (result.outcome === "stale") {
         setStaleAcceptChatId(selectedChatId);
         return;
@@ -7979,22 +7993,10 @@ function ChatInterface({
                     draftUpdateBanner={(() => {
                       if (!currentChatMetadata?.hasProposedChanges) return null;
 
-                      // Accept through the newest still-proposed batch, but never below the cut the
-                      // server seeds the compacted prefix at. That prefix is accepted as a unit, so
-                      // addressing anything under it drains nothing -- which is reachable both when
-                      // it only created gadgets (no Yjs bytes, hence no entry here) and when paging
-                      // backward leaves the newest loaded batch below the boundary. Discard-all uses
-                      // sequence zero because compacted batches retain their original, earlier
-                      // sequences; the synthetic prefix sequence is only meaningful when merging.
-                      const { activeChanges } = messageStates;
-                      const cuts = [
-                        ...(activeChanges.length > 0
-                          ? [activeChanges[activeChanges.length - 1].sequence] : []),
-                        ...(currentChatMetadata.compactedTo !== undefined
-                          ? [currentChatMetadata.compactedTo - 1] : []),
-                      ];
-                      if (cuts.length === 0) return null;
-                      const mergeThrough = Math.max(...cuts);
+                      // Accepting always merges everything the chat proposes (drafts swept in,
+                      // no partial accepts -- see Overseer.mergeChanges()), so the banner needs
+                      // no accept cut of its own. Discard-all still uses sequence zero, which
+                      // covers every batch including the compacted prefix's.
                       const isDiscardingChanges = discardingChangesChatIds.has(
                         currentChatMetadata.id,
                       );
@@ -8024,9 +8026,7 @@ function ChatInterface({
                               : "Keep this draft and make it the gadget's current version."} asChild>
                             <WorkshopButton
                               disabled={changesActionsDisabled}
-                              onClick={() =>
-                                handleMergeChanges(mergeThrough, { includeDraft: true })
-                              }
+                              onClick={() => handleMergeChanges()}
                               tone="primary"
                               className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
                             >

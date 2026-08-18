@@ -1,8 +1,9 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import { DownloadSimple } from '@phosphor-icons/react'
-import { Overseer } from '@gadgets/workshop-shared/api'
-import { seedDocFromFiles, seedUpdateHash } from '@gadgets/workshop-shared/yjs-seed'
+import { Overseer, WorkpieceId } from '@gadgets/workshop-shared/api'
+import { bindLiveDocClientId, seedClientIdForGadget, seedRootFromFiles }
+  from '@gadgets/workshop-shared/yjs-seed'
 import { RpcStub } from 'capnweb'
 import * as Y from 'yjs'
 import FileSidebar from './FileSidebar'
@@ -10,40 +11,55 @@ import type { FileChangeStatus, FileSidebarHandle } from './FileSidebar'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import CodeEditor from './CodeEditor'
 import CodeDiffEditor from './CodeDiffEditor'
-import type { ChatCodeChanges, SelectedChatCodeInfo, StreamingProposedChanges } from './ChatInterface'
+import type { ChatCodeChanges, StreamingProposedChanges } from './ChatInterface'
+import { deriveVerifiedPinSeed, pinSetSignature } from './chatCodeDoc'
 import { reportIssue } from './errorReporting'
 import { saveTextToFile } from './fileTransfers'
+import { isTransientRpcError } from './rpcErrors'
 
 // The code view over git-backed gadget code.
 //
 // Committed code is git commits; the gadget's head commit (`headCommitId`, from
 // WorkpieceSummary.commitId) is fetched with Overseer.getCodeAtCommit() -- immutable, so cached
 // by oid -- and is both the read-only view outside any chat and the "original" side of in-chat
-// diffs. A chat's uncommitted changes are a Yjs doc layered on a fixed base the browser derives
-// itself: the deterministic seed built from the chat's pinned commits (see ChatCodeBase in the
-// API and `seedDocFromFiles` in @gadgets/workshop-shared/yjs-seed, verified against the chat's
-// stored seed hash), or, for chats predating commit-seeded docs, the server-provided legacy base
-// (Overseer.getLegacyChatDocBase()). The chat's recorded change updates (`chatChanges`), live
-// drafts, and streaming agent edits apply on top, and the user's own edits are recorded as chat
-// drafts via Overseer.updateCode(). There is no standalone (out-of-chat) editing: gadget heads
-// only advance when a chat's changes are accepted.
+// diffs. A chat's uncommitted changes are a Yjs doc the browser derives itself, per gadget and
+// lazily (see ChatCodeBase in the API): a gadget joins the doc only when its code is first
+// modified in the chat, pinned at a commit whose tree seeds the gadget's root (the deterministic
+// `seedRootFromFiles` from @gadgets/workshop-shared/yjs-seed, verified against the pin's seed
+// hash). The chat's current-epoch change updates (`chatChanges`), live drafts, and streaming
+// agent edits apply on top, and the user's own edits are recorded as chat drafts via
+// Overseer.updateCode(). Chats predating commit-seeded docs use the server-provided legacy base
+// instead (ChatCodeBase.legacy / Overseer.getLegacyChatDocBase()).
+//
+// A gadget not pinned in the chat tracks mainline head live. To let the user start editing it
+// without an extra round trip, the editable doc *eagerly* seeds the selected root from the head
+// commit locally (never sent anywhere -- every side derives the identical bytes); the first
+// actual edit then declares the pin on its updateCode() call (see LocalPin). If the server
+// refuses an update -- the chat's generation moved under a merge/revert/draft-discard, or the
+// pin declaration lost a race -- the queued local edits are discarded with a notice and the view
+// rebuilds from server state, per ChatCodeBase.generation's contract.
+//
+// There is no standalone (out-of-chat) editing: gadget heads only advance when a chat's changes
+// are accepted.
 
 interface GadgetCodeInterfaceProps {
   overseer: RpcStub<Overseer>
+  // The selected workpiece's ID: the gadget whose files the editor shows, used for pin
+  // declarations and the per-gadget seed clientID (see ChatCodeBase).
+  workpieceId: WorkpieceId
   // Name of the Y.Doc root map holding the selected workpiece's files (see
   // WorkpieceSummary.filesRoot). Chat code docs span the whole workspace; this selects which
   // workpiece's files the editor shows.
   filesRoot: string
-  // The selected workpiece's head commit (WorkpieceSummary.commitId). Absent while the gadget has
-  // no accepted code (e.g. still pending in a chat), which reads as an empty committed file set.
+  // The selected workpiece's head commit (WorkpieceSummary.commitId). Absent while the gadget is
+  // still pending in a chat (see WorkpieceSummary.commitId: every permanent gadget has a head),
+  // which reads as an empty committed file set.
   headCommitId?: string
   height?: string | number
   selectedChatId?: number | null
-  // The selected chat's code-base pins, once known (see SelectedChatCodeInfo). Required to build
-  // the chat's doc base; the view stays in its loading state until it arrives.
-  chatCode?: SelectedChatCodeInfo
-  // The selected chat's recorded code changes (see ChatCodeChanges). `undefined` until the chat's
-  // history has loaded.
+  // The selected chat's code-branch snapshot (see ChatCodeChanges): its ChatCodeBase plus the
+  // current epoch's recorded code changes, derived together. `undefined` until the chat's
+  // metadata and history have loaded; the view stays in its loading state until it arrives.
   chatChanges?: ChatCodeChanges
   draftProposedChanges?: StreamingProposedChanges
   streamingProposedChanges?: StreamingProposedChanges
@@ -79,28 +95,23 @@ function fetchCommitFiles(
   return cached
 }
 
-// Builds the chat doc's base update for a commit-seeded chat: the deterministic whole-doc seed
-// from every seedCommit-bearing pin (a single seedDocFromFiles call, as the seed contract
-// requires), verified against the chat's stored seed hash. A mismatch means this client derives
-// a different seed than the chat was created with (e.g. a Yjs upgrade changed the encoding), and
-// editing a diverged doc would corrupt it -- so fail loudly instead.
-async function deriveSeedUpdate(
-  overseer: RpcStub<Overseer>,
-  codeBase: NonNullable<SelectedChatCodeInfo['codeBase']>,
-): Promise<Uint8Array> {
-  const roots = new Map<string, ReadonlyMap<string, string>>()
-  for (const pin of codeBase.gadgets) {
-    if (pin.seedCommit !== undefined) {
-      roots.set(pin.filesRoot, await fetchCommitFiles(overseer, pin.seedCommit))
-    }
-  }
-  const seed = seedDocFromFiles(roots)
-  const hash = await seedUpdateHash(seed)
-  if (hash !== codeBase.seedHash) {
-    throw new Error(
-      `Chat code seed derivation mismatch (derived ${hash}, chat expects ${codeBase.seedHash})`)
-  }
-  return seed
+// A pin this client holds locally, ahead of the chat's own codeBase. Two kinds share the shape:
+//
+// - An *eager* seed (declared: false): the selected root is not pinned in the chat, so its head
+//   commit's seed is applied to the editable doc purely locally, letting the user start typing
+//   against real content. It is never sent anywhere and is rederived at the current head
+//   whenever mainline advances (an unpinned gadget tracks head live).
+// - A *declared* pin (declared: true): the first local edit converted the eager seed into a pin
+//   declaration riding its updateCode() call. The entry carries the seed until the pin is
+//   echoed back in the chat's codeBase, whose fetched seed is byte-identical by construction.
+//
+// Entries always belong to the selected chat; the map is cleared on chat switch, generation
+// change, and local-edit discard.
+type LocalPin = {
+  filesRoot: string
+  baseCommit: string
+  seed: Uint8Array
+  declared: boolean
 }
 
 function didFileChange(originalMap: Y.Map<Y.Text>, previewMap: Y.Map<Y.Text>, filename: string) {
@@ -167,10 +178,18 @@ function getTouchedFilesFromEvents(events: Y.YEvent<any>[], rootMap: Y.Map<Y.Tex
 type QueuedCodeUpdate = {
   chatId: number
   update: Uint8Array
+  // The ChatCodeBase.generation the editable doc that produced this update was built against
+  // (see Overseer.updateCode()).
+  generation: number
+  // Pin declaration riding this update: present on the first edit to a gadget not yet pinned in
+  // the chat (see LocalPin).
+  pin?: { gadgetId: WorkpieceId, baseCommit: string }
 }
 
-export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId, height = '100%', selectedChatId = null, chatCode, chatChanges, draftProposedChanges, streamingProposedChanges, streamingActiveFile, isAgentActive, isVisible = true, onHasCodeChange }: GadgetCodeInterfaceProps) {
+export default function GadgetCodeInterface({ overseer, workpieceId, filesRoot, headCommitId, height = '100%', selectedChatId = null, chatChanges, draftProposedChanges, streamingProposedChanges, streamingActiveFile, isAgentActive, isVisible = true, onHasCodeChange }: GadgetCodeInterfaceProps) {
   const toasts = useKumoToastManager()
+  const toastsRef = useRef(toasts)
+  toastsRef.current = toasts
   const branchMode = selectedChatId !== null
 
   // The committed head's file map, fetched by oid (see fetchCommitFiles). `commitId` records
@@ -201,7 +220,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId,
   }, [headCommitId, overseer, headRetryToken])
 
   // The committed files currently applicable: an absent head reads as an empty committed file
-  // set (the gadget has no accepted code yet); null while the head's tree is still loading.
+  // set (the gadget is still pending in a chat); null while the head's tree is still loading.
   const headFiles: ReadonlyMap<string, string> | null = headCommitId === undefined
     ? EMPTY_FILES
     : headFilesState !== null && headFilesState.commitId === headCommitId
@@ -226,31 +245,48 @@ export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId,
   const headFilesMapRef = useRef<Y.Map<Y.Text>>(headDoc.getMap(filesRoot))
   headFilesMapRef.current = headDoc.getMap(filesRoot)
 
-  // The chat doc's base update: the commit-derived deterministic seed, or the server-provided
-  // legacy base for chats predating commit-seeded docs (see the note at the top of this file).
-  // Both are fixed for the life of the chat, so this is fetched once per chat selection.
-  // `chatBaseError` marks a failed derivation (most seriously a seed-hash mismatch); the view
-  // renders an error state rather than an editable doc that would diverge.
-  const [chatBase, setChatBase] = useState<{ chatId: number, update: Uint8Array } | null>(null)
+  // The chat's code base for its current epoch, from the snapshot delivered with the changes
+  // (see ChatCodeChanges). An absent codeBase reads as `{gadgets: [], generation: 0}` (see
+  // ChatCodeBase).
+  const codeBase = chatChanges?.codeBase
+  const generation = codeBase?.generation ?? 0
+  const isLegacyChat = codeBase?.legacy === true
+  const metaPins = codeBase?.gadgets
+
+  // The chat doc's base updates: the deterministic per-pin seeds derived from the pins'
+  // commits, or (for a legacy chat) the server-provided whole-doc legacy base. Keyed by the
+  // pin-set signature, so a pin arriving -- or the whole set resetting at an epoch boundary --
+  // rederives it; while a rederivation is in flight the docs built from the previous base stay
+  // up rather than flashing a loading state. `chatBaseError` marks a failed derivation (most
+  // seriously a per-pin seed-hash mismatch); the view renders an error state rather than an
+  // editable doc that would diverge.
+  const [chatBase, setChatBase] =
+    useState<{ chatId: number, key: string, updates: Uint8Array[] } | null>(null)
   const [chatBaseError, setChatBaseError] = useState(false)
-  const chatCodeRef = useRef(chatCode)
-  chatCodeRef.current = chatCode
-  // The seed is a pure function of the seedCommit-bearing pins, which are immutable for the life
-  // of the chat, so the stored hash (or its absence, marking a legacy chat) is the only input
-  // that matters for keying the fetch; the pins themselves are read through the ref.
-  const chatSeedHash = chatCode?.codeBase?.seedHash
-  const chatCodeKnown = chatCode !== undefined
+  const chatChangesRef = useRef(chatChanges)
+  chatChangesRef.current = chatChanges
+  const chatDocKnown = chatChanges !== undefined
+  const baseKey = isLegacyChat ? 'legacy' : pinSetSignature(metaPins ?? [])
   useEffect(() => {
-    setChatBase(null)
     setChatBaseError(false)
-    if (selectedChatId === null || !chatCodeKnown) return
+    if (selectedChatId === null || !chatDocKnown) {
+      setChatBase(null)
+      return
+    }
     let cancelled = false
     ;(async () => {
-      const codeBase = chatCodeRef.current?.codeBase
-      const update = codeBase?.seedHash !== undefined
-        ? await deriveSeedUpdate(overseer, codeBase)
-        : await overseer.getLegacyChatDocBase(selectedChatId)
-      if (!cancelled) setChatBase({ chatId: selectedChatId, update })
+      let updates: Uint8Array[]
+      if (isLegacyChat) {
+        updates = [await overseer.getLegacyChatDocBase(selectedChatId)]
+      } else {
+        // The seed is a pure function of the seedCommit-bearing pins, whose signature is the
+        // `baseKey` dependency; the pins themselves are read through the ref.
+        const pins = (chatChangesRef.current?.codeBase?.gadgets ?? [])
+          .filter(pin => pin.seedCommit !== undefined)
+        updates = await Promise.all(pins.map(async pin =>
+          deriveVerifiedPinSeed(pin, await fetchCommitFiles(overseer, pin.seedCommit!))))
+      }
+      if (!cancelled) setChatBase({ chatId: selectedChatId, key: baseKey, updates })
     })().catch(err => {
       if (cancelled) return
       console.error('Failed to build the chat code doc base:', err)
@@ -258,8 +294,11 @@ export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId,
       setChatBaseError(true)
     })
     return () => { cancelled = true }
-  }, [selectedChatId, chatCodeKnown, chatSeedHash, overseer])
-  const chatBaseReady = chatBase !== null && chatBase.chatId === selectedChatId
+  }, [selectedChatId, chatDocKnown, isLegacyChat, baseKey, overseer])
+  // The base usable for building docs right now: possibly a stale pin set for the same chat
+  // (rederived momentarily), never another chat's.
+  const usableChatBase =
+    chatBase !== null && chatBase.chatId === selectedChatId ? chatBase : null
 
   // Updates originating locally are enqueued to this array.
   const updateQueueRef = useRef<QueuedCodeUpdate[]>([]);
@@ -267,11 +306,41 @@ export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId,
   // Track whether we're currently sending updates to prevent concurrent sends
   const isSendingRef = useRef<boolean>(false)
 
+  // Pins this client holds locally (see LocalPin), keyed by gadget.
+  const localPinsRef = useRef(new Map<WorkpieceId, LocalPin>())
+
   // React state for UI
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const fileSidebarRef = useRef<FileSidebarHandle | null>(null)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [, setEditableDocVersion] = useState(0)
+
+  // Bumped whenever queued local edits are discarded outside the branch-docs effect (a rejected
+  // updateCode() call), forcing the editable doc to rebuild without them.
+  const [localDiscardToken, setLocalDiscardToken] = useState(0)
+
+  // Discard the chat's queued (not yet acknowledged) local edits and local pins: a merge,
+  // revert, or draft discard invalidated the doc they were made in, or the server refused them
+  // outright (see ChatCodeBase.generation). The notice is shown only when keystrokes were
+  // actually lost.
+  const discardQueuedEdits = useCallback((chatId: number) => {
+    const hadQueued = updateQueueRef.current.some(entry => entry.chatId === chatId)
+    updateQueueRef.current = updateQueueRef.current.filter(entry => entry.chatId !== chatId)
+    // Local pins only ever belong to the selected chat; a rejected send for a chat the user has
+    // since left must not clear the current one's.
+    if (chatId === selectedChatIdRef.current) {
+      localPinsRef.current.clear()
+    }
+    setHasUnsavedChanges(false)
+    if (hadQueued) {
+      toastsRef.current.add({
+        title: "Your latest code edits were discarded — this conversation's changes were " +
+          'merged, reverted, or changed by someone else at the same time.',
+        variant: 'warning',
+      })
+    }
+    setLocalDiscardToken(token => token + 1)
+  }, [])
 
   // Sorted committed file list (the base layer of the sidebar; in-chat additions arrive through
   // previewFileNames below).
@@ -288,7 +357,14 @@ export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId,
   const editableDraftCursorRef = useRef(0)
   const editableDraftUpdatesRef = useRef<Uint8Array[] | undefined>(undefined)
   const editableBaseChangesRef = useRef<Uint8Array | undefined>(undefined)
-  const editableChatBaseRef = useRef<{ chatId: number, update: Uint8Array } | null>(null)
+  // The seed set the editable doc's roots were built from: the fetched base's pin signature
+  // unioned with the local pins' (see the branch-docs effect). Comparing signatures rather than
+  // update identities keeps the editable doc alive across rederivations that don't change its
+  // content -- above all the metadata echo of a pin this client itself declared, which lands
+  // exactly when the user has just started typing.
+  const editableDocBaseSigRef = useRef<string | null>(null)
+  const editableGenerationRef = useRef(0)
+  const editableDiscardTokenRef = useRef(0)
   const editableChatIdRef = useRef<number | null>(null)
   // The files root the editable/streaming docs' map refs were derived from; a root switch forces
   // a rebuild so the refs point into the newly-selected workpiece's map.
@@ -296,6 +372,8 @@ export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId,
   const streamingRootRef = useRef<string | null>(null)
   const selectedChatIdRef = useRef<number | null>(selectedChatId)
   selectedChatIdRef.current = selectedChatId
+  const workpieceIdRef = useRef(workpieceId)
+  workpieceIdRef.current = workpieceId
   const previewObserverCleanupRef = useRef<(() => void) | null>(null)
   const editableObserverCleanupRef = useRef<(() => void) | null>(null)
   const [changedFiles, setChangedFiles] = useState<Set<string>>(new Set())
@@ -485,10 +563,11 @@ export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId,
 
   // Build the durable branch doc and editable draft doc whenever the selected chat or
   // server-backed branch state changes. The durable doc is the chat's server-recorded state --
-  // its fixed base (chatBase) plus its recorded change updates -- and the editable doc layers
-  // drafts and not-yet-acknowledged local edits on top.
+  // the current epoch's base (per-pin seeds or the legacy base) plus its recorded change
+  // updates -- and the editable doc layers local pins, drafts, and not-yet-acknowledged local
+  // edits on top.
   useEffect(() => {
-    if (!branchMode || !chatBaseReady || chatChanges === undefined) {
+    if (!branchMode || chatChanges === undefined || usableChatBase === null) {
       // Not in a chat, or the chat's base/history hasn't loaded yet (the view shows its loading
       // state until both have).
       observeEditableDoc(null)
@@ -498,8 +577,9 @@ export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId,
       editableDraftCursorRef.current = 0
       editableDraftUpdatesRef.current = undefined
       editableBaseChangesRef.current = undefined
-      editableChatBaseRef.current = null
+      editableDocBaseSigRef.current = null
       editableChatIdRef.current = null
+      localPinsRef.current.clear()
       if (!streamingYdocRef.current) {
         observePreviewMap(null)
         replaceChangedFiles(null)
@@ -507,25 +587,109 @@ export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId,
       return
     }
 
+    if (usableChatBase.key !== baseKey) {
+      // The pin set changed and its seeds are being rederived; keep showing the docs built from
+      // the previous base rather than tearing down. (Change updates that arrive ahead of a new
+      // pin's seed park as Yjs pending structs until a rebuild applies it.)
+      //
+      // This deliberately returns before the generation check below, leaving a stale doc
+      // editable for the rederivation's duration. That is safe: edits made now are enqueued
+      // with the doc's own (stale) generation -- editableGenerationRef only advances at
+      // rebuild -- so the server rejects them and discardQueuedEdits handles the cleanup, the
+      // same backstop that covers keystrokes already in flight when a merge or revert lands
+      // (no client-side ordering can close that race). The window is also inherently short
+      // where it matters: a generation bump only ever *shrinks* the pin set, so its seeds
+      // rederive from the already-populated commit-files cache with no network fetch. The
+      // rederivations that do fetch (a collaborator's new pin, the echo of this client's own
+      // first-keystroke pin) leave the generation unchanged, and the current doc stays valid
+      // for editing throughout (pin additions don't invalidate docs -- see
+      // ChatCodeBase.generation). Running the generation discard from here instead would spin:
+      // it bumps localDiscardToken, which reruns this effect, which would land right back here
+      // until the new base arrives.
+      return
+    }
+
+    if (editableYdocRef.current && editableChatIdRef.current === selectedChatId &&
+        editableGenerationRef.current !== generation) {
+      // A merge, revert, or draft discard invalidated every doc built on the previous
+      // generation (see ChatCodeBase.generation): queued keystrokes are rooted in erased
+      // history (or already swept into the merge), so they are discarded rather than submitted.
+      discardQueuedEdits(selectedChatId)
+    }
+
     const durableDoc = new Y.Doc()
-    Y.applyUpdateV2(durableDoc, chatBase!.update, 'server')
+    for (const update of usableChatBase.updates) {
+      Y.applyUpdateV2(durableDoc, update, 'server')
+    }
     if (chatChanges.update) {
       Y.applyUpdateV2(durableDoc, chatChanges.update, 'server')
     }
     durableBranchYdocRef.current = durableDoc
+
+    // The local pins the editable doc should carry (see LocalPin): declared pins not yet echoed
+    // in the chat's codeBase, plus -- when the selected root is unpinned everywhere -- an eager
+    // seed of its head. The union of the fetched base's pins and these is the editable doc's
+    // seed-set signature; a rebuild is needed exactly when it (or any other layer) changes.
+    const carriedLocalPins = [...localPinsRef.current].filter(([gadgetId, pin]) =>
+      pin.declared &&
+      !metaPins?.some(p => p.gadgetId === gadgetId && p.seedCommit !== undefined))
+    const selectedRootPinned =
+      metaPins?.some(pin => pin.gadgetId === workpieceId && pin.seedCommit !== undefined) ||
+      carriedLocalPins.some(([gadgetId]) => gadgetId === workpieceId)
+    const eagerBaseCommit = !isLegacyChat && !selectedRootPinned &&
+        headCommitId !== undefined && headFiles !== null ? headCommitId : undefined
+    const sigParts = new Set<string>(
+      usableChatBase.key === '' ? [] : usableChatBase.key.split(','))
+    for (const [gadgetId, pin] of carriedLocalPins) {
+      sigParts.add(`${gadgetId}:${pin.baseCommit}`)
+    }
+    if (eagerBaseCommit !== undefined) {
+      sigParts.add(`${workpieceId}:${eagerBaseCommit}`)
+    }
+    const docBaseSig = [...sigParts].toSorted().join(',')
 
     const draftUpdates = draftProposedChanges?.updates ?? []
     const draftUpdateCount = draftProposedChanges?.count ?? 0
     const shouldRebuildEditable = !editableYdocRef.current
       || editableChatIdRef.current !== selectedChatId
       || editableRootRef.current !== filesRoot
-      || editableChatBaseRef.current !== chatBase
+      || editableDocBaseSigRef.current !== docBaseSig
       || editableBaseChangesRef.current !== chatChanges.update
+      || editableGenerationRef.current !== generation
+      || editableDiscardTokenRef.current !== localDiscardToken
       || editableDraftCursorRef.current > draftUpdateCount
 
     if (shouldRebuildEditable) {
+      // Materialize the local-pin set the signature was computed from, reusing a still-valid
+      // eager entry (same head) and rederiving otherwise -- an unpinned root tracks head live.
+      const nextLocalPins = new Map(carriedLocalPins)
+      if (eagerBaseCommit !== undefined) {
+        const existing = localPinsRef.current.get(workpieceId)
+        nextLocalPins.set(workpieceId,
+          existing !== undefined && !existing.declared &&
+              existing.baseCommit === eagerBaseCommit && existing.filesRoot === filesRoot
+            ? existing
+            : {
+                filesRoot,
+                baseCommit: eagerBaseCommit,
+                seed: seedRootFromFiles(
+                  filesRoot, headFiles!, seedClientIdForGadget(workpieceId)),
+                declared: false,
+              })
+      }
+      localPinsRef.current = nextLocalPins
+
       const editableDoc = new Y.Doc()
+      // The editable doc authors chat updates, so its clientID must stay outside the reserved
+      // seed band for its whole lifetime (see yjs-seed in workshop-shared).
+      bindLiveDocClientId(editableDoc)
       Y.applyUpdateV2(editableDoc, Y.encodeStateAsUpdateV2(durableDoc))
+      for (const pin of localPinsRef.current.values()) {
+        // Seeds are only ever *applied* as remote updates, never authored in place (see
+        // seedRootFromFiles). This runs before the update observer attaches, so nothing here is
+        // ever sent to the server.
+        Y.applyUpdateV2(editableDoc, pin.seed)
+      }
       for (const update of draftUpdates) {
         Y.applyUpdateV2(editableDoc, update, 'server')
       }
@@ -541,7 +705,9 @@ export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId,
       editableDraftCursorRef.current = draftUpdateCount
       editableDraftUpdatesRef.current = draftUpdates
       editableBaseChangesRef.current = chatChanges.update
-      editableChatBaseRef.current = chatBase
+      editableDocBaseSigRef.current = docBaseSig
+      editableGenerationRef.current = generation
+      editableDiscardTokenRef.current = localDiscardToken
       editableChatIdRef.current = selectedChatId
       editableRootRef.current = filesRoot
       setEditableDocVersion((prev) => prev + 1)
@@ -562,15 +728,24 @@ export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId,
     }
   }, [
     branchMode,
-    chatBase,
-    chatBaseReady,
+    baseKey,
     chatChanges,
+    discardQueuedEdits,
     draftProposedChanges?.count,
     draftProposedChanges?.updates,
     filesRoot,
+    generation,
+    headCommitId,
+    headFiles,
+    isLegacyChat,
+    localDiscardToken,
+    metaPins,
     observePreviewMap,
+    observeEditableDoc,
     replaceChangedFiles,
     selectedChatId,
+    usableChatBase,
+    workpieceId,
   ])
 
   // Incrementally apply streaming updates to a persistent streaming Y.Doc.
@@ -639,7 +814,19 @@ export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId,
   // Helper to send updates to server based on what it's missing
   // Uses a loop to ensure all changes get sent, with only one send in flight at a time
   const sendUpdateToServer = async (update: Uint8Array, chatId: number) => {
-    updateQueueRef.current.push({ update, chatId });
+    // The first local edit to a not-yet-pinned gadget converts its eager seed into a pin
+    // declaration riding this update (see LocalPin). Local edits only ever touch the selected
+    // workpiece's root -- the editor and sidebar expose nothing else.
+    let pin: QueuedCodeUpdate['pin']
+    const localPin = localPinsRef.current.get(workpieceIdRef.current)
+    if (localPin !== undefined && !localPin.declared) {
+      localPin.declared = true
+      pin = { gadgetId: workpieceIdRef.current, baseCommit: localPin.baseCommit }
+    }
+    updateQueueRef.current.push({
+      chatId, update, generation: editableGenerationRef.current,
+      ...(pin !== undefined ? { pin } : {}),
+    });
 
     // If already sending, return early - the running instance will pick up our changes
     if (isSendingRef.current) {
@@ -651,38 +838,53 @@ export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId,
     try {
       // Loop until there's nothing left to send
       while (updateQueueRef.current.length > 0) {
-        const currentTarget = updateQueueRef.current[0].chatId
-        let sameTargetCount = 1
-        while (
-          sameTargetCount < updateQueueRef.current.length &&
-          updateQueueRef.current[sameTargetCount].chatId === currentTarget
-        ) {
-          sameTargetCount++
+        const queue = updateQueueRef.current
+        const head = queue[0]
+        // Batch consecutive updates rooted in the same base. One updateCode() call carries at
+        // most one pin declaration, so an entry declaring its own pin starts a new batch.
+        const batch = [head]
+        for (let i = 1; i < queue.length; i++) {
+          const entry = queue[i]
+          if (entry.chatId !== head.chatId || entry.generation !== head.generation ||
+              entry.pin !== undefined) {
+            break
+          }
+          batch.push(entry)
         }
 
-        let outgoingUpdate = updateQueueRef.current[0].update
-        if (sameTargetCount > 1) {
-          outgoingUpdate = Y.mergeUpdatesV2(
-            updateQueueRef.current
-              .slice(0, sameTargetCount)
-              .map((entry) => entry.update),
-          )
-        }
+        const outgoingUpdate = batch.length === 1
+          ? head.update
+          : Y.mergeUpdatesV2(batch.map((entry) => entry.update))
 
         try {
-          await currentOverseerRef.current.updateCode(outgoingUpdate, currentTarget)
+          await currentOverseerRef.current.updateCode(outgoingUpdate, head.chatId, {
+            generation: head.generation,
+            ...(head.pin !== undefined ? { pin: head.pin } : {}),
+          })
           // Successfully sent - clear unsaved changes indicator
           setHasUnsavedChanges(false)
         } catch (error) {
-          console.error('Failed to send update to server:', error)
-          // Mark that we have unsaved changes
-          setHasUnsavedChanges(true)
-          // On error, stop trying to avoid hammering the server
-          break
+          if (isTransientRpcError(error)) {
+            // Connection trouble: keep the queue (the next local edit or reconnect retries) and
+            // stop trying for now to avoid hammering the server.
+            console.debug('Failed to send code update to server:', error)
+            setHasUnsavedChanges(true)
+            break
+          }
+          // The server refused the update outright: the chat's generation moved under a merge,
+          // revert, or draft discard, or the pin declaration lost a race (see
+          // Overseer.updateCode()). The doc these keystrokes were made in no longer matches the
+          // chat, so discard them and rebuild from server state.
+          console.error('Code update rejected; discarding local edits:', error)
+          reportIssue('code-view.update-rejected', error, { handled: true })
+          discardQueuedEdits(head.chatId)
+          continue
         }
 
-        // Discard the update we successfully sent.
-        updateQueueRef.current.splice(0, sameTargetCount);
+        // Discard exactly the entries we sent -- a concurrent discard may have replaced the
+        // queue in the meantime.
+        const sent = new Set<QueuedCodeUpdate>(batch)
+        updateQueueRef.current = updateQueueRef.current.filter(entry => !sent.has(entry))
 
         // More updates may have been queued in the meantime. Loop to handle them.
 
@@ -842,7 +1044,7 @@ export default function GadgetCodeInterface({ overseer, filesRoot, headCommitId,
   // and recorded changes must be in too (the branch-docs effect builds the editable doc from them
   // one render later, which CodeDiffEditor tolerates as a transiently detached binding).
   const isReady = headFiles !== null &&
-    (!branchMode || (chatBaseReady && chatChanges !== undefined))
+    (!branchMode || (usableChatBase !== null && chatChanges !== undefined))
   const loading = !isReady && !chatBaseError
 
   // Repair the file selection when the active file stops existing everywhere it could live --

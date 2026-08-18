@@ -165,6 +165,53 @@ describe("computeChatDocUpdates", () => {
   });
 });
 
+// Accepting changes closes the chat's epoch: the doc is discarded and rebuilt from the new
+// epoch's pins, so updates at or below ChatCodeBase.epoch -- the epoch-opening merge's sequence
+// -- are no longer part of the doc (see computeChatDocUpdates).
+describe("computeChatDocUpdates epoch scoping", () => {
+  it("drops updates from closed epochs, keeping the current epoch's", () => {
+    const updates = computeChatDocUpdates(
+      [changes(10, OLDER), merge(11, 10), changes(12, LOADED)],
+      undefined,
+      11,
+    );
+
+    expect(updates).toEqual([LOADED]);
+  });
+
+  it("applies no epoch cutoff when epoch is absent (no merge yet, or a legacy chat)", () => {
+    const updates = computeChatDocUpdates(
+      [changes(10, OLDER), merge(11, 10), changes(12, LOADED)],
+      undefined,
+      undefined,
+    );
+
+    expect(updates).toEqual([OLDER, LOADED]);
+  });
+
+  // The boundary's blobs stand in at sequence `to - 1`, so an epoch boundary at or past that
+  // point covers their content too (it was all accepted into commits).
+  it("drops the boundary blobs when the epoch reaches past them", () => {
+    const updates = computeChatDocUpdates(
+      [merge(11, 10), changes(12, LOADED)],
+      boundary(10, PRE_BOUNDARY, ACCEPTED),
+      11,
+    );
+
+    expect(updates).toEqual([LOADED]);
+  });
+
+  it("keeps the boundary blobs when the epoch closed before them", () => {
+    const updates = computeChatDocUpdates(
+      [changes(10, LOADED)],
+      boundary(10, PRE_BOUNDARY, ACCEPTED),
+      5,
+    );
+
+    expect(updates).toEqual([ACCEPTED, PRE_BOUNDARY, LOADED]);
+  });
+});
+
 describe("announcing a compaction", () => {
   const compact = (sequence: number) => message(sequence,
     {type: "slashCommand", request: {id: {builtin: true, commandId: "compact"}, args: ""}});
