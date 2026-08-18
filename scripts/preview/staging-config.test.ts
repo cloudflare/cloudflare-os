@@ -311,10 +311,21 @@ test("a preview that cannot use the binding transport needs the gateway token", 
   assert.deepEqual(resolveAiGateway({ gateway: "g", accountId: "a", useBinding: "true" }),
       { CF_AI_GATEWAY: "g", CF_AI_GATEWAY_ACCOUNT_ID: "a", CF_AI_GATEWAY_USE_BINDING: "true" });
 
+  // Case and padding are normalized before the check, and the canonical form is what is emitted,
+  // so the backend never receives a value it would have to normalize itself.
+  assert.deepEqual(
+      resolveAiGateway({ gateway: "g", accountId: "a", apiToken: "t", useBinding: " FALSE " }),
+      { CF_AI_GATEWAY: "g", CF_AI_GATEWAY_ACCOUNT_ID: "a", CF_AI_GATEWAY_API_TOKEN: "t",
+        CF_AI_GATEWAY_USE_BINDING: "false" });
+  // A normalized " FALSE " is still the opt-out, so it needs the token like any other.
+  assert.throws(
+      () => resolveAiGateway({ gateway: "g", accountId: "a", useBinding: " FALSE " }),
+      /CF_AI_GATEWAY_API_TOKEN must be set when CF_AI_GATEWAY_USE_BINDING is false/);
+
   // The backend compares against the two strings and reads anything else as unset, so a value it
-  // would silently ignore fails here instead.
-  assert.throws(() => resolveAiGateway({ gateway: "g", accountId: "a", useBinding: "False" }),
-      /CF_AI_GATEWAY_USE_BINDING must be "true" or "false"/);
+  // would silently ignore fails here instead
+  assert.throws(() => resolveAiGateway({ gateway: "g", accountId: "a", useBinding: "yes please" }),
+      /CF_AI_GATEWAY_USE_BINDING must be "true" or "false", not "yes please"/);
 });
 
 test("no generated config declares a secret's variable", () => {

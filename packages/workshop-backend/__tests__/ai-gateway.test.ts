@@ -58,6 +58,17 @@ describe("AiGatewayConfig transport selection", () => {
     expect(config.bindingFor("openai")).toBeUndefined();
   });
 
+  it("opts out on a padded, mixed-case CF_AI_GATEWAY_USE_BINDING", () => {
+    const config = new AiGatewayConfig(env({
+      CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
+      CF_AI_GATEWAY_API_TOKEN: "gateway-token",
+      CF_AI_GATEWAY_USE_BINDING: " False ",
+      WORKERS_AI: binding,
+    }));
+    expect(config.binding).toBeUndefined();
+    expect(config.bindingFor("anthropic")).toBeUndefined();
+  });
+
   it("still requires a transport when the opt-out leaves no token", () => {
     expect(() => new AiGatewayConfig({
       ...bindingOnly,

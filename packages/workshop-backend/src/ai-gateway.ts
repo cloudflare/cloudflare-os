@@ -36,10 +36,13 @@ export class AiGatewayConfig {
     }
     this.accountId = env.CF_AI_GATEWAY_ACCOUNT_ID;
     this.apiToken = env.CF_AI_GATEWAY_API_TOKEN || undefined;
-    this.binding = env.CF_AI_GATEWAY_USE_BINDING === "false"
+    // Normalized once, so a stray " False " opts out rather than reading as unset and silently
+    // picking the other transport.
+    const useBinding = env.CF_AI_GATEWAY_USE_BINDING?.trim().toLowerCase();
+    this.binding = useBinding === "false"
         ? undefined
         : (env as { WORKERS_AI?: Ai }).WORKERS_AI;
-    if (env.CF_AI_GATEWAY_USE_BINDING === "true" && !this.binding) {
+    if (useBinding === "true" && !this.binding) {
       throw new Error(
           "CF_AI_GATEWAY_USE_BINDING requires the WORKERS_AI binding; without it the config " +
           "would silently fall back to the HTTPS transport.");
@@ -49,8 +52,7 @@ export class AiGatewayConfig {
           "AI Gateway mode needs a transport: bind Workers AI (WORKERS_AI; in local dev start " +
           "with --use-workers-ai-binding) or set CF_AI_GATEWAY_API_TOKEN (a Run + Read token).");
     }
-    this.sameAccountGateway =
-        env.CF_AI_GATEWAY_USE_BINDING === "false" ? undefined : this.gateway;
+    this.sameAccountGateway = useBinding === "false" ? undefined : this.gateway;
     this.providers = new Set(
       (env.CF_AI_GATEWAY_PROVIDERS || "").split(",").map(s => s.trim()).filter(s => s !== "")
     );

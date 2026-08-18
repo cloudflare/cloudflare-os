@@ -577,7 +577,7 @@ export function resolveAiGateway({
   accountId = process.env.CF_AI_GATEWAY_ACCOUNT_ID,
   apiToken = process.env.CF_AI_GATEWAY_API_TOKEN,
   providers = process.env.CF_AI_GATEWAY_PROVIDERS,
-  useBinding = process.env.CF_AI_GATEWAY_USE_BINDING,
+  useBinding: rawUseBinding = process.env.CF_AI_GATEWAY_USE_BINDING,
 }: {
   gateway?: string;
   accountId?: string;
@@ -585,6 +585,9 @@ export function resolveAiGateway({
   providers?: string;
   useBinding?: string;
 } = {}): Record<string, string> {
+  // Normalized here rather than in the parameter default, which only runs when the caller omits
+  // the value -- an explicitly passed " FALSE " would skip it and fail validation below.
+  const useBinding = rawUseBinding?.trim().toLowerCase();
   const rest = { CF_AI_GATEWAY_ACCOUNT_ID: accountId, CF_AI_GATEWAY_API_TOKEN: apiToken,
     CF_AI_GATEWAY_PROVIDERS: providers, CF_AI_GATEWAY_USE_BINDING: useBinding };
   if (!gateway) {
@@ -606,7 +609,7 @@ export function resolveAiGateway({
     // an intended "false" is the opposite of what was asked for -- silently, and in a preview
     // nobody is reading the logs of.
     throw new Error(`CF_AI_GATEWAY_USE_BINDING must be "true" or "false", not ` +
-        `"${useBinding}": the backend reads any other value as unset.`);
+        `"${rawUseBinding}": the backend reads any other value as unset.`);
   }
   // The two AiGatewayConfig throws the Workers AI binding does not cover. Raised here so a
   // half-configured preview fails its deploy rather than its first chat.
