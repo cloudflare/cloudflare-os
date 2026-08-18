@@ -18,7 +18,11 @@ const frameReport = {
   exception: { type: 'Error', message: 'boom', stack: 'Error: boom' },
 } as const
 
+// The reporting identity is module state, and every test that sets one imports a fresh instance via
+// `vi.resetModules()`. That reset is what isolates it: a statically imported setter would target a
+// different instance than the one under test.
 afterEach(() => {
+  window.history.replaceState(null, '', '/')
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
 })
@@ -51,6 +55,59 @@ describe('Workshop reporter initialization', () => {
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
     const body = JSON.parse(fetch.mock.calls[0][1]?.body as string)
     expect(body.sessionId).toMatch(/^session-/)
+  })
+
+  it('captures the current origin and pathname with the authenticated user', async () => {
+    vi.resetModules()
+    vi.stubEnv('VITE_FRONTEND_ERROR_REPORTING', 'true')
+    window.history.replaceState(null, '', '/workspace/first?token=secret#fragment')
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response())
+    vi.stubGlobal('fetch', fetch)
+
+    const module = await import('./errorReporting')
+    module.setErrorReportingUserId('person@example.com')
+    module.reportIssue('test.first-route', new Error('first'))
+    window.history.replaceState(null, '', '/workspace/second?other=secret')
+    module.reportIssue('test.second-route', new Error('second'))
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
+
+    const origin = window.location.origin
+    const reports = fetch.mock.calls.map(([, init]) => JSON.parse(init?.body as string))
+    expect(reports.map(({ pageLocation, userId }) => ({ pageLocation, userId }))).toEqual([
+      { pageLocation: `${origin}/workspace/first`, userId: 'person@example.com' },
+      { pageLocation: `${origin}/workspace/second`, userId: 'person@example.com' },
+    ])
+  })
+
+  it('stops attaching the user once the identity is cleared', async () => {
+    vi.resetModules()
+    vi.stubEnv('VITE_FRONTEND_ERROR_REPORTING', 'true')
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response())
+    vi.stubGlobal('fetch', fetch)
+
+    const module = await import('./errorReporting')
+    module.setErrorReportingUserId('person@example.com')
+    module.setErrorReportingUserId(undefined)
+    module.reportIssue('test.signed-out', new Error('boom'))
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+
+    const report = JSON.parse(fetch.mock.calls[0][1]?.body as string)
+    expect(report).not.toHaveProperty('userId')
+  })
+
+  it('treats an empty identity as no identity', async () => {
+    vi.resetModules()
+    vi.stubEnv('VITE_FRONTEND_ERROR_REPORTING', 'true')
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response())
+    vi.stubGlobal('fetch', fetch)
+
+    const module = await import('./errorReporting')
+    module.setErrorReportingUserId('')
+    module.reportIssue('test.empty-identity', new Error('boom'))
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+
+    const report = JSON.parse(fetch.mock.calls[0][1]?.body as string)
+    expect(report).not.toHaveProperty('userId')
   })
 
   it('ignores window errors without a thrown value and reports real errors as non-fatal', async () => {
@@ -145,6 +202,47 @@ describe('createBrowserErrorReporter', () => {
     }))
   })
 
+  it('marks reports truncated when page or user context is clipped', () => {
+    const transport = vi.fn<(report: FrontendErrorReportV1) => void>()
+    window.history.replaceState(null, '', `/${'p'.repeat(300)}`)
+    const reporter = createBrowserErrorReporter({
+      surface: 'workshop', transport, userId: () => 'u'.repeat(300),
+    })
+
+    reporter.reportIssue('workshop.render', new Error('boom'))
+
+    const report = transport.mock.calls[0][0]
+    expect(report.userId).toBe('u'.repeat(256))
+    expect(report.pageLocation).toHaveLength(256)
+    expect(report.truncated).toBe(true)
+  })
+
+  it('attaches host-owned page and user context to a forwarded frame surface', () => {
+    const transport = vi.fn<(report: FrontendErrorReportV1) => void>()
+    const reporter = createBrowserErrorReporter({
+      surface: 'workshop', transport, userId: () => 'person@example.com',
+    })
+
+    reporter.reportIssue('frame:gatekeeper.render', new Error('boom'), {
+      surface: 'gatekeeper-app',
+    })
+
+    expect(transport).toHaveBeenCalledWith(expect.objectContaining({
+      surface: 'gatekeeper-app',
+      pageLocation: `${window.location.origin}/`,
+      userId: 'person@example.com',
+    }))
+  })
+
+  it('omits the user when no owner has claimed an identity', () => {
+    const transport = vi.fn<(report: FrontendErrorReportV1) => void>()
+    const reporter = createBrowserErrorReporter({ surface: 'workshop', transport })
+
+    reporter.reportIssue('workshop.render', new Error('boom'))
+
+    expect(transport.mock.calls[0][0]).not.toHaveProperty('userId')
+  })
+
   it('deduplicates by the first stack frame rather than the full stack', () => {
     const transport = vi.fn<(report: FrontendErrorReportV1) => void>()
     const reporter = createBrowserErrorReporter({ surface: 'workshop', transport })
@@ -181,6 +279,8 @@ describe('forwardTrustedFrameError', () => {
           surface: 'gadget',
           sessionId: 'frame-claimed-session',
           gatekeeperVendorId: 'frame-claimed-vendor',
+          pageLocation: 'https://evil.example/claimed',
+          userId: 'attacker@example.com',
           browser: { family: 'Other' },
         },
       },
@@ -194,6 +294,8 @@ describe('forwardTrustedFrameError', () => {
         handled: false,
         surface: 'gatekeeper-app',
       }))
+    expect(forward.mock.calls[0][2]).not.toHaveProperty('pageLocation')
+    expect(forward.mock.calls[0][2]).not.toHaveProperty('userId')
 
     expect(forwardTrustedFrameError({ ...valid, origin: 'https://evil.example' } as MessageEvent,
       source, context, forward)).toBe(false)

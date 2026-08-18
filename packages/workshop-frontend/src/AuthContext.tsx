@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi, AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
+import { setErrorReportingUserId } from './errorReporting'
 
 interface AuthContextType {
   authenticatedApi: RpcStub<AuthenticatedApi>
@@ -26,10 +27,17 @@ export function AuthProvider({ children, authenticatedApi, onLogout }: AuthProvi
   useEffect(() => {
     let cancelled = false
     authenticatedApi.whoami().then((info) => {
-      if (!cancelled) setCurrentUser(info)
+      if (cancelled) return
+      setCurrentUser(info)
+      // Only a real user account names a person: for a gadget author `id` is its owner's id.
+      if (info.type === 'user') setErrorReportingUserId(info.id)
     }).catch(() => {})
     return () => { cancelled = true }
   }, [authenticatedApi])
+
+  // Cleared only when the provider goes away, deliberately not when `authenticatedApi` changes: a
+  // reconnect mints a fresh stub, and reports during that window should still name the user.
+  useEffect(() => () => setErrorReportingUserId(undefined), [])
 
   useEffect(() => {
     let cancelled = false

@@ -25,6 +25,8 @@ type BrowserReporterOptions = Readonly<{
   browser?: FrontendBrowserFacts
   transport(report: FrontendErrorReportV1): void | Promise<void>
   now?: () => number
+  /** Reads the diagnostic identity at report time; absent means reports carry none. */
+  userId?: () => string | undefined
 }>
 
 type BrowserReporter = Readonly<{
@@ -35,6 +37,27 @@ type BrowserReporter = Readonly<{
     options?: BrowserReportOptions,
   ): void
 }>
+
+/** The diagnostic identity attached to subsequent reports. */
+let reportingUserId: string | undefined
+
+/**
+ * Returns the current location with query and fragment removed, or '' when it cannot be read.
+ *
+ * A share link carries a bearer capability in its fragment, so a report must never carry one out
+ * of the tab. A failure resolves to '' rather than throwing, because the caller's catch would
+ * otherwise discard an entire report over a single missing field.
+ */
+function getPageLocation(): string {
+  try {
+    const url = new URL(window.location.href)
+    url.search = ''
+    url.hash = ''
+    return url.href
+  } catch {
+    return ''
+  }
+}
 
 /** Creates the Workshop-owned browser reporter with one per-tab throttle per trusted surface. */
 export function createBrowserErrorReporter(options: BrowserReporterOptions): BrowserReporter {
@@ -54,12 +77,20 @@ export function createBrowserErrorReporter(options: BrowserReporterOptions): Bro
       fingerprintsBySurface.set(surface, fingerprints)
       if (fingerprints.size >= 10) return
       const failureSite = site.slice(0, MAX_STRING_CHARS)
+      // The route is deliberately absent from the fingerprint: the same fault on two routes is one
+      // issue, and including it would let a single navigation loop exhaust the per-surface cap.
+      const fingerprint = `${failureSite}\n${exception?.type ?? ''}\n${firstStackFrame(exception?.stack)}`
+      if (fingerprints.has(fingerprint)) return
+
+      // Read only once the report is known to be sent, so a suppressed one costs nothing.
+      const pageLocation = getPageLocation()
+      const userId = options.userId?.()
       const contextTruncated = [
         reportOptions?.gadgetId,
         reportOptions?.gatekeeperVendorId,
+        pageLocation,
+        userId,
       ].some(value => value !== undefined && value.length > MAX_STRING_CHARS)
-      const fingerprint = `${failureSite}\n${exception?.type ?? ''}\n${firstStackFrame(exception?.stack)}`
-      if (fingerprints.has(fingerprint)) return
 
       const report: FrontendErrorReportV1 = {
         schemaVersion: 1,
@@ -69,6 +100,8 @@ export function createBrowserErrorReporter(options: BrowserReporterOptions): Bro
         captureMechanism: reportOptions?.captureMechanism ?? 'explicit',
         surface,
         ...(options.sessionId && { sessionId: options.sessionId }),
+        ...(pageLocation && { pageLocation: pageLocation.slice(0, MAX_STRING_CHARS) }),
+        ...(userId && { userId: userId.slice(0, MAX_STRING_CHARS) }),
         ...(exception && { exception }),
         ...(reportOptions?.gadgetId && {
           gadgetId: reportOptions.gadgetId.slice(0, MAX_STRING_CHARS),
@@ -150,6 +183,7 @@ const reporter: BrowserReporter = reportingEnabled
       surface: 'workshop',
       sessionId: getSessionId(),
       browser: getBrowserFacts(),
+      userId: () => reportingUserId,
       transport: (report) => fetch('/api/client-errors', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -161,6 +195,15 @@ const reporter: BrowserReporter = reportingEnabled
 /** Reports an unexpected Workshop failure without affecting the user-facing operation. */
 export function reportIssue(site: string, caught: unknown, options?: BrowserReportOptions): void {
   reporter.reportIssue(site, caught, options)
+}
+
+/**
+ * Sets or clears the diagnostic identity attached to subsequent reports.
+ *
+ * The value is a label only: it reaches the backend unverified and is never treated as authority.
+ */
+export function setErrorReportingUserId(userId: string | undefined): void {
+  reportingUserId = userId || undefined
 }
 
 /** Installs automatic capture before the Workshop opens its RPC WebSocket. */
