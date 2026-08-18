@@ -558,11 +558,16 @@ export function resolveAccess({
  * Optional as a group, unlike {@link resolveAccess}: with CF_AI_GATEWAY unset a preview is BYOK,
  * exactly like a deployment that never configured a gateway, and the agent still works. Set, it
  * routes inference through Cloudflare AI Gateway with server-managed keys — and then the gateway
- * account and its Run + Read token are required, because `AiGatewayConfig` (ai-gateway.ts) throws
- * without them. That throw would otherwise land in a chat rather than in this deploy.
+ * account is required, because `AiGatewayConfig` (ai-gateway.ts) throws without it. That throw
+ * would otherwise land in a chat rather than in this deploy.
  *
- * CF_AI_GATEWAY_WAI is deliberately not offered: it cannot be combined with CF_AI_GATEWAY_WAI_DIRECT
- * (the backend rejects the pair), and one knob for where Workers AI inference goes is enough.
+ * The Run + Read token is not required with it. Every preview backend binds Workers AI (see
+ * {@link applyBackend}), and the binding is the gateway transport whenever it is present: those
+ * requests are pre-authenticated in-account, so neither inference nor a cost-log read needs a
+ * token. Two configurations still do, and each is the deploy-time mirror of a constructor throw:
+ * CF_AI_GATEWAY_USE_BINDING=false, which marks the gateway as living in a *different* account and
+ * so forces the HTTPS transport, and the google provider, whose SDK cannot take the binding's
+ * fetch.
  *
  * The environment is read in the parameter defaults rather than the body so that
  * env-passthrough.test.js, whose discovery is textual, can see every name.
@@ -572,16 +577,16 @@ export function resolveAiGateway({
   accountId = process.env.CF_AI_GATEWAY_ACCOUNT_ID,
   apiToken = process.env.CF_AI_GATEWAY_API_TOKEN,
   providers = process.env.CF_AI_GATEWAY_PROVIDERS,
-  waiDirect = process.env.CF_AI_GATEWAY_WAI_DIRECT,
+  useBinding = process.env.CF_AI_GATEWAY_USE_BINDING,
 }: {
   gateway?: string;
   accountId?: string;
   apiToken?: string;
   providers?: string;
-  waiDirect?: string;
+  useBinding?: string;
 } = {}): Record<string, string> {
   const rest = { CF_AI_GATEWAY_ACCOUNT_ID: accountId, CF_AI_GATEWAY_API_TOKEN: apiToken,
-    CF_AI_GATEWAY_PROVIDERS: providers, CF_AI_GATEWAY_WAI_DIRECT: waiDirect };
+    CF_AI_GATEWAY_PROVIDERS: providers, CF_AI_GATEWAY_USE_BINDING: useBinding };
   if (!gateway) {
     // Every one of these does nothing without a gateway name, so a set of them without it is a
     // half-finished configuration rather than a deliberate BYOK preview.
@@ -592,22 +597,38 @@ export function resolveAiGateway({
     }
     return {};
   }
-  if (!accountId || !apiToken) {
-    const missing = [
-      ...(accountId ? [] : ["CF_AI_GATEWAY_ACCOUNT_ID"]),
-      ...(apiToken ? [] : ["CF_AI_GATEWAY_API_TOKEN"]),
-    ];
-    throw new Error(`${missing.join(" and ")} must be set when CF_AI_GATEWAY is: inference goes ` +
-        "over HTTPS with a Run + Read token, so the backend refuses to start a chat without it");
+  if (!accountId) {
+    throw new Error("CF_AI_GATEWAY_ACCOUNT_ID must be set when CF_AI_GATEWAY is: the backend " +
+        "cannot discover its own account, and refuses to start a chat without it");
+  }
+  if (useBinding !== undefined && useBinding !== "true" && useBinding !== "false") {
+    // The backend compares against those two strings and treats anything else as unset, which for
+    // an intended "false" is the opposite of what was asked for -- silently, and in a preview
+    // nobody is reading the logs of.
+    throw new Error(`CF_AI_GATEWAY_USE_BINDING must be "true" or "false", not ` +
+        `"${useBinding}": the backend reads any other value as unset.`);
+  }
+  // The two AiGatewayConfig throws the Workers AI binding does not cover. Raised here so a
+  // half-configured preview fails its deploy rather than its first chat.
+  if (!apiToken && useBinding === "false") {
+    throw new Error("CF_AI_GATEWAY_API_TOKEN must be set when CF_AI_GATEWAY_USE_BINDING is " +
+        "false: opting out of the binding leaves the HTTPS transport, which needs a Run + Read " +
+        "token. Drop the opt-out unless the gateway is in another account.");
+  }
+  if (!apiToken && providers?.split(",").some(p => p.trim() === "google")) {
+    throw new Error("CF_AI_GATEWAY_API_TOKEN must be set when the google provider is enabled: " +
+        "the @google/genai SDK does not support a custom fetch, so Google inference cannot ride " +
+        "the Workers AI binding.");
   }
   return {
     CF_AI_GATEWAY: gateway,
     CF_AI_GATEWAY_ACCOUNT_ID: accountId,
-    CF_AI_GATEWAY_API_TOKEN: apiToken,
-    // Both are optional on their own: no providers means the gateway offers no server-keyed model,
-    // and no WAI_DIRECT routes Workers AI through the gateway itself.
+    // Each of the three is optional on its own: no token rides the binding transport, no providers
+    // means the gateway offers no server-keyed model, and no USE_BINDING takes the binding
+    // whenever it is bound -- which, for a preview, is always.
+    ...(apiToken ? { CF_AI_GATEWAY_API_TOKEN: apiToken } : {}),
     ...(providers ? { CF_AI_GATEWAY_PROVIDERS: providers } : {}),
-    ...(waiDirect ? { CF_AI_GATEWAY_WAI_DIRECT: waiDirect } : {}),
+    ...(useBinding ? { CF_AI_GATEWAY_USE_BINDING: useBinding } : {}),
   };
 }
 

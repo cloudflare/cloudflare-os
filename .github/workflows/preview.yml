@@ -106,13 +106,20 @@ jobs:
           CF_ACCESS_ISS: ${{ secrets.CF_ACCESS_ISS }}
           # AI Gateway, so a preview's chats use server-managed keys rather than asking each user
           # for their own. Optional as a group: with CF_AI_GATEWAY unset the preview is BYOK, but
-          # once it is set the account id and the Run + Read token are required.
+          # once it is set the account id is required.
           CF_AI_GATEWAY: ${{ secrets.CF_AI_GATEWAY }}
           # This is delibaretely set to CF_OS_AI_GATEWAY_ACCOUNT_ID (gets uploaded as CF_AI_GATEWAY_ACCOUNT_ID)
           CF_AI_GATEWAY_ACCOUNT_ID: ${{ secrets.CF_OS_AI_GATEWAY_ACCOUNT_ID }}
-          CF_AI_GATEWAY_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_API_TOKEN }}
           CF_AI_GATEWAY_PROVIDERS: ${{ secrets.CF_AI_GATEWAY_PROVIDERS }}
-          CF_AI_GATEWAY_WAI_DIRECT: ${{ secrets.CF_AI_GATEWAY_WAI_DIRECT }}
+          # The gateway above lives in the account these previews deploy to, so the backend's
+          # WORKERS_AI binding reaches it: inference and cost-log reads are pre-authenticated
+          # in-account, which is why no CF_AI_GATEWAY_API_TOKEN is passed at all.
+          #
+          # Two configurations cannot use the binding and so are unreachable from here until a
+          # `CF_AI_GATEWAY_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_API_TOKEN }}` line is added back:
+          # a gateway in a *different* account (which sets this secret to `false`), and the google
+          # provider, whose SDK cannot take the binding's fetch. Both fail the deploy.
+          CF_AI_GATEWAY_USE_BINDING: ${{ secrets.CF_AI_GATEWAY_USE_BINDING || 'true' }}
           # Together these are the preview name, which is the first label of its hostname: a preview
           # reads as `pr123-my-branch-router.<subdomain>.workers.dev`. The number is what keeps two
           # branches that slugify alike from sharing one instance, and is how the nightly sweep
