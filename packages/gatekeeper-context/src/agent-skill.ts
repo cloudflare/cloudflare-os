@@ -2,7 +2,7 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import type { SlashCommandDescriptor } from "@gadgets/workshop-shared/gatekeeper";
 import type { EnabledCollectionInfo } from "./context-types.js";
-import { encodeDocId } from "./context-types.js";
+import { docIdRoot, encodeDocId } from "./context-types.js";
 
 const AGENT_SKILL_NAME_MAX_LENGTH = 64;
 
@@ -63,11 +63,18 @@ export function buildAgentSkillCatalogEntries(
 /**
  * Context builds this complete message. Workshop stores it as normal chat text.
  * $ARGUMENT uses the raw command text. If missing, the text is appended after the skill.
+ *
+ * The slash-command record is display-only, so this message is the agent's only input: it names the
+ * document the skill came from, because otherwise the paths the skill cites resolve to nothing. The
+ * name is prose rather than an element attribute since a document path may contain quotes.
  */
-export function buildAgentSkillMessage(content: string, args: string): string {
+export function buildAgentSkillMessage(docId: string, content: string, args: string): string {
   let usesArgument = /\$ARGUMENT(?![A-Za-z0-9_[])/.test(content);
   let expanded = content.replace(/\$ARGUMENT(?![A-Za-z0-9_[])/g, () => args);
-  let message = `<agent_skill>\n${expanded}\n</agent_skill>`;
+  let message = `<agent_skill>\n${expanded}\n</agent_skill>\n\n` +
+    `skill root: ${docIdRoot(docId)} — read the documents it references ` +
+    `before following it: prefix skill-local paths with this root, shared paths with the ` +
+    `collection ID alone. Read by ID.`;
   return !usesArgument && args ? `${message}\n\nARGUMENT: ${args}` : message;
 }
 

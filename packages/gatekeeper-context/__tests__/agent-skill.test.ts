@@ -235,35 +235,43 @@ describe("skill manifest content types", () => {
 });
 
 describe("buildAgentSkillMessage", () => {
+  // A quote in the path is why the root is named in prose rather than an element attribute.
+  let docId = 'lib/skills/de"ck/SKILL.md';
+  let root = 'skill root: lib/skills/de"ck/ — read the documents it references before following ' +
+    "it: prefix skill-local paths with this root, shared paths with the collection ID alone. " +
+    "Read by ID.";
+
   it("replaces $ARGUMENT with the full argument text", () => {
     expect(buildAgentSkillMessage(
+      docId,
       "Create a presentation about $ARGUMENT.",
       "CloudflareOS",
     )).toBe(
-      "<agent_skill>\nCreate a presentation about CloudflareOS.\n</agent_skill>",
+      `<agent_skill>\nCreate a presentation about CloudflareOS.\n</agent_skill>\n\n${root}`,
     );
   });
 
   it("inserts dollar signs without replacement-string expansion", () => {
     let args = "$& $$ $` $' $1";
-    expect(buildAgentSkillMessage("Use $ARGUMENT exactly.", args)).toBe(
-      `<agent_skill>\nUse ${args} exactly.\n</agent_skill>`,
+    expect(buildAgentSkillMessage(docId, "Use $ARGUMENT exactly.", args)).toBe(
+      `<agent_skill>\nUse ${args} exactly.\n</agent_skill>\n\n${root}`,
     );
   });
 
   it("appends the argument when the skill has no placeholder", () => {
     expect(buildAgentSkillMessage(
+      docId,
       "Create a clear presentation.",
       "Make it nice and clean",
     )).toBe(
-      "<agent_skill>\nCreate a clear presentation.\n</agent_skill>\n\n" +
+      `<agent_skill>\nCreate a clear presentation.\n</agent_skill>\n\n${root}\n\n` +
       "ARGUMENT: Make it nice and clean",
     );
   });
 
   it("does not append an empty argument", () => {
-    expect(buildAgentSkillMessage("Create a clear presentation.", "")).toBe(
-      "<agent_skill>\nCreate a clear presentation.\n</agent_skill>",
+    expect(buildAgentSkillMessage(docId, "Create a clear presentation.", "")).toBe(
+      `<agent_skill>\nCreate a clear presentation.\n</agent_skill>\n\n${root}`,
     );
   });
 });

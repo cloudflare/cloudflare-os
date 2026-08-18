@@ -72,6 +72,11 @@ export function encodeDocId(collectionId: string, path: string): string {
   return `${collectionId}/${path}`;
 }
 
+/** The ID prefix every document beside this one shares, trailing slash included. */
+export function docIdRoot(docId: string): string {
+  return docId.slice(0, docId.lastIndexOf("/") + 1);
+}
+
 /** Invalid IDs resolve to no document. */
 export function decodeDocId(docId: string): {collectionId: string; path: string} | null {
   let slashIndex = docId.indexOf("/");

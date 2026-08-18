@@ -313,7 +313,7 @@ export class ContextGatekeeper
     let manifest = parseSkillManifest(document.path, document.content);
     return {
       skillName: manifest.name,
-      message: buildAgentSkillMessage(document.content, args),
+      message: buildAgentSkillMessage(id, document.content, args),
     };
   }
 
