@@ -15,6 +15,7 @@
 //  7. Observer verification — all bindings track independently restricted spaces and content.
 
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import { SerialTaskQueue } from "@gadgets/backend-utils/gatekeeper-action";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   type AccountDescription,
@@ -58,6 +59,7 @@ import {
 } from "./confluence-api";
 import {
   ConfluenceStore,
+  applyStoredActionsThrough,
   applyStoredAction,
   observation,
   overlayChildPages,
@@ -568,6 +570,7 @@ function makeApi(ctx: { exports: Cloudflare.Env }, props: BaseProps): Confluence
 @validateRpc()
 export class ConfluenceSiteGatekeeperImpl extends DurableObject<Env, SiteGatekeeperProps>
     implements Gatekeeper<ConfluenceSiteSession> {
+  #actionResolution = new SerialTaskQueue();
   #store() { return new ConfluenceStore(this.ctx.storage.kv, makeApi(this.ctx, this.ctx.props)); }
   #tracker() { return new ConfluenceObserverTracker(this.ctx.storage.kv, this.ctx.props.cloudId); }
 
@@ -609,14 +612,24 @@ export class ConfluenceSiteGatekeeperImpl extends DurableObject<Env, SiteGatekee
 
   async removeObserver(id: string): Promise<void> { this.#tracker().removeObserver(id); }
 
-  async applyAction(action: number): Promise<void> { await applyStoredAction(this.#store(), action); }
-  async rejectAction(action: number) { return rejectStoredAction(this.#store(), action); }
-  async revertAction(action: number) { return await revertStoredAction(this.#store(), action); }
+  applyActionsThrough(actionId: number, vetoes: number[]) {
+    return this.#actionResolution.run(() => applyStoredActionsThrough(this.#store(), actionId, vetoes));
+  }
+  applyAction(action: number): Promise<void> {
+    return this.#actionResolution.run(() => applyStoredAction(this.#store(), action));
+  }
+  rejectAction(action: number) {
+    return this.#actionResolution.run(() => rejectStoredAction(this.#store(), action));
+  }
+  revertAction(action: number) {
+    return this.#actionResolution.run(() => revertStoredAction(this.#store(), action));
+  }
 }
 
 @validateRpc()
 export class ConfluenceSpaceGatekeeperImpl extends DurableObject<Env, SpaceGatekeeperProps>
     implements Gatekeeper<ConfluenceSpaceSession> {
+  #actionResolution = new SerialTaskQueue();
   #store() { return new ConfluenceStore(this.ctx.storage.kv, makeApi(this.ctx, this.ctx.props)); }
   #tracker() { return new ConfluenceObserverTracker(this.ctx.storage.kv, this.ctx.props.cloudId); }
 
@@ -655,14 +668,24 @@ export class ConfluenceSpaceGatekeeperImpl extends DurableObject<Env, SpaceGatek
 
   async removeObserver(id: string): Promise<void> { this.#tracker().removeObserver(id); }
 
-  async applyAction(action: number): Promise<void> { await applyStoredAction(this.#store(), action); }
-  async rejectAction(action: number) { return rejectStoredAction(this.#store(), action); }
-  async revertAction(action: number) { return await revertStoredAction(this.#store(), action); }
+  applyActionsThrough(actionId: number, vetoes: number[]) {
+    return this.#actionResolution.run(() => applyStoredActionsThrough(this.#store(), actionId, vetoes));
+  }
+  applyAction(action: number): Promise<void> {
+    return this.#actionResolution.run(() => applyStoredAction(this.#store(), action));
+  }
+  rejectAction(action: number) {
+    return this.#actionResolution.run(() => rejectStoredAction(this.#store(), action));
+  }
+  revertAction(action: number) {
+    return this.#actionResolution.run(() => revertStoredAction(this.#store(), action));
+  }
 }
 
 @validateRpc()
 export class ConfluenceContentGatekeeperImpl extends DurableObject<Env, ContentGatekeeperProps>
     implements Gatekeeper<ConfluenceContentSession> {
+  #actionResolution = new SerialTaskQueue();
   #store() { return new ConfluenceStore(this.ctx.storage.kv, makeApi(this.ctx, this.ctx.props)); }
   #tracker() { return new ConfluenceObserverTracker(this.ctx.storage.kv, this.ctx.props.cloudId); }
 
@@ -702,9 +725,18 @@ export class ConfluenceContentGatekeeperImpl extends DurableObject<Env, ContentG
 
   async removeObserver(id: string): Promise<void> { this.#tracker().removeObserver(id); }
 
-  async applyAction(action: number): Promise<void> { await applyStoredAction(this.#store(), action); }
-  async rejectAction(action: number) { return rejectStoredAction(this.#store(), action); }
-  async revertAction(action: number) { return await revertStoredAction(this.#store(), action); }
+  applyActionsThrough(actionId: number, vetoes: number[]) {
+    return this.#actionResolution.run(() => applyStoredActionsThrough(this.#store(), actionId, vetoes));
+  }
+  applyAction(action: number): Promise<void> {
+    return this.#actionResolution.run(() => applyStoredAction(this.#store(), action));
+  }
+  rejectAction(action: number) {
+    return this.#actionResolution.run(() => rejectStoredAction(this.#store(), action));
+  }
+  revertAction(action: number) {
+    return this.#actionResolution.run(() => revertStoredAction(this.#store(), action));
+  }
 }
 
 function accountFor(ctx: { exports: Cloudflare.Env }, userObjectId: string) {

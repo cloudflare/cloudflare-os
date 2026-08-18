@@ -132,6 +132,9 @@ importers:
 
   packages/gatekeeper-confluence:
     dependencies:
+      '@gadgets/backend-utils':
+        specifier: workspace:*
+        version: link:../backend-utils
       '@gadgets/configurator-ui':
         specifier: workspace:*
         version: link:../configurator-ui
@@ -480,6 +483,9 @@ importers:
 
   packages/gatekeeper-notion:
     dependencies:
+      '@gadgets/backend-utils':
+        specifier: workspace:*
+        version: link:../backend-utils
       '@gadgets/configurator-ui':
         specifier: workspace:*
         version: link:../configurator-ui

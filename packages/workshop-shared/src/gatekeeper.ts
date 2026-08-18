@@ -688,6 +688,35 @@ export interface GatekeeperUser extends WorkerEntrypoint {
  */
 export interface GatekeeperUserVerifier extends WorkerEntrypoint {}
 
+/** Result of applying a Gatekeeper's queued actions through a decision frontier. */
+export interface ApplyActionsThroughResult {
+  /**
+   * Something went unexpectedly wrong at the given action number; remaining actions were not
+   * applied. The user may retry after resolving the problem or vetoing.
+   */
+  stopped?: {
+    /** Gatekeeper-local action ID that could not be applied. */
+    at: number;
+
+    /**
+     * Explanation of why application stopped. Only the error's `message` survives the RPC hop,
+     * so it must stand alone as display-safe text, specific enough for the user to resolve the
+     * problem.
+     */
+    reason: Error;
+  };
+
+  /**
+   * Actions invalidated as a result of vetoes (may include future action numbers). Display-only.
+   * Gatekeepers MAY not track dependencies and instead let the dependent action fail with
+   * `stopped`.
+   *
+   * Each entry pairs an invalidated Gatekeeper-local action ID with the vetoed action ID that
+   * invalidated it.
+   */
+  invalidatedByVeto?: Array<{action: number, invalidatedBy: number}>;
+}
+
 /**
  * Interface exposed by a Gatekeeper instance implementing a specific resource binding on a
  * specific Gadget.
@@ -798,33 +827,39 @@ export interface Gatekeeper<Session> extends DurableObject {
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
 
   // ---------------------------------------------------------------------------
-  // Callbacks invoked by the overseer to apply (or reject) actions that were previously queued
-  // for approval via the ApprovalQueue.
+  // Callback invoked by the overseer to resolve actions that were previously queued for approval
+  // via the ApprovalQueue.
   //
   // Each action is identified by a sequential integer action ID, assigned by the gatekeeper when
-  // it submits the action for approval. The action ID is passed back to these methods so the
+  // it submits the action for approval. The action ID is passed back to this method so the
   // gatekeeper can look up the action details in its own storage.
 
   /**
-   * Action was approved. This call should apply the action (or schedule it to be applied).
+   * Applies all actions through the given action ID (includes all previous actions that are not
+   * yet applied). Action IDs listed in `vetoes` are actions the user has rejected.
    *
-   * If this throws an exception, the user will be informed that the action failed and given the
-   * opportunity to retry or discard.
+   * Actions are applied in ascending ID order. Vetoed actions and actions invalidated by a veto
+   * become terminal no-ops. Processing stops at the first application failure; a pending in-range
+   * action the gatekeeper still holds must never be silently skipped — it is either applied or
+   * reported via `stopped`. An action whose `submitAction()` call has not yet completed must not
+   * be applied.
    *
-   * Depending on policy conditions, an action may be approved and applied automatically. However,
-   * the gatekeeper is nevertheless expected to submit all actions for approval; there is no mode
-   * in which it's OK to skip the check.
+   * `actionId` is the decision frontier and may equal the current frontier to deliver vetoes only.
+   * Every action ID in `vetoes` must be less than or equal to `actionId`. A veto may arrive long
+   * after the user rejected the action; delivery is opportunistic, not prompt.
+   *
+   * Calls must be idempotent. Missing IDs and vetoes of unknown or already-applied actions are
+   * ignored. A repeated request must re-report persisted invalidations attributable to its vetoes.
    */
+  applyActionsThrough?(actionId: number, vetoes: number[]): Promise<ApplyActionsThroughResult>;
+
+  /** @deprecated Implement `applyActionsThrough()` instead. */
   applyAction(action: number): Promise<void>;
 
   /**
-   * Indicates that an action was rejected by the user. The gatekeeper should clean up any
-   * associated storage.
+   * The returned `restart` flag is ignored; the overseer discards it.
    *
-   * If the returned `restart` flag is true, rejecting this action requires restarting the Gadget.
-   * This is sometimes needed by gatekeepers that simulate actions as if they had been approved --
-   * the session may be in a state that is difficult to roll back without confusing the Gadget.
-   * The Overseer will take care of the restart, possibly after rejecting other actions.
+   * @deprecated Implement `applyActionsThrough()` instead.
    */
   rejectAction(action: number): Promise<void | {restart?: boolean}>;
 
@@ -845,11 +880,9 @@ export interface Gatekeeper<Session> extends DurableObject {
    * `canRetry` should be true if the revert failed (for a reason described in `message`), but
    * it could make sense to retry later. In this case the UI will continue to give the user the
    * option to revert.
-   *
-   * `restart` has the same meaning as for `rejectAction()`.
    */
   revertAction(action: number):
-      Promise<void | {message?: string, canRetry?: boolean, restart?: boolean}>;
+      Promise<void | {message?: string, canRetry?: boolean}>;
 }
 
 export interface ObservationAuthorizer extends RpcTarget {
@@ -944,9 +977,8 @@ export interface ApprovalQueue extends ObservationAuthorizer {
    * be carried out until much later. It's intended that the user might not approve actions until
    * hours or days later, but this shouldn't cause any problems.
    *
-   * `action` is a sequential integer action ID assigned by the gatekeeper. It will be passed back
-   * to the Gatekeeper's applyAction() or rejectAction() when the action is later approved or
-   * rejected.
+   * `action` is a sequential integer action ID assigned by the gatekeeper. It will later be used as
+   * a decision frontier or veto in the Gatekeeper's `applyActionsThrough()` method.
    *
    * `description` describes the action in a way that can direct UI representation and policy
    * enforcement details.
