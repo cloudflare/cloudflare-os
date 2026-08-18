@@ -1,10 +1,12 @@
 name: Bonk PR Review
 
 on:
-  pull_request:
-    types: [opened, synchronize, unlabeled]
-  issue_comment:
-    types: [created]
+  # Emergency shutoff: restore the PR and comment triggers when Bonk is confirmed working.
+  workflow_dispatch:
+  # pull_request:
+  #   types: [opened, synchronize, unlabeled]
+  # issue_comment:
+  #   types: [created]
 
 jobs:
   # Break-glass invariants:
