@@ -566,7 +566,7 @@ export function resolveAccess({
  * requests are pre-authenticated in-account, so neither inference nor a cost-log read needs a
  * token. Two configurations still do, and each is the deploy-time mirror of a constructor throw:
  * CF_AI_GATEWAY_USE_BINDING=false, which marks the gateway as living in a *different* account and
- * so forces the HTTPS transport, and the google provider, whose SDK cannot take the binding's
+ * so forces the HTTPS transport, and the google provider, whose pi adapter refuses the binding's
  * fetch.
  *
  * The environment is read in the parameter defaults rather than the body so that
@@ -620,8 +620,8 @@ export function resolveAiGateway({
   }
   if (!apiToken && providers?.split(",").some(p => p.trim() === "google")) {
     throw new Error("CF_AI_GATEWAY_API_TOKEN must be set when the google provider is enabled: " +
-        "the @google/genai SDK does not support a custom fetch, so Google inference cannot ride " +
-        "the Workers AI binding.");
+        "pi's Google adapter refuses a custom fetch, so Google inference cannot ride the Workers " +
+        "AI binding.");
   }
   return {
     CF_AI_GATEWAY: gateway,

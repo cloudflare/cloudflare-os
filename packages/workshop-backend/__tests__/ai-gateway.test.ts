@@ -112,6 +112,13 @@ describe("AiGatewayConfig transport selection", () => {
       CF_AI_GATEWAY_USE_BINDING: "false",
       WORKERS_AI: binding,
     })).sameAccountGateway).toBeUndefined();
+    // It tracks the binding rather than the opt-out, so an HTTPS-only deployment that never had a
+    // binding to opt out of resolves no same-account gateway either.
+    expect(new AiGatewayConfig(env({
+      CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
+      CF_AI_GATEWAY_API_TOKEN: "gateway-token",
+      WORKERS_AI: undefined,
+    })).sameAccountGateway).toBeUndefined();
   });
 });
 

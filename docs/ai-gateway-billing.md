@@ -66,9 +66,11 @@ the binding too), or otherwise an API token with AI Gateway Run and Read permiss
 access lets Gadgets retrieve each log's cost for user-visible accounting. The binding transport
 only works when the Gateway lives in the Worker's own account, which the Worker can't verify at
 runtime — a deployment whose Gateway is in a different account must set
-`CF_AI_GATEWAY_USE_BINDING=false` to opt out and use the token transport. The token stays
-required for the `google` provider even when the binding transport applies. Every provider,
-Workers AI included, routes through the same Gateway.
+`CF_AI_GATEWAY_USE_BINDING=false` to opt out and use the token transport. That is a flag rather
+than an unbinding because `WORKERS_AI` also backs the webFetch tool's document-to-Markdown
+conversion (and is hardcoded for every released backend), so removing it would break that instead
+of just moving gateway traffic. The token stays required for the `google` provider even when the
+binding transport applies. Every provider, Workers AI included, routes through the same Gateway.
 
 The Cloudflare dashboard OAuth endpoints and scopes are **hardcoded** in the Cloudflare gatekeeper
 (`packages/gatekeeper-cloudflare/src/oauth.ts`):

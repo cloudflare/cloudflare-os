@@ -7,12 +7,27 @@ import { UserAiModelRecord } from "./user.js";
 // compared to the actual coding model so there's not much reason to use a smaller model.
 const QUICK_MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
+/**
+ * Providers whose pi API adapter refuses a custom fetch, so their inference cannot ride the
+ * Workers AI binding and needs CF_AI_GATEWAY_API_TOKEN over HTTPS. pi's Google adapter throws
+ * "Custom fetch is not supported by the Google Generative AI adapter" whenever the fetch it is
+ * given is not globalThis.fetch, and the client it builds on offers no hook to route around that:
+ * @google/genai's `GoogleGenAI` takes only `httpOptions`, whose knobs are
+ * baseUrl/apiVersion/headers/timeout/extraBody/retryOptions.
+ * https://github.com/earendil-works/pi/blob/v0.84.2/packages/ai/src/api/google-generative-ai.ts#L80
+ *
+ * pi's Vertex adapter throws the same way, so a google-vertex provider would belong here too; it
+ * is absent only because this deployment has no such provider.
+ * https://github.com/earendil-works/pi/blob/v0.84.2/packages/ai/src/api/google-vertex.ts#L98
+ */
+const HTTPS_ONLY_PROVIDERS = new Set(["google"]);
+
 export class AiGatewayConfig {
   readonly gateway: string;
   /**
    * The gateway name for Workers-AI-binding calls (webFetch's toMarkdown): binding calls only
-   * reach gateways in the Worker's own account, so this is the platform gateway unless
-   * CF_AI_GATEWAY_USE_BINDING=false marks it cross-account.
+   * reach gateways in the Worker's own account, so this is the platform gateway whenever the
+   * binding transport is active, and unset when it isn't (see {@link binding}).
    */
   readonly sameAccountGateway?: string;
   readonly accountId: string;
@@ -25,6 +40,10 @@ export class AiGatewayConfig {
    * account ID), so deployments whose gateway lives in a DIFFERENT account must set the opt-out
    * and use CF_AI_GATEWAY_API_TOKEN over HTTPS. Absent in local dev unless run-dev-server is
    * started with --use-workers-ai-binding.
+   *
+   * Such a deployment opts out with the flag rather than by unbinding WORKERS_AI, because the
+   * binding is not only the gateway transport: webFetch's document-to-Markdown conversion calls
+   * `env.ai.toMarkdown()` through it (see web-fetch.ts), so unbinding would break that too.
    */
   readonly binding?: Ai;
   readonly providers: Set<string>;
@@ -52,25 +71,27 @@ export class AiGatewayConfig {
           "AI Gateway mode needs a transport: bind Workers AI (WORKERS_AI; in local dev start " +
           "with --use-workers-ai-binding) or set CF_AI_GATEWAY_API_TOKEN (a Run + Read token).");
     }
-    this.sameAccountGateway = useBinding === "false" ? undefined : this.gateway;
+    this.sameAccountGateway = this.binding ? this.gateway : undefined;
     this.providers = new Set(
       (env.CF_AI_GATEWAY_PROVIDERS || "").split(",").map(s => s.trim()).filter(s => s !== "")
     );
-    if (this.providers.has("google") && !this.apiToken) {
+    const httpsOnly = [...this.providers].filter(p => HTTPS_ONLY_PROVIDERS.has(p));
+    if (httpsOnly.length > 0 && !this.apiToken) {
+      const names = httpsOnly.join(", ");
       throw new Error(
-          "Google models cannot use the Workers AI binding transport (the @google/genai SDK " +
-          "does not support a custom fetch), so enabling the google provider requires " +
+          `${names} inference cannot ride the Workers AI binding transport, so enabling the ` +
+          `${names} provider${httpsOnly.length > 1 ? "s" : ""} requires ` +
           "CF_AI_GATEWAY_API_TOKEN.");
     }
   }
 
   /**
-   * Transport for a provider's gateway inference: the Workers AI binding when present, except
-   * for Google (pi's Google adapter rejects a custom fetch, so Google rides HTTPS with the
-   * token; the constructor guarantees a token whenever google is an enabled provider).
+   * Transport for a provider's gateway inference: the Workers AI binding when present, except for
+   * the providers in {@link HTTPS_ONLY_PROVIDERS}, which ride HTTPS with the token (the
+   * constructor guarantees a token whenever one of them is an enabled provider).
    */
   bindingFor(provider: string): Ai | undefined {
-    return provider === "google" ? undefined : this.binding;
+    return HTTPS_ONLY_PROVIDERS.has(provider) ? undefined : this.binding;
   }
 
   /**

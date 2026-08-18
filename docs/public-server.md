@@ -53,19 +53,22 @@ are pre-authenticated in-account, so inference and cost-log reads need no API to
 valid when the Gateway lives in the Worker's **own** account — binding requests can't reach
 another account's Gateway, and the Worker cannot verify where the Gateway lives at runtime — so
 deployments whose Gateway is in a different account must set `CF_AI_GATEWAY_USE_BINDING=false` to
-opt out and route over HTTPS instead. Without the binding transport, set
+opt out and route over HTTPS instead. Keep `WORKERS_AI` bound when you do: it is also what the
+webFetch tool's document-to-Markdown conversion runs on, so unbinding it opts out of far more than
+the gateway transport. Without the binding transport, set
 `CF_AI_GATEWAY_API_TOKEN` — a token with AI Gateway Run and Read permissions so Gadgets can
 execute models and report their costs (over HTTPS the Gateway may live in the Worker's own
 account or a different one). The token stays required for the `google` provider regardless of the
-binding (its SDK can't ride the binding transport — note the platform config above enables it, so
-the platform server itself still needs the token). Every provider, Workers AI included, routes
-through the same Gateway.
+binding (the model SDK adapter refuses the binding's fetch — note the platform config above enables
+it, so the platform server itself still needs the token). Every provider, Workers AI included,
+routes through the same Gateway.
 
 When using `CF_AI_GATEWAY*` in local development, start the server with
 `pnpm run dev-server -- --use-workers-ai-binding` so the server has a `WORKERS_AI` binding for
 the webFetch tool's document-to-Markdown conversion and for the gateway transport above (without
 it, gateway traffic falls back to HTTPS with `CF_AI_GATEWAY_API_TOKEN`). If your dev Gateway
-lives in a different account than the binding, also set `CF_AI_GATEWAY_USE_BINDING=false`.
+lives in a different account than the binding, also set `CF_AI_GATEWAY_USE_BINDING=false` — keep
+`--use-workers-ai-binding` on, since the Markdown conversion still needs the binding.
 
 Each gatekeeper's OAuth app must be registered with that gatekeeper's redirect URI (replace the host
 with `PUBLIC_BASE_URL`):

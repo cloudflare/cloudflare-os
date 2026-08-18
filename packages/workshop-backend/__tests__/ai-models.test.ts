@@ -386,6 +386,15 @@ describe("getModel AI Gateway binding transport", () => {
         "enabling the google provider requires CF_AI_GATEWAY_API_TOKEN");
   });
 
+  it("rejects a stored google config when the deployment has no token", () => {
+    expect(() => getModel(bindingEnv(), {
+      provider: "google",
+      model: "gemini-2.5-flash",
+      apiToken: "ignored-in-gateway-mode",
+    }, INITIATOR)).toThrow(
+        'Provider "google" cannot use the Workers AI binding transport');
+  });
+
 });
 
 describe("getModel direct routing (no gateway)", () => {

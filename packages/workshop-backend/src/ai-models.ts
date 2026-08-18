@@ -447,6 +447,12 @@ function getModelViaGateway(
 ): ModelHandle {
   const metadata = buildMetadata(initiator, options.metadata);
   const binding = gwConfig.bindingFor(config.provider);
+  // No binding means either the provider can't ride one or the deployment has none; the second
+  // case already required a token in the constructor, so this only fires for the first
+  if (!binding && !gwConfig.apiToken) {
+    throw new Error(`Provider "${config.provider}" cannot use the Workers AI binding transport, ` +
+        "and no CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.");
+  }
   const gatewayAuthHeaders: ProviderHeaders = {
     // pi's API impls explicitly recognize cf-aig-authorization and skip SDK auth; the null
     // values suppress the SDKs' own auth headers so the gateway's server-managed provider keys
@@ -464,13 +470,6 @@ function getModelViaGateway(
   const logRoute = (gateway: string): AiGatewayLogRoute => gwConfig.binding
       ? { gateway }
       : { gateway, accountId: gwConfig.accountId, apiToken: gwConfig.apiToken! };
-
-  if (config.provider === "google" && !gwConfig.apiToken) {
-    // Unreachable when google is an enabled provider (the config constructor throws), but a
-    // stored model config can still name google directly.
-    throw new Error("Google models require CF_AI_GATEWAY_API_TOKEN (the Workers AI binding " +
-        "transport cannot carry them).");
-  }
 
   // Every provider -- Workers AI included -- rides the same gateway, with the same log route
   // and attribution metadata. Binding-routed providers address it on the binding's host, which
