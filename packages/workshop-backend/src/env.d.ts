@@ -15,21 +15,11 @@ declare global {
 
       // AI Gateway mode: when CF_AI_GATEWAY is set, supported providers are routed through
       // Cloudflare AI Gateway with server-managed keys. Users don't need their own keys.
-      // Transport: the WORKERS_AI binding when present (pre-authenticated
-      // in-account -- no API token; in local dev the binding needs --use-workers-ai-binding)
-      // unless CF_AI_GATEWAY_USE_BINDING=false opts out, HTTPS with CF_AI_GATEWAY_API_TOKEN
-      // otherwise. The token stays REQUIRED for the google provider (pi's Google adapter can't
-      // use the binding transport).
       CF_AI_GATEWAY?: string;            // Gateway name (enables gateway mode)
       CF_AI_GATEWAY_PROVIDERS?: string;   // Comma-separated list: "anthropic,openai,google,cloudflare"
       CF_AI_GATEWAY_ACCOUNT_ID?: string;  // Gateway owner account ID (required with CF_AI_GATEWAY)
       CF_AI_GATEWAY_API_TOKEN?: string;   // Run + Read token; optional when the binding transport
                                           // applies (still required for google)
-      // "false" = never use the WORKERS_AI binding as the gateway transport. Binding requests
-      // only reach gateways in the Worker's own account, and the Worker can't verify where the
-      // gateway lives (it can't discover its own account ID at runtime) -- so deployments whose
-      // gateway is in a DIFFERENT account (e.g. the internal production Workshop) must set this
-      // opt-out and route over HTTPS with the token. Unset/"true" = binding when present.
       CF_AI_GATEWAY_USE_BINDING?: string;
       // Note: outside gateway mode, Workers AI (provider "cloudflare") is BYOK like every other
       // provider -- the account ID and API token live in the user's model config, not in env.

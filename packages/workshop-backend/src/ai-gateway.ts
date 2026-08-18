@@ -9,19 +9,23 @@ const QUICK_MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 export class AiGatewayConfig {
   readonly gateway: string;
-  // The gateway name for Workers-AI-binding calls (webFetch's toMarkdown): binding calls only
-  // reach gateways in the Worker's own account, so this is the platform gateway unless
-  // CF_AI_GATEWAY_USE_BINDING=false marks it cross-account.
+  /**
+   * The gateway name for Workers-AI-binding calls (webFetch's toMarkdown): binding calls only
+   * reach gateways in the Worker's own account, so this is the platform gateway unless
+   * CF_AI_GATEWAY_USE_BINDING=false marks it cross-account.
+   */
   readonly sameAccountGateway?: string;
   readonly accountId: string;
   readonly apiToken?: string;
-  // Workers AI binding, used as the gateway transport whenever present unless
-  // CF_AI_GATEWAY_USE_BINDING=false opts out: binding requests are pre-authenticated in-account,
-  // so inference and cost-log reads need no API token. Binding requests only reach gateways in
-  // the Worker's own account, and the Worker can't verify that itself (it can't discover its own
-  // account ID), so deployments whose gateway lives in a DIFFERENT account must set the opt-out
-  // and use CF_AI_GATEWAY_API_TOKEN over HTTPS. Absent in local dev unless run-dev-server is
-  // started with --use-workers-ai-binding.
+  /**
+   * Workers AI binding, used as the gateway transport whenever present unless
+   * CF_AI_GATEWAY_USE_BINDING=false opts out: binding requests are pre-authenticated in-account,
+   * so inference and cost-log reads need no API token. Binding requests only reach gateways in
+   * the Worker's own account, and the Worker can't verify that itself (it can't discover its own
+   * account ID), so deployments whose gateway lives in a DIFFERENT account must set the opt-out
+   * and use CF_AI_GATEWAY_API_TOKEN over HTTPS. Absent in local dev unless run-dev-server is
+   * started with --use-workers-ai-binding.
+   */
   readonly binding?: Ai;
   readonly providers: Set<string>;
 

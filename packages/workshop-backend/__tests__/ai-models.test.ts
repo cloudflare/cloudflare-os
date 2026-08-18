@@ -229,28 +229,33 @@ describe("getModel AI Gateway routing", () => {
 });
 
 describe("getModel AI Gateway binding transport", () => {
-  // Universal-endpoint entries captured by the fake Workers AI binding. In binding mode the
-  // handle's requests never hit HTTP: pi's SDK fetch is the pi gateway-binding shim, which
-  // translates each request into binding.gateway(gw).run(entry).
-  type CapturedEntry = {
-    gatewayId: string;
-    provider: string;
-    endpoint: string;
+  // Provider-native requests captured by the fake Workers AI binding. In binding mode the
+  // handle's requests never hit HTTP: pi's SDK fetch is the gateway-binding shim, which only
+  // rewrites the URL onto the gateway's provider passthrough
+  // (workers-binding.ai/ai-gateway/gateways/{gateway}/{provider}/...) and hands the request to
+  // binding.fetch() otherwise unchanged.
+  type CapturedBindingRequest = {
+    url: string;
+    method: string;
     headers: Record<string, string>;
-    query: unknown;
+    body: string;
   };
-  const capturedEntries: CapturedEntry[] = [];
+  const capturedEntries: CapturedBindingRequest[] = [];
 
   const fakeBinding = {
-    gateway: (gatewayId: string) => ({
-      run: async (data: Omit<CapturedEntry, "gatewayId">) => {
-        capturedEntries.push({ gatewayId, ...data });
-        // Same non-retryable client error as the HTTP fetch stub: pi surfaces an error-stop
-        // message and the entry stays captured for assertions.
-        return Response.json(
-            { error: { type: "bad_request", message: "stubbed" } }, { status: 400 });
-      },
-    }),
+    fetch: async (input: Request | string | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      capturedEntries.push({
+        url: request.url,
+        method: request.method,
+        headers: Object.fromEntries(request.headers),
+        body: await request.text(),
+      });
+      // Same non-retryable client error as the HTTP fetch stub: pi surfaces an error-stop
+      // message and the request stays captured for assertions.
+      return Response.json(
+          { error: { type: "bad_request", message: "stubbed" } }, { status: 400 });
+    },
   } as unknown as Ai;
 
   // Binding transport selects by default: binding present, no API token (in-account gateways;
@@ -265,7 +270,7 @@ describe("getModel AI Gateway binding transport", () => {
     });
   }
 
-  async function captureEntry(handle: ModelHandle): Promise<CapturedEntry> {
+  async function captureEntry(handle: ModelHandle): Promise<CapturedBindingRequest> {
     const stream = handle.stream(handle.model, {
       messages: [{ role: "user", content: "hello", timestamp: 0 }],
     }, { maxRetries: 0 });
@@ -286,65 +291,63 @@ describe("getModel AI Gateway binding transport", () => {
     });
 
     expect(handle.model.api).toBe("anthropic-messages");
+    // Binding-routed models address the gateway on the binding's host, which takes no account
+    // id -- the binding channel carries identity.
     expect(handle.model.baseUrl).toBe(
-        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/anthropic");
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/anthropic");
     // Same-account log reads ride the binding too: no account id or token in the route.
     expect(handle.aiGatewayLogRoute).toEqual({ gateway: "platform-gateway" });
 
     const entry = await captureEntry(handle);
-    expect(entry.gatewayId).toBe("platform-gateway");
-    expect(entry.provider).toBe("anthropic");
-    expect(entry.endpoint).toBe("v1/messages");
-    // The sentinel auth header satisfies pi's request-auth check but must never reach the
-    // gateway; the SDK's own auth headers stay suppressed.
+    expect(entry.url).toBe(
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/anthropic/v1/messages");
+    expect(entry.method).toBe("POST");
+    // The sentinel auth header satisfies pi's request-auth check; the gateway recognizes and
+    // strips it on binding-routed requests, so the shim forwards it. The SDK's own auth
+    // headers stay suppressed.
+    expect(entry.headers["cf-aig-authorization"]).toBe("Bearer cloudflare-gateway-binding");
     const headerNames = Object.keys(entry.headers).map((name) => name.toLowerCase());
-    expect(headerNames).not.toContain("cf-aig-authorization");
     expect(headerNames).not.toContain("x-api-key");
     expect(headerNames).not.toContain("authorization");
-    const metadataHeader = Object.entries(entry.headers)
-        .find(([name]) => name.toLowerCase() === "cf-aig-metadata")?.[1];
-    expect(JSON.parse(metadataHeader!)).toEqual({
+    expect(JSON.parse(entry.headers["cf-aig-metadata"])).toEqual({
       user: "user-123",
       source: "chat",
       gadgetId: "gadget-123",
       chatId: 7,
     });
-    expect((entry.query as { model: string }).model).toBe("claude-sonnet-4-5");
+    expect((JSON.parse(entry.body) as { model: string }).model).toBe("claude-sonnet-4-5");
   }, 15000);
 
   it("drives Workers AI through the binding via its gateway route", async () => {
     const handle = getModel(bindingEnv(), WORKERS_AI_CONFIG, INITIATOR);
 
     expect(handle.model.baseUrl).toBe(
-        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/" +
-        "workers-ai/v1");
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/workers-ai/v1");
     expect(handle.aiGatewayLogRoute).toEqual({ gateway: "platform-gateway" });
 
     const entry = await captureEntry(handle);
-    expect(entry.gatewayId).toBe("platform-gateway");
-    expect(entry.provider).toBe("workers-ai");
-    expect(entry.endpoint).toBe("v1/chat/completions");
-    expect((entry.query as { model: string }).model)
+    expect(entry.url).toBe(
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/workers-ai/" +
+        "v1/chat/completions");
+    expect((JSON.parse(entry.body) as { model: string }).model)
         .toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
     // openai-completions adapters inject `Authorization: Bearer unused` under header-owned
-    // auth; the gatewayAuthHeaders nulls must delete it before the entry is built, else the
-    // gateway would treat it as a request-supplied provider key overriding stored keys.
+    // auth; the gatewayAuthHeaders nulls must delete it before dispatch, else the gateway
+    // would treat it as a request-supplied provider key overriding stored keys.
     const headerNames = Object.keys(entry.headers).map((name) => name.toLowerCase());
     expect(headerNames).not.toContain("authorization");
     expect(headerNames).not.toContain("x-api-key");
-    expect(headerNames).not.toContain("cf-aig-authorization");
   }, 15000);
 
   it("lets a per-call fetch override the binding transport", async () => {
-    // Tests and diagnostics inject options.fetch; it must win over the handle's binding shim.
-    // The raw request still carries the sentinel (stripping is the shim's job).
+    // Tests and diagnostics inject options.fetch; it must win over the handle's binding fetch.
+    // The URL is the model's, so it still names the binding route -- only the transport swaps.
     const handle = getModel(bindingEnv(), ANTHROPIC_CONFIG, INITIATOR);
 
     const request = await captureRequest(handle);
     expect(capturedEntries).toHaveLength(0);
     expect(request.url).toBe(
-        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/anthropic/" +
-        "v1/messages");
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/anthropic/v1/messages");
     expect(request.headers.get("cf-aig-authorization"))
         .toBe("Bearer cloudflare-gateway-binding");
   }, 15000);
@@ -370,9 +373,10 @@ describe("getModel AI Gateway binding transport", () => {
 
     const anthropicHandle = getModel(hybridEnv, ANTHROPIC_CONFIG, INITIATOR);
     const entry = await captureEntry(anthropicHandle);
-    expect(entry.provider).toBe("anthropic");
-    const headerNames = Object.keys(entry.headers).map((name) => name.toLowerCase());
-    expect(headerNames).not.toContain("cf-aig-authorization");
+    expect(entry.url).toBe(
+        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/anthropic/v1/messages");
+    // The binding arm carries the sentinel, never the real gateway token.
+    expect(entry.headers["cf-aig-authorization"]).toBe("Bearer cloudflare-gateway-binding");
   }, 15000);
 
   it("requires the token when google is an enabled provider", () => {

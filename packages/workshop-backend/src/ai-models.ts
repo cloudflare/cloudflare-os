@@ -5,9 +5,6 @@ import type {
   ModelCost, OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction,
 } from "@earendil-works/pi-ai";
 import { stream as anthropicMessagesStream } from "@earendil-works/pi-ai/api/anthropic-messages";
-import {
-  CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL, createGatewayBindingFetch,
-} from "./ai-gateway-binding-fetch.js";
 import { stream as googleGenerativeAiStream } from "@earendil-works/pi-ai/api/google-generative-ai";
 import { stream as openaiCompletionsStream } from "@earendil-works/pi-ai/api/openai-completions";
 import { stream as openaiResponsesStream } from "@earendil-works/pi-ai/api/openai-responses";
@@ -168,9 +165,11 @@ function workersAiCompat(catalog: Model<Api> | undefined): OpenAICompletionsComp
 }
 
 // Build the pi model descriptor for reaching a provider's own native API through an AI Gateway
-// (the platform's or a user's). `gatewayUrl` is a gateway root
-// (https://gateway.ai.cloudflare.com/v1/{accountId}/{gateway}); each provider's native API is
-// exposed under a per-provider path on it. AI Gateway also offers a unified OpenAI-compat
+// (the platform's or a user's). `gatewayUrl` is a gateway root -- over HTTPS
+// (https://gateway.ai.cloudflare.com/v1/{accountId}/{gateway}) or, for binding-routed requests,
+// over the AI binding (https://workers-binding.ai/ai-gateway/gateways/{gateway}); each
+// provider's native API is exposed under the same per-provider path on either. AI Gateway also
+// offers a unified OpenAI-compat
 // translation layer (/compat), which we deliberately never use: we already speak every
 // provider's native API, and the translation drops provider features pi relies on (extended
 // thinking, Anthropic cache_control prompt caching, the OpenAI Responses API). Billing --
@@ -271,7 +270,8 @@ type HandleArgs = {
   gatewayMetadata?: GatewayMetadata;
   sessionAffinity?: string;
   aiGatewayLogRoute?: AiGatewayLogRoute;
-  // Transport override for every request on this handle (e.g. the AI Gateway binding shim).
+  // Transport override for every request on this handle: how a binding-routed model reaches the
+  // gateway over env.WORKERS_AI.fetch() instead of the global fetch (see bindingFetch).
   // A per-call options.fetch still wins, which tests rely on to capture requests.
   fetch?: FetchFunction;
 };
@@ -415,6 +415,28 @@ function getModelViaUserGateway(
   });
 }
 
+/**
+ * Placeholder auth value for binding-routed requests. pi's API impls require an API key or a
+ * recognized auth header (authorization, x-api-key, cf-aig-authorization) before dispatch;
+ * binding calls are pre-authenticated in-account, so this satisfies the check and the gateway
+ * recognizes and strips it rather than treating it as a BYOK provider key.
+ */
+const CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL = "cloudflare-gateway-binding";
+
+/**
+ * `Ai#fetch` exists at runtime but @cloudflare/workers-types' `Ai` doesn't declare it, so the
+ * binding is cast structurally to reach the passthrough.
+ */
+type AiFetchBinding = {
+  fetch(input: Request | string | URL, init?: RequestInit): Promise<Response>;
+};
+
+// pi drives the model's baseUrl, which already names the gateway route on the binding's host,
+// so the binding's fetch passes through unchanged -- no URL rewriting needed.
+function bindingFetch(binding: Ai): FetchFunction {
+  return (input, init) => (binding as unknown as AiFetchBinding).fetch(input, init);
+}
+
 // Platform free-tier path: route through the deployment's configured AI Gateway (platform-funded).
 // Used only for requests that are NOT billed to a connected user's account.
 function getModelViaGateway(
@@ -424,10 +446,6 @@ function getModelViaGateway(
   options: ModelRoutingOptions,
 ): ModelHandle {
   const metadata = buildMetadata(initiator, options.metadata);
-  // Binding transport when available (all providers except Google): requests go through
-  // env.WORKERS_AI.gateway().run(), pre-authenticated in-account. pi's API impls require a
-  // recognized auth header before dispatch, so binding-routed requests carry a sentinel
-  // cf-aig-authorization that the shim strips before it reaches the wire.
   const binding = gwConfig.bindingFor(config.provider);
   const gatewayAuthHeaders: ProviderHeaders = {
     // pi's API impls explicitly recognize cf-aig-authorization and skip SDK auth; the null
@@ -455,9 +473,13 @@ function getModelViaGateway(
   }
 
   // Every provider -- Workers AI included -- rides the same gateway, with the same log route
-  // and attribution metadata.
+  // and attribution metadata. Binding-routed providers address it on the binding's host, which
+  // takes no account id (the binding channel carries identity); the paths are otherwise the
+  // same, so the model descriptors are built identically from either root.
   const gateway = gwConfig.gateway;
-  const gatewayUrl = `${gatewayBase}/${gateway}`;
+  const gatewayUrl = binding
+      ? `https://workers-binding.ai/ai-gateway/gateways/${gateway}`
+      : `${gatewayBase}/${gateway}`;
   const model = gatewayNativeModel(config, gatewayUrl);
   if (!model) {
     throw new Error(
@@ -476,9 +498,7 @@ function getModelViaGateway(
     // the gateway recognizes its own token there and applies the stored Google key instead.
     ...(config.provider === "google" ? { apiKey: gwConfig.apiToken } : {}),
     headers: gatewayAuthHeaders,
-    ...(binding
-        ? { fetch: createGatewayBindingFetch({ binding, baseUrl: gatewayUrl, gateway }) }
-        : {}),
+    ...(binding ? { fetch: bindingFetch(binding) } : {}),
     gatewayMetadata: metadata,
     sessionAffinity: options.sessionAffinity,
     aiGatewayLogRoute: logRoute(gateway),
