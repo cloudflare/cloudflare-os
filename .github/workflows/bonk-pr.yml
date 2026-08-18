@@ -148,6 +148,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+          OPENCODE_CONFIG_CONTENT: '{"provider":{"cloudflare-ai-gateway":{"models":{"anthropic/claude-opus-4-8":{}}}}}'
         with:
           oidc_base_url: https://ask-bonk.cloudflare-exponent.workers.dev/auth
           model: "cloudflare-ai-gateway/anthropic/claude-opus-4-8"
@@ -156,4 +157,4 @@ jobs:
           permissions: write
           token_permissions: NO_PUSH
           agent: bonk
-          opencode_version: 1.15.13 # pin to this version as certain ones cause ProviderInitError issues
+          opencode_version: 1.18.18
