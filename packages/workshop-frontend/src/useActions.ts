@@ -125,6 +125,46 @@ function release(overseer: RpcStub<Overseer>) {
   }
 }
 
+/**
+ * Earlier pending actions from the same gatekeeper connection that approving `record` would also
+ * apply: the backend treats an approval as a decision frontier covering everything before it.
+ */
+export function countEarlierPending(
+  entries: Iterable<ActionLogEntry>,
+  record: ActionLogEntry,
+): number {
+  if (record.type !== 'action' || record.gatekeeperId === undefined) return 0
+  let count = 0
+  for (const other of entries) {
+    if (
+      other.type === 'action' &&
+      other.state === 'pending' &&
+      other.gatekeeperId === record.gatekeeperId &&
+      other.id < record.id
+    ) {
+      count++
+    }
+  }
+  return count
+}
+
+/**
+ * Display note for a rejection that cascaded from another action's veto, naming the vetoed action
+ * when it is still in the local list.
+ */
+export function invalidationNote(
+  record: ActionLogEntry,
+  actionsById: Map<number, ActionLogEntry>,
+): string | undefined {
+  if (record.type !== 'action' || record.state !== 'rejected' || record.cascadedFrom === undefined) {
+    return undefined
+  }
+  const source = actionsById.get(record.cascadedFrom)
+  return source?.type === 'action'
+    ? `Invalidated by rejection of “${source.description.title}”`
+    : 'Invalidated by a rejected action'
+}
+
 export type UseActionsResult = {
   actionsById: Map<number, ActionLogEntry>
   isReady: boolean

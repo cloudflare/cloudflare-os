@@ -5,12 +5,16 @@ export function ResolveButton({
   variant = 'quiet',
   disabled,
   onClick,
+  earlierCount = 0,
 }: {
   tone: 'approve' | 'deny'
   variant?: 'quiet' | 'filled'
   disabled: boolean
   onClick: MouseEventHandler<HTMLButtonElement>
+  /** Approve only: earlier pending actions from the same connection this approval also applies. */
+  earlierCount?: number
 }) {
+  const showEarlier = tone === 'approve' && earlierCount > 0
   const toneClassName = variant === 'filled'
     ? 'h-7 bg-kumo-brand px-3 text-white enabled:hover:opacity-90'
     : tone === 'approve'
@@ -22,9 +26,15 @@ export function ResolveButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
+      title={showEarlier
+        ? `Also applies ${earlierCount} earlier pending ${earlierCount === 1 ? 'action' : 'actions'} from this connection.`
+        : undefined}
       className={`flex cursor-pointer items-center rounded-md text-[12px] font-medium tracking-[-0.15px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${toneClassName}`}
     >
       {tone === 'approve' ? 'Approve' : 'Deny'}
+      {showEarlier && (
+        <span className="ml-1 text-[11px] font-normal opacity-70">+{earlierCount} earlier</span>
+      )}
     </button>
   )
 }

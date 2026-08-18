@@ -7,6 +7,7 @@ import { CountBadge } from './components/CountBadge'
 import { ResolveButton } from './components/ResolveButton'
 import { formatRelativeTime, type ActivityView } from './Activity'
 import { useResolveAction } from './useResolveAction'
+import { countEarlierPending } from './useActions'
 
 interface ActivityNotificationsProps {
   overseer: RpcStub<Overseer>
@@ -108,6 +109,7 @@ export default function ActivityNotifications({
                         tone="approve"
                         disabled={isProcessing}
                         onClick={() => void resolveAction(action.id, 'approve')}
+                        earlierCount={countEarlierPending(pending, action)}
                       />
                     </div>
                   </div>

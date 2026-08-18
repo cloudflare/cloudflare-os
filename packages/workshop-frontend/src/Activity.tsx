@@ -8,7 +8,7 @@ import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle } from './components/HookToggle'
 import { AlwaysApproveButton, ResolveButton } from './components/ResolveButton'
 import { WorkshopButton } from './components/WorkshopControls'
-import { useActions } from './useActions'
+import { countEarlierPending, invalidationNote, useActions } from './useActions'
 import { useAutoApproval, autoApprovalKey, type AutoApprovalEntry } from './useAutoApproval'
 import { useAlwaysApproveTag } from './useAlwaysApproveTag'
 import { useAuthenticatedApi } from './AuthContext'
@@ -233,6 +233,7 @@ export default function Activity({
                   <ReviewRequest
                     key={record.id}
                     record={record}
+                    earlierPendingCount={countEarlierPending(actionsById.values(), record)}
                     expanded={expandedActionId === record.id}
                     processing={processingActions.has(record.id)}
                     onToggle={() => toggleExpanded(record.id)}
@@ -310,6 +311,7 @@ export default function Activity({
                     <HistoryRow
                       key={record.id}
                       record={record}
+                      invalidation={invalidationNote(record, actionsById)}
                       expanded={expandedActionId === record.id}
                       onToggle={() => toggleExpanded(record.id)}
                       togglingHook={record.type === 'bindHook' && record.hookId !== undefined
@@ -489,6 +491,7 @@ function AutoApprovalPanel({
 
 function ReviewRequest({
   record,
+  earlierPendingCount,
   expanded,
   processing,
   onToggle,
@@ -497,6 +500,7 @@ function ReviewRequest({
   onAlwaysApprove,
 }: {
   record: ActionLogEntry
+  earlierPendingCount: number
   expanded: boolean
   processing: boolean
   onToggle: () => void
@@ -505,6 +509,7 @@ function ReviewRequest({
   onAlwaysApprove?: () => void
 }) {
   const resourceUrl = safeExternalUrl(record.resourceUrl)
+  const failure = record.type === 'action' ? record.failure : undefined
   return (
     <article className="border-b border-kumo-line px-5 py-3 transition-colors hover:bg-kumo-elevated/50">
       <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
@@ -543,7 +548,12 @@ function ReviewRequest({
             <AlwaysApproveButton onClick={onAlwaysApprove} disabled={processing} />
           )}
           <ResolveButton tone="deny" onClick={onReject} disabled={processing} />
-          <ResolveButton tone="approve" onClick={onApprove} disabled={processing} />
+          <ResolveButton
+            tone="approve"
+            onClick={onApprove}
+            disabled={processing}
+            earlierCount={earlierPendingCount}
+          />
         </div>
       </div>
 
@@ -552,18 +562,25 @@ function ReviewRequest({
           {record.description.description}
         </p>
       )}
+      {failure && (
+        <p className="mt-1.5 max-w-2xl text-[12px] leading-4 tracking-[-0.1px] text-kumo-danger">
+          {failure}
+        </p>
+      )}
     </article>
   )
 }
 
 function HistoryRow({
   record,
+  invalidation,
   expanded,
   onToggle,
   togglingHook,
   onToggleHook,
 }: {
   record: ActionLogEntry
+  invalidation?: string
   expanded: boolean
   onToggle: () => void
   togglingHook: boolean
@@ -620,6 +637,7 @@ function HistoryRow({
                 {autoApproved ? `Auto-approved (${resolvedBy.name}'s rule)` : `By ${resolvedBy.name}`}
               </ResolverBadge>
             )}
+            {invalidation && <span className="text-kumo-subtle">{invalidation}</span>}
             {resourceUrl && (
               <a
                 href={resourceUrl}

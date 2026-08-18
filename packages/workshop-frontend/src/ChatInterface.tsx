@@ -113,7 +113,7 @@ import DeleteConfirmationDialog from "./components/DeleteConfirmationDialog";
 import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
 import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
-import { useActionEntries } from "./useActions";
+import { countEarlierPending, invalidationNote, useActionEntries, useActions } from "./useActions";
 import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
 import { useResolveAction } from "./useResolveAction";
 import { safeExternalUrl } from "./utils/safeExternalUrl";
@@ -5911,6 +5911,10 @@ function ChatInterface({
     if (applyOptimisticActionState(actionId, state)) forceUpdate();
   });
 
+  // Full action list, for the approve buttons' "+N earlier" hint (approving applies every earlier
+  // pending action from the same connection) and for naming cascade-invalidation sources.
+  const { actionsById } = useActions(overseer);
+
   // Handle enabling/disabling a bound hook from the chat thread.
   const handleToggleHook = async (actionId: number, hookId: number, enabled: boolean) => {
     setProcessingActions((prev) => new Set(prev).add(actionId));
@@ -6463,6 +6467,9 @@ function ChatInterface({
     const isPending = state === "pending";
     const isApproved = state === "approved";
     const isRejected = state === "rejected";
+    const earlierCount = isPending ? countEarlierPending(actionsById.values(), log) : 0;
+    const failure = isAct && isPending ? log.failure : undefined;
+    const invalidation = isAct ? invalidationNote(log, actionsById) : undefined;
     // A blocking (awaitDecision) pending action suspends the agent turn and blocks the composer, so
     // present it as a prominent callout with its details expanded by default.
     const isBlocking = isPending && log.description.awaitDecision === true;
@@ -6518,6 +6525,7 @@ function ChatInterface({
           variant={isBlocking ? "filled" : "quiet"}
           onClick={() => void resolveAction(msg.actionId, "approve")}
           disabled={isProc}
+          earlierCount={earlierCount}
         />
       </>
     ) : null;
@@ -6567,6 +6575,9 @@ function ChatInterface({
                 <div className={`chat-panel mt-1 max-h-[200px] overflow-y-auto pr-1 text-[13px] leading-[18px] text-kumo-subtle ${styles.markdownContent}`}>
                   <MarkdownMessage message={log.description.description} />
                 </div>
+                {failure && (
+                  <p className="m-0 mt-1.5 text-[12px] leading-4 text-kumo-danger">{failure}</p>
+                )}
               </div>
               <div className="ml-3 flex flex-shrink-0 items-center gap-1 self-center">
                 {actionControls}
@@ -6627,6 +6638,12 @@ function ChatInterface({
             <div className={`chat-panel max-h-[200px] overflow-y-auto pr-1 ${styles.markdownContent}`}>
               <MarkdownMessage message={log.description.description} />
             </div>
+            {failure && (
+              <p className="m-0 text-[12px] leading-4 text-kumo-danger">{failure}</p>
+            )}
+            {invalidation && (
+              <p className="m-0 text-[12px] leading-4 text-kumo-inactive">{invalidation}</p>
+            )}
             {resourceMeta}
           </div>
         )}
