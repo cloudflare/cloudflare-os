@@ -10,7 +10,7 @@ const validReport = {
   surface: "workshop",
   sessionId: "session-12345678",
   pageLocation: "https://workshop.example/workspace/123",
-  userId: "person@example.com",
+  reportedUserId: "person@example.com",
   exception: { type: "Error", message: "boom", stack: "Error: boom" },
 };
 
@@ -129,7 +129,7 @@ describe("handleClientErrorRequest", () => {
         captureMechanism: "react",
         surface: "workshop",
         pageLocation: "https://workshop.example/workspace/123",
-        userId: "person@example.com",
+        reportedUserId: "person@example.com",
       }),
     }));
     expect(waits).toHaveLength(1);
@@ -138,22 +138,22 @@ describe("handleClientErrorRequest", () => {
 
   it("forwards the client's unverified user claim without vetting it", async () => {
     const { env, ctx, report } = setup();
-    const claimed = { ...validReport, userId: "someone-elses@example.com" };
+    const claimed = { ...validReport, reportedUserId: "someone-elses@example.com" };
 
     expect((await handleClientErrorRequest(request(claimed), env, ctx)).status).toBe(204);
     // The endpoint has no credential, so this value is a claim. It travels as a diagnostic
     // attribute and must never be read to make a decision.
     expect(report.mock.calls[0][0].attributes)
-      .toMatchObject({ userId: "someone-elses@example.com" });
+      .toMatchObject({ reportedUserId: "someone-elses@example.com" });
   });
 
   it("omits page and user attributes when the report carries neither", async () => {
     const { env, ctx, report } = setup();
-    const anonymous = { ...validReport, userId: undefined, pageLocation: undefined };
+    const anonymous = { ...validReport, reportedUserId: undefined, pageLocation: undefined };
 
     expect((await handleClientErrorRequest(request(anonymous), env, ctx)).status).toBe(204);
     const { attributes } = report.mock.calls[0][0];
-    expect(attributes).not.toHaveProperty("userId");
+    expect(attributes).not.toHaveProperty("reportedUserId");
     expect(attributes).not.toHaveProperty("pageLocation");
   });
 

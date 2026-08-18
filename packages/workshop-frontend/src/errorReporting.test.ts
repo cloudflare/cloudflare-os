@@ -65,7 +65,7 @@ describe('Workshop reporter initialization', () => {
     vi.stubGlobal('fetch', fetch)
 
     const module = await import('./errorReporting')
-    module.setErrorReportingUserId('person@example.com')
+    module.setReportedUserId('person@example.com')
     module.reportIssue('test.first-route', new Error('first'))
     window.history.replaceState(null, '', '/workspace/second?other=secret')
     module.reportIssue('test.second-route', new Error('second'))
@@ -73,9 +73,9 @@ describe('Workshop reporter initialization', () => {
 
     const origin = window.location.origin
     const reports = fetch.mock.calls.map(([, init]) => JSON.parse(init?.body as string))
-    expect(reports.map(({ pageLocation, userId }) => ({ pageLocation, userId }))).toEqual([
-      { pageLocation: `${origin}/workspace/first`, userId: 'person@example.com' },
-      { pageLocation: `${origin}/workspace/second`, userId: 'person@example.com' },
+    expect(reports.map(({ pageLocation, reportedUserId }) => ({ pageLocation, reportedUserId }))).toEqual([
+      { pageLocation: `${origin}/workspace/first`, reportedUserId: 'person@example.com' },
+      { pageLocation: `${origin}/workspace/second`, reportedUserId: 'person@example.com' },
     ])
   })
 
@@ -86,13 +86,13 @@ describe('Workshop reporter initialization', () => {
     vi.stubGlobal('fetch', fetch)
 
     const module = await import('./errorReporting')
-    module.setErrorReportingUserId('person@example.com')
-    module.setErrorReportingUserId(undefined)
+    module.setReportedUserId('person@example.com')
+    module.setReportedUserId(undefined)
     module.reportIssue('test.signed-out', new Error('boom'))
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
 
     const report = JSON.parse(fetch.mock.calls[0][1]?.body as string)
-    expect(report).not.toHaveProperty('userId')
+    expect(report).not.toHaveProperty('reportedUserId')
   })
 
   it('treats an empty identity as no identity', async () => {
@@ -102,12 +102,31 @@ describe('Workshop reporter initialization', () => {
     vi.stubGlobal('fetch', fetch)
 
     const module = await import('./errorReporting')
-    module.setErrorReportingUserId('')
+    module.setReportedUserId('')
     module.reportIssue('test.empty-identity', new Error('boom'))
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
 
     const report = JSON.parse(fetch.mock.calls[0][1]?.body as string)
-    expect(report).not.toHaveProperty('userId')
+    expect(report).not.toHaveProperty('reportedUserId')
+  })
+
+  it('carries an identity set after an earlier one was cleared', async () => {
+    vi.resetModules()
+    vi.stubEnv('VITE_FRONTEND_ERROR_REPORTING', 'true')
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response())
+    vi.stubGlobal('fetch', fetch)
+
+    // Each call must reach the module's own state. A parameter shadowing it type-checks, passes the
+    // clearing tests, and makes the setter a no-op, so assert a set *after* a clear.
+    const module = await import('./errorReporting')
+    module.setReportedUserId('first@example.com')
+    module.setReportedUserId(undefined)
+    module.setReportedUserId('second@example.com')
+    module.reportIssue('test.reset-identity', new Error('boom'))
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+
+    const report = JSON.parse(fetch.mock.calls[0][1]?.body as string)
+    expect(report.reportedUserId).toBe('second@example.com')
   })
 
   it('ignores window errors without a thrown value and reports real errors as non-fatal', async () => {
@@ -206,13 +225,13 @@ describe('createBrowserErrorReporter', () => {
     const transport = vi.fn<(report: FrontendErrorReportV1) => void>()
     window.history.replaceState(null, '', `/${'p'.repeat(300)}`)
     const reporter = createBrowserErrorReporter({
-      surface: 'workshop', transport, userId: () => 'u'.repeat(300),
+      surface: 'workshop', transport, reportedUserId: () => 'u'.repeat(300),
     })
 
     reporter.reportIssue('workshop.render', new Error('boom'))
 
     const report = transport.mock.calls[0][0]
-    expect(report.userId).toBe('u'.repeat(256))
+    expect(report.reportedUserId).toBe('u'.repeat(256))
     expect(report.pageLocation).toHaveLength(256)
     expect(report.truncated).toBe(true)
   })
@@ -220,7 +239,7 @@ describe('createBrowserErrorReporter', () => {
   it('attaches host-owned page and user context to a forwarded frame surface', () => {
     const transport = vi.fn<(report: FrontendErrorReportV1) => void>()
     const reporter = createBrowserErrorReporter({
-      surface: 'workshop', transport, userId: () => 'person@example.com',
+      surface: 'workshop', transport, reportedUserId: () => 'person@example.com',
     })
 
     reporter.reportIssue('frame:gatekeeper.render', new Error('boom'), {
@@ -230,7 +249,7 @@ describe('createBrowserErrorReporter', () => {
     expect(transport).toHaveBeenCalledWith(expect.objectContaining({
       surface: 'gatekeeper-app',
       pageLocation: `${window.location.origin}/`,
-      userId: 'person@example.com',
+      reportedUserId: 'person@example.com',
     }))
   })
 
@@ -240,7 +259,7 @@ describe('createBrowserErrorReporter', () => {
 
     reporter.reportIssue('workshop.render', new Error('boom'))
 
-    expect(transport.mock.calls[0][0]).not.toHaveProperty('userId')
+    expect(transport.mock.calls[0][0]).not.toHaveProperty('reportedUserId')
   })
 
   it('deduplicates by the first stack frame rather than the full stack', () => {
@@ -280,7 +299,7 @@ describe('forwardTrustedFrameError', () => {
           sessionId: 'frame-claimed-session',
           gatekeeperVendorId: 'frame-claimed-vendor',
           pageLocation: 'https://evil.example/claimed',
-          userId: 'attacker@example.com',
+          reportedUserId: 'attacker@example.com',
           browser: { family: 'Other' },
         },
       },
@@ -295,7 +314,7 @@ describe('forwardTrustedFrameError', () => {
         surface: 'gatekeeper-app',
       }))
     expect(forward.mock.calls[0][2]).not.toHaveProperty('pageLocation')
-    expect(forward.mock.calls[0][2]).not.toHaveProperty('userId')
+    expect(forward.mock.calls[0][2]).not.toHaveProperty('reportedUserId')
 
     expect(forwardTrustedFrameError({ ...valid, origin: 'https://evil.example' } as MessageEvent,
       source, context, forward)).toBe(false)

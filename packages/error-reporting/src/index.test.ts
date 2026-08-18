@@ -57,7 +57,7 @@ describe("normalizeFrontendErrorReport", () => {
     const decoded = normalizeFrontendErrorReport({
       ...report,
       pageLocation: "https://workshop.example/workspace/123",
-      userId: "person@example.com",
+      reportedUserId: "person@example.com",
       attributes: { prompt: "secret" },
       routeTemplate: "/gadget/:id",
       chatId: "chat-123",
@@ -66,7 +66,7 @@ describe("normalizeFrontendErrorReport", () => {
     expect(decoded).toEqual({
       ...report,
       pageLocation: "https://workshop.example/workspace/123",
-      userId: "person@example.com",
+      reportedUserId: "person@example.com",
       browser: { family: "Chromium", mobile: false },
     });
     expect(decoded).not.toHaveProperty("attributes");
@@ -78,13 +78,13 @@ describe("normalizeFrontendErrorReport", () => {
     const decoded = normalizeFrontendErrorReport({
       ...report,
       pageLocation: "p".repeat(300),
-      userId: "u".repeat(300),
+      reportedUserId: "u".repeat(300),
     });
 
     expect(decoded).toEqual({
       ...report,
       pageLocation: "p".repeat(256),
-      userId: "u".repeat(256),
+      reportedUserId: "u".repeat(256),
       truncated: true,
     });
   });
@@ -113,10 +113,10 @@ describe("normalizeFrontendErrorReport", () => {
   it("keeps context sitting exactly on the bound without marking it truncated", () => {
     const prefix = "https://workshop.example/";
     const pageLocation = prefix + "p".repeat(MAX_STRING_CHARS - prefix.length);
-    const userId = "u".repeat(MAX_STRING_CHARS);
+    const reportedUserId = "u".repeat(MAX_STRING_CHARS);
 
-    expect(normalizeFrontendErrorReport({ ...report, pageLocation, userId }))
-      .toEqual({ ...report, pageLocation, userId });
+    expect(normalizeFrontendErrorReport({ ...report, pageLocation, reportedUserId }))
+      .toEqual({ ...report, pageLocation, reportedUserId });
   });
 
   it("normalizes malformed fields instead of losing the report", () => {

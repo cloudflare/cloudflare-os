@@ -26,7 +26,7 @@ type BrowserReporterOptions = Readonly<{
   transport(report: FrontendErrorReportV1): void | Promise<void>
   now?: () => number
   /** Reads the diagnostic identity at report time; absent means reports carry none. */
-  userId?: () => string | undefined
+  reportedUserId?: () => string | undefined
 }>
 
 type BrowserReporter = Readonly<{
@@ -38,8 +38,13 @@ type BrowserReporter = Readonly<{
   ): void
 }>
 
-/** The diagnostic identity attached to subsequent reports. */
-let reportingUserId: string | undefined
+/**
+ * The diagnostic identity attached to subsequent reports.
+ *
+ * Named apart from the `reportedUserId` report field so a setter parameter or a local read of it
+ * cannot shadow this and silently write nowhere.
+ */
+let currentReportedUserId: string | undefined
 
 /**
  * Returns the current location with query and fragment removed, or '' when it cannot be read.
@@ -84,12 +89,12 @@ export function createBrowserErrorReporter(options: BrowserReporterOptions): Bro
 
       // Read only once the report is known to be sent, so a suppressed one costs nothing.
       const pageLocation = getPageLocation()
-      const userId = options.userId?.()
+      const reportedUserId = options.reportedUserId?.()
       const contextTruncated = [
         reportOptions?.gadgetId,
         reportOptions?.gatekeeperVendorId,
         pageLocation,
-        userId,
+        reportedUserId,
       ].some(value => value !== undefined && value.length > MAX_STRING_CHARS)
 
       const report: FrontendErrorReportV1 = {
@@ -101,7 +106,7 @@ export function createBrowserErrorReporter(options: BrowserReporterOptions): Bro
         surface,
         ...(options.sessionId && { sessionId: options.sessionId }),
         ...(pageLocation && { pageLocation: pageLocation.slice(0, MAX_STRING_CHARS) }),
-        ...(userId && { userId: userId.slice(0, MAX_STRING_CHARS) }),
+        ...(reportedUserId && { reportedUserId: reportedUserId.slice(0, MAX_STRING_CHARS) }),
         ...(exception && { exception }),
         ...(reportOptions?.gadgetId && {
           gadgetId: reportOptions.gadgetId.slice(0, MAX_STRING_CHARS),
@@ -183,7 +188,7 @@ const reporter: BrowserReporter = reportingEnabled
       surface: 'workshop',
       sessionId: getSessionId(),
       browser: getBrowserFacts(),
-      userId: () => reportingUserId,
+      reportedUserId: () => currentReportedUserId,
       transport: (report) => fetch('/api/client-errors', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -202,8 +207,8 @@ export function reportIssue(site: string, caught: unknown, options?: BrowserRepo
  *
  * The value is a label only: it reaches the backend unverified and is never treated as authority.
  */
-export function setErrorReportingUserId(userId: string | undefined): void {
-  reportingUserId = userId || undefined
+export function setReportedUserId(reportedUserId: string | undefined): void {
+  currentReportedUserId = reportedUserId || undefined
 }
 
 /** Installs automatic capture before the Workshop opens its RPC WebSocket. */

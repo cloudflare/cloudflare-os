@@ -87,10 +87,11 @@ export type FrontendErrorReportV1 = Readonly<{
    */
   pageLocation?: string;
   /**
-   * Diagnostic user identifier supplied by the client. Not authoritative: it is an unverified
-   * claim, and nothing may read it to make a decision or grant access.
+   * Diagnostic user identifier as *reported* by the client, which is what the name records. Not
+   * authoritative: it is an unverified claim, and nothing may read it to make a decision or grant
+   * access.
    */
-  userId?: string;
+  reportedUserId?: string;
   exception?: ErrorExceptionV1;
   gadgetId?: string;
   gatekeeperVendorId?: string;
@@ -232,7 +233,7 @@ export function normalizeFrontendErrorReport(input: unknown): FrontendErrorRepor
     const surfaceValue = ownValue(input, "surface");
     const sessionId = boundedString(ownValue(input, "sessionId"), MAX_STRING_CHARS, mark);
     const pageLocation = boundedPageLocation(ownValue(input, "pageLocation"), mark);
-    const userId = boundedString(ownValue(input, "userId"), MAX_STRING_CHARS, mark);
+    const reportedUserId = boundedString(ownValue(input, "reportedUserId"), MAX_STRING_CHARS, mark);
     const gadgetId = boundedString(ownValue(input, "gadgetId"), MAX_STRING_CHARS, mark);
     const gatekeeperVendorId = boundedString(
       ownValue(input, "gatekeeperVendorId"), MAX_STRING_CHARS, mark,
@@ -244,7 +245,7 @@ export function normalizeFrontendErrorReport(input: unknown): FrontendErrorRepor
       surface: allowlistedString(surfaceValue, surfaces) ?? "workshop",
       ...(sessionId && { sessionId }),
       ...(pageLocation && { pageLocation }),
-      ...(userId && { userId }),
+      ...(reportedUserId && { reportedUserId }),
       ...(gadgetId !== undefined && { gadgetId }),
       ...(gatekeeperVendorId !== undefined && { gatekeeperVendorId }),
       ...(browser && { browser }),
