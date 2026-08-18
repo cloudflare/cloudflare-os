@@ -2576,7 +2576,7 @@ class OverseerImpl implements AgentHooks {
       let bundle = this.getGadgetUiBundle(gadgetId, chatId);
       if (!bundle) throw new Error("This Gadget does not have a UI to export.");
       let title = this.getGadgetRecord(gadgetId).title;
-      return renderGadgetInBrowser(browser, bundle.jsCode, title, exportGadget.move(), format);
+      return renderGadgetInBrowser(browser, bundle.jsCode, title, exportGadget.dup(), format);
     }
   }
 
