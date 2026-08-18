@@ -46,6 +46,9 @@ export interface LoginAttempt extends RpcTarget {
 
 /** Public API exposed to the internet. */
 export interface PublicApi extends RpcTarget {
+  /** Confirms that the RPC connection can round-trip without performing application work. */
+  ping(): Promise<void>;
+
   /**
    * Returns deployment-level configuration the client needs at boot (auth mode, available sign-in
    * vendors, whether the Cloudflare limits flow is enabled). Contains no secrets.

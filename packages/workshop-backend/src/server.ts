@@ -643,6 +643,8 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     this.users = this.ctx.exports.UserDurableObject;
   }
 
+  async ping(): Promise<void> {}
+
   async getServerConfig(): Promise<ServerConfig> {
     return getServerConfig(this.env);
   }

@@ -59,9 +59,8 @@ let lastConnectTime: number = 0;
 
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 10000;
-// The probe is getServerConfig — the same call the app needs to boot anyway. Generous deadlines
-// let a slow-but-alive backend settle instead of connect/dispose looping (or, on wake, tearing
-// down a healthy socket under load).
+// Generous probe deadlines let a slow-but-alive backend settle instead of connect/dispose looping
+// (or, on wake, tearing down a healthy socket under load).
 const RECONNECT_PROBE_TIMEOUT_MS = 20000;
 const WAKE_PROBE_TIMEOUT_MS = 10000;
 const WAKE_PROBE_MIN_IDLE_MS = 15000;
@@ -123,7 +122,7 @@ async function handleBroken(error: unknown) {
 
     const candidate = startConnection();
     try {
-      await withTimeout(candidate.getServerConfig(), RECONNECT_PROBE_TIMEOUT_MS);
+      await withTimeout(candidate.ping(), RECONNECT_PROBE_TIMEOUT_MS);
     } catch (probeError) {
       console.debug('Reconnect attempt failed:', probeError);
       disposeQuietly(candidate);
@@ -149,7 +148,7 @@ async function probeOnWake() {
   probing = true;
   const suspect = currentStub;
   try {
-    await withTimeout(suspect.getServerConfig(), WAKE_PROBE_TIMEOUT_MS);
+    await withTimeout(suspect.ping(), WAKE_PROBE_TIMEOUT_MS);
     lastProvenAt = Date.now();
   } catch (error) {
     if (currentStub !== suspect || reconnecting) return;  // a real broken event won the race
