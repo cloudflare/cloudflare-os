@@ -155,7 +155,7 @@ async function recloneRepo(dir: string, url: string, branch: string, onAuth: () 
 }
 
 async function fetchRepo(dir: string, url: string, branch: string, onAuth: () => { username: string; password: string }, maxBytes: number): Promise<string> {
-  await fetch({
+  let result = await fetch({
     fs,
     http: makeHttp(maxBytes),
     dir,
@@ -166,7 +166,7 @@ async function fetchRepo(dir: string, url: string, branch: string, onAuth: () =>
     prune: true,
     onAuth,
   });
-  return resolveRef({ fs, dir, ref: "HEAD" });
+  return result.fetchHead ?? "";
 }
 
 async function fetchOrRecloneRepo(dir: string, url: string, branch: string, onAuth: () => { username: string; password: string }): Promise<string> {
