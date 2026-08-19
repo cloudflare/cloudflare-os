@@ -1,6 +1,12 @@
 import type { EvalExpectation, EvalTask } from "../src/task.js";
 import appointmentDesk from "./appointment-desk.task.js";
+import expenseLedger from "./expense-ledger.task.js";
+import orgChart from "./org-chart.task.js";
+import pantryKitchen from "./pantry-kitchen.task.js";
+import projectDoc from "./project-doc.task.js";
+import spacedRepetition from "./spaced-repetition.task.js";
 import stockLedger from "./stock-ledger.task.js";
+import timeTracker from "./time-tracker.task.js";
 
 /**
  * Every authored task.
@@ -9,7 +15,16 @@ import stockLedger from "./stock-ledger.task.js";
  * and list it here. `registry.test.ts` fails when a task file is missing from this list, so the two
  * cannot drift.
  */
-export const evalTasks: readonly EvalTask[] = [appointmentDesk, stockLedger];
+export const evalTasks: readonly EvalTask[] = [
+  appointmentDesk,
+  expenseLedger,
+  orgChart,
+  pantryKitchen,
+  projectDoc,
+  spacedRepetition,
+  stockLedger,
+  timeTracker,
+];
 
 /** The tasks in one result set. */
 export function tasksFor(expectation: EvalExpectation): EvalTask[] {
