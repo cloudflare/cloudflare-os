@@ -1756,14 +1756,15 @@ class OverseerImpl implements AgentHooks {
   }
 
   // The workspace owner's commit identity, for commits synthesized by the git-storage migration.
-  // Degrades to a placeholder rather than failing: identity on synthesized history is cosmetic,
-  // and blocking the migration on the owner's User DO would leave the workspace unusable for as
-  // long as that DO is unreachable (or its account gone).
+  // A transient user-DO reset is retried once (pure read on a fresh-stub helper); anything past
+  // that degrades to a placeholder rather than failing: identity on synthesized history is
+  // cosmetic, and blocking the migration on the owner's User DO would leave the workspace
+  // unusable for as long as that DO is unreachable (or its account gone).
   async #ownerCommitIdentity(): Promise<CommitIdentity> {
     try {
       if (this.ownerId !== undefined) {
-        let profile = await this.users.get(this.users.idFromString(this.ownerId))
-            .whoamiIfExists();
+        let profile = await retryOnDoReset(
+            () => this.#ownerUserDo().whoamiIfExists(), this.logger);
         if (profile) return commitIdentityForAuthor(profile);
       }
     } catch (err) {
@@ -8441,13 +8442,18 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     if (files.size === 0) {
       throw new Error("This blueprint's code archive is empty.");
     }
-    if (!this.impl.ownerId) {
+    let ownerId = this.impl.ownerId;
+    if (!ownerId) {
       throw new Error("Workspace has no owner.");
     }
-    let owner = this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId));
+    // Fresh stub per call, so the pure whoami() read below is safe to retry once across a
+    // user-DO reset (see retryOnDoReset: a captured stub would be permanently broken).
+    let owner = () => wrapDoStubForTelemetry(
+        this.impl.users.get(this.impl.users.idFromString(ownerId)), this.impl.logger);
+    let ownerProfile = await retryOnDoReset(() => owner().whoami(), this.impl.logger);
     let commitId = await this.impl.gitStore.writeFilesAsCommit(files, {
       parents: [],
-      author: commitIdentityForAuthor(await owner.whoami()),
+      author: commitIdentityForAuthor(ownerProfile),
       message: `Instantiate blueprint: ${title}`,
       timestamp: new Date(),
     });
@@ -8465,7 +8471,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     // Mark gadget as non-provisional (it has code, so it should appear in the gadget list).
-    await owner.setGadgetLastActive(this.ctx.id.toString(), new Date(), undefined);
+    // (A write, so deliberately not retried -- a reset can't distinguish "never applied" from
+    // "applied, response lost".)
+    await owner().setGadgetLastActive(this.ctx.id.toString(), new Date(), undefined);
   }
 
   async startGatekeeperSession(
