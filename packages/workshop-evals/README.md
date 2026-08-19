@@ -185,10 +185,9 @@ unfinished write.
 
 The mechanism is worth understanding before relying on it:
 
-- **A restart invalidates every existing stub.** Reconnect after calling it; a task that holds a stub
-  across the call will see the next method throw. That is also the only honest way to prove a restart
-  happened, which is why `stock-ledger` checks it explicitly before the durability checks that depend
-  on it — a restart that silently did nothing would make all of them pass for free.
+- **A restart invalidates every existing stub.** Reconnect after calling it; a stub held across the
+  call throws on its next method. That is also how a task confirms a restart occurred, which
+  `stock-ledger` does before the checks that depend on it.
 - **Only call it from a task's final turn.** It advances the workspace code version, and an agent
   replaying its history in a later turn rejects a version it did not observe.
 - The same behaviour is pinned deterministically, with no model involved, in
