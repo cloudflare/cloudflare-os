@@ -8,6 +8,14 @@
     "plural": "Slides",
     "icon": "presentation"
   },
-  "author": { "type": "user", "name": "Cloudflare", "id": "agent@cloudflare.com" },
-  "revision": 7
+  "author": {
+    "type": "user",
+    "name": "Cloudflare",
+    "id": "agent@cloudflare.com"
+  },
+  "revision": 7,
+  "created": "2026-08-01T08:44:15.052Z",
+  "version": 5,
+  "lastUpdated": "2026-08-12T18:09:36.259Z",
+  "bindings": {}
 }

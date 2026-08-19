@@ -4,18 +4,16 @@
 // The directory defaults to this package's `format-blueprints/`, and `FORMAT_BLUEPRINTS_DIR`
 // points somewhere else. That is how a deployment ships its own formats: this repo is often a
 // submodule, so a fork can't add files here without conflicting on every update -- it keeps its
-// archives in its own tree and points the build at them. Whatever directory is named *is* the
+// blueprints in its own tree and points the build at them. Whatever directory is named *is* the
 // deployment's format set; it replaces this one rather than adding to it.
 //
-// Each blueprint is a `<name>.gadget` archive and a `<name>.json` beside it describing how to
-// present it. Nothing references a list, so a directory outside this repo is self-contained.
-//
-// Archives are binary, so they are emitted as base64 -- the same "bundle a data file as a
-// generated module" approach gatekeeper-context uses for its SPA.
+// Each blueprint is a directory containing blueprint.json and a files/ directory. The reviewable
+// source is converted to the ordinary binary .gadget representation only in the generated module.
 
 import { readdir, readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname, join, resolve, basename } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildContent, readSourceFiles, serializeArchive } from "./format-blueprint-files.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
@@ -35,16 +33,32 @@ const RESERVED_BLUEPRINT_KEYS = new Set([".featured", ".adminConfig"]);
 // Validated here rather than at runtime so a typo fails the build of whoever made it, instead of
 // quietly presenting the wrong thing in production. Unknown keys are rejected too: silently
 // ignoring one looks exactly like the field not working.
-function parseSidecar(name, raw) {
-  let bad = (message) => { throw new Error(`${name}.json: ${message}`); };
+type FormatBlueprintManifest = {
+  blueprintId: string;
+  title: string;
+  description: string;
+  output: {id: string; noun: string; plural: string; icon: string};
+  author: {type: "user"; name: string; id: string};
+  revision: number;
+  created: string;
+  version: number;
+  lastUpdated: string;
+  bindings: Record<string, unknown>;
+};
+
+function parseManifest(name: string, raw: string): FormatBlueprintManifest {
+  let bad = (message: string): never => { throw new Error(`${name}/blueprint.json: ${message}`); };
   let parsed = JSON.parse(raw);
 
-  let string = (value, what) => {
+  let string = (value: unknown, what: string): string => {
     if (typeof value !== "string" || value.trim() === "") bad(`${what} must be a non-empty string`);
-    return value;
+    return value as string;
   };
 
-  let { blueprintId, title, description, output, author, revision, $comment, ...rest } = parsed;
+  let {
+    blueprintId, title, description, output, author, revision, created, version, lastUpdated,
+    bindings, $comment, ...rest
+  } = parsed;
   if (Object.keys(rest).length > 0) bad(`unknown keys: ${Object.keys(rest).join(", ")}`);
 
   if (!/^[a-zA-Z0-9._-]+$/.test(blueprintId ?? "")) {
@@ -55,6 +69,17 @@ function parseSidecar(name, raw) {
   }
   if (typeof revision !== "number" || !Number.isInteger(revision) || revision < 1) {
     bad("revision must be a positive integer");
+  }
+  if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
+    bad("version must be a positive integer");
+  }
+  for (let [key, value] of [["created", created], ["lastUpdated", lastUpdated]] as const) {
+    if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) {
+      bad(`${key} must be an ISO date string`);
+    }
+  }
+  if (typeof bindings !== "object" || bindings === null || Array.isArray(bindings)) {
+    bad("bindings must be an object");
   }
   if (typeof output !== "object" || output === null) bad("output is required");
   let { id, noun, plural, icon, ...outputRest } = output;
@@ -72,14 +97,14 @@ function parseSidecar(name, raw) {
   if (authorType !== undefined && authorType !== "user") bad(`author.type must be "user"`);
 
   return {
-    blueprintId,
+    blueprintId: blueprintId as string,
     title: string(title, "title"),
     description: string(description, "description"),
     output: {
       id: string(id, "output.id"),
       noun: string(noun, "output.noun"),
       plural: string(plural, "output.plural"),
-      icon,
+      icon: icon as string,
     },
     author: {
       type: "user",
@@ -87,51 +112,78 @@ function parseSidecar(name, raw) {
       id: string(authorId, "author.id"),
     },
     revision,
+    created: created as string,
+    version: version as number,
+    lastUpdated: lastUpdated as string,
+    bindings: bindings as Record<string, unknown>,
   };
 }
 
 // An empty directory is a supported way to ship no formats, so it is a warning rather than an
 // error. A mistyped FORMAT_BLUEPRINTS_DIR fails in readdir() above, which is the case worth
 // catching.
-let archives = (await readdir(sourceDir)).filter((f) => f.endsWith(".gadget")).toSorted();
-if (archives.length === 0) {
-  console.warn(`No *.gadget archives in ${sourceDir}; the deployment will bundle no formats.`);
+let directories = (await readdir(sourceDir, {withFileTypes: true}))
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name)
+    .toSorted();
+let unexpected = (await readdir(sourceDir, {withFileTypes: true}))
+    .filter(entry => !entry.isDirectory() && entry.name !== "README.md")
+    .map(entry => entry.name);
+if (unexpected.length > 0) {
+  throw new Error(`Unexpected files in ${sourceDir}: ${unexpected.join(", ")}`);
+}
+if (directories.length === 0) {
+  console.warn(`No blueprint directories in ${sourceDir}; the deployment will bundle no formats.`);
 }
 
-let entries = [];
+let entries: Array<Omit<FormatBlueprintManifest,
+    "created" | "version" | "lastUpdated" | "bindings"> & {archive: string}> = [];
 let totalBytes = 0;
 let seen = new Map();
-for (let file of archives) {
-  let name = basename(file, ".gadget");
-  let raw;
+for (let name of directories) {
+  let raw: string;
   try {
-    raw = await readFile(join(sourceDir, `${name}.json`), "utf8");
+    raw = await readFile(join(sourceDir, name, "blueprint.json"), "utf8");
   } catch (err) {
-    if (err?.code !== "ENOENT") throw err;
-    throw new Error(`${file} has no ${name}.json describing it.`, { cause: err });
+    if (!isErrorCode(err, "ENOENT")) throw err;
+    throw new Error(`${name}/ has no blueprint.json describing it.`, { cause: err });
   }
 
-  let entry = parseSidecar(name, raw);
+  let entry = parseManifest(name, raw);
   // Two archives installing under one id would race, and only one would survive.
   let duplicate = seen.get(entry.blueprintId);
-  if (duplicate) throw new Error(`${name}.json and ${duplicate}.json share id ${entry.blueprintId}`);
+  if (duplicate) {
+    throw new Error(`${name}/blueprint.json and ${duplicate}/blueprint.json share id ` +
+        entry.blueprintId);
+  }
   seen.set(entry.blueprintId, name);
 
-  let bytes = await readFile(join(sourceDir, file));
+  let files = await readSourceFiles(join(sourceDir, name, "files"), `${name}/files`);
+  let metadata = {
+    title: entry.title,
+    description: entry.description,
+    author: entry.author,
+    created: entry.created,
+    version: entry.version,
+    lastUpdated: entry.lastUpdated,
+    bindings: entry.bindings,
+  };
+  let content = buildContent(files, name);
+  let bytes = serializeArchive(metadata, content, name);
   totalBytes += bytes.byteLength;
-  entries.push({ ...entry, archive: bytes.toString("base64") });
+  let {created, version, lastUpdated, bindings, ...bundled} = entry;
+  entries.push({ ...bundled, archive: Buffer.from(bytes).toString("base64") });
 }
 
-let generated = `// GENERATED by scripts/build-format-blueprints.mjs -- do not edit.
+let generated = `// GENERATED by scripts/build-format-blueprints.ts -- do not edit.
 //
-// The deployment's format blueprints, with their archives base64-encoded so they can be bundled
+// The deployment's format blueprints, rebuilt from reviewable source and base64-encoded for bundling
 // into the Worker. Built from ${process.env.FORMAT_BLUEPRINTS_DIR ? "FORMAT_BLUEPRINTS_DIR" : "format-blueprints/"}.
 
 import type { AiChatAuthorInfo, BlueprintOutput } from "@gadgets/workshop-shared/api";
 
 // One bundled blueprint: how to present it, and the archive that says what it does. The build
-// validates these sidecar fields; the archive itself is copied verbatim and checked when the
-// importer writes it.
+// validates the source manifest and files before constructing the archive.
 export type BundledFormatBlueprint = {
   blueprintId: string;
   title: string;
@@ -158,7 +210,7 @@ let unchanged = false;
 try {
   unchanged = await readFile(outFile, "utf8") === generated;
 } catch (err) {
-  if (err?.code !== "ENOENT") throw err;
+  if (!isErrorCode(err, "ENOENT")) throw err;
 }
 
 if (unchanged) {
@@ -168,4 +220,8 @@ if (unchanged) {
   await writeFile(outFile, generated);
   console.log(`Bundled ${entries.length} format blueprint(s) from ${sourceDir}, ` +
       `${(totalBytes / 1024).toFixed(0)} KiB raw -> ${outFile}`);
+}
+
+function isErrorCode(err: unknown, code: string): boolean {
+  return typeof err === "object" && err !== null && "code" in err && err.code === code;
 }

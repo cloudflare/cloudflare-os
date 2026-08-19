@@ -1,7 +1,7 @@
 // Installing the deployment's bundled output-format blueprints.
 //
-// The archives and their presentation come from a directory chosen at build time (see
-// scripts/build-format-blueprints.mjs), so a deployment ships its own formats by pointing
+// The reviewable source and its presentation come from a directory chosen at build time (see
+// scripts/build-format-blueprints.ts), so a deployment ships its own formats by pointing
 // FORMAT_BLUEPRINTS_DIR at its own tree rather than by editing this repo.
 //
 // Installation writes an ordinary blueprint -- metadata into BLUEPRINTS, the code snapshot into
@@ -53,7 +53,7 @@ async function installOne(env: InstallEnv, entry: BundledFormatBlueprint)
   }
 
   // The archive supplies what the blueprint does -- code, bindings, and the dates from the
-  // workspace it was exported from. How it is presented comes from its sidecar, overwriting
+  // workspace it was exported from. How it is presented comes from its source manifest, overwriting
   // whatever the archive carries.
   let installed: BlueprintMetadata = {
     ...metadata,
