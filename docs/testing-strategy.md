@@ -197,6 +197,8 @@ replays its history in a later turn rejects a version that it did not observe.
 - Two tasks have no live measurement. Both carry the frontier state.
 - One task passes one trial in three. It treats intervals as closed instead of half-open, and it
   accepts a duplicate identifier.
-- No task uses a gatekeeper. The fixture gatekeeper exposes no session methods, so a connector task
-  needs a new fixture.
+- No task uses a gatekeeper. The fixture gatekeeper exposes no session methods. The Context Library
+  gatekeeper is a better candidate, because it auto-provisions its account with no OAuth and keeps its
+  own state, so it starts in this harness with no network. A probe confirmed that it starts and mints
+  an account.
 - Part of `workshop-backend/__integration__` carries `describe.skip`, because it timed out in CI.
