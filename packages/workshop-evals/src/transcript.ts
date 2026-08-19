@@ -66,14 +66,21 @@ export function canonicalTranscript(history: readonly AiChatMessage[]): Transcri
 
 /** Extracts the failure signals a reader needs to explain how a run went. */
 export function collectDiagnostics(history: readonly AiChatMessage[]): EvalDiagnostics {
-  const diagnostics: EvalDiagnostics =
-    { toolCalls: 0, toolErrors: [], agentErrors: [], harnessWarnings: [] };
+  const diagnostics: EvalDiagnostics = {
+    modelTurns: 0,
+    toolCalls: 0,
+    toolErrors: [],
+    agentErrors: [],
+    blockedRequests: [],
+    harnessWarnings: [],
+  };
   for (const message of history) {
     if (message.type === "error") {
       diagnostics.agentErrors.push(truncate(message.message));
       continue;
     }
     if (message.type !== "message") continue;
+    if (message.author.type === "agent") diagnostics.modelTurns++;
     for (const call of message.toolCalls ?? []) {
       diagnostics.toolCalls++;
       if (call.error !== undefined) {

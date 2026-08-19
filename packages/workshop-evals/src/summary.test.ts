@@ -38,9 +38,12 @@ function runOutput(overrides: Overrides = {}) {
     runId: overrides.runId ?? "run-0",
     passed: overrides.passed ?? true,
     diagnostics: {
+      modelTurns: 3,
       toolCalls: 4,
       toolErrors: overrides.toolErrors ?? [],
       agentErrors: overrides.agentErrors ?? [],
+      blockedRequests: [] as string[],
+      harnessWarnings: [] as string[],
     },
     usage: {
       complete: overrides.complete ?? true,
@@ -220,5 +223,29 @@ describe("rendering", () => {
 
   it("says so when there is nothing to report", () => {
     expect(formatSummaryTable({ version: 1, groups: [] })).toContain("No Workshop eval results");
+  });
+});
+
+describe("diagnostics reporting", () => {
+  it("reports model turns and tool calls as distributions", () => {
+    const first = runOutput({ runId: "a" });
+    first.diagnostics.modelTurns = 4;
+    first.diagnostics.toolCalls = 9;
+    const second = runOutput({ runId: "b", trial: 1 });
+    second.diagnostics.modelTurns = 8;
+    second.diagnostics.toolCalls = 21;
+    const summary = summarizeVitestReport(report([assertion(first, 1), assertion(second, 1)]));
+    expect(summary.groups.at(0)?.modelTurns?.mean).toBe(6);
+    expect(summary.groups.at(0)?.toolCalls?.mean).toBe(15);
+  });
+
+  it("reports the fraction of trials that tried to reach a blocked host", () => {
+    const reached = runOutput({ runId: "a" });
+    reached.diagnostics.blockedRequests = ["GET https://example.test/docs"];
+    const summary = summarizeVitestReport(report([
+      assertion(reached, 1),
+      assertion(runOutput({ runId: "b", trial: 1 }), 1),
+    ]));
+    expect(summary.groups.at(0)?.blockedRequestRate).toBe(0.5);
   });
 });

@@ -1,5 +1,6 @@
 import { AgentSession, type AgentSourceSnapshot } from "@gadgets/integration-tests/agent-session";
 import { startHarness, type WorkerConfig } from "@gadgets/integration-tests/harness";
+import { NetworkInterceptor } from "@gadgets/integration-tests/network-interceptor";
 import type { AiChatMessage, WorkpieceSummary } from "@gadgets/workshop-shared/api";
 import { createHarness } from "vitest-evals";
 import { runDirectory, slug, writeArtifact } from "./artifacts.js";
@@ -13,6 +14,12 @@ import type {
   EvalArtifact, EvalGadgetSource, EvalRunInput, EvalRunOutput, EvalTask, EvalTurnResult,
 } from "./task.js";
 import { EvalVerifier } from "./verifier.js";
+
+// The only hosts a trial may reach. Everything else throws, which keeps a result reproducible and
+// keeps a prompt from leaving for a third party: the agent's `webFetch` tool is always available to
+// it, and would otherwise reach the live internet from inside a trial. A blocked attempt lands in the
+// trial's tool errors, so it is visible rather than silent.
+const MODEL_HOSTS = ["api.cloudflare.com", "gateway.ai.cloudflare.com"];
 
 /** Stands in for an artifact whose write failed, so the report never claims a file that is absent. */
 const MISSING_ARTIFACT: EvalArtifact = { path: "", sha256: "", bytes: 0 };
@@ -88,6 +95,8 @@ export function createWorkshopHarness(task: EvalTask) {
         runId: input.runId,
       });
       const gateway = parseGatewayEnvironment();
+      const network = new NetworkInterceptor([], { passThroughHosts: MODEL_HOSTS });
+      network.install();
       const harness = await startHarness({
         gatekeepers: [],
         enableGadgetExecution: true,
@@ -129,6 +138,7 @@ export function createWorkshopHarness(task: EvalTask) {
         const directory = runDirectory(task.id, input.model, input.trial);
         const events = canonicalTranscript(history);
         const diagnostics = collectDiagnostics(history);
+        diagnostics.blockedRequests = network.getUnmockedCalls().slice(0, 50);
         const warnings = diagnostics.harnessWarnings;
         const transcript = await tolerate("transcript", warnings, MISSING_ARTIFACT, () =>
           writeArtifact(`${directory}/transcript.json`, `${JSON.stringify({ events }, null, 2)}\n`));
@@ -183,6 +193,7 @@ export function createWorkshopHarness(task: EvalTask) {
       } finally {
         disposable?.[Symbol.dispose]();
         await harness.server.close();
+        network.uninstall();
       }
     },
   });

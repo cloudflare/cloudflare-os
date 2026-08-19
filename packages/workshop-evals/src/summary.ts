@@ -34,10 +34,12 @@ const IdentitySchema = z.object({
 const RunOutputSchema = IdentitySchema.extend({
   passed: z.boolean(),
   diagnostics: z.object({
+    modelTurns: z.number().nonnegative(),
     toolCalls: z.number().nonnegative(),
     toolErrors: z.array(z.object({ tool: z.string(), message: z.string() })),
     agentErrors: z.array(z.string()),
-  }),
+    blockedRequests: z.array(z.string()),
+  }).loose(),
   usage: UsageSchema,
   wallDurationMs: z.number().nonnegative(),
 });
@@ -71,6 +73,10 @@ export type EvalSummaryGroup = {
   scoreSampleSd: number | null;
   /** Student-t 95% interval for {@link meanScore}. */
   scoreMeanInterval: ConfidenceInterval | null;
+  /** Model turns per trial, which is how many steps the agent took. */
+  modelTurns: MetricDistribution | null;
+  /** Tool calls per trial. */
+  toolCalls: MetricDistribution | null;
   /** Total tokens per trial, over the trials whose telemetry settled. */
   tokens: MetricDistribution | null;
   /** Summed model request time per trial, excluding tool execution, over measured trials. */
@@ -86,6 +92,8 @@ export type EvalSummaryGroup = {
   telemetryCompleteRate: number | null;
   /** Fraction of valid trials containing at least one failed tool call. */
   toolFailureRate: number | null;
+  /** Fraction of valid trials that tried to reach a host outside the model provider. */
+  blockedRequestRate: number | null;
   /** Fraction of measured trials containing at least one failed model request. */
   modelFailureRate: number | null;
   /** Fraction of valid trials where the agent posted an error into chat history. */
@@ -144,6 +152,8 @@ function summarizeGroup(group: Accumulator): EvalSummaryGroup {
     meanScore: trials.length === 0 ? null : mean(scores),
     scoreSampleSd: sampleStandardDeviation(scores),
     scoreMeanInterval: tMeanInterval(scores),
+    modelTurns: metricDistribution(trials.map(trial => trial.output.diagnostics.modelTurns)),
+    toolCalls: metricDistribution(trials.map(trial => trial.output.diagnostics.toolCalls)),
     tokens: metricDistribution(measured.map(output => output.usage.totalTokens)),
     modelDurationMs: metricDistribution(measured.map(output => output.usage.durationMs)),
     wallDurationMs: metricDistribution(trials.map(trial => trial.output.wallDurationMs)),
@@ -151,6 +161,9 @@ function summarizeGroup(group: Accumulator): EvalSummaryGroup {
     telemetryCompleteRate: rate(measured.length, trials.length),
     toolFailureRate: rate(
         trials.filter(trial => trial.output.diagnostics.toolErrors.length > 0).length, trials.length),
+    blockedRequestRate: rate(
+        trials.filter(trial => trial.output.diagnostics.blockedRequests.length > 0).length,
+        trials.length),
     modelFailureRate: rate(
         measured.filter(output => output.usage.failedRequests > 0).length, measured.length),
     agentErrorRate: rate(
@@ -209,7 +222,8 @@ function cost(distribution: MetricDistribution | null): string {
 }
 
 const HEADERS = [
-  "Task", "Model", "Pass", "95% CI", "Score", "Tokens", "Wall p50", "Cost", "Tool fail", "Invalid",
+  "Task", "Model", "Pass", "95% CI", "Score", "Turns", "Tokens", "Wall p50", "Cost", "Tool fail",
+  "Invalid",
 ] as const;
 
 function row(group: EvalSummaryGroup): string[] {
@@ -219,6 +233,7 @@ function row(group: EvalSummaryGroup): string[] {
     `${group.passCount}/${group.validTrials}`,
     interval(group.passRateInterval),
     group.meanScore === null ? "n/a" : group.meanScore.toFixed(2),
+    group.modelTurns === null ? "n/a" : group.modelTurns.p50.toFixed(0),
     tokens(group.tokens),
     seconds(group.wallDurationMs),
     cost(group.costUsd),

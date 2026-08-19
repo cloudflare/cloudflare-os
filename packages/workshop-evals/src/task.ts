@@ -126,6 +126,8 @@ export type EvalGadgetSource = {
  * across trials are the signal for platform bugs the checks alone would not surface.
  */
 export type EvalDiagnostics = {
+  /** Model turns the agent took, which is one assistant message each. */
+  modelTurns: number;
   /** Tool calls the agent made. */
   toolCalls: number;
   /** Tool calls that returned an error, in order. */
@@ -137,6 +139,14 @@ export type EvalDiagnostics = {
   }[];
   /** Errors posted into canonical chat history, which end a turn without an answer. */
   agentErrors: string[];
+  /**
+   * Outbound requests the trial refused, as `METHOD url`.
+   *
+   * A trial may reach the model provider and nothing else. The agent's `webFetch` tool stays
+   * available to it, so this records an attempt to use it rather than leaving the attempt silent.
+   * A non-empty list means the result depended on something outside the trial.
+   */
+  blockedRequests: string[];
   /**
    * Failures in the harness's own bookkeeping after the last check was recorded — capturing source,
    * writing the transcript, reading Gateway logs. Recorded rather than thrown, because discarding a
