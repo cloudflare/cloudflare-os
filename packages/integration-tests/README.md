@@ -28,7 +28,8 @@ vendor this one as a submodule:
   `globalThis.fetch` (the harness routes Worker subrequests back through the Node process, so that is
   enough), passes loopback through, and **throws on anything a handler didn't match** — a test cannot
   reach the real internet. What a given vendor's endpoints answer lives in a handler module you pass
-  in, which is what makes it reusable across gatekeepers.
+  in, which is what makes it reusable across gatekeepers. `passThroughHosts` exempts a host a suite
+  genuinely has to reach; a handler cannot, because it never receives the request body.
 - **`src/rpc-client.ts`** — speaks Cap'n Web over a WebSocket to `/api`, the same transport the
   browser uses: sign-up, reading connected accounts, and `ObserverConfigRecorder`, which records the
   overseer's `configure()` calls and answers from a scripted queue.

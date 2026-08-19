@@ -18,13 +18,29 @@
 export type Handler =
     (url: URL, method: string, headers: Headers) => Response | null | Promise<Response | null>;
 
+/** Optional settings for {@link NetworkInterceptor}. */
+export type InterceptorOptions = {
+  /**
+   * Hostnames whose requests reach the real network untouched.
+   *
+   * A handler cannot stand in for a host that a suite genuinely has to reach, because a handler
+   * receives the URL, the method, and the headers, but never the body. Passing a real POST through
+   * therefore has to happen here, before the request is taken apart.
+   *
+   * Keep the list to hosts the suite cannot do without. Every other host still throws.
+   */
+  passThroughHosts?: readonly string[];
+};
+
 export class NetworkInterceptor {
   readonly #handlers: readonly Handler[];
+  readonly #passThroughHosts: ReadonlySet<string>;
   #realFetch: typeof globalThis.fetch | null = null;
   #unmockedCalls: string[] = [];
 
-  constructor(handlers: Handler[] = []) {
+  constructor(handlers: Handler[] = [], options: InterceptorOptions = {}) {
     this.#handlers = [...handlers];
+    this.#passThroughHosts = new Set(options.passThroughHosts ?? []);
   }
 
   install(): void {
@@ -40,8 +56,10 @@ export class NetworkInterceptor {
         : input.url;
       const url = new URL(raw);
 
-      // The harness dispatches its own traffic over loopback; let that through untouched.
-      if (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]") {
+      // The harness dispatches its own traffic over loopback; let that through untouched. An
+      // explicitly allowed host goes the same way, before the body can be disturbed below.
+      if (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]"
+          || this.#passThroughHosts.has(url.hostname)) {
         return realFetch(input, init);
       }
 
