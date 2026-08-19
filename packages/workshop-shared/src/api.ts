@@ -1659,15 +1659,21 @@ export interface Overseer extends RpcTarget {
   getGadget(id: WorkpieceId): Promise<RpcStub<GadgetClient>>;
 
   /**
-   * Read the full file map of a commit in the workspace's git object store: file path -> text
-   * content, with nested trees flattened to `/`-joined paths.
+   * Read the full contents of a commit in the workspace's git object store: one
+   * `[path, content]` entry per file, with nested trees flattened to `/`-joined paths. Paths are
+   * unique; entry order carries no meaning.
+   *
+   * A list of pairs rather than a path-keyed object, for the same reason CodeOp's per-gadget
+   * entries are (see `@gadgets/workshop-shared/code-op`): a git tree may legitimately contain a
+   * file named `__proto__` or `constructor`, and Cap'n Web deletes prototype-shadowing keys from
+   * every object it deserializes, so such files would silently vanish in transit.
    *
    * Commits are immutable, so responses are cacheable client-side by oid. This is how committed
    * code is viewed when no chat's uncommitted state applies (outside any chat, or for a gadget
    * the chat has no pin for, which tracks mainline head live), and how a chat's per-pin base
    * content is fetched (see ChatCodeBase).
    */
-  getCodeAtCommit(commitId: string): Promise<{files: Record<string, string>}>;
+  getCodeAtCommit(commitId: string): Promise<{files: [path: string, content: string][]}>;
 
   /**
    * Walk the commit graph from `fromCommit` (that commit first, then its ancestry), returning up

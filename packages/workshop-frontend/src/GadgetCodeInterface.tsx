@@ -76,13 +76,8 @@ function fetchCommitFiles(
 ): Promise<ReadonlyMap<string, string>> {
   let cached = commitFilesCache.get(commitId)
   if (!cached) {
-    cached = overseer.getCodeAtCommit(commitId).then(({ files }) => {
-      const map = new Map<string, string>()
-      for (const [name, content] of Object.entries(files)) {
-        map.set(name, content)
-      }
-      return map as ReadonlyMap<string, string>
-    })
+    cached = overseer.getCodeAtCommit(commitId).then(
+      ({ files }) => new Map(files) as ReadonlyMap<string, string>)
     cached.catch(() => commitFilesCache.delete(commitId))
     commitFilesCache.set(commitId, cached)
   }

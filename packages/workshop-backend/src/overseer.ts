@@ -9216,13 +9216,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   // --- Commit-backed code reads ---
 
-  async getCodeAtCommit(commitId: string): Promise<{files: Record<string, string>}> {
-    // Null prototype so a hostile filename like "__proto__" is an ordinary key.
-    let files: Record<string, string> = Object.create(null);
-    for (let [file, content] of await this.impl.gitStore.readCommitFiles(validateOid(commitId))) {
-      files[file] = content;
-    }
-    return {files};
+  async getCodeAtCommit(commitId: string): Promise<{files: [path: string, content: string][]}> {
+    // A list of pairs, not a path-keyed object: a file named "__proto__" is a legitimate tree
+    // entry, and RPC would drop it from an object (see Overseer.getCodeAtCommit).
+    return {files: [...await this.impl.gitStore.readCommitFiles(validateOid(commitId))]};
   }
 
   async getCommitLog(fromCommit: string, depth?: number): Promise<CommitInfo[]> {
@@ -10531,7 +10528,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
       : Promise<{generation: number, revision: number}> {
     this.#deny();
   }
-  async getCodeAtCommit(_commitId: string): Promise<{files: Record<string, string>}> {
+  async getCodeAtCommit(_commitId: string): Promise<{files: [path: string, content: string][]}> {
     this.#deny();
   }
   async getCommitLog(_fromCommit: string, _depth?: number): Promise<CommitInfo[]> {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { deserialize, serialize } from "capnweb";
 import { createTypedStorage } from "@gadgets/typed-storage";
 import {
   GITDIR, GitStore, commitIdentityForAuthor, gitObjectsCollection, makeGitObjectsFs,
@@ -75,6 +76,23 @@ describe("GitStore", () => {
 
     expect(await store.readCommitFiles(INITIAL_COMMIT_OID)).toEqual(INITIAL_FILES);
     expect(await store.readCommitFiles(SECOND_COMMIT_OID)).toEqual(SECOND_FILES);
+  });
+
+  it("survives Cap'n Web in Overseer.getCodeAtCommit's entry-list shape", async () => {
+    // A tree may legitimately name a file after an Object.prototype member, so getCodeAtCommit
+    // ships [path, content] pairs rather than a path-keyed object: Cap'n Web can't serialize a
+    // null-prototype object at all, and deletes prototype-shadowing keys (and "toJSON") from
+    // every ordinary object it deserializes -- either way such files would vanish on the wire.
+    let store = new GitStore(makeObjects());
+    let files = new Map(
+        ["__proto__", "constructor", "toString", "toJSON", "lib/hasOwnProperty"]
+            .map((name, i) => [name, `v${i}\n`] as const));
+    let oid = await store.writeFilesAsCommit(files, {
+      parents: [], author: ALICE, message: "exotic names", timestamp: new Date(1700000000_000),
+    });
+
+    let wire: [path: string, content: string][] = [...await store.readCommitFiles(oid)];
+    expect(new Map(deserialize(serialize(wire)) as typeof wire)).toEqual(files);
   });
 
   it("reads per-file blob oids without content, deduplicated across commits", async () => {
