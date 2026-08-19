@@ -160,6 +160,18 @@ function validateGmailQueryForGrouping(query: string): void {
   if (quote || stack.length > 0) throw new Error("Gmail query has unterminated grouping or quotes.");
 }
 
+// decodeURIComponent(), but an undecodable percent-sequence names the offending part of the
+// resource URL instead of leaking a bare URIError. A literal `%` in a Gmail search or label
+// ("50% off") hits this whenever it is not escaped as `%25`.
+function decodeResourceUrlPart(encoded: string, what: string): string {
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    throw new Error(
+        `Invalid ${what}: it cannot be percent-decoded. Encode a literal "%" as "%25".`);
+  }
+}
+
 function getBaseUrl(env: Env) {
   return stripTrailingSlashes(env.BASE_URL || "http://localhost:8787/gatekeeper/google");
 }
@@ -872,7 +884,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     }
 
     if (parsed.hostname === "calendar.google.com" && parsed.pathname.startsWith("/calendar/")) {
-      let calendarId = decodeURIComponent(parsed.pathname.split("/")[2] ?? "");
+      let calendarId = decodeResourceUrlPart(parsed.pathname.split("/")[2] ?? "", "Google Calendar URL");
       if (!calendarId) {
         throw new Error("Invalid Google Calendar URL: no calendar ID found");
       }
@@ -905,7 +917,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 
       // Synthetic path: /<projectId>/<datasetId>/<tableId> (each segment optional after the first).
       let segments = parsed.pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean)
-          .map(segment => decodeURIComponent(segment));
+          .map(segment => decodeResourceUrlPart(segment, "BigQuery resource URL"));
       if (segments.length > 3) {
         throw new Error(
             "BigQuery resource URLs must be /<projectId>, /<projectId>/<datasetId>, " +
@@ -944,11 +956,11 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       // Gmail's own UI encodes spaces in hash searches as `+`, while
       // decodeURIComponent() only decodes `%20`. Normalize both forms.
       const encodedQuery = hash.slice("#search/".length).replace(/\+/g, " ");
-      const query = decodeURIComponent(encodedQuery);
+      const query = decodeResourceUrlPart(encodedQuery, "Gmail search query");
       validateGmailQueryForGrouping(query);
       props.searchQuery = query;
     } else if (hash.startsWith("#label/")) {
-      const labelName = decodeURIComponent(hash.slice("#label/".length));
+      const labelName = decodeResourceUrlPart(hash.slice("#label/".length), "Gmail label name");
       if (!labelName || new TextEncoder().encode(labelName).byteLength > 320) {
         throw new Error("Gmail label name must be between 1 and 320 bytes.");
       }
