@@ -10,7 +10,7 @@
     "typecheck:app": "tsc -p tsconfig.app.json && tsc -p tsconfig.vite.json",
     "build": "pnpm run typecheck:app && vp run --cache build:app && tsc",
     "clean": "rm -rf dist src/generated",
-    "test:run": "vitest run"
+    "test:run": "vitest run && vitest run -c vitest.node.config.ts"
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "@cloudflare/kumo": "^2.9.2",
+    "@cloudflare/vitest-pool-workers": "catalog:",
     "@codemirror/commands": "^6.10.4",
     "@codemirror/lang-javascript": "^6.2.5",
     "@codemirror/lang-json": "^6.0.2",
