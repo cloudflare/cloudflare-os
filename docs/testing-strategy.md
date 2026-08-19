@@ -97,9 +97,16 @@ For example, one task asks for an appointment desk that never sells more places 
 satisfied it with one synchronous SQL sequence and a database trigger. A check for a mutation queue
 rejects that correct answer.
 
-The trajectory is a diagnostic, not a score. We record the tool calls, the tool errors, the agent
-errors, the turns, the tokens, the time, and the cost. An agent that recovered from a failed tool call
-still delivered the application.
+The trajectory is a diagnostic, not a score. We record the model turns, the tool calls, the tool
+errors, the agent errors, the tokens, the time, and the cost. An agent that recovered from a failed
+tool call still delivered the application.
+
+Two more diagnostics come from the code itself. `src/source-checks.ts` reports each use of a web API
+that a Gadget cannot use, such as `localStorage`, which throws in the UI frame. The harness reports
+each outbound request that it refused.
+
+Syntax needs no check of its own. Every `.js` file in a Gadget becomes a module in its Worker, so a
+file that cannot parse stops the server and fails every check.
 
 ### Invalid trials
 
@@ -120,6 +127,17 @@ trial from the token, duration, and cost figures only, and reports the fraction 
 
 The platform posts an error message when a turn dies. It posts none when the agent runs out of turns
 or gives up. Therefore an error almost always means infrastructure, and not capability.
+
+## What a trial may reach
+
+A trial may reach the model provider, and nothing else. The harness installs the network interceptor
+from `packages/integration-tests` and allows two hosts.
+
+The agent keeps its `webFetch` tool inside a trial, so without this a result could depend on a live
+third-party site, and the prompt would leave for that site. A refused request appears in the trial's
+diagnostics.
+
+A Gadget's own code has no network at all. The platform gives its Worker no outbound service.
 
 ## Gates
 

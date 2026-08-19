@@ -42,6 +42,7 @@ function runOutput(overrides: Overrides = {}) {
       toolCalls: 4,
       toolErrors: overrides.toolErrors ?? [],
       agentErrors: overrides.agentErrors ?? [],
+      sandboxViolations: [] as { file: string; api: string; reason: string }[],
       blockedRequests: [] as string[],
       harnessWarnings: [] as string[],
     },

@@ -130,10 +130,17 @@ Reading list      @cf/zai-org/glm-5.2          2/3   [21, 94]  0.83   61.7k     
   so a task that half-works is visibly different from one that does not work.
 - **95% CI** is a Wilson interval. At three trials it is very wide; that is honest, not a defect.
   Raise `WORKSHOP_EVAL_TRIALS` to say anything firm about a difference between two models.
+- **Turns** is the median number of model turns a trial took, and the report also carries the tool
+  calls per trial. Both measure how much work an ask cost, against a cap of 30 turns.
 - **Tool fail** is the fraction of trials with a failed tool call. It never affects pass or score —
   an agent that recovered still delivered — but a rate that climbs is usually a platform bug. The
   baseline run surfaced one this way: `executeCode` importing `node:assert`, which the sandbox has
   no module for.
+- `sandboxViolationRate` is the fraction of trials whose source used a web API a Gadget cannot use,
+  such as `localStorage`. Such code parses and loads, and the feature built on it is dead, so a task's
+  own checks miss it unless the task asked for that feature. A baseline run found one real case.
+- `blockedRequestRate` is the fraction of trials that tried to reach a host outside the model
+  provider. It should stay at zero.
 - **Invalid** counts trials that produced no usable result. They are excluded from every rate above,
   so infrastructure trouble reads as missing data rather than as a bad model. A *failing* trial
   whose turn ended with an error is unscored for the same reason: the platform posts an error when
@@ -195,6 +202,28 @@ The mechanism is worth understanding before relying on it:
   hand-written source through `AgentSession.seedGadget()`. That file also pins the premise
   `appointment-desk` depends on: a deliberately naive check-then-write booking implementation really
   does oversell under concurrent calls here, so the overselling check can fail.
+
+## What a trial may reach
+
+A trial may reach the model provider, and nothing else. The harness installs a network interceptor
+that passes `api.cloudflare.com` and `gateway.ai.cloudflare.com` through, and throws on every other
+host.
+
+This matters because the agent keeps its `webFetch` tool inside a trial. Without the interceptor a
+task's result could depend on a live third-party site, and the prompt would leave for that site. A
+refused request lands in `diagnostics.blockedRequests`, so the attempt is visible.
+
+A Gadget's own code has no network at all: the platform gives its Worker no outbound service, which
+is a property of the product rather than of this suite.
+
+## What the source checks cover
+
+Syntax needs no separate step. Every `.js` file in a Gadget becomes a module in its Worker, so a file
+that cannot parse stops the server from starting, and every check then fails.
+`packages/integration-tests` pins that behaviour.
+
+`src/source-checks.ts` covers the next layer: code that parses, loads, runs, and does nothing, because
+it calls a web API the Gadget frame does not have. It reports and never decides a verdict.
 
 ## What this does not do
 

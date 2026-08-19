@@ -39,6 +39,7 @@ const RunOutputSchema = IdentitySchema.extend({
     toolErrors: z.array(z.object({ tool: z.string(), message: z.string() })),
     agentErrors: z.array(z.string()),
     blockedRequests: z.array(z.string()),
+    sandboxViolations: z.array(z.object({ file: z.string(), api: z.string() }).loose()),
   }).loose(),
   usage: UsageSchema,
   wallDurationMs: z.number().nonnegative(),
@@ -94,6 +95,8 @@ export type EvalSummaryGroup = {
   toolFailureRate: number | null;
   /** Fraction of valid trials that tried to reach a host outside the model provider. */
   blockedRequestRate: number | null;
+  /** Fraction of valid trials whose source used a web API a Gadget cannot use. */
+  sandboxViolationRate: number | null;
   /** Fraction of measured trials containing at least one failed model request. */
   modelFailureRate: number | null;
   /** Fraction of valid trials where the agent posted an error into chat history. */
@@ -163,6 +166,9 @@ function summarizeGroup(group: Accumulator): EvalSummaryGroup {
         trials.filter(trial => trial.output.diagnostics.toolErrors.length > 0).length, trials.length),
     blockedRequestRate: rate(
         trials.filter(trial => trial.output.diagnostics.blockedRequests.length > 0).length,
+        trials.length),
+    sandboxViolationRate: rate(
+        trials.filter(trial => trial.output.diagnostics.sandboxViolations.length > 0).length,
         trials.length),
     modelFailureRate: rate(
         measured.filter(output => output.usage.failedRequests > 0).length, measured.length),

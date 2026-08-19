@@ -71,6 +71,7 @@ export function collectDiagnostics(history: readonly AiChatMessage[]): EvalDiagn
     toolCalls: 0,
     toolErrors: [],
     agentErrors: [],
+    sandboxViolations: [],
     blockedRequests: [],
     harnessWarnings: [],
   };

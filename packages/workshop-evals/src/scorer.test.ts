@@ -21,7 +21,7 @@ function output(...turns: EvalCheck[][]): EvalRunOutput {
     })),
     passed: turns.every(checks => checks.every(check => check.pass)),
     gadgets: [],
-    diagnostics: { modelTurns: 0, toolCalls: 0, toolErrors: [], agentErrors: [], blockedRequests: [], harnessWarnings: [] },
+    diagnostics: { modelTurns: 0, toolCalls: 0, toolErrors: [], agentErrors: [], sandboxViolations: [], blockedRequests: [], harnessWarnings: [] },
     usage: {
       complete: true,
       successfulRequests: 1,
@@ -86,7 +86,7 @@ describe("ChecksScorer", () => {
     const value = output([{ id: "a", pass: true }, { id: "b", pass: false }]);
     value.diagnostics = {
       modelTurns: 6, toolCalls: 12, toolErrors: [],
-      agentErrors: ["Stream ended without finish_reason"], blockedRequests: [], harnessWarnings: [],
+      agentErrors: ["Stream ended without finish_reason"], sandboxViolations: [], blockedRequests: [], harnessWarnings: [],
     };
     const result = await assess(value);
     expect(result.score).toBeNull();
@@ -96,7 +96,7 @@ describe("ChecksScorer", () => {
   it("scores a run that hit a transient error and still delivered", async () => {
     const value = output([{ id: "a", pass: true }]);
     value.diagnostics = {
-      modelTurns: 5, toolCalls: 9, toolErrors: [], agentErrors: ["500 status code (no body)"],
+      modelTurns: 5, toolCalls: 9, toolErrors: [], agentErrors: ["500 status code (no body)"], sandboxViolations: [],
       blockedRequests: [], harnessWarnings: [],
     };
     expect((await assess(value)).score).toBe(1);
@@ -104,7 +104,7 @@ describe("ChecksScorer", () => {
 
   it("scores a failing run that ended cleanly, which is a real capability failure", async () => {
     const value = output([{ id: "a", pass: false }]);
-    value.diagnostics = { modelTurns: 1, toolCalls: 9, toolErrors: [], agentErrors: [], blockedRequests: [], harnessWarnings: [] };
+    value.diagnostics = { modelTurns: 1, toolCalls: 9, toolErrors: [], agentErrors: [], sandboxViolations: [], blockedRequests: [], harnessWarnings: [] };
     expect((await assess(value)).score).toBe(0);
   });
 

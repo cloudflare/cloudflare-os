@@ -140,6 +140,13 @@ export type EvalDiagnostics = {
   /** Errors posted into canonical chat history, which end a turn without an answer. */
   agentErrors: string[];
   /**
+   * Uses of a web API that does not work inside a Gadget, found in the source the agent wrote.
+   *
+   * These do not decide the verdict. The code parses, the server starts, and the feature built on the
+   * API is simply dead — so a task's own checks catch it only when the task asked for that feature.
+   */
+  sandboxViolations: { file: string; api: string; reason: string }[];
+  /**
    * Outbound requests the trial refused, as `METHOD url`.
    *
    * A trial may reach the model provider and nothing else. The agent's `webFetch` tool stays

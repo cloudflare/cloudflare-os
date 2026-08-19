@@ -9,6 +9,7 @@ import {
   collectAgentGatewayUsage, type GatewayConfig, incompleteGatewayUsage, parseGatewayEnvironment,
   usesDirectWorkersAi,
 } from "./gateway-logs.js";
+import { findSandboxViolations, type SandboxViolation } from "./source-checks.js";
 import { canonicalTranscript, collectDiagnostics } from "./transcript.js";
 import type {
   EvalArtifact, EvalGadgetSource, EvalRunInput, EvalRunOutput, EvalTask, EvalTurnResult,
@@ -55,7 +56,8 @@ function workshopConfig(config: WorkerConfig, gateway: GatewayConfig): void {
 async function captureSource(
     snapshot: AgentSourceSnapshot,
     workpieces: readonly WorkpieceSummary[],
-    directory: string): Promise<EvalGadgetSource[]> {
+    directory: string,
+    violations: SandboxViolation[]): Promise<EvalGadgetSource[]> {
   const gadgets: EvalGadgetSource[] = [];
   for (const workpiece of workpieces) {
     if (workpiece.type !== "gadget") continue;
@@ -65,6 +67,7 @@ async function captureSource(
       ? undefined
       : snapshot.workpieces.get(workpiece.filesRoot);
     if (source === undefined) continue;
+    violations.push(...findSandboxViolations(source.files));
     for (const [name, contents] of source.files) {
       gadget.files.push(await writeArtifact(
           `${directory}/source/${slug(workpiece.title)}/${slug(name)}`, contents));
@@ -143,7 +146,8 @@ export function createWorkshopHarness(task: EvalTask) {
         const transcript = await tolerate("transcript", warnings, MISSING_ARTIFACT, () =>
           writeArtifact(`${directory}/transcript.json`, `${JSON.stringify({ events }, null, 2)}\n`));
         const gadgets = await tolerate("source capture", warnings, [], async () =>
-          captureSource(await session.acceptChanges(), workpieces, directory));
+          captureSource(
+              await session.acceptChanges(), workpieces, directory, diagnostics.sandboxViolations));
         const usage = usesDirectWorkersAi()
           ? incompleteGatewayUsage()
           : await tolerate("gateway telemetry", warnings, incompleteGatewayUsage(), () =>
