@@ -8,6 +8,7 @@ import FileSidebar from './FileSidebar'
 import type { FileChangeStatus, FileSidebarHandle } from './FileSidebar'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import CodeEditor, { type EditSession } from './CodeEditor'
+import CodeDiffEditor from './CodeDiffEditor'
 import type { ChatCodeChanges, ChatLiveOpRows } from './ChatInterface'
 import { ChatOtClient, type RemoteFileEvent } from './otClient'
 import { reportIssue } from './errorReporting'
@@ -595,9 +596,10 @@ export default function GadgetCodeInterface({
   const activeFileText = activeFile !== null
     ? displayFiles?.get(activeFile) ?? null
     : null
-  const activeFileOriginal = isDiffMode && activeFile !== null
-    ? headFiles?.get(activeFile) ?? ''
-    : undefined
+  // The committed side of the diff; null = the file doesn't exist at head (an added file).
+  const activeFileOriginal = activeFile !== null
+    ? headFiles?.get(activeFile) ?? null
+    : null
   const activeFileDownloadable =
     activeFile !== null && displayFiles?.get(activeFile) !== undefined
   const activeFileModeLabel = !branchMode
@@ -674,13 +676,22 @@ export default function GadgetCodeInterface({
                   )}
                 </div>
               </div>
+            ) : isDiffMode ? (
+              <CodeDiffEditor
+                filename={activeFile}
+                original={activeFileOriginal}
+                text={activeFileText}
+                session={activeSession}
+                readOnly={isEditingLocked}
+                height="100%"
+              />
             ) : (
+              // Outside any chat the committed head is shown read-only: committed code only
+              // changes through a chat's accepted changes.
               <CodeEditor
                 filename={activeFile}
                 text={activeFileText}
-                session={activeSession}
-                original={activeFileOriginal}
-                readOnly={isEditingLocked}
+                readOnly
                 height="100%"
               />
             )}

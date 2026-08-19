@@ -1,0 +1,187 @@
+/*
+ * Diff view styling (see CodeDiffEditor.tsx and src/diff/diffRenderer.ts). The editors are
+ * CodeMirror 6; the shared code theme (components/codeTheme.ts) provides the base chrome, and
+ * these rules add the diff layer: changed-line tints, the 3px change-bar gutter, char-level
+ * highlights, deletion zones (block widgets plus their gutter columns), and the hatched blank
+ * zones that keep the split layout aligned.
+ */
+
+:where(.gadgets-diff-surface) {
+  --gd-bg: #fffdfb;
+  --gd-fg: #1f1d1a;
+  --gd-fg-num: #c9beb1;
+  --gd-add-bg: #f1f8eb;
+  --gd-add-bar: #5fa940;
+  --gd-add-num: #4e8a3a;
+  --gd-mod-bar: #d6a400;
+  --gd-del-bg: #fcebe6;
+  --gd-del-bar: #d6433a;
+  --gd-del-num: #b3554d;
+  --gd-margin-line: #f3eadf;
+  --gd-blank-bg: #faf4ee;
+  --gd-omitted-bg: color-mix(in srgb, var(--gd-del-bg) 88%, white);
+  --gd-omitted-hover-bg: color-mix(in srgb, var(--gd-del-bg) 78%, white);
+}
+
+[data-mode="dark"] .gadgets-diff-surface {
+  --gd-bg: #16151f;
+  --gd-fg: #e8e6f0;
+  --gd-fg-num: #6d6880;
+  --gd-add-bg: #163222;
+  --gd-add-bar: #4ade80;
+  --gd-add-num: #86efac;
+  --gd-mod-bar: #fbbf24;
+  --gd-del-bg: #3a1e27;
+  --gd-del-bar: #f87171;
+  --gd-del-num: #fca5a5;
+  --gd-margin-line: #2a263b;
+  --gd-blank-bg: #11101a;
+  --gd-omitted-bg: color-mix(in srgb, var(--gd-del-bg) 86%, var(--gd-bg));
+  --gd-omitted-hover-bg: color-mix(in srgb, var(--gd-del-bg) 72%, var(--gd-bg));
+}
+
+.gadgets-diff-surface .cm-gutters {
+  box-shadow: inset -1px 0 0 var(--gd-margin-line);
+}
+
+/* ---- changed lines ---- */
+
+.gadgets-diff-surface .gadgets-diff-line-add {
+  background: var(--gd-add-bg);
+  mix-blend-mode: multiply;
+}
+
+.gadgets-diff-surface .gadgets-diff-line-delete {
+  background: var(--gd-del-bg);
+  mix-blend-mode: multiply;
+}
+
+/* ---- gutters: the 3px change bar and the line-number tints ---- */
+
+.gadgets-diff-surface .cm-gutter.gadgets-diff-gutter-bar {
+  width: 3px;
+}
+
+.gadgets-diff-surface .gadgets-diff-gutter-bar .gadgets-diff-gutter-add {
+  background: var(--gd-add-bar);
+}
+
+.gadgets-diff-surface .gadgets-diff-gutter-bar .gadgets-diff-gutter-modified,
+.gadgets-diff-surface .gadgets-diff-gutter-bar .gadgets-diff-gutter-delete-modified {
+  background: var(--gd-mod-bar);
+}
+
+.gadgets-diff-surface .gadgets-diff-gutter-bar .gadgets-diff-gutter-delete {
+  background: var(--gd-del-bar);
+}
+
+.gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-add,
+.gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-modified {
+  background: var(--gd-add-bg);
+  color: var(--gd-add-num);
+  mix-blend-mode: multiply;
+}
+
+.gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-delete,
+.gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-delete-modified {
+  background: var(--gd-del-bg);
+  color: var(--gd-del-num);
+  mix-blend-mode: multiply;
+}
+
+[data-mode="dark"] .gadgets-diff-surface .gadgets-diff-line-add,
+[data-mode="dark"] .gadgets-diff-surface .gadgets-diff-line-delete,
+[data-mode="dark"] .gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-add,
+[data-mode="dark"] .gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-modified,
+[data-mode="dark"] .gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-delete,
+[data-mode="dark"] .gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-delete-modified {
+  mix-blend-mode: normal;
+}
+
+/* ---- char-level highlights ---- */
+
+.gadgets-diff-surface .gadgets-diff-inline-add {
+  background: color-mix(in srgb, var(--gd-add-bg) 55%, var(--gd-add-bar));
+  border-radius: 2px;
+}
+
+.gadgets-diff-surface .gadgets-diff-inline-delete {
+  background: color-mix(in srgb, var(--gd-del-bg) 52%, var(--gd-del-bar));
+  border-radius: 2px;
+}
+
+/* ---- blank zones (split-layout alignment filler) ---- */
+
+.gadgets-diff-surface .gadgets-diff-blank-zone,
+.gadgets-diff-surface .cm-gutterElement.gadgets-diff-blank-margin {
+  background-color: var(--gd-blank-bg);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 4px,
+    color-mix(in srgb, var(--gd-fg-num) 24%, transparent) 4px,
+    color-mix(in srgb, var(--gd-fg-num) 24%, transparent) 5px
+  );
+}
+
+/* ---- deletion zones ---- */
+
+.gadgets-diff-surface .gadgets-deleted-code-zone {
+  background: var(--gd-del-bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--gd-fg);
+  white-space: pre;
+  overflow: hidden;
+}
+
+.gadgets-diff-surface .gadgets-deleted-code-row {
+  height: 20px;
+  padding: 0 16px 0 12px;
+}
+
+/* The deleted lines' original numbers, rendered into the line-number gutter. */
+.gadgets-diff-surface .cm-gutterElement.gadgets-deleted-margin {
+  background: var(--gd-del-bg);
+  color: var(--gd-del-num);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.gadgets-diff-surface .gadgets-deleted-num-row {
+  height: 20px;
+}
+
+/* The change-bar gutter's rows for a deletion zone. */
+.gadgets-diff-surface .gadgets-deleted-bar-zone .gadgets-deleted-num-row {
+  background: var(--gd-del-bar);
+}
+
+.gadgets-diff-surface .gadgets-deleted-bar-zone .gadgets-replacement-num-row {
+  background: var(--gd-mod-bar);
+}
+
+/* The truncation row: "..." in the gutter, an expand button in the content. */
+.gadgets-diff-surface .gadgets-deleted-omitted-row {
+  color: var(--gd-del-num);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.gadgets-diff-surface button.gadgets-deleted-omitted-row {
+  display: block;
+  width: 100%;
+  height: 20px;
+  border: 0;
+  padding: 0 12px;
+  background: var(--gd-omitted-bg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.gadgets-diff-surface button.gadgets-deleted-omitted-row:hover {
+  background: var(--gd-omitted-hover-bg);
+}

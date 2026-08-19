@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Annotation, Compartment, EditorState, Text, Transaction } from '@codemirror/state'
+import { Annotation, Compartment, EditorState, Transaction } from '@codemirror/state'
 import type { Extension } from '@codemirror/state'
 import {
   EditorView, keymap, lineNumbers, drawSelection, dropCursor, highlightSpecialChars,
@@ -10,18 +10,14 @@ import {
 } from '@codemirror/language'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search'
-import { unifiedMergeView } from '@codemirror/merge'
 import type { FileOp, TextOp } from '@gadgets/workshop-shared/code-op'
 import { codeEditorTheme, monoFont } from './components/codeTheme'
 import { getLanguage } from './getLanguage'
 import { useTheme } from './ThemeContext'
 
-// The code view's editor: CodeMirror 6, either read-only (the committed head view) or bound to
-// the chat's OT client through an EditSession. In a chat it doubles as the diff view: passing
-// `original` (the committed side's text) layers @codemirror/merge's unified view over the same
-// editable document, with inserted lines highlighted in place and deleted chunks shown inline.
-// (This unified view is the interim diff presentation; a richer stacked/split rebuild is
-// planned on the same foundation.)
+// The code view's plain editor: CodeMirror 6, either read-only (the committed head view) or
+// bound to the chat's OT client through an EditSession. In-chat diff presentation lives in
+// CodeDiffEditor, which reuses this module's session wiring.
 
 /**
  * An editable file's connection to the chat's OT client (see GadgetCodeInterface): the editor
@@ -44,8 +40,6 @@ interface CodeEditorProps {
   text?: string | null
   /** Editable OT-bound session; absent = read-only text view. */
   session?: EditSession
-  /** The committed ("original") text for the unified diff layer; undefined = no diff. */
-  original?: string
   readOnly?: boolean
   height?: string | number
 }
@@ -54,8 +48,64 @@ interface CodeEditorProps {
 // doesn't feed them back into the session and undo history skips them.
 const remoteChange = Annotation.define<boolean>()
 
+/**
+ * The local half of an EditSession binding: an update listener that pushes locally-authored
+ * doc changes into the session (`getSession` is read per update, so the extension can be built
+ * once against a ref).
+ */
+export function sessionChangeListener(getSession: () => EditSession | undefined): Extension {
+  return EditorView.updateListener.of(update => {
+    if (!update.docChanged) return
+    if (update.transactions.every(tr => tr.annotation(remoteChange) !== true)) {
+      getSession()?.applyLocal(
+        { edit: update.changes.toJSON() as TextOp }, update.state.doc.toString())
+    }
+  })
+}
+
+/**
+ * The remote half of an EditSession binding: streams the session's remote ops into the view as
+ * annotated transactions (bypassing the local-edit listener and undo history). `set` covers
+ * wholesale replacement (e.g. a newly-seeded base); `remove` clears the document so the view
+ * doesn't show stale text a stray keystroke would silently resurrect. Returns an unsubscriber.
+ */
+export function connectSessionRemote(view: EditorView, session: EditSession): () => void {
+  return session.subscribeRemote(op => {
+    if ('edit' in op) {
+      view.dispatch({
+        changes: specFromTextOp(op.edit),
+        annotations: [remoteChange.of(true), Transaction.addToHistory.of(false)],
+      })
+    } else if ('set' in op) {
+      if (view.state.doc.toString() !== op.set) {
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: op.set },
+          annotations: [remoteChange.of(true), Transaction.addToHistory.of(false)],
+        })
+      }
+    } else if ('remove' in op) {
+      if (view.state.doc.length > 0) {
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: '' },
+          annotations: [remoteChange.of(true), Transaction.addToHistory.of(false)],
+        })
+      }
+    }
+  })
+}
+
+/** Replace the whole document programmatically (annotated like a remote op). */
+export function setDocText(view: EditorView, text: string) {
+  if (view.state.doc.toString() !== text) {
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: text },
+      annotations: [remoteChange.of(true), Transaction.addToHistory.of(false)],
+    })
+  }
+}
+
 export default function CodeEditor({
-  filename, text = null, session, original, readOnly = false, height = '100%',
+  filename, text = null, session, readOnly = false, height = '100%',
 }: CodeEditorProps) {
   const { resolvedThemeMode } = useTheme()
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -72,7 +122,7 @@ export default function CodeEditor({
   readOnlyRef.current = readOnly
 
   // (Re)build the editor whenever the document's identity changes: the file, the session (or
-  // its key -- a chat switch or client rebuild), the diff base, or the absence of both.
+  // its key -- a chat switch or client rebuild), or the absence of one.
   useEffect(() => {
     const host = hostRef.current
     if (!host || filename === null) return
@@ -107,27 +157,8 @@ export default function CodeEditor({
       ]),
       getLanguage(filename),
     ]
-    if (original !== undefined) {
-      extensions.push(unifiedMergeView({
-        // Split on "\n" only, mirroring the lineSeparator facet above: given a plain string,
-        // the merge view would split it on /\r?\n/, silently dropping the CRs the document
-        // side preserves and making every line of an unchanged CRLF file read as changed.
-        original: Text.of(original.split('\n')),
-        mergeControls: false,
-        // Accepting/rejecting hunks is the accept-changes flow's job, not the editor's; the
-        // gutter marker plus highlights are presentation only.
-        highlightChanges: true,
-        gutter: true,
-      }))
-    }
     if (session) {
-      extensions.push(EditorView.updateListener.of(update => {
-        if (!update.docChanged) return
-        if (update.transactions.every(tr => tr.annotation(remoteChange) !== true)) {
-          sessionRef.current?.applyLocal(
-            { edit: update.changes.toJSON() as TextOp }, update.state.doc.toString())
-        }
-      }))
+      extensions.push(sessionChangeListener(() => sessionRef.current))
     }
 
     const view = new EditorView({
@@ -136,33 +167,7 @@ export default function CodeEditor({
     })
     viewRef.current = view
 
-    // Remote ops stream in as deltas; `set` covers wholesale replacement (e.g. a newly-seeded
-    // base). Both are annotated so they bypass the local-edit listener and undo history.
-    const unsubscribe = session?.subscribeRemote(op => {
-      if ('edit' in op) {
-        view.dispatch({
-          changes: specFromTextOp(op.edit),
-          annotations: [remoteChange.of(true), Transaction.addToHistory.of(false)],
-        })
-      } else if ('set' in op) {
-        if (view.state.doc.toString() !== op.set) {
-          view.dispatch({
-            changes: { from: 0, to: view.state.doc.length, insert: op.set },
-            annotations: [remoteChange.of(true), Transaction.addToHistory.of(false)],
-          })
-        }
-      } else if ('remove' in op) {
-        // The file was deleted remotely: clear the document, so the diff view shows the
-        // deletion (the merge view's original side carries the removed content) instead of
-        // stale text that a stray keystroke would silently resurrect.
-        if (view.state.doc.length > 0) {
-          view.dispatch({
-            changes: { from: 0, to: view.state.doc.length, insert: '' },
-            annotations: [remoteChange.of(true), Transaction.addToHistory.of(false)],
-          })
-        }
-      }
-    })
+    const unsubscribe = session ? connectSessionRemote(view, session) : undefined
 
     return () => {
       unsubscribe?.()
@@ -173,19 +178,13 @@ export default function CodeEditor({
     // Likewise `text` only matters at build time in session mode; in read-only mode the sync
     // effect below tracks it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filename, sessionKey, session === undefined, original])
+  }, [filename, sessionKey, session === undefined])
 
   // Read-only views track the text prop in place (no state rebuild, keeps scroll position).
   useEffect(() => {
     const view = viewRef.current
     if (!view || session !== undefined) return
-    const next = text ?? ''
-    if (view.state.doc.toString() !== next) {
-      view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: next },
-        annotations: [remoteChange.of(true), Transaction.addToHistory.of(false)],
-      })
-    }
+    setDocText(view, text ?? '')
   }, [text, session])
 
   // Theme and read-only flips reconfigure in place.

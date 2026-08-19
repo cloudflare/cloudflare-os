@@ -1,8 +1,8 @@
 /**
- * Shared CodeMirror theme + monospace font stack used by the code view's editors (CodeEditor's
- * plain and unified-diff modes). Ported from the Workshop's former Monaco theme -- the palette
- * is the same one gatekeeper-context's Monaco-matched CodeMirror theme uses, so gadget code
- * looks identical across surfaces.
+ * Shared CodeMirror theme + monospace font stack used by the code view's editors (CodeEditor
+ * and CodeDiffEditor). Ported from the Workshop's former Monaco theme -- the palette is the
+ * same one gatekeeper-context's Monaco-matched CodeMirror theme uses, so gadget code looks
+ * identical across surfaces. The diff layer's own styling lives in CodeDiffEditor.css.
  */
 
 import { EditorView } from '@codemirror/view'
@@ -68,8 +68,6 @@ const highlightDark = HighlightStyle.define([
 function editorChrome(colors: {
   bg: string; fg: string; gutter: string; gutterActive: string; selection: string
   inactiveSelection: string; matchHighlight: string; panelBg: string; line: string
-  addBg: string; addBar: string; delBg: string; delBar: string
-  collapsedBg: string
 }, dark: boolean): Extension {
   return EditorView.theme(
     {
@@ -112,28 +110,6 @@ function editorChrome(colors: {
         border: 'none',
         color: colors.gutterActive,
       },
-      // Unified merge view (the in-chat diff): inserted lines green, deleted chunks red, with
-      // the same tints the old diff renderer used.
-      '.cm-changedLine, .cm-inlineChangedLine': { backgroundColor: colors.addBg },
-      '.cm-changedText': {
-        background: 'transparent',
-        backgroundColor: colors.addBar,
-      },
-      '.cm-deletedChunk': { backgroundColor: colors.delBg },
-      '.cm-deletedChunk .cm-deletedText': {
-        background: 'transparent',
-        backgroundColor: colors.delBar,
-        textDecoration: 'none',
-      },
-      '.cm-deletedChunk del': { textDecoration: 'none' },
-      '.cm-changeGutter': { width: '3px', paddingLeft: '1px' },
-      '.cm-changedLineGutter': { background: colors.addBar },
-      '.cm-deletedLineGutter': { background: colors.delBar },
-      '.cm-collapsedLines': {
-        color: colors.gutterActive,
-        backgroundColor: colors.collapsedBg,
-        padding: '2px 16px',
-      },
     },
     { dark },
   )
@@ -149,11 +125,6 @@ const chromeLight = editorChrome({
   matchHighlight: '#cee0fa',
   panelBg: '#faf6f1',
   line: '#efe4d6',
-  addBg: '#f1f8eb',
-  addBar: '#cfe8bd',
-  delBg: '#fcebe6',
-  delBar: '#f6cfc7',
-  collapsedBg: '#faf4ee',
 }, false)
 
 const chromeDark = editorChrome({
@@ -166,11 +137,6 @@ const chromeDark = editorChrome({
   matchHighlight: '#352f4a',
   panelBg: '#1d1c29',
   line: '#2a263b',
-  addBg: '#163222',
-  addBar: '#1f5c38',
-  delBg: '#3a1e27',
-  delBar: '#6b3040',
-  collapsedBg: '#11101a',
 }, true)
 
 /** The editor theme (chrome + syntax highlighting) for the given resolved UI theme mode. */
