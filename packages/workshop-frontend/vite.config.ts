@@ -62,12 +62,6 @@ export default defineConfig(({ mode }) => {
     // Spread, not a literal `run: {...}`: `run` is Vite+'s field and vite's own `defineConfig` has
     // no such property, but the excess-property check doesn't reach spreads.
     ...runConfig,
-    resolve: {
-      // Remove when y-monaco supports Monaco 0.56: https://github.com/yjs/y-monaco/pull/31
-      alias: {
-        'monaco-editor/esm/vs/editor/editor.api.js': 'monaco-editor/editor',
-      },
-    },
     plugins: [
       TanStackRouterVite({ target: 'react', autoCodeSplitting: true }),
       react(),

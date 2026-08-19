@@ -56,7 +56,6 @@ import {
 import { RpcStub, RpcTarget } from "capnweb";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import * as Y from "yjs";
 import styles from "./ChatInterface.module.css";
 import {
   getStoredSelectedModel,
@@ -86,6 +85,8 @@ import {
   OutputIcon,
   OutputFormatOffer,
 } from "@gadgets/workshop-shared/api";
+import { composeCodeOp, type CodeOp } from "@gadgets/workshop-shared/code-op";
+import type { ChatOpRow } from "./otClient";
 import { ActionKind, ResourceDescription } from "@gadgets/workshop-shared/gatekeeper";
 import {
   parseSlashCommandInput, slashCommandTokenKey, stripSlashCommandToken,
@@ -134,25 +135,46 @@ import {
   type StoredComposerDraft,
 } from "./composerDraft";
 
-export interface StreamingProposedChanges {
-  updates: Uint8Array[];
-  count: number;
+/**
+ * The selected chat's live (accepted but not yet materialized) op row stream, delivered via
+ * AiChatSubscriber.opApplied() and buffered per chat. `subscribe` replays the currently
+ * retained rows and then delivers each new row as it arrives -- synchronously from the
+ * subscription callback, *before* the materialization watermark that absorbs it can prune the
+ * buffer. That ordering is load-bearing: the server broadcasts a row and the "changes" message
+ * that materializes it in the same step (e.g. at the live-window size cap), so a consumer fed
+ * asynchronously would routinely miss the final row of each materialized batch. Rows a
+ * consumer subscribes too late to see are covered by the durable snapshot's watermark instead
+ * (see ChatCodeChanges.rowsThrough). Replay can redeliver rows a consumer has already seen;
+ * consumers dedupe by stream position (the OT client does).
+ */
+export interface ChatLiveOpRows {
+  /** Which chat this stream belongs to (see ChatCodeChanges.chatId). */
+  chatId: number;
+  /** Subscribe to the row stream; returns the unsubscribe function. */
+  subscribe(listener: (row: ChatOpRow) => void): () => void;
 }
 
 /**
- * The selected chat's code-branch state, as one consistent snapshot: the chat's current
+ * The selected chat's durable code-branch state, as one consistent snapshot: the chat's current
  * ChatCodeBase (pins, generation, epoch -- `codeBase` absent when the chat has none yet, which
- * reads as `{gadgets: [], generation: 0}`) together with every non-reverted "changes" update
- * recorded in the epoch that codeBase names, merged into one Yjs update. The two are always
- * derived together -- the code view builds its doc as per-pin seeds (or the legacy base, see
- * ChatCodeBase.legacy) + `update` + drafts, and pairing a stale epoch's updates with a fresh
- * epoch's pins (or vice versa) would transiently build nonsense. `undefined` while no chat is
- * selected or its metadata/history hasn't loaded; `update` absent when the chat has recorded no
- * code changes this epoch.
+ * reads as `{pins: [], generation: 0, revision: 0}`) together with the current epoch's
+ * non-reverted "changes" ops composed into one. The two are always derived together -- the code
+ * view builds the chat's content as pin base trees + `epochOp` + live rows, and pairing a stale
+ * epoch's ops with a fresh epoch's pins (or vice versa) would transiently build nonsense.
+ * `rowsThrough` is the current generation's revision the composed ops' watermarks reach: rows
+ * at or below it are already inside `epochOp`, and only later rows still apply on top (see
+ * AiChatMessageBody.watermark). `undefined` while no chat is selected or its metadata/history
+ * hasn't loaded; `epochOp` absent when the chat has recorded no code changes this epoch.
  */
 export interface ChatCodeChanges {
-  update?: Uint8Array;
+  /**
+   * Which chat this snapshot describes: parent-owned state updates lag a chat switch by a
+   * render, so consumers must ignore a snapshot whose chatId doesn't match their selection.
+   */
+  chatId: number;
   codeBase?: ChatCodeBase;
+  epochOp?: CodeOp;
+  rowsThrough: number;
 }
 
 type CreatedGadgetCardInfo = {
@@ -224,15 +246,17 @@ export type ActiveFileTarget = {
   filename: string;
 };
 
-type DraftUpdateEntry = {
-  timestamp: Date;
-  author: AiChatAuthorInfo;
-  update: Uint8Array;
-};
-
-type DraftChatState = {
-  entries: DraftUpdateEntry[];
+// One chat's buffered live op rows (see ChatLiveOpRows): append-only `rows` with `seen` keys
+// for dedupe (subscribe-replay redelivers retained rows). Pruning -- dropping rows a
+// materialization watermark covered or a destructive generation bump erased -- replaces `rows`
+// wholesale so consumers' cursors know to restart.
+type ChatOpRowBuffer = {
+  rows: ChatOpRow[];
+  seen: Set<string>;
+  // For the draft banner: who authored the newest row, and when it arrived (rows don't carry
+  // timestamps on the wire; arrival time is close enough for display).
   latestAuthor: AiChatAuthorInfo | null;
+  lastReceivedAt: Date | null;
 };
 
 type ChatListScope = "direct" | "agents" | "all";
@@ -263,52 +287,24 @@ function persistShowThinkingTraces(show: boolean): void {
   }
 }
 
-function refreshDraftLatestAuthor(state: DraftChatState) {
-  state.latestAuthor =
-    state.entries.length > 0 ? state.entries[state.entries.length - 1].author : null;
-}
-
-function pruneDraftEntriesBefore(
-  drafts: Map<number, DraftChatState>,
+// Prune a chat's row buffer to the rows `keep` selects, replacing the array (a new identity
+// tells consumers to re-read from the start). Returns whether anything was dropped.
+function pruneChatOpRows(
+  buffers: Map<number, ChatOpRowBuffer>,
   chatId: number,
-  cutoff: Date,
-) {
-  let state = drafts.get(chatId);
-  if (!state) {
-    return false;
-  }
-
-  const cutoffTime = cutoff.getTime();
-  const nextEntries = state.entries.filter(
-    (entry) => entry.timestamp.getTime() > cutoffTime,
-  );
-  if (nextEntries.length === state.entries.length) {
-    return false;
-  }
-
-  if (nextEntries.length === 0) {
-    drafts.delete(chatId);
+  keep: (row: ChatOpRow) => boolean,
+): boolean {
+  const buffer = buffers.get(chatId);
+  if (!buffer) return false;
+  const kept = buffer.rows.filter(keep);
+  if (kept.length === buffer.rows.length) return false;
+  if (kept.length === 0) {
+    buffers.delete(chatId);
     return true;
   }
-
-  state.entries = nextEntries;
-  refreshDraftLatestAuthor(state);
+  buffer.rows = kept;
+  buffer.seen = new Set(kept.map(row => `${row.generation}:${row.revision}`));
   return true;
-}
-
-function getOrCreateDraftChatState(
-  drafts: Map<number, DraftChatState>,
-  chatId: number,
-): DraftChatState {
-  let state = drafts.get(chatId);
-  if (!state) {
-    state = {
-      entries: [],
-      latestAuthor: null,
-    };
-    drafts.set(chatId, state);
-  }
-  return state;
 }
 
 // Auto-resize a textarea element between min and max row heights.
@@ -3662,9 +3658,9 @@ interface MessageState {
   revertTimestamps: Map<number, Date>; // sequence -> timestamp of reverted-from message
 
   // The accumulated unmerged/unreverted changes (for the proposed changes view). An entry's
-  // `update` is absent for batches that record only gadget creations/binding additions; such
+  // `op` is absent for batches that record only gadget creations/binding additions; such
   // batches still count as proposed changes (they are accepted and reverted like code edits).
-  activeChanges: { sequence: number; update?: Uint8Array }[];
+  activeChanges: { sequence: number; op?: CodeOp }[];
 }
 
 type ChatDisplayEntry =
@@ -4171,27 +4167,27 @@ export function computeMessageStates(
   const mergeTimestamps = new Map<number, Date>();
   const revertTimestamps = new Map<number, Date>();
 
-  // Track active updates as we scan (for proposed changes computation)
-  let updates: { sequence: number; update?: Uint8Array }[] = [];
+  // Track active ops as we scan (for proposed changes computation)
+  let updates: { sequence: number; op?: CodeOp }[] = [];
 
-  // The boundary carries the still-proposed pre-boundary changes merged into one update. Fold it
+  // The boundary carries the still-proposed pre-boundary changes composed into one op. Fold it
   // in at the last pre-boundary sequence, so it counts as proposed and a later merge or revert
   // reaching across the boundary still resolves it. Skipped once the page before the boundary has
   // loaded, since its own "changes" messages would then count the same edits again.
   //
-  // Only the bytes appear here, because that is all these entries are read for: reconstructing the
+  // Only the op appears here, because that is all these entries are read for: reconstructing the
   // proposed code. A prefix that only created gadgets carries none, and stays reachable through the
   // server's own cut -- see the accept-changes banner.
   if (
-    compacted?.proposedChanges !== undefined &&
+    compacted?.proposedOp !== undefined &&
     (messages.length === 0 || messages[0].sequence >= compacted.to)
   ) {
-    updates.push({ sequence: compacted.to - 1, update: compacted.proposedChanges });
+    updates.push({ sequence: compacted.to - 1, op: compacted.proposedOp });
   }
 
   for (let msg of messages) {
     if (msg.type === "changes") {
-      updates.push({ sequence: msg.sequence, update: msg.update });
+      updates.push({ sequence: msg.sequence, op: msg.op });
       changeStatus.set(msg.sequence, "pending");
     } else if (msg.type === "merge") {
       // Mark changes as merged and drop from active set
@@ -4230,54 +4226,58 @@ export function computeMessageStates(
 }
 
 /**
- * The Yjs updates that rebuild a chat's code doc on top of its current epoch's base (per-pin
- * commit-derived seeds, or the legacy base -- see ChatCodeBase): every non-reverted "changes"
- * update recorded *in the current epoch*, in order. `epoch` is the chat's current
- * ChatCodeBase.epoch -- the sequence of the merge that opened the epoch -- and everything at or
- * below it is excluded: accepting changes discards the chat's doc (the merged content lives in
- * commits from then on), so earlier epochs' updates are rooted in seeds the doc no longer
- * contains. Keying the cutoff on the metadata's epoch rather than on loaded merge messages keeps
- * this consistent with the seeds the code view derives from the same metadata's pins. Within the
- * epoch, accepted updates are included alike -- a legacy (pre-graduation) chat's base never
- * advances, and epoch-opening merges of commit-pinned chats reset `epoch` itself.
+ * The durable part of a chat's uncommitted code state (see ChatCodeChanges): the current
+ * epoch's non-reverted "changes" ops composed into one, plus the generation revision their
+ * watermarks reach. `codeBase` is the chat's current ChatCodeBase; only messages at or after
+ * its `epoch` participate ("at" matters for a migrated chat, whose epoch points at its own
+ * conversionBoundary changes message) -- accepting changes resets the chat's code base, so
+ * earlier epochs' ops are composed over pins that no longer exist. Keying the cutoff on the
+ * metadata's epoch rather than on loaded merge messages keeps this consistent with the pin set
+ * the code view reads from the same metadata.
  *
- * The oldest loaded compaction boundary stands in for the pages before it -- its acceptedChanges
- * blob unconditionally (accepted changes can't be reverted), its proposedChanges blob unless a
- * loaded revert reached across the boundary -- and drops out once those pages load, exactly like
- * computeMessageStates' active-changes seeding. Both blobs fold in at sequence `to - 1`, so an
- * epoch at or above that excludes them like any other pre-epoch content. (Re-applying an update
- * a legacy base already contains is harmless: Yjs update application is idempotent.)
+ * The oldest loaded compaction boundary stands in for the pages before it -- its proposedOp
+ * blob, unless a loaded revert reached across the boundary -- and drops out once those pages
+ * load, exactly like computeMessageStates' active-changes seeding. The blob folds in at
+ * sequence `to - 1`, so an epoch past that excludes it like any other pre-epoch content.
  */
-export function computeChatDocUpdates(
+export function computeChatEpochOps(
   messages: AiChatMessage[],
   compacted?: CompactionBoundary,
-  epoch?: number,
-): Uint8Array[] {
+  codeBase?: ChatCodeBase,
+): { epochOp?: CodeOp; rowsThrough: number } {
   const { changeStatus } = computeMessageStates(messages, compacted);
-  const updates: Uint8Array[] = [];
+  const epoch = codeBase?.epoch;
+  const generation = codeBase?.generation ?? 0;
+  const ops: CodeOp[] = [];
+  let rowsThrough = 0;
 
   if (compacted && (messages.length === 0 || messages[0].sequence >= compacted.to) &&
-      (epoch === undefined || compacted.to - 1 > epoch)) {
-    if (compacted.acceptedChanges !== undefined) {
-      updates.push(compacted.acceptedChanges);
-    }
+      (epoch === undefined || compacted.to - 1 >= epoch)) {
     // The boundary's proposed-changes entry is folded in at sequence `to - 1` by
     // computeMessageStates, so a revert reaching across the boundary marks that sequence.
-    if (compacted.proposedChanges !== undefined &&
+    if (compacted.proposedOp !== undefined &&
         changeStatus.get(compacted.to - 1) !== "reverted") {
-      updates.push(compacted.proposedChanges);
+      ops.push(compacted.proposedOp);
     }
   }
 
   for (const msg of messages) {
-    if (msg.type === "changes" && msg.update !== undefined &&
-        (epoch === undefined || msg.sequence > epoch) &&
-        changeStatus.get(msg.sequence) !== "reverted") {
-      updates.push(msg.update);
+    if (msg.type !== "changes" || (epoch !== undefined && msg.sequence < epoch) ||
+        changeStatus.get(msg.sequence) === "reverted") {
+      continue;
+    }
+    if (msg.op !== undefined) ops.push(msg.op);
+    // Revisions restart per generation, so only the current generation's watermarks position
+    // the live-row cursor (an older generation's rows were retired by its closing bump).
+    if (msg.watermark !== undefined && msg.watermark.opsGeneration === generation) {
+      rowsThrough = Math.max(rowsThrough, msg.watermark.throughRevision);
     }
   }
 
-  return updates;
+  return {
+    epochOp: ops.length === 0 ? undefined : ops.reduce((a, b) => composeCodeOp(a, b)),
+    rowsThrough,
+  };
 }
 
 function inferSelectedModelFromMessages(messages: AiChatMessage[]): string | null {
@@ -4322,12 +4322,9 @@ interface ChatInterfaceProps {
   // current epoch's recorded changes, delivered together so the code view always layers a
   // consistent pair.
   onChatChangesChange?: (changes: ChatCodeChanges | undefined) => void;
-  onDraftProposedChangesChange?: (
-    updates: StreamingProposedChanges | undefined,
-  ) => void;
-  onStreamingProposedChangesChange?: (
-    updates: StreamingProposedChanges | undefined,
-  ) => void;
+  // The selected chat's live (unmaterialized) op rows, delivered separately from the durable
+  // snapshot so per-keystroke row arrivals don't churn it (see ChatLiveOpRows).
+  onLiveRowsChange?: (rows: ChatLiveOpRows | undefined) => void;
   onStreamingActiveFileChange?: (chatId: number, file: ActiveFileTarget | null | undefined) => void;
   pendingConsoleLogCount: number;
   consoleLogPreview: string;
@@ -4440,7 +4437,6 @@ type ProvisionalChatState = {
   compacting: boolean;
   toolCalls: ProvisionalToolCallState[];
   toolCallsById: Map<string, ProvisionalToolCallState>;
-  codeUpdates: Uint8Array[];
   activeEditingFile: ActiveFileTarget | null | undefined;
 };
 
@@ -4451,7 +4447,6 @@ function createProvisionalChatState(): ProvisionalChatState {
     compacting: false,
     toolCalls: [],
     toolCallsById: new Map(),
-    codeUpdates: [],
     activeEditingFile: undefined,
   };
 }
@@ -4461,13 +4456,13 @@ function clearProvisionalTextState(state: ProvisionalChatState) {
   state.reasoning = "";
   state.toolCalls = [];
   state.toolCallsById.clear();
-  // Note: This function only clears chat streaming state, not code streaming state. Chat streaming
-  // is reset when a message arrives (once per step), whereas code streaming is reset when code
-  // changes arrive (at the end of a turn).
+  // Note: This function only clears chat streaming state, not the active-file marker. Chat
+  // streaming is reset when a message arrives (once per step); the active-file marker is reset
+  // when the finalized changes arrive (at the end of a turn). (Streaming *code* needs no
+  // provisional state at all: agent edits arrive as durable op rows via opApplied.)
 }
 
 function clearProvisionalCodeState(state: ProvisionalChatState) {
-  state.codeUpdates = [];
   state.activeEditingFile = undefined;
 }
 
@@ -4477,7 +4472,6 @@ function isProvisionalChatStateEmpty(state: ProvisionalChatState) {
     state.reasoning === "" &&
     !state.compacting &&
     state.toolCalls.length === 0 &&
-    state.codeUpdates.length === 0 &&
     state.activeEditingFile === undefined
   );
 }
@@ -4513,8 +4507,7 @@ function ChatInterface({
   selectedChatId,
   onNavigateToChat,
   onChatChangesChange,
-  onDraftProposedChangesChange,
-  onStreamingProposedChangesChange,
+  onLiveRowsChange,
   onStreamingActiveFileChange,
   pendingConsoleLogCount,
   consoleLogPreview,
@@ -4546,7 +4539,12 @@ function ChatInterface({
     lastMessageTimestamp: null,
   });
   const provisionalRef = useRef<Map<number, ProvisionalChatState>>(new Map());
-  const draftRef = useRef<Map<number, DraftChatState>>(new Map());
+  // Per-chat buffers of live (unmaterialized) op rows (see ChatLiveOpRows), fed by opApplied,
+  // pruned by materialization watermarks and generation bumps.
+  const chatOpRowsRef = useRef<Map<number, ChatOpRowBuffer>>(new Map());
+  // Live-row subscribers by chat, notified synchronously from opApplied (before any pruning;
+  // see ChatLiveOpRows.subscribe).
+  const chatOpRowListenersRef = useRef<Map<number, Set<(row: ChatOpRow) => void>>>(new Map());
   // Last server-instance generation seen (survives reconnects). Used to detect a full DO restart,
   // in which case in-flight provisional streams were lost and must be discarded. See
   // AiChatSubscriber.streamGeneration.
@@ -4566,7 +4564,10 @@ function ChatInterface({
   const [isLoadingEarlier, setIsLoadingEarlier] = useState(false);
   const [updateCounter, setUpdateCounter] = useState(0); // Force re-render when cache updates
   const [proposedChangesVersion, setProposedChangesVersion] = useState(0); // Incremented only for change-affecting messages
-  const [draftChangesVersion, setDraftChangesVersion] = useState(0);
+  // Rows live in refs (chatOpRowsRef); this state only forces re-renders of their readers (the
+  // draft banner) as rows arrive or get pruned. Subscribed consumers are fed synchronously and
+  // don't depend on it (see ChatLiveOpRows).
+  const [_liveRowsVersion, setLiveRowsVersion] = useState(0);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleInput, setTitleInput] = useState("");
   const [renamingChatId, setRenamingChatId] = useState<number | null>(null);
@@ -4992,38 +4993,40 @@ function ChatInterface({
       ? (provisionalRef.current.get(selectedChatId) ?? null)
       : null;
 
-  const currentDraftState =
-    selectedChatId !== null ? (draftRef.current.get(selectedChatId) ?? null) : null;
-  const currentDraftChangesCount = currentDraftState?.entries.length ?? 0;
+  const currentRowBuffer =
+    selectedChatId !== null ? (chatOpRowsRef.current.get(selectedChatId) ?? null) : null;
+  const currentLiveRowCount = currentRowBuffer?.rows.length ?? 0;
 
   const provisionalToolCalls = currentProvisionalState?.toolCalls ?? [];
   const useConstrainedChatWidth = sidebarMode || constrainChatWidth;
 
-  const currentStreamingChanges = currentProvisionalState?.codeUpdates;
-  const currentStreamingChangesCount = currentStreamingChanges?.length ?? 0;
   const currentStreamingActiveFile = currentProvisionalState?.activeEditingFile;
-  const currentDraftChangesState = useMemo(():
-    | StreamingProposedChanges
-    | undefined => {
-    if (!currentDraftState || currentDraftChangesCount === 0) {
-      return undefined;
-    }
+  // The selected chat's live-row stream in the subscription shape the code view consumes (see
+  // ChatLiveOpRows). Identity is stable per chat -- the subscription itself outlives row
+  // arrivals and buffer pruning -- so consumers subscribe once per chat.
+  const currentLiveRows = useMemo((): ChatLiveOpRows | undefined => {
+    if (selectedChatId === null) return undefined;
+    const chatId = selectedChatId;
     return {
-      updates: currentDraftState.entries.map((entry) => entry.update),
-      count: currentDraftChangesCount,
+      chatId,
+      subscribe: (listener) => {
+        let listeners = chatOpRowListenersRef.current.get(chatId);
+        if (!listeners) {
+          listeners = new Set();
+          chatOpRowListenersRef.current.set(chatId, listeners);
+        }
+        listeners.add(listener);
+        // Replay what the buffer retains (rows arriving during the replay are impossible: this
+        // is all synchronous). The consumer dedupes, so redundancy is harmless.
+        const buffer = chatOpRowsRef.current.get(chatId);
+        if (buffer) for (const row of buffer.rows) listener(row);
+        return () => {
+          listeners.delete(listener);
+          if (listeners.size === 0) chatOpRowListenersRef.current.delete(chatId);
+        };
+      },
     };
-  }, [currentDraftChangesCount, currentDraftState, draftChangesVersion, selectedChatId]);
-  const currentStreamingState = useMemo(():
-    | StreamingProposedChanges
-    | undefined => {
-    if (!currentStreamingChanges || currentStreamingChangesCount === 0) {
-      return undefined;
-    }
-    return {
-      updates: currentStreamingChanges,
-      count: currentStreamingChangesCount,
-    };
-  }, [selectedChatId, currentStreamingChanges, currentStreamingChangesCount]);
+  }, [selectedChatId]);
 
   const isCompacting = currentProvisionalState?.compacting === true;
 
@@ -5090,7 +5093,6 @@ function ChatInterface({
   }, [
     currentMessages,
     hasVisibleProvisionalContent,
-    currentStreamingChangesCount,
     isAgentActive,
     scrollMessagesToBottom,
   ]);
@@ -5163,18 +5165,13 @@ function ChatInterface({
       (msg) => msg !== undefined,
     );
     const codeBase = cacheRef.current.chats.get(selectedChatId)?.codeBase;
-    const updates = computeChatDocUpdates(
+    const { epochOp, rowsThrough } = computeChatEpochOps(
       messages,
       cacheRef.current.compacted.get(selectedChatId)?.[0],
-      codeBase?.epoch,
+      codeBase,
     );
 
-    onChatChangesChange?.({
-      update: updates.length === 0
-        ? undefined
-        : updates.length === 1 ? updates[0] : Y.mergeUpdatesV2(updates),
-      codeBase,
-    });
+    onChatChangesChange?.({ chatId: selectedChatId, codeBase, epochOp, rowsThrough });
   }, [
     proposedChangesVersion,
     selectedChatId,
@@ -5183,12 +5180,8 @@ function ChatInterface({
   ]);
 
   useEffect(() => {
-    onStreamingProposedChangesChange?.(currentStreamingState);
-  }, [currentStreamingState, onStreamingProposedChangesChange]);
-
-  useEffect(() => {
-    onDraftProposedChangesChange?.(currentDraftChangesState);
-  }, [currentDraftChangesState, onDraftProposedChangesChange]);
+    onLiveRowsChange?.(currentLiveRows);
+  }, [currentLiveRows, onLiveRowsChange]);
 
   const onStreamingActiveFileChangeRef = useRef(onStreamingActiveFileChange);
   onStreamingActiveFileChangeRef.current = onStreamingActiveFileChange;
@@ -5248,19 +5241,20 @@ function ChatInterface({
         refreshBoundaryRef.current(chat.id);
       }
 
-      // Every server-side generation bump (merge, revert, draft discard -- see
-      // ChatCodeBase.generation) deletes all stored drafts in the same atomic step, so any
-      // drafts cached here when the bump becomes visible necessarily predate it and are rooted
-      // in erased history. Drop them now rather than waiting for draftCleared(): its delivery
-      // order relative to this metadata is not guaranteed, and a code-doc rebuild that paired
-      // the new generation with the stale drafts would seed erased Yjs structs that new edits
-      // -- accepted under the new generation -- could reference forever. Post-bump drafts are
-      // only ever emitted after the bump's metadata, so none are lost; the resubscribe path
-      // replays current drafts before its metadata catch-up, where this can drop them, which
-      // costs at most their provisional display until the next draft or materialization.
-      if (prevChat !== undefined &&
-          (prevChat.codeBase?.generation ?? 0) !== (chat.codeBase?.generation ?? 0)) {
-        draftRef.current.delete(chat.id);
+      // A generation bump obsoletes buffered rows: a *destructive* bump (revert / draft
+      // discard -- no `prior`) erased every row, so drop them all; a content-preserving bump
+      // (a merge's epoch reset) retires the closed generation's rows but the code view may
+      // still be draining its tail, so keep exactly the prior generation and the new one.
+      // (The buffers are advisory replay caches -- the OT client dedupes and prunes on its own
+      // stream position -- so pruning here is memory hygiene, not correctness.)
+      const codeBase = chat.codeBase;
+      if (prevChat !== undefined && codeBase !== undefined &&
+          (prevChat.codeBase?.generation ?? 0) !== codeBase.generation) {
+        const keepFrom = codeBase.prior?.generation ?? codeBase.generation;
+        if (pruneChatOpRows(chatOpRowsRef.current, chat.id,
+                            row => row.generation >= keepFrom)) {
+          setLiveRowsVersion((prev) => prev + 1);
+        }
       }
 
       cacheRef.current.chats.set(chat.id, chat);
@@ -5275,7 +5269,7 @@ function ChatInterface({
       cacheRef.current.compacted.delete(chatId);
       removeChatFromActionMessageIndex(chatId);
       provisionalRef.current.delete(chatId);
-      draftRef.current.delete(chatId);
+      chatOpRowsRef.current.delete(chatId);
       bumpChatListVersion();
 
       // If currently viewing this chat, go back to list
@@ -5287,37 +5281,35 @@ function ChatInterface({
       forceUpdate();
     }
 
-    draftUpdate(
+    opApplied(
       chatId: number,
-      timestamp: Date,
+      generation: number,
+      revision: number,
       author: AiChatAuthorInfo,
-      update: Uint8Array,
+      op: CodeOp,
+      submission?: { clientId: string; seq: number },
     ) {
-      let draft = getOrCreateDraftChatState(draftRef.current, chatId);
-      let existingIndex = draft.entries.findIndex(
-        (entry) => entry.timestamp.getTime() === timestamp.getTime(),
-      );
-
-      if (existingIndex >= 0) {
-        draft.entries[existingIndex] = { timestamp, author, update };
-      } else {
-        draft.entries.push({ timestamp, author, update });
-        draft.entries.sort(
-          (left, right) => left.timestamp.getTime() - right.timestamp.getTime(),
-        );
+      let buffer = chatOpRowsRef.current.get(chatId);
+      if (!buffer) {
+        buffer = { rows: [], seen: new Set(), latestAuthor: null, lastReceivedAt: null };
+        chatOpRowsRef.current.set(chatId, buffer);
       }
-
-      refreshDraftLatestAuthor(draft);
-      if (existingIndex >= 0) {
-        setDraftChangesVersion((prev) => prev + 1);
-      }
+      // Dedupe: subscribe-replay redelivers every retained row (see Overseer.subscribeToChat).
+      const key = `${generation}:${revision}`;
+      if (buffer.seen.has(key)) return;
+      buffer.seen.add(key);
+      const row: ChatOpRow = {
+        generation, revision, author, op,
+        ...(submission !== undefined ? { submission } : {}),
+      };
+      buffer.rows.push(row);
+      buffer.latestAuthor = author;
+      buffer.lastReceivedAt = new Date();
+      // Deliver to subscribers synchronously: the message that materializes this row may prune
+      // it from the buffer before any effect runs (see ChatLiveOpRows).
+      chatOpRowListenersRef.current.get(chatId)?.forEach((listener) => listener(row));
+      setLiveRowsVersion((prev) => prev + 1);
       scheduleUpdate();
-    }
-
-    draftCleared(chatId: number) {
-      if (draftRef.current.delete(chatId)) {
-        scheduleUpdate();
-      }
     }
 
     message(msg: AiChatMessage) {
@@ -5352,8 +5344,16 @@ function ChatInterface({
         setProposedChangesVersion((prev) => prev + 1);
       }
 
-      if (msg.type === "changes" && msg.author.type === "user") {
-        pruneDraftEntriesBefore(draftRef.current, msg.chatId, msg.timestamp);
+      // A "changes" message's watermark absorbs the rows it materialized; drop our copies (see
+      // AiChatMessageBody.watermark). Rows of other generations are untouched -- revisions
+      // restart per generation, so an unqualified prune could clear the wrong stream's rows.
+      if (msg.type === "changes" && msg.watermark !== undefined) {
+        const { opsGeneration, throughRevision } = msg.watermark;
+        if (pruneChatOpRows(chatOpRowsRef.current, msg.chatId,
+                            row => row.generation !== opsGeneration ||
+                                   row.revision > throughRevision)) {
+          setLiveRowsVersion((prev) => prev + 1);
+        }
       }
 
       const provisional = provisionalRef.current.get(msg.chatId);
@@ -5463,12 +5463,6 @@ function ChatInterface({
           toolCall.target = event.file.filename;
           break;
         }
-        case "codeReset":
-          provisional.codeUpdates = [];
-          break;
-        case "codeUpdate":
-          provisional.codeUpdates.push(event.update);
-          break;
       }
 
       if (isProvisionalChatStateEmpty(provisional)) {
@@ -5891,9 +5885,9 @@ function ChatInterface({
     if (selectedChatId === null) return;
 
     try {
+      // The destructive generation bump this causes prunes the buffered rows when its
+      // metadata arrives (see the metadata handler).
       await overseer.discardChatDraftChanges(selectedChatId);
-      draftRef.current.delete(selectedChatId);
-      forceUpdate();
       toasts.add({ title: "Changes discarded", variant: "success" });
     } catch (err) {
       console.error("Failed to discard changes:", err);
@@ -5907,14 +5901,10 @@ function ChatInterface({
     const target = discardChangesTarget;
     setDiscardingChangesChatIds((chatIds) => new Set(chatIds).add(target.chatId));
     try {
-      // Rewind durable checkpoints first. If discarding the live editor draft then fails, the user
-      // still retains those edits rather than losing both layers after a partial operation.
+      // One call covers everything: live op rows are strictly newer than every materialized
+      // message, so revertChanges(0) erases them along with the recorded batches (and a
+      // rows-only revert degenerates to a draft discard server-side).
       await overseer.revertChanges(target.chatId, 0);
-      if ((draftRef.current.get(target.chatId)?.entries.length ?? 0) > 0) {
-        await overseer.discardChatDraftChanges(target.chatId);
-        draftRef.current.delete(target.chatId);
-        forceUpdate();
-      }
       setDiscardChangesTarget((current) =>
         current?.chatId === target.chatId ? null : current,
       );
@@ -7755,8 +7745,8 @@ function ChatInterface({
                       );
                     })}
 
-                    {currentDraftState && currentDraftState.entries.length > 0 && (() => {
-                      const latestAuthor = currentDraftState.latestAuthor;
+                    {currentRowBuffer && currentLiveRowCount > 0 && (() => {
+                      const latestAuthor = currentRowBuffer.latestAuthor;
                       const isUserAuthored = latestAuthor?.type === "user";
                       const title = isUserAuthored
                         ? "Draft changes pending"
@@ -7764,10 +7754,7 @@ function ChatInterface({
                       const description = isUserAuthored
                         ? "Your edits are still a live draft."
                         : `${latestAuthor?.name ?? "The agent"} is editing changes for this gadget.`;
-                      const lastDraftEntry =
-                        currentDraftState.entries[
-                          currentDraftState.entries.length - 1
-                        ];
+                      const lastEditedAt = currentRowBuffer.lastReceivedAt;
                       const lastEntry = displayEntries[displayEntries.length - 1] ?? null;
                       const draftTopClass = !lastEntry
                         ? ""
@@ -7783,7 +7770,7 @@ function ChatInterface({
                               <Pencil size={16} />
                             </span>
                             <Tooltip
-                              content={`${description} Last edited ${formatFullTimestamp(lastDraftEntry.timestamp)}`}
+                              content={`${description}${lastEditedAt !== null ? ` Last edited ${formatFullTimestamp(lastEditedAt)}` : ''}`}
                               asChild
                             >
                               <span className="font-medium text-kumo-subtle">

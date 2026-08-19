@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from "vitest";
-import type { AiChatMessage, AiChatMessageBody } from "@gadgets/workshop-shared/api";
+import type { AiChatMessage, AiChatMessageBody, ChatCodeBase } from "@gadgets/workshop-shared/api";
+import type { CodeOp } from "@gadgets/workshop-shared/code-op";
 import {
-  buildChatDisplayEntries, computeChatDocUpdates, computeMessageStates,
+  buildChatDisplayEntries, computeChatEpochOps, computeMessageStates,
   type CompactionBoundary,
 } from "./ChatInterface";
 
@@ -13,28 +14,30 @@ function message(sequence: number, body: AiChatMessageBody): AiChatMessage {
   return { chatId: 1, sequence, timestamp: new Date(sequence * 1000), author: AUTHOR, ...body };
 }
 
-function changes(sequence: number, update: Uint8Array): AiChatMessage {
-  return message(sequence, { type: "changes", update });
+function changes(sequence: number, op: CodeOp): AiChatMessage {
+  return message(sequence, { type: "changes", op });
 }
 
 function merge(sequence: number, mergeThrough: number): AiChatMessage {
-  return message(sequence, { type: "merge", mergeThrough, version: 1, commits: [] });
+  return message(sequence, { type: "merge", mergeThrough, commits: [], epochBoundary: true });
 }
 
 function revert(sequence: number, revertFrom: number): AiChatMessage {
   return message(sequence, { type: "revert", revertFrom });
 }
 
-function boundary(
-  to: number, proposedChanges?: Uint8Array, acceptedChanges?: Uint8Array,
-): CompactionBoundary {
-  return { to, summary: "Earlier work", proposedChanges, acceptedChanges };
+function boundary(to: number, proposedOp?: CodeOp): CompactionBoundary {
+  return { to, summary: "Earlier work", proposedOp };
 }
 
-const PRE_BOUNDARY = new Uint8Array([1, 2, 3]);
-const LOADED = new Uint8Array([4, 5, 6]);
-const OLDER = new Uint8Array([7, 8, 9]);
-const ACCEPTED = new Uint8Array([10, 11, 12]);
+function codeBase(overrides?: Partial<ChatCodeBase>): ChatCodeBase {
+  return { pins: [], generation: 0, revision: 0, ...overrides };
+}
+
+// Ops on distinct files, so their compositions are easy to recognize (a union of `set`s).
+const PRE_BOUNDARY: CodeOp = { 1: [["pre.txt", { set: "pre" }]] };
+const LOADED: CodeOp = { 1: [["loaded.txt", { set: "loaded" }]] };
+const OLDER: CodeOp = { 1: [["older.txt", { set: "older" }]] };
 
 describe("computeMessageStates compaction seeding", () => {
   it("counts the boundary's proposed changes as one entry below the oldest loaded message", () => {
@@ -44,18 +47,18 @@ describe("computeMessageStates compaction seeding", () => {
     );
 
     expect(activeChanges).toEqual([
-      { sequence: 9, update: PRE_BOUNDARY },
-      { sequence: 10, update: LOADED },
+      { sequence: 9, op: PRE_BOUNDARY },
+      { sequence: 10, op: LOADED },
     ]);
   });
 
   it("ignores a boundary that carries no proposed changes", () => {
     const { activeChanges } = computeMessageStates([changes(10, LOADED)], boundary(10));
 
-    expect(activeChanges).toEqual([{ sequence: 10, update: LOADED }]);
+    expect(activeChanges).toEqual([{ sequence: 10, op: LOADED }]);
   });
 
-  // Accepting changes must clear the compacted prefix's update too, or the chat keeps reporting
+  // Accepting changes must clear the compacted prefix's op too, or the chat keeps reporting
   // proposed changes that the user already accepted.
   it("resolves the boundary entry when a merge reaches across it", () => {
     const { activeChanges } = computeMessageStates(
@@ -63,7 +66,7 @@ describe("computeMessageStates compaction seeding", () => {
       boundary(10, PRE_BOUNDARY),
     );
 
-    expect(activeChanges).toEqual([{ sequence: 12, update: OLDER }]);
+    expect(activeChanges).toEqual([{ sequence: 12, op: OLDER }]);
   });
 
   it("keeps the boundary entry when a revert stops above it", () => {
@@ -72,11 +75,11 @@ describe("computeMessageStates compaction seeding", () => {
       boundary(10, PRE_BOUNDARY),
     );
 
-    expect(activeChanges).toEqual([{ sequence: 9, update: PRE_BOUNDARY }]);
+    expect(activeChanges).toEqual([{ sequence: 9, op: PRE_BOUNDARY }]);
   });
 
-  // The boundary's update is the merge of the "changes" messages before it, so it must drop out the
-  // moment those messages load -- otherwise the same edits are counted twice.
+  // The boundary's op is the composition of the "changes" messages before it, so it must drop out
+  // the moment those messages load -- otherwise the same edits are counted twice.
   it("drops the boundary entry once the messages before it have loaded", () => {
     const { activeChanges } = computeMessageStates(
       [changes(5, OLDER), changes(10, LOADED)],
@@ -84,8 +87,8 @@ describe("computeMessageStates compaction seeding", () => {
     );
 
     expect(activeChanges).toEqual([
-      { sequence: 5, update: OLDER },
-      { sequence: 10, update: LOADED },
+      { sequence: 5, op: OLDER },
+      { sequence: 10, op: LOADED },
     ]);
   });
 
@@ -99,61 +102,64 @@ describe("computeMessageStates compaction seeding", () => {
   });
 });
 
-// The chat doc's base never advances (see ChatCodeBase), so rebuilding the doc must apply every
-// non-reverted update -- accepted ones included -- with the oldest loaded boundary's blobs
-// standing in for the compacted pages.
-describe("computeChatDocUpdates", () => {
-  it("applies accepted and proposed updates alike, in order", () => {
-    const updates = computeChatDocUpdates([
+// The durable half of the chat's content: the current epoch's non-reverted ops composed into
+// one, with the oldest loaded boundary's proposedOp standing in for the compacted pages, plus
+// the current generation's materialization watermark (see ChatCodeChanges).
+describe("computeChatEpochOps", () => {
+  it("composes non-reverted ops in order", () => {
+    const { epochOp } = computeChatEpochOps([
       changes(10, LOADED),
-      merge(11, 10),
       changes(12, OLDER),
     ]);
 
-    expect(updates).toEqual([LOADED, OLDER]);
+    expect(epochOp).toEqual({
+      1: [["loaded.txt", { set: "loaded" }], ["older.txt", { set: "older" }]],
+    });
   });
 
-  it("skips reverted updates", () => {
-    const updates = computeChatDocUpdates([
+  it("skips reverted ops", () => {
+    const { epochOp } = computeChatEpochOps([
       changes(10, LOADED),
       revert(11, 10),
       changes(12, OLDER),
     ]);
 
-    expect(updates).toEqual([OLDER]);
+    expect(epochOp).toEqual(OLDER);
   });
 
-  it("seeds from the boundary's accepted and proposed blobs, oldest first", () => {
-    const updates = computeChatDocUpdates(
+  it("seeds from the boundary's proposed op", () => {
+    const { epochOp } = computeChatEpochOps(
       [changes(10, LOADED)],
-      boundary(10, PRE_BOUNDARY, ACCEPTED),
+      boundary(10, PRE_BOUNDARY),
     );
 
-    expect(updates).toEqual([ACCEPTED, PRE_BOUNDARY, LOADED]);
+    expect(epochOp).toEqual({
+      1: [["loaded.txt", { set: "loaded" }], ["pre.txt", { set: "pre" }]],
+    });
   });
 
-  // Accepted changes are committed and can never be reverted, so a revert reaching across the
-  // boundary erases only the proposed blob.
-  it("keeps the boundary's accepted blob when a revert reaches across it", () => {
-    const updates = computeChatDocUpdates(
+  it("drops the boundary's proposed op when a revert reaches across it", () => {
+    const { epochOp } = computeChatEpochOps(
       [changes(10, LOADED), revert(11, 0)],
-      boundary(10, PRE_BOUNDARY, ACCEPTED),
+      boundary(10, PRE_BOUNDARY),
     );
 
-    expect(updates).toEqual([ACCEPTED]);
+    expect(epochOp).toBeUndefined();
   });
 
-  it("drops the boundary blobs once the messages before it have loaded", () => {
-    const updates = computeChatDocUpdates(
+  it("drops the boundary op once the messages before it have loaded", () => {
+    const { epochOp } = computeChatEpochOps(
       [changes(5, OLDER), changes(10, LOADED)],
-      boundary(10, PRE_BOUNDARY, ACCEPTED),
+      boundary(10, PRE_BOUNDARY),
     );
 
-    expect(updates).toEqual([OLDER, LOADED]);
+    expect(epochOp).toEqual({
+      1: [["loaded.txt", { set: "loaded" }], ["older.txt", { set: "older" }]],
+    });
   });
 
-  it("keeps a creation-only batch out of the update list", () => {
-    const updates = computeChatDocUpdates([
+  it("keeps a creation-only batch out of the composition", () => {
+    const { epochOp } = computeChatEpochOps([
       message(10, {
         type: "changes",
         createdGadgets: [{ gadgetId: 1, title: "New", bindingName: "NEW" }],
@@ -161,54 +167,79 @@ describe("computeChatDocUpdates", () => {
       changes(11, LOADED),
     ]);
 
-    expect(updates).toEqual([LOADED]);
+    expect(epochOp).toEqual(LOADED);
+  });
+
+  // Only the current generation's watermarks position the live-row cursor: revisions restart
+  // per generation, so an older generation's watermark says nothing about the current stream.
+  it("reports the current generation's materialization watermark", () => {
+    const { rowsThrough } = computeChatEpochOps(
+      [
+        message(10, { type: "changes", op: LOADED,
+                      watermark: { opsGeneration: 1, throughRevision: 7 } }),
+        message(12, { type: "changes", op: OLDER,
+                      watermark: { opsGeneration: 2, throughRevision: 3 } }),
+      ],
+      undefined,
+      codeBase({ generation: 2 }),
+    );
+
+    expect(rowsThrough).toBe(3);
   });
 });
 
-// Accepting changes closes the chat's epoch: the doc is discarded and rebuilt from the new
-// epoch's pins, so updates at or below ChatCodeBase.epoch -- the epoch-opening merge's sequence
-// -- are no longer part of the doc (see computeChatDocUpdates).
-describe("computeChatDocUpdates epoch scoping", () => {
-  it("drops updates from closed epochs, keeping the current epoch's", () => {
-    const updates = computeChatDocUpdates(
+// Accepting changes closes the chat's epoch: the content resets and rebuilds from the new
+// epoch's pins, so ops before ChatCodeBase.epoch -- the epoch-opening merge's sequence -- are no
+// longer part of it. A migrated chat's epoch instead points at its own conversionBoundary
+// *changes* message, whose op is part of the current content, hence the inclusive comparison.
+describe("computeChatEpochOps epoch scoping", () => {
+  it("drops ops from closed epochs, keeping the current epoch's", () => {
+    const { epochOp } = computeChatEpochOps(
       [changes(10, OLDER), merge(11, 10), changes(12, LOADED)],
       undefined,
-      11,
+      codeBase({ epoch: 11 }),
     );
 
-    expect(updates).toEqual([LOADED]);
+    expect(epochOp).toEqual(LOADED);
   });
 
-  it("applies no epoch cutoff when epoch is absent (no merge yet, or a legacy chat)", () => {
-    const updates = computeChatDocUpdates(
+  it("applies no epoch cutoff when epoch is absent", () => {
+    const { epochOp } = computeChatEpochOps(
       [changes(10, OLDER), merge(11, 10), changes(12, LOADED)],
       undefined,
-      undefined,
+      codeBase(),
     );
 
-    expect(updates).toEqual([OLDER, LOADED]);
+    expect(epochOp).toEqual({
+      1: [["loaded.txt", { set: "loaded" }], ["older.txt", { set: "older" }]],
+    });
   });
 
-  // The boundary's blobs stand in at sequence `to - 1`, so an epoch boundary at or past that
-  // point covers their content too (it was all accepted into commits).
-  it("drops the boundary blobs when the epoch reaches past them", () => {
-    const updates = computeChatDocUpdates(
+  it("includes the epoch-opening message itself (a conversion boundary)", () => {
+    const { epochOp } = computeChatEpochOps(
+      [
+        message(10, { type: "changes", op: OLDER, conversionBoundary: true }),
+        changes(12, LOADED),
+      ],
+      undefined,
+      codeBase({ epoch: 10 }),
+    );
+
+    expect(epochOp).toEqual({
+      1: [["loaded.txt", { set: "loaded" }], ["older.txt", { set: "older" }]],
+    });
+  });
+
+  // The boundary's op stands in at sequence `to - 1`, so an epoch boundary past that point
+  // covers its content too (it was all accepted into commits).
+  it("drops the boundary op when the epoch reaches past it", () => {
+    const { epochOp } = computeChatEpochOps(
       [merge(11, 10), changes(12, LOADED)],
-      boundary(10, PRE_BOUNDARY, ACCEPTED),
-      11,
+      boundary(10, PRE_BOUNDARY),
+      codeBase({ epoch: 11 }),
     );
 
-    expect(updates).toEqual([LOADED]);
-  });
-
-  it("keeps the boundary blobs when the epoch closed before them", () => {
-    const updates = computeChatDocUpdates(
-      [changes(10, LOADED)],
-      boundary(10, PRE_BOUNDARY, ACCEPTED),
-      5,
-    );
-
-    expect(updates).toEqual([ACCEPTED, PRE_BOUNDARY, LOADED]);
+    expect(epochOp).toEqual(LOADED);
   });
 });
 

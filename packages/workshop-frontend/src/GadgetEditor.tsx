@@ -42,9 +42,9 @@ import WorkpiecePicker, {
   WORKPIECE_RAIL_EXPANDED_WIDTH,
 } from './WorkpiecePicker'
 import ChatInterface, {
-  type StreamingProposedChanges,
   type ActiveFileTarget,
   type ChatCodeChanges,
+  type ChatLiveOpRows,
 } from './ChatInterface'
 import { formatOf } from './components/format/formats'
 import { FormatGlyph } from './components/format/FormatVisuals'
@@ -595,8 +595,9 @@ export default function GadgetEditor() {
   // base and the current epoch's recorded changes, plumbed from the chat subscription into the
   // code view, which layers them over the per-pin commit-derived doc base.
   const [chatChanges, setChatChanges] = useState<ChatCodeChanges | undefined>(undefined)
-  const [draftProposedChanges, setDraftProposedChanges] = useState<StreamingProposedChanges | undefined>(undefined)
-  const [streamingProposedChanges, setStreamingProposedChanges] = useState<StreamingProposedChanges | undefined>(undefined)
+  // The selected chat's live (unmaterialized) op row stream, stable per chat; the code view
+  // subscribes to it rather than reading rows through renders (see ChatLiveOpRows).
+  const [liveRows, setLiveRows] = useState<ChatLiveOpRows | undefined>(undefined)
   const [streamingActiveFileState, setStreamingActiveFileState] = useState<{
     chatId: number
     file: ActiveFileTarget | null | undefined
@@ -658,6 +659,13 @@ export default function GadgetEditor() {
       w.chatId === undefined || w.chatId === effectiveSelectedChatId)
   }, [allGadgets, effectiveSelectedChatId])
 
+  // Gadgets still pending (created within) the selected chat: their chat content builds up from
+  // nothing rather than from a pinned commit (see GadgetCodeInterface's pendingGadgetIds).
+  const pendingGadgetIds = useMemo(() => new Set(
+    allGadgets.filter(w => w.chatId !== undefined && w.chatId === effectiveSelectedChatId)
+      .map(w => w.id)
+  ), [allGadgets, effectiveSelectedChatId])
+
   // The selected gadget: explicit URL state wins, followed by the app open in this session (only
   // accepted apps are persisted), then the workspace default and the first visible gadget.
   const selectedGadgetId = useMemo(() => {
@@ -707,7 +715,6 @@ export default function GadgetEditor() {
     }
   }, [id, workpiecesReady, workspaceView, allGadgets, metadata?.defaultGadgetId])
 
-  const selectedFilesRoot = selectedGadgetSummary?.filesRoot
   // The stub for the selected gadget arrives via an effect; during a switch it briefly lags the
   // selection, in which case gadget-dependent views render their empty states for a frame.
   const selectedGadgetStub =
@@ -757,14 +764,14 @@ export default function GadgetEditor() {
 
   // Whether the *selected* gadget has code. When no gadget is selected, the code interface is
   // unmounted and raw `hasCode` can't update, but a gadget-less workspace has no code to show.
-  const effectiveHasCode = selectedFilesRoot !== undefined
+  const effectiveHasCode = selectedGadgetSummary !== undefined
     ? hasCode
     : workpiecesReady ? false : null
 
   const codeStateReady = effectiveHasCode !== null
   const hasCodeRelatedState = effectiveHasCode === true
     || hasAnyProposedChanges
-    || streamingProposedChanges !== undefined
+    || streamingActiveFile != null
   const layoutModeReady = chatListReady && (codeStateReady || hasCodeRelatedState)
 
   // Wait for all initial subscriptions before choosing the new-workspace chat-only layout.
@@ -984,8 +991,7 @@ export default function GadgetEditor() {
 
   useEffect(() => {
     setChatChanges(undefined)
-    setDraftProposedChanges(undefined)
-    setStreamingProposedChanges(undefined)
+    setLiveRows(undefined)
     setStreamingActiveFileState(null)
     setHasCode(null)
     setChatCount(null)
@@ -1495,8 +1501,7 @@ export default function GadgetEditor() {
                   selectedChatId={effectiveSelectedChatId}
                   onNavigateToChat={navigateToChat}
                   onChatChangesChange={setChatChanges}
-                  onDraftProposedChangesChange={setDraftProposedChanges}
-                  onStreamingProposedChangesChange={updates => setStreamingProposedChanges(updates)}
+                  onLiveRowsChange={setLiveRows}
                   onStreamingActiveFileChange={handleStreamingActiveFileChange}
                   pendingConsoleLogCount={consoleLogCount}
                   consoleLogPreview={
@@ -1687,17 +1692,16 @@ export default function GadgetEditor() {
             </div>
 
             <div className={activeTab === 'code' ? 'h-full' : 'hidden'}>
-              {overseer && selectedGadgetSummary && selectedFilesRoot !== undefined ? (
+              {overseer && selectedGadgetSummary ? (
                 <GadgetCodeInterface
                   overseer={overseer.stub}
                   workpieceId={selectedGadgetSummary.id}
-                  filesRoot={selectedFilesRoot}
                   headCommitId={selectedGadgetSummary.commitId}
                   height={RIGHT_CONTENT_H}
                   selectedChatId={effectiveSelectedChatId}
                   chatChanges={chatChanges}
-                  draftProposedChanges={draftProposedChanges}
-                  streamingProposedChanges={streamingProposedChanges}
+                  liveRows={liveRows}
+                  pendingGadgetIds={pendingGadgetIds}
                   streamingActiveFile={streamingActiveFileForSelected}
                   isAgentActive={isAgentActive}
                   isVisible={activeTab === 'code'}
