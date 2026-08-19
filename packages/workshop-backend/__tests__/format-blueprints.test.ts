@@ -140,6 +140,19 @@ describe("bundled format blueprints", () => {
     }
   });
 
+  it.skipIf(FORMAT_BLUEPRINTS.length === 0)(
+      "changes the manifest version when bundled source changes", () => {
+    let entry = FORMAT_BLUEPRINTS[0];
+    let before = formatBlueprintsManifestVersion();
+    let original = entry.contentHash;
+    try {
+      entry.contentHash = `${original}-changed`;
+      expect(formatBlueprintsManifestVersion()).not.toBe(before);
+    } finally {
+      entry.contentHash = original;
+    }
+  });
+
   // Curated text is the input most likely to be edited -- it is the whole point of keeping it in a
   // text file -- and an edit that doesn't reach deployments which already installed would be
   // invisible: the build succeeds and the old wording stays put.

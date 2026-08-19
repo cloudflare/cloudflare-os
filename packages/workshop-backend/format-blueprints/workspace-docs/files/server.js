@@ -397,7 +397,7 @@ function htmlToMarkdown(html) {
       }
       case "a": links.push(readHtmlAttribute(attributes, "href")); markdown += "["; break;
       case "img": {
-        const alt = readHtmlAttribute(attributes, "alt").replace(/[\[\]]/g, "\\$&");
+        const alt = readHtmlAttribute(attributes, "alt").replace(/[\\[\]]/g, "\\$&");
         markdown += "![" + alt + "](" + readHtmlAttribute(attributes, "src") + ")";
         break;
       }

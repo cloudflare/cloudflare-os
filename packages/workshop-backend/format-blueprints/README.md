@@ -24,7 +24,8 @@ generated Worker module. No binary archive is committed.
 
 `blueprintId` is the install key. Never change it after deployment: the new ID would install a
 second format while the old one remained. `version` is the blueprint's published content version
-and R2 key. `revision` is the bundled reinstall trigger and is bumped automatically by the importer.
+and R2 key. The build fingerprints the generated archive, so direct edits under `files/` reinstall
+automatically. `revision` remains an explicit reinstall trigger and is bumped by the importer.
 
 ## Editing presentation
 

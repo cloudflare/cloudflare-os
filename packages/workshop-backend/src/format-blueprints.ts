@@ -25,11 +25,11 @@ type InstallEnv = Pick<Cloudflare.Env, "BLUEPRINTS" | "BLUEPRINT_CONTENT">;
  *
  * Everything that ends up in the installed metadata contributes, not just `revision`: editing a
  * description would otherwise build, deploy, and change nothing on a deployment that had already
- * installed. `revision` covers the one input this can't see, the archive bytes.
+ * installed. `contentHash` covers the generated archive, including direct edits to source files.
  */
 export function formatBlueprintsManifestVersion(): string {
   return FORMAT_BLUEPRINTS
-      .map(e => `${e.blueprintId}@${e.revision}+` +
+      .map(e => `${e.blueprintId}@${e.revision}+${e.contentHash}+` +
           fingerprint(JSON.stringify([e.title, e.description, e.author, e.output])))
       .toSorted()
       .join(",");

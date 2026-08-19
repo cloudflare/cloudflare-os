@@ -1179,8 +1179,7 @@ function wrapInline(text, ctx) {
 const BLOCK_TAGS = ["P", "H1", "H2", "H3", "H4", "H5", "H6", "BLOCKQUOTE", "PRE", "UL", "OL", "LI", "DIV"];
 
 function sanitizePastedHtml(html) {
-  const tpl = document.createElement("template");
-  tpl.innerHTML = html;
+  const parsed = new DOMParser().parseFromString(html, "text/html");
   const result = document.createElement("div");
 
   function appendInline(src, target, ctx) {
@@ -1268,7 +1267,7 @@ function sanitizePastedHtml(html) {
     });
   }
 
-  processNodes(Array.from(tpl.content.childNodes), {});
+  processNodes(Array.from(parsed.body.childNodes), {});
   return result.innerHTML;
 }
 
@@ -1777,4 +1776,3 @@ if (isDocumentExport) {
     setStatus("bad", "Offline");
   }
   refreshToolbarState();
-
