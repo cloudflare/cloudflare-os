@@ -3,7 +3,8 @@ import {type AiChatAuthorInfo, type AiChatMessage, type AiChatMessageBody}
   from "@gadgets/workshop-shared/api";
 import {
   buildCompactionState, buildSummaryPrompt, findCompactionBoundary, findProtectedFromSequence,
-  getModelTokenLimits, isCompactionTurn, protectRetainedReverts, shouldCompactChat, startsAgentTurn,
+  foldProposedChanges, getModelTokenLimits, isCompactionTurn, protectRetainedReverts,
+  shouldCompactChat, startsAgentTurn,
 } from "../src/agent-compaction";
 import {applyCodeOp, type CodeOp} from "@gadgets/workshop-shared/code-op";
 import type {Api, AssistantMessage, Message, Model} from "@earendil-works/pi-ai";
@@ -419,6 +420,19 @@ describe("compaction checkpoint state", () => {
     expect(next.pins).toEqual([pin9]);
     expect(next.epoch).toBe(1);
     expect(filesIn(next.proposedOp)).toEqual(["file.js"]);
+  });
+
+  it("an empty conversion boundary proposes nothing; one with an op is a normal batch", () => {
+    // A read-only migrated chat's boundary (no op, no pins) must not surface as a proposed
+    // change, while a boundary carrying converted content is an ordinary batch that merges and
+    // reverts like any other.
+    expect(foldProposedChanges([
+      record(0, user, {type: "changes", conversionBoundary: true}),
+    ])).toEqual([]);
+    let proposed = foldProposedChanges([
+      record(0, user, {type: "changes", conversionBoundary: true, op: op("a")}),
+    ]);
+    expect(proposed.map(batch => batch.sequence)).toEqual([0]);
   });
 
   it("treats a conversion boundary as an epoch boundary for pins and the epoch", () => {

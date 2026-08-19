@@ -1,11 +1,14 @@
-// Migration of pre-git-storage workspaces: synthesizes git commits from the legacy Yjs code log.
+// Migration of pre-git-storage workspaces: synthesizes git commits from the legacy Yjs code log
+// and converts every live chat to the commit-pinned op-stream representation.
 //
 // Before git-backed code storage, mainline code was a workspace-wide Yjs doc persisted as an
-// incremental update log (the `code`/`snapshots` collections). This module replays that log once
-// and synthesizes, per gadget, a chain of real git commits in the workspace's object store, then
-// rewrites every record that referenced a code-log version to reference a commit instead:
-// gadget heads (GadgetRecord.commitId), historical merge messages (their required `commits`
-// field), blueprint records (codeVersion -> commitId), and live chats' code-base pins.
+// incremental update log (the `code`/`snapshots` collections), and each chat's uncommitted
+// changes were Yjs updates riding its "changes" messages (plus live drafts in
+// `chatDraftUpdates`). This module replays that log once and synthesizes, per gadget, a chain of
+// real git commits in the workspace's object store, then rewrites every record that referenced a
+// code-log version to reference a commit instead: gadget heads (GadgetRecord.commitId),
+// historical merge messages (their required `commits` field), and blueprint records
+// (codeVersion -> commitId).
 //
 // The log has limited information about *why* code changed -- essentially just timestamps -- so
 // commit points are chosen as:
@@ -23,27 +26,37 @@
 // every permanent gadget leaves the migration with a head even if the log never gave it content
 // (the invariant chat pinning relies on; see GadgetRecord.commitId).
 //
-// Chats predating commit-pinned docs keep deriving their Yjs base from the retired log (see
-// ChatCodeBase.legacy); the migration gives each a `codeBase` marked `legacy: true` whose
-// per-gadget `mergedCommit` pins the synthesized commit at the same version its doc base
-// anchors to -- what arms the accept flow's fast-forward gate (and update-from-mainline's merge
-// base) for legacy chats until their first merge graduates them.
+// Each live pre-git chat is then **converted** in place (see
+// AiChatMessageBody.conversionBoundary): its legacy doc -- the mainline doc at the chat's anchor
+// version, plus its non-reverted "changes" updates, plus any outstanding drafts (which are then
+// deleted) -- is flattened once, and its uncommitted state becomes one synthetic "changes"
+// message whose `op` is the diff of that flatten against the anchor commits' trees, carrying a
+// pin per touched permanent gadget ({baseCommit: anchor, mergedCommit: anchor} -- what arms the
+// accept flow's fast-forward gate). Untouched gadgets get no pin (they track head live, the lazy
+// semantics); gadgets still pending in the chat get their content as plain `set`s with no pin,
+// like any chat-created gadget. The boundary message is written even when there is nothing to
+// convert (empty op, no pins): ChatCodeBase.epoch points at it, and replay keys the elision of
+// pre-conversion tool reads on it. After conversion the chat is an ordinary new-model chat; the
+// pre-conversion messages keep their retired Yjs `update` bytes on disk as rollback insurance,
+// but nothing can apply them (delivery strips them; see hydrateChatMessageForClient).
 //
 // The migration runs in the Overseer constructor under blockConcurrencyWhile, gated by the
 // `version` singleton (see OverseerImpl.#migrateToGitStorage). It is re-runnable: object writes
-// are content-addressed (recommitting identical history yields identical oids), and every record
-// rewrite is deterministic from storage state, so a crashed run is simply redone.
+// are content-addressed (recommitting identical history yields identical oids), every record
+// rewrite is deterministic from storage state, and all record writes (chat conversion included)
+// happen in one synchronous tail, so a crashed run is simply redone. (Defensively, a chat that
+// already has a codeBase is skipped: it was converted by a previous run.)
 
 import * as Y from "yjs";
 import { keyString } from "@gadgets/typed-storage";
 import type {
-  AiChatMessage, ChatGadgetPin, CommitIdentity, WorkpieceId,
+  AiChatMessage, AiChatMetadata, ChatChangesPin, ChatGadgetPin, CommitIdentity, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
+import { diffFiles, type CodeContent, type CodeOp } from "@gadgets/workshop-shared/code-op";
 import type { CompactionCheckpoint } from "./agent";
 import type { OverseerStorage } from "./overseer";
-import { legacyChatBaseVersion } from "./agent-compaction";
+import { chatChangeStatuses, legacyChatBaseVersion } from "./agent-compaction";
 import { GitStore, filesEqual } from "./git-store";
-import { readDocFiles } from "./yjs-files";
 import { createWorkshopLogger } from "./observability";
 
 const logger = createWorkshopLogger("workshop.overseer.git-migration");
@@ -61,7 +74,9 @@ export const HISTORY_COMMIT_GAP_MS = 60 * 60 * 1000;
  */
 export interface GitMigrationHost {
   /** The workspace's storage. Only the listed collections are read or written. */
-  storage: Pick<OverseerStorage, "code" | "gadgets" | "chats" | "chatMeta" | "blueprints">;
+  storage: Pick<OverseerStorage,
+      "code" | "gadgets" | "chats" | "chatMeta" | "chatDraftUpdates" | "nextChatSequences" |
+      "blueprints">;
 
   /** The workspace's git object store, which receives the synthesized commits. */
   gitStore: GitStore;
@@ -72,16 +87,30 @@ export interface GitMigrationHost {
   /** The workspace's default gadget, which legacy records reference by omission. */
   defaultGadgetId: WorkpieceId | undefined;
 
-  /** Maps a gadget to its Y.Doc root name (the default gadget's is ""); see gadgetRootName. */
+  /** Maps a gadget to its legacy Y.Doc root name (the default gadget's is ""). */
   gadgetRootName(id: WorkpieceId): string;
 
   /** The checkpoint named by the chat's `compactedTo`, for the chat's anchor computation. */
   getActiveChatCompaction(chatId: number): CompactionCheckpoint | undefined;
+
+  /**
+   * A unique, monotonic chat-message timestamp (the chats collection's byTimestamp index is
+   * unique), for the conversion boundary messages.
+   */
+  getChatTimestamp(): Date;
 }
 
-// One gadget's synthesis state: its files root, the file map and commit chain synthesized so
-// far (`files` is the content of `chain`'s last entry -- the "previous synthesized commit" that
-// unchanged versions are skipped against).
+// A stored pre-conversion "changes" message: the retired Yjs V2 update payload is gone from the
+// wire type but still present on disk. The conversion is the only reader that *applies* it;
+// delivery strips it (hydrateChatMessageForClient) and agent replay only tests its presence
+// (the generic pre-conversion user-edit note).
+type StoredChangesMessage = Extract<AiChatMessage, { type: "changes" }> & {
+  update?: Uint8Array,
+};
+
+// One gadget's synthesis state: its legacy files root, the file map and commit chain synthesized
+// so far (`files` is the content of `chain`'s last entry -- the "previous synthesized commit"
+// that unchanged versions are skipped against).
 type GadgetSynthesis = {
   root: string;
   files: Map<string, string>;
@@ -99,10 +128,21 @@ function chainFloor(state: GadgetSynthesis, version: number)
   return found;
 }
 
+// Read all files of one root map of a legacy code doc as a plain `name -> text` map. (Formerly
+// yjs-files.ts's readDocFiles; this module is the last reader of legacy docs.)
+function readDocFiles(doc: Y.Doc, rootName: string): Map<string, string> {
+  let files = new Map<string, string>();
+  for (let [name, text] of doc.getMap<Y.Text>(rootName)) {
+    files.set(name, text.toString());
+  }
+  return files;
+}
+
 /**
- * Synthesizes commits from the legacy code log and rewrites version-pinned records to commit
- * pins (see the module comment for the full contract). Returns the number of commits written,
- * for logging. Does not bump the storage schema version; the caller owns that.
+ * Synthesizes commits from the legacy code log, rewrites version-pinned records to commit
+ * references, and converts live chats (see the module comment for the full contract). Returns
+ * the number of commits written, for logging. Does not bump the storage schema version; the
+ * caller owns that.
  */
 export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ commits: number }> {
   let { storage, gitStore } = host;
@@ -140,14 +180,19 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
     }
   }
 
-  // Historical merges (in any chat, including deleted gadgets' chats) and live chats' anchors.
-  // Only versions actually present in the log become merge points: a merge that accepted no code
-  // recorded a counter value with no code entry, and correctly backfills to `commits: []` below.
+  // Historical merges (in any chat, including deleted gadgets' chats) and every chat's anchor.
+  // Only versions actually present in the log become merge points: a merge that accepted no
+  // code recorded a counter value with no code entry, and correctly backfills to `commits: []`
+  // below. Already-converted chats (a defensive re-run case; see the module comment) are not
+  // converted again, but their merges are still re-backfilled and their anchors still become
+  // commit points -- the anchor derives from the log's version stamps, which the conversion
+  // didn't touch, so a re-run chooses the same points and converges on the same chains
+  // (dropping a converted chat's anchor would synthesize different commits than the ones its
+  // boundary already pins).
   type LegacyMergeMessage = Extract<AiChatMessage, { type: "merge" }>;
   let legacyMerges: LegacyMergeMessage[] = [];
   let chatAnchors = new Map<number, number>();
   for (let meta of Array.from(storage.chatMeta.list())) {
-    if (meta.codeBase !== undefined && meta.codeBase.legacy !== true) continue;  // commit-pinned
     let messages = [...storage.chats.list({ prefix: `${keyString(meta.id)}.` })];
     for (let msg of messages) {
       if (msg.type === "merge" && msg.version !== undefined) {
@@ -157,8 +202,8 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
     }
     let anchor = legacyChatBaseVersion(host.getActiveChatCompaction(meta.id), messages);
     let resolved = floorLogVersion(anchor === "current" ? finalVersion : anchor);
-    chatAnchors.set(meta.id, resolved);
     if (resolved > 0) points.add(resolved);
+    if (meta.codeBase === undefined) chatAnchors.set(meta.id, resolved);
   }
 
   // Blueprint pins. Tracks the referenced gadget even when it has since been deleted from the
@@ -188,13 +233,12 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
 
   // Every permanent gadget's chain is rooted at a version-0 empty-tree commit, so every
   // permanent gadget ends the migration with a head (the invariant the chat pinning flow
-  // relies on; see GadgetRecord.commitId) and every legacy chat's anchor -- including one
-  // predating the gadget's first content -- resolves to a pin (the chat's doc holds nothing
-  // for the root there, and the empty tree is exactly that state; without the pin, edits to
-  // such a root could never pass the accept gate once mainline moved). Pending gadgets are
-  // excluded: promotion by their own chat's accept writes their first commit. Blueprint
-  // resolution below likewise ignores version-0 floors, since an empty snapshot is not a
-  // valid blueprint.
+  // relies on; see GadgetRecord.commitId) and every chat anchor -- including one predating the
+  // gadget's first content -- resolves to a pin base (the chat's doc holds nothing for the root
+  // there, and the empty tree is exactly that state; without it, edits to such a root could
+  // never pass the accept gate once mainline moved). Pending gadgets are excluded: promotion by
+  // their own chat's accept writes their first commit. Blueprint resolution below likewise
+  // ignores version-0 floors, since an empty snapshot is not a valid blueprint.
   for (let gadget of storage.gadgets.list()) {
     if (gadget.pending) continue;
     let state = tracked.get(gadget.id)!;
@@ -210,9 +254,18 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
     commits++;
   }
 
+  // Snapshots of the mainline doc at each live chat's anchor version, captured during the same
+  // replay: the conversion below rebuilds each chat's doc base from these. (Version 0 -- an
+  // anchor before any code entry -- needs no snapshot; the base is the empty doc.)
+  let anchorVersions = new Set(chatAnchors.values());
+  let anchorStates = new Map<number, Uint8Array>();
+
   let ydoc = new Y.Doc();
   for (let entry of storage.code.list()) {
     Y.applyUpdateV2(ydoc, entry.update);
+    if (anchorVersions.has(entry.version)) {
+      anchorStates.set(entry.version, Y.encodeStateAsUpdateV2(ydoc));
+    }
     if (!points.has(entry.version)) continue;
     for (let state of tracked.values()) {
       let files = readDocFiles(ydoc, state.root);
@@ -237,8 +290,9 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
   }
 
   // ---------------------------------------------------------------------------------------
-  // Rewrite the version-pinned records. All writes below are synchronous, so they land
-  // atomically under the output gate, after every object they reference exists.
+  // Rewrite the version-pinned records and convert the live chats. All writes below are
+  // synchronous, so they land atomically under the output gate, after every object they
+  // reference exists.
 
   // Gadget heads.
   for (let gadget of Array.from(storage.gadgets.list())) {
@@ -260,28 +314,11 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
     storage.chats.put(msg);
   }
 
-  // Live legacy chats' pins: mergedCommit at the chain floor of the same version the chat's doc
-  // base anchors to (so accept's fast-forward gate and update-from-mainline's merge base agree
-  // with the doc the chat actually builds). No seedCommit and no seedHash: the chat's Yjs base
-  // remains the legacy log (see getLegacyChatDocBase), which is exactly what the `legacy` flag
-  // declares -- the chat behaves this way until its first merge graduates it. Every permanent
-  // gadget has a floor (its chain is rooted at the version-0 empty commit, matching the doc's
-  // empty root at anchors predating the gadget's content); only pending gadgets get no pin,
-  // which reads as "nothing merged yet" everywhere pins are consumed -- accurate, since only
-  // their own chat's accept can promote them.
+  // Convert each live pre-git chat (see the module comment).
   for (let meta of Array.from(storage.chatMeta.list())) {
-    if (meta.codeBase !== undefined && meta.codeBase.legacy !== true) continue;
-    let anchor = chatAnchors.get(meta.id)!;
-    let pins: ChatGadgetPin[] = [];
-    for (let gadget of Array.from(storage.gadgets.list())) {
-      let state = tracked.get(gadget.id)!;
-      let floor = chainFloor(state, anchor);
-      if (floor !== undefined) {
-        pins.push({ gadgetId: gadget.id, filesRoot: state.root, mergedCommit: floor.commitId });
-      }
-    }
-    meta.codeBase = { legacy: true, generation: meta.codeBase?.generation ?? 0, gadgets: pins };
-    storage.chatMeta.put(meta);
+    let anchor = chatAnchors.get(meta.id);
+    if (anchor === undefined) continue;  // already converted by a previous run
+    convertLegacyChat(host, tracked, meta, anchor, anchorStates.get(anchor));
   }
 
   // Blueprint records: the exported snapshot's version becomes the commit whose tree is that
@@ -309,4 +346,126 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
   }
 
   return { commits };
+}
+
+// Converts one live pre-git chat: flatten its legacy doc (anchor state + non-reverted "changes"
+// updates + outstanding drafts, which are deleted), then record the flatten as a
+// conversion-boundary "changes" message and the matching commit-pinned codeBase. Fully
+// synchronous (see the caller's atomicity note).
+function convertLegacyChat(
+    host: GitMigrationHost, tracked: Map<WorkpieceId, GadgetSynthesis>, meta: AiChatMetadata,
+    anchor: number, anchorState: Uint8Array | undefined): void {
+  let { storage } = host;
+  let messages = [...storage.chats.list({ prefix: `${keyString(meta.id)}.` })];
+  let statuses = chatChangeStatuses(messages);
+
+  // The anchor doc (the conversion diff's base) and the chat doc built on top of it. Applying
+  // *merged* updates too is deliberate and harmless: a legacy merge appended the chat's updates
+  // to the mainline log itself, and the anchor is at or past the merge's version (see
+  // legacyChatBaseVersion), so the anchor state already contains those items and re-applying
+  // them is a no-op. Reverted updates are skipped, as the legacy doc construction skipped them.
+  let anchorDoc = new Y.Doc();
+  let chatDoc = new Y.Doc();
+  if (anchorState !== undefined) {
+    Y.applyUpdateV2(anchorDoc, anchorState);
+    Y.applyUpdateV2(chatDoc, anchorState);
+  }
+  for (let msg of messages) {
+    if (msg.type !== "changes" || statuses.get(msg.sequence) === "reverted") continue;
+    let update = (msg as StoredChangesMessage).update;
+    if (update !== undefined) Y.applyUpdateV2(chatDoc, update);
+  }
+
+  // Outstanding drafts fold in (they are strictly newer than every message, and their keys --
+  // hence this iteration -- order by timestamp), then are deleted: their content now lives in
+  // the conversion op.
+  for (let draft of Array.from(storage.chatDraftUpdates.list(
+      { prefix: `${keyString(meta.id)}.` }))) {
+    Y.applyUpdateV2(chatDoc, draft.update);
+    storage.chatDraftUpdates.delete(
+        `${keyString(draft.chatId)}.${keyString(draft.timestamp.valueOf())}`);
+  }
+
+  // Diff the flatten against the anchor trees, gadget by gadget. Untouched gadgets contribute
+  // nothing and get no pin -- they track mainline head live. Touched permanent gadgets pin at
+  // the anchor's chain floor, whose tree is exactly the anchor doc's content for that root (the
+  // anchor was made a commit point). A gadget still pending in this chat gets no pin -- its
+  // anchor content is empty, so its files arrive as plain `set`s, like any chat-created gadget
+  // -- and a gadget pending in *another* chat is skipped outright (its files live only in that
+  // chat's proposed changes; this doc holds nothing for it). Deleted gadgets' leftover roots
+  // are ignored, as everywhere (the registry is the enumeration source of truth).
+  let before: CodeContent = new Map();
+  let after: CodeContent = new Map();
+  let pins: ChatGadgetPin[] = [];
+  let carriedPending: WorkpieceId[] = [];
+  for (let gadget of storage.gadgets.list()) {
+    if (gadget.pending !== undefined && gadget.pending.chatId !== meta.id) continue;
+    let root = host.gadgetRootName(gadget.id);
+    let anchorFiles = readDocFiles(anchorDoc, root);
+    let chatFiles = readDocFiles(chatDoc, root);
+    if (filesEqual(anchorFiles, chatFiles)) continue;
+    before.set(gadget.id, anchorFiles);
+    after.set(gadget.id, chatFiles);
+    if (gadget.pending === undefined) {
+      let floor = chainFloor(tracked.get(gadget.id)!, anchor)!;
+      pins.push({ gadgetId: gadget.id, baseCommit: floor.commitId,
+                  mergedCommit: floor.commitId });
+    } else if (gadget.pending.sequence !== undefined) {
+      // A touched pending gadget's files now ride the boundary op, but its creation was
+      // recorded by an earlier message -- a split the new model never produces (a creation's
+      // files ride the message that records it) and the accept/revert lifecycle mishandles:
+      // reverting at the boundary would erase the files while leaving the creation proposed,
+      // stranding a permanently content-less pending gadget. So the boundary *re-records* the
+      // creation (`createdGadgets` below) and the record is re-stamped to it, keeping creation
+      // and content on one message. (An unstamped record is a crashed turn's tail with no
+      // flushed files, hence never touched; it stays with the existing reconciliation flow.)
+      carriedPending.push(gadget.id);
+    }
+  }
+  let op: CodeOp | undefined = diffFiles(before, after);
+  if (Object.keys(op).length === 0) op = undefined;
+
+  // The boundary message is written even when the chat has nothing to convert: the boundary
+  // itself is load-bearing (epoch points at it; replay keys pre-conversion elision on it). An
+  // empty boundary carries no op and no pins, and proposes nothing (see foldProposedChanges).
+  let sequenceRecord = storage.nextChatSequences.get(meta.id);
+  let sequence = sequenceRecord?.nextSequence ?? 0;
+  storage.nextChatSequences.put({ chatId: meta.id, nextSequence: sequence + 1 });
+  let createdGadgets = carriedPending.map(id => {
+    let gadget = storage.gadgets.get(id)!;
+    return { gadgetId: id, title: gadget.title, bindingName: gadget.bindingName };
+  });
+  storage.chats.put({
+    chatId: meta.id,
+    sequence,
+    timestamp: host.getChatTimestamp(),
+    // Attribution is cosmetic, as on the synthesized commits: the op collapses potentially
+    // many authors' edits.
+    author: { type: "user", id: host.ownerIdentity.email, name: host.ownerIdentity.name },
+    type: "changes",
+    ...(op !== undefined ? { op } : {}),
+    ...(pins.length > 0
+        ? { pins: pins.map((pin): ChatChangesPin =>
+              ({ gadgetId: pin.gadgetId, baseCommit: pin.baseCommit })) }
+        : {}),
+    ...(createdGadgets.length > 0 ? { createdGadgets } : {}),
+    conversionBoundary: true,
+  });
+
+  // Re-stamp the carried creations onto the boundary (see above): accept and revert then treat
+  // creation and content as one, exactly as if the boundary had created the gadget. (The
+  // original message's `createdGadgets` remains as display history; every consumer of the
+  // duplicate entry is idempotent.)
+  for (let id of carriedPending) {
+    let gadget = storage.gadgets.get(id)!;
+    gadget.pending = { chatId: meta.id, sequence };
+    storage.gadgets.put(gadget);
+  }
+
+  meta.codeBase = { pins, generation: 0, epoch: sequence, revision: 0 };
+  // A non-empty conversion op is a proposed change (uncommitted content survived the
+  // conversion); an empty one changes nothing about the chat's proposedness (pre-conversion
+  // creation-only batches may still be proposed, which the stored flag already reflects).
+  if (op !== undefined) meta.hasProposedChanges = true;
+  storage.chatMeta.put(meta);
 }

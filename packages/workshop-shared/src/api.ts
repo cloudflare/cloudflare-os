@@ -2633,9 +2633,10 @@ export type AiChatMessageBody = {
    * edit -- outstanding drafts included -- into one diff against the chat's pinned commits. For
    * replay and content reconstruction it acts as an epoch boundary that re-seeds at (pin bases
    * + this op): messages before it are text-only history whose code payloads are unrecoverable
-   * and no longer delivered. Present -- with an empty `op` and no `pins` -- even when the chat
-   * had nothing to convert, because the boundary itself is load-bearing (ChatCodeBase.epoch
-   * points at it). Overseer.revertChanges() refuses a `revertFrom` before this message: the
+   * and no longer delivered. Present -- with no `op` and no `pins`, a boundary that proposes
+   * nothing -- even when the chat had nothing to convert, because the boundary itself is
+   * load-bearing (ChatCodeBase.epoch points at it). Overseer.revertChanges() refuses a
+   * `revertFrom` before this message: the
    * conversion op is all-or-nothing, so partial reverts of legacy history are impossible by
    * construction.
    */
@@ -2888,9 +2889,9 @@ export type AiToolCall = {
    * agent observed code at a particular version, the server stayed at that version for the rest
    * of the thread, to avoid confusing the agent. ("changes" messages record the base version of
    * their code updates the same way; see AiChatMessageBody.) The git-storage migration converted
-   * every chat to a commit-pinned op stream (see ChatCodeBase) and replay elides pre-conversion
-   * reads rather than recomputing them, so this stamp survives only as stored data on old
-   * messages and drives nothing.
+   * every chat to a commit-pinned op stream (see ChatCodeBase); the stamp's *presence* is what
+   * marks a read as pre-conversion, which replay elides rather than recomputes (the content it
+   * observed lived in the retired representation). The value itself drives nothing.
    */
   observedCodeVersion?: number;
 

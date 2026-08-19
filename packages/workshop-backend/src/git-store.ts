@@ -525,8 +525,8 @@ const LINE_BOUNDARY = /(?<=\n)/;
 
 /**
  * Split `text` into lines, each keeping its trailing "\n", so `lines.join("") === text` always
- * holds. Both consumers -- the diff3 merge below and applyTextEdit's minimal diff
- * (yjs-files.ts) -- reassemble content from the pieces they compute over, so the split must be
+ * holds. The consumer -- the diff3 merge below -- reassembles content from the pieces it
+ * computes over, so the split must be
  * lossless above all: only "\n" ends a line, and a bare "\r" (or U+2028/U+2029) stays *inside*
  * its line rather than acting as a boundary, which merely makes diffs and merges of such exotic
  * line endings coarser -- whereas the obvious `/^.*$/m`-style split treats those characters as

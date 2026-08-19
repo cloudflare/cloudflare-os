@@ -834,6 +834,57 @@ describe("revert and draft discard", () => {
     expect(codeBase.pins).toEqual([]);
     expect(codeBase).toMatchObject({ generation: 2, revision: 0 });
   }));
+
+  it("refuses a revert from before the conversion boundary, but allows one at it",
+      () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+
+    // Seed the shape the git-storage migration leaves behind (see git-migration.ts): a
+    // pre-conversion message, then the conversion boundary carrying the collapsed legacy edits
+    // (a pinned gadget's edit plus a carried pending creation, whose record the migration
+    // re-stamped onto the boundary), mirrored into codeBase.
+    impl.storage.chats.put({
+      chatId: 1, sequence: impl.nextChatSequence(1), timestamp: impl.getChatTimestamp(),
+      author: USER, type: "message", message: "legacy history",
+    });
+    let boundary = impl.nextChatSequence(1);
+    impl.storage.chats.put({
+      chatId: 1, sequence: boundary, timestamp: impl.getChatTimestamp(), author: USER,
+      type: "changes", conversionBoundary: true,
+      op: {
+        "1": [["a.txt", { set: "one\nlegacy\n" }]],
+        "2": [["mine.js", { set: "mine\n" }]],
+      },
+      pins: [{ gadgetId: 1, baseCommit: c1 }],
+      createdGadgets: [{ gadgetId: 2, title: "Mine", bindingName: "MINE" }],
+    });
+    impl.storage.gadgets.put({
+      id: 2, title: "Mine", created: new Date(0), bindingName: "MINE", bindings: {},
+      pending: { chatId: 1, sequence: boundary },
+    });
+    let meta = impl.storage.chatMeta.get(1)!;
+    meta.codeBase = {
+      pins: [{ gadgetId: 1, baseCommit: c1, mergedCommit: c1 }],
+      generation: 0, epoch: boundary, revision: 0,
+    };
+    impl.storage.chatMeta.put(meta);
+
+    // The boundary's op is all-or-nothing: a revert cannot start below it.
+    await expect(impl.revertChanges(1, boundary - 1, USER))
+        .rejects.toThrow(/before this chat's conversion/);
+
+    // Reverting *at* the boundary discards everything the conversion carried over, together:
+    // the pin rolls back, the content empties, and the carried creation is rejected (its
+    // re-stamped record falls in the reverted range) instead of lingering content-less.
+    await impl.revertChanges(1, boundary, USER);
+    let codeBase = impl.storage.chatMeta.get(1)!.codeBase!;
+    expect(codeBase.pins).toEqual([]);
+    expect(codeBase).toMatchObject({ generation: 1, revision: 0 });
+    expect(await gadgetContent(impl, 1, 1)).toEqual({});
+    expect(impl.storage.gadgets.get(2)).toBeUndefined();
+  }));
 });
 
 describe("updateChatFromMainline", () => {

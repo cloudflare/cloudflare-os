@@ -104,7 +104,13 @@ export function foldProposedChanges(
   let proposed = [...seed];
   for (let message of messages) {
     if (message.type === "changes") {
-      proposed.push({sequence: message.sequence, op: message.op});
+      // An empty conversion boundary (see AiChatMessageBody.conversionBoundary) proposes
+      // nothing: the chat had no uncommitted legacy content to convert, and the boundary alone
+      // must not make a read-only migrated chat show proposed changes. A boundary *with* an op
+      // is an ordinary proposed batch.
+      if (!message.conversionBoundary || message.op !== undefined) {
+        proposed.push({sequence: message.sequence, op: message.op});
+      }
     } else if (message.type === "merge") {
       while (proposed.length > 0 && proposed[0].sequence <= message.mergeThrough) {
         proposed.shift();

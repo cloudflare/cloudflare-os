@@ -2,16 +2,16 @@ import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 import { keyString } from "@gadgets/typed-storage";
 import type {
-  AiChatAuthorInfo, AiChatMessage, BlueprintMetadata,
+  AiChatAuthorInfo, AiChatMessage, BlueprintMetadata, ChatCodeBase,
 } from "@gadgets/workshop-shared/api";
+import { applyCodeOp, type CodeContent } from "@gadgets/workshop-shared/code-op";
 import { makeMockStorage } from "./mock-storage";
 import { makeOverseerStorage } from "../src/overseer";
 import { GitStore } from "../src/git-store";
-import { readDocFiles } from "../src/yjs-files";
 import {
   HISTORY_COMMIT_GAP_MS, migrateCodeLogToGit, type GitMigrationHost,
 } from "../src/git-migration";
-import { legacyChatBaseVersion } from "../src/agent-compaction";
+import { foldProposedChanges, legacyChatBaseVersion } from "../src/agent-compaction";
 
 const USER: AiChatAuthorInfo = { type: "user", id: "alice@example.com", name: "Alice" };
 const AGENT: AiChatAuthorInfo = { type: "agent", id: "some-model", name: "Agent" };
@@ -24,7 +24,8 @@ const MINUTE = 60_000;
  * Builds a synthetic pre-git-storage workspace on mock storage: a legacy code log written the
  * way the old updateCode() wrote it (incremental V2 updates against one workspace-wide doc,
  * versions drawn from the shared change counter -- so `skipVersions` models the gaps that
- * non-code changes left), plus gadget records, chats, and blueprint records.
+ * non-code changes left), plus gadget records, chats (with legacy Yjs-update messages and
+ * drafts), and blueprint records.
  */
 class LegacyWorkspace {
   storage = makeOverseerStorage(makeMockStorage());
@@ -33,7 +34,6 @@ class LegacyWorkspace {
   #doc = new Y.Doc();
   #version = 0;
   #updates: Uint8Array[] = [];
-  #sequences = new Map<number, number>();
   #timestamp = 0;
 
   constructor() {
@@ -71,9 +71,12 @@ class LegacyWorkspace {
     return doc;
   }
 
-  addGadget(id: number, bindingName: string): void {
-    this.storage.gadgets.put(
-        { id, title: bindingName, created: new Date(T0), bindingName, bindings: {} });
+  addGadget(id: number, bindingName: string,
+            pending?: { chatId: number, sequence?: number }): void {
+    this.storage.gadgets.put({
+      id, title: bindingName, created: new Date(T0), bindingName, bindings: {},
+      ...(pending !== undefined ? { pending } : {}),
+    });
   }
 
   addChat(id: number): void {
@@ -82,14 +85,24 @@ class LegacyWorkspace {
   }
 
   addMessage(chatId: number, author: AiChatAuthorInfo, body: object): number {
-    let sequence = this.#sequences.get(chatId) ?? 0;
-    this.#sequences.set(chatId, sequence + 1);
-    // Legacy bodies (e.g. merge messages without `commits`) are exactly what the migration
-    // consumes, so this deliberately bypasses the current wire type.
+    // Sequences come from the real counter collection, exactly as the legacy system allocated
+    // them (the migration's conversion message continues the same counter).
+    let sequence = this.storage.nextChatSequences.get(chatId)?.nextSequence ?? 0;
+    this.storage.nextChatSequences.put({ chatId, nextSequence: sequence + 1 });
+    // Legacy bodies (e.g. merge messages without `commits`, changes messages carrying a retired
+    // Yjs `update`) are exactly what the migration consumes, so this deliberately bypasses the
+    // current wire type.
     this.storage.chats.put({
       chatId, sequence, timestamp: new Date(T0 + ++this.#timestamp), author, ...body,
     } as AiChatMessage);
     return sequence;
+  }
+
+  /** Records a legacy live draft (see ChatDraftUpdateRecord in overseer.ts). */
+  addDraft(chatId: number, update: Uint8Array): void {
+    this.storage.chatDraftUpdates.put({
+      chatId, timestamp: new Date(T0 + ++this.#timestamp), author: USER, update,
+    });
   }
 
   host(defaultGadgetId?: number): GitMigrationHost {
@@ -105,12 +118,40 @@ class LegacyWorkspace {
             : this.storage.chatCompactions.get(
                 `${keyString(chatId)}.${keyString(compactedTo)}`);
       },
+      // The shared counter keeps conversion timestamps unique against every message's (the
+      // chats collection's byTimestamp index is unique), like the real getChatTimestamp().
+      getChatTimestamp: () => new Date(T0 + ++this.#timestamp),
     };
   }
 
   mergeMessages(chatId: number): Extract<AiChatMessage, { type: "merge" }>[] {
     return [...this.storage.chats.list({ prefix: `${keyString(chatId)}.` })]
         .filter(msg => msg.type === "merge");
+  }
+
+  messages(chatId: number): AiChatMessage[] {
+    return [...this.storage.chats.list({ prefix: `${keyString(chatId)}.` })];
+  }
+
+  conversionMessage(chatId: number): Extract<AiChatMessage, { type: "changes" }> {
+    let found = this.messages(chatId).filter(
+        msg => msg.type === "changes" && msg.conversionBoundary);
+    expect(found).toHaveLength(1);
+    return found[0] as Extract<AiChatMessage, { type: "changes" }>;
+  }
+
+  codeBase(chatId: number): ChatCodeBase | undefined {
+    return this.storage.chatMeta.get(chatId)?.codeBase;
+  }
+
+  /** The chat's converted content: the pin bases with the conversion op applied on top. */
+  async convertedContent(chatId: number): Promise<CodeContent> {
+    let conversion = this.conversionMessage(chatId);
+    let content: CodeContent = new Map();
+    for (let pin of conversion.pins ?? []) {
+      content.set(pin.gadgetId, await this.gitStore.readCommitFiles(pin.baseCommit));
+    }
+    return conversion.op !== undefined ? applyCodeOp(content, conversion.op) : content;
   }
 }
 
@@ -178,14 +219,15 @@ describe("migrateCodeLogToGit", () => {
     expect(merges[1].commits).toEqual([{ gadgetId: 10, commitId: head }]);
     expect(merges[2].commits).toEqual([]);
 
-    // The chat's anchor is its highest referenced version (7), which floors to v4's commit. The
-    // `legacy` flag marks its Yjs base as the retired code log until its first merge graduates
-    // it; generation starts at 0 like any fresh code base.
-    expect(ws.storage.chatMeta.get(1)!.codeBase).toEqual({
-      legacy: true,
-      generation: 0,
-      gadgets: [{ gadgetId: 10, filesRoot: "10", mergedCommit: head }],
-    });
+    // The chat's every change was merged, so its flatten matches its anchor (its highest
+    // referenced version, 7, floored to v4): nothing to convert. The boundary message is still
+    // written -- the epoch points at it -- but carries no op and no pins, and proposes nothing.
+    let conversion = ws.conversionMessage(1);
+    expect(conversion.op).toBeUndefined();
+    expect(conversion.pins).toBeUndefined();
+    expect(ws.codeBase(1)).toEqual(
+        { pins: [], generation: 0, epoch: conversion.sequence, revision: 0 });
+    expect(ws.storage.chatMeta.get(1)!.hasProposedChanges).toBeUndefined();
   });
 
   it("batches standalone-edit bursts by one-hour gaps", async () => {
@@ -236,60 +278,186 @@ describe("migrateCodeLogToGit", () => {
     expect(merges[0].commits).toEqual([{ gadgetId: 30, commitId: left }]);
     expect(merges[1].commits).toEqual([{ gadgetId: 40, commitId: right }]);
 
-    // The chat merged both, so it pins both gadgets -- each at its own chain's floor.
-    expect(ws.storage.chatMeta.get(1)!.codeBase!.gadgets).toEqual([
-      { gadgetId: 30, filesRoot: "30", mergedCommit: left },
-      { gadgetId: 40, filesRoot: "40", mergedCommit: right },
-    ]);
+    // The chat's own merges are all in its anchor: nothing uncommitted, so no pins.
+    expect(ws.codeBase(1)!.pins).toEqual([]);
   });
 
-  it("pins live chats at their anchored versions", async () => {
+  it("converts uncommitted chat edits into a conversion op pinned at the anchor", async () => {
     let ws = new LegacyWorkspace();
     ws.addGadget(50, "APP");
-    ws.addGadget(55, "LATER");   // gains its first content only after chat 5's anchor
+    ws.addGadget(55, "OTHER");  // committed but untouched by the chat: must stay unpinned
     ws.addChat(9);   // the chat whose merges advanced mainline
-    ws.addChat(5);   // a live chat anchored mid-history
-    ws.addChat(6);   // a live chat with no version references at all
-    ws.addChat(7);   // a commit-pinned chat: the migration must not touch it
+    ws.addChat(5);   // the live chat under test
 
-    ws.edit(T0 + 1 * MINUTE, doc => setFile(doc, "50", "app.js", "one\n"));              // v2
-    ws.addMessage(9, USER, { type: "merge", mergeThrough: 0, version: 2 });
-    ws.addMessage(5, AGENT, { type: "changes", observedCodeVersion: 2 });
-    ws.edit(T0 + 2 * MINUTE, doc => setFile(doc, "50", "app.js", "two\n"));              // v3
-    ws.edit(T0 + 3 * MINUTE, doc => setFile(doc, "55", "later.js", "l\n"));              // v4
-    ws.addMessage(9, USER, { type: "merge", mergeThrough: 1, version: 4 });
+    ws.edit(T0 + 1 * MINUTE, doc => setFile(doc, "50", "app.js", "base\n"));             // v2
+    ws.edit(T0 + 2 * MINUTE, doc => setFile(doc, "55", "other.js", "o\n"));              // v3
+    ws.addMessage(9, USER, { type: "merge", mergeThrough: 0, version: 3 });
 
-    let seededBase = { gadgets: [], generation: 2, epoch: 5 };
-    let seeded = ws.storage.chatMeta.get(7)!;
-    seeded.codeBase = seededBase;
-    ws.storage.chatMeta.put(seeded);
+    // The chat's agent edits app.js against version 3, still unmerged at migration time.
+    let update = captureEdit(ws.docAt(3), doc =>
+        doc.getMap<Y.Text>("50").get("app.js")!.insert(5, "agent\n"));
+    ws.addMessage(5, AGENT, { type: "changes", update, observedCodeVersion: 3 });
 
     await migrateCodeLogToGit(ws.host());
 
+    // The chat pins only the gadget it touched, base = merged = the anchor (v3) commit, which
+    // is the gadget's head here.
     let head = ws.storage.gadgets.get(50)!.commitId!;
-    let log = await ws.gitStore.readCommitLog(head);
-    expect(log.length).toBe(3);  // empty root, v2, v3+v4 batch
+    expect(ws.codeBase(5)!.pins).toEqual(
+        [{ gadgetId: 50, baseCommit: head, mergedCommit: head }]);
+    let conversion = ws.conversionMessage(5);
+    expect(conversion.pins).toEqual([{ gadgetId: 50, baseCommit: head }]);
+    expect(ws.codeBase(5)).toMatchObject(
+        { generation: 0, epoch: conversion.sequence, revision: 0 });
+    expect(ws.storage.chatMeta.get(5)!.hasProposedChanges).toBe(true);
 
-    let pinFor = (chatId: number, gadgetId: number) =>
-        ws.storage.chatMeta.get(chatId)!.codeBase!.gadgets
-            .find(pin => pin.gadgetId === gadgetId)!;
+    // The op re-creates the chat's uncommitted content on top of the pinned tree.
+    expect(await ws.convertedContent(5)).toEqual(new Map([
+      [50, new Map([["app.js", "base\nagent\n"]])],
+    ]));
 
-    // Chat 5 saw version 2; chat 6 never referenced a version, so it anchors at the tip; chat 9
-    // merged through the tip. The commit-seeded chat's codeBase is untouched.
-    expect(pinFor(5, 50).mergedCommit).toBe(log[1].oid);
-    expect(pinFor(6, 50).mergedCommit).toBe(head);
-    expect(pinFor(9, 50).mergedCommit).toBe(head);
-    expect(ws.storage.chatMeta.get(7)!.codeBase).toEqual(seededBase);
+    // A non-empty conversion op is one proposed batch (on top of the legacy op-less batch that
+    // recorded the original update).
+    let proposed = foldProposedChanges(ws.messages(5));
+    expect(proposed.map(batch => batch.op !== undefined)).toEqual([false, true]);
+  });
 
-    // Gadget 55 had no content at chat 5's anchor, so the pin sits at its empty root -- the
-    // doc's exact state for that root there -- arming the accept gate instead of leaving the
-    // gadget unpinned (which would wedge the chat once mainline moved on it).
-    let laterHead = ws.storage.gadgets.get(55)!.commitId!;
-    let laterLog = await ws.gitStore.readCommitLog(laterHead);
-    expect(laterLog.length).toBe(2);
-    expect(pinFor(5, 55).mergedCommit).toBe(laterLog[1].oid);
-    expect(await ws.gitStore.readCommitFiles(laterLog[1].oid)).toEqual(new Map());
-    expect(pinFor(6, 55).mergedCommit).toBe(laterHead);
+  it("converts a read-only chat to an empty boundary that proposes nothing", async () => {
+    let ws = new LegacyWorkspace();
+    ws.addGadget(10, "APP");
+    ws.addChat(1);
+    ws.edit(T0 + 1 * MINUTE, doc => setFile(doc, "10", "app.js", "hello\n"));            // v2
+    ws.addMessage(1, USER, { type: "message", message: "what does this code do?" });
+    ws.addMessage(1, AGENT, { type: "message", message: "it greets", toolCalls: [
+      { toolCallId: "t1", toolName: "readFile", input: { filename: "app.js" },
+        observedCodeVersion: 2 },
+    ] });
+
+    await migrateCodeLogToGit(ws.host());
+
+    // The boundary is written even with nothing to convert -- the epoch points at it, and
+    // replay's elision of the pre-conversion read keys on it -- but it proposes nothing.
+    let conversion = ws.conversionMessage(1);
+    expect(conversion.op).toBeUndefined();
+    expect(conversion.pins).toBeUndefined();
+    expect(ws.codeBase(1)).toEqual(
+        { pins: [], generation: 0, epoch: conversion.sequence, revision: 0 });
+    expect(ws.storage.chatMeta.get(1)!.hasProposedChanges).toBeUndefined();
+    expect(foldProposedChanges(ws.messages(1))).toEqual([]);
+  });
+
+  it("folds outstanding drafts into the conversion op and deletes them", async () => {
+    let ws = new LegacyWorkspace();
+    ws.addGadget(10, "APP");
+    ws.addChat(1);
+    ws.edit(T0 + 1 * MINUTE, doc => setFile(doc, "10", "app.js", "hello\n"));            // v2
+
+    // An agent edit recorded as a message, then a user draft typed on top of it, never
+    // materialized.
+    let base = ws.docAt(2);
+    let agentUpdate = captureEdit(base, doc =>
+        doc.getMap<Y.Text>("10").get("app.js")!.insert(6, "agent\n"));
+    ws.addMessage(1, AGENT, { type: "changes", update: agentUpdate, observedCodeVersion: 2 });
+    ws.addDraft(1, captureEdit(base, doc =>
+        doc.getMap<Y.Text>("10").get("app.js")!.insert(12, "draft\n")));
+
+    await migrateCodeLogToGit(ws.host());
+
+    expect(await ws.convertedContent(1)).toEqual(new Map([
+      [10, new Map([["app.js", "hello\nagent\ndraft\n"]])],
+    ]));
+    expect([...ws.storage.chatDraftUpdates.list()]).toEqual([]);
+  });
+
+  it("skips reverted legacy updates, like the legacy doc construction did", async () => {
+    let ws = new LegacyWorkspace();
+    ws.addGadget(10, "APP");
+    ws.addChat(1);
+    ws.edit(T0 + 1 * MINUTE, doc => setFile(doc, "10", "app.js", "hello\n"));            // v2
+
+    let base = ws.docAt(2);
+    let reverted = ws.addMessage(1, AGENT, {
+      type: "changes", observedCodeVersion: 2,
+      update: captureEdit(base, doc =>
+          doc.getMap<Y.Text>("10").get("app.js")!.insert(6, "rejected\n")),
+    });
+    ws.addMessage(1, USER, { type: "revert", revertFrom: reverted });
+    // A surviving edit built on a doc that never saw the reverted one.
+    let survivor = ws.docAt(2);
+    ws.addMessage(1, AGENT, {
+      type: "changes", observedCodeVersion: 2,
+      update: captureEdit(survivor, doc =>
+          doc.getMap<Y.Text>("10").get("app.js")!.insert(0, "kept\n")),
+    });
+
+    await migrateCodeLogToGit(ws.host());
+
+    expect(await ws.convertedContent(1)).toEqual(new Map([
+      [10, new Map([["app.js", "kept\nhello\n"]])],
+    ]));
+  });
+
+  it("carries a pending gadget's files as plain sets, re-stamping its creation", async () => {
+    let ws = new LegacyWorkspace();
+    ws.addGadget(10, "APP");
+    ws.addGadget(60, "MINE", { chatId: 1, sequence: 0 });  // pending in the chat under test
+    ws.addGadget(70, "THEIRS", { chatId: 2 });   // pending in another chat: not this chat's
+    ws.addChat(1);
+    ws.addChat(2);
+
+    // The pending gadget's files exist only in the chat's proposed updates.
+    ws.addMessage(1, AGENT, {
+      type: "changes", observedCodeVersion: 1,
+      update: captureEdit(ws.docAt(1), doc => setFile(doc, "60", "mine.js", "mine\n")),
+      createdGadgets: [{ gadgetId: 60, title: "MINE", bindingName: "MINE" }],
+    });
+
+    await migrateCodeLogToGit(ws.host());
+
+    // No pin for the pending gadget (it has no head to pin); its content rides the op as sets.
+    expect(ws.codeBase(1)!.pins).toEqual([]);
+    let conversion = ws.conversionMessage(1);
+    expect(conversion.pins).toBeUndefined();
+    expect(conversion.op).toEqual({ "60": [["mine.js", { set: "mine\n" }]] });
+    // The creation is re-recorded on the boundary and the record re-stamped to it, so accept
+    // and revert treat creation and content as one (a revert at the boundary rejects the
+    // creation rather than stranding a content-less pending gadget).
+    expect(conversion.createdGadgets).toEqual(
+        [{ gadgetId: 60, title: "MINE", bindingName: "MINE" }]);
+    expect(ws.storage.gadgets.get(60)!.pending).toEqual(
+        { chatId: 1, sequence: conversion.sequence });
+    // Pending gadgets get no synthesized head; the permanent gadget got its empty root.
+    expect(ws.storage.gadgets.get(60)!.commitId).toBeUndefined();
+    expect(ws.storage.gadgets.get(10)!.commitId).toBeDefined();
+    // The other chat's pending gadget is not the converting chat's to carry.
+    expect(ws.codeBase(2)!.pins).toEqual([]);
+    expect(ws.conversionMessage(2).op).toBeUndefined();
+    expect(ws.storage.gadgets.get(70)!.pending).toEqual({ chatId: 2 });
+  });
+
+  it("is deterministic: the same log converts to the same op", async () => {
+    let build = () => {
+      let ws = new LegacyWorkspace();
+      ws.addGadget(10, "APP");
+      ws.addChat(1);
+      ws.edit(T0 + 1 * MINUTE, doc => setFile(doc, "10", "app.js", "one\ntwo\nthree\n"));
+      let base = ws.docAt(2);
+      ws.addMessage(1, AGENT, {
+        type: "changes", observedCodeVersion: 2,
+        update: captureEdit(base, doc => {
+          setFile(doc, "10", "new.js", "fresh\n");
+          doc.getMap<Y.Text>("10").get("app.js")!.insert(4, "1.5\n");
+        }),
+      });
+      return ws;
+    };
+    let a = build();
+    let b = build();
+    await migrateCodeLogToGit(a.host());
+    await migrateCodeLogToGit(b.host());
+    expect(a.conversionMessage(1).op).toBeDefined();
+    expect(a.conversionMessage(1).op).toEqual(b.conversionMessage(1).op);
+    expect(a.codeBase(1)).toEqual(b.codeBase(1));
   });
 
   it("rewrites blueprint records to commits, including deleted gadgets'", async () => {
@@ -337,8 +505,8 @@ describe("migrateCodeLogToGit", () => {
     // The hazard: a user draft materialized while mainline was ahead of the agent's version
     // lock carries a later stamp, and its update can reference Yjs items the lower-anchored doc
     // lacks -- Yjs parks them as pending structs and the edits silently vanish from flattened
-    // content. The anchor rule must pick the *max* referenced version so the chat's accept
-    // commits those edits.
+    // content. The anchor rule must pick the *max* referenced version so the conversion op
+    // carries both edits.
     let ws = new LegacyWorkspace();
     ws.addGadget(80, "APP");
     ws.addChat(90);   // another chat, whose merge advances mainline
@@ -365,8 +533,7 @@ describe("migrateCodeLogToGit", () => {
     ws.addMessage(91, USER, { type: "changes", update: userUpdate, observedCodeVersion: 3 });
 
     // The anchor is the max referenced version, not the agent's first stamp.
-    let messages = [...ws.storage.chats.list({ prefix: `${keyString(91)}.` })];
-    expect(legacyChatBaseVersion(undefined, messages)).toBe(3);
+    expect(legacyChatBaseVersion(undefined, ws.messages(91))).toBe(3);
 
     await migrateCodeLogToGit(ws.host());
 
@@ -376,45 +543,49 @@ describe("migrateCodeLogToGit", () => {
       ["app.js", "base\n"],
       ["new.js", "fresh\n"],
     ]));
-    expect(ws.storage.chatMeta.get(91)!.codeBase!.gadgets)
-        .toEqual([{ gadgetId: 80, filesRoot: "80", mergedCommit: head }]);
+    expect(ws.codeBase(91)!.pins).toEqual(
+        [{ gadgetId: 80, baseCommit: head, mergedCommit: head }]);
 
-    // ...and the doc base anchored there keeps both edits, where the agent's lower lock would
-    // have dropped the user's (the pending-structs hazard this rule exists to prevent).
-    let anchored = ws.docAt(3);
-    Y.applyUpdateV2(anchored, agentUpdate);
-    Y.applyUpdateV2(anchored, userUpdate);
-    expect(readDocFiles(anchored, "80")).toEqual(new Map([
-      ["app.js", "base\nagent\n"],
-      ["new.js", "fresh\nuser\n"],
+    // ...and the conversion anchored there keeps both edits, where the agent's lower lock
+    // would have dropped the user's (the pending-structs hazard this rule exists to prevent).
+    expect(await ws.convertedContent(91)).toEqual(new Map([
+      [80, new Map([["app.js", "base\nagent\n"], ["new.js", "fresh\nuser\n"]])],
     ]));
-    let underAnchored = ws.docAt(2);
-    Y.applyUpdateV2(underAnchored, agentUpdate);
-    Y.applyUpdateV2(underAnchored, userUpdate);
-    expect(readDocFiles(underAnchored, "80").get("new.js")).toBeUndefined();
   });
 
-  it("is re-runnable, converging on the same commits", async () => {
+  it("is re-runnable, converging on the same commits and a single conversion", async () => {
     let ws = new LegacyWorkspace();
     ws.addGadget(10, "APP");
     ws.addChat(1);
     ws.edit(T0 + 1 * MINUTE, doc => setFile(doc, "10", "app.js", "hello\n"));
     ws.addMessage(1, USER, { type: "merge", mergeThrough: 0, version: 2 });
+    ws.addMessage(1, AGENT, {
+      type: "changes", observedCodeVersion: 2,
+      update: captureEdit(ws.docAt(2), doc =>
+          doc.getMap<Y.Text>("10").get("app.js")!.insert(6, "more\n")),
+    });
 
     let first = await migrateCodeLogToGit(ws.host());
     let head = ws.storage.gadgets.get(10)!.commitId!;
+    let converted = { message: ws.conversionMessage(1), codeBase: ws.codeBase(1) };
     let second = await migrateCodeLogToGit(ws.host());
 
     expect(second.commits).toBe(first.commits);
     expect(ws.storage.gadgets.get(10)!.commitId).toBe(head);
     expect(ws.mergeMessages(1)[0].commits).toEqual([{ gadgetId: 10, commitId: head }]);
+    // The chat is converted exactly once (a codeBase marks it done).
+    expect(ws.conversionMessage(1)).toEqual(converted.message);
+    expect(ws.codeBase(1)).toEqual(converted.codeBase);
   });
 
-  it("gives a gadget the log never gave content an empty-tree head", async () => {
+  it("pins an edit to a never-committed gadget at its empty-tree head", async () => {
     let ws = new LegacyWorkspace();
     ws.addGadget(10, "APP");
     ws.addChat(1);
-    ws.addMessage(1, AGENT, { type: "changes", observedCodeVersion: 1 });
+    ws.addMessage(1, AGENT, {
+      type: "changes", observedCodeVersion: 1,
+      update: captureEdit(ws.docAt(1), doc => setFile(doc, "10", "app.js", "fresh\n")),
+    });
 
     let { commits } = await migrateCodeLogToGit(ws.host());
     expect(commits).toBe(1);
@@ -425,11 +596,14 @@ describe("migrateCodeLogToGit", () => {
     expect(await ws.gitStore.readCommitFiles(head)).toEqual(new Map());
     expect((await ws.gitStore.readCommitLog(head)).length).toBe(1);
 
-    // ...and the legacy chat pins it there, arming the accept gate: edits to the empty gadget
-    // fast-forward from it, and a first commit landing from another chat reads as ordinary
-    // staleness rather than wedging the chat.
-    expect(ws.storage.chatMeta.get(1)!.codeBase!.gadgets).toEqual([
-      { gadgetId: 10, filesRoot: "10", mergedCommit: head }]);
+    // ...and the chat's uncommitted edit pins there, arming the accept gate: the accept
+    // fast-forwards from the empty tree, and a first commit landing from another chat reads as
+    // ordinary staleness rather than wedging the chat.
+    expect(ws.codeBase(1)!.pins).toEqual(
+        [{ gadgetId: 10, baseCommit: head, mergedCommit: head }]);
+    expect(await ws.convertedContent(1)).toEqual(new Map([
+      [10, new Map([["app.js", "fresh\n"]])],
+    ]));
   });
 });
 

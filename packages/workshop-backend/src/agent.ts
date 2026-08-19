@@ -1874,11 +1874,17 @@ export async function runAgent(
           }
         }
 
+        // A migrated chat's conversion boundary acts as an epoch boundary that re-seeds at
+        // (pin bases + this op): everything before it is text-only history whose code payloads
+        // are unrecoverable (pre-conversion reads were elided above). The reset applies *even
+        // when the boundary itself was reverted* (reverting at the boundary erases the
+        // converted content, not the boundary): pre-conversion writes leave pendingReplayEdits
+        // that no pre-conversion message discharges (none carries an op or watermark), and they
+        // must not leak into the post-boundary epoch. The pre-boundary log contributes no ops
+        // or pins, so the rest of the reset is a no-op either way.
+        if (msg.conversionBoundary) resetSessionEpoch();
+
         if (chatMessageStatus.get(msg.sequence) !== "reverted") {
-          // A migrated chat's conversion boundary acts as an epoch boundary that re-seeds at
-          // (pin bases + this op): everything before it is text-only history whose code
-          // payloads are unrecoverable (pre-conversion reads were elided above).
-          if (msg.conversionBoundary) resetSessionEpoch();
           // Pins this batch establishes enter the content before the op applies (a no-op for
           // gadgets ensureReplayContentForWrite already established early; see there).
           for (let pin of msg.pins ?? []) {
@@ -1886,11 +1892,13 @@ export async function runAgent(
           }
           // A batch with no `op` records only creations/binding additions; there is nothing to
           // apply to the session content (and no diff), but user-authored creations/additions
-          // are still surfaced as observations below.
+          // are still surfaced as observations below. A conversion boundary's op is not user
+          // activity -- it re-records content from before the boundary, which the model already
+          // saw (or wrote) -- so it applies without an observation.
           let diff = msg.op !== undefined
-              ? applyReplayedOp(msg.op, msg.author.type === "user")
+              ? applyReplayedOp(msg.op, msg.author.type === "user" && !msg.conversionBoundary)
               : undefined;
-          if (msg.author.type === "user") {
+          if (msg.author.type === "user" && !msg.conversionBoundary) {
             // Surface everything the user did in this batch as one synthetic observation:
             // gadgets they created and bindings they added from the workspace UI
             // (agent-initiated creations/additions need no note -- the model already sees its
@@ -1907,6 +1915,14 @@ export async function runAgent(
             }
             if (diff !== undefined) {
               observations.push(diff);
+            } else if ((msg as {update?: Uint8Array}).update !== undefined) {
+              // A pre-conversion batch (see AiChatMessageBody.conversionBoundary): its retired
+              // Yjs payload -- still on the stored record -- can't be applied or diffed, so the
+              // user's edits get a generic note instead of a diff. The conversion boundary
+              // later in the log re-establishes the content itself.
+              observations.push(
+                  "The user edited the gadget code. (The specific changes are no longer " +
+                  "available; read the files to see their current content.)");
             }
             if (observations.length > 0) {
               let toolCallId = `synthetic_${msg.sequence}`;

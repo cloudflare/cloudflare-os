@@ -921,8 +921,8 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
  * One incremental update in the workspace-wide Yjs code log (the `code` and `snapshots`
  * collections). Formerly the public `CodeUpdate` wire type; the git-storage transition removed it
  * from the API along with `subscribeToCode()` (mainline code becomes commits; see git-store.ts),
- * leaving it as the internal record type of the log, which ultimately remains only as the
- * read-only CRDT base for chats that predate commit-seeded docs.
+ * leaving it as the internal record type of the retired log, whose one remaining reader is the
+ * git-storage migration's replay (git-migration.ts).
  */
 type CodeUpdate = {
   /** Version number of the code AFTER this update has been applied. */
@@ -962,8 +962,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //   2 = git-backed code: mainline code lives in `gitObjects` as commits synthesized from
       //       the legacy `code` log (see git-migration.ts); gadget records carry a `commitId`,
       //       blueprint records reference commits, historical merge messages carry `commits`,
-      //       and legacy chats' metadata pins mergedCommit per gadget. The `code`/`snapshots`
-      //       collections are read-only from this version on.
+      //       and every live chat was converted to the commit-pinned op stream (a
+      //       `conversionBoundary` changes message plus a `codeBase`). The `code`/`snapshots`
+      //       collections are dead stored data from this version on.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1022,9 +1023,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         primaryKey: "version"
       }),
 
-      // READ-ONLY LEGACY: "snapshots" of the code log, each an encoded update "from zero", so
-      // the migration's replay needn't scan the whole `code` table. No new snapshots are
-      // created.
+      // READ-ONLY LEGACY: "snapshots" of the code log, each an encoded update "from zero",
+      // formerly a replay optimization. Nothing reads or writes them anymore (the migration's
+      // single replay scans `code` itself); retained as dead stored data alongside `code` for
+      // one release as rollback insurance, then deleted together.
       snapshots: collection<CodeUpdate>()({
         primaryKey: "version"
       }),
@@ -1146,7 +1148,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       }),
 
       // READ-ONLY LEGACY: pre-git-storage live drafts. Retained only as migration input (the
-      // conversion op folds them in and deletes them); nothing else reads or writes it.
+      // conversion op folds them in and deletes them); nothing else reads or writes it, apart
+      // from deleteChat's defensive sweep.
       chatDraftUpdates: collection<ChatDraftUpdateRecord>()({
         primaryKey(record: ChatDraftUpdateRecord) {
           return `${keyString(record.chatId)}.${keyString(record.timestamp.valueOf())}`;
@@ -1743,6 +1746,7 @@ class OverseerImpl implements AgentHooks {
       defaultGadgetId: this.defaultGadgetId,
       gadgetRootName: (id) => this.gadgetRootName(id),
       getActiveChatCompaction: (chatId) => this.getActiveChatCompaction(chatId),
+      getChatTimestamp: () => this.getChatTimestamp(),
     });
     this.storage.version.put(2);
     this.logger.info("migrated workspace code to git storage", {
@@ -1906,8 +1910,9 @@ class OverseerImpl implements AgentHooks {
     return record;
   }
 
-  // Name of the Y.Doc root map holding the given gadget's files. The default gadget keeps the
-  // legacy unnamed root ""; all others use the decimal workpiece ID.
+  // Name of the legacy Y.Doc root map that held the given gadget's files in the retired
+  // pre-git code log. The default gadget used the unnamed root ""; all others the decimal
+  // workpiece ID. Only the git-storage migration still resolves roots (git-migration.ts).
   gadgetRootName(id: WorkpieceId): string {
     return this.defaultGadgetId === id ? "" : `${id}`;
   }
@@ -1919,15 +1924,14 @@ class OverseerImpl implements AgentHooks {
     return this.defaultGadgetId === id ? "gadget" : `gadget${id}`;
   }
 
-  // Resolve an agent tool's optional workpiece reference to the workpiece's files root. Absent
-  // means the workspace's default gadget; the error when there is none tells the agent how to
-  // proceed. When `mustExist` is set, the gadget must currently exist in the registry (used by
-  // live file tools; history replay omits it so old edits to since-deleted gadgets still resolve
-  // to the right root) and, if `forChatId` is also given, must be visible to that chat -- a gadget
-  // still provisional to some *other* chat is treated as nonexistent (its files exist only in its
-  // own chat's proposed changes).
+  // Resolve an agent tool's optional workpiece reference. Absent means the workspace's default
+  // gadget; the error when there is none tells the agent how to proceed. When `mustExist` is
+  // set, the gadget must currently exist in the registry (used by live file tools; history
+  // replay omits it so old edits to since-deleted gadgets still resolve) and, if `forChatId` is
+  // also given, must be visible to that chat -- a gadget still provisional to some *other* chat
+  // is treated as nonexistent (its files exist only in its own chat's proposed changes).
   resolveWorkpieceRoot(workpieceId?: WorkpieceId, mustExist?: boolean, forChatId?: number)
-      : {workpieceId: WorkpieceId, rootName: string} {
+      : {workpieceId: WorkpieceId} {
     if (workpieceId === undefined && this.defaultGadgetId === undefined) {
       throw new Error(
           "No workpiece was specified, and this workspace has no default gadget. Pass the " +
@@ -1946,7 +1950,7 @@ class OverseerImpl implements AgentHooks {
         throw new Error(`No such gadget: ${id}`);
       }
     }
-    return {workpieceId: id, rootName: this.gadgetRootName(id)};
+    return {workpieceId: id};
   }
 
   // Create a new gadget workpiece with the given title and binding name, no files, and no
@@ -3686,6 +3690,21 @@ class OverseerImpl implements AgentHooks {
         msg.type === "changes" && msg.sequence >= revertFrom &&
         statuses.get(msg.sequence) === undefined;
 
+    // A revert may not start before the chat's conversion boundary (the synthetic message the
+    // git-storage migration wrote; see AiChatMessageBody.conversionBoundary): the boundary's op
+    // collapsed every surviving pre-conversion edit into one batch, so a revertFrom below it
+    // would mark the boundary reverted while claiming to keep some of the legacy edits it
+    // re-recorded -- a partial legacy revert, impossible by construction. Reverting *at* the
+    // boundary (discarding everything the conversion carried over, together) or after it works
+    // normally.
+    let boundary = messages.find(msg => msg.type === "changes" && msg.conversionBoundary);
+    if (boundary !== undefined && revertFrom < boundary.sequence) {
+      throw new Error("Cannot revert to a point before this chat's conversion to git-backed " +
+          "storage: the pre-conversion changes were collapsed into a single batch and can " +
+          "only be reverted together. Revert from the conversion point or a later change " +
+          "instead.");
+    }
+
     // A still-proposed mainline merge (see updateChatFromMainline) cannot be reverted: it
     // advanced the chat's pins to commits whose content arrived in that very update, so erasing
     // the update would leave the pins claiming content the chat no longer has -- and a later
@@ -4372,9 +4391,16 @@ class OverseerImpl implements AgentHooks {
     return content.data;
   }
 
-  // Inline image attachment bytes before sending a chat message to the client.
-  // Non-image attachments are fetched on demand via getChatAttachmentContent().
+  // Prepare a stored chat message for delivery to a client: inline image attachment bytes
+  // (non-image attachments are fetched on demand via getChatAttachmentContent()), and strip the
+  // retired Yjs payload from pre-conversion "changes" messages -- it is kept on disk as
+  // rollback insurance (see git-migration.ts) but nothing can apply it, so it must not ship as
+  // dead weight on the wire (it is not part of the message's API type).
   hydrateChatMessageForClient(msg: AiChatMessage): AiChatMessage {
+    if (msg.type === "changes" && "update" in msg) {
+      let {update: _, ...rest} = msg as AiChatMessage & {update?: Uint8Array};
+      msg = rest as AiChatMessage;
+    }
     if (msg.type !== "message" || !msg.attachments?.length) return msg;
     let attachments = msg.attachments.map((a) => {
       if (!isAllowedChatAttachmentImageMimeType(a.mimeType)) {
@@ -9855,9 +9881,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     let self = this;
     function deliverMessage(record: AiChatMessage) {
-      let delivered = record.type === "message" && record.attachments?.length ?
-          self.impl.hydrateChatMessageForClient(record) : record;
-      subscriber.message(delivered).catch(unsubscribe);
+      subscriber.message(self.impl.hydrateChatMessageForClient(record)).catch(unsubscribe);
     }
 
     let msgSubscriber = {
