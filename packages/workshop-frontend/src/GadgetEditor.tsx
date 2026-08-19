@@ -1216,7 +1216,14 @@ export default function GadgetEditor() {
   }, [overseer])
 
   // ── reload UI when preview branch/code changes ────────────────────────────────
-  useEffect(() => { setUiReloadTrigger(t => t + 1) }, [previewChatId, chatChanges])
+  useEffect(() => {
+    // Every loaded chat has a code snapshot, even when it has no proposed changes. Only a chat
+    // that actually owns the preview should invalidate the iframe; chatId changes themselves
+    // remount GadgetUISession when entering or leaving a preview.
+    if (previewChatId !== undefined && chatChanges?.chatId === previewChatId) {
+      setUiReloadTrigger(t => t + 1)
+    }
+  }, [previewChatId, chatChanges])
 
   // ── user info ─────────────────────────────────────────────────────────────────
   useEffect(() => {
