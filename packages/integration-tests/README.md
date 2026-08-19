@@ -7,11 +7,19 @@ toolkit those tests are built from. Part of `pnpm test`, so CI runs it like any 
 pnpm --filter @gadgets/integration-tests test:run
 ```
 
+`workshop-backend/__integration__` also covers more than one module. It runs in-process under
+`@cloudflare/vitest-pool-workers`, so it reaches Durable Object internals through `cloudflare:test`.
+This package runs out-of-process and reaches only the public Cap'n Web API.
+
 ## The toolkit
 
-Three source-only modules, consumed both by the tests here and by per-vendor suites in repos that
+Four source-only entry points, consumed both by the tests here and by per-vendor suites in repos that
 vendor this one as a submodule:
 
+- **`src/agent-session.ts`** — `AgentSession`, a production-RPC driver for live agent evaluations.
+  It creates a fresh account and workspace, keeps one chat across turns, waits through callback-driven
+  agent restarts, reads complete paginated history, discovers workpieces, and optionally accepts and
+  snapshots source. It owns transport lifecycle only; evaluation semantics stay in the consuming suite.
 - **`src/harness.ts`** — boots `workshop-backend` and any set of gatekeepers as real Workers under
   [`wrangler`'s `createTestHarness()`](https://developers.cloudflare.com/changelog/post/2026-07-21-integration-test-harness/),
   patching their checked-in `wrangler.jsonc` in memory. Parameterised over gatekeepers on purpose: a
@@ -31,6 +39,40 @@ vendor this one as a submodule:
   per-test resource URLs; account labels are allocated for you, so two tests can't pick the same one.
 - **The escape assertion lives in `afterAll`, not `afterEach`** — an `afterEach` fires while sibling
   tests are still running, so it would inspect and clear state they are still using.
+
+## Live agent evaluations
+
+Boot the harness with `enableGadgetExecution: true`; the default is false so existing suites do not
+need a Worker Loader. Configure the Workshop through `patchWorkshop` with the real deployment model
+credentials, then create the driver from the harness URL:
+
+```ts
+const harness = await startHarness({
+  enableGadgetExecution: true,
+  gatekeepers: [],
+  patchWorkshop(config) {
+    config.vars = {
+      ...config.vars,
+      CF_AI_GATEWAY: process.env.CF_AI_GATEWAY,
+      CF_AI_GATEWAY_ACCOUNT_ID: process.env.CF_AI_GATEWAY_ACCOUNT_ID,
+      CF_AI_GATEWAY_API_TOKEN: process.env.CF_AI_GATEWAY_API_TOKEN,
+      CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,google,cloudflare",
+    };
+  },
+});
+
+using session = await AgentSession.create(harness.url, { modelId: "claude-sonnet-5" });
+const first = await session.run("Build a small status page.");
+const accepted = await session.run("Add an incident timeline.", { acceptChanges: true });
+```
+
+`run()` never accepts changes by default. When acceptance is requested it includes the current live
+draft, then returns a Yjs V2 source snapshot keyed by each workpiece's `filesRoot`. Verifiers can use
+`getGadget()` or typed `connectToGadget<T>()`, selecting either the accepted or current chat branch.
+
+The unit suite uses no fake model protocol. A credentialed live evaluation is the end-to-end proof
+for model execution and must be invoked explicitly by its consuming repository; it is not registered
+as a silently skipped test here.
 
 ## The fixture gatekeeper
 
