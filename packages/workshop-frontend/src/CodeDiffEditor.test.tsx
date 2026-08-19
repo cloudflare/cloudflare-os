@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act } from 'react'
+import { StrictMode, act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { EditorView } from '@codemirror/view'
 import type { FileOp } from '@gadgets/workshop-shared/code-op'
 import CodeDiffEditor from './CodeDiffEditor'
 import type { EditSession } from './CodeEditor'
@@ -11,7 +12,9 @@ import { ThemeProvider } from './ThemeContext'
 
 // Mounts the diff editor with a fake EditSession to cover the component wiring: the
 // rAF-coalesced diff recompute, the -N +N pill, the deletion zones, and remote ops flowing
-// into both the document and the diff layer.
+// into both the document and the diff layer. Mounted under StrictMode like the real app
+// (main.tsx): its simulated unmount+remount runs effect cleanups against a component instance
+// that lives on, which is exactly what once wedged the recompute scheduler.
 
 const testGlobal = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
@@ -97,13 +100,15 @@ describe('CodeDiffEditor', () => {
   async function mount(session: FakeSession, original: string | null) {
     await act(async () => {
       root.render(
-        <ThemeProvider>
-          <CodeDiffEditor
-            filename="notes.txt"
-            original={original}
-            session={session}
-          />
-        </ThemeProvider>,
+        <StrictMode>
+          <ThemeProvider>
+            <CodeDiffEditor
+              filename="notes.txt"
+              original={original}
+              session={session}
+            />
+          </ThemeProvider>
+        </StrictMode>,
       )
     })
     await flushFrames()
@@ -116,6 +121,32 @@ describe('CodeDiffEditor', () => {
     expect(container.querySelector('.gadgets-deleted-code-zone')?.textContent).toBe('world')
     expect(container.textContent).toContain('-1')
     expect(container.textContent).toContain('+1')
+  })
+
+  it('re-diffs after locally-authored edits (StrictMode remount must not wedge the rAF)', async () => {
+    const session = new FakeSession('hello\nworld')
+    await mount(session, 'hello\nworld')
+    expect(container.textContent).toContain('Unchanged')
+
+    const view = EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement)
+    expect(view).not.toBeNull()
+    // A user edit: a plain transaction with no remote annotation, replacing line 2.
+    await act(async () => {
+      view!.dispatch({ changes: { from: 6, to: 11, insert: 'there' } })
+    })
+    await flushFrames()
+    expect(session.getText()).toBe('hello\nthere')
+    expect(container.textContent).toContain('-1')
+    expect(container.textContent).toContain('+1')
+    expect(container.querySelector('.gadgets-deleted-code-zone')?.textContent).toBe('world')
+    expect(container.querySelector('.gadgets-diff-line-add')).not.toBeNull()
+
+    // And again: the scheduler must keep working across repeated frames.
+    await act(async () => {
+      view!.dispatch({ changes: { from: view!.state.doc.length, insert: '\nmore' } })
+    })
+    await flushFrames()
+    expect(container.textContent).toContain('+2')
   })
 
   it('folds remote ops into the document and re-diffs', async () => {

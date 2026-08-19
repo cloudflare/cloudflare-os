@@ -184,6 +184,11 @@ export default function CodeDiffEditor({
   useEffect(() => () => {
     if (recomputeRafRef.current !== null) {
       window.cancelAnimationFrame(recomputeRafRef.current)
+      // Clear the id, not just the frame: StrictMode's simulated unmount runs this cleanup and
+      // then remounts the same component instance (refs intact), so a canceled id left behind
+      // would make every future scheduleRecompute() think a frame is still pending -- freezing
+      // the diff at its mount-time state.
+      recomputeRafRef.current = null
     }
   }, [])
 
