@@ -691,7 +691,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
              resetAt: nextUtcMidnightIso() };
   }
 
-  /** DO NOT MAKE PUBLIC -- returns API keys. */
+  /** DO NOT MAKE PUBLIC -- returns API keys. Pure read: call sites replay it across DO resets
+   * via retryOnDoReset, so it must stay free of writes and side effects. */
   async getChatContext(modelId: string | null): Promise<UserChatContext> {
     let gwConfig = getAiGatewayConfig(this.env);
 

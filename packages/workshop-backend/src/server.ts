@@ -28,7 +28,7 @@ import { verifyCfAccessJwt } from "./access.js";
 import { resolveUiFeatureFlags } from "./feature-flags";
 import { serveSiteLogo, SITE_LOGO_PATH } from "./site-logo.js";
 import { createWorkshopLogger } from "./observability";
-import { wrapDoStubForTelemetry } from "./do-retry";
+import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 
 const logger = createWorkshopLogger("workshop.server");
 
@@ -117,7 +117,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   whoami(): Promise<AiChatAuthorInfo> {
-    return this.#user.whoami();
+    // Pure-read delegations retry once across a user-DO reset (see retryOnDoReset); writes never do.
+    return retryOnDoReset(() => this.#user.whoami());
   }
   setOwnDisplayName(name: string): Promise<void> {
     return this.#user.setOwnDisplayName(name);
@@ -126,10 +127,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#user.changePassword(oldHash, newHash);
   }
   hasPasswordLogin(): Promise<boolean> {
-    return this.#user.hasPasswordLogin();
+    return retryOnDoReset(() => this.#user.hasPasswordLogin());
   }
   listModels(): Promise<AiChatAuthorInfo[]> {
-    return this.#user.listModels();
+    return retryOnDoReset(() => this.#user.listModels());
   }
   addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
     return this.#user.addModel(profile, config);
@@ -141,17 +142,17 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#user.setQuickModel(id);
   }
   getQuickModel(): Promise<null | string> {
-    return this.#user.getQuickModel();
+    return retryOnDoReset(() => this.#user.getQuickModel());
   }
 
   getPreferredModel(): Promise<string | null> {
-    return this.#user.getPreferredModel();
+    return retryOnDoReset(() => this.#user.getPreferredModel());
   }
   setPreferredModel(id: string | null): Promise<void> {
     return this.#user.setPreferredModel(id);
   }
   isOnboardingCompleted(): Promise<boolean> {
-    return this.#user.isOnboardingCompleted();
+    return retryOnDoReset(() => this.#user.isOnboardingCompleted());
   }
   completeOnboarding(): Promise<void> {
     return this.#user.completeOnboarding();
@@ -296,7 +297,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
-    return this.#user.listGadgets();
+    return retryOnDoReset(() => this.#user.listGadgets());
   }
 
   listOutputs(): Promise<ListOutputsResult> {
@@ -310,7 +311,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   listGatekeeperVendors(filter?: GatekeeperVendorFilter): Promise<GatekeeperVendorInfo[]> {
-    return this.#user.listGatekeeperVendors(filter);
+    return retryOnDoReset(() => this.#user.listGatekeeperVendors(filter));
   }
 
   connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<{url: string}> {
@@ -322,7 +323,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   listAddableGatekeepers(): Promise<GatekeeperVendorInfo[]> {
-    return this.#user.listAddableGatekeepers();
+    return retryOnDoReset(() => this.#user.listAddableGatekeepers());
   }
 
   provisionAmbientAccount(vendorId: string): Promise<void> {
@@ -354,15 +355,15 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async listOwnBlueprints(): Promise<BlueprintUserSummary[]> {
-    return this.#user.listBlueprints();
+    return retryOnDoReset(() => this.#user.listBlueprints());
   }
 
   async getOwnBlueprint(blueprintId: string): Promise<BlueprintUserSummary | null> {
-    return this.#user.getBlueprint(blueprintId);
+    return retryOnDoReset(() => this.#user.getBlueprint(blueprintId));
   }
 
   async listLibraryBlueprints(): Promise<BlueprintLibrarySummary[]> {
-    return this.#user.listLibraryBlueprints();
+    return retryOnDoReset(() => this.#user.listLibraryBlueprints());
   }
 
   async setBlueprintPinned(blueprintId: string, pinned: boolean): Promise<void> {
@@ -370,7 +371,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async isBlueprintPinned(blueprintId: string): Promise<boolean> {
-    return this.#user.isBlueprintPinned(blueprintId);
+    return retryOnDoReset(() => this.#user.isBlueprintPinned(blueprintId));
   }
 
   async listFeaturedBlueprints(): Promise<BlueprintPublicInfo[]> {
@@ -387,7 +388,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   isBlueprintInLibrary(blueprintId: string): Promise<{ uploaded: boolean } | null> {
-    return this.#user.isBlueprintInLibrary(blueprintId);
+    return retryOnDoReset(() => this.#user.isBlueprintInLibrary(blueprintId));
   }
 
   async importBlueprint(archive: ReadableStream<Uint8Array>): Promise<string> {

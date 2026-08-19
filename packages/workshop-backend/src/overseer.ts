@@ -38,7 +38,7 @@ import { SharingManager, SharingCaller, CollaboratorRecord, ShareKeyRecord } fro
 import { AutoApprovalDrainer } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext, traced } from "./observability";
-import { wrapDoStubForTelemetry } from "./do-retry";
+import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import type { GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
@@ -4498,7 +4498,8 @@ class OverseerImpl implements AgentHooks {
 
   #ownerUserDo() {
     if (!this.ownerId) throw new Error("Workspace is not initialized.");
-    return this.users.get(this.users.idFromString(this.ownerId));
+    return wrapDoStubForTelemetry(
+        this.users.get(this.users.idFromString(this.ownerId)), this.logger);
   }
 
   // Ensure every singleton account the gadget owner has (e.g. the Context Library) is provisioned
@@ -4696,7 +4697,9 @@ class OverseerImpl implements AgentHooks {
       : Promise<{config: AiModelConfig, initiator: AiChatAuthorInfo} | undefined> {
     if (!this.ownerId) return undefined;
     try {
-      let userMeta = await this.#ownerUserDo().getChatContext(null);
+      // Pure read on a fresh-stub getter: safe to retry once across a user-DO reset.
+      let userMeta = await retryOnDoReset(
+          () => this.#ownerUserDo().getChatContext(null), this.logger);
       return userMeta.quickModel
           ? {config: userMeta.quickModel, initiator: userMeta.profile}
           : undefined;
@@ -5685,7 +5688,8 @@ class OverseerImpl implements AgentHooks {
 
   #ownerUserStub() {
     if (!this.ownerId) throw new Error("Workspace has been deleted.");
-    return this.users.get(this.users.idFromString(this.ownerId));
+    return wrapDoStubForTelemetry(
+        this.users.get(this.users.idFromString(this.ownerId)), this.logger);
   }
 
   // Short-TTL cache for the gatekeeper vendor list. The list is derived from static
@@ -5702,7 +5706,8 @@ class OverseerImpl implements AgentHooks {
     if (this.#vendorsCache && this.#vendorsCache.expires > now) {
       return this.#vendorsCache.promise;
     }
-    let promise = this.#ownerUserStub().listGatekeeperVendors();
+    let promise = retryOnDoReset(
+        () => this.#ownerUserStub().listGatekeeperVendors(), this.logger);
     // Don't cache failures: drop the entry so the next call retries.
     promise.catch(() => {
       if (this.#vendorsCache?.promise === promise) this.#vendorsCache = null;
@@ -7407,10 +7412,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async #getClientProfile(): Promise<AiChatAuthorInfo> {
     if (!this.#clientProfilePromise) {
-      this.#clientProfilePromise = this.#clientUser.whoami().catch((err: unknown) => {
-        this.#clientProfilePromise = undefined;
-        throw err;
-      });
+      this.#clientProfilePromise = retryOnDoReset(
+          () => this.#clientUser.whoami(), this.impl.logger)
+          .catch((err: unknown) => {
+            this.#clientProfilePromise = undefined;
+            throw err;
+          });
     }
 
     const profilePromise = this.#clientProfilePromise!;
@@ -7427,7 +7434,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       defaultGadgetId: this.impl.defaultGadgetId,
     };
     if (!this.isOwner) {
-      result.owner = await this.#owner.whoami();
+      result.owner = await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
     }
     return result;
   }
@@ -7448,7 +7455,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     // For collaborators, include owner info.
     if (!this.isOwner) {
-      metadata.owner = await this.#owner.whoami();
+      metadata.owner = await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
     }
 
     let titleSubscriber = {
@@ -7529,7 +7536,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       let taken = new Set(
           [...this.impl.storage.gadgets.list()].map(gadget => gadget.bindingName));
       for (let name of chatNames ?? []) taken.add(name);
-      let userMeta = await this.#clientUser.getChatContext(null);
+      let userMeta = await retryOnDoReset(
+          () => this.#clientUser.getChatContext(null), this.impl.logger);
       if (userMeta.quickModel) {
         bindingName = await this.impl.generateBindingName(
             title, taken, {config: userMeta.quickModel, initiator: userMeta.profile});
@@ -7731,7 +7739,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async newAiModelGatekeeper(modelId: string): Promise<GatekeeperClient<any>> {
-    let chatMeta = await this.#clientUser.getChatContext(modelId);
+    let chatMeta = await retryOnDoReset(
+        () => this.#clientUser.getChatContext(modelId), this.impl.logger);
     let props: LanguageModelGatekeeperProps = {
       displayName: chatMeta.aiModel!.profile.name,
       config: chatMeta.aiModel!.config,
@@ -7787,7 +7796,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       config,
     };
     if (config.modelId) {
-      let chatMeta = await this.#clientUser.getChatContext(config.modelId);
+      let chatMeta = await retryOnDoReset(
+          () => this.#clientUser.getChatContext(config.modelId), this.impl.logger);
       if (chatMeta.aiModel) {
         creationSpec.modelProvider = chatMeta.aiModel.config.provider;
         creationSpec.modelName = chatMeta.aiModel.config.model;
@@ -8095,7 +8105,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       }
     }
 
-    let userMeta = await this.#clientUser.getChatContext(modelId);
+    let userMeta = await retryOnDoReset(
+        () => this.#clientUser.getChatContext(modelId), this.impl.logger);
     if (!userMeta.aiModel) return;  // No model resolved; nothing to resume.
 
     let preparation = this.impl.waitForChatMessagePreparation(chatId);
@@ -8212,7 +8223,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async listModels(): Promise<AiChatAuthorInfo[]> {
-    return this.#clientUser.listModels();
+    return retryOnDoReset(() => this.#clientUser.listModels(), this.impl.logger);
   }
 
   async listSlashCommands(): Promise<SlashCommandChoice[]> {
@@ -8226,7 +8237,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   ): Promise<ChatAttachmentHandle> {
     let provider: AiModelConfig["provider"] | undefined;
     if (modelId !== null) {
-      provider = (await this.#clientUser.getChatContext(modelId)).aiModel?.config.provider;
+      provider = (await retryOnDoReset(
+          () => this.#clientUser.getChatContext(modelId), this.impl.logger))
+          .aiModel?.config.provider;
     }
     attachment = validateChatAttachmentUpload(
       attachment,
@@ -8450,7 +8463,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async newChat(initialMessage: string | SlashCommandRequest, chosenModelId: string | null,
                 capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
                 formats?: MessageFormatRef[]): Promise<number> {
-    let userMeta = await this.#clientUser.getChatContext(chosenModelId);
+    let userMeta = await retryOnDoReset(
+        () => this.#clientUser.getChatContext(chosenModelId), this.impl.logger);
     return this.impl.newChat(this.#clientUser, userMeta, initialMessage, capsules, attachments,
                              undefined, undefined, formats);
   }
@@ -8459,7 +8473,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       chatId: number, message: string | SlashCommandRequest, chosenModelId: string | null,
       capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
       formats?: MessageFormatRef[]): Promise<void> {
-    let userMeta = await this.#clientUser.getChatContext(chosenModelId);
+    let userMeta = await retryOnDoReset(
+        () => this.#clientUser.getChatContext(chosenModelId), this.impl.logger);
     return this.impl.sendChatMessage(
         this.#clientUser, userMeta, chatId, message, capsules, attachments, undefined, formats);
   }
@@ -8476,7 +8491,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async mergeChanges(chatId: number, mergeThrough: number | null,
                      options?: { includeDraft?: boolean }): Promise<void> {
-    let userMeta = await this.#clientUser.getChatContext(null);
+    let userMeta = await retryOnDoReset(
+        () => this.#clientUser.getChatContext(null), this.impl.logger);
 
     let meta = this.impl.assertChatNotActive(chatId);
     if (options?.includeDraft) {
@@ -8742,7 +8758,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async retryAgent(chatId: number, modelId: string): Promise<void> {
-    let userMeta = await this.#clientUser.getChatContext(modelId);
+    let userMeta = await retryOnDoReset(
+        () => this.#clientUser.getChatContext(modelId), this.impl.logger);
 
     let meta = this.impl.assertChatNotActive(chatId);
     if (!userMeta.aiModel) {
@@ -8995,7 +9012,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         // Check if the creator is the owner (requires an RPC to the owner's DO).
         let ownerProfileId = await this.impl.getOwnerProfileId();
         if (ownerProfileId === record.createdBy) {
-          createdBy = await this.#owner.whoami();
+          createdBy = await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
         }
         // Check if the creator is a collaborator (resolved locally).
         if (!createdBy) {
@@ -9047,7 +9064,8 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
               private notifyClosed: NativeRpcStub<() => void>) {
     super();
     this.#leavePresence = joinSessionPresence(
-        this.impl, this.clientProfileId, "use", () => this.#clientUser.whoami());
+        this.impl, this.clientProfileId, "use",
+        () => retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger));
     this.#leaveOutputsFanout = this.impl.joinOutputsFanout(this.clientUserId);
   }
 
@@ -9086,7 +9104,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     return {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
-      owner: await this.#owner.whoami(),
+      owner: await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger),
       role: "use",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -9100,7 +9118,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     let metadata: GadgetMetadata = {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
-      owner: await this.#owner.whoami(),
+      owner: await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger),
       role: "use",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -9368,7 +9386,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     if (!this.impl.storage.chatMeta.get(chatId)) {
       throw new Error(`No such chat: ${chatId}`);
     }
-    let author = await this.#clientUser.whoami();
+    let author = await retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger);
     this.impl.bindWorkpiece(this.id, name, target, chatId);
     this.impl.addChatMessages(chatId, author, [{
       type: "changes",
