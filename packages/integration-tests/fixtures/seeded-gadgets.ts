@@ -90,3 +90,12 @@ export class Gadget extends DurableObject {
   }
 }
 `;
+
+/** A server that loads and answers, paired with a `client.js` that cannot parse. */
+export const VALID_SERVER_ONLY = `
+import { DurableObject } from "cloudflare:workers";
+
+export class Gadget extends DurableObject {
+  async ping() { return "ok"; }
+}
+`;

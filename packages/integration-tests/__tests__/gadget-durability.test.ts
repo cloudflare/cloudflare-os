@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/agent-session.js";
 import { startHarness, type Harness, type WorkerConfig } from "../src/harness.js";
-import { DURABLE_NOTES_SERVER, OVERSELLING_DESK_SERVER } from "../fixtures/seeded-gadgets.js";
+import {
+  DURABLE_NOTES_SERVER, OVERSELLING_DESK_SERVER, VALID_SERVER_ONLY,
+} from "../fixtures/seeded-gadgets.js";
 
 // Scope: a Gadget facet restarting, and whether an application's state survives it. A whole Durable
 // Object resetting is a separate concern, covered in `workshop-backend/__integration__`, which runs
@@ -23,6 +25,10 @@ interface NotesApi {
   put(input: { id: string; body: string }): Promise<{ ok: boolean }>;
   all(): Promise<{ id: string; body: string }[]>;
   liveness(): Promise<{ instance: string; callsSinceStart: number }>;
+}
+
+interface PingApi {
+  ping(): Promise<string>;
 }
 
 interface DeskApi {
@@ -117,6 +123,36 @@ describe("Gadget durability across abrupt server restarts", () => {
     expect(rows.length).toBeGreaterThanOrEqual(1);
     expect(rows.length).toBeLessThanOrEqual(2);
     for (const row of rows) expect(typeof row.body).toBe("string");
+  }, 120_000);
+});
+
+describe("Gadget module loading", () => {
+  // Every `.js` file in a Gadget becomes a module in its Worker, so workerd parses client.js at load
+  // even though the server never imports it. A test that verifies a Gadget through its RPC therefore
+  // already covers the syntax of both files, and needs no separate parse step.
+  it("refuses to start the server when client.js cannot parse", async () => {
+    using session = await AgentSession.create(harness.url, { usernamePrefix: "syntax" });
+    const id = await session.seedGadget({
+      title: "Unparseable",
+      bindingName: "UNPARSEABLE",
+      files: { "server.js": VALID_SERVER_ONLY, "client.js": "this is ( not valid javascript ===" },
+    });
+
+    // Cap'n Web pipelines, so connecting resolves and the load failure surfaces on the first call.
+    using api = await session.connectToGadget<PingApi>(id, "accepted");
+    await expect(api.ping()).rejects.toThrow(/SyntaxError/);
+  }, 120_000);
+
+  it("starts the server when both files parse", async () => {
+    using session = await AgentSession.create(harness.url, { usernamePrefix: "syntax" });
+    const id = await session.seedGadget({
+      title: "Parseable",
+      bindingName: "PARSEABLE",
+      files: { "server.js": VALID_SERVER_ONLY, "client.js": "const unused = 1;" },
+    });
+
+    using api = await session.connectToGadget<PingApi>(id, "accepted");
+    expect(await api.ping()).toBe("ok");
   }, 120_000);
 });
 
