@@ -7,13 +7,27 @@ Read [`integration-testing.md`](integration-testing.md) for the design of the sh
 
 ## Scope
 
-An AI agent writes the applications on this platform, and the code runs in a sandbox. Unit tests show
-that our modules behave correctly. They do not show that the agent delivers an application that works.
+Every other suite in this repository tests code that we wrote, with inputs that we chose. The result
+is a boolean for each code path, and it is the same on every run.
 
-Two suites answer the first question, and one suite answers the second:
+The evaluation suite is different in three ways:
+
+- The input is a prompt in English, and not a call to a typed API.
+- The code under test does not exist until the test runs. An agent writes it.
+- The same input can give a different result twice, because a model is not deterministic.
+
+Therefore the suite cannot report a boolean. It reports a distribution, and that is why it needs
+repeated trials, confidence intervals, and a rule for the trials that it must discard.
+
+Two facts set the boundary. No other suite sends a prompt to a model: `ai-models.test.ts` and
+`ai-gateway.test.ts` replace `fetch` with a stub and check the routing decision, and
+`__integration__` calls `listModels()` without starting a turn. No other suite runs code that an agent
+wrote.
+
+The suites therefore answer two different questions:
 
 1. Does the platform work when all of its parts run together?
-2. Does the agent deliver a working application?
+2. Does the agent deliver an application that works?
 
 ## Suites
 
