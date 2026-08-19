@@ -166,7 +166,8 @@ async function fetchRepo(dir: string, url: string, branch: string, onAuth: () =>
     prune: true,
     onAuth,
   });
-  return result.fetchHead ?? "";
+  if (!result.fetchHead) throw new Error("Git fetch did not return a commit.");
+  return result.fetchHead;
 }
 
 async function fetchOrRecloneRepo(dir: string, url: string, branch: string, onAuth: () => { username: string; password: string }): Promise<string> {
