@@ -2,24 +2,50 @@
 
 This is how the integration test suites work, and why they are shaped the way they are.
 
-There are two kinds of suite:
+## Which suite to add to
 
-| | this repo's `packages/integration-tests` | a consumer repo's per-vendor suite |
-|---|---|---|
-| Runs | `pnpm test` (part of CI's normal test job) | its own CI step |
-| Gatekeeper | a fixture Worker whose verification outcome the tests set | a real vendor gatekeeper, unmodified |
-| Covers | the overseer's observer logic | a genuinely expired credential, end to end |
-| Owns | the harness, interceptor, and RPC client | that vendor's handlers and token minting |
+Four suites exercise more than one module at a time. Each reaches a different part of the system, so
+the choice decides what a test can assert.
+
+| Suite | Runtime | Reaches | Use it for |
+|---|---|---|---|
+| `workshop-backend/__integration__` | **in-process** workerd (`@cloudflare/vitest-pool-workers`) | Worker and Durable Object internals, via `cloudflare:test` | the backend's own resilience: DO resets, native-RPC error shapes, session recovery |
+| `packages/integration-tests` | **out-of-process** workerd (`wrangler`'s `createTestHarness()`) | only the public Cap'n Web API, as a browser would | the overseer's observer logic, gatekeeper flows, Gadget behaviour end to end |
+| a consumer repo's per-vendor suite | out-of-process, same toolkit | one real vendor gatekeeper, unmodified | a genuinely expired credential, end to end |
+| `packages/workshop-evals` | out-of-process **plus a live model** | the production agent, then the Gadget it built | whether the agent delivers a working application |
+
+The dividing line is the first column, and it decides what is available to you:
+
+- **In-process only.** `cloudflare:test` — `abortAllDurableObjects()`, `runInDurableObject(stub, fn)`,
+  and therefore `state.abort(reason)` — plus direct access to `exports.SomeDurableObject`. This is the
+  surgical way to reset a specific Durable Object, and the only way to assert on a *native* RPC
+  boundary. Fake timers also work here.
+- **Out-of-process only.** Real WebSocket transport, several Workers bound to each other, service
+  bindings, and a Worker Loader actually executing Gadget code. The code under test is in another
+  process, so none of the `cloudflare:test` helpers exist and nothing can be reached except through
+  the API a client has.
+
+Two consequences follow:
+
+- **Each runtime restarts a server differently.** In-process, abort the object directly.
+  Out-of-process, call `AgentSession.restartGadgets()`, which applies an empty code update — the same
+  thing the platform does on every code change. It confirms the restart by checking that outstanding
+  stubs became invalid.
+- **A live model belongs only in `workshop-evals`.** `pnpm test` stays deterministic and free, so the
+  eval suite runs on its own schedule. A test that needs no model belongs in one of the first two
+  suites, where it runs on every commit.
 
 A consumer repo is one that vendors this repo as a `public/` submodule and consumes the toolkit as a
 workspace dependency (`public/packages/integration-tests` in its `pnpm-workspace.yaml`).
 
-No such suite lives in this repo, and nothing here depends on one existing. The second column is
-described anyway because it is what the toolkit is parameterised *for*: the harness takes a list of
-gatekeepers and the interceptor takes pluggable handler modules precisely so a suite can be added
-outside this repo without forking either. Where this doc describes a per-vendor suite, take it as the
-worked example of that shape — one gatekeeper run unmodified against its vendor's mocked endpoints —
-rather than as something you will find here.
+No such suite lives in this repo, and nothing here depends on one existing. It is described anyway
+because it is what the toolkit is parameterised *for*: the harness takes a list of gatekeepers and the
+interceptor takes pluggable handler modules precisely so a suite can be added outside this repo
+without forking either. Where this doc describes a per-vendor suite, take it as the worked example of
+that shape — one gatekeeper run unmodified against its vendor's mocked endpoints — rather than as
+something you will find here.
+
+The rest of this document is about `packages/integration-tests` and the toolkit it owns.
 
 ## What these tests are
 

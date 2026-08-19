@@ -1,0 +1,30 @@
+{
+  "name": "@gadgets/workshop-evals",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test:run": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts",
+    "eval": "vitest run --config vitest.eval.config.ts --outputFile.json=.wrangler/evals/results.json",
+    "eval:required": "vitest run --config vitest.eval.config.ts evals/required.eval.ts --outputFile.json=.wrangler/evals/required.json",
+    "eval:frontier": "vitest run --config vitest.eval.config.ts evals/frontier.eval.ts --outputFile.json=.wrangler/evals/frontier.json",
+    "eval:summary": "node --experimental-strip-types --no-warnings src/summary.ts"
+  },
+  "dependencies": {
+    "@gadgets/integration-tests": "workspace:*",
+    "@gadgets/workshop-shared": "workspace:*",
+    "@vitest-evals/core": "0.16.1",
+    "capnweb": "catalog:",
+    "tinyrainbow": "^3.0.3",
+    "vitest-evals": "0.16.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260808.1",
+    "@types/node": "^26.1.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

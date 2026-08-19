@@ -157,9 +157,10 @@ describe("Gadget module loading", () => {
 });
 
 describe("Concurrent RPC interleaving", () => {
-  // Pins the platform behaviour that any "never oversells" assertion depends on: if a naive
-  // implementation could not oversell here, such an assertion would hold for the wrong reason.
-  it("lets a check-then-write implementation oversell", async () => {
+  // The eval suite asserts an agent-built booking gadget never oversells under concurrent load.
+  // That check is only meaningful if a naive implementation *does* oversell here, so this pins the
+  // platform behaviour the check depends on.
+  it("lets a check-then-write implementation oversell, so the eval check has teeth", async () => {
     using session = await AgentSession.create(harness.url, { usernamePrefix: "oversell" });
     const id = await session.seedGadget({
       title: "Broken Desk", bindingName: "DESK", files: { "server.js": OVERSELLING_DESK_SERVER },

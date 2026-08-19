@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node", "@cloudflare/workers-types"],
+    "noEmit": true,
+    // `src/summary.ts` runs directly under node, which resolves specifiers for real.
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@gadgets/integration-tests/*": ["../integration-tests/src/*"],
+      "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"]
+    }
+  },
+  "include": ["src", "evals", "tasks", "*.ts"],
+  "exclude": ["node_modules", "output"]
+}
