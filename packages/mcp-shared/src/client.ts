@@ -567,7 +567,7 @@ export class McpClient {
    * tools cannot crowd the requested server or exact grant names out of the bounded result.
    */
   async listTools(maxTools: number, include?: McpToolFilter): Promise<ToolCatalog> {
-    return this.#list(maxTools, include, clampToolDefinition);
+    return this.#list({ maxTools, include, project: clampToolDefinition });
   }
 
   /**
@@ -575,42 +575,59 @@ export class McpClient {
    * definition with `findTool` before use.
    */
   async listToolIndex(maxTools: number): Promise<ToolIndex> {
-    return this.#list(maxTools, undefined, indexTool);
+    return this.#list({ maxTools, project: indexTool });
   }
 
   /** Collects at most `maxTools` matching index entries without scanning later pages. */
   async listMatchingToolIndex(maxTools: number, include: McpToolFilter): Promise<ToolIndex> {
-    return this.#list(maxTools, include, indexTool, true);
+    return this.#list({ maxTools, include, project: indexTool, stopWhenFull: true });
   }
 
   /** Finds one exact tool without reading pages after the match. */
   async findTool(name: string): Promise<McpTool | undefined> {
     if (!isValidToolName(name)) return undefined;
-    return (await this.#list(
-      1, tool => tool.name === name, clampToolDefinition, true, true)).tools[0];
+    return (await this.#list({
+      maxTools: 1,
+      include: tool => tool.name === name,
+      project: clampToolDefinition,
+      stopWhenFull: true,
+      requireCompleteScan: true,
+    })).tools[0];
   }
 
   /** Collects at most `maxTools` bounded matching summaries without scanning later pages. */
   async listMatchingToolSummaries(maxTools: number, include: McpToolFilter): Promise<McpTool[]> {
-    return (await this.#list(maxTools, include, clampToolSummary, true, true)).tools;
+    return (await this.#list({
+      maxTools,
+      include,
+      project: clampToolSummary,
+      stopWhenFull: true,
+      requireCompleteScan: true,
+    })).tools;
   }
 
   // The shared listing loop. `project` decides how much of each tool is retained, and therefore how
   // much of the byte budget each one costs; the budget itself is applied to whatever it returns.
-  async #list<T extends { name: string }>(
-    maxTools: number,
-    include: McpToolFilter | undefined,
-    project: (tool: McpWireTool) => T,
+  async #list<T extends { name: string }>({
+    maxTools,
+    include,
+    project,
     stopWhenFull = false,
-    failOnScanLimit = false,
-  ): Promise<{ tools: T[]; truncated: boolean }> {
+    requireCompleteScan = false,
+  }: {
+    maxTools: number;
+    include?: McpToolFilter;
+    project: (tool: McpWireTool) => T;
+    stopWhenFull?: boolean;
+    requireCompleteScan?: boolean;
+  }): Promise<{ tools: T[]; truncated: boolean }> {
     const tools: T[] = [];
     let budget = MAX_CATALOG_BYTES;
     let scannedBytes = 0;
     let scannedTools = 0;
     let cursor: string | undefined;
     const scanLimit = (): { tools: T[]; truncated: boolean } => {
-      if (failOnScanLimit) {
+      if (requireCompleteScan) {
         throw new McpProtocolError(
           "MCP tool discovery exceeded its scan budget.", undefined, "declined");
       }
