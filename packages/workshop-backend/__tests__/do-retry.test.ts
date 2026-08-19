@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isDoResetError } from "../src/do-telemetry";
+import { isDoResetError } from "../src/do-retry";
 
 // Synthetic errors shaped like workerd's tagged rejections (jsg/util.c++). Local aborts reject
 // flagless (pinned by the "user-DO reset flags" integration test), so the predicate is
