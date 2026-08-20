@@ -3368,6 +3368,12 @@ export const ChatInput = ({
                 }
               }}
               onKeyDown={(e) => {
+                // An IME commits a composition with Enter, and the browser reports that as an
+                // ordinary keydown. Reading it as "send" truncates the message mid-word for every
+                // user who types through an IME, so hand the whole keystroke back to the IME: Enter
+                // is not the only key it owns -- Escape cancels a composition and the arrows move
+                // through candidates.
+                if (e.nativeEvent.isComposing) return;
                 if (slashCommandPicker.open && e.key === "Escape") {
                   e.preventDefault();
                   slashCommandPicker.dismiss();
