@@ -158,7 +158,7 @@ export type ContextDocument = {
   /** File name derived from the path. */
   name: string;
 
-  /** What this document covers and when to use it. */
+  /** What this document covers and when to use it. Values over 16,000 characters are truncated. */
   description: string;
 
   /** Determines whether `body` is text or base64. */

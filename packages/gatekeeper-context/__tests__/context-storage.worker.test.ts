@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  decodeStoredContextBody, encodeStoredContextBody,
+  decodeStoredContextBody, encodeStoredContextBody, truncateContextDescription,
 } from "../src/context-storage.js";
 import { artifactContextDocument } from "../src/artifact-sync.js";
 
@@ -23,6 +23,14 @@ describe("context document storage", () => {
     expect(decodeStoredContextBody("image/png", stored)).toBe("AQID");
   });
 
+  it("measures binary storage by decoded bytes rather than base64 length", () => {
+    const body = "AAAA".repeat(450_001);
+    const stored = encodeStoredContextBody("image/png", body);
+
+    expect(body.length).toBeGreaterThan(1_800_000);
+    expect(stored.byteLength).toBe(1_350_003);
+  });
+
   it("reads legacy binary base64 strings", () => {
     expect(decodeStoredContextBody("image/png", "AQID")).toBe("AQID");
   });
@@ -33,5 +41,15 @@ describe("context document storage", () => {
 
     expect(artifactContextDocument("readme.md", text).body).toBe(text);
     expect(artifactContextDocument("image.png", binary).body).toBe(binary);
+  });
+
+  it("truncates descriptions", () => {
+    const description = "x".repeat(16_001);
+    expect(truncateContextDescription(description)).toBe("x".repeat(16_000));
+  });
+
+  it("truncates descriptions derived from git documents", () => {
+    const body = new TextEncoder().encode(`description: |\n  ${"x".repeat(20_000)}\nnext: true\n`);
+    expect(artifactContextDocument("context.yaml", body).description).toBe("x".repeat(16_000));
   });
 });

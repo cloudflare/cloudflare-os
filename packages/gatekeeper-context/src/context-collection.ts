@@ -19,7 +19,9 @@ import {
   isSkillManifestPath, parseSkillManifest, type SkillIndexEntry,
 } from "./agent-skill.js";
 import { obsContext } from "./observability.js";
-import { decodeStoredContextBody, encodeStoredContextBody } from "./context-storage.js";
+import {
+  decodeStoredContextBody, encodeStoredContextBody, truncateContextDescription,
+} from "./context-storage.js";
 
 const logger = obsContext.createLogger({
   component: "gatekeeper.context", vendorId: VENDOR_ID,
@@ -83,9 +85,10 @@ type ContextRecord = {
   lastUpdated: Date;
 };
 
-function contextRecord(document: ContextDocument): ContextRecord {
+function contextRecord(document: ContextDocument): ContextRecord & { body: Uint8Array } {
   return {
     ...document,
+    description: truncateContextDescription(document.description),
     body: encodeStoredContextBody(document.contentType, document.body),
   };
 }
@@ -218,7 +221,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     try {
       return parseSkillManifest(
         record.path,
-        decodeStoredContextBody(record.contentType, record.body),
+        decodeStoredContextBody(record.contentType ?? DEFAULT_DOCUMENT_CONTENT_TYPE, record.body),
       );
     } catch {
       return undefined;
@@ -371,17 +374,15 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       doc: { description: string; body: string; contentType?: string }): Promise<void> {
     this.#assertWebWritable();
     validateDocumentPath(path);
-    // Enforce real UTF-8 bytes, not UTF-16 code units.
-    let byteLength = new TextEncoder().encode(doc.body).length;
-    if (byteLength > MAX_DOCUMENT_BODY_BYTES) {
-      throw new Error(`Document is too large (${byteLength} bytes; max ${MAX_DOCUMENT_BODY_BYTES}).`);
-    }
-
     let contentType = doc.contentType || contentTypeFromPath(path);
     let record = contextRecord({
       path, name: baseName(path), description: doc.description, contentType, body: doc.body,
       lastUpdated: new Date(),
     });
+    let byteLength = record.body.byteLength;
+    if (byteLength > MAX_DOCUMENT_BODY_BYTES) {
+      throw new Error(`Document is too large (${byteLength} bytes; max ${MAX_DOCUMENT_BODY_BYTES}).`);
+    }
 
     this.storage.transaction(() => {
       let isNew = !this.storage.documents.get(path);

@@ -7,6 +7,7 @@ import { posix as posixPath } from "node:path";
 import {
   MAX_DOCUMENT_BODY_BYTES, contentTypeFromPath, isTextContentType, VENDOR_ID,
 } from "./context-types.js";
+import { truncateContextDescription } from "./context-storage.js";
 import { extractDescription } from "./description-extractors.js";
 import { obsContext } from "./observability.js";
 
@@ -111,7 +112,9 @@ export function artifactContextDocument(path: string, blob: Uint8Array): Artifac
   return {
     path,
     name: posixPath.basename(path),
-    description: body === undefined ? "" : extractDescription(contentType, body) ?? "",
+    description: truncateContextDescription(
+      body === undefined ? "" : extractDescription(contentType, body) ?? "",
+    ),
     contentType,
     body: blob,
     lastUpdated: new Date(),

@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [capnwebValidate(), cloudflareTest({
     miniflare: {
       compatibilityDate: "2026-02-02",
-      compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
+      compatibilityFlags: ["nodejs_compat", "allow_irrevocable_stub_storage"],
     },
   })],
   test: {

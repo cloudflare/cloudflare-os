@@ -3,6 +3,12 @@ import { isTextContentType } from "./context-types.js";
 
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
+const MAX_DOCUMENT_DESCRIPTION_CHARS = 16_000;
+
+/** Bound descriptions to preserve storage headroom. */
+export function truncateContextDescription(description: string): string {
+  return description.slice(0, MAX_DOCUMENT_DESCRIPTION_CHARS);
+}
 
 export function decodeStoredContextBody(
   contentType: string,
