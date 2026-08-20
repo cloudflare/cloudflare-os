@@ -1,5 +1,5 @@
 import { promises as fsp } from "node:fs";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const git = vi.hoisted(() => ({
   clone: vi.fn(),
@@ -23,16 +23,23 @@ vi.mock("isomorphic-git/http/web", () => ({ request: vi.fn() }));
 
 import { readArtifactRepoDocuments } from "../src/artifact-sync.js";
 
-const dir = "/tmp/artifacts/fetch-test";
+let artifactsDir: string;
+let id: string;
+
+beforeEach(async () => {
+  await fsp.mkdir("/tmp/artifacts", { recursive: true });
+  artifactsDir = await fsp.mkdtemp("/tmp/artifacts/fetch-test-");
+  id = artifactsDir.slice("/tmp/artifacts/".length);
+});
 
 afterEach(async () => {
   vi.resetAllMocks();
-  await fsp.rm(dir, { recursive: true, force: true });
+  await fsp.rm(artifactsDir, { recursive: true, force: true });
 });
 
 describe("artifact repository refresh", () => {
   it("reads the fetched commit instead of stale local HEAD", async () => {
-    await fsp.mkdir(`${dir}/.git`, { recursive: true });
+    await fsp.mkdir(`${artifactsDir}/.git`, { recursive: true });
     git.listServerRefs.mockResolvedValue([{ ref: "refs/heads/main", oid: "new-commit" }]);
     git.fetch.mockResolvedValue({ fetchHead: "new-commit" });
     git.listFiles.mockResolvedValue(["readme.md"]);
@@ -49,7 +56,7 @@ describe("artifact repository refresh", () => {
 
     const result = await readArtifactRepoDocuments(
       artifacts,
-      "fetch-test",
+      id,
       "https://example.com/repo.git",
       "main",
       "old-commit",
@@ -62,7 +69,7 @@ describe("artifact repository refresh", () => {
   });
 
   it("reclones instead of returning an empty collection when fetch has no head", async () => {
-    await fsp.mkdir(`${dir}/.git`, { recursive: true });
+    await fsp.mkdir(`${artifactsDir}/.git`, { recursive: true });
     git.listServerRefs.mockResolvedValue([{ ref: "refs/heads/main", oid: "new-commit" }]);
     git.fetch.mockResolvedValue({ fetchHead: null });
     git.resolveRef.mockResolvedValue("recloned-commit");
@@ -80,7 +87,7 @@ describe("artifact repository refresh", () => {
 
     const result = await readArtifactRepoDocuments(
       artifacts,
-      "fetch-test",
+      id,
       "https://example.com/repo.git",
       "main",
       "old-commit",

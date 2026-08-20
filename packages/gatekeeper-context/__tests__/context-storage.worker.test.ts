@@ -13,6 +13,13 @@ describe("context document storage", () => {
     expect(decodeStoredContextBody("application/json", stored)).toBe(body);
   });
 
+  it("preserves a leading UTF-8 BOM", () => {
+    const body = "\uFEFF# Title";
+    expect(decodeStoredContextBody("text/markdown", encodeStoredContextBody(
+      "text/markdown", body,
+    ))).toBe(body);
+  });
+
   it("reads legacy string records", () => {
     expect(decodeStoredContextBody("text/markdown", "legacy body")).toBe("legacy body");
   });
@@ -21,6 +28,11 @@ describe("context document storage", () => {
     const stored = encodeStoredContextBody("image/png", "AQID");
     expect(stored).toEqual(new Uint8Array([1, 2, 3]));
     expect(decodeStoredContextBody("image/png", stored)).toBe("AQID");
+  });
+
+  it("rejects malformed binary base64 bodies", () => {
+    expect(() => encodeStoredContextBody("image/png", "AQID!"))
+      .toThrow("Binary document body must be valid canonical base64.");
   });
 
   it("measures binary storage by decoded bytes rather than base64 length", () => {

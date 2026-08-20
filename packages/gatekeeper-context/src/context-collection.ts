@@ -379,7 +379,9 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       path, name: baseName(path), description: doc.description, contentType, body: doc.body,
       lastUpdated: new Date(),
     });
-    let byteLength = record.body.byteLength;
+    let byteLength = record.body.byteLength + new TextEncoder().encode(
+      JSON.stringify({ ...record, body: "" }),
+    ).byteLength;
     if (byteLength > MAX_DOCUMENT_BODY_BYTES) {
       throw new Error(`Document is too large (${byteLength} bytes; max ${MAX_DOCUMENT_BODY_BYTES}).`);
     }
