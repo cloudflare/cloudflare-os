@@ -308,10 +308,11 @@ export type ActiveFileTarget = {
 type ChatChangeRowBuffer = {
   rows: ChatChangeRow[];
   seen: Set<string>;
-  // For the draft banner: who authored the newest row, and when it arrived (rows don't carry
+  // For the draft banner, which describes *human* draft edits only (rows carrying a
+  // `submission`, i.e. produced by submitCodeChange -- agent edits flow through the same stream
+  // but have their own streaming UI): when the newest such row arrived (rows don't carry
   // timestamps on the wire; arrival time is close enough for display).
-  latestAuthor: AiChatAuthorInfo | null;
-  lastReceivedAt: Date | null;
+  lastUserEditAt: Date | null;
 };
 
 type ChatListScope = "direct" | "agents" | "all";
@@ -5061,7 +5062,13 @@ function ChatInterface({
 
   const currentRowBuffer =
     selectedChatId !== null ? (chatChangeRowsRef.current.get(selectedChatId) ?? null) : null;
-  const currentLiveRowCount = currentRowBuffer?.rows.length ?? 0;
+  // Whether the live window holds *human* draft edits -- the rows the draft banner describes.
+  // Server-authored rows (agent edits, mainline merges) share the same stream but must not
+  // raise the banner: the agent's activity has its own streaming UI. Derived from the rows
+  // (rather than tracked) so pruning -- materialization watermarks, generation bumps -- can
+  // never leave it stale.
+  const currentHasUserDraftRows =
+    currentRowBuffer !== null && currentRowBuffer.rows.some(row => row.submission !== undefined);
 
   const provisionalToolCalls = currentProvisionalState?.toolCalls ?? [];
   const useConstrainedChatWidth = sidebarMode || constrainChatWidth;
@@ -5417,7 +5424,7 @@ function ChatInterface({
     ) {
       let buffer = chatChangeRowsRef.current.get(chatId);
       if (!buffer) {
-        buffer = { rows: [], seen: new Set(), latestAuthor: null, lastReceivedAt: null };
+        buffer = { rows: [], seen: new Set(), lastUserEditAt: null };
         chatChangeRowsRef.current.set(chatId, buffer);
       }
       // Dedupe: subscribe-replay redelivers every retained row (see Overseer.subscribeToChat).
@@ -5429,8 +5436,10 @@ function ChatInterface({
         ...(submission !== undefined ? { submission } : {}),
       };
       buffer.rows.push(row);
-      buffer.latestAuthor = author;
-      buffer.lastReceivedAt = new Date();
+      if (submission !== undefined) {
+        // Only human submissions drive the draft banner (see ChatChangeRowBuffer).
+        buffer.lastUserEditAt = new Date();
+      }
       // Deliver to subscribers synchronously: the message that materializes this row may prune
       // it from the buffer before any effect runs (see ChatLiveChangeRows).
       chatChangeRowListenersRef.current.get(chatId)?.forEach((listener) => listener(row));
@@ -7916,16 +7925,8 @@ function ChatInterface({
                       );
                     })}
 
-                    {currentRowBuffer && currentLiveRowCount > 0 && (() => {
-                      const latestAuthor = currentRowBuffer.latestAuthor;
-                      const isUserAuthored = latestAuthor?.type === "user";
-                      const title = isUserAuthored
-                        ? "Draft changes pending"
-                        : "Draft changes in progress";
-                      const description = isUserAuthored
-                        ? "Your edits are still a live draft."
-                        : `${latestAuthor?.name ?? "The agent"} is editing changes for this gadget.`;
-                      const lastEditedAt = currentRowBuffer.lastReceivedAt;
+                    {currentRowBuffer && currentHasUserDraftRows && (() => {
+                      const lastEditedAt = currentRowBuffer.lastUserEditAt;
                       const lastEntry = displayEntries[displayEntries.length - 1] ?? null;
                       const draftTopClass = !lastEntry
                         ? ""
@@ -7941,11 +7942,11 @@ function ChatInterface({
                               <Pencil size={16} />
                             </span>
                             <Tooltip
-                              content={`${description}${lastEditedAt !== null ? ` Last edited ${formatFullTimestamp(lastEditedAt)}` : ''}`}
+                              content={`Your edits are still a live draft.${lastEditedAt !== null ? ` Last edited ${formatFullTimestamp(lastEditedAt)}` : ''}`}
                               asChild
                             >
                               <span className="font-medium text-kumo-subtle">
-                                {title}
+                                Draft changes pending
                               </span>
                             </Tooltip>
                             <div className="flex flex-wrap items-center gap-2 text-[13px] leading-4">
