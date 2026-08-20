@@ -25,7 +25,6 @@ import {
   AiChatAuthorInfo,
   ConsoleLogSubscriber,
   ConsoleLogEvent,
-  ActionLogEntry,
   WorkpieceId,
   WorkpieceSummary,
   BlueprintOutput,
@@ -750,16 +749,17 @@ export default function GadgetEditor() {
       ? streamingActiveFile.filename
       : undefined
 
-  const { actionsById } = useActions(overseer?.stub ?? null)
-  // Hook bindings change once in a while, but `actionsById` is a fresh Map on every action-log
+  const { status: actionsStatus, pendingById, liveById } = useActions(overseer?.stub ?? null)
+  // Hook bindings change once in a while, but `liveById` is a fresh Map on every action-log
   // frame. Track just the bindHook enable states so the refetch isn't driven at animation rate.
+  // listHooks() below is the authoritative initial source; live entries only trigger refetches.
   const hookSignature = useMemo(() => {
     const parts: string[] = []
-    for (const record of actionsById.values()) {
+    for (const record of liveById.values()) {
       if (record.type === 'bindHook') parts.push(`${record.hookId}:${record.enabled}`)
     }
     return parts.join()
-  }, [actionsById])
+  }, [liveById])
   const [hookedGadgetIds, setHookedGadgetIds] = useState<ReadonlySet<WorkpieceId>>(NO_GADGETS)
   useEffect(() => {
     if (!overseer || metadata === null || isUseOnly) return
@@ -772,13 +772,7 @@ export default function GadgetEditor() {
     // Clear on teardown so a workspace switch never shows the previous workspace's indicators.
     return () => { cancelled = true; setHookedGadgetIds(NO_GADGETS) }
   }, [overseer, hookSignature, metadata !== null, isUseOnly])
-  const pendingActions = useMemo(() => {
-    const pending: ActionLogEntry[] = []
-    for (const record of actionsById.values()) {
-      if (record.state === 'pending') pending.push(record)
-    }
-    return pending
-  }, [actionsById])
+  const pendingActions = useMemo(() => [...pendingById.values()], [pendingById])
   const pendingActionsCount = pendingActions.length
 
   // Whether the *selected* gadget has code. When no gadget is selected, the code interface is
@@ -1473,6 +1467,7 @@ export default function GadgetEditor() {
           <ActivityNotifications
             overseer={overseer.stub}
             pendingActions={pendingActions}
+            checking={actionsStatus === 'checking'}
             onViewActivity={openActivity}
           />
 

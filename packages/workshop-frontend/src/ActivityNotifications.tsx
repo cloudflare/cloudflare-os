@@ -11,6 +11,8 @@ import { useResolveAction } from './useResolveAction'
 interface ActivityNotificationsProps {
   overseer: RpcStub<Overseer>
   pendingActions: ActionLogEntry[]
+  /** True while the background scan for already-pending requests is still running. */
+  checking?: boolean
   onViewActivity: (view: ActivityView) => void
 }
 
@@ -19,6 +21,7 @@ const PREVIEW_LIMIT = 3
 export default function ActivityNotifications({
   overseer,
   pendingActions,
+  checking,
   onViewActivity,
 }: ActivityNotificationsProps) {
   const [open, setOpen] = useState(false)
@@ -69,7 +72,7 @@ export default function ActivityNotifications({
 
         {pending.length === 0 ? (
           <p className="m-0 px-3.5 pb-3 pt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-            Nothing is waiting on you.
+            {checking ? 'Checking for pending requests…' : 'Nothing is waiting on you.'}
           </p>
         ) : (
           <div className="max-h-[min(58vh,420px)] overflow-y-auto pb-1">

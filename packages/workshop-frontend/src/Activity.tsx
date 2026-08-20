@@ -115,7 +115,7 @@ export default function Activity({
   onAutoApproveChange,
   autoApproveReloadTrigger,
 }: ActivityProps) {
-  const { actionsById, isReady } = useActions(overseer)
+  const { status: actionsStatus, pendingById } = useActions(overseer)
   const [historyFilter, setHistoryFilter] = useState<ActionHistoryFilter>('all')
   const [processingActions, setProcessingActions] = useState<Set<number>>(new Set())
   const [togglingHooks, setTogglingHooks] = useState<Set<number>>(new Set())
@@ -130,10 +130,9 @@ export default function Activity({
   const toasts = useKumoToastManager()
 
   const pendingActions = useMemo(() =>
-    [...actionsById.values()]
-      .filter(record => record.state === 'pending')
+    [...pendingById.values()]
       .toSorted((a, b) => timeValue(a.createdAt) - timeValue(b.createdAt) || a.id - b.id),
-  [actionsById])
+  [pendingById])
 
   const history = useActionHistory(overseer, historyFilter, view === 'history')
 
@@ -176,32 +175,39 @@ export default function Activity({
     setExpandedActionId(previous => (previous === id ? null : id))
   }
 
-  if (!isReady) {
-    return (
-      <div className="flex h-full items-center justify-center text-[13px] text-kumo-subtle">
-        Loading activity…
-      </div>
-    )
-  }
-
   return (
     <div className="flex h-full flex-col bg-kumo-base">
       {view === 'review' ? (
         pendingActions.length === 0 ? (
-          <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-            <span className="grid h-9 w-9 place-items-center rounded-full bg-kumo-tint text-kumo-subtle">
-              <Check size={17} weight="bold" />
-            </span>
-            <p className="mt-3 text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
-              Nothing to review
-            </p>
-            <p className="mt-1 max-w-xs text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-              Requests that need your approval show up here and in the workspace header.
-            </p>
-            <WorkshopButton className="mt-4" onClick={() => onViewChange('history')}>
-              View history
-            </WorkshopButton>
-          </div>
+          actionsStatus === 'checking' ? (
+            <div className="flex h-full items-center justify-center text-[13px] text-kumo-subtle">
+              Checking for requests…
+            </div>
+          ) : actionsStatus === 'error' ? (
+            <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+              <p className="m-0 text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
+                Could not check for requests
+              </p>
+              <p className="mt-1 max-w-xs text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
+                Reload the page to try again.
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+              <span className="grid h-9 w-9 place-items-center rounded-full bg-kumo-tint text-kumo-subtle">
+                <Check size={17} weight="bold" />
+              </span>
+              <p className="mt-3 text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
+                Nothing to review
+              </p>
+              <p className="mt-1 max-w-xs text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
+                Requests that need your approval show up here and in the workspace header.
+              </p>
+              <WorkshopButton className="mt-4" onClick={() => onViewChange('history')}>
+                View history
+              </WorkshopButton>
+            </div>
+          )
         ) : (
           <>
             <div className={`${PANE_BAR} gap-2 px-5`}>
@@ -242,6 +248,16 @@ export default function Activity({
                   />
                 )
               })}
+              {actionsStatus === 'checking' && (
+                <p className="m-0 px-5 py-3 text-center text-[12px] leading-4 text-kumo-inactive">
+                  Still checking older activity…
+                </p>
+              )}
+              {actionsStatus === 'error' && (
+                <p className="m-0 px-5 py-3 text-center text-[12px] leading-4 text-kumo-inactive">
+                  Could not finish checking for requests — reload the page to try again.
+                </p>
+              )}
             </div>
           </>
         )
