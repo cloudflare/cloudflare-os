@@ -5,9 +5,9 @@ packages:
 # needing to hand edit a bunch of different package.json files.
 catalog:
   '@cloudflare/vitest-pool-workers': ^0.20.2
-  capnweb: ^0.11.1
+  capnweb: ^0.12.0
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
-  capnweb-validate: 0.2.4
+  capnweb-validate: 0.3.0
   # Exact: TypeScript 7 (tsgo). Type-checking runs on the native compiler. Build-time
   # transpilers that need the JS compiler API (scripts/build-gatekeeper-configurator.ts)
   # use the root "typescript6" npm alias instead; capnweb-validate ships its own
