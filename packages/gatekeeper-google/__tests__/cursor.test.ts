@@ -134,8 +134,10 @@ describe("malformed provider responses", () => {
     await expect(pager.next()).rejects.toThrow("TestProvider returned a repeated page token.");
   });
 
-  it("allows a token that merely repeats an earlier, non-adjacent one", async () => {
-    let tokens = ["1", "2", "1", undefined];
+  // A longer cycle is the same bug wearing a hat, and the empty-page cap does not catch it: the
+  // pages come back full, so a drain would serve duplicates forever.
+  it("refuses a token it followed earlier, not just the one it just sent", async () => {
+    let tokens = ["1", "2", "1", "2"];
     let step = 0;
     let pager = new CursorPager<string, string>({
       provider: "TestProvider",
@@ -143,7 +145,14 @@ describe("malformed provider responses", () => {
       buildEntries: async items => items,
       authorize: async () => {},
     });
-    expect(await drain(pager)).toEqual(["p0", "p1", "p2", "p3"]);
+    expect(await pager.next()).toEqual(["p0"]);
+    expect(await pager.next()).toEqual(["p1"]);
+    await expect(pager.next()).rejects.toThrow("TestProvider returned a repeated page token.");
+  });
+
+  it("still walks a long run of distinct tokens", async () => {
+    let pager = makePager(Array.from({ length: 30 }, (_, i) => [`p${i}`])).pager;
+    expect(await drain(pager)).toHaveLength(30);
   });
 });
 

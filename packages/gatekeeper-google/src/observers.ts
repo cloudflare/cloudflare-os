@@ -59,11 +59,14 @@ export type ObserverTrackerOptions<T, V> = {
    */
   recordObservers?: boolean;
   /**
-   * Tracked sets beyond which {@link ObserverTracker.addObserver} refuses to admit anyone new.
+   * Distinct sets this binding may track before {@link ObserverTracker.prepareObservation} starts
+   * refusing reads.
    *
-   * Verifying a joining observer costs one round trip per tracked set, and the overseer re-runs it
-   * on every open, so an unbounded set makes opening the gadget unboundedly expensive. Failing
-   * closed keeps existing observers working while telling the user to bind a narrower scope.
+   * Verifying an observer costs one round trip per tracked set, and the overseer re-runs it on
+   * every open, so an unbounded set makes opening the gadget unboundedly expensive. The cap is
+   * enforced when a set is *recorded* rather than when an observer joins, because the alternative
+   * is worse: a binding that has already read past the cap can never be verified against, which
+   * locks out the collaborators already using it as well as new ones, with no way back.
    */
   maxTrackedSets?: number;
   /** Concurrent verifier round trips. Bounded to stay inside the Workers subrequest limits. */
@@ -145,6 +148,10 @@ export class ObserverTracker<T, V> {
    *
    * Pending rather than observed, because the read may still be denied: promoting eagerly would
    * permanently narrow who may observe this binding on the strength of a read that never happened.
+   *
+   * Throws if recording these sets would take the binding past {@link
+   * ObserverTrackerOptions.maxTrackedSets}. Recording anyway would disclose data no observer is
+   * ever verified against; not recording it would do the same silently.
    */
   async prepareObservation(values: readonly T[]): Promise<ObserverCheck<T>> {
     let seen = new Set<string>();
@@ -156,10 +163,15 @@ export class ObserverTracker<T, V> {
     });
     if (pendingSets.length === 0) return { pendingSets, commit() {} };
 
-    for (let value of pendingSets) {
-      let key = this.#setKey(value);
-      if (this.#kv.get<ObservedSetState>(key) === undefined) this.#kv.put(key, "pending");
+    let untracked = pendingSets.filter(
+      value => this.#kv.get<ObservedSetState>(this.#setKey(value)) === undefined);
+    let tracked = this.listTracked().length;
+    if (tracked + untracked.length > this.#maxTrackedSets) {
+      throw new Error(
+        `This binding has read ${tracked} distinct items, the most it can track while remaining ` +
+        "shareable. Bind a narrower scope.");
     }
+    for (let value of untracked) this.#kv.put(this.#setKey(value), "pending");
 
     // One flat queue over (observer, set) pairs: nesting two Promise.alls would multiply out to an
     // unbounded number of concurrent round trips.
@@ -187,17 +199,13 @@ export class ObserverTracker<T, V> {
    * Admits `id` as an observer, or throws naming the first set they cannot reach.
    *
    * Re-lists after each round of checks, so a set observed while this was awaiting is covered too.
+   * The tracked set is bounded by {@link ObserverTrackerOptions.maxTrackedSets} at record time, so
+   * this needs no bound of its own.
    */
   async addObserver(id: string, verifier: V): Promise<void> {
     let checked = new Set<string>();
     for (;;) {
       let tracked = this.listTracked();
-      if (tracked.length > this.#maxTrackedSets) {
-        throw new Error(
-          `This binding has read ${tracked.length} distinct items, more than the ` +
-          `${this.#maxTrackedSets} a new collaborator can be verified against. Bind a narrower ` +
-          "scope to share it.");
-      }
 
       let pending = tracked.filter(value => !checked.has(this.#options.encode(value)));
       if (pending.length === 0) {

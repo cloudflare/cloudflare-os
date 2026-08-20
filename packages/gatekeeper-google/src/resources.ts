@@ -199,10 +199,11 @@ export function parseResourceUrl(url: string): ResourceTarget {
   try {
     parsed = new URL(url);
   } catch {
-    throw new Error(`Not a valid resource URL: ${url}`);
+    // Nothing of an unparseable string is safe to quote back.
+    throw new Error("Not a valid resource URL.");
   }
   if (parsed.protocol !== "https:") {
-    throw new Error(`Google resource URLs must use https: ${url}`);
+    throw new Error(`Google resource URLs must use https, not ${parsed.protocol}`);
   }
 
   switch (parsed.hostname) {
@@ -211,7 +212,20 @@ export function parseResourceUrl(url: string): ResourceTarget {
     case "calendar.google.com": return parseCalendarUrl(parsed);
     case BIGQUERY_HOST: return parseBigQueryUrl(parsed);
   }
-  throw new Error(`Unsupported Google resource URL: ${url}`);
+  throw new Error(`Unsupported Google resource URL host: ${parsed.hostname}`);
+}
+
+/**
+ * How much of a resource URL is safe to name in an error.
+ *
+ * A resource URL is caller-supplied and its tail is the sensitive part: a Gmail hash carries a
+ * search query, and `href` retains any embedded credentials. These errors reach the Workshop UI and
+ * are logged by their catchers, so only the host and path travel. The path still names a document
+ * id, which is what makes the error worth reading at all -- but an id the caller just supplied and
+ * the recorded binding will hold anyway, not a secret this adds to the trail.
+ */
+function describeUrl(parsed: URL): string {
+  return `${parsed.hostname}${parsed.pathname}`;
 }
 
 /**
@@ -251,12 +265,12 @@ function parseDocsUrl(parsed: URL): ResourceTarget {
     if (!id) throw new Error("Invalid Google Sheets URL: no spreadsheet ID found");
     return { kind: "sheets", spreadsheetId: id };
   }
-  throw new Error(`Unsupported Google Docs resource URL: ${parsed.href}`);
+  throw new Error(`Unsupported Google Docs resource URL: ${describeUrl(parsed)}`);
 }
 
 function parseCalendarUrl(parsed: URL): ResourceTarget {
   if (!parsed.pathname.startsWith("/calendar/")) {
-    throw new Error(`Unsupported Google Calendar resource URL: ${parsed.href}`);
+    throw new Error(`Unsupported Google Calendar resource URL: ${describeUrl(parsed)}`);
   }
   let calendarId = decodeURIComponent(parsed.pathname.split("/")[2] ?? "");
   if (!calendarId) {

@@ -6,6 +6,16 @@ import {
   resourceUrlPatternsToOAuthScopes, validateResourceUrlPatterns,
 } from "../src/resources";
 
+/** The message `parseResourceUrl` rejects `url` with. Fails the test if it accepts it. */
+function messageFor(url: string): string {
+  try {
+    parseResourceUrl(url);
+  } catch (error) {
+    return (error as Error).message;
+  }
+  throw new Error(`expected ${url} to be rejected`);
+}
+
 describe("resource declarations", () => {
   // A urlPattern is permanent identity: it keys admin disable-sets, blueprint typeUrlPatterns and
   // recorded grants, so changing one after deploy orphans every binding that used it.
@@ -149,6 +159,43 @@ describe("parseResourceUrl", () => {
 
     it("rejects a string that is not a URL", () => {
       expect(() => parseResourceUrl("mail.google.com")).toThrow(/Not a valid resource URL/);
+    });
+
+    // These errors reach the Workshop UI and are logged by their catchers, so the parts of a
+    // caller-supplied URL that carry content or credentials must not ride along.
+    describe("error messages", () => {
+
+      it("omits the fragment, which for Gmail is a search query", () => {
+        let message = messageFor(
+          "https://docs.google.com/presentation/d/abc/edit#search/acquisition+target");
+        expect(message).not.toContain("acquisition");
+        expect(message).toContain("docs.google.com/presentation/d/abc/edit");
+      });
+
+      it("omits query parameters", () => {
+        expect(messageFor("https://calendar.google.com/other?token=sekrit"))
+          .not.toContain("sekrit");
+      });
+
+      it("omits credentials embedded in the authority", () => {
+        let message = messageFor("https://user:hunter2@docs.google.com/presentation/d/abc");
+        expect(message).not.toContain("hunter2");
+        expect(message).not.toContain("user");
+      });
+
+      it("quotes back nothing at all from an unparseable string", () => {
+        expect(messageFor("not a url at all sekrit")).toBe("Not a valid resource URL.");
+      });
+
+      it("names only the host for an unsupported one", () => {
+        expect(messageFor("https://groups.google.com/g/team?invite=sekrit"))
+          .toBe("Unsupported Google resource URL host: groups.google.com");
+      });
+
+      it("names only the scheme for a non-https URL", () => {
+        expect(messageFor("http://mail.google.com/#search/sekrit"))
+          .toBe("Google resource URLs must use https, not http:");
+      });
     });
   });
 

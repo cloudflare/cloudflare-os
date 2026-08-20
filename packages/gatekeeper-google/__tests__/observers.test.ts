@@ -239,34 +239,49 @@ describe("addObserver", () => {
       for (let i = 0; i < count; i++) kv.put(`set:s${i}`, "observed");
     };
 
-    it("admits at the cap", async () => {
+    // The cap bounds what addObserver has to verify, but enforcing it there would deny every
+    // collaborator on every reopen once passed -- including the ones already using the gadget,
+    // with no way back, since tracked sets are never dropped. So the read is what fails.
+    it("refuses to record a read that would pass the cap, naming the remedy", async () => {
+      fill(3);
+      let tracker = makeTracker({ maxTrackedSets: 3 });
+      await expect(tracker.prepareObservation(["extra"]))
+        .rejects.toThrow(/read 3 distinct items.*Bind a narrower scope/s);
+    });
+
+    it("records a read that lands exactly on the cap", async () => {
+      fill(2);
+      let tracker = makeTracker({ maxTrackedSets: 3 });
+      expect((await tracker.prepareObservation(["extra"])).pendingSets).toEqual(["extra"]);
+    });
+
+    it("counts the whole batch, not one set at a time", async () => {
+      fill(2);
+      let tracker = makeTracker({ maxTrackedSets: 3 });
+      await expect(tracker.prepareObservation(["x", "y"])).rejects.toThrow(/narrower scope/);
+      expect(kv.get("set:x")).toBeUndefined();
+      expect(kv.get("set:y")).toBeUndefined();
+    });
+
+    // Re-reading what the binding already tracks costs nothing new, so the cap must not turn a
+    // binding sitting on the limit into one that can no longer read its own data.
+    it("keeps serving reads of sets it already tracks", async () => {
+      fill(3);
+      let tracker = makeTracker({ maxTrackedSets: 3 });
+      expect((await tracker.prepareObservation(["s0", "s1"])).pendingSets).toEqual([]);
+    });
+
+    it("does not count a duplicate within one batch twice", async () => {
+      fill(2);
+      let tracker = makeTracker({ maxTrackedSets: 3 });
+      expect((await tracker.prepareObservation(["dup", "dup"])).pendingSets).toEqual(["dup"]);
+    });
+
+    // A binding at the cap is still shareable -- that is the whole point of capping the read.
+    it("admits observers at the cap", async () => {
       fill(3);
       let tracker = makeTracker({ maxTrackedSets: 3 });
       await expect(tracker.addObserver("reader", allow("s0", "s1", "s2"))).resolves.toBeUndefined();
-    });
-
-    // Verifying costs a round trip per tracked set on every open, so an unbounded set makes
-    // opening the gadget unboundedly expensive. Fail closed rather than degrade.
-    it("refuses a new observer past the cap, naming the remedy", async () => {
-      fill(4);
-      let tracker = makeTracker({ maxTrackedSets: 3 });
-      await expect(tracker.addObserver("reader", allow("s0", "s1", "s2", "s3")))
-        .rejects.toThrow(/read 4 distinct items.*Bind a narrower scope/s);
-    });
-
-    it("leaves existing observers in place when the cap is passed", async () => {
-      let tracker = makeTracker({ maxTrackedSets: 3 });
-      await tracker.addObserver("existing", allow());
-      fill(4);
-
-      await expect(tracker.addObserver("newcomer", allow())).rejects.toThrow(/narrower scope/);
-      expect([...tracker.observers()].map(([id]) => id)).toEqual(["existing"]);
-    });
-
-    it("still records reads past the cap so nothing goes unverified", async () => {
-      fill(4);
-      let tracker = makeTracker({ maxTrackedSets: 3 });
-      expect((await tracker.prepareObservation(["extra"])).pendingSets).toEqual(["extra"]);
     });
   });
 });

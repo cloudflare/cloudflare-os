@@ -57,6 +57,9 @@ export class CursorPager<Item, Entry> implements Pager<Entry> {
   #options: CursorPagerOptions<Item, Entry>;
   #maxEmptyPages: number;
   #pageToken: string | undefined;
+  // Every token the provider has handed back. A cursor stops at the first repeat, so this grows
+  // only with genuinely distinct pages.
+  #seenTokens = new Set<string>();
   #exhausted = false;
   #tail: Promise<unknown> = Promise.resolve();
 
@@ -84,16 +87,23 @@ export class CursorPager<Item, Entry> implements Pager<Entry> {
 
     let { provider, fetchPage, buildEntries, authorize } = this.#options;
     let pageToken = this.#pageToken;
+    // Tokens followed during this call. Merged into the committed set only once the page is
+    // approved: a denied read rewinds the cursor, and the retry re-derives these same tokens.
+    let followed = new Set<string>();
     let entries: Entry[];
 
     for (let fetched = 1; ; fetched++) {
-      let previousToken = pageToken;
       let page = await fetchPage(pageToken);
       pageToken = page.nextPageToken;
 
-      // A provider that hands back the token we just sent would page forever.
-      if (pageToken !== undefined && pageToken === previousToken) {
-        throw new Error(`${provider} returned a repeated page token.`);
+      // A token we have already followed would page forever. Comparing only against the token we
+      // just sent would catch a self-loop but not a longer cycle, and the empty-page cap is no
+      // backstop: the pages in a cycle come back full.
+      if (pageToken !== undefined) {
+        if (this.#seenTokens.has(pageToken) || followed.has(pageToken)) {
+          throw new Error(`${provider} returned a repeated page token.`);
+        }
+        followed.add(pageToken);
       }
 
       entries = await buildEntries(page.items);
@@ -113,6 +123,7 @@ export class CursorPager<Item, Entry> implements Pager<Entry> {
     // Advance only once the page has been approved. A denied read leaves the cursor where it was,
     // so retrying re-offers the same page instead of silently skipping over it.
     await authorize(entries);
+    for (let token of followed) this.#seenTokens.add(token);
     this.#pageToken = pageToken;
     this.#exhausted = pageToken === undefined;
     return entries;
