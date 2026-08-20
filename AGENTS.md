@@ -98,6 +98,8 @@ IMPORTANT: When using React's useState(), the state value cannot be an RPC stub.
 
 IMPORTANT: RPC stubs must be disposed to prevent resource leaks on the server side. Call `stub[Symbol.dispose]()` when the stub is no longer needed (or use a `using` declaration where possible). In particular, when a React component obtains a stub in a useEffect, the cleanup function should dispose the stub.
 
+IMPORTANT: All RPC interfaces should use the annotation `@validateRpc()` to apply capnweb-validate, which installs auto-generated runtime type validation matching the interface's TypeScript signatures. Do not write redundant validation code that duplicates the checks capnweb-validate already covers.
+
 IMPORTANT: Server-side logging uses `@gadgets/backend-utils/logger` (frontend browser `console.*` is out of scope):
 - Define a package-owned field type and module-scoped logger with a stable dot-separated `component`
   and, for gatekeepers, `vendorId`:
