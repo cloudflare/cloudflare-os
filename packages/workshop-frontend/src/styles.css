@@ -266,18 +266,30 @@ body {
       top: auto !important;
       right: env(safe-area-inset-right) !important;
       bottom: calc(var(--app-bottom) + env(safe-area-inset-bottom)) !important;
-      left: env(safe-area-inset-left) !important;
+      left: 50% !important;
       width: calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right)) !important;
       max-width: none !important;
       max-height: calc(var(--app-height) - 8px - env(safe-area-inset-top)) !important;
       border-bottom-right-radius: 0 !important;
       border-bottom-left-radius: 0 !important;
-      translate: 0 0 !important;
+      translate: -50% 0 !important;
       transform: none !important;
     }
 
     body .responsive-dialog :is(input, textarea, select) {
       font-size: 16px;
+    }
+
+    body .connect-connector-dialog {
+      top: 50% !important;
+      bottom: auto !important;
+      right: auto !important;
+      left: 50% !important;
+      width: calc(100vw - 32px) !important;
+      max-height: calc(var(--app-height) - 32px) !important;
+      border-bottom-right-radius: var(--radius-xl) !important;
+      border-bottom-left-radius: var(--radius-xl) !important;
+      translate: -50% -50% !important;
     }
   }
 }
