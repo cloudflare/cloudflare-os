@@ -25,18 +25,24 @@ jobs:
         with:
           persist-credentials: false
 
-      # Ahead of setup-node, which shells out to `pnpm store path` to find the directory it caches.
+      # Vite+ downloads its own pnpm for `vp install` and exposes no shim, so this is what puts
+      # `pnpm` on PATH for the steps below.
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # Vite+ resolves its own version from the `vite-plus` catalog entry, and installs the pnpm
+      # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not
+      # needed.
+      #
+      # No `cache` here, unlike `test`: this job is fast anyway, and both caching
+      # means they race to reserve the same lockfile-keyed entry.
+      # TODO(someday): It would be great if the setup-vp action could share a cache key with the test job but disable writes to cache
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          cache: false
+          run-install: true
 
       - name: Lint
         run: pnpm lint:check
@@ -57,18 +63,20 @@ jobs:
         with:
           persist-credentials: false
 
-      # Ahead of setup-node, which shells out to `pnpm store path` to find the directory it caches.
+      # Vite+ downloads its own pnpm for `vp install` and exposes no shim, so this is what puts
+      # `pnpm` on PATH for the steps below.
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # Vite+ resolves its own version from the `vite-plus` catalog entry, and installs the pnpm
+      # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not
+      # needed.
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          cache: true
+          run-install: true
 
       # Codegen, the frontend/SPA bundles, and the repo's single type check (`types:check` aliases this).
       - name: Build
