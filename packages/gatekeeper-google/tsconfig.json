@@ -13,6 +13,6 @@
       "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"]
     }
   },
-  "include": ["src"],
-  "exclude": ["dist", "node_modules"]
+  "include": ["src", "__tests__"],
+  "exclude": ["dist", "node_modules", ".wrangler"]
 }

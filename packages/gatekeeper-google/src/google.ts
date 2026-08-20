@@ -47,6 +47,16 @@ import GOOGLE_SHEETS_CONFIGURATOR_HTML from "./generated/google-sheets-configura
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
+import {
+  MAX_GMAIL_VISIBLE_THREAD_MESSAGES, validateGmailAddress, validateGmailBody,
+  validateGmailQueryForGrouping, validateGmailRecipientCount, validateOutboundInput,
+} from "./gmail-validate";
+import {
+  AUTH_SCOPES, BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
+  GOOGLE_DOC_RESOURCE, GOOGLE_SHEETS_RESOURCE, LEGACY_GRANTED_RESOURCE_URL_PATTERNS,
+  RESOURCE_BY_KIND, SUPPORTED_RESOURCES, grantedResourcesFromScopes, parseResourceUrl,
+  resourceUrlPatternsToOAuthScopes,
+} from "./resources";
 
 // Vendor id = GATEKEEPER_<NAME> binding suffix (lowercased).
 const VENDOR_ID = "google";
@@ -128,38 +138,6 @@ function toLabelObjects(labelIds: string[], labelMap: Map<string, string>): Gmai
   });
 }
 
-function validateGmailQueryForGrouping(query: string): void {
-  if (new TextEncoder().encode(query).byteLength > MAX_GMAIL_QUERY_BYTES) {
-    throw new Error(`Gmail search query must be at most ${MAX_GMAIL_QUERY_BYTES} bytes.`);
-  }
-  const stack: string[] = [];
-  let quote: string | undefined;
-  let escaped = false;
-  for (const char of query) {
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (char === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (char === quote) quote = undefined;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      quote = char;
-    } else if (char === '(' || char === '{') {
-      stack.push(char);
-    } else if (char === ')' || char === '}') {
-      const expected = char === ')' ? '(' : '{';
-      if (stack.pop() !== expected) throw new Error("Gmail query has mismatched grouping delimiters.");
-    }
-  }
-  if (quote || stack.length > 0) throw new Error("Gmail query has unterminated grouping or quotes.");
-}
-
 function getBaseUrl(env: Env) {
   return stripTrailingSlashes(env.BASE_URL || "http://localhost:8787/gatekeeper/google");
 }
@@ -209,140 +187,6 @@ const NOT_CONFIGURED_HTML = `<!DOCTYPE html>
     </div>
   </body>
 </html>`;
-
-// OAuth scopes we always request, used to identify the account (name, email, avatar). Not tied to
-// any resource type.
-const IDENTITY_SCOPES = [
-  "openid",
-  "https://www.googleapis.com/auth/userinfo.profile",
-  "https://www.googleapis.com/auth/userinfo.email",
-];
-
-// Minimal scopes for sign-in only (verify the user's email). Used when connecting in "auth" mode;
-// the resulting grant is transient. (Same as IDENTITY_SCOPES — sign-in needs no resource scopes.)
-const AUTH_SCOPES = IDENTITY_SCOPES;
-
-const BIGQUERY_HOST = "bigquery.googleapis.com";
-
-const GMAIL_RESOURCE: SupportedResource = {
-  urlPattern: "https://mail.google.com/*",
-  title: "Gmail Mailbox",
-  description: "Read emails and apply labels.",
-  grantable: true,
-};
-
-const GOOGLE_DOC_RESOURCE: SupportedResource = {
-  urlPattern: "https://docs.google.com/document/d/:docId/*",
-  title: "Google Doc",
-  description:
-      "Read and edit documents you choose.",
-  grantable: true,
-};
-
-const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
-  urlPattern: "https://docs.google.com/spreadsheets/d/:spreadsheetId/*",
-  title: "Google Spreadsheet",
-  description: "Read values from a spreadsheet you choose.",
-  grantable: true,
-};
-
-const GOOGLE_CALENDAR_RESOURCE: SupportedResource = {
-  urlPattern: "https://calendar.google.com/calendar/:calendarId/*",
-  title: "Google Calendar",
-  description:
-      "Read and manage a Google Calendar.",
-  grantable: true,
-};
-
-const BIGQUERY_RESOURCE: SupportedResource = {
-  urlPattern: `https://${BIGQUERY_HOST}/:projectId/*`,
-  title: "BigQuery",
-  description: "Choose a Google Cloud project, then optionally narrow access to a dataset or table.",
-  grantable: true,
-};
-
-// Accounts connected before per-resource scope tracking received scopes for exactly these
-// resources.
-const LEGACY_GRANTED_RESOURCE_URL_PATTERNS = [
-  GMAIL_RESOURCE.urlPattern,
-  GOOGLE_DOC_RESOURCE.urlPattern,
-  BIGQUERY_RESOURCE.urlPattern,
-];
-
-const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] = [
-  {
-    resource: GMAIL_RESOURCE,
-    scopes: [
-      "https://www.googleapis.com/auth/gmail.labels",
-      "https://www.googleapis.com/auth/gmail.modify",
-    ],
-  },
-  {
-    resource: GOOGLE_DOC_RESOURCE,
-    scopes: [
-      "https://www.googleapis.com/auth/documents",
-      // Read-only Drive file metadata, used to power the doc picker when connecting a Google Doc.
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
-    ],
-  },
-  {
-    resource: GOOGLE_SHEETS_RESOURCE,
-    scopes: [
-      "https://www.googleapis.com/auth/spreadsheets.readonly",
-      // Read-only Drive file metadata, used to power the spreadsheet picker.
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
-    ],
-  },
-  {
-    resource: GOOGLE_CALENDAR_RESOURCE,
-    scopes: [
-      // Read-only calendar list, used to power the calendar picker when connecting a calendar.
-      "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
-      "https://www.googleapis.com/auth/calendar.events",
-    ],
-  },
-  {
-    resource: BIGQUERY_RESOURCE,
-    scopes: [
-      // `bigquery` (not `bigquery.readonly`): dry-runs go through `jobs.insert` for scope
-      // enforcement, which `readonly` doesn't permit. Read-only is enforced at the API layer.
-      "https://www.googleapis.com/auth/bigquery",
-    ],
-  },
-];
-
-const SUPPORTED_RESOURCES: SupportedResource[] = RESOURCE_SCOPES.map(entry => entry.resource);
-
-function validateResourceUrlPatterns(resourceUrlPatterns?: string[]): void {
-  if (resourceUrlPatterns === undefined) return;
-
-  let knownPatterns = new Set(RESOURCE_SCOPES.map(entry => entry.resource.urlPattern));
-  let unknownPatterns = resourceUrlPatterns.filter(pattern => !knownPatterns.has(pattern));
-  if (unknownPatterns.length > 0) {
-    throw new Error(`Unknown grantable resource URL pattern(s): ${unknownPatterns.join(", ")}`);
-  }
-}
-
-// The OAuth scopes to request for the given grantable resource `urlPattern`s.
-function resourceUrlPatternsToOAuthScopes(resourceUrlPatterns?: string[]): string[] {
-  validateResourceUrlPatterns(resourceUrlPatterns);
-
-  let scopes = new Set<string>(IDENTITY_SCOPES);
-  for (let entry of RESOURCE_SCOPES) {
-    if (resourceUrlPatterns === undefined ||
-        resourceUrlPatterns.includes(entry.resource.urlPattern)) {
-      for (let scope of entry.scopes) scopes.add(scope);
-    }
-  }
-  return [...scopes];
-}
-
-function grantedResourcesFromScopes(grantedOAuthScopes: string[]): string[] {
-  let granted = new Set(grantedOAuthScopes);
-  return RESOURCE_SCOPES
-      .filter(entry => entry.scopes.every(scope => granted.has(scope)))
-      .map(entry => entry.resource.urlPattern);
-}
 
 const GOOGLE_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(GOOGLE_LOGO_SVG)}`;
 
@@ -839,126 +683,43 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     class: DurableObjectClass<Gatekeeper<any>>;
     resource: SupportedResource;
   }> {
-    let parsed = new URL(url);
+    let target = parseResourceUrl(url);
+    let resource = RESOURCE_BY_KIND[target.kind];
+    let userObjectId = this.ctx.props.userObjectId;
 
-    if (parsed.hostname === "docs.google.com" &&
-        parsed.pathname.startsWith("/document/d/")) {
-      // Extract document ID from URL path: /document/d/{documentId}/...
-      let documentId = parsed.pathname.split("/")[3];
-      if (!documentId) {
-        throw new Error("Invalid Google Docs URL: no document ID found");
+    switch (target.kind) {
+      case "gmail": {
+        let props: GmailGatekeeperImplProps = {
+          userObjectId, searchQuery: target.searchQuery, labelName: target.labelName,
+        };
+        return {class: this.ctx.exports.GmailGatekeeperImpl({props}), resource};
       }
-      let props: GoogleDocGatekeeperImplProps = {
-        userObjectId: this.ctx.props.userObjectId,
-        documentId,
-      };
-      return {class: this.ctx.exports.GoogleDocGatekeeperImpl({props}), resource: GOOGLE_DOC_RESOURCE};
+      case "doc": {
+        let props: GoogleDocGatekeeperImplProps = {userObjectId, documentId: target.documentId};
+        return {class: this.ctx.exports.GoogleDocGatekeeperImpl({props}), resource};
+      }
+      case "sheets": {
+        let props: GoogleSheetsGatekeeperImplProps = {
+          userObjectId, spreadsheetId: target.spreadsheetId,
+        };
+        return {class: this.ctx.exports.GoogleSheetsGatekeeperImpl({props}), resource};
+      }
+      case "calendar": {
+        let props: GoogleCalendarGatekeeperImplProps = {
+          userObjectId, calendarId: target.calendarId, availabilityMode: target.availabilityMode,
+        };
+        return {class: this.ctx.exports.GoogleCalendarGatekeeperImpl({props}), resource};
+      }
+      case "bigquery": {
+        let props: BigQueryGatekeeperImplProps = {
+          userObjectId,
+          scopedProjectId: target.projectId,
+          scopedDatasetId: target.datasetId,
+          scopedTableId: target.tableId,
+        };
+        return {class: this.ctx.exports.BigQueryGatekeeperImpl({props}), resource};
+      }
     }
-
-    if (parsed.hostname === "docs.google.com" &&
-        parsed.pathname.startsWith("/spreadsheets/d/")) {
-      let spreadsheetId = parsed.pathname.split("/")[3];
-      if (!spreadsheetId) {
-        throw new Error("Invalid Google Sheets URL: no spreadsheet ID found");
-      }
-      let props: GoogleSheetsGatekeeperImplProps = {
-        userObjectId: this.ctx.props.userObjectId,
-        spreadsheetId,
-      };
-      return {
-        class: this.ctx.exports.GoogleSheetsGatekeeperImpl({ props }),
-        resource: GOOGLE_SHEETS_RESOURCE,
-      };
-    }
-
-    if (parsed.hostname === "calendar.google.com" && parsed.pathname.startsWith("/calendar/")) {
-      let calendarId = decodeURIComponent(parsed.pathname.split("/")[2] ?? "");
-      if (!calendarId) {
-        throw new Error("Invalid Google Calendar URL: no calendar ID found");
-      }
-      if (calendarId === "primary") {
-        throw new Error(
-          "Google Calendar bindings must use a stable calendar ID, not the account-relative " +
-          "\"primary\" alias.");
-      }
-      // Default to the least-privilege scope unless the URL explicitly opts into all calendars.
-      let availabilityMode: CalendarAvailabilityMode =
-          parsed.searchParams.get("availability") === "allVisible" ? "allVisible" : "thisCalendar";
-      let props: GoogleCalendarGatekeeperImplProps = {
-        userObjectId: this.ctx.props.userObjectId,
-        calendarId,
-        availabilityMode,
-      };
-      return {
-        class: this.ctx.exports.GoogleCalendarGatekeeperImpl({props}),
-        resource: GOOGLE_CALENDAR_RESOURCE,
-      };
-    }
-
-    if (parsed.hostname === BIGQUERY_HOST) {
-      if (parsed.protocol !== "https:") {
-        throw new Error(`BigQuery resource URLs must use https: ${url}`);
-      }
-      if (parsed.search || parsed.hash) {
-        throw new Error("BigQuery resource URLs must not include query strings or fragments.");
-      }
-
-      // Synthetic path: /<projectId>/<datasetId>/<tableId> (each segment optional after the first).
-      let segments = parsed.pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean)
-          .map(segment => decodeURIComponent(segment));
-      if (segments.length > 3) {
-        throw new Error(
-            "BigQuery resource URLs must be /<projectId>, /<projectId>/<datasetId>, " +
-            "or /<projectId>/<datasetId>/<tableId>.");
-      }
-      let projectId = segments[0] || undefined;
-      let datasetId = segments[1] || undefined;
-      let tableId = segments[2] || undefined;
-      if (!projectId) {
-        throw new Error("BigQuery resource URLs must include a project ID.");
-      }
-      if (tableId && !datasetId) {
-        throw new Error("Cannot scope to a table without specifying a dataset.");
-      }
-
-      let props: BigQueryGatekeeperImplProps = {
-        userObjectId: this.ctx.props.userObjectId,
-        scopedProjectId: projectId,
-        scopedDatasetId: datasetId,
-        scopedTableId: tableId,
-      };
-      return {
-        class: this.ctx.exports.BigQueryGatekeeperImpl({props}),
-        resource: BIGQUERY_RESOURCE,
-      };
-    }
-
-    // Default: Gmail
-    let props: GmailGatekeeperImplProps = {...this.ctx.props};
-
-    // Parse the URL hash to extract a search or label scope. Keep labels as
-    // opaque names; startSession resolves them to Gmail label IDs so label text
-    // can never be interpreted as search syntax.
-    let hash = parsed.hash;
-    if (hash.startsWith("#search/")) {
-      // Gmail's own UI encodes spaces in hash searches as `+`, while
-      // decodeURIComponent() only decodes `%20`. Normalize both forms.
-      const encodedQuery = hash.slice("#search/".length).replace(/\+/g, " ");
-      const query = decodeURIComponent(encodedQuery);
-      validateGmailQueryForGrouping(query);
-      props.searchQuery = query;
-    } else if (hash.startsWith("#label/")) {
-      const labelName = decodeURIComponent(hash.slice("#label/".length));
-      if (!labelName || new TextEncoder().encode(labelName).byteLength > 320) {
-        throw new Error("Gmail label name must be between 1 and 320 bytes.");
-      }
-      props.labelName = labelName;
-    } else if (hash && hash !== "#inbox") {
-      throw new Error(
-        "Unsupported Gmail view. Connect the inbox, an explicit search, or an explicit label.");
-    }
-
-    return {class: this.ctx.exports.GmailGatekeeperImpl({props}), resource: GMAIL_RESOURCE};
   }
 
   async startResourceConfigurator(
@@ -1268,29 +1029,6 @@ type GmailSessionContext = {
 
 // ── GmailSessionImpl ────────────────────────────────────────────────
 
-const MAX_GMAIL_RECIPIENTS = 100;
-const MAX_GMAIL_SUBJECT_BYTES = 998;
-const MAX_GMAIL_BODY_BYTES = 64 * 1024;
-const MAX_GMAIL_QUERY_BYTES = 4096;
-const MAX_GMAIL_ADDRESS_BYTES = 320;
-const MAX_GMAIL_VISIBLE_THREAD_MESSAGES = 100;
-
-function validateOutboundInput(to: string[], subject: string, body: string): void {
-  if (to.length === 0 || to.length > MAX_GMAIL_RECIPIENTS) {
-    throw new Error(`Email must have between 1 and ${MAX_GMAIL_RECIPIENTS} recipients.`);
-  }
-  if (to.some(address => address.length === 0 ||
-      new TextEncoder().encode(address).byteLength > MAX_GMAIL_ADDRESS_BYTES)) {
-    throw new Error("Invalid recipient address length.");
-  }
-  if (new TextEncoder().encode(subject).byteLength > MAX_GMAIL_SUBJECT_BYTES) {
-    throw new Error(`Email subject must be at most ${MAX_GMAIL_SUBJECT_BYTES} UTF-8 bytes.`);
-  }
-  if (new TextEncoder().encode(body).byteLength > MAX_GMAIL_BODY_BYTES) {
-    throw new Error(`Email body must be at most ${MAX_GMAIL_BODY_BYTES} bytes.`);
-  }
-}
-
 @validateRpc()
 class GmailSessionImpl extends RpcTarget implements GmailSession {
   #ctx: GmailSessionContext;
@@ -1553,9 +1291,7 @@ class GmailThreadStub extends RpcTarget implements GmailThread {
   }
 
   async messagesVisibleTo(address: string): Promise<GmailMessage[]> {
-    if (new TextEncoder().encode(address).byteLength > MAX_GMAIL_ADDRESS_BYTES) {
-      throw new Error(`Email address must be at most ${MAX_GMAIL_ADDRESS_BYTES} bytes.`);
-    }
+    validateGmailAddress(address);
     const [normalizedAddress] = normalizeEmailRecipients([address]);
     const thread = await this.#ctx.gmailApi.getThread(this.#threadId);
 
@@ -1703,9 +1439,7 @@ class GmailMessageStub extends RpcTarget implements GmailMessage {
   }
 
   async reply(body: string): Promise<void> {
-    if (new TextEncoder().encode(body).byteLength > MAX_GMAIL_BODY_BYTES) {
-      throw new Error(`Email body must be at most ${MAX_GMAIL_BODY_BYTES} bytes.`);
-    }
+    validateGmailBody(body);
     const original = await this.#getRaw();
     await this.#ctx.approvalQueue.authorizeObservation({
       title: "Read message headers to prepare reply",
@@ -1730,9 +1464,7 @@ class GmailMessageStub extends RpcTarget implements GmailMessage {
   }
 
   async replyAll(body: string): Promise<void> {
-    if (new TextEncoder().encode(body).byteLength > MAX_GMAIL_BODY_BYTES) {
-      throw new Error(`Email body must be at most ${MAX_GMAIL_BODY_BYTES} bytes.`);
-    }
+    validateGmailBody(body);
     const original = await this.#getRaw();
     await this.#ctx.approvalQueue.authorizeObservation({
       title: "Read message headers to prepare reply-all",
@@ -1758,12 +1490,8 @@ class GmailMessageStub extends RpcTarget implements GmailMessage {
 
   async forward(to: string[], body?: string): Promise<void> {
     const normalizedTo = normalizeEmailRecipients(to);
-    if (normalizedTo.length === 0 || normalizedTo.length > MAX_GMAIL_RECIPIENTS) {
-      throw new Error(`Email must have between 1 and ${MAX_GMAIL_RECIPIENTS} recipients.`);
-    }
-    if (new TextEncoder().encode(body ?? '').byteLength > MAX_GMAIL_BODY_BYTES) {
-      throw new Error(`Email body must be at most ${MAX_GMAIL_BODY_BYTES} bytes.`);
-    }
+    validateGmailRecipientCount(normalizedTo);
+    validateGmailBody(body ?? '');
     const original = await this.#getRaw();
     await this.#ctx.approvalQueue.authorizeObservation({
       title: "Read message to prepare forward",
