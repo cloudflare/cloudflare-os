@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
-import { DownloadSimple } from '@phosphor-icons/react'
+import { DownloadSimple, List } from '@phosphor-icons/react'
 import { Overseer, CodeSubscriber, CodeUpdate } from '@gadgets/workshop-shared/api'
 import { RpcStub, RpcTarget } from 'capnweb'
 import * as Y from 'yjs'
@@ -157,7 +157,11 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
   // React state for UI
   const [fileNames, setFileNames] = useState<string[]>([])
   const [activeFile, setActiveFile] = useState<string | null>(null)
+  const [fileDrawerOpen, setFileDrawerOpen] = useState(false)
+  const [compactLayout, setCompactLayout] = useState(false)
   const fileSidebarRef = useRef<FileSidebarHandle | null>(null)
+  const fileDrawerRef = useRef<HTMLDivElement | null>(null)
+  const fileDrawerTriggerRef = useRef<HTMLButtonElement | null>(null)
   const [isReady, setIsReady] = useState(false)
   const [loading, setLoading] = useState(true)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
@@ -184,6 +188,53 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
   const previewObserverCleanupRef = useRef<(() => void) | null>(null)
   const editableObserverCleanupRef = useRef<(() => void) | null>(null)
   const [changedFiles, setChangedFiles] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (!isVisible) setFileDrawerOpen(false)
+  }, [isVisible])
+
+  useEffect(() => {
+    if (!window.matchMedia) return
+    const query = window.matchMedia('(max-width: 767px)')
+    const update = () => {
+      setCompactLayout(query.matches)
+      if (!query.matches) setFileDrawerOpen(false)
+    }
+    update()
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+
+  useEffect(() => {
+    if (!compactLayout || !fileDrawerOpen) return
+    const drawer = fileDrawerRef.current
+    drawer?.focus()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setFileDrawerOpen(false)
+        return
+      }
+      if (event.key !== 'Tab' || !drawer) return
+      const focusable = [...drawer.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )]
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === drawer)) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      if (fileDrawerTriggerRef.current?.isConnected) fileDrawerTriggerRef.current.focus()
+    }
+  }, [compactLayout, fileDrawerOpen])
   // Sorted list of file names present in the currently-observed preview map (streaming preview or
   // editable branch doc). Tracked as state so the file sidebar updates when files are added/removed
   // mid-turn — the preview map is a mutable ref whose identity doesn't change on incremental edits.
@@ -859,40 +910,84 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
           <span>Connection issue - changes will be saved when connection is restored</span>
         </div>
       )}
-      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        <FileSidebar
-          ref={fileSidebarRef}
-          files={displayedFiles}
-          activeFile={activeFile}
-          streamingActiveFile={streamingActiveFile}
-          dirtyFiles={new Set()}
-          changedFiles={changedFiles}
-          fileChangeStatuses={fileChangeStatuses}
-          isDiffMode={isDiffMode}
-          editLocked={isEditingLocked}
-          onFileSelect={handleFileSelect}
-          onFileCreate={handleFileCreate}
-          onFileDelete={handleFileDelete}
-          onFileRename={handleFileRename}
-          onFileDownload={handleFileDownload}
-        />
-        <div className="flex flex-col bg-kumo-base" style={{ flex: 1, minWidth: 0 }}>
-          {activeFile && (
-            <div className="flex h-9 shrink-0 items-center justify-between gap-3 border-b border-kumo-line bg-kumo-base px-3">
-              <div className="min-w-0 text-[12px] leading-4 tracking-[-0.2px] text-kumo-subtle">
-                {activeFileModeLabel} <span className="font-mono font-medium text-kumo-default">{activeFile}</span>
-              </div>
+      <div className="relative flex min-h-0 flex-1">
+        {fileDrawerOpen && (
+          <button
+            type="button"
+            aria-label="Close files"
+            onClick={() => setFileDrawerOpen(false)}
+            className="absolute inset-0 z-20 bg-black/25 md:hidden"
+          />
+        )}
+        <div
+          ref={fileDrawerRef}
+          role={compactLayout ? 'dialog' : undefined}
+          aria-modal={compactLayout ? true : undefined}
+          aria-label={compactLayout ? 'Files' : undefined}
+          aria-hidden={compactLayout && !fileDrawerOpen ? true : undefined}
+          inert={compactLayout && !fileDrawerOpen ? true : undefined}
+          tabIndex={compactLayout ? -1 : undefined}
+          className={`flex h-full shrink-0 outline-none max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-30 max-md:w-[min(85vw,320px)] max-md:shadow-xl max-md:transition-transform max-md:duration-200 ${
+            fileDrawerOpen
+              ? 'max-md:visible max-md:translate-x-0'
+              : 'max-md:invisible max-md:-translate-x-full'
+          }`}
+        >
+          <FileSidebar
+            ref={fileSidebarRef}
+            files={displayedFiles}
+            activeFile={activeFile}
+            streamingActiveFile={streamingActiveFile}
+            dirtyFiles={new Set()}
+            changedFiles={changedFiles}
+            fileChangeStatuses={fileChangeStatuses}
+            isDiffMode={isDiffMode}
+            editLocked={isEditingLocked}
+            onFileSelect={(filename) => {
+              handleFileSelect(filename)
+              setFileDrawerOpen(false)
+            }}
+            onFileCreate={handleFileCreate}
+            onFileDelete={handleFileDelete}
+            onFileRename={handleFileRename}
+            onFileDownload={handleFileDownload}
+            onRequestClose={() => setFileDrawerOpen(false)}
+            className="max-md:!w-full"
+          />
+        </div>
+        <div
+          className="flex flex-col bg-kumo-base"
+          style={{ flex: 1, minWidth: 0 }}
+          inert={compactLayout && fileDrawerOpen ? true : undefined}
+          aria-hidden={compactLayout && fileDrawerOpen ? true : undefined}
+        >
+          <div className={`${activeFile ? 'flex' : 'flex md:hidden'} h-11 shrink-0 items-center justify-between gap-2 border-b border-kumo-line bg-kumo-base px-2 md:h-9 md:px-3`}>
+            <WorkshopIconButton
+              aria-label="Open files"
+              title="Files"
+              onClick={() => setFileDrawerOpen(true)}
+              ref={fileDrawerTriggerRef}
+              className="!h-9 !w-9 md:!hidden"
+            >
+              <List size={18} />
+            </WorkshopIconButton>
+            <div className="min-w-0 flex-1 truncate text-[13px] leading-4 text-kumo-subtle md:text-[12px]">
+              {activeFile ? (
+                <>{activeFileModeLabel} <span className="font-mono font-medium text-kumo-default">{activeFile}</span></>
+              ) : 'Files'}
+            </div>
+            {activeFile && (
               <WorkshopIconButton
                 aria-label={`Download ${activeFile}`}
                 title="Download file"
                 onClick={() => handleFileDownload(activeFile)}
                 disabled={!activeFileDownloadable}
-                className="!h-6 !w-6"
+                className="!h-9 !w-9 md:!h-6 md:!w-6"
               >
                 <DownloadSimple size={14} weight="bold" />
               </WorkshopIconButton>
-            </div>
-          )}
+            )}
+          </div>
           <div className="min-h-0 flex-1">
             {isReady && !loading && displayedFiles.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center bg-kumo-base px-6 text-center">

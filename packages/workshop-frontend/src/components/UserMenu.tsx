@@ -19,7 +19,7 @@ export default function UserMenu() {
       <DropdownMenu.Trigger
         render={
           <button
-            className="w-7 h-7 cursor-pointer rounded-full flex items-center justify-center bg-kumo-tint hover:bg-kumo-fill transition-colors overflow-hidden"
+            className="flex h-11 w-11 cursor-pointer items-center justify-center overflow-hidden rounded-full bg-kumo-tint transition-colors hover:bg-kumo-fill md:h-7 md:w-7"
             title="Open profile menu"
             aria-label="Open profile menu"
           >

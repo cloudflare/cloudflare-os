@@ -216,11 +216,70 @@
     0 18px 40px 0 #00000033, 0 4px 12px 0 #0000002e;
 }
 
+:root {
+  --app-height: 100dvh;
+  --app-top: 0px;
+  --app-bottom: 0px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  min-height: 0;
+}
+
 body {
   @apply m-0 antialiased;
+  overflow: hidden;
   font-family: var(--font-sans);
   background-color: var(--color-kumo-base);
   color: var(--text-color-kumo-default);
+}
+
+.app-viewport {
+  position: fixed;
+  top: var(--app-top);
+  right: 0;
+  left: 0;
+  box-sizing: border-box;
+  height: var(--app-height);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+.visual-viewport-fixed {
+  position: fixed;
+  top: calc(var(--app-top) + env(safe-area-inset-top));
+  right: env(safe-area-inset-right);
+  bottom: calc(var(--app-bottom) + env(safe-area-inset-bottom));
+  left: env(safe-area-inset-left);
+}
+
+@layer utilities {
+  /* Turns a Kumo Dialog into a keyboard-safe bottom sheet on phones (and very short windows).
+     The `body` prefix and !important are load-bearing: they out-rank both Kumo's own dialog
+     styles and the per-dialog Tailwind `!` utilities (same layer, lower specificity), which
+     still apply on desktop where this block is inactive. */
+  @media (max-width: 767px), (max-height: 520px) {
+    body .responsive-dialog {
+      top: auto !important;
+      right: env(safe-area-inset-right) !important;
+      bottom: calc(var(--app-bottom) + env(safe-area-inset-bottom)) !important;
+      left: env(safe-area-inset-left) !important;
+      width: calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right)) !important;
+      max-width: none !important;
+      max-height: calc(var(--app-height) - 8px - env(safe-area-inset-top)) !important;
+      border-bottom-right-radius: 0 !important;
+      border-bottom-left-radius: 0 !important;
+      translate: 0 0 !important;
+      transform: none !important;
+    }
+
+    body .responsive-dialog :is(input, textarea, select) {
+      font-size: 16px;
+    }
+  }
 }
 
 ::selection {

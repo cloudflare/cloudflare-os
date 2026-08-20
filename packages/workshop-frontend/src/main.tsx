@@ -130,6 +130,29 @@ function AppWithConnection() {
   const [serverConfigError, setServerConfigError] = useState(false);
 
   useEffect(() => {
+    const viewport = window.visualViewport;
+    const updateHeight = () => {
+      const height = viewport?.height ?? window.innerHeight;
+      const top = viewport?.offsetTop ?? 0;
+      document.documentElement.style.setProperty('--app-height', `${height}px`);
+      document.documentElement.style.setProperty('--app-top', `${top}px`);
+      document.documentElement.style.setProperty(
+        '--app-bottom',
+        `${Math.max(0, window.innerHeight - top - height)}px`,
+      );
+    };
+    updateHeight();
+    viewport?.addEventListener('resize', updateHeight);
+    viewport?.addEventListener('scroll', updateHeight);
+    window.addEventListener('resize', updateHeight);
+    return () => {
+      viewport?.removeEventListener('resize', updateHeight);
+      viewport?.removeEventListener('scroll', updateHeight);
+      window.removeEventListener('resize', updateHeight);
+    };
+  }, []);
+
+  useEffect(() => {
     let cb = () => setRpcState({ stub: currentStub, connectionLost: isConnectionLost });
     notifyCurrentStubUpdated.add(cb);
     return () => { notifyCurrentStubUpdated.delete(cb); };
@@ -167,8 +190,12 @@ function AppWithConnection() {
       <RpcContext.Provider value={rpcState}>
         <ServerConfigErrorContext.Provider value={serverConfigError}>
           <ServerConfigContext.Provider value={serverConfig}>
-            <AnnouncementBanner />
-            <RouterProvider router={router} />
+            <div className="app-viewport flex min-w-0 flex-col overflow-hidden">
+              <AnnouncementBanner />
+              <div className="h-full min-h-0 flex-1">
+                <RouterProvider router={router} />
+              </div>
+            </div>
           </ServerConfigContext.Provider>
         </ServerConfigErrorContext.Provider>
       </RpcContext.Provider>

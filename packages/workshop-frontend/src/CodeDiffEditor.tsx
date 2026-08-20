@@ -75,6 +75,7 @@ export default function CodeDiffEditor({
   const [editorMountVersion, setEditorMountVersion] = useState(0)
   const [originalEditorMountVersion, setOriginalEditorMountVersion] = useState(0)
   const [canSplitDiff, setCanSplitDiff] = useState(false)
+  const [isCompact, setIsCompact] = useState(false)
   const [diffLayoutPreference, setDiffLayoutPreference] = useState<DiffLayoutPreference>(getInitialDiffLayoutPreference)
   const [yjsVersion, setYjsVersion] = useState(0)
   const [lineChanges, setLineChanges] = useState<editor.ILineChange[] | null>(null)
@@ -118,7 +119,10 @@ export default function CodeDiffEditor({
     const container = containerRef.current
     if (!container) return
 
-    const update = (width: number) => setCanSplitDiff(width >= SPLIT_DIFF_MIN_WIDTH)
+    const update = (width: number) => {
+      setCanSplitDiff(width >= SPLIT_DIFF_MIN_WIDTH)
+      setIsCompact(width < 640)
+    }
     update(container.getBoundingClientRect().width)
 
     const observer = new ResizeObserver(entries => {
@@ -362,7 +366,7 @@ export default function CodeDiffEditor({
     fontFamily: monoFont,
     fontLigatures: false,
     minimap: { enabled: false },
-    wordWrap: 'off',
+    wordWrap: isCompact ? 'on' : 'off',
     scrollBeyondLastLine: false,
     renderLineHighlight: 'none',
     selectOnLineNumbers: true,
@@ -370,8 +374,8 @@ export default function CodeDiffEditor({
     cursorStyle: 'line',
     glyphMargin: false,
     folding: false,
-    lineDecorationsWidth: 12,
-    lineNumbersMinChars: 4,
+    lineDecorationsWidth: isCompact ? 8 : 12,
+    lineNumbersMinChars: isCompact ? 3 : 4,
     overviewRulerLanes: 0,
     hideCursorInOverviewRuler: true,
     renderValidationDecorations: 'editable',
@@ -391,7 +395,7 @@ export default function CodeDiffEditor({
     insertSpaces: true,
     contextmenu: true,
     mouseWheelZoom: false,
-  }), [])
+  }), [isCompact])
 
   const layoutButtonClass = (active: boolean, disabled = false) => (
     `inline-flex h-[22px] w-[22px] items-center justify-center rounded-md border transition-colors ${
@@ -415,7 +419,7 @@ export default function CodeDiffEditor({
   return (
     <div ref={containerRef} className="flex min-h-0 overflow-hidden bg-kumo-base" style={{ height }}>
       <div
-        className="gadgets-diff-surface relative m-4 min-h-0 flex-1 overflow-hidden rounded-[10px] border border-kumo-line bg-kumo-base"
+        className="gadgets-diff-surface relative min-h-0 flex-1 overflow-hidden bg-kumo-base md:m-4 md:rounded-[10px] md:border md:border-kumo-line"
         style={{ isolation: 'isolate' }}
       >
         <div className="absolute right-3 top-3 flex items-center gap-2" style={{ zIndex: 1 }}>

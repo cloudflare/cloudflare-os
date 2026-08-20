@@ -715,8 +715,8 @@ function ConnectorsPage() {
     accounts.length === 0
 
   return (
-    <div className="min-h-[calc(100vh-3.5rem-1px)] bg-kumo-base">
-      <div className="mx-auto w-full max-w-5xl px-4 py-12 sm:px-8 sm:py-14">
+    <div className="h-full overflow-y-auto bg-kumo-base">
+      <div className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-8 sm:py-14">
         <header className="mb-8 grid gap-8 lg:grid-cols-[minmax(0,540px)_444px] lg:items-center lg:justify-between">
           <div>
             <h1 className="m-0 text-3xl font-semibold leading-tight tracking-tight text-kumo-default sm:text-[34px]">

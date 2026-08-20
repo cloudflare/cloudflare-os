@@ -39,7 +39,7 @@ export default function ConnectionConfigModal({
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog size="base" className="p-0 overflow-hidden">
+      <Dialog size="base" className="responsive-dialog overflow-hidden p-0">
         {/* Header */}
         <div className="flex items-center gap-3 px-5 pt-5 pb-4">
           <div
