@@ -97,10 +97,11 @@ function isEmptyOp(op: CodeOp): boolean {
 // Drop the given gadgets' entries from an op (an epoch reset marks gadgets discontinuous:
 // pending ops touching them would be rejected as bridge-ineligible anyway).
 function dropGadgetsFromOp(op: CodeOp, gadgets: ReadonlySet<WorkpieceId>): CodeOp {
-  if (![...gadgets].some(id => String(id) in op)) return op
+  if (![...gadgets].some(id => id in op)) return op
   const out: CodeOp = {}
   for (const [key, entries] of Object.entries(op)) {
-    if (!gadgets.has(Number(key))) out[key] = entries
+    const gadgetId = Number(key)
+    if (!gadgets.has(gadgetId)) out[gadgetId] = entries
   }
   return out
 }

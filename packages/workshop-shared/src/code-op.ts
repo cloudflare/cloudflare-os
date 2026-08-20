@@ -80,6 +80,9 @@ export type FileOp = { edit: TextOp } | { set: string } | { remove: true };
  * One code change: for each touched gadget, a list of `[path, FileOp]` entries. Keys of the
  * outer object are gadget ids (WorkpieceIds) in canonical decimal form; an empty object is the
  * identity op, and a present gadget entry must be a non-empty list with no duplicate paths.
+ * The index signature is `number`, but object keys are strings at runtime and on the wire, so
+ * canonical decimal form is an invariant `validateCodeOpSchema` enforces rather than one the
+ * type states -- and iteration still yields string keys (see `opGadgets`).
  * Plain JSON, treated as immutable everywhere -- functions in this module share subtrees
  * between inputs and outputs rather than copying. Ops produced by this module list entries in
  * sorted path order, but consumers must not require that of received ops (entry order has no
@@ -93,7 +96,7 @@ export type FileOp = { edit: TextOp } | { set: string } | { remove: true };
  * files in RPC transit. Gadget ids are safe as keys precisely because the canonical-decimal
  * rule excludes every such name.
  */
-export type CodeOp = { [gadgetId: string]: [path: string, op: FileOp][] };
+export type CodeOp = { [gadgetId: number]: [path: string, op: FileOp][] };
 
 // =======================================================================================
 // Content model
