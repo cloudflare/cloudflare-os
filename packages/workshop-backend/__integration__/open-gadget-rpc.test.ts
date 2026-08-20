@@ -220,3 +220,19 @@ describe("workspace session across a user-DO-only reset", () => {
     expect(await gadget.getTitle()).toBe("post-reset gadget");
   });
 });
+
+// Smoke the paged action-log RPCs against a real workspace DO: proves the @validateRpc wiring
+// accepts the option shapes (the semantics live in __tests__/action-log-pagination.test.ts).
+// Runs after the reset tests so this session's DOs aren't torn down by abortAllDurableObjects().
+describe("paged action-log reads", () => {
+  it("answers scanPendingActions and listActions on a fresh workspace", async () => {
+    using publicApi = await connect();
+    const account = await createAccount(publicApi, "actionlog");
+    using authenticated = await publicApi.authenticate(account.token);
+    using workspace = await authenticated.newGadget();
+
+    expect(await workspace.scanPendingActions()).toEqual({ entries: [], throughId: 0 });
+    expect(await workspace.listActions({ limit: 5, filter: "action" }))
+        .toEqual({ entries: [] });
+  });
+});
