@@ -94,7 +94,9 @@ async function listDriveFiles(
     ({ files } = await drive.listFiles({ mimeType, nameContains: query }));
   } catch (error) {
     if (error instanceof DriveApiDisabledError) {
-      throw new Error(`${resourceName} search requires ${error.message}.`, { cause: error });
+      throw new Error(
+        `${resourceName} search requires the Google Drive API to be enabled for this OAuth ` +
+        "project.", { cause: error });
     }
     throw error;
   }

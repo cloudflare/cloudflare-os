@@ -52,6 +52,61 @@ export type DriveFileList = {
 export class DriveApiDisabledError extends Error {}
 
 /**
+ * How much of an error body we are willing to parse.
+ *
+ * The body is never surfaced, so this only caps the work done to read a machine-readable reason
+ * out of it.
+ */
+const MAX_ERROR_BODY_CHARS = 4096;
+
+/** Google's `reason` for "the API is not enabled on this project". */
+const API_DISABLED_REASON = "accessNotConfigured";
+
+/**
+ * Google's error envelope. Only `reason` is read: it is the stable machine-readable field, whereas
+ * `message` is prose that can quote the request back.
+ */
+type GoogleErrorPayload = {
+  error?: { errors?: { reason?: unknown }[] };
+};
+
+/**
+ * Google's own `reason` for a failed response, if it declared one.
+ *
+ * Tolerant by design — an error path must not throw a second error — so a body that is truncated,
+ * not JSON, or shaped differently simply yields no reason.
+ */
+async function errorReason(response: Response): Promise<string | undefined> {
+  let text = (await response.text().catch(() => "")).slice(0, MAX_ERROR_BODY_CHARS);
+  let payload: GoogleErrorPayload;
+  try {
+    payload = JSON.parse(text) as GoogleErrorPayload;
+  } catch {
+    return undefined;
+  }
+  let reason = payload.error?.errors?.[0]?.reason;
+  // Constrained to an identifier so a reason cannot smuggle arbitrary text into the message.
+  return typeof reason === "string" && /^\w{1,64}$/.test(reason) ? reason : undefined;
+}
+
+/**
+ * Turns a failed Drive response into an error safe to hand back.
+ *
+ * Only the status and Google's `reason` travel with it. The response body is deliberately dropped:
+ * Drive quotes the `q` it was sent back in some messages, and this error crosses the configurator
+ * RPC boundary into a UI that may forward it to the error reporter.
+ */
+async function driveError(response: Response): Promise<Error> {
+  let reason = await errorReason(response);
+  if (response.status === 403 && reason === API_DISABLED_REASON) {
+    return new DriveApiDisabledError(
+      "the Google Drive API is not enabled for this OAuth project");
+  }
+  return new Error(
+    `Google Drive API request failed: ${response.status}${reason ? ` (${reason})` : ""}`);
+}
+
+/**
  * Escapes a value for interpolation into a Drive `q` string literal.
  *
  * Drive literals are single-quoted, and Google documents `\'` and `\\` as the escapes. Without
@@ -100,14 +155,7 @@ export class DriveApi {
       { headers: { Accept: "application/json" } },
       this.getAccessToken);
 
-    if (!response.ok) {
-      let text = await response.text();
-      if (response.status === 403 && text.includes("Google Drive API has not been used")) {
-        throw new DriveApiDisabledError(
-          "the Google Drive API is not enabled for this OAuth project");
-      }
-      throw new Error(`Google Drive API request failed: ${response.status} ${text}`);
-    }
+    if (!response.ok) throw await driveError(response);
     return await response.json<T>();
   }
 }

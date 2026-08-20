@@ -73,7 +73,9 @@ export class CursorPager<Item, Entry> implements Pager<Entry> {
    */
   next(): Promise<Entry[] | null> {
     let result = this.#tail.then(() => this.#nextPage());
-    this.#tail = result.catch(() => {});
+    // Chain on completion, not on the value: holding the resolved page here would pin a page of
+    // results in memory until the next call.
+    this.#tail = result.then(() => undefined, () => undefined);
     return result;
   }
 

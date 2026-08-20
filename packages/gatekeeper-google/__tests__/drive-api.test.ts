@@ -3,8 +3,13 @@ import {
   DRIVE_FILE_FIELDS, DriveApi, DriveApiDisabledError, buildDriveQuery, escapeDriveQueryLiteral,
 } from "../src/drive-api";
 
-const DRIVE_DISABLED_BODY = JSON.stringify({
-  error: { message: "Google Drive API has not been used in project 1234 before or it is disabled." },
+/** Google's real error envelope for an API that is not enabled on the project. */
+const API_DISABLED_BODY = JSON.stringify({
+  error: {
+    code: 403,
+    message: "Google Drive API has not been used in project 1234 before or it is disabled.",
+    errors: [{ domain: "usageLimits", reason: "accessNotConfigured" }],
+  },
 });
 
 /** Installs a fetch stub and returns the URLs and headers it was called with. */
@@ -130,22 +135,80 @@ describe("listFiles", () => {
 });
 
 describe("error handling", () => {
-  it("distinguishes the API-not-enabled 403, which the admin must fix", async () => {
-    stubFetch([new Response(DRIVE_DISABLED_BODY, { status: 403 })]);
+  it("distinguishes the API-not-enabled 403 by Google's reason, which the admin must fix", async () => {
+    stubFetch([new Response(API_DISABLED_BODY, { status: 403 })]);
     await expect(api().listFiles()).rejects.toBeInstanceOf(DriveApiDisabledError);
   });
 
-  it("reports an ordinary 403 as a plain failure", async () => {
-    stubFetch([new Response("insufficient scope", { status: 403 })]);
+  it("does not mistake another 403 for the API being disabled", async () => {
+    stubFetch([new Response(JSON.stringify({
+      error: { errors: [{ reason: "insufficientPermissions" }] },
+    }), { status: 403 })]);
     let error = await api().listFiles().catch(e => e);
     expect(error).not.toBeInstanceOf(DriveApiDisabledError);
-    expect(error.message).toContain("403");
+    expect(error.message).toBe("Google Drive API request failed: 403 (insufficientPermissions)");
   });
 
-  it("surfaces the status and body of an unexpected failure", async () => {
-    stubFetch([new Response("boom", { status: 400 })]);
+  it("reports the status alone when Google declared no reason", async () => {
+    stubFetch([new Response("{}", { status: 404 })]);
     await expect(api().listFiles())
-      .rejects.toThrow("Google Drive API request failed: 400 boom");
+      .rejects.toThrow("Google Drive API request failed: 404");
+  });
+
+  // The provider's prose can quote the `q` we sent, and this error reaches a UI that may forward
+  // it to the error reporter.
+  it("never puts the response body in the error", async () => {
+    let body = JSON.stringify({
+      error: {
+        message: "Invalid query: name contains 'Acme Q3 acquisition'",
+        errors: [{ reason: "invalid" }],
+      },
+    });
+    stubFetch([new Response(body, { status: 400 })]);
+    let error = await api().listFiles().catch(e => e);
+    expect(error.message).toBe("Google Drive API request failed: 400 (invalid)");
+    expect(error.message).not.toContain("Acme");
+  });
+
+  it("survives a non-JSON error body", async () => {
+    stubFetch([new Response("<html>400 Bad Request</html>", { status: 400 })]);
+    await expect(api().listFiles())
+      .rejects.toThrow("Google Drive API request failed: 400");
+  });
+
+  it("survives an empty error body", async () => {
+    stubFetch([new Response("", { status: 403 })]);
+    let error = await api().listFiles().catch(e => e);
+    expect(error).not.toBeInstanceOf(DriveApiDisabledError);
+    expect(error.message).toBe("Google Drive API request failed: 403");
+  });
+
+  it("ignores a reason that is not a plain identifier", async () => {
+    stubFetch([new Response(JSON.stringify({
+      error: { errors: [{ reason: "not an identifier: leaked 'secret'" }] },
+    }), { status: 400 })]);
+    let error = await api().listFiles().catch(e => e);
+    expect(error.message).toBe("Google Drive API request failed: 400");
+  });
+
+  it("ignores a non-string reason", async () => {
+    stubFetch([new Response(JSON.stringify({
+      error: { errors: [{ reason: { nested: true } }] },
+    }), { status: 400 })]);
+    await expect(api().listFiles())
+      .rejects.toThrow("Google Drive API request failed: 400");
+  });
+
+  // A body large enough that parsing it whole would be the expensive part of failing.
+  it("caps how much of an oversized body it parses", async () => {
+    let padded = "x".repeat(64 * 1024);
+    stubFetch([new Response(JSON.stringify({
+      error: { message: padded, errors: [{ reason: "invalid" }] },
+    }), { status: 400 })]);
+    let error = await api().listFiles().catch(e => e);
+    // Truncation makes the JSON unparseable, so no reason survives — and no body leaks either.
+    expect(error.message).toBe("Google Drive API request failed: 400");
+    expect(error.message).not.toContain("x");
   });
 });
 
@@ -194,5 +257,16 @@ describe("auth retry", () => {
 
     expect((await drive.listFiles()).files).toHaveLength(1);
     expect(calls).toHaveLength(2);
+  });
+
+  it("retries a 5xx, then reports it sanitized once the budget runs out", async () => {
+    let drive = new DriveApi(async () => "tok");
+    let calls = stubFetch(() => new Response(JSON.stringify({
+      error: { errors: [{ reason: "backendError" }] },
+    }), { status: 503 }));
+
+    await expect(drive.listFiles())
+      .rejects.toThrow("Google Drive API request failed: 503 (backendError)");
+    expect(calls).toHaveLength(3);
   });
 });
