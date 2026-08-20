@@ -35,7 +35,7 @@ import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker"
 import { completeAgentCatalogSnapshot, normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
 import { SharingManager, SharingCaller, CollaboratorRecord, ShareKeyRecord } from "./sharing";
-import { AutoApprovalDrainer } from "./auto-approval";
+import { AutoApprovalDrainer, handleActionApplyFailure } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext, traced } from "./observability";
 import { wrapDoStubForTelemetry } from "./do-telemetry";
@@ -528,8 +528,12 @@ export type ActionRecord = {
   appliedAt?: Date;
   action: number;  // action key assigned by the gatekeeper, passed back on apply/reject/revert
   description: ActionDescription;
-  resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
-  autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
+  /** Set when resolved (approved/rejected); absent while pending or on legacy records. */
+  resolvedBy?: AiChatAuthorInfo;
+  /** True when applied by an auto-approval rule rather than a human. */
+  autoApproved?: boolean;
+  /** Why the action became invalid before dispatch. */
+  invalidationReason?: string;
 } | {
   type: "observation";
   description: ObservationDescription;
@@ -738,6 +742,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         description: record.description,
         resolvedBy: record.resolvedBy,
         autoApproved: record.autoApproved,
+        invalidationReason: record.invalidationReason,
       };
     case "bindHook":
       return {
@@ -2657,14 +2662,32 @@ class OverseerImpl implements AgentHooks {
   // requiring them here guarantees the audit log always records the resolving user and whether it
   // was applied automatically. For an auto-approval, `resolvedBy` is the user who enabled the rule.
   async applyPendingAction(record: ActionRecord & {type: "action"},
-                           resolvedBy: AiChatAuthorInfo, autoApproved: boolean): Promise<void> {
+                           resolvedBy: AiChatAuthorInfo, autoApproved: boolean)
+      : Promise<"approved" | "stopped"> {
     let gatekeeper = this.getGatekeeperFacet(record.gatekeeperId);
-    await gatekeeper.applyAction(record.action);
+    let failureReason: string | undefined;
+    try {
+      await gatekeeper.applyAction(record.action);
+    } catch (error) {
+      failureReason = handleActionApplyFailure(this.storage, record.gatekeeperId, error);
+      if (failureReason === undefined) throw error;
+    }
+    if (failureReason !== undefined) {
+      // Keep the established wire state so an older browser renders this as denied rather than
+      // claiming the undispatched action was approved. The reason distinguishes invalidation.
+      record.state = "rejected";
+      record.appliedAt = new Date();
+      record.resolvedBy = resolvedBy;
+      record.invalidationReason = failureReason;
+      this.storage.actions.put(record);
+      return "stopped";
+    }
     record.state = "approved";
     record.appliedAt = new Date();
     record.resolvedBy = resolvedBy;
     record.autoApproved = autoApproved;
     this.storage.actions.put(record);
+    return "approved";
   }
 
   // Apply all currently-eligible pending actions of the given gatekeeper, in ascending id order.
@@ -7828,7 +7851,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Resolve the approver's identity before applying, so a failed profile fetch can't leave the
     // action applied in the world but still "pending" in storage.
     let profile = await this.#getClientProfile();
-    await this.impl.applyPendingAction(action, profile, false);
+    const outcome = await this.impl.applyPendingAction(action, profile, false);
+    if (outcome === "stopped") return;
 
     // If this was an awaited agent action, resume only after all awaited actions in the turn are
     // approved. If applyPendingAction throws, the action stays pending and the turn stays suspended.
@@ -7944,7 +7968,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Only resume when every awaited action in the turn has been decided and all were approved.
     if (awaited.length === 0) return;                       // No awaited action in current turn.
     if (awaited.some(r => r.state === "pending")) return;   // Still waiting on a decision.
-    if (awaited.some(r => r.state === "rejected")) return;  // Denial leaves the turn ended.
+    if (awaited.some(r => r.state === "rejected")) return;
 
     // Persist one note for replay; raw action cards are not surfaced to the LLM. Concurrent
     // approvals could both pass the gate above and append duplicate notes (the DO input gate is

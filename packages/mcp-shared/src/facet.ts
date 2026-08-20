@@ -2,12 +2,13 @@
 // identity, props, labels, trust source, and account lookup.
 
 import { DurableObject, type RpcStub } from "cloudflare:workers";
-import type {
-  ActionKind,
-  ApprovalQueue,
-  Gatekeeper,
-  GatekeeperUserVerifier,
-  ResourceDescription,
+import {
+  createActionDispatchStoppedError,
+  type ActionKind,
+  type ApprovalQueue,
+  type Gatekeeper,
+  type GatekeeperUserVerifier,
+  type ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 
 import { ActionStore, REVERT_UNSUPPORTED_MESSAGE } from "./action-store.js";
@@ -17,8 +18,9 @@ import {
   scopedCatalog,
   type ScopedCatalog,
 } from "./catalog.js";
-import type { McpClient } from "./client.js";
+import type { McpClient, McpTool } from "./client.js";
 import {
+  McpConnectionChangedError,
   withClient,
   type ConnectionAccount,
   type ConnectionEnv,
@@ -26,6 +28,11 @@ import {
 } from "./connection.js";
 import type { McpLog } from "./log.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS } from "./fetch.js";
+import {
+  isPortalNativeTool,
+  looksLikePortal,
+  PORTAL_LIST_SERVERS_TOOL,
+} from "./portal.js";
 import { formatToolScope, scopeAllows, type ToolScope } from "./scope.js";
 import { matchesToolQuery, toolQueryTerms, MAX_SEARCH_RESULTS } from "./tool-search.js";
 import { McpSessionBase, type McpSessionHost, type StoredAction } from "./session.js";
@@ -34,6 +41,7 @@ import { observerRefusalMessage } from "./sharing-policy.js";
 import {
   actionKindFor,
   classifyTool,
+  toolPolicyFingerprint,
   type ClassifiedTool,
   type ServerTrust,
 } from "./tools.js";
@@ -64,6 +72,11 @@ export abstract class McpFacetBase<
   #hydrated = new HydratedTools();
   #activeDiscoveries = 0;
   #waitingDiscoveries: Array<() => void> = [];
+  #resolvingCalls = new Map<string, Promise<{
+    entry: ClassifiedTool;
+    policyFingerprint: string;
+    connectionGeneration: number;
+  } | undefined>>();
 
   #actions(): ActionStore {
     return this.#actionStore ??= new ActionStore(this.ctx.storage.sql);
@@ -215,6 +228,53 @@ export abstract class McpFacetBase<
     });
   }
 
+  async #freshTool(
+    client: McpClient,
+    name: string,
+    catalog: ScopedCatalog,
+    deadline?: number,
+  ): Promise<McpTool | undefined> {
+    if (!catalog.isPortal && isPortalNativeTool(name)) {
+      const probe = await client.listTools(
+        2,
+        tool => tool.name === name || tool.name === PORTAL_LIST_SERVERS_TOOL,
+        deadline,
+      );
+      if (looksLikePortal(probe.tools, { truncated: probe.truncated, cap: 2 })) return undefined;
+      return probe.tools.find(tool => tool.name === name);
+    }
+    return client.findTool(name, deadline);
+  }
+
+  /** Resolves current dispatch policy and the account generation it belongs to. */
+  resolveToolForCall(name: string): Promise<{
+    entry: ClassifiedTool;
+    policyFingerprint: string;
+    connectionGeneration: number;
+  } | undefined> {
+    const existing = this.#resolvingCalls.get(name);
+    if (existing) return existing;
+    const resolving = this.runDiscovery(async deadline => {
+      if (!scopeAllows(this.scope, name, this.scope.serverId !== undefined)) return undefined;
+      const catalog = await this.catalog(deadline);
+      if (!scopeAllows(this.scope, name, catalog.isPortal)) return undefined;
+      return this.call(async (client, connectionGeneration) => {
+        const tool = await this.#freshTool(client, name, catalog);
+        if (!tool) return undefined;
+        const entry = classifyTool(tool, this.trust);
+        return {
+          entry,
+          policyFingerprint: toolPolicyFingerprint(tool, this.trust),
+          connectionGeneration,
+        };
+      }, { deadline });
+    }).finally(() => {
+      if (this.#resolvingCalls.get(name) === resolving) this.#resolvingCalls.delete(name);
+    });
+    this.#resolvingCalls.set(name, resolving);
+    return resolving;
+  }
+
   /** Returns action kinds that this facet's current catalog permits auto-approving. */
   async getAutoApprovableActions(): Promise<ActionKind[]> {
     return (await this.tools())
@@ -244,8 +304,12 @@ export abstract class McpFacetBase<
   async removeObserver(_id: string): Promise<void> {}
 
   /** Stages an MCP action for approval. */
-  stageAction(toolName: string, args: Record<string, unknown>): StoredAction {
-    return this.#actions().stage(toolName, args);
+  stageAction(
+    toolName: string,
+    args: Record<string, unknown>,
+    snapshot: { policyFingerprint: string; connectionGeneration: number },
+  ): StoredAction {
+    return this.#actions().stage(toolName, args, snapshot);
   }
 
   /** Discards an action whose approval submission failed. */
@@ -260,8 +324,49 @@ export abstract class McpFacetBase<
 
   /** Applies an approved action without retrying an outcome-unknown write. */
   async applyAction(action: number): Promise<void> {
-    await this.#actions().apply(
-      action, fn => this.call(fn, { retryOnExpiry: false }), this.log);
+    const stored = this.#actions().get(action);
+    if (!stored) throw new Error(`MCP action ${action} is unknown.`);
+    const snapshotMissing = stored.connectionGeneration === undefined ||
+      stored.policyFingerprint === undefined;
+    const safeToRestage = stored.state === "pending" ||
+      (stored.state === "failed" && stored.retryable !== false);
+    if (snapshotMissing && safeToRestage) {
+      const reason =
+        "This MCP action predates current approval policy checks. Stage the call again.";
+      this.#actions().markRestageRequired(action, reason);
+      throw createActionDispatchStoppedError("restage", reason);
+    }
+    return this.#actions().apply(
+      action,
+      fn => this.call(async (client, connectionGeneration) => {
+        const dispatch = await this.runDiscovery(async deadline => {
+          const catalog = await this.catalog(deadline);
+          if (stored.connectionGeneration === undefined || stored.policyFingerprint === undefined
+              || connectionGeneration !== stored.connectionGeneration) {
+            throw createActionDispatchStoppedError("invalidated",
+              "This MCP connection changed after approval was requested. Stage the call again.");
+          }
+          if (!scopeAllows(this.scope, stored.toolName, catalog.isPortal)) {
+            throw createActionDispatchStoppedError("invalidated",
+              "This MCP tool is no longer allowed by the binding. Stage the call again.");
+          }
+          const tool = await this.#freshTool(client, stored.toolName, catalog, deadline);
+          if (!tool || toolPolicyFingerprint(tool, this.trust) !== stored.policyFingerprint) {
+            throw createActionDispatchStoppedError("invalidated",
+              "This MCP tool's approval policy changed. Review and stage the call again.");
+          }
+          return () => fn(client);
+        });
+        return dispatch();
+      }, { retryOnExpiry: false }).catch(error => {
+        if (error instanceof McpConnectionChangedError) {
+          throw createActionDispatchStoppedError("invalidated",
+            "This MCP connection changed after approval was requested. Stage the call again.");
+        }
+        throw error;
+      }),
+      this.log,
+    );
   }
 
   /** Rejects a pending action. */
@@ -276,7 +381,7 @@ export abstract class McpFacetBase<
 
   /** Runs a call against this facet's endpoint and account. */
   call<T>(
-    fn: (client: McpClient) => Promise<T>,
+    fn: (client: McpClient, connectionGeneration: number) => Promise<T>,
     options?: WithClientOptions,
   ): Promise<T> {
     return withClient(this.env, this.account(), this.endpoint, fn, options);

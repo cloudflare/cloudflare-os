@@ -1470,7 +1470,7 @@ export interface CodeSubscriber {
  * Specifies the state of an action in the action log:
  * * pending: Action has not been applied yet. It is waiting for approval.
  * * approved: Action was approved and applied.
- * * rejected: Action was rejected by the user.
+ * * rejected: Action was rejected by the user, or became invalid before dispatch.
  */
 export type ActionState = "pending" | "approved" | "rejected";
 
@@ -1507,6 +1507,9 @@ export type ActionLogEntry = {
    * clicking Approve. Only ever set alongside state "approved" (there is no automatic rejection).
    */
   autoApproved?: boolean;
+
+  /** Why an approved action became invalid before dispatch. Present only when state is rejected. */
+  invalidationReason?: string;
 } | {
   type: "observation";
   description: ObservationDescription;

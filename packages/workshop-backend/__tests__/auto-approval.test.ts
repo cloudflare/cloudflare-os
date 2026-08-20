@@ -1,8 +1,17 @@
 import { describe, it, expect } from "vitest";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
-import { AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn } from "../src/auto-approval.js";
+import {
+  AutoApprovalDrainer,
+  AutoApprovalStorage,
+  ApplyPendingActionFn,
+  clearAutoApprovalRules,
+  handleActionApplyFailure,
+} from "../src/auto-approval.js";
 import type { ActionRecord, AutoApproveTagRecord } from "../src/overseer.js";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
+import {
+  createActionDispatchStoppedError,
+} from "@gadgets/workshop-shared/gatekeeper";
 import { makeMockStorage } from "./mock-storage.js";
 
 function makeStorage(): AutoApprovalStorage {
@@ -66,6 +75,7 @@ function makeImmediateApply(storage: AutoApprovalStorage) {
       fresh.autoApproved = autoApproved;
       storage.actions.put(fresh);
     }
+    return "approved";
   };
   return { applyFn, calls };
 }
@@ -78,7 +88,7 @@ function makeControlledApply(storage: AutoApprovalStorage) {
   let gates: Array<() => void> = [];
   let applyFn: ApplyPendingActionFn = (record, resolvedBy, autoApproved) => {
     calls.push(record.id);
-    return new Promise<void>((resolve) => {
+    return new Promise<"approved">((resolve) => {
       gates.push(() => {
         let fresh = storage.actions.get(record.id);
         if (fresh && fresh.type === "action") {
@@ -88,7 +98,7 @@ function makeControlledApply(storage: AutoApprovalStorage) {
           fresh.autoApproved = autoApproved;
           storage.actions.put(fresh);
         }
-        resolve();
+        resolve("approved");
       });
     });
   };
@@ -156,6 +166,93 @@ describe("AutoApprovalDrainer.drain", () => {
     expect(getAction(storage, 3).state).toBe("approved");
   });
 
+  it("allows auto-approval again after the user explicitly re-enables a cleared rule", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    putAction(storage, 1);
+    putAction(storage, 2);
+    const calls: number[] = [];
+    const apply: ApplyPendingActionFn = async record => {
+      calls.push(record.id);
+      if (record.id === 1) {
+        record.state = "rejected";
+        record.invalidationReason = "Policy changed.";
+        clearAutoApprovalRules(storage, GK);
+        storage.actions.put(record);
+        return "stopped";
+      }
+      record.state = "approved";
+      storage.actions.put(record);
+      return "approved";
+    };
+
+    await new AutoApprovalDrainer(storage, apply).drain(GK);
+
+    expect(calls).toEqual([1]);
+    expect(getAction(storage, 2).state).toBe("pending");
+
+    expect(storage.autoApproveTags.get(`${GK}:edit`)).toBeUndefined();
+    enableRule(storage);
+    await new AutoApprovalDrainer(storage, apply).drain(GK);
+
+    expect(calls).toEqual([1, 2]);
+    expect(getAction(storage, 2).state).toBe("approved");
+  });
+
+  it("does not restart after invalidation when a concurrent drain requested a rerun", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    putAction(storage, 1);
+    putAction(storage, 2);
+    const calls: number[] = [];
+    let release!: () => void;
+    const apply: ApplyPendingActionFn = record => {
+      calls.push(record.id);
+      return new Promise(resolve => {
+        release = () => {
+          record.state = "rejected";
+          record.invalidationReason = "Policy changed.";
+          storage.actions.put(record);
+          resolve("stopped");
+        };
+      });
+    };
+    const drainer = new AutoApprovalDrainer(storage, apply);
+
+    const first = drainer.drain(GK);
+    await flush();
+    await drainer.drain(GK);
+    release();
+    await first;
+
+    expect(calls).toEqual([1]);
+    expect(getAction(storage, 2).state).toBe("pending");
+  });
+
+  it("stops when a later candidate is invalidated after the drain snapshot", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    putAction(storage, 1);
+    putAction(storage, 2);
+    putAction(storage, 3);
+    let apply = makeControlledApply(storage);
+    let draining = new AutoApprovalDrainer(storage, apply.applyFn).drain(GK);
+    await flush();
+
+    let invalidated = getAction(storage, 2);
+    invalidated.state = "rejected";
+    invalidated.invalidationReason = "Policy changed.";
+    storage.actions.put(invalidated);
+    apply.releaseNext();
+    await flush();
+    const callsAfterInvalidation = [...apply.calls];
+    if (apply.inFlight() > 0) apply.releaseNext();
+    await draining;
+
+    expect(callsAfterInvalidation).toEqual([1]);
+    expect(getAction(storage, 3).state).toBe("pending");
+  });
+
   // Two concurrent drains for the same gatekeeper must not double-apply. The input gate is open
   // across the apply await, so without the single-flight guard the second drain's pending re-check
   // would see the still-"pending" record and apply it again.
@@ -210,5 +307,75 @@ describe("AutoApprovalDrainer.drain", () => {
     expect(apply.calls).toEqual([1, 2]);
     expect(getAction(storage, 1).state).toBe("approved");
     expect(getAction(storage, 2).state).toBe("approved");
+  });
+});
+
+describe("clearAutoApprovalRules", () => {
+  it("removes every rule for the invalidated gatekeeper and leaves other connections alone", () => {
+    const storage = makeStorage();
+    enableRule(storage, "edit", GK);
+    enableRule(storage, "delete", GK);
+    enableRule(storage, "edit", 2);
+
+    clearAutoApprovalRules(storage, GK);
+
+    expect(storage.autoApproveTags.get(`${GK}:edit`)).toBeUndefined();
+    expect(storage.autoApproveTags.get(`${GK}:delete`)).toBeUndefined();
+    expect(storage.autoApproveTags.get("2:edit")).toBeDefined();
+  });
+
+  it("materializes the lazy rule list before deleting from its collection", () => {
+    let iterating = false;
+    const deleted: string[] = [];
+    const rules: AutoApproveTagRecord[] = [
+      { gatekeeperId: GK, actionKind: { tag: "edit", label: "Edits" }, enabledBy: ENABLER },
+      { gatekeeperId: GK, actionKind: { tag: "delete", label: "Deletes" }, enabledBy: ENABLER },
+    ];
+    const autoApproveTags = {
+      *list() {
+        iterating = true;
+        try {
+          yield* rules;
+        } finally {
+          iterating = false;
+        }
+      },
+      delete(key: string) {
+        if (iterating) throw new Error("collection iterator invalidated");
+        deleted.push(key);
+      },
+    } as unknown as AutoApprovalStorage["autoApproveTags"];
+
+    expect(() => clearAutoApprovalRules({ autoApproveTags }, GK)).not.toThrow();
+    expect(deleted).toEqual([`${GK}:edit`, `${GK}:delete`]);
+  });
+});
+
+describe("handleActionApplyFailure", () => {
+  it("preserves rules when an action predates approval snapshots", () => {
+    const storage = makeStorage();
+    enableRule(storage, "edit");
+    enableRule(storage, "delete");
+
+    expect(handleActionApplyFailure(
+      storage,
+      GK,
+      createActionDispatchStoppedError("restage", "Stage the call again."),
+    )).toBe("Stage the call again.");
+    expect([...storage.autoApproveTags.list()].map(rule => rule.actionKind.tag).toSorted())
+      .toEqual(["delete", "edit"]);
+  });
+
+  it("clears rules when the approval context changed", () => {
+    const storage = makeStorage();
+    enableRule(storage, "edit");
+    enableRule(storage, "delete");
+
+    expect(handleActionApplyFailure(
+      storage,
+      GK,
+      createActionDispatchStoppedError("invalidated", "The connection changed."),
+    )).toBe("The connection changed.");
+    expect([...storage.autoApproveTags.list()]).toEqual([]);
   });
 });

@@ -96,6 +96,9 @@ function activityStatus(
   if (record.state === 'pending') {
     return { label: 'Waiting', dotClass: 'bg-kumo-brand', textClass: 'text-kumo-strong' }
   }
+  if (record.type === 'action' && record.invalidationReason) {
+    return { label: 'Invalidated', dotClass: 'bg-kumo-danger', textClass: 'text-kumo-danger' }
+  }
   if (record.state === 'rejected') {
     return { label: 'Denied', dotClass: 'bg-kumo-danger', textClass: 'text-kumo-danger' }
   }
@@ -130,7 +133,13 @@ export default function Activity({
   } | null>(null)
   const toasts = useKumoToastManager()
 
-  const { pendingActions, historyGroups, historyTotal, historyShown } = useMemo(() => {
+  const {
+    pendingActions,
+    historyGroups,
+    historyTotal,
+    historyShown,
+    invalidationCount,
+  } = useMemo(() => {
     const records = [...actionsById.values()]
     const pending = records
       .filter(record => record.state === 'pending')
@@ -152,6 +161,9 @@ export default function Activity({
       historyGroups: groups,
       historyTotal: resolved.length,
       historyShown: filtered.length,
+      invalidationCount: records.filter(
+        record => record.type === 'action' && record.invalidationReason,
+      ).length,
     }
   }, [actionsById, historyFilter])
 
@@ -324,7 +336,10 @@ export default function Activity({
           )}
         </>
       ) : (
-        <AutoApprovalPanel overseer={overseer} reloadTrigger={autoApproveReloadTrigger} />
+        <AutoApprovalPanel
+          overseer={overseer}
+          reloadTrigger={`${autoApproveReloadTrigger ?? 0}:${invalidationCount}`}
+        />
       )}
 
       {confirmAutoApprove && (
@@ -351,7 +366,7 @@ function AutoApprovalPanel({
   reloadTrigger,
 }: {
   overseer: RpcStub<Overseer>
-  reloadTrigger?: number
+  reloadTrigger?: string | number
 }) {
   const { entries, isLoading, loadError, pending, refresh, setEnabled } = useAutoApproval(overseer)
   const { authenticatedApi } = useAuthenticatedApi()
@@ -610,6 +625,11 @@ function HistoryRow({
           {record.description.description && (
             <p className="m-0 whitespace-pre-wrap text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
               {record.description.description}
+            </p>
+          )}
+          {record.type === 'action' && record.invalidationReason && (
+            <p className="mb-0 mt-2 whitespace-pre-wrap text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-danger">
+              {record.invalidationReason}
             </p>
           )}
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11.5px] text-kumo-inactive">

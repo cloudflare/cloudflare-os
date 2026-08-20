@@ -5,11 +5,16 @@
 // supplies. The base never touches the Durable Object, the account, or the endpoint's credentials.
 
 import { RpcTarget, type RpcStub } from "cloudflare:workers";
-import type { ActionDescription, ActionKind, ApprovalQueue }
-  from "@gadgets/workshop-shared/gatekeeper";
+import {
+  getActionDispatchStopped,
+  type ActionDescription,
+  type ActionKind,
+  type ApprovalQueue,
+} from "@gadgets/workshop-shared/gatekeeper";
 
 import {
   MAX_TOOL_NAME_CHARS,
+  McpCallNotDispatchedError,
   type McpClient,
 } from "./client.js";
 import type { WithClientOptions } from "./connection.js";
@@ -46,6 +51,10 @@ export type StoredAction = {
    */
   state: "pending" | "applying" | "applied" | "rejected" | "failed";
   submittedAt: number;
+  /** Policy fingerprint the user approved, absent on actions staged by older code. */
+  policyFingerprint?: string;
+  /** Account connection generation the user approved, absent on actions staged by older code. */
+  connectionGeneration?: number;
   /** When the in-flight apply was claimed, for recovering a claim whose Durable Object died mid-call. */
   claimedAt?: number;
   /**
@@ -57,7 +66,7 @@ export type StoredAction = {
   retryable?: boolean;
   /** Populated once applied; delivered to the Gadget as an observation. */
   result?: Extract<McpCallResult, { status: "ok" }>;
-  /** Terminal failure reason retained for later collection. */
+  /** Terminal failure or invalidation reason retained for later collection. */
   error?: string;
 };
 
@@ -77,16 +86,27 @@ export interface McpSessionHost {
   searchTools(query: string): Promise<ClassifiedTool[]>;
   /** Finds one granted tool definition by exact wire name. */
   findTool(name: string): Promise<ClassifiedTool | undefined>;
-  /** Runs `fn` against an initialized client for this binding's endpoint. */
+  /** Resolves current dispatch policy and the account generation it belongs to. */
+  resolveToolForCall(name: string): Promise<{
+    entry: ClassifiedTool;
+    policyFingerprint: string;
+    connectionGeneration: number;
+  } | undefined>;
+
+  /** Runs `fn` against an initialized client and captured generation for this binding's endpoint. */
   call<T>(
-    fn: (client: McpClient) => Promise<T>,
+    fn: (client: McpClient, connectionGeneration: number) => Promise<T>,
     options?: WithClientOptions,
   ): Promise<T>;
 
   /** The approval-kind tag for one tool, namespaced so pre-approvals cannot cross servers. */
   actionKindFor(toolName: string): ActionKind;
 
-  stageAction(toolName: string, args: Record<string, unknown>): StoredAction;
+  stageAction(
+    toolName: string,
+    args: Record<string, unknown>,
+    snapshot: { policyFingerprint: string; connectionGeneration: number },
+  ): StoredAction;
   discardStagedAction(id: number): void;
   lookupAction(id: number): StoredAction | undefined;
 }
@@ -190,8 +210,9 @@ export class McpSessionBase extends RpcTarget {
     }
 
     const host = this.#host;
-    const entry = await host.findTool(name);
-    if (!entry) throw new Error(this.#noSuchToolMessage(name));
+    const resolved = await host.resolveToolForCall(name);
+    if (!resolved) throw new Error(this.#noSuchToolMessage(name));
+    const { entry } = resolved;
 
     const described = describeCall({
       serverName: host.serverName,
@@ -203,13 +224,19 @@ export class McpSessionBase extends RpcTarget {
     });
 
     if (entry.mode === "read") {
-      const result = await host.call(client => client.callTool(name, toolArgs));
+      const result = await host.call((client, connectionGeneration) => {
+        if (connectionGeneration !== resolved.connectionGeneration) {
+          throw new McpCallNotDispatchedError(
+            "This MCP connection changed while the tool was being resolved. Try again.");
+        }
+        return client.callTool(name, toolArgs);
+      });
       // Authorize before the data is handed back, per the gatekeeper contract.
       await this.#queue.authorizeObservation(described);
       return toCallResult(result);
     }
 
-    const staged = host.stageAction(name, toolArgs);
+    const staged = host.stageAction(name, toolArgs, resolved);
     const description: ActionDescription = {
       ...described,
       // MCP describes no inverse operation for a tool call.
@@ -262,7 +289,7 @@ export class McpSessionBase extends RpcTarget {
       case "failed":
         return {
           status: "failed",
-          message: stored.error
+          message: (stored.error && getActionDispatchStopped(stored.error)?.reason) ?? stored.error
             ?? `Calling "${stored.toolName}" on ${host.serverName} failed.`,
         };
       case "applied": {

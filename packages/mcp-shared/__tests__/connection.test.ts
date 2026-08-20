@@ -5,7 +5,12 @@ import {
   McpCallNotDispatchedError,
   McpClient,
 } from "../src/client.js";
-import { withClient, type ConnectionAccount } from "../src/connection.js";
+import {
+  createMcpConnectionChangedRpcError,
+  McpConnectionChangedError,
+  withClient,
+  type ConnectionAccount,
+} from "../src/connection.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -62,6 +67,24 @@ it("classifies credential lookup failure as not dispatched", async () => {
   expect(callMayHaveTakenEffect(error)).toBe(false);
 });
 
+it("preserves a connection change detected during credential lookup", async () => {
+  const account: ConnectionAccount = {
+    async getConnection() {
+      throw createMcpConnectionChangedRpcError("The account was repointed.");
+    },
+    async assertConnectionCurrent() {},
+    async setMcpSessionId() { return true; },
+    async noteCredentialsExpired() {},
+  };
+
+  const error = await withClient({}, account, "https://mcp.example.com",
+    client => client.callTool("send", {}), { retryOnExpiry: false }).catch(err => err);
+
+  expect(error).toBeInstanceOf(McpConnectionChangedError);
+  expect(error.message).toBe("The account was repointed.");
+  expect(callMayHaveTakenEffect(error)).toBe(false);
+});
+
 it("classifies initialization failure as not dispatched", async () => {
   vi.stubGlobal("fetch", async () => new Response(null, { status: 500 }));
   const account: ConnectionAccount = {
@@ -102,7 +125,7 @@ it("rechecks account generation immediately before the tool request", async () =
       return { authorization: "token", sessionId: "session", generation: 1 };
     },
     async assertConnectionCurrent() {
-      if (!current) throw new Error("connection replaced");
+      if (!current) throw createMcpConnectionChangedRpcError("connection replaced");
     },
     async setMcpSessionId() { return true; },
     async noteCredentialsExpired() {},
@@ -113,7 +136,7 @@ it("rechecks account generation immediately before the tool request", async () =
     return client.callTool("send", {});
   }, { retryOnExpiry: false }).catch(err => err);
 
-  expect(error).toBeInstanceOf(McpCallNotDispatchedError);
+  expect(error).toBeInstanceOf(McpConnectionChangedError);
   expect(requests).toBe(0);
 });
 

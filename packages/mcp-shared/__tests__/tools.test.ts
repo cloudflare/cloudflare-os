@@ -4,6 +4,7 @@ import {
   catalogRevision,
   classifyTool,
   describeCall,
+  toolPolicyFingerprint,
   toolInfo,
 } from "../src/tools.js";
 import type { McpTool } from "../src/client.js";
@@ -66,6 +67,21 @@ describe("classifyTool", () => {
     expect(classifyTool(tool({ idempotentHint: true }), "vetted").autoApprovable).toBe(false);
     expect(classifyTool(tool({ destructiveHint: true, idempotentHint: true }), "vetted")
       .autoApprovable).toBe(false);
+  });
+});
+
+describe("toolPolicyFingerprint", () => {
+  it("tracks effective dispatch policy rather than inert raw claims", () => {
+    expect(toolPolicyFingerprint(tool(), "byo")).toBe(toolPolicyFingerprint(tool({
+      destructiveHint: false,
+      idempotentHint: true,
+    }), "byo"));
+    expect(toolPolicyFingerprint(tool(), "vetted"))
+      .not.toBe(toolPolicyFingerprint(tool({ readOnlyHint: true }), "vetted"));
+    expect(toolPolicyFingerprint(tool(), "vetted")).not.toBe(toolPolicyFingerprint(tool({
+      destructiveHint: false,
+      idempotentHint: true,
+    }), "vetted"));
   });
 });
 

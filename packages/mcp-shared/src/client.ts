@@ -416,7 +416,7 @@ export class McpClient {
     return headers;
   }
 
-  async #post(body: unknown): Promise<Response> {
+  async #post(body: unknown, deadline?: number): Promise<Response> {
     let headers: Headers;
     try {
       const method = typeof body === "object" && body !== null && "method" in body
@@ -433,7 +433,7 @@ export class McpClient {
         method: "POST",
         headers,
         body: JSON.stringify(body),
-      }, this.#fetchOptions);
+      }, deadline === undefined ? this.#fetchOptions : { ...this.#fetchOptions, deadline });
     } catch (err) {
       if (err instanceof FetchNotStartedError) {
         throw new McpCallNotDispatchedError(err.message, err);
@@ -466,12 +466,13 @@ export class McpClient {
   async #callMeasured<T>(
     method: string,
     params?: unknown,
+    deadline?: number,
   ): Promise<{ result: T; responseBytes: number }> {
     // A transport session is persisted on the account and can be used by several short-lived client
     // instances concurrently. Prefixing IDs per instance prevents two active requests from both
     // being JSON-RPC id 1 and confusing the server's SSE response routing.
     const id = `${this.#requestPrefix}:${++this.#requestId}`;
-    const response = await this.#post({ jsonrpc: "2.0", id, method, params });
+    const response = await this.#post({ jsonrpc: "2.0", id, method, params }, deadline);
 
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
@@ -565,9 +566,13 @@ export class McpClient {
    *
    * `include`, when present, is applied before count and byte budgets so an aggregator's unrelated
    * tools cannot crowd the requested server or exact grant names out of the bounded result.
+   * `deadline` bounds this listing only; later requests on the same client keep their original
+   * fetch options.
    */
-  async listTools(maxTools: number, include?: McpToolFilter): Promise<ToolCatalog> {
-    return this.#list(maxTools, include, clampToolDefinition);
+  async listTools(
+    maxTools: number, include?: McpToolFilter, deadline?: number,
+  ): Promise<ToolCatalog> {
+    return this.#list(maxTools, include, clampToolDefinition, false, false, deadline);
   }
 
   /**
@@ -583,11 +588,11 @@ export class McpClient {
     return this.#list(maxTools, include, indexTool, true);
   }
 
-  /** Finds one exact tool without reading pages after the match. */
-  async findTool(name: string): Promise<McpTool | undefined> {
+  /** Finds one exact tool without reading pages after the match, optionally before one deadline. */
+  async findTool(name: string, deadline?: number): Promise<McpTool | undefined> {
     if (!isValidToolName(name)) return undefined;
     return (await this.#list(
-      1, tool => tool.name === name, clampToolDefinition, true, true)).tools[0];
+      1, tool => tool.name === name, clampToolDefinition, true, true, deadline)).tools[0];
   }
 
   /** Collects at most `maxTools` bounded matching summaries without scanning later pages. */
@@ -603,6 +608,7 @@ export class McpClient {
     project: (tool: McpWireTool) => T,
     stopWhenFull = false,
     failOnScanLimit = false,
+    deadline?: number,
   ): Promise<{ tools: T[]; truncated: boolean }> {
     const tools: T[] = [];
     let budget = MAX_CATALOG_BYTES;
@@ -619,7 +625,7 @@ export class McpClient {
 
     for (let page = 0; page < MAX_TOOL_PAGES; page++) {
       const measured = await this.#callMeasured<{ tools?: McpWireTool[]; nextCursor?: string }>(
-        "tools/list", cursor === undefined ? {} : { cursor });
+        "tools/list", cursor === undefined ? {} : { cursor }, deadline);
       const body = measured.result;
       scannedBytes += measured.responseBytes;
       if (scannedBytes > MAX_SCANNED_TOOL_BYTES) return scanLimit();

@@ -24,7 +24,12 @@ import {
 } from "@modelcontextprotocol/client";
 
 import { McpAuthRequiredError, McpClient, type McpServerInfo } from "./client.js";
-import { clientName, type ConnectionEnv, type McpConnection } from "./connection.js";
+import {
+  clientName,
+  createMcpConnectionChangedRpcError,
+  type ConnectionEnv,
+  type McpConnection,
+} from "./connection.js";
 import {
   ACCESS_TOKEN_SAFETY_MS,
   CONNECT_TIMEOUT_MS,
@@ -705,15 +710,25 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     // is about to contact; reject before reading or refreshing credentials if the account has since
     // moved. Otherwise a bearer token minted for the new portal would be sent to the old endpoint.
     if (!sameEndpoint(endpoint, server.endpoint)) {
-      throw new Error(
+      throw createMcpConnectionChangedRpcError(
         `This binding is for ${hostOf(endpoint)}, but the account is now connected to ` +
         `${hostOf(server.endpoint)}. Replace the binding before using it again.`);
     }
-    const authorization = await this.#getAuthorization(server, generation);
+    let authorization: string | null;
+    try {
+      authorization = await this.#getAuthorization(server, generation);
+    } catch (error) {
+      if (!this.isCurrentConnection(server, generation)) {
+        throw createMcpConnectionChangedRpcError(
+          "This MCP connection changed while credentials were being prepared. Try again.");
+      }
+      throw error;
+    }
     // `#getAuthorization` may await a token refresh. A reconnect can interleave there, so recheck
     // before returning the credential to a caller that still intends to contact the old endpoint.
     if (!this.isCurrentConnection(server, generation)) {
-      throw new Error("This MCP connection changed while credentials were being prepared. Try again.");
+      throw createMcpConnectionChangedRpcError(
+        "This MCP connection changed while credentials were being prepared. Try again.");
     }
     return {
       authorization,
@@ -727,7 +742,8 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     const server = this.server();
     if (!server || !sameEndpoint(endpoint, server.endpoint)
         || generation !== this.connectionGeneration()) {
-      throw new Error("This MCP connection changed before the request was sent. Try again.");
+      throw createMcpConnectionChangedRpcError(
+        "This MCP connection changed before the request was sent. Try again.");
     }
   }
 

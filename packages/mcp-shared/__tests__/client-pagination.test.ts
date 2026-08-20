@@ -183,6 +183,24 @@ describe("McpClient.listTools", () => {
     expect(calls()).toBe(2);
   });
 
+  it("does not carry an exact lookup deadline into a later tool call", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", async (_input: unknown, init?: RequestInit) => {
+      calls++;
+      const request = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: { content: [] },
+      }), { headers: { "Content-Type": "application/json" } });
+    });
+    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+
+    await expect(client.findTool("send", 0)).rejects.toThrow(/timed out|timeout/i);
+    await expect(client.callTool("send", {})).resolves.toEqual({ content: [] });
+    expect(calls).toBe(1);
+  });
+
   it("stops paging when a bounded search has enough matches", async () => {
     const calls = stubPages([{
       tools: Array.from({ length: 25 }, (_, i) => ({ name: `jira_tool_${i}` })),

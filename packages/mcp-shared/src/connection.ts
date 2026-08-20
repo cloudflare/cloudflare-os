@@ -83,12 +83,34 @@ function notDispatched(err: unknown): McpCallNotDispatchedError {
   );
 }
 
+const CONNECTION_CHANGED_ERROR_PREFIX = "MCP_CONNECTION_CHANGED: ";
+
+/** A connector-side connection change known to have preceded tool dispatch. */
+export class McpConnectionChangedError extends McpCallNotDispatchedError {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "McpConnectionChangedError";
+  }
+}
+
+/** Creates a connection-change error whose discriminator survives account Durable Object RPC. */
+export function createMcpConnectionChangedRpcError(reason: string): Error {
+  return new Error(`${CONNECTION_CHANGED_ERROR_PREFIX}${reason}`);
+}
+
+function connectionChangedReason(error: unknown): string | undefined {
+  const message = error instanceof Error ? error.message : undefined;
+  return message?.startsWith(CONNECTION_CHANGED_ERROR_PREFIX)
+    ? message.slice(CONNECTION_CHANGED_ERROR_PREFIX.length)
+    : undefined;
+}
+
 /** Runs `fn` against an initialized client for `endpoint`, using the account's credentials. */
 export async function withClient<T>(
   env: ConnectionEnv,
   account: ConnectionAccount,
   endpoint: string,
-  fn: (client: McpClient) => Promise<T>,
+  fn: (client: McpClient, connectionGeneration: number) => Promise<T>,
   options: WithClientOptions = {},
 ): Promise<T> {
   // Read once for the whole operation. The account refreshes a token a minute before expiry, so one
@@ -97,13 +119,21 @@ export async function withClient<T>(
   try {
     connection = await account.getConnection(endpoint);
   } catch (err) {
+    const reason = connectionChangedReason(err);
+    if (reason !== undefined) throw new McpConnectionChangedError(reason);
     throw notDispatched(err);
   }
   const { authorization, sessionId, generation } = connection;
   const client = new McpClient(
     endpoint, async method => {
       if (method === "tools/call") {
-        await account.assertConnectionCurrent(endpoint, generation);
+        try {
+          await account.assertConnectionCurrent(endpoint, generation);
+        } catch (err) {
+          const reason = connectionChangedReason(err);
+          if (reason !== undefined) throw new McpConnectionChangedError(reason);
+          throw err;
+        }
       }
       return authorization;
     }, sessionId, {
@@ -157,8 +187,12 @@ export async function withClient<T>(
       }
     }
     try {
-      return await fn(client);
+      return await fn(client, generation);
     } catch (err) {
+      if (err instanceof McpCallNotDispatchedError &&
+          err.cause instanceof McpConnectionChangedError) {
+        throw err.cause;
+      }
       if (!(err instanceof McpSessionExpiredError)) throw err;
       if (options.retryOnExpiry !== false) {
         client.sessionId = null;
@@ -168,7 +202,7 @@ export async function withClient<T>(
           if (initializeError instanceof McpAuthRequiredError) throw initializeError;
           throw notDispatched(initializeError);
         }
-        return await fn(client);
+        return await fn(client, generation);
       }
       // This call is not retried, since it may already have taken effect. The session is gone all
       // the same, so the cached id is dead: left in place it would fail every later call for a

@@ -4,6 +4,12 @@ import { McpSessionBase, type McpSessionHost, type StoredAction } from "../src/s
 import { MAX_TOOL_NAME_CHARS } from "../src/client.js";
 import { classifyTool } from "../src/tools.js";
 
+const resolved = (entry: ReturnType<typeof classifyTool>) => ({
+  entry,
+  policyFingerprint: "byo:w--",
+  connectionGeneration: 1,
+});
+
 it("reports an execution failure distinctly from a rejected approval", async () => {
   const failed: StoredAction = {
     id: 1,
@@ -41,7 +47,7 @@ it("tells an agent to return a pending action so its approval can appear in chat
     serverName: "Jira",
     endpoint: "https://mcp.example.com",
     scope: { serverId: "jira" },
-    findTool: async () => entry,
+    resolveToolForCall: async () => resolved(entry),
     stageAction: () => staged,
     discardStagedAction() {},
     actionKindFor: () => ({ tag: "jira:create", label: "Create issue" }),
@@ -95,10 +101,10 @@ it("calls a tool resolved beyond the initial generated catalog", async () => {
     endpoint: "https://mcp.example.com",
     scope: { serverId: "jira" },
     tools: async () => [],
-    findTool: async () => expanded,
-    call: async (fn: (client: never) => Promise<unknown>) => fn({
+    resolveToolForCall: async () => resolved(expanded),
+    call: async (fn: (client: never, connectionGeneration: number) => Promise<unknown>) => fn({
       callTool: async () => ({ content: [{ type: "text", text: "PROJ-1" }] }),
-    } as never),
+    } as never, 1),
   } as unknown as McpSessionHost;
   const queue = { authorizeObservation() {} };
   const session = new McpSessionBase(host, queue as never);
@@ -107,6 +113,49 @@ it("calls a tool resolved beyond the initial generated catalog", async () => {
     status: "ok",
     text: "PROJ-1",
   });
+});
+
+it("resolves current tool policy before deciding whether a call needs approval", async () => {
+  let resolvedPolicy = false;
+  const host = {
+    serverName: "Jira",
+    endpoint: "https://mcp.example.com",
+    scope: { serverId: "jira" },
+    resolveToolForCall: async () => {
+      resolvedPolicy = true;
+      return resolved(classifyTool(
+        { name: "jira_search_issues", annotations: { readOnlyHint: true } }, "byo"));
+    },
+    call: async (fn: (client: never, connectionGeneration: number) => Promise<unknown>) => fn({
+      callTool: async () => ({ content: [] }),
+    } as never, 1),
+  } as unknown as McpSessionHost;
+  const session = new McpSessionBase(host, { authorizeObservation() {} } as never);
+
+  await session.callTool("jira_search_issues");
+
+  expect(resolvedPolicy).toBe(true);
+});
+
+it("does not dispatch a read after its connection generation changes", async () => {
+  let called = false;
+  const entry = classifyTool({
+    name: "jira_search_issues",
+    annotations: { readOnlyHint: true },
+  }, "byo");
+  const host = {
+    serverName: "Jira",
+    endpoint: "https://mcp.example.com",
+    scope: { serverId: "jira" },
+    resolveToolForCall: async () => resolved(entry),
+    call: async (fn: (client: never, connectionGeneration: number) => Promise<unknown>) =>
+      fn({ callTool: async () => { called = true; return { content: [] }; } } as never,
+        2),
+  } as unknown as McpSessionHost;
+  const session = new McpSessionBase(host, { authorizeObservation() {} } as never);
+
+  await expect(session.callTool("jira_search_issues")).rejects.toThrow(/connection changed/i);
+  expect(called).toBe(false);
 });
 
 it("identifies the tool in a describe observation", async () => {
@@ -136,6 +185,7 @@ it("names the grant, not the server, when a scoped binding lacks the tool", asyn
     endpoint: "https://mcp.example.com",
     scope: { serverId: "jira" },
     findTool: async () => undefined,
+    resolveToolForCall: async () => undefined,
   } as unknown as McpSessionHost;
   const session = new McpSessionBase(host, { authorizeObservation() {} } as never);
 

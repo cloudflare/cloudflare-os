@@ -1,8 +1,9 @@
-import { useCallback, useState, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import { RpcStub } from 'capnweb'
 import { Overseer } from '@gadgets/workshop-shared/api'
 import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
+import { useActionEntries } from './useActions'
 
 /**
  * Enables an auto-approval rule for the action's (gatekeeperId, actionKind.tag), and tracks
@@ -17,6 +18,23 @@ export function useAlwaysApproveTag(
     onEnabled?: () => void) {
   const toasts = useKumoToastManager()
   const [enabledTags, setEnabledTags] = useState<Set<string>>(new Set())
+  const seenInvalidations = useRef(new Set<number>())
+
+  useEffect(() => {
+    seenInvalidations.current.clear()
+    setEnabledTags(new Set())
+  }, [overseer])
+
+  useActionEntries(overseer, record => {
+    if (record.type !== 'action' || !record.invalidationReason || record.gatekeeperId === undefined ||
+        seenInvalidations.current.has(record.id)) return
+    seenInvalidations.current.add(record.id)
+    const prefix = `${record.gatekeeperId}:`
+    setEnabledTags(previous => {
+      const next = new Set([...previous].filter(key => !key.startsWith(prefix)))
+      return next.size === previous.size ? previous : next
+    })
+  })
 
   // Enable auto-approval for the action's class. Returns true on success, false on failure (the
   // error is surfaced via a toast) so the caller can decide whether to dismiss a confirm dialog.

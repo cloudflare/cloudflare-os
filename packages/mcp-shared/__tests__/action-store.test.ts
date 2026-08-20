@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 import { ActionStore } from "../src/action-store.js";
-import { McpProtocolError, McpSessionExpiredError } from "../src/client.js";
+import {
+  createActionDispatchStoppedError,
+  getActionDispatchStopped,
+} from "@gadgets/workshop-shared/gatekeeper";
+import {
+  McpProtocolError,
+  McpSessionExpiredError,
+} from "../src/client.js";
 
 type TestSql = ConstructorParameters<typeof ActionStore>[0];
 
@@ -12,7 +19,7 @@ function fakeSql(): TestSql {
     exec<T>(query: string, ...bindings: SQLInputValue[]) {
       const rows = bindings.length > 0
         ? db.prepare(query).all(...bindings)
-        : /^\s*(?:SELECT|INSERT.*RETURNING)/is.test(query)
+          : /^\s*(?:SELECT|INSERT.*RETURNING)/is.test(query)
           ? db.prepare(query).all()
           : (db.exec(query), []);
       return {
@@ -28,11 +35,68 @@ function fakeSql(): TestSql {
 
 const log = { debug() {}, info() {}, warn() {}, error() {}, with() { return log; } };
 const ok = async () => ({ content: [{ type: "text" as const, text: "done" }] });
+const snapshot = { policyFingerprint: "action:manual", connectionGeneration: 1 };
+const stage = (store: ActionStore, args: Record<string, unknown>) =>
+  store.stage("send", args, snapshot);
 
 describe("ActionStore", () => {
+  it("persists the approved policy and account generation", () => {
+    const store = new ActionStore(fakeSql());
+    const staged = store.stage("send", {}, {
+      policyFingerprint: "vetted:w01",
+      connectionGeneration: 7,
+    });
+
+    expect(store.get(staged.id)).toMatchObject({
+      policyFingerprint: "vetted:w01",
+      connectionGeneration: 7,
+    });
+  });
+
+  it("closes an action invalidated before dispatch without claiming it may have landed", async () => {
+    const store = new ActionStore(fakeSql());
+    const staged = stage(store, {});
+
+    const first = await store.apply(staged.id, async () => {
+      throw createActionDispatchStoppedError(
+        "invalidated", "Policy changed. Stage the call again.");
+    }, log).catch((caught: unknown) => caught);
+    const replay = await store.apply(staged.id, async () => {
+      throw new Error("must not dispatch again");
+    }, log).catch((caught: unknown) => caught);
+
+    expect(getActionDispatchStopped(first)).toEqual({
+      kind: "invalidated",
+      reason: "Policy changed. Stage the call again.",
+    });
+    expect(getActionDispatchStopped(replay)).toEqual(getActionDispatchStopped(first));
+
+    const stored = store.get(staged.id);
+    expect(stored).toMatchObject({
+      state: "failed",
+      retryable: false,
+    });
+    expect(getActionDispatchStopped(stored?.error)).toEqual(getActionDispatchStopped(first));
+  });
+
+  it("keeps validation failures retryable when tools/call was never reached", async () => {
+    const store = new ActionStore(fakeSql());
+    const staged = stage(store, {});
+
+    await expect(store.apply(staged.id, async () => {
+      throw new McpProtocolError("validation failed");
+    }, log)).rejects.toThrow(/validation failed/);
+
+    expect(store.get(staged.id)).toMatchObject({
+      state: "failed",
+      retryable: true,
+      error: "validation failed",
+    });
+  });
+
   it("keeps a decided action available until the Gadget collects it", async () => {
     const store = new ActionStore(fakeSql());
-    const staged = store.stage("send", { to: "a@b.c" });
+    const staged = stage(store, { to: "a@b.c" });
     await store.apply(staged.id, fn => fn({ callTool: ok } as never), log);
     expect(store.get(staged.id)?.state).toBe("applied");
     expect(store.get(staged.id)?.result?.text).toBe("done");
@@ -41,9 +105,9 @@ describe("ActionStore", () => {
   it("retains only recent terminal actions without pruning pending ones", async () => {
     const sql = fakeSql();
     const store = new ActionStore(sql);
-    const pending = store.stage("send", { pending: true });
+    const pending = stage(store, { pending: true });
     for (let i = 0; i < 250; i++) {
-      const staged = store.stage("send", { i });
+      const staged = stage(store, { i });
       await store.apply(staged.id, fn => fn({ callTool: ok } as never), log);
     }
     const { count } = sql.exec<{ count: number }>("SELECT count(*) AS count FROM mcp_actions").one();
@@ -59,8 +123,8 @@ describe("ActionStore", () => {
     // Pending records cannot be pruned, so without a cap they are an unbounded write primitive: a
     // Gadget that queues calls and never collects them grows the Durable Object forever.
     const store = new ActionStore(fakeSql());
-    for (let i = 0; i < 50; i++) store.stage("send", { i });
-    expect(() => store.stage("send", { overflow: true })).toThrow(/awaiting approval/);
+    for (let i = 0; i < 50; i++) stage(store, { i });
+    expect(() => stage(store, { overflow: true })).toThrow(/awaiting approval/);
   });
 
   it("rejects arguments that cannot be stored safely", () => {
@@ -68,27 +132,27 @@ describe("ActionStore", () => {
     const circular: Record<string, unknown> = {};
     circular.self = circular;
 
-    expect(() => store.stage("send", circular)).toThrow(/JSON-compatible/);
-    expect(() => store.stage("send", { body: "x".repeat(70_000) })).toThrow(/too large/);
+    expect(() => stage(store, circular)).toThrow(/JSON-compatible/);
+    expect(() => stage(store, { body: "x".repeat(70_000) })).toThrow(/too large/);
   });
 
   it("frees a pending slot however the call was decided", async () => {
     const store = new ActionStore(fakeSql());
-    for (let i = 0; i < 48; i++) store.stage("send", { i });
-    const applied = store.stage("send", { applied: true });
-    const rejected = store.stage("send", { rejected: true });
-    expect(() => store.stage("send", {})).toThrow();
+    for (let i = 0; i < 48; i++) stage(store, { i });
+    const applied = stage(store, { applied: true });
+    const rejected = stage(store, { rejected: true });
+    expect(() => stage(store, {})).toThrow();
 
     await store.apply(applied.id, fn => fn({ callTool: ok } as never), log);
     store.reject(rejected.id);
-    expect(() => store.stage("send", {})).not.toThrow();
-    expect(() => store.stage("send", {})).not.toThrow();
+    expect(() => stage(store, {})).not.toThrow();
+    expect(() => stage(store, {})).not.toThrow();
   });
 
   it("records a declined call as retryable, distinct from a rejection", async () => {
     // The server answered, so the tool did not run and another attempt cannot duplicate anything.
     const store = new ActionStore(fakeSql());
-    const staged = store.stage("send", {});
+    const staged = stage(store, {});
     const declined = async () => {
       throw new McpProtocolError("MCP server rejected: unknown tool", -32601, "declined");
     };
@@ -110,7 +174,7 @@ describe("ActionStore", () => {
     // server acted, so the request may already have been carried out. Retrying is how one approval
     // becomes two writes, and MCP has no inverse operation to undo the second.
     const store = new ActionStore(fakeSql());
-    const staged = store.stage("send", {});
+    const staged = stage(store, {});
     let calls = 0;
     const dropped = async () => {
       calls++;
@@ -133,7 +197,7 @@ describe("ActionStore", () => {
   it("treats an unrecognised failure as possibly performed", async () => {
     // Fails safe. A throw site that has not said what it means is not evidence the tool never ran.
     const store = new ActionStore(fakeSql());
-    const staged = store.stage("send", {});
+    const staged = stage(store, {});
     const boom = async () => { throw new Error("upstream exploded"); };
     await expect(store.apply(staged.id, fn => fn({ callTool: boom } as never), log))
       .rejects.toThrow(/may or may not have taken effect/);
@@ -151,7 +215,7 @@ describe("ActionStore", () => {
     };
 
     for (let attempt = 0; attempt < 250; attempt++) {
-      const staged = store.stage("send", { attempt });
+      const staged = stage(store, { attempt });
       await expect(store.apply(staged.id, fn => fn({ callTool: declined } as never), log))
         .rejects.toThrow();
     }
@@ -164,7 +228,7 @@ describe("ActionStore", () => {
     // Pruning must not reach the record that just failed: the Gadget learns the outcome by asking
     // for it afterwards.
     const store = new ActionStore(fakeSql());
-    const staged = store.stage("send", {});
+    const staged = stage(store, {});
     const declined = async () => {
       throw new McpProtocolError("MCP server rejected: unknown tool", -32601, "declined");
     };
@@ -178,7 +242,7 @@ describe("ActionStore", () => {
     // MCP says a session-bearing 404 means no dispatch, but a fronting proxy can produce the same
     // response after the upstream accepted the write. The two cases are indistinguishable here.
     const store = new ActionStore(fakeSql());
-    const staged = store.stage("send", {});
+    const staged = stage(store, {});
     let calls = 0;
     const expired = async () => {
       calls++;
@@ -199,7 +263,7 @@ describe("ActionStore", () => {
     // tool. MCP describes no inverse operation, so the duplicate write cannot be undone -- the
     // claim has to be taken before the first await, not after the call returns.
     const store = new ActionStore(fakeSql());
-    const staged = store.stage("send", { to: "a@b.c" });
+    const staged = stage(store, { to: "a@b.c" });
     let calls = 0;
     const slow = async () => {
       calls++;
@@ -221,7 +285,7 @@ describe("ActionStore", () => {
 
   it("does not reject an action after application has started", async () => {
     const store = new ActionStore(fakeSql());
-    const staged = store.stage("send", {});
+    const staged = stage(store, {});
     let release!: () => void;
     const blocked = new Promise<void>(resolve => { release = resolve; });
     const applying = store.apply(staged.id, async fn => {
@@ -243,7 +307,7 @@ describe("ActionStore", () => {
     // write permanently. The action is closed as failed and a person decides what to do.
     const sql = fakeSql();
     const store = new ActionStore(sql);
-    const staged = store.stage("send", {});
+    const staged = stage(store, {});
     sql.exec(
       "UPDATE mcp_actions SET state = 'applying', claimed_at = ? WHERE id = ?",
       Date.now() - 5 * 60 * 1000,
@@ -260,24 +324,98 @@ describe("ActionStore", () => {
     expect(recovered.get(staged.id)?.state).toBe("failed");
   });
 
+  it("keeps a claim retryable when interruption preceded the dispatch boundary", async () => {
+    const sql = fakeSql();
+    const store = new ActionStore(sql);
+    const staged = stage(store, {});
+    sql.exec(
+      "UPDATE mcp_actions SET state = 'applying', retryable = 1 WHERE id = ?",
+      staged.id,
+    );
+    const recovered = new ActionStore(sql);
+
+    await recovered.apply(staged.id, fn => fn({ callTool: ok } as never), log);
+
+    expect(recovered.get(staged.id)?.state).toBe("applied");
+  });
+
+  it("conservatively closes interrupted claims when migrating the main-era schema", () => {
+    const sql = fakeSql();
+    sql.exec(`CREATE TABLE mcp_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tool_name TEXT NOT NULL,
+      args_json TEXT NOT NULL,
+      state TEXT NOT NULL,
+      submitted_at INTEGER NOT NULL,
+      claimed_at INTEGER,
+      retryable INTEGER,
+      result_json TEXT,
+      error TEXT
+    ) STRICT`);
+    sql.exec(
+      `INSERT INTO mcp_actions (
+         tool_name, args_json, state, submitted_at, retryable
+       ) VALUES ('send', '{}', 'applying', 1, 1)`,
+    );
+
+    const migrated = new ActionStore(sql);
+
+    expect(migrated.get(1)).toMatchObject({ state: "failed", retryable: false });
+  });
+
+  it("uses the prior dispatch marker once when migrating interrupted claims", async () => {
+    const sql = fakeSql();
+    sql.exec(`CREATE TABLE mcp_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tool_name TEXT NOT NULL,
+      args_json TEXT NOT NULL,
+      state TEXT NOT NULL,
+      submitted_at INTEGER NOT NULL,
+      policy_fingerprint TEXT,
+      connection_generation INTEGER,
+      dispatched INTEGER,
+      claimed_at INTEGER,
+      retryable INTEGER,
+      result_json TEXT,
+      error TEXT
+    ) STRICT`);
+    sql.exec(
+      `INSERT INTO mcp_actions (
+         id, tool_name, args_json, state, submitted_at, policy_fingerprint,
+         connection_generation, dispatched, retryable
+       ) VALUES
+         (1, 'send', '{}', 'applying', 1, 'action:manual', 1, 1, 1),
+         (2, 'send', '{}', 'applying', 1, 'action:manual', 1, 0, 1)`,
+    );
+
+    const migrated = new ActionStore(sql);
+
+    expect(migrated.get(1)).toMatchObject({ state: "failed", retryable: false });
+    expect(migrated.get(2)).toMatchObject({ state: "failed", retryable: true });
+    await expect(migrated.apply(1, fn => fn({ callTool: ok } as never), log))
+      .rejects.toThrow(/may or may not have taken effect/);
+    await migrated.apply(2, fn => fn({ callTool: ok } as never), log);
+    expect(migrated.get(2)?.state).toBe("applied");
+  });
+
   it("does not let claims nobody will settle consume the queue permanently", async () => {
     // Only the next `apply()` for that same id settles an expired claim, and an evicted Durable
     // Object never makes one. Counting those rows retired the binding one interruption at a time.
     const sql = fakeSql();
     const store = new ActionStore(sql);
-    for (let n = 0; n < 50; n++) store.stage("send", { n });
+    for (let n = 0; n < 50; n++) stage(store, { n });
     sql.exec(
       "UPDATE mcp_actions SET state = 'applying', claimed_at = ?",
       Date.now() - 5 * 60 * 1000,
     );
 
-    expect(new ActionStore(sql).stage("send", { n: 50 }).state).toBe("pending");
+    expect(stage(new ActionStore(sql), { n: 50 }).state).toBe("pending");
   });
 
   it("does not retire a live slow call when another action is staged", async () => {
     const sql = fakeSql();
     const store = new ActionStore(sql);
-    const staged = store.stage("send", {});
+    const staged = stage(store, {});
     let release!: () => void;
     const applying = store.apply(staged.id, async fn => {
       await new Promise<void>(resolve => { release = resolve; });
@@ -289,7 +427,7 @@ describe("ActionStore", () => {
       staged.id,
     );
 
-    store.stage("send", { another: true });
+    stage(store, { another: true });
     expect(store.get(staged.id)?.state).toBe("applying");
     release();
     await applying;
@@ -299,14 +437,14 @@ describe("ActionStore", () => {
     const sql = fakeSql();
     let store = new ActionStore(sql);
     for (let batch = 0; batch < 3; batch++) {
-      for (let n = 0; n < 50; n++) store.stage("send", { batch, n });
+      for (let n = 0; n < 50; n++) stage(store, { batch, n });
       sql.exec(
         "UPDATE mcp_actions SET state = 'applying', claimed_at = ? WHERE state = 'pending'",
         Date.now() - 5 * 60 * 1000,
       );
       store = new ActionStore(sql);
     }
-    store.stage("send", { final: true });
+    stage(store, { final: true });
 
     const { applying } = sql.exec<{ applying: number }>(
       "SELECT count(*) AS applying FROM mcp_actions WHERE state = 'applying'").one();
@@ -322,7 +460,7 @@ describe("ActionStore", () => {
     // and the next attempt re-ran a tool call that had already taken effect. Losing the result is
     // recoverable; repeating the write is not.
     const store = new ActionStore(fakeSql());
-    const staged = store.stage("send", {});
+    const staged = stage(store, {});
     let calls = 0;
     const poison = async () => {
       calls++;
@@ -342,7 +480,7 @@ describe("ActionStore", () => {
 
   it("bounds retained results by UTF-8 bytes", async () => {
     const store = new ActionStore(fakeSql());
-    const staged = store.stage("send", {});
+    const staged = stage(store, {});
     const big = async () => ({ content: [{ type: "text" as const, text: "😀".repeat(40_000) }] });
     await store.apply(staged.id, fn => fn({ callTool: big } as never), log);
     expect(store.get(staged.id)?.state).toBe("applied");
@@ -351,7 +489,7 @@ describe("ActionStore", () => {
 
   it("is idempotent, because the Workshop may retry a call whose result it never saw", async () => {
     const store = new ActionStore(fakeSql());
-    const staged = store.stage("send", {});
+    const staged = stage(store, {});
     let calls = 0;
     const counting = async () => { calls++; return { content: [] }; };
     await store.apply(staged.id, fn => fn({ callTool: counting } as never), log);

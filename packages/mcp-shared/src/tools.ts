@@ -134,6 +134,12 @@ function policyClaims(tool: McpTool): string {
   ].join("");
 }
 
+/** Stable snapshot of one tool's effective read/action and auto-approval policy. */
+export function toolPolicyFingerprint(tool: McpTool, trust: ServerTrust): string {
+  const policy = classifyTool(tool, trust);
+  return `${policy.mode}:${policy.autoApprovable ? "auto" : "manual"}`;
+}
+
 /**
  * Stable fingerprint of a tool catalog, for detecting that an endpoint changed under us.
  *

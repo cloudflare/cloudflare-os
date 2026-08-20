@@ -18,6 +18,38 @@
 
 import type { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 
+/** Why an approved action stopped before dispatch. */
+export type ActionDispatchStopped = {
+  /** Whether current authority changed or an older action lacks the snapshot needed to prove it. */
+  kind: "invalidated" | "restage";
+  /** Human-readable explanation shown to the user. */
+  reason: string;
+};
+
+const ACTION_DISPATCH_STOPPED_PREFIX = "GATEKEEPER_ACTION_DISPATCH_STOPPED:";
+
+/** Creates a dispatch-stopped error whose kind survives Workers RPC error serialization. */
+export function createActionDispatchStoppedError(
+    kind: ActionDispatchStopped["kind"], reason: string): Error {
+  return new Error(`${ACTION_DISPATCH_STOPPED_PREFIX}${kind}: ${reason}`);
+}
+
+/** Reads a dispatch-stopped result from a local error, RPC error, or persisted message. */
+export function getActionDispatchStopped(error: unknown): ActionDispatchStopped | undefined {
+  const message = typeof error === "string" ? error
+    : typeof error === "object" && error !== null && "message" in error
+        && typeof error.message === "string"
+      ? error.message
+      : undefined;
+  if (!message?.startsWith(ACTION_DISPATCH_STOPPED_PREFIX)) return undefined;
+  const encoded = message.slice(ACTION_DISPATCH_STOPPED_PREFIX.length);
+  const separator = encoded.indexOf(": ");
+  if (separator < 0) return undefined;
+  const kind = encoded.slice(0, separator);
+  if (kind !== "invalidated" && kind !== "restage") return undefined;
+  return { kind, reason: encoded.slice(separator + 2) };
+}
+
 /**
  * A pagination cursor.
  *
@@ -810,6 +842,13 @@ export interface Gatekeeper<Session> extends DurableObject {
    *
    * If this throws an exception, the user will be informed that the action failed and given the
    * opportunity to retry or discard.
+   *
+   * If policy or authority changed after approval but before dispatch, throw an `"invalidated"`
+   * error created by `createActionDispatchStoppedError()`. New Workshop versions record that
+   * distinct terminal outcome; old versions leave the action pending rather than recording a write
+   * that was never dispatched as approved. `"restage"` is reserved for an older queued action that
+   * lacks the snapshot needed for current validation. Both stop the current drain, but only
+   * `"invalidated"` clears auto-approval rules whose authority may have changed.
    *
    * Depending on policy conditions, an action may be approved and applied automatically. However,
    * the gatekeeper is nevertheless expected to submit all actions for approval; there is no mode
