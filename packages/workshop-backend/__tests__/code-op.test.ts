@@ -496,8 +496,11 @@ describe("validateCodeOpSchema", () => {
     });
   });
 
+  // Wire-shape rejection -- a non-object op, a gadget entry that isn't an array of [string,
+  // FileOp] pairs, a FileOp variant of the wrong type -- is capnweb-validate's job, established
+  // before an op reaches this module (see the trust boundary note in code-op.ts). These cases
+  // cover only what a well-typed CodeOp can still get wrong.
   it("rejects malformed outer shapes", () => {
-    expect(() => validateCodeOpSchema([] as unknown as CodeOp)).toThrow(/must be an object/);
     expect(() => validateCodeOpSchema({ "01": [["a", { remove: true }]] }))
         .toThrow(/canonical gadget id/);
     expect(() => validateCodeOpSchema({ "-1": [["a", { remove: true }]] }))
@@ -507,41 +510,30 @@ describe("validateCodeOpSchema", () => {
     expect(() => validateCodeOpSchema({ "abc": [["a", { remove: true }]] }))
         .toThrow(/canonical gadget id/);
     expect(() => validateCodeOpSchema({ 1: [] })).toThrow(/is empty/);
-    expect(() => validateCodeOpSchema({ 1: {} as unknown as CodeOp[string] }))
-        .toThrow(/must be an array/);
-    expect(() => validateCodeOpSchema({ 1: ["f"] as unknown as CodeOp[string] }))
-        .toThrow(/pair/);
-    expect(() => validateCodeOpSchema({ 1: [["f"]] as unknown as CodeOp[string] }))
-        .toThrow(/pair/);
-    expect(() => validateCodeOpSchema({ 1: [[42, { remove: true }]] as unknown as CodeOp[string] }))
-        .toThrow(/pair/);
     expect(() => validateCodeOpSchema({ 1: [["", { remove: true }]] })).toThrow(/path is empty/);
     expect(() => validateCodeOpSchema(
         { 1: [["f", { remove: true }], ["f", { set: "x" }]] })).toThrow(/duplicate/);
   });
 
-  it("rejects malformed file ops", () => {
+  // The wire validator's FileOp union is first-match and tolerates extra properties, so a
+  // multi-variant file op is ours to reject (applyCodeOp and transformCodeOp would read it
+  // differently and diverge two replicas).
+  it("rejects file ops that are not exactly one variant", () => {
     let bad = (fileOp: unknown) =>
         expect(() => validateCodeOpSchema({ 1: [["f", fileOp as FileOp]] }));
     bad({}).toThrow(/exactly one/);
     bad({ set: "x", remove: true }).toThrow(/exactly one/);
     bad({ frobnicate: 1 }).toThrow(/exactly one/);
-    bad(null).toThrow(/must be an object/);
-    bad("remove").toThrow(/must be an object/);
-    bad({ set: 42 }).toThrow(/must be a string/);
-    bad({ remove: false }).toThrow(/must be true/);
   });
 
+  // Likewise: a section length is a `number` to the wire validator, which says nothing about
+  // integrality or sign.
   it("rejects malformed text ops", () => {
-    let bad = (edit: unknown) =>
-        expect(() => validateCodeOpSchema({ 1: [["f", { edit: edit as TextOp }]] }));
-    bad("nope").toThrow(/must be an array/);
-    bad([{}]).toThrow(/invalid section length/);
+    let bad = (edit: TextOp) =>
+        expect(() => validateCodeOpSchema({ 1: [["f", { edit }]] }));
     bad([-1]).toThrow(/invalid section length/);
     bad([1.5]).toThrow(/invalid section length/);
-    bad([["x"]]).toThrow(/invalid section length/);
     bad([[-2, "x"]]).toThrow(/invalid section length/);
-    bad([[1, 2]]).toThrow(/malformed/);
   });
 
   it("rejects do-nothing sections and embedded newlines in inserted lines", () => {

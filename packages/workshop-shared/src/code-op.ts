@@ -28,6 +28,15 @@
 // *after* transforming the op to the server's current revision, because lengths and boundaries
 // are only meaningful against the content the op will actually apply to.
 //
+// Both stages take a `CodeOp`, and that parameter type is a precondition rather than a hope:
+// the declared shape is established before they run, by capnweb-validate's generated validator
+// at the RPC edge (Overseer.submitCodeOp) and by the compiler for the one in-process producer
+// (the agent's AgentHooks.appendAgentCodeOp, whose ops this module itself builds). So neither
+// stage re-checks that a value is an object, an array, a pair, or a string; they check the
+// invariants a TypeScript type cannot express -- canonical gadget keys, path rules, size caps,
+// integer section lengths, and the one variant rule the wire validator's first-match union
+// misses (see validateFileOpSchema).
+//
 // Validation's resource-exhaustion goal is deliberately modest: reject anything the caps rule
 // out in at most one linear pass over input the RPC layer already parsed (with cheap early
 // exits where they fall out naturally), and no more. Op producers hold edit rights, and a user
@@ -435,20 +444,18 @@ export function changedGadgets(op: CodeOp): number[] {
 // Validation (the trust boundary)
 
 /**
- * Stage 1 of ingestion validation: structural well-formedness, checked *before* any transform
- * (transformation must only ever see schema-valid ops). Verifies the outer shape (canonical
- * decimal gadget keys; non-empty entry lists of `[path, FileOp]` pairs with non-empty,
- * duplicate-free paths; exactly one variant per `FileOp`), that every `edit` parses as a
- * ChangeSet whose sections are non-negative integers that each retain, delete, or insert
- * something (do-nothing padding is rejected) and whose inserted line strings contain no "\n",
- * and the size caps: `MAX_FILE_TEXT_LENGTH` per produced file, `MAX_FILE_PATH_LENGTH` per
- * path, and `MAX_CODE_OP_SIZE` for the op overall. Throws on the first violation.
- * Content-dependent checks (lengths, boundaries) are stage 2: `validateCodeOpContent`.
+ * Stage 1 of ingestion validation: the invariants a `CodeOp`'s type cannot express, checked
+ * *before* any transform (transformation must only ever see schema-valid ops). The declared
+ * shape is a precondition -- see the trust boundary note at the top of this module -- so this
+ * verifies canonical decimal gadget keys; non-empty entry lists with non-empty, duplicate-free
+ * paths; exactly one variant per `FileOp`; that every `edit` parses as a ChangeSet whose
+ * sections are non-negative integers that each retain, delete, or insert something (do-nothing
+ * padding is rejected) and whose inserted line strings contain no "\n"; and the size caps:
+ * `MAX_FILE_TEXT_LENGTH` per produced file, `MAX_FILE_PATH_LENGTH` per path, and
+ * `MAX_CODE_OP_SIZE` for the op overall. Throws on the first violation. Content-dependent
+ * checks (lengths, boundaries) are stage 2: `validateCodeOpContent`.
  */
 export function validateCodeOpSchema(op: CodeOp): void {
-  if (typeof op !== "object" || op === null || Array.isArray(op)) {
-    throw new Error("code op must be an object");
-  }
   // The size cap is enforced as a running budget, not an after-the-fact sum: an edit's section
   // count is pre-checked in O(1) and the budget re-checked as each section's cost accrues, so a
   // hostile op is rejected before its sections are walked -- and in particular before
@@ -459,18 +466,11 @@ export function validateCodeOpSchema(op: CodeOp): void {
     if (!Number.isSafeInteger(gadgetId) || gadgetId < 0 || String(gadgetId) !== gadgetKey) {
       throw new Error(`code op gadget key is not a canonical gadget id: ${gadgetKey}`);
     }
-    if (!Array.isArray(fileOps)) {
-      throw new Error(`code op gadget entry must be an array: gadget ${gadgetKey}`);
-    }
     if (fileOps.length === 0) {
       throw new Error(`code op gadget entry is empty: gadget ${gadgetKey}`);
     }
     let seen = new Set<string>();
-    for (let entry of fileOps) {
-      if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string") {
-        throw new Error(`code op file entry must be a [path, op] pair: gadget ${gadgetKey}`);
-      }
-      let [path, fileOp] = entry;
+    for (let [path, fileOp] of fileOps) {
       if (path === "") throw new Error(`code op file path is empty: gadget ${gadgetKey}`);
       if (path.length > MAX_FILE_PATH_LENGTH) {
         throw new Error(`code op file path is too long: gadget ${gadgetKey}`);
@@ -490,29 +490,25 @@ export function validateCodeOpSchema(op: CodeOp): void {
 // MAX_CODE_OP_SIZE; always <= budget). Throws "code op is too large" as soon as the running
 // cost exceeds `budget`, so an oversized payload is rejected without being fully walked.
 function validateFileOpSchema(where: string, fileOp: FileOp, budget: number): number {
-  if (typeof fileOp !== "object" || fileOp === null || Array.isArray(fileOp)) {
-    throw new Error(`file op must be an object: ${where}`);
-  }
+  // Exactly one variant. This one is not the wire validator's to make: its union is first-match
+  // and extra properties are allowed, so `{set, remove}` reaches us. It must not survive --
+  // `applyCodeOp` tests `set` before `edit` while `transformCodeOp` tests `edit` first, so a
+  // two-variant FileOp would be read differently by two replicas and diverge them.
   let keys = Object.keys(fileOp);
   if (keys.length !== 1 || !["edit", "set", "remove"].includes(keys[0])) {
     throw new Error(`file op must have exactly one of edit/set/remove: ${where}`);
   }
   if ("set" in fileOp) {
-    if (typeof fileOp.set !== "string") throw new Error(`file op set must be a string: ${where}`);
     if (fileOp.set.length > MAX_FILE_TEXT_LENGTH) throw new Error(`file is too large: ${where}`);
     if (fileOp.set.length > budget) throw new Error("code op is too large");
     return fileOp.set.length;
   }
-  if ("remove" in fileOp) {
-    if (fileOp.remove !== true) throw new Error(`file op remove must be true: ${where}`);
-    return 0;
-  }
+  if ("remove" in fileOp) return 0;
   // ChangeSet.fromJSON is not strict enough on its own -- it accepts negative and non-integer
   // section lengths, sections that neither retain, delete, nor insert (free padding that would
   // evade the size caps), and inserted "line" strings containing "\n" (which desynchronize the
   // resulting document's line metadata from its text) -- so check sections ourselves first;
   // fromJSON then rejects the remaining malformed shapes, on input the budget has bounded.
-  if (!Array.isArray(fileOp.edit)) throw new Error(`file op edit must be an array: ${where}`);
   // O(1) budget pre-check on the section count alone, before any section is even looked at.
   let cost = fileOp.edit.length * EDIT_SECTION_SIZE_WEIGHT;
   if (cost > budget) throw new Error("code op is too large");
@@ -521,15 +517,15 @@ function validateFileOpSchema(where: string, fileOp: FileOp, budget: number): nu
       if (!Number.isSafeInteger(section[0]) || section[0] < 0) {
         throw new Error(`file op edit has an invalid section length: ${where}`);
       }
-      // The inserted text's length: the lines' lengths plus the "\n" joining them. Non-string
-      // entries fall through to fromJSON's rejection below. The separator count is known
-      // before the lines are walked, so a section padded with empty lines is rejected here in
-      // O(1) rather than after the walk.
+      // The inserted text's length: the lines' lengths plus the "\n" joining them. The
+      // separator count is known before the lines are walked, so a section padded with empty
+      // lines is rejected here in O(1) rather than after the walk.
       let insertedHere = section.length >= 2 ? section.length - 2 : 0;
       if (cost + insertedHere > budget) throw new Error("code op is too large");
       for (let i = 1; i < section.length; i++) {
-        let line = section[i];
-        if (typeof line !== "string") continue;
+        // A numeric index into `[number, ...string[]]` types as `string | number` because it
+        // spans every element; every element past the first is a line.
+        let line = section[i] as string;
         if (line.includes("\n")) {
           throw new Error(`file op edit inserted line contains a newline: ${where}`);
         }

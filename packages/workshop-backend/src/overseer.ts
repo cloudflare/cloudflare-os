@@ -3251,11 +3251,12 @@ class OverseerImpl implements AgentHooks {
     return {generation: row.generation, revision: row.revision};
   }
 
-  // Structural validation of a CodeOpSubmission (the trust boundary's stage 1; see
-  // validateCodeOpSchema for the op itself).
+  // Validation of a CodeOpSubmission beyond its declared type (the trust boundary's stage 1;
+  // see validateCodeOpSchema for the op itself, and that module's header for why neither
+  // re-checks the shape capnweb-validate has already established): value formats, ranges, and
+  // the cross-checks between the pins and the op.
   #validateSubmissionShape(submission: CodeOpSubmission): void {
-    if (typeof submission.clientId !== "string" ||
-        !CHAT_OP_CLIENT_ID_PATTERN.test(submission.clientId)) {
+    if (!CHAT_OP_CLIENT_ID_PATTERN.test(submission.clientId)) {
       throw new Error("Invalid clientId.");
     }
     if (!Number.isSafeInteger(submission.seq) || submission.seq < 1) {
@@ -3271,7 +3272,6 @@ class OverseerImpl implements AgentHooks {
       throw new Error("A code op submission must change something.");
     }
     if (submission.pins !== undefined) {
-      if (!Array.isArray(submission.pins)) throw new Error("Invalid pins.");
       let seen = new Set<WorkpieceId>();
       for (let pin of submission.pins) {
         if (!Number.isSafeInteger(pin.gadgetId) || pin.gadgetId < 0 || seen.has(pin.gadgetId)) {
