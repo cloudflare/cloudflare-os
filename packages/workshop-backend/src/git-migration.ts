@@ -50,7 +50,7 @@
 import * as Y from "yjs";
 import { keyString } from "@gadgets/typed-storage";
 import type {
-  AiChatMessage, AiChatMetadata, ChatChangesPin, ChatGadgetPin, CommitIdentity, WorkpieceId,
+  AiChatMessage, AiChatMetadata, ChatGadgetPin, ChatGadgetPinState, CommitIdentity, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { CompactionCheckpoint } from "./agent";
@@ -396,7 +396,7 @@ function convertLegacyChat(
   // are ignored, as everywhere (the registry is the enumeration source of truth).
   let before: CodeContent = new Map();
   let after: CodeContent = new Map();
-  let pins: ChatGadgetPin[] = [];
+  let pins: ChatGadgetPinState[] = [];
   let carriedPending: WorkpieceId[] = [];
   for (let gadget of storage.gadgets.list()) {
     if (gadget.pending !== undefined && gadget.pending.chatId !== meta.id) continue;
@@ -445,7 +445,7 @@ function convertLegacyChat(
     type: "changes",
     ...(change !== undefined ? { change } : {}),
     ...(pins.length > 0
-        ? { pins: pins.map((pin): ChatChangesPin =>
+        ? { pins: pins.map((pin): ChatGadgetPin =>
               ({ gadgetId: pin.gadgetId, baseCommit: pin.baseCommit })) }
         : {}),
     ...(createdGadgets.length > 0 ? { createdGadgets } : {}),

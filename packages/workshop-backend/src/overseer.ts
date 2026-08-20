@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ChatChangesPin, ChatCodeBase, ChatGadgetPin, CodeChangeSubmission, CommitIdentity, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitIdentity, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, changedGadgets, composeCodeChange, diffFiles, transformCodeChange,
   validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -2532,7 +2532,7 @@ class OverseerImpl implements AgentHooks {
   // chat content with the row applied (the caller computed it while validating).
   #appendChatChangeRow(chatId: number, meta: AiChatMetadata, author: AiChatAuthorInfo,
                        change: CodeChange, source: ChatChangeRecord["source"],
-                       newPins: ChatGadgetPin[], contentAfter: CodeContent | undefined,
+                       newPins: ChatGadgetPinState[], contentAfter: CodeContent | undefined,
                        submission?: {clientId: string, seq: number}): ChatChangeRecord {
     let codeBase = this.chatCodeBase(meta);
     codeBase.pins.push(...newPins);
@@ -2618,12 +2618,12 @@ class OverseerImpl implements AgentHooks {
     return declared;
   }
 
-  // Meta pins (see ChatGadgetPin) whose establishment no surviving current-epoch "changes"
-  // message records yet, in log-pin form. A pin lands in `codeBase` atomically with the row
-  // that needed it; its durable log declaration lands when the rows materialize. Also the
-  // AgentHooks implementation of the same name (a resumed turn re-adopts these so its next
-  // flush declares them).
-  undeclaredMetaPins(chatId: number, meta: AiChatMetadata): ChatChangesPin[] {
+  // Pins in the chat's live state (see ChatGadgetPinState) whose establishment no surviving
+  // current-epoch "changes" message records yet, stripped back to what the log stores. A pin
+  // lands in `codeBase` atomically with the row that needed it; its durable log declaration
+  // lands when the rows materialize. Also the AgentHooks implementation of the same name (a
+  // resumed turn re-adopts these so its next flush declares them).
+  undeclaredMetaPins(chatId: number, meta: AiChatMetadata): ChatGadgetPin[] {
     let pins = meta.codeBase?.pins ?? [];
     if (pins.length === 0) return [];
     let declared = this.declaredPinGadgets(chatId);
@@ -2632,7 +2632,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   // AgentHooks implementation: undeclaredMetaPins against the chat's current metadata.
-  undeclaredChatPins(chatId: number): ChatChangesPin[] {
+  undeclaredChatPins(chatId: number): ChatGadgetPin[] {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return [];
     return this.undeclaredMetaPins(chatId, meta);
@@ -2925,7 +2925,7 @@ class OverseerImpl implements AgentHooks {
     }
     content = cached.content;
 
-    let newPins: ChatGadgetPin[] = [];
+    let newPins: ChatGadgetPinState[] = [];
     if (pin !== undefined) {
       let existing = codeBase.pins.find(p => p.gadgetId === pin.gadgetId);
       if (existing !== undefined) {
@@ -3183,7 +3183,7 @@ class OverseerImpl implements AgentHooks {
     // Establish pins: validate each declaration against the gadget's current head (tolerating a
     // parent-of-head base -- the client raced exactly one merge), idempotent against an
     // identical existing pin, conflicting against a different one.
-    let newPins: ChatGadgetPin[] = [];
+    let newPins: ChatGadgetPinState[] = [];
     let validationContent = content;
     for (let [gadgetId, baseCommit] of declarations) {
       let existing = codeBase.pins.find(p => p.gadgetId === gadgetId);
@@ -3318,7 +3318,7 @@ class OverseerImpl implements AgentHooks {
     // gadget has been deleted are skipped -- there is no head to merge. Heads that advance
     // *during* the merge below are fine without revalidation: each pin is advanced only to the
     // commit actually merged, so the chat simply comes out still stale.
-    let stale: {record: GadgetRecord, pin: ChatGadgetPin}[] = [];
+    let stale: {record: GadgetRecord, pin: ChatGadgetPinState}[] = [];
     for (let pin of codeBase.pins) {
       let record = this.storage.gadgets.get(pin.gadgetId);
       if (record?.commitId !== undefined && record.commitId !== pin.mergedCommit) {

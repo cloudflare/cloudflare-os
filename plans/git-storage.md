@@ -448,7 +448,7 @@ against Yjs:
   **required, not optional**: the migration synthesizes a commit at every historical
   merge's version and backfills the field (§4), and the pre-git writer records an
   accurate `commits: []` in the interim.
-- **Chat pins ride `AiChatMetadata.codeBase`** (`ChatCodeBase` / `ChatGadgetPin`):
+- **Chat pins ride `AiChatMetadata.codeBase`** (`ChatCodeBase` / `ChatGadgetPinState`):
   per-gadget `seedCommit`(optional — absent for roots that entered the chat via
   update-from-mainline or in-chat creation)/`mergedCommit` pins plus the chat's
   `seedHash`, delivered and re-delivered via the existing metadata subscription. Each
@@ -906,7 +906,7 @@ pending-era (see the agent replay note in "Known edge cases").
 
 ### Wire/API deltas (`workshop-shared/src/api.ts`)
 
-- `ChatCodeBase` → `{gadgets: ChatGadgetPin[], generation: number, epoch?: number,
+- `ChatCodeBase` → `{gadgets: ChatGadgetPinState[], generation: number, epoch?: number,
   legacy?: true}`. `generation` is the `updateCode` validation token (bumped by
   merge, revert, and draft discard); `epoch` (the sequence of the merge message that
   opened the current epoch, absent = since chat start) keys reconstruction.
@@ -917,7 +917,7 @@ pending-era (see the agent replay note in "Known edge cases").
   first `updateCode` passes `generation: 0` and validates against the absent record
   (doc-comment this on `ChatCodeBase` itself; every bump-site therefore materializes
   the record if absent).
-- `ChatGadgetPin`: `seedCommit` + per-pin `seedHash` required on new-model pins;
+- `ChatGadgetPinState`: `seedCommit` + per-pin `seedHash` required on new-model pins;
   legacy pins remain `mergedCommit`-only under the chat-level `legacy` flag. (No
   seed-version field — deferred until a second algorithm exists, see the epochs
   section.)
@@ -1352,7 +1352,7 @@ isomorphic-git):
 
 ### 2. Revision protocol — one change stream per epoch
 
-- `ChatCodeBase` becomes `{pins: ChatGadgetPin[], generation, epoch?, revision,
+- `ChatCodeBase` becomes `{pins: ChatGadgetPinState[], generation, epoch?, revision,
   prior?}`, where `prior: {generation, finalRevision, discontinuousGadgets}` is
   present after a **content-preserving** bump: it names the closed generation and
   its terminal revision — the marker by which a client knows it has processed the
@@ -1361,13 +1361,16 @@ isomorphic-git):
   content the reset visibly changed and which the client must rebuild from head
   rather than carry over (§7). Absent after destructive bumps, whose tail is not
   processable anyway.
-  `ChatGadgetPin` = `{gadgetId, baseCommit, mergedCommit}`: `baseCommit` replaces
+  `ChatGadgetPinState` = `{gadgetId, baseCommit, mergedCommit}`: `baseCommit` replaces
   `seedCommit` (immutable within the epoch — it is what changes compose on top of) and
   needs **no hash**: `readCommitFiles(baseCommit)` is deterministic by construction,
   which is the point of the whole exercise. `mergedCommit` and the fast-forward gate
   are unchanged from Part 2. `seedHash`, the seed band, and both in-band-author
   rejection chokepoints are deleted. Absent `codeBase` still reads as
-  `{pins: [], generation: 0, revision: 0}`.
+  `{pins: [], generation: 0, revision: 0}`. The immutable half is its own type,
+  `ChatGadgetPin` = `{gadgetId, baseCommit}` — what a submit declares and what the log
+  and checkpoints record — with `ChatGadgetPinState` extending it by the one field that
+  is live state rather than history.
 - **`chatChanges` collection replaces `chatDraftUpdates`**: rows
   `{revision, author, timestamp, change, submission?, source}` under a
   **per-generation** revision counter (see the generation bullet). `source`
@@ -1695,7 +1698,7 @@ false), and the Part 2 suite re-based onto the new pin shape.
   `{changesGeneration, throughRevision}` watermark replace `update?: Uint8Array`;
   `pins` lose `seedHash`; `mainlineMerge` unchanged; `conversionBoundary?: true`
   added; `observedCodeVersion` doc-marked historical.
-- `ChatCodeBase`/`ChatGadgetPin` reshaped as in §2 (including `prior` — the
+- `ChatCodeBase`/`ChatGadgetPinState` reshaped as in §2 (including `prior` — the
   closed generation's terminal-revision marker plus its bridge-ineligible
   `discontinuousGadgets`); `seedHash` and `legacy` gone.
 - `getLegacyChatDocBase` deleted. Checkpoint/history-page `acceptedChanges` and

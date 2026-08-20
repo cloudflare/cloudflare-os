@@ -1,5 +1,5 @@
 import type {
-  AiChatAuthorInfo, ChatCodeBase, ChatChangesPin, CodeChangeSubmission, WorkpieceId,
+  AiChatAuthorInfo, ChatCodeBase, ChatGadgetPin, CodeChangeSubmission, WorkpieceId,
 } from '@gadgets/workshop-shared/api'
 import {
   applyCodeChange, changedGadgets, composeCodeChange, transformCodeChange,
@@ -576,7 +576,7 @@ export class ChatOtClient {
     // for local-seed gadgets, which were unpinned on both sides of the boundary and follow the
     // normal first-touch rule.
     if (this.#inflight === null && !isEmptyChange(this.#pending)) {
-      const pins: ChatChangesPin[] = changedGadgets(this.#pending)
+      const pins: ChatGadgetPin[] = changedGadgets(this.#pending)
         .filter(gadgetId => !this.#applied.has(gadgetId) && this.#localSeeds.has(gadgetId))
         .map(gadgetId =>
           ({ gadgetId, baseCommit: this.#localSeeds.get(gadgetId)!.baseCommit }))
@@ -744,7 +744,7 @@ export class ChatOtClient {
     // the pin metadata hasn't reached us yet (e.g. right after an epoch reset whose bridged
     // rows re-pinned it) -- hold the submission until it does (setDurableState re-schedules).
     const pinned = new Set((this.#latestDurable.codeBase?.pins ?? []).map(pin => pin.gadgetId))
-    const pins: ChatChangesPin[] = []
+    const pins: ChatGadgetPin[] = []
     for (const gadgetId of changedGadgets(this.#pending)) {
       if (pinned.has(gadgetId) || this.#applied.has(gadgetId) ||
           this.#pendingCreations.has(gadgetId)) {

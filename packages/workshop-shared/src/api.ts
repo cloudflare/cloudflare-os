@@ -1950,10 +1950,10 @@ export interface Overseer extends RpcTarget {
    * `changes` message are swept in first, and there is no way to accept only a subset.
    *
    * Accepting is only ever a fast-forward: every gadget touched by the merged changes must have
-   * its chat pin equal to the gadget's current head commit (see ChatGadgetPin.mergedCommit). If
-   * mainline has advanced past any pin, nothing at all is merged and the call returns a "stale"
-   * outcome (an expected result, not an exception; see MergeChangesResult): call
-   * updateChatFromMainline(), resolve any conflicts, and retry.
+   * its chat pin equal to the gadget's current head commit (see
+   * ChatGadgetPinState.mergedCommit). If mainline has advanced past any pin, nothing at all is
+   * merged and the call returns a "stale" outcome (an expected result, not an exception; see
+   * MergeChangesResult): call updateChatFromMainline(), resolve any conflicts, and retry.
    *
    * A successful merge closes the chat's current **epoch**: all merged content now lives in
    * commits, so the chat's code base resets to empty (every pin is dropped, the change stream
@@ -1970,7 +1970,7 @@ export interface Overseer extends RpcTarget {
    *
    * Only *pinned* gadgets participate: an unpinned gadget's code was never modified in this
    * chat, so it tracks mainline head live and there is nothing to merge into. For each pinned
-   * gadget whose ChatGadgetPin.mergedCommit is behind the gadget's current head, the server
+   * gadget whose ChatGadgetPinState.mergedCommit is behind the gadget's current head, the server
    * computes a 3-way text merge (base = the last merged commit, ours = the head, theirs = the
    * chat's current files) and applies the result to the chat as an ordinary change -- broadcast via
    * AiChatSubscriber.changeApplied(), so concurrent editors transform against it like any other
@@ -2260,7 +2260,7 @@ export type AiChatMetadata = {
  */
 export type ChatCodeBase = {
   /** Per-gadget pins: every permanent gadget whose code has been modified in the current epoch. */
-  pins: ChatGadgetPin[];
+  pins: ChatGadgetPinState[];
 
   /**
    * Identifies the chat's current change stream. submitCodeChange() validates against this; it is
@@ -2318,10 +2318,18 @@ export type ChatCodeBase = {
 };
 
 /**
- * One gadget's pin within a chat (see ChatCodeBase). A pin exists only for gadgets whose code
- * has been modified in the chat's current epoch; it is established by the first modification (a
+ * One gadget's pin within a chat (see ChatCodeBase): the record that the gadget's code was
+ * modified for the first time in the chat's current epoch, fixing the commit its uncommitted
+ * changes apply on top of. A pin is established by that first modification -- a
  * submitCodeChange() pin declaration, or the agent's first write, which pins at the then-current
- * head) and lasts until the epoch ends or the declaring message is reverted.
+ * head -- and lasts until the epoch ends or the declaring message is reverted.
+ *
+ * This same shape is both the declaration a client submits with a first modification
+ * (CodeChangeSubmission.pins) and the permanent record of it in the chat log (the `pins` field of
+ * a "changes" message) and in compaction checkpoints. The log record is what a closed epoch's
+ * content is reconstructed from: start from `baseCommit`'s tree, then apply the epoch's changes
+ * in order. Nothing here ever changes once recorded; a pin's mutable state lives in
+ * ChatGadgetPinState.
  */
 export type ChatGadgetPin = {
   /** The pinned gadget. */
@@ -2330,11 +2338,20 @@ export type ChatGadgetPin = {
   /**
    * The commit whose tree the chat's uncommitted changes for this gadget apply on top of.
    * Immutable for the life of the pin: every change recorded for this gadget since is expressed
-   * against content rooted here, so the base moving would invalidate them all. (Mainline
-   * movement is merged into the chat as ordinary changes, advancing `mergedCommit` -- never this.)
+   * against content rooted here, so the base moving would invalidate them all. (Mainline movement
+   * is merged into the chat as ordinary changes, advancing ChatGadgetPinState.mergedCommit --
+   * never this.)
    */
   baseCommit: string;
+};
 
+/**
+ * A pin's current state within a chat (see ChatCodeBase.pins): the immutable ChatGadgetPin the
+ * epoch recorded, plus how far mainline has been merged into the chat since. That addition is
+ * live state rather than history, which is why it is absent from the declaration a client submits
+ * and from the record the chat log keeps.
+ */
+export type ChatGadgetPinState = ChatGadgetPin & {
   /**
    * The most recent mainline commit whose content has been merged into the chat for this gadget.
    * Starts equal to baseCommit and advances on updateChatFromMainline(). Accepting the chat's
@@ -2384,34 +2401,14 @@ export type CodeChangeSubmission = {
 
   /**
    * Pin declarations, one per permanent gadget this change touches that is not yet pinned in the
-   * chat (a gadget still pending in the chat is never pinned or declared). See
-   * Overseer.submitCodeChange() for the validation rules and ChatChangesPin for the shape's durable
-   * role.
+   * chat (a gadget still pending in the chat is never pinned or declared). The same shape is
+   * what the chat log keeps permanently; see Overseer.submitCodeChange() for the validation
+   * rules.
    */
-  pins?: ChatChangesPin[];
+  pins?: ChatGadgetPin[];
 
   /** The change itself. */
   change: CodeChange;
-};
-
-/**
- * Records a gadget's code being modified for the first time in a chat's epoch, fixing the
- * commit its uncommitted changes apply on top of. This is both the declaration a client submits
- * with such a first modification (CodeChangeSubmission.pins) and the permanent record of it in the
- * chat log (the `pins` field of a "changes" message) and in compaction checkpoints. The log
- * record is what a closed epoch's content is reconstructed from: start from `baseCommit`'s
- * tree, then apply the epoch's changes in order. Unlike ChatGadgetPin -- the *current* pin state,
- * whose mergedCommit advances -- this never changes once recorded.
- */
-export type ChatChangesPin = {
-  /** The pinned gadget. */
-  gadgetId: WorkpieceId;
-
-  /**
-   * The commit whose tree the gadget's chat content applies on top of
-   * (ChatGadgetPin.baseCommit, as of when the pin was established).
-   */
-  baseCommit: string;
 };
 
 /**
@@ -2542,7 +2539,7 @@ export type AiChatMessageBody = {
   /**
    * The code changes themselves, composed from the changes this batch materialized (see
    * `watermark`). Applies to the chat content produced by the current epoch's earlier messages,
-   * with this message's own `pins` established first (see ChatChangesPin). Absent when the
+   * with this message's own `pins` established first (see ChatGadgetPin). Absent when the
    * batch records only gadget creations and/or binding additions with no accompanying code
    * edits, and on pre-conversion messages (see `conversionBoundary`).
    */
@@ -2559,9 +2556,9 @@ export type AiChatMessageBody = {
    * Pins this batch establishes: for each gadget listed, this message's `change` contains the
    * epoch's first modification of that gadget's code, applied on top of the pinned commit's
    * tree. Content reconstruction establishes each listed pin's base before applying the change (see
-   * ChatChangesPin).
+   * ChatGadgetPin).
    */
-  pins?: ChatChangesPin[];
+  pins?: ChatGadgetPin[];
 
   /**
    * The span of the change stream this batch materialized: this message's `change` is the

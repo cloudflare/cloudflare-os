@@ -1,4 +1,4 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, ChatChangesPin, ChatCodeBase, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, ChatGadgetPin, ChatCodeBase, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, replaceSpanChange, type CodeContent, type CodeChange }
   from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
@@ -139,10 +139,10 @@ export type CompactionCheckpoint = {
   observedCodeVersion?: number;
 
   /**
-   * The pins active at the boundary (see ChatChangesPin). Replay establishes their base trees
+   * The pins active at the boundary (see ChatGadgetPin). Replay establishes their base trees
    * before applying `proposedChange`.
    */
-  pins?: ChatChangesPin[];
+  pins?: ChatGadgetPin[];
 
   /**
    * Sequence of the message that opened the epoch the boundary lies in, mirroring
@@ -328,7 +328,7 @@ export interface AgentHooks {
    * records yet (see the flush above). At turn start these identify a crashed predecessor's
    * pins, whose base trees replay must establish before applying the unmaterialized rows.
    */
-  undeclaredChatPins(chatId: number): ChatChangesPin[];
+  undeclaredChatPins(chatId: number): ChatGadgetPin[];
 
   /**
    * The gadget's current head commit (WorkpieceSummary.commitId), or undefined if it has none:
@@ -1386,7 +1386,7 @@ export async function runAgent(
   // Establishes a pin's base tree in the session content during replay and marks the gadget
   // pinned. Idempotent: commits are immutable, so re-establishing the same base is harmless --
   // which is what lets ensureReplayContentForWrite below establish a base *early*.
-  let applyReplayedPin = async (pin: ChatChangesPin) => {
+  let applyReplayedPin = async (pin: ChatGadgetPin) => {
     let files = await hooks.readCommitFiles(pin.baseCommit);
     sessionContent = new Map(sessionContent);
     sessionContent.set(pin.gadgetId, files);
@@ -1414,7 +1414,7 @@ export async function runAgent(
     if (pinnedGadgets.has(workpieceId)) return;
     if (hooks.getGadgetHead(workpieceId) === undefined) return;  // no committed code
 
-    let upcoming: ChatChangesPin | "reverted" | "flushed-unpinned" | undefined;
+    let upcoming: ChatGadgetPin | "reverted" | "flushed-unpinned" | undefined;
     for (let msg of chatMessages) {
       if (msg.sequence <= sequence) continue;
       if (msg.type === "merge" && msg.epochBoundary) break;
