@@ -123,6 +123,7 @@ import OutOfCreditsModal from "./components/billing/OutOfCreditsModal";
 import { useSlashCommandPicker } from "./components/chat/SlashCommandPicker";
 import { formatFullTimestamp } from "./utils/formatTimestamp";
 import { copyToClipboard } from "./clipboard";
+import { isImeComposing } from "./keyboardEvent";
 import {
   composerDraftStorageKey,
   decorateComposerDraft,
@@ -3373,7 +3374,7 @@ export const ChatInput = ({
                 // user who types through an IME, so hand the whole keystroke back to the IME: Enter
                 // is not the only key it owns -- Escape cancels a composition and the arrows move
                 // through candidates.
-                if (e.nativeEvent.isComposing) return;
+                if (isImeComposing(e)) return;
                 if (slashCommandPicker.open && e.key === "Escape") {
                   e.preventDefault();
                   slashCommandPicker.dismiss();
@@ -6744,6 +6745,7 @@ function ChatInterface({
                             onChange={(e) => setRenamingInput(e.target.value)}
                             onClick={(e) => e.stopPropagation()}
                             onKeyDown={(e) => {
+                              if (isImeComposing(e)) return;
                               if (e.key === "Enter") {
                                 e.preventDefault();
                                 handleSaveListRename(chat.id);
@@ -6968,6 +6970,7 @@ function ChatInterface({
                         value={titleInput}
                         onChange={(e) => setTitleInput(e.target.value)}
                         onKeyDown={(e) => {
+                          if (isImeComposing(e)) return;
                           if (e.key === "Enter") handleSaveChatTitle();
                           if (e.key === "Escape") handleCancelTitleEdit();
                         }}

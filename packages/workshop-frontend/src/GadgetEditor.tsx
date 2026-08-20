@@ -59,6 +59,7 @@ import { useWorkspaceOpen } from './useWorkspaceOpen'
 import { reportIssue } from './errorReporting'
 import GadgetExportMenu from './GadgetExportMenu'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
+import { isImeComposing } from './keyboardEvent'
 
 const NO_GADGETS: ReadonlySet<WorkpieceId> = new Set()
 
@@ -1373,6 +1374,7 @@ export default function GadgetEditor() {
                 value={titleInput}
                 onChange={e => setTitleInput(e.target.value)}
                 onKeyDown={e => {
+                  if (isImeComposing(e)) return
                   if (e.key === 'Enter') handleSaveTitle()
                   if (e.key === 'Escape') handleCancelEdit()
                 }}
