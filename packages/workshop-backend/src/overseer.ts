@@ -2896,8 +2896,8 @@ class OverseerImpl implements AgentHooks {
   }
 
   // AgentHooks implementation: append one agent tool edit to the chat's change stream, durable
-  // and broadcast immediately (this doubles as the streaming preview; see
-  // AiChatSubscriber.changeApplied).
+  // and broadcast immediately (superseding the provisional editPreview* stream of the call's
+  // in-progress content; see AiChatSubscriber.changeApplied).
   // `pin`, on the first write to an unpinned gadget, is validated against the gadget's *current*
   // head and mirrored into the chat's code base in the same synchronous step that records the
   // row -- head movement after the append merely leaves the chat stale for the accept gate to

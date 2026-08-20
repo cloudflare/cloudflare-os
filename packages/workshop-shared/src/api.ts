@@ -3199,10 +3199,9 @@ export type AiChatStreamEvent = {
   toolName: AiToolCall["toolName"];
 } | {
   /**
-   * For the executeCode tool specifically, we stream the code as the AI writes it. (For all other
-   * tool calls, the tool inputs are not streamed -- though writeFile and editFile edits are
-   * delivered live via AiChatSubscriber.changeApplied(), as durable changes rather than provisional
-   * events.)
+   * For the executeCode tool specifically, we stream the code as the AI writes it. (writeFile and
+   * editFile stream their in-progress content through the editPreview* events below instead; other
+   * tool calls' inputs are not streamed.)
    */
   type: "toolCodeDelta";
   toolCallId: string;
@@ -3227,6 +3226,56 @@ export type AiChatStreamEvent = {
   type: "toolCallTarget";
   toolCallId: string;
   file: { workpieceId: WorkpieceId, filename: string };
+} | {
+  /**
+   * Opens a live preview of a writeFile/editFile call whose content the model is still
+   * generating: the streamed value (delivered by editPreviewDelta events) progressively replaces
+   * a span of the target file, so the user watches the edit appear as it is written. Emitted
+   * once the call's input has streamed far enough to identify the target (which happens when the
+   * content/replacement field begins, since it is the input's final field).
+   *
+   * The event carries no base content: the client locates the span in its own copy of the file
+   * -- the chat's content, or the committed head for a gadget the chat doesn't cover -- which
+   * mirrors the content the agent computes its edit against (both are the same change stream).
+   * The preview is display-only provisional state, never entering the client's own change
+   * tracking.
+   *
+   * At most one preview is *streaming* at a time (a new editPreviewStart ends the previous
+   * call's delta stream), but a preview outlives its streaming: tool calls execute only after
+   * the whole model response has streamed, so several previews can finish before any of their
+   * durable rows exists. The client must keep displaying each finished preview's final text --
+   * a call's edits would otherwise vanish until its row lands -- until the preview resolves,
+   * which happens in one of two ways: the completed call's change row arrives via
+   * AiChatSubscriber.changeApplied() carrying the same final content (the ordinary end), or an
+   * editPreviewClear withdraws it because no row will come. Since rows arrive in call order,
+   * per-file previews resolve oldest-first. As with all provisional state, the client should
+   * also discard whatever remains when the agent stops running.
+   */
+  type: "editPreviewStart";
+  toolCallId: string;
+  file: { workpieceId: WorkpieceId, filename: string };
+  /**
+   * For editFile: the exact text being replaced. The client finds its unique match in the file
+   * (skipping the preview if there isn't exactly one -- the call itself will then fail). Absent
+   * for writeFile, whose streamed content replaces the whole file.
+   */
+  textToReplace?: string;
+} | {
+  /** Appends newly decoded characters to the streaming edit preview's content. */
+  type: "editPreviewDelta";
+  toolCallId: string;
+  delta: string;
+} | {
+  /**
+   * Withdraws an edit preview whose tool call will produce no change row -- its input failed to
+   * parse or validate, the call failed, or the edit turned out to be a no-op. May name any call
+   * of the current response, not just the one currently streaming (failures surface at
+   * execution, after later calls' previews may have started). The client restores the previewed
+   * file to its real content. (Successful calls emit no clear: the durable changeApplied row
+   * supersedes the preview instead.)
+   */
+  type: "editPreviewClear";
+  toolCallId: string;
 } | {
   /**
    * Streaming createGadget output format, used by the UI before the finalized tool call arrives.
@@ -3273,8 +3322,9 @@ export interface AiChatSubscriber {
 
   /**
    * Delivers one accepted change of a chat's change stream: a human submitCodeChange(), an agent
-   * tool edit (this doubles as the agent's live streaming preview -- there are no separate
-   * streaming code events), or an updateChatFromMainline() merge. Changes must be applied in
+   * tool edit (broadcast when the tool call completes, superseding the provisional editPreview*
+   * stream of its in-progress content -- see AiChatStreamEvent), or an updateChatFromMainline()
+   * merge. Changes must be applied in
    * revision order within a generation; a gap means events were lost and the client should
    * rebuild from fresh metadata and history. On a generation switch, first finish the old
    * generation's remaining changes -- complete once seen through

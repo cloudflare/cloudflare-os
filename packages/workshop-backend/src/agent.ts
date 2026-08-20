@@ -847,18 +847,7 @@ Gives up on handling the current callbacks, rejecting all outstanding callbacks 
 
 // =======================================================================================
 
-import { StreamingToolInputParser } from './streaming-json-parser.js';
-
-type CodePreviewEntry = {
-  toolName: "writeFile" | "editFile";
-  parser: StreamingToolInputParser;
-  // The edit's target workpiece, resolved from the streaming input's prefix fields once they are
-  // complete. `null` means resolution failed (e.g. the agent omitted `workpiece` in a workspace
-  // with no default gadget) — the tool call itself will fail, so no preview is shown.
-  target?: {workpieceId: WorkpieceId} | null;
-  // Whether we've already emitted the toolCallTarget event. To avoid emitting multiple times.
-  targetEmitted?: boolean;
-};
+import { CodePreviewManager, ExecuteCodeStreamManager } from './code-preview';
 
 // Description of a file-editing tool call which we may need to replay.
 type ReplayPendingEdit = {
@@ -909,173 +898,6 @@ function findEditPos(content: string, textToReplace: string): number {
     throw new Error("Multiple matches were found. The text to match must be unique.");
   }
   return pos;
-}
-
-// Tracks writeFile and editFile tool calls while the LLM is still streaming their input, so the
-// UI can focus the file being edited before the call finalizes. As tool-call input tokens
-// arrive, the streaming JSON parser extracts the target fields incrementally and emits
-// toolCallTarget / setActiveFile events. (The edit's *content* is not streamed: it is delivered
-// as a durable change row via AiChatSubscriber.changeApplied when the tool call completes.)
-class CodePreviewManager {
-  #previews = new Map<string, CodePreviewEntry>();
-  #activeFile: {workpieceId: WorkpieceId, filename: string} | null = null;
-
-  // `resolveWorkpiece` resolves an edit's (optional) `workpiece` input field -- the chat binding
-  // name of the target workpiece -- to the workpiece whose file is being edited (a filename
-  // alone doesn't identify a file).
-  constructor(private emit: (event: AiChatStreamEvent) => void,
-              private resolveWorkpiece:
-                  (workpiece?: string) => {workpieceId: WorkpieceId}) {}
-
-  startToolCall(toolCallId: string, toolName: AiToolCall["toolName"]) {
-    if (toolName !== "writeFile" && toolName !== "editFile") {
-      return;
-    }
-
-    let streamingField = toolName === "writeFile" ? "content" : "replacement";
-    this.#previews.set(toolCallId, {
-      toolName,
-      parser: new StreamingToolInputParser(streamingField),
-    });
-  }
-
-  appendInput(toolCallId: string, delta: string) {
-    let entry = this.#previews.get(toolCallId);
-    if (!entry) return;
-
-    try {
-      entry.parser.append(delta);
-      if (entry.parser.hasError) throw new Error("Invalid JSON in tool input");
-
-      this.#maybeEmitActiveFile(toolCallId, entry);
-    } catch (err) {
-      this.#previews.delete(toolCallId);
-      logger.warn("failed to parse provisional tool input", {
-        event: "agent.provisional.tool.input.parse.failed", toolCallId, error: err,
-      });
-    }
-  }
-
-  finishToolCall(toolCallId: string, success: boolean) {
-    if (!this.#previews.has(toolCallId)) return;
-
-    if (!success) {
-      this.#previews.delete(toolCallId);
-    }
-  }
-
-  clear() {
-    this.#previews.clear();
-    this.#activeFile = null;
-  }
-
-  clearActiveFile() {
-    if (this.#activeFile === null) return;
-
-    this.#activeFile = null;
-    this.emit({type: "setActiveFile", file: null});
-  }
-
-  #maybeEmitActiveFile(toolCallId: string, entry: CodePreviewEntry) {
-    let prefix = entry.parser.prefixFields;
-    let filename = prefix?.filename;
-    if (typeof filename !== "string") {
-      return;
-    }
-
-    // Resolve the target workpiece once the prefix fields (which precede the streaming content
-    // field, hence are complete) are available.
-    if (entry.target === undefined) {
-      let rawWorkpiece = prefix!.workpiece;
-      try {
-        entry.target =
-            this.resolveWorkpiece(typeof rawWorkpiece === "string" ? rawWorkpiece : undefined);
-      } catch {
-        // Unresolvable target: the tool call itself will fail, so show no preview for it.
-        entry.target = null;
-      }
-    }
-    if (!entry.target) return;
-    let workpieceId = entry.target.workpieceId;
-
-    // Tell the UI this call's target file so it can display before it finalizes.
-    if (!entry.targetEmitted) {
-      entry.targetEmitted = true;
-      this.emit({type: "toolCallTarget", toolCallId, file: {workpieceId, filename}});
-    }
-
-    if (this.#activeFile !== null && this.#activeFile.workpieceId === workpieceId &&
-        this.#activeFile.filename === filename) {
-      return;
-    }
-    this.#activeFile = {workpieceId, filename};
-    this.emit({type: "setActiveFile", file: {workpieceId, filename}});
-  }
-}
-
-// Streams the `code` field of executeCode tool calls to the client as it arrives, so the
-// UI can display the code the agent is about to run before the tool call is actually
-// invoked.  Emits incremental "toolCodeDelta" stream events containing only the new
-// characters decoded since the last event.
-class ExecuteCodeStreamManager {
-  #streams = new Map<string, {parser: StreamingToolInputParser, emittedLength: number}>();
-
-  constructor(private emit: (event: AiChatStreamEvent) => void) {}
-
-  startToolCall(toolCallId: string, toolName: AiToolCall["toolName"]) {
-    if (toolName !== "executeCode") {
-      return;
-    }
-
-    this.#streams.set(toolCallId, {
-      parser: new StreamingToolInputParser("code"),
-      emittedLength: 0,
-    });
-  }
-
-  appendInput(toolCallId: string, delta: string) {
-    let stream = this.#streams.get(toolCallId);
-    if (!stream) return;
-
-    try {
-      stream.parser.append(delta);
-      if (stream.parser.hasError) {
-        this.#streams.delete(toolCallId);
-        logger.warn("failed to parse provisional executeCode input", {
-          event: "agent.provisional.execute.code.input.parse.failed",
-          toolCallId,
-        });
-        return;
-      }
-
-      if (!stream.parser.prefixFields) return;
-
-      let code = stream.parser.streamingValue;
-      let newDelta = code.slice(stream.emittedLength);
-      if (newDelta !== "") {
-        stream.emittedLength = code.length;
-        this.emit({
-          type: "toolCodeDelta",
-          toolCallId,
-          delta: newDelta,
-        });
-      }
-    } catch (err) {
-      this.#streams.delete(toolCallId);
-      logger.warn("failed to parse provisional executeCode input", {
-        event: "agent.provisional.execute.code.input.parse.failed",
-        toolCallId, error: err,
-      });
-    }
-  }
-
-  finishToolCall(toolCallId: string) {
-    this.#streams.delete(toolCallId);
-  }
-
-  clear() {
-    this.#streams.clear();
-  }
 }
 
 // Renders a JSON-structured tool result as the exact text the model sees. Used by both the live
@@ -2548,6 +2370,8 @@ export async function runAgent(
 
           return toolResult(jsonToolResultText({success: true, changeId: nextChangeId}));
         } catch (error) {
+          // (The preview of a failed edit is withdrawn centrally at tool_execution_end, which
+          // also covers failures that never reach this execute.)
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)
           });
@@ -2616,10 +2440,15 @@ export async function runAgent(
             let edit = replaceSpanChange(before.length, pos, textToReplace, replacement);
             await appendAgentEdit(
                 resolved.workpieceId, {[resolved.workpieceId]: [[filename, {edit}]]}, pin);
+          } else {
+            // A no-op edit appends no change row, so nothing will supersede its streamed
+            // preview; withdraw it explicitly.
+            codePreviewManager.clearPreview(toolCallId);
           }
 
           return toolResult(jsonToolResultText({success: true, changeId: nextChangeId}));
         } catch (error) {
+          // (Failed edits' previews are withdrawn centrally at tool_execution_end.)
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)
           });
@@ -3104,6 +2933,14 @@ export async function runAgent(
       }
 
       case "tool_execution_end":
+        // The one chokepoint that sees every failed call -- including schema-validation
+        // failures, blocked calls, and aborts, which never reach the tool's own execute() -- so
+        // withdraw failed edits' previews here. A failed call appends no change row, and nothing
+        // else would supersede its preview. (Successful calls need no withdrawal: their row
+        // does; see AiChatStreamEvent's editPreviewClear.)
+        if (event.isError) {
+          codePreviewManager.clearPreview(event.toolCallId);
+        }
         if (event.toolName === "executeCode") {
           emitStreamEvent({type: "toolCallFinished", toolCallId: event.toolCallId});
         }

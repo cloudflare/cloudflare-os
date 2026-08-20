@@ -45,6 +45,7 @@ import ChatInterface, {
   type ActiveFileTarget,
   type ChatCodeChanges,
   type ChatLiveChangeRows,
+  type ChatLiveEditPreviews,
 } from './ChatInterface'
 import { formatOf } from './components/format/formats'
 import { FormatGlyph } from './components/format/FormatVisuals'
@@ -598,6 +599,10 @@ export default function GadgetEditor() {
   // The selected chat's live (unmaterialized) change row stream, stable per chat; the code view
   // subscribes to it rather than reading rows through renders (see ChatLiveChangeRows).
   const [liveRows, setLiveRows] = useState<ChatLiveChangeRows | undefined>(undefined)
+  // The selected chat's live edit-preview stream (the agent's in-progress writeFile/editFile
+  // content), likewise subscription-shaped (see ChatLiveEditPreviews).
+  const [liveEditPreviews, setLiveEditPreviews] =
+    useState<ChatLiveEditPreviews | undefined>(undefined)
   const [streamingActiveFileState, setStreamingActiveFileState] = useState<{
     chatId: number
     file: ActiveFileTarget | null | undefined
@@ -1509,6 +1514,7 @@ export default function GadgetEditor() {
                   onNavigateToChat={navigateToChat}
                   onChatChangesChange={setChatChanges}
                   onLiveRowsChange={setLiveRows}
+                  onLiveEditPreviewsChange={setLiveEditPreviews}
                   onStreamingActiveFileChange={handleStreamingActiveFileChange}
                   pendingConsoleLogCount={consoleLogCount}
                   consoleLogPreview={
@@ -1708,6 +1714,7 @@ export default function GadgetEditor() {
                   selectedChatId={effectiveSelectedChatId}
                   chatChanges={chatChanges}
                   liveRows={liveRows}
+                  liveEditPreviews={liveEditPreviews}
                   pendingGadgetIds={pendingGadgetIds}
                   streamingActiveFile={streamingActiveFileForSelected}
                   isAgentActive={isAgentActive}

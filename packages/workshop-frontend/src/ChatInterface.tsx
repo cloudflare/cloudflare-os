@@ -155,6 +155,60 @@ export interface ChatLiveChangeRows {
 }
 
 /**
+ * One event of the selected chat's edit-preview stream: the writeFile/editFile content the agent
+ * is still generating (see AiChatStreamEvent's editPreviewStart for the model). `start` opens a
+ * preview of the named call -- ending the previous call's delta stream, though *that* preview
+ * stays displayed until its durable row or `clear` resolves it (tool calls execute only after
+ * the whole model response streams, so several previews can finish before any row exists).
+ * `delta` appends streamed text to the named call's preview; `clear` withdraws a preview whose
+ * call will produce no row (it may name any call of the response, not just the streaming one);
+ * `reset` is the mop-up that drops all preview state (turn ended, stream lost). The consumer
+ * additionally resolves each preview when its durable change row arrives (see
+ * GadgetCodeInterface), which is the ordinary end of a successful one.
+ */
+export type EditPreviewEvent = {
+  kind: "start";
+  toolCallId: string;
+  workpieceId: WorkpieceId;
+  filename: string;
+  /** editFile's replaced text; absent for writeFile (the streamed text replaces the whole file). */
+  textToReplace?: string;
+} | {
+  kind: "delta";
+  toolCallId: string;
+  delta: string;
+} | {
+  kind: "clear";
+  toolCallId: string;
+} | {
+  kind: "reset";
+};
+
+/**
+ * The selected chat's live edit-preview stream (see EditPreviewEvent), fed synchronously from
+ * the chat subscription's stream events. `subscribe` replays the currently *streaming* preview
+ * (as a start plus one delta) so a consumer attaching mid-stream still shows it; previews that
+ * already finished streaming are not replayable -- a late joiner picks their content up from the
+ * durable rows instead.
+ */
+export interface ChatLiveEditPreviews {
+  /** Which chat this stream belongs to (see ChatCodeChanges.chatId). */
+  chatId: number;
+  /** Subscribe to the preview event stream; returns the unsubscribe function. */
+  subscribe(listener: (event: EditPreviewEvent) => void): () => void;
+}
+
+// The currently-streaming preview retained per chat, for subscribe-time replay only (see
+// ChatLiveEditPreviews.subscribe).
+type StreamingEditPreview = {
+  toolCallId: string;
+  workpieceId: WorkpieceId;
+  filename: string;
+  textToReplace?: string;
+  text: string;
+};
+
+/**
  * The selected chat's durable code-branch state, as one consistent snapshot: the chat's current
  * ChatCodeBase (pins, generation, epoch -- `codeBase` absent when the chat has none yet, which
  * reads as `{pins: [], generation: 0, revision: 0}`) together with the current epoch's
@@ -4327,6 +4381,9 @@ interface ChatInterfaceProps {
   // The selected chat's live (unmaterialized) change rows, delivered separately from the durable
   // snapshot so per-keystroke row arrivals don't churn it (see ChatLiveChangeRows).
   onLiveRowsChange?: (rows: ChatLiveChangeRows | undefined) => void;
+  // The selected chat's live edit-preview stream, stable per chat like the row stream (see
+  // ChatLiveEditPreviews).
+  onLiveEditPreviewsChange?: (previews: ChatLiveEditPreviews | undefined) => void;
   onStreamingActiveFileChange?: (chatId: number, file: ActiveFileTarget | null | undefined) => void;
   pendingConsoleLogCount: number;
   consoleLogPreview: string;
@@ -4510,6 +4567,7 @@ function ChatInterface({
   onNavigateToChat,
   onChatChangesChange,
   onLiveRowsChange,
+  onLiveEditPreviewsChange,
   onStreamingActiveFileChange,
   pendingConsoleLogCount,
   consoleLogPreview,
@@ -4548,6 +4606,11 @@ function ChatInterface({
   // see ChatLiveChangeRows.subscribe).
   const chatChangeRowListenersRef =
       useRef<Map<number, Set<(row: ChatChangeRow) => void>>>(new Map());
+  // Per-chat streaming edit previews (retained for subscribe-time replay; see
+  // StreamingEditPreview) and their event subscribers, fed synchronously from stream events.
+  const editPreviewsRef = useRef<Map<number, StreamingEditPreview>>(new Map());
+  const editPreviewListenersRef =
+      useRef<Map<number, Set<(event: EditPreviewEvent) => void>>>(new Map());
   // Last server-instance generation seen (survives reconnects). Used to detect a full DO restart,
   // in which case in-flight provisional streams were lost and must be discarded. See
   // AiChatSubscriber.streamGeneration.
@@ -5031,6 +5094,44 @@ function ChatInterface({
     };
   }, [selectedChatId]);
 
+  // The selected chat's edit-preview stream in subscription shape (see ChatLiveEditPreviews),
+  // stable per chat like the row stream above.
+  const currentLiveEditPreviews = useMemo((): ChatLiveEditPreviews | undefined => {
+    if (selectedChatId === null) return undefined;
+    const chatId = selectedChatId;
+    return {
+      chatId,
+      subscribe: (listener) => {
+        let listeners = editPreviewListenersRef.current.get(chatId);
+        if (!listeners) {
+          listeners = new Set();
+          editPreviewListenersRef.current.set(chatId, listeners);
+        }
+        listeners.add(listener);
+        // Replay the streaming preview, if any, so a consumer subscribing mid-stream (a chat
+        // switch, an OT client rebuild) still shows the text streamed so far.
+        const streaming = editPreviewsRef.current.get(chatId);
+        if (streaming !== undefined) {
+          listener({
+            kind: "start",
+            toolCallId: streaming.toolCallId,
+            workpieceId: streaming.workpieceId,
+            filename: streaming.filename,
+            ...(streaming.textToReplace !== undefined
+              ? { textToReplace: streaming.textToReplace } : {}),
+          });
+          if (streaming.text !== "") {
+            listener({ kind: "delta", toolCallId: streaming.toolCallId, delta: streaming.text });
+          }
+        }
+        return () => {
+          listeners.delete(listener);
+          if (listeners.size === 0) editPreviewListenersRef.current.delete(chatId);
+        };
+      },
+    };
+  }, [selectedChatId]);
+
   const isCompacting = currentProvisionalState?.compacting === true;
 
   const hasVisibleProvisionalContent =
@@ -5186,6 +5287,10 @@ function ChatInterface({
     onLiveRowsChange?.(currentLiveRows);
   }, [currentLiveRows, onLiveRowsChange]);
 
+  useEffect(() => {
+    onLiveEditPreviewsChange?.(currentLiveEditPreviews);
+  }, [currentLiveEditPreviews, onLiveEditPreviewsChange]);
+
   const onStreamingActiveFileChangeRef = useRef(onStreamingActiveFileChange);
   onStreamingActiveFileChangeRef.current = onStreamingActiveFileChange;
   useEffect(() => {
@@ -5193,6 +5298,19 @@ function ChatInterface({
       onStreamingActiveFileChangeRef.current?.(selectedChatId, currentStreamingActiveFile);
     }
   }, [currentStreamingActiveFile, selectedChatId]);
+
+  // Deliver one edit-preview event to a chat's subscribers. Touches only refs, so the
+  // first-render closures the subscriber instance captures stay correct.
+  const emitEditPreviewEvent = (chatId: number, event: EditPreviewEvent) => {
+    editPreviewListenersRef.current.get(chatId)?.forEach((listener) => listener(event));
+  };
+  // The turn-boundary mop-up: drop all of a chat's preview state (see EditPreviewEvent's
+  // `reset`). Emitted even when no preview is *streaming* -- finished previews awaiting their
+  // rows live in the consumer, which this tells to let go of them.
+  const resetEditPreviews = (chatId: number) => {
+    editPreviewsRef.current.delete(chatId);
+    emitEditPreviewEvent(chatId, { kind: "reset" });
+  };
 
   // Proper class implementation of AiChatSubscriber
   // This is necessary so the server receives a single stub for the object,
@@ -5208,6 +5326,9 @@ function ChatInterface({
         // re-streamed content isn't appended to it. Clearing all chats is safe: provisional state
         // is purely ephemeral display state, and idle chats already have none.
         provisionalRef.current.clear();
+        // Reset every subscribed chat's previews, not just those with a streaming entry:
+        // consumers also hold finished previews awaiting rows that were lost with the DO.
+        for (const chatId of editPreviewListenersRef.current.keys()) resetEditPreviews(chatId);
         forceUpdate();
       }
       lastStreamGenerationRef.current = generation;
@@ -5222,6 +5343,7 @@ function ChatInterface({
       const prevChat = cacheRef.current.chats.get(chat.id);
       if (prevChat?.activeAgent && !chat.activeAgent) {
         provisionalRef.current.delete(chat.id);
+        resetEditPreviews(chat.id);
       }
 
       // A revert reaching across a boundary rolls compaction back, lowering or clearing
@@ -5272,6 +5394,7 @@ function ChatInterface({
       cacheRef.current.compacted.delete(chatId);
       removeChatFromActionMessageIndex(chatId);
       provisionalRef.current.delete(chatId);
+      editPreviewsRef.current.delete(chatId);
       chatChangeRowsRef.current.delete(chatId);
       bumpChatListVersion();
 
@@ -5357,6 +5480,13 @@ function ChatInterface({
                                        row.revision > throughRevision)) {
           setLiveRowsVersion((prev) => prev + 1);
         }
+      }
+
+      // The turn-flush "changes" message covers every row a successful edit appended, and an
+      // error message ends the step -- either way this step's previews are over (ordinarily
+      // each previewed edit's own row already resolved it; see GadgetCodeInterface).
+      if (msg.type === "changes" || msg.type === "error") {
+        resetEditPreviews(msg.chatId);
       }
 
       const provisional = provisionalRef.current.get(msg.chatId);
@@ -5464,6 +5594,44 @@ function ChatInterface({
             null,
           );
           toolCall.target = event.file.filename;
+          break;
+        }
+        case "editPreviewStart":
+          editPreviewsRef.current.set(chatId, {
+            toolCallId: event.toolCallId,
+            workpieceId: event.file.workpieceId,
+            filename: event.file.filename,
+            ...(event.textToReplace !== undefined
+              ? { textToReplace: event.textToReplace } : {}),
+            text: "",
+          });
+          emitEditPreviewEvent(chatId, {
+            kind: "start",
+            toolCallId: event.toolCallId,
+            workpieceId: event.file.workpieceId,
+            filename: event.file.filename,
+            ...(event.textToReplace !== undefined
+              ? { textToReplace: event.textToReplace } : {}),
+          });
+          break;
+        case "editPreviewDelta": {
+          const preview = editPreviewsRef.current.get(chatId);
+          if (preview !== undefined && preview.toolCallId === event.toolCallId) {
+            preview.text += event.delta;
+          }
+          emitEditPreviewEvent(chatId,
+            { kind: "delta", toolCallId: event.toolCallId, delta: event.delta });
+          break;
+        }
+        case "editPreviewClear": {
+          const preview = editPreviewsRef.current.get(chatId);
+          if (preview !== undefined && preview.toolCallId === event.toolCallId) {
+            editPreviewsRef.current.delete(chatId);
+          }
+          // Forwarded regardless of which call it names: a failed call's clear arrives at
+          // execution time, when a later call's preview may already be the streaming one, and
+          // the consumer still holds the named call's finished preview.
+          emitEditPreviewEvent(chatId, { kind: "clear", toolCallId: event.toolCallId });
           break;
         }
       }
