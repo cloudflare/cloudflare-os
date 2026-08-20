@@ -1,6 +1,6 @@
 import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, ChatChangesPin, ChatCodeBase, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
-import { applyCodeOp, replaceSpanOp, type CodeContent, type CodeOp }
-  from '@gadgets/workshop-shared/code-op';
+import { applyCodeChange, replaceSpanChange, type CodeContent, type CodeChange }
+  from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger } from "./observability";
@@ -140,7 +140,7 @@ export type CompactionCheckpoint = {
 
   /**
    * The pins active at the boundary (see ChatChangesPin). Replay establishes their base trees
-   * before applying `proposedOp`.
+   * before applying `proposedChange`.
    */
   pins?: ChatChangesPin[];
 
@@ -153,24 +153,24 @@ export type CompactionCheckpoint = {
   /**
    * Historical (pre-git-storage): still-proposed and accepted Yjs updates from before the
    * boundary. Survive only as stored data on pre-conversion checkpoints, read by the migration's
-   * conversion; new checkpoints record `proposedOp` instead.
+   * conversion; new checkpoints record `proposedChange` instead.
    */
   acceptedChanges?: Uint8Array;
   proposedChanges?: Uint8Array;
 
   /**
-   * Still-proposed code changes from before the boundary, composed into one op (bounded by
+   * Still-proposed code changes from before the boundary, composed into one change (bounded by
    * content size, not edit history). Individual batches remain addressable through the chat
    * log, so reverting to a point before the boundary is still possible.
    *
    * Provisional gadget creations and binding additions from before the boundary are deliberately
-   * absent: they carry no op, and the registry rows they created (`GadgetRecord.pending`,
+   * absent: they carry no change, and the registry rows they created (`GadgetRecord.pending`,
    * `BindingRecord.pending`) already record them with the sequence that did, untouched by
    * compaction. Merge and revert promote and delete from there rather than from the log, so
    * duplicating them here would be a second source of truth. See getProposedChanges(), which
    * reports the compacted prefix as pending when either this or such a row exists.
    */
-  proposedOp?: CodeOp;
+  proposedChange?: CodeChange;
 };
 
 /** The compaction state and policy for one call to `runAgent`. */
@@ -293,19 +293,19 @@ export interface AgentHooks {
   getChatCodeBase(chatId: number): ChatCodeBase | undefined;
 
   /**
-   * Append one agent tool edit to the chat's op stream: durable and broadcast immediately (the
+   * Append one agent tool edit to the chat's change stream: durable and broadcast immediately (the
    * row doubles as the streaming preview). `pin`, on the first write to an unpinned gadget,
    * names the head the edit is anchored to; it is validated against the gadget's *current* head
    * and mirrored into the chat's code base in the same synchronous step that records the row
    * (a moved head fails the append, surfacing as a tool error). The pin's durable log
    * declaration rides the next turn flush (see flushAgentChanges).
    */
-  appendAgentCodeOp(chatId: number, author: AiChatAuthorInfo, op: CodeOp,
-                    pin?: {gadgetId: WorkpieceId, baseCommit: string})
+  appendAgentCodeChange(chatId: number, author: AiChatAuthorInfo, change: CodeChange,
+                        pin?: {gadgetId: WorkpieceId, baseCommit: string})
       : Promise<{generation: number, revision: number}>;
 
   /**
-   * The turn flush: materialize the chat's unmaterialized op rows (this turn's appends, plus
+   * The turn flush: materialize the chat's unmaterialized change rows (this turn's appends, plus
    * any crashed predecessor's re-adopted tail) into one durable "changes" message, carrying the
    * still-undeclared pin establishments and the given buffered gadget creations and binding
    * additions. Returns whether a message was written (change-ID numbering counts messages).
@@ -316,12 +316,12 @@ export interface AgentHooks {
   }): boolean;
 
   /**
-   * The chat's live (unmaterialized) op rows, oldest first. Nonempty at turn start only when a
+   * The chat's live (unmaterialized) change rows, oldest first. Nonempty at turn start only when a
    * previous turn crashed after appending rows but before its flush; replay applies them on top
-   * of the messages' ops -- they are already durable chat content.
+   * of the messages' changes -- they are already durable chat content.
    */
-  listUnmaterializedChatOps(chatId: number): {op: CodeOp, generation: number,
-                                              revision: number}[];
+  listUnmaterializedChatChanges(chatId: number): {change: CodeChange, generation: number,
+                                                  revision: number}[];
 
   /**
    * Pins present in the chat's code base whose establishment no surviving "changes" message
@@ -899,7 +899,7 @@ function applyPendingEditToText(content: string | null, edit: ReplayPendingEdit)
 }
 
 // Locates `textToReplace` in `content`, enforcing editFile's exactly-one-match contract. The
-// returned position is also where the live tool anchors its exact-span op.
+// returned position is also where the live tool anchors its exact-span change.
 function findEditPos(content: string, textToReplace: string): number {
   let pos = content.indexOf(textToReplace);
   if (pos < 0) {
@@ -915,7 +915,7 @@ function findEditPos(content: string, textToReplace: string): number {
 // UI can focus the file being edited before the call finalizes. As tool-call input tokens
 // arrive, the streaming JSON parser extracts the target fields incrementally and emits
 // toolCallTarget / setActiveFile events. (The edit's *content* is not streamed: it is delivered
-// as a durable op row via AiChatSubscriber.opApplied when the tool call completes.)
+// as a durable change row via AiChatSubscriber.changeApplied when the tool call completes.)
 class CodePreviewManager {
   #previews = new Map<string, CodePreviewEntry>();
   #activeFile: {workpieceId: WorkpieceId, filename: string} | null = null;
@@ -1166,8 +1166,8 @@ export async function runAgent(
 
   // The chat's session content: the *pinned* gadgets' files (each entry rooted at its pin's
   // commit tree) plus the chat's uncommitted changes, reconstructed by replaying the log's pins
-  // and ops below; unpinned gadgets are read live at their head commit (see ChatCodeBase).
-  // Treated as immutable (applyCodeOp shares structure), so it is only ever replaced.
+  // and changes below; unpinned gadgets are read live at their head commit (see ChatCodeBase).
+  // Treated as immutable (applyCodeChange shares structure), so it is only ever replaced.
   let sessionContent: CodeContent = new Map();
 
   // Gadgets pinned in the session's current epoch: pins replayed from the log plus pins
@@ -1232,22 +1232,22 @@ export async function runAgent(
     }
     return undefined;
   };
-  // Applies a replayed op to the session content, optionally rendering the change as unified
-  // diffs for the model (used to surface user edits as observeUserChanges results). Ops make
-  // the changed paths and contents directly visible, so the diff is computed from the op's own
+  // Applies a replayed change to the session content, optionally rendering the change as unified
+  // diffs for the model (used to surface user edits as observeUserChanges results). Changes make
+  // the changed paths and contents directly visible, so the diff is computed from the change's own
   // before/after values. Diffs are grouped by gadget: each gadget with changes contributes a
   // heading line naming it (unified diff format tolerates metadata between files, and this
   // output only needs to be understandable to the model, not valid `patch` input), followed by
   // its files' diffs with bare filenames. A gadget with no in-scope binding gets no diff output:
   // the agent can't reference it, so a diff would only confuse it.
-  let applyReplayedOp = (op: CodeOp, includeDiff: boolean): string | undefined => {
+  let applyReplayedChange = (change: CodeChange, includeDiff: boolean): string | undefined => {
     let before = sessionContent;
-    sessionContent = applyCodeOp(sessionContent, op);
+    sessionContent = applyCodeChange(sessionContent, change);
     if (!includeDiff) return;
 
     let diffParts: string[] = [];
     for (let info of gadgetInfos) {
-      let entries = op[info.id];
+      let entries = change[info.id];
       if (entries === undefined) continue;
       let envName = chatNameFor(info.id);
       if (envName === undefined) continue;
@@ -1401,13 +1401,13 @@ export async function runAgent(
   // - an upcoming surviving declaration: establish from it now;
   // - a *reverted* declaration: do nothing -- the range's reads are elided and its pending
   //   edits are discharged by the (reverted) flush message, so the base is never needed;
-  // - a flush (any op- or watermark-carrying "changes" message, which is what discharges
+  // - a flush (any change- or watermark-carrying "changes" message, which is what discharges
   //   pending edits and what a live write's pin would have ridden) with *no* declaration: the
   //   write was made while the gadget had no committed code -- it was still pending in this
-  //   chat, its content built up from its own ops -- and the head seen now is its later
+  //   chat, its content built up from its own changes -- and the head seen now is its later
   //   promotion. Nothing to establish;
   // - nothing at all: the turn crashed before flushing. The pin was still mirrored into the
-  //   chat's code base when the write's row was appended (see AgentHooks.appendAgentCodeOp), so
+  //   chat's code base when the write's row was appended (see AgentHooks.appendAgentCodeChange), so
   //   establish from the meta pin; the trailing unmaterialized rows applied after replay carry
   //   the edits themselves, and the next flush declares the pin (see undeclaredChatPins).
   let ensureReplayContentForWrite = async (workpieceId: WorkpieceId, sequence: number) => {
@@ -1424,7 +1424,7 @@ export async function runAgent(
         upcoming = chatMessageStatus.get(msg.sequence) === "reverted" ? "reverted" : pin;
         break;
       }
-      if (msg.op !== undefined || msg.watermark !== undefined) {
+      if (msg.change !== undefined || msg.watermark !== undefined) {
         upcoming = "flushed-unpinned";
         break;
       }
@@ -1482,13 +1482,13 @@ export async function runAgent(
   let callbackNameCounter = 0;
 
   // Rebuild the code the compacted prefix left behind: first the checkpoint's pins establish
-  // their base trees, then the composed proposed op applies on top. (A pre-conversion
+  // their base trees, then the composed proposed change applies on top. (A pre-conversion
   // checkpoint carries neither -- its retired Yjs fields are ignored; the conversion boundary
   // in the tail re-establishes the content.)
   for (let pin of checkpoint?.pins ?? []) {
     await applyReplayedPin(pin);
   }
-  if (checkpoint?.proposedOp) applyReplayedOp(checkpoint.proposedOp, false);
+  if (checkpoint?.proposedChange) applyReplayedChange(checkpoint.proposedChange, false);
 
   for (let msg of chatMessages) {
     let modelMessageStart = modelMessages.length;
@@ -1705,7 +1705,7 @@ export async function runAgent(
 
                     // The read was served from the session content. Pending (not-yet-flushed)
                     // edits from earlier in the same turn are applied to the file's text here:
-                    // the content map advances only when the covering "changes" message's op
+                    // the content map advances only when the covering "changes" message's change
                     // applies, so reads between an edit and its flush replay the edits against
                     // the string.
                     let value: string | null =
@@ -1875,28 +1875,29 @@ export async function runAgent(
         }
 
         // A migrated chat's conversion boundary acts as an epoch boundary that re-seeds at
-        // (pin bases + this op): everything before it is text-only history whose code payloads
+        // (pin bases + this change): everything before it is text-only history whose code payloads
         // are unrecoverable (pre-conversion reads were elided above). The reset applies *even
         // when the boundary itself was reverted* (reverting at the boundary erases the
         // converted content, not the boundary): pre-conversion writes leave pendingReplayEdits
-        // that no pre-conversion message discharges (none carries an op or watermark), and they
-        // must not leak into the post-boundary epoch. The pre-boundary log contributes no ops
+        // that no pre-conversion message discharges (none carries a change or watermark), and they
+        // must not leak into the post-boundary epoch. The pre-boundary log contributes no changes
         // or pins, so the rest of the reset is a no-op either way.
         if (msg.conversionBoundary) resetSessionEpoch();
 
         if (chatMessageStatus.get(msg.sequence) !== "reverted") {
-          // Pins this batch establishes enter the content before the op applies (a no-op for
+          // Pins this batch establishes enter the content before the change applies (a no-op for
           // gadgets ensureReplayContentForWrite already established early; see there).
           for (let pin of msg.pins ?? []) {
             await applyReplayedPin(pin);
           }
-          // A batch with no `op` records only creations/binding additions; there is nothing to
+          // A batch with no `change` records only creations/binding additions; there is nothing to
           // apply to the session content (and no diff), but user-authored creations/additions
-          // are still surfaced as observations below. A conversion boundary's op is not user
+          // are still surfaced as observations below. A conversion boundary's change is not user
           // activity -- it re-records content from before the boundary, which the model already
           // saw (or wrote) -- so it applies without an observation.
-          let diff = msg.op !== undefined
-              ? applyReplayedOp(msg.op, msg.author.type === "user" && !msg.conversionBoundary)
+          let diff = msg.change !== undefined
+              ? applyReplayedChange(
+                  msg.change, msg.author.type === "user" && !msg.conversionBoundary)
               : undefined;
           if (msg.author.type === "user" && !msg.conversionBoundary) {
             // Surface everything the user did in this batch as one synthetic observation:
@@ -1945,10 +1946,10 @@ export async function runAgent(
             }
           }
         }
-        // A batch that materialized rows discharges the pending edits it covers (its op
-        // re-records their content); an op-less, watermark-less batch flushed no edits, so it
-        // doesn't discharge any.
-        if (msg.op !== undefined || msg.watermark !== undefined) {
+        // A batch that materialized rows discharges the pending edits it covers (its change
+        // re-records their content); a batch carrying neither flushed no edits, so it doesn't
+        // discharge any.
+        if (msg.change !== undefined || msg.watermark !== undefined) {
           pendingReplayEdits = [];
         }
         for (let {gadgetId} of msg.createdGadgets ?? []) {
@@ -2104,7 +2105,7 @@ export async function runAgent(
   }
 
   // If the previous agent turn was aborted by a server restart, its edits are already durable,
-  // broadcast op rows that no "changes" message covers yet: establish their pins' bases (the
+  // broadcast change rows that no "changes" message covers yet: establish their pins' bases (the
   // pins were mirrored into the chat's code base when the rows were appended, but their log
   // declarations ride the next flush) and apply the rows to the session content. The pending
   // replay edits are the same edits in tool-call form, so they are discharged rather than
@@ -2116,8 +2117,8 @@ export async function runAgent(
       await applyReplayedPin(pin);
     }
   }
-  for (let row of hooks.listUnmaterializedChatOps(chatId)) {
-    sessionContent = applyCodeOp(sessionContent, row.op);
+  for (let row of hooks.listUnmaterializedChatChanges(chatId)) {
+    sessionContent = applyCodeChange(sessionContent, row.change);
   }
   pendingReplayEdits = [];
 
@@ -2167,7 +2168,7 @@ export async function runAgent(
 
   // Flush the turn's pending structure and durable rows into a "changes" message: the message
   // is the durable record that stamps pending registry rows/edges (see addChatMessages in
-  // overseer.ts) and declares the pins this turn's writes established; its op re-records the
+  // overseer.ts) and declares the pins this turn's writes established; its change re-records the
   // rows appended since the last flush (see AgentHooks.flushAgentChanges). Change-ID numbering
   // counts messages, so the counter advances exactly when a message was written.
   let flushPendingChanges = () => {
@@ -2180,23 +2181,23 @@ export async function runAgent(
     }
   };
 
-  // Append one file edit to the chat's op stream, durable and broadcast immediately, and apply
+  // Append one file edit to the chat's change stream, durable and broadcast immediately, and apply
   // it to the session content. The first write to an unpinned gadget with committed code pins
   // it at the given head -- always the current head, never an older observed commit: a read
   // that observed an older head is (or will be) elided, and a previously-elided read must not
   // spring back to life as the anchor of a later write. The pin is validated and mirrored into
   // the chat's code base at append time; its log declaration rides the next flush.
   let appendAgentEdit = async (
-      workpieceId: WorkpieceId, op: CodeOp,
+      workpieceId: WorkpieceId, change: CodeChange,
       pin?: {baseCommit: string, baseFiles: Map<string, string>}) => {
-    await hooks.appendAgentCodeOp(chatId, author, op,
+    await hooks.appendAgentCodeChange(chatId, author, change,
         pin !== undefined ? {gadgetId: workpieceId, baseCommit: pin.baseCommit} : undefined);
     if (pin !== undefined) {
       sessionContent = new Map(sessionContent);
       sessionContent.set(workpieceId, pin.baseFiles);
       pinnedGadgets.add(workpieceId);
     }
-    sessionContent = applyCodeOp(sessionContent, op);
+    sessionContent = applyCodeChange(sessionContent, change);
   };
 
   let agentContext = hooks.getChatAgentContext(chatId);
@@ -2482,7 +2483,7 @@ export async function runAgent(
           // An unpinned gadget with committed code is read live at its head (fixed for the
           // turn; see observeHead), stamping the commit so replay can detect staleness and
           // elide. Pinned gadgets -- and gadgets with no committed code, whose files exist
-          // only in the chat's op stream -- read from the session content, unstamped: it is
+          // only in the chat's change stream -- read from the session content, unstamped: it is
           // never stale within an epoch.
           if (!pinnedGadgets.has(resolved.workpieceId)) {
             let head = observeHead(resolved.workpieceId);
@@ -2527,7 +2528,7 @@ export async function runAgent(
 
           // The first write to an unpinned gadget with committed code pins it at the current
           // head (a whole-file overwrite is coherent against any base, so no read gate here).
-          // Gadgets with no committed code stay unpinned; their content builds up from ops.
+          // Gadgets with no committed code stay unpinned; their content builds up from changes.
           let pin: {baseCommit: string, baseFiles: Map<string, string>} | undefined;
           if (!pinnedGadgets.has(resolved.workpieceId)) {
             let head = hooks.getGadgetHead(resolved.workpieceId);
@@ -2601,9 +2602,9 @@ export async function runAgent(
 
           // Compute the edit against the file as the agent sees it (the pinned base's content
           // when this edit establishes the pin -- byte-identical to what the read observed, per
-          // the gate above). The matched span becomes the op directly -- no diffing --
-          // and replaceSpanOp trims the unchanged disambiguation context the model padded
-          // textToReplace with, so the op reports only the text that actually changed.
+          // the gate above). The matched span becomes the change directly -- no diffing --
+          // and replaceSpanChange trims the unchanged disambiguation context the model padded
+          // textToReplace with, so the change reports only the text that actually changed.
           let before = pin !== undefined
               ? pin.baseFiles.get(filename)
               : sessionContent.get(resolved.workpieceId)?.get(filename);
@@ -2612,7 +2613,7 @@ export async function runAgent(
           }
           let pos = findEditPos(before, textToReplace);
           if (replacement !== textToReplace) {
-            let edit = replaceSpanOp(before.length, pos, textToReplace, replacement);
+            let edit = replaceSpanChange(before.length, pos, textToReplace, replacement);
             await appendAgentEdit(
                 resolved.workpieceId, {[resolved.workpieceId]: [[filename, {edit}]]}, pin);
           }
@@ -2827,14 +2828,14 @@ export async function runAgent(
               {gadgetId: created.id, changeId};
 
           if (blueprint) {
-            // Copy the blueprint's files into the new gadget as one op: like writeFile edits,
+            // Copy the blueprint's files into the new gadget as one change: like writeFile edits,
             // they ride the chat's proposed changes and revert together with the creation. The
             // new gadget is pending in this chat -- no head, hence no pin -- so its content
-            // builds up from `set` ops.
-            let fileOps = Object.entries(blueprint.files)
+            // builds up from `set` changes.
+            let fileChanges = Object.entries(blueprint.files)
                 .map(([filename, text]): [string, {set: string}] => [filename, {set: text}]);
-            if (fileOps.length > 0) {
-              await appendAgentEdit(created.id, {[created.id]: fileOps});
+            if (fileChanges.length > 0) {
+              await appendAgentEdit(created.id, {[created.id]: fileChanges});
             }
             // (The files are deliberately NOT added to filesRead: unlike a writeFile, the agent
             // hasn't seen their contents, so it must read before editing.)

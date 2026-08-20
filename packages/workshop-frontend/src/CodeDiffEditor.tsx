@@ -246,7 +246,7 @@ export default function CodeDiffEditor({
     modifiedViewRef.current = view
 
     const unsubscribeRemote = session ? connectSessionRemote(view, session) : undefined
-    // Ops that don't change this document (e.g. deleting an already-empty file) still flip the
+    // Changes that don't change this document (e.g. deleting an already-empty file) still flip the
     // model's has-modified flag; the doc-change listener alone would miss them.
     const unsubscribeRecompute = session?.subscribeRemote(() => scheduleRecompute())
 

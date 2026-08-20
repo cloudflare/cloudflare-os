@@ -566,7 +566,7 @@ with git. Worth considering as a follow-on change; not part of this plan.
   presence/cursors, and local undo (Y.UndoManager) for free. OT needs equivalent
   client integration built or adopted.
 - Offline and reconnect handling is where CRDTs quietly do a lot of work; OT clients
-  must buffer and transform against missed server ops on reconnect — more protocol
+  must buffer and transform against missed server changes on reconnect — more protocol
   code, more edge cases.
 - The chat message format (`"changes"` carrying Yjs updates, compaction checkpoints)
   would change shape again, with another migration for in-flight chats.
@@ -1039,7 +1039,7 @@ merge, which graduates them.
   (`{gadgetId, baseCommit, files}` gated on a seed-version field), but incremental
   per-file seeding has a real concurrency wrinkle (deterministic clock continuation
   vs. concurrent optimistic seeders). When large repos arrive, prefer the **OT swap**
-  (see "Future consideration" above): an OT op references its base by revision +
+  (see "Future consideration" above): an OT change references its base by revision +
   path, so base content never enters the history and the entire seeding apparatus —
   deterministic clientIDs, per-pin hashes, golden-byte tests — is deleted rather than
   extended. Large-repo support is the concrete trigger that OT section was waiting
@@ -1139,10 +1139,10 @@ Checked against the actual code rather than assumptions:
   rejection at two ingestion points, per-pin seed hashes in three places, golden-byte
   tests on both sides, epoch doc reconstruction, `applyTextEdit`'s anchor-preserving
   minimal diffs, and ~700 LOC of agent session-doc capture/replay machinery. Under
-  OT, most of this is not migrated but deleted: an OT op is already "a change
+  OT, most of this is not migrated but deleted: an OT change is already "a change
   relative to commit X", so there is no seeding problem to solve.
-- **Ops are transparent where Yjs updates were opaque.** The server can see exactly
-  which files an op touches and validate lengths and boundaries at the trust
+- **Changes are transparent where Yjs updates were opaque.** The server can see exactly
+  which files a change touches and validate lengths and boundaries at the trust
   boundary — the generation token's subtlest rationale ("the server cannot tell
   which gadget an opaque update touches") evaporates, and the parked-pending-structs
   class of silent-loss races becomes an explicit, checkable rejection.
@@ -1150,13 +1150,13 @@ Checked against the actual code rather than assumptions:
 ## Locked decisions
 
 - **Text OT core: `@codemirror/state`'s `ChangeSet`/`Text` (plus `fast-diff` for
-  op generation)**, with `workshop-shared/src/code-op.ts` as the **single owner of
-  the invariants**: validation, the file-map lifting, and the priority convention
-  live there and nowhere else (the same reason git-store.ts privatizes
+  change generation)**, with `workshop-shared/src/code-change.ts` as the **single
+  owner of the invariants**: validation, the file-map lifting, and the priority
+  convention live there and nowhere else (the same reason git-store.ts privatizes
   isomorphic-git — invariant ownership, *not* a swappability shim). The wire
-  carries our own doc-commented plain-text op types (structurally ChangeSet's
+  carries our own doc-commented plain-text change types (structurally ChangeSet's
   compact JSON form, so conversion is `ChangeSet.fromJSON`/`toJSON`), keeping the
-  RPC contract self-describing; on the backend nothing outside code-op.ts imports
+  RPC contract self-describing; on the backend nothing outside code-change.ts imports
   the library, while the **frontend uses `ChangeSet` objects natively** (its editor
   is CodeMirror — see below), serializing only at the RPC boundary. (quill-delta
   5.1 was evaluated first and passed the same fuzz battery, but lost on every other
@@ -1171,24 +1171,24 @@ Checked against the actual code rather than assumptions:
   the same three surfaces when the editor moved later.
 - **`@codemirror/collab` is deliberately not used**, editor choice notwithstanding:
   it is a per-document client state machine, not a wire protocol, and its per-doc
-  version model doesn't fit a per-chat revision stream whose ops span files no
+  version model doesn't fit a per-chat revision stream whose changes span files no
   editor has open (`set`/`remove`, agent multi-file edits, pins/generation have no
   collab counterpart). We keep the chat-level two-buffer client; the editor
   integrates via annotated transactions, with CM history configured to skip remote
   changes (a supported, standard setup).
 - **Client-server OT (Jupiter model), TP1 only.** The Overseer DO is the single
   authoritative sequencer; there is no peer-to-peer path and no need for TP2.
-  Priority convention, fixed in code-op.ts and used identically on both sides: the
-  op the server ordered *earlier* comes first (its inserts precede at ties). This is
+  Priority convention, fixed in code-change.ts and used identically on both sides: the
+  change the server ordered *earlier* comes first (its inserts precede at ties). This is
   exactly ChangeSet's documented law — `A.compose(B.map(A))` ==
   `B.compose(A.map(B, true))` — so for concurrent a (server-applied first) and b:
   the server applies `b' = b.map(a)`; a client holding pending b that receives a
   applies `a' = a.map(b, true)` and rebases its pending to `b'`. Convergence of
   exactly this pairing is fuzz-verified (below) and the harness ports into the
-  code-op test suite.
-- **One revisioned op stream per chat epoch** replaces all three of today's tiers:
+  code-change test suite.
+- **One revisioned change stream per chat epoch** replaces all three of today's tiers:
   human drafts (`chatDraftUpdates`), agent streaming (`codeUpdate`/`codeReset`
-  stream events), and the Yjs payload of `"changes"` messages. Every accepted op —
+  stream events), and the Yjs payload of `"changes"` messages. Every accepted change —
   human keystroke batch, agent tool edit, update-from-mainline merge — gets a
   revision and is broadcast on one subscriber event. Agent edits become durable on
   apply (see the agent section for the crash/abort consequences).
@@ -1219,39 +1219,39 @@ against the ~80KB+ of yjs it displaces; type-checks under this repo's tsgo with
   authority, i.e. precisely the DO-as-sequencer model — and the OT law is documented
   right on `map()`: *"`A.compose(B.map(A))` and `B.compose(A.map(B, true))` will
   produce the same document."*
-- **Ops are base-free.** A ChangeSet serializes to compact JSON — sections of
+- **Changes are base-free.** A ChangeSet serializes to compact JSON — sections of
   retained lengths and `[deletedLen, ...insertedLines]` (e.g. `[2,[2,"😀","x"],2]`)
-  — with no base content; `map` (transform) is op-vs-op and needs no document.
+  — with no base content; `map` (transform) is change-vs-change and needs no document.
   Applying needs the base transiently as a `Text` (`Text.of(str.split('\n'))`, a
   rope; `toString()` round-trips `\r`, `\r\n`, `\u2028`, and NUL losslessly —
   verified, matching `splitLines`' invariants in git-store). Base content never
-  enters storage, the wire, or the op history: chat state is literally
-  `(baseCommit, composedOp)`.
+  enters storage, the wire, or the change history: chat state is literally
+  `(baseCommit, composedChange)`.
 - **Exact-length invariants are built in — the trust boundary mostly comes free.**
   Every ChangeSet carries both the before-length (`length`) and after-length
   (`newLength`); `ChangeSet.of` **rejects out-of-range changes at construction**,
   `apply` **throws on a wrong-length document**, and `fromJSON` **rejects malformed
   input**. Our ingestion validator shrinks to surrogate-boundary checks and size
   caps.
-- **Fuzz-verified where it matters**: 20k random concurrent-op pairs (including
+- **Fuzz-verified where it matters**: 20k random concurrent-change pairs (including
   astral chars) converge under the documented pairing, in both the composed and the
   stepwise (apply-one-then-map-the-other) forms; 5k compose-vs-apply cases agree.
-- **Composition compacts** (measured): 1,500 keystroke-grained ops — type 1,000
+- **Composition compacts** (measured): 1,500 keystroke-grained changes — type 1,000
   chars, backspace 500 — compose from ~17.4KB of individual JSON rows to a single
   508-byte section; N edits at distinct scattered positions keep N sections, the
   minimal representation. Composed size is bounded by changed-region extent, not
-  edit count — the property materialization (§2) and checkpoint `proposedOp`
+  edit count — the property materialization (§2) and checkpoint `proposedChange`
   bounds rely on.
 - **Diff is the one piece it lacks** (quill-delta bundles one; ChangeSet doesn't):
   we depend on `fast-diff` 1.3 directly — one file, zero deps, the Myers-diff port
   quill-delta itself uses. A ~12-line fold turns its output into `ChangeSet.of`
   specs; fuzz-verified over 20k astral-heavy string pairs, correct and **never
-  splitting surrogate pairs** (every op boundary checked against the base's
+  splitting surrogate pairs** (every change boundary checked against the base's
   code-point boundaries).
-- **The residual hazard is surrogate boundaries in hostile ops**: ChangeSet accepts
+- **The residual hazard is surrogate boundaries in hostile changes**: ChangeSet accepts
   a mid-pair boundary (a delete of just a high surrogate yields a lone surrogate,
   which becomes U+FFFD over a UTF-8 wire — the corruption class the Yjs design
-  guarded against in `applyTextEdit`). The ingestion check (op boundaries on
+  guarded against in `applyTextEdit`). The ingestion check (change boundaries on
   code-point boundaries of the base, inserts free of lone surrogates) is ~15 lines —
   and unlike with opaque Yjs updates it is actually possible, because the server
   holds the base.
@@ -1307,27 +1307,27 @@ in the repo):
 
 ## Design
 
-### 1. Op model (`workshop-shared/src/code-op.ts`, new)
+### 1. Change model (`workshop-shared/src/code-change.ts`, new)
 
 Our own doc-commented wire types; `@codemirror/state` and `fast-diff` are
 module-private implementation details (mirroring how git-store.ts privatizes
 isomorphic-git):
 
-- A file's state is `string | absent`. `TextOp` is our own TS type for ChangeSet's
+- A file's state is `string | absent`. `TextChange` is our own TS type for ChangeSet's
   compact JSON form — `(number | [number, ...string[]])[]`, sections of retained
   lengths and `[deletedLen, ...insertedLines]` — plain JSON, friendly for Cap'n Web
   (no `Uint8Array` payloads anywhere in the new protocol), and carrying exact
   before/after lengths by construction.
-- `FileOp` = `{edit: TextOp}` (applies to an existing file of exactly the op's
-  before-length) | `{set: string}` (create or wholesale replace — `writeFile`;
+- `FileChange` = `{edit: TextChange}` (applies to an existing file of exactly the
+  change's before-length) | `{set: string}` (create or wholesale replace — `writeFile`;
   valid against any state including absent) | `remove` (delete). An `edit` on an
   absent file is invalid.
-- `CodeOp` = per-gadget, per-path map of `FileOp`s, keyed by gadget id (the Yjs
-  `filesRoot` naming layer disappears; ops address gadgets directly).
-- Operations: `applyCodeOp(files, op)`, `composeCodeOp(a, b)`,
-  `transformCodeOp(a, b)` (a = the earlier/priority side), `diffFiles(before,
-  after) → CodeOp` (fast-diff output folded into `ChangeSet.of` specs),
-  `changedGadgets(op)`. Transform lifting per path: edit/edit delegates to
+- `CodeChange` = per-gadget, per-path map of `FileChange`s, keyed by gadget id (the Yjs
+  `filesRoot` naming layer disappears; changes address gadgets directly).
+- Operations: `applyCodeChange(files, change)`, `composeCodeChange(a, b)`,
+  `transformCodeChange(a, b)` (a = the earlier/priority side), `diffFiles(before,
+  after) → CodeChange` (fast-diff output folded into `ChangeSet.of` specs),
+  `changedGadgets(change)`. Transform lifting per path: edit/edit delegates to
   `ChangeSet.map` with the fixed priority pairing; `set`/`remove` are
   **last-writer-wins by server order** — transforming b over an earlier a: a's
   `set`/`remove` drops b's `edit` (its base was wholesale-replaced); b's
@@ -1335,10 +1335,10 @@ isomorphic-git):
   delete-vs-edit and create-vs-create.
 - **Two-stage ingestion validation** (the trust boundary):
   1. **Schema, before transform**: `ChangeSet.fromJSON` (rejects malformed input
-     outright), plus per-file and per-op size caps. Malformed ops must never reach
-     transform.
+     outright), plus per-file and per-change size caps. Malformed changes must never
+     reach transform.
   2. **Content, after transform against the current file**: exact length match
-     (`op.length === file.length` — ChangeSet carries it, and `apply` throws on
+     (`change.length === file.length` — ChangeSet carries it, and `apply` throws on
      mismatch as a backstop), and every change boundary lands on a code-point
      boundary of the base with inserts free of lone surrogates (no surrogate-pair
      splits — the server holds the base, ~15 lines; the one check the library
@@ -1350,7 +1350,7 @@ isomorphic-git):
   mid-pair boundaries, edit-on-absent, set/remove LWW cases). These run in the
   workshop-backend workerd suite like the git-store tests.
 
-### 2. Revision protocol — one op stream per epoch
+### 2. Revision protocol — one change stream per epoch
 
 - `ChatCodeBase` becomes `{pins: ChatGadgetPin[], generation, epoch?, revision,
   prior?}`, where `prior: {generation, finalRevision, discontinuousGadgets}` is
@@ -1362,23 +1362,23 @@ isomorphic-git):
   rather than carry over (§7). Absent after destructive bumps, whose tail is not
   processable anyway.
   `ChatGadgetPin` = `{gadgetId, baseCommit, mergedCommit}`: `baseCommit` replaces
-  `seedCommit` (immutable within the epoch — it is what ops compose on top of) and
+  `seedCommit` (immutable within the epoch — it is what changes compose on top of) and
   needs **no hash**: `readCommitFiles(baseCommit)` is deterministic by construction,
   which is the point of the whole exercise. `mergedCommit` and the fast-forward gate
   are unchanged from Part 2. `seedHash`, the seed band, and both in-band-author
   rejection chokepoints are deleted. Absent `codeBase` still reads as
   `{pins: [], generation: 0, revision: 0}`.
-- **`chatOps` collection replaces `chatDraftUpdates`**: rows
-  `{revision, author, timestamp, op, submission?, source}` under a
+- **`chatChanges` collection replaces `chatDraftUpdates`**: rows
+  `{revision, author, timestamp, change, submission?, source}` under a
   **per-generation** revision counter (see the generation bullet). `source`
   attributes the row to its producer — `user`, `agent` (with the turn's sequence),
   or `mainlineMerge` — which is what lets turn flush select its segment and turn
   abort select its rows (§4); `submission = {clientId, seq}` identifies the
   submission that produced a user row (the idempotency scheme below; absent on
-  server-authored rows). Three producers: `submitCodeOp` (human editors), agent tool edits
-  (durable on apply), and update-from-mainline's merge op. Every accepted row is
-  broadcast as one subscriber event —
-  `opApplied(chatId, generation, revision, author, op, submission?)`, with
+  server-authored rows). Three producers: `submitCodeChange` (human editors), agent
+  tool edits (durable on apply), and update-from-mainline's merge change. Every
+  accepted row is broadcast as one subscriber event —
+  `changeApplied(chatId, generation, revision, author, change, submission?)`, with
   `submission = {clientId, seq}` on user rows (one grouped optional, so
   half-present states are unrepresentable) — which
   **also replaces the `codeUpdate`/`codeReset` stream events**: agent streaming
@@ -1390,11 +1390,11 @@ isomorphic-git):
   old generation's tail would strand its pending buffer). On subscribe, retained
   rows are replayed like drafts are today; clients apply rows in revision order and
   treat a gap as "refetch".
-- **`submitCodeOp(chatId, {generation, revision, clientId, seq, pins?, op}) →
+- **`submitCodeChange(chatId, {generation, revision, clientId, seq, pins?, change}) →
   {generation, revision}`** replaces `updateCode` (the ack names the landing spot,
   which under the straggler bridge below can be a *newer* generation than the
   submit's). `pins` is an **array** — one declaration per newly-pinned gadget the
-  op covers, since a `CodeOp` spans gadgets and a pending buffer composed while
+  change covers, since a `CodeChange` spans gadgets and a pending buffer composed while
   disconnected can first-touch several unpinned gadgets at once. A declaration
   identical to an existing pin is **idempotent-accept**; only a genuinely different
   `baseCommit` is a conflict. Idempotency is **per client session**: `clientId` is
@@ -1403,36 +1403,36 @@ isomorphic-git):
   **one record per client session, scoped to the authenticated user** — the last
   accepted `seq`, its landing `(generation, revision)`, and a digest of the
   submission, updated in place at accept — rather than a token per
-  op: per-op tokens would grow dedupe state with row count (and on local workerd
+  change: per-change tokens would grow dedupe state with row count (and on local workerd
   deployments RTT is near zero, so rows genuinely approach one per keystroke),
   while per-client records are O(client sessions) and live outside the rows, so
   recognition survives materialization, epoch resets, and destructive bumps with
   no extra bookkeeping. The user scoping is load-bearing: clientIds are public
-  (they ride the `opApplied` echo), so unscoped records would let one
+  (they ride the `changeApplied` echo), so unscoped records would let one
   collaborator consume another's next `seq` — the victim's own next submit would
   then match the record and be acked with the interloper's landing spot,
-  silently stranding an unapplied op. A submit whose `seq` equals the record is a
-  **retry of an already-accepted op** — the server verifies the digest (a
+  silently stranding an unapplied change. A submit whose `seq` equals the record is a
+  **retry of an already-accepted change** — the server verifies the digest (a
   same-seq submit with different content is a client bug, rejected loudly rather
   than acknowledged unapplied) and returns the recorded landing spot without
   re-applying (an RPC response lost after acceptance would otherwise double-apply
   the edit on retry, which OT, unlike a CRDT, does not tolerate); `seq` one past
-  the record (or 1 from a session the user has never used) is the next op;
+  the record (or 1 from a session the user has never used) is the next change;
   anything else is a protocol violation → throw, client discards and rebuilds
-  under a fresh `clientId`. Only the last op's landing is remembered, so at most
+  under a fresh `clientId`. Only the last change's landing is remembered, so at most
   one submission may be in flight per client — which the seq rule *enforces*
   rather than assumes (and is exactly the two-buffer client's behavior, §7).
   Records are never pruned — they are tiny, one per session that ever submitted,
   the same growth class as the chat log itself, and are deleted with the chat —
   because expiry would reopen the double-apply hole: an unknown session's
-  `seq: 1` is accepted as a fresh first op, so a sufficiently delayed retry of a
-  pruned session's first op would masquerade as one. Server, in order:
+  `seq: 1` is accepted as a fresh first change, so a sufficiently delayed retry of a
+  pruned session's first change would masquerade as one. Server, in order:
   schema-validate; **dedupe by `(clientId, seq)` before anything that can reject
   the base** — regardless of the claimed `(generation, revision)`, because an
   already-accepted retry must get its recorded landing spot back even when its
   base has since been destructively bumped (recognition must never require the
   base to remain transformable), and dedupe before the
-  turn check also means a retry of an op accepted just before a turn started gets
+  turn check also means a retry of a change accepted just before a turn started gets
   its ack rather than a bounce; resolve the claimed `(generation, revision)` —
   current generation → proceed; previous generation ended by a
   **content-preserving boundary** with the base still in the retired buffer → the
@@ -1442,7 +1442,7 @@ isomorphic-git):
   only backstops races — the client keeps its queue and resubmits after the
   turn); validate/establish each pin exactly as in Part 2 (first edit to an
   unpinned gadget declares `baseCommit`, validated tip-or-parent); transform the
-  op over rows since the claimed `revision`; content-validate the transformed op
+  change over rows since the claimed `revision`; content-validate the transformed change
   against current content; apply, append, broadcast. All in one synchronous step
   with the row write (atomic under the output gate) — the git reads for pin
   validation happen before it, as today.
@@ -1463,14 +1463,14 @@ isomorphic-git):
   therefore records a **boundary map** alongside the retired rows: per gadget,
   its **boundary commit** (the merge's commit, or head-at-reset for an
   evaporated pin whose flatten equals its content) or a **bridge-ineligible**
-  marker (pin evaporated with content differing from head). A bridged op is transformed over the old
-  generation's remaining retired rows to the old tip, then over the new
-  generation's rows, then applied normally — **rejected** (discard path) if it
-  touches a bridge-ineligible gadget, or a gadget whose **new-generation pin sits
+  marker (pin evaporated with content differing from head). A bridged change is
+  transformed over the old generation's remaining retired rows to the old tip, then
+  over the new generation's rows, then applied normally — **rejected** (discard path)
+  if it touches a bridge-ineligible gadget, or a gadget whose **new-generation pin sits
   at a different base** than its boundary commit (a new-epoch edit pinned at a
-  since-moved head C2: carrying a C-based op onto C2-based content needs the
+  since-moved head C2: carrying a C-based change onto C2-based content needs the
   C→C2 tree diff — a cross-base merge, which is update-from-mainline's job, not
-  transform's). Pin handling otherwise: client declarations on bridged ops are
+  transform's). Pin handling otherwise: client declarations on bridged changes are
   **ignored and server-derived** (they describe a world that no longer exists) —
   each touched gadget pins at its boundary commit (idempotent against an existing
   identical pin; boundary commits cover promoted in-chat creations via the merge
@@ -1489,21 +1489,21 @@ isomorphic-git):
   This **subsumes the window-expiry rejection**: a submit based inside a
   materialized range transforms over the retired rows instead of being rejected;
   rejection remains only for destructive bumps, the buffer horizon, and invalid
-  ops. Destructive boundaries (revert, draft discard, turn abort) retire no
+  changes. Destructive boundaries (revert, draft discard, turn abort) retire no
   *rows* — their content basis was erased, transformation across them is
   meaningless, and their discard UX is *intended* semantics — and they need no
-  dedupe bookkeeping either: the per-client last-op records live outside the rows,
-  so a retry of an op that was accepted (then erased like any other applied op) is
-  still recognized and acked with its recorded landing spot.
+  dedupe bookkeeping either: the per-client last-change records live outside the rows,
+  so a retry of a change that was accepted (then erased like any other applied change)
+  is still recognized and acked with its recorded landing spot.
 - **Materialization** (`materializeChatDraft`'s successor) composes a row range into
-  a `"changes"` message — `op: CodeOp` replaces `update: Uint8Array`, plus the
+  a `"changes"` message — `change: CodeChange` replaces `update: Uint8Array`, plus the
   existing `pins` (minus seedHash) and a **generation-qualified watermark**
-  `{opsGeneration, throughRevision}` (revisions are per-generation, so an
+  `{changesGeneration, throughRevision}` (revisions are per-generation, so an
   unqualified watermark in a delayed message could clear rows of the wrong
   generation) — and retires the rows.
   Composition genuinely compacts: a `ChangeSet` composition is bounded by the
-  extent of changed regions, not edit count (measured: 1,500 keystroke-grained ops
-  — type 1,000 chars, backspace 500 — compose to a single 508-byte section; ops
+  extent of changed regions, not edit count (measured: 1,500 keystroke-grained changes
+  — type 1,000 chars, backspace 500 — compose to a single 508-byte section; changes
   scattered across N distinct positions keep N sections, the minimal
   representation), so a changes message is never per-keystroke JSON. The delivered
   message itself signals materialization (clients drop local knowledge of *that
@@ -1515,8 +1515,8 @@ isomorphic-git):
 - **Generation** survives with bump sites unchanged (merge, revert,
   `discardChatDraftChanges`' successor) but its bumps now come in the two classes
   above: **content-preserving** (merge — the stream identity changes, the content
-  doesn't, and the straggler bridge carries late ops across) and **destructive**
-  (revert, draft discard, turn abort — already-applied ops are erased, content
+  doesn't, and the straggler bridge carries late changes across) and **destructive**
+  (revert, draft discard, turn abort — already-applied changes are erased, content
   that other clients may have transformed against is gone, so their local state is
   unrebuildable-by-patching and they must discard and rebuild). Pin additions and
   update-from-mainline still don't bump (they only append). **The revision counter
@@ -1530,7 +1530,7 @@ isomorphic-git):
 
 - `buildChatDoc` → **`buildChatContent(through)`**: the same epoch-aware log fold
   (epoch-boundary merge → reset; changes message → establish its pins' bases via
-  `readCommitFiles`, apply its op; then trailing unmaterialized rows in revision
+  `readCommitFiles`, apply its change; then trailing unmaterialized rows in revision
   order), producing plain `Map<gadgetId, Map<path, string>>`. Commits are immutable,
   so reconstruction of closed epochs is deterministic — from log pins alone, with no
   hash needed. The DO caches the current-epoch content map, invalidated by
@@ -1538,7 +1538,7 @@ isomorphic-git):
   deleted.
 - **Accept** (`mergeChanges(chatId)`, signature unchanged from Part 2): the flatten
   *is* the content map. Fast-forward gate, `writeFilesAsCommit`, head advancement,
-  provisional promotion, epoch reset (retiring `chatOps` rows into the grace
+  provisional promotion, epoch reset (retiring `chatChanges` rows into the grace
   buffer alongside the per-gadget **boundary map** the bridge gates on — §2 — and
   restarting `revision`), generation bump (content-preserving class — the
   straggler bridge applies), `epochBoundary` merge message with server-computed
@@ -1547,12 +1547,12 @@ isomorphic-git):
   awaits are already-*accepted* content the flatten didn't cover, so the accept's
   synchronous tail still gives up with a retryable throw (someone is actively
   typing) rather than silently sweeping or dropping them; the bridge only carries
-  ops that arrive *after* the merge committed.
+  changes that arrive *after* the merge committed.
 - **Update-from-mainline**: `threeWayMerge` with the pin's `mergedCommit` as
   explicit ancestor, unchanged. The delivery mechanism simplifies: the merge result
-  becomes `diffFiles(currentChatContent, mergedContent)` applied as a server op row
+  becomes `diffFiles(currentChatContent, mergedContent)` applied as a server change row
   at the current revision and broadcast — concurrent typists transform against it
-  like any other remote op. Correctness no longer hangs on minimal diffs
+  like any other remote change. Correctness no longer hangs on minimal diffs
   (`applyTextEdit`'s CRDT-anchor rationale is gone); fast-diff's character-level
   minimality is a quality bonus for concurrent-editor transforms. `mergedCommit`
   advancement, `conflictPaths` surfacing, the record-even-if-empty rule, and the
@@ -1560,10 +1560,10 @@ isomorphic-git):
 - **Revert**: same policy as Part 2 — pin survival = declaring message survival,
   unlogged pins die with their drafts (now: with their unmaterialized rows), rows at
   or after the reverted point are erased, generation bumps. The rationale is now
-  uniform: erasing applied ops invalidates every client's local state, hence the
+  uniform: erasing applied changes invalidates every client's local state, hence the
   bump. One new restriction: **a revert may not start before a conversion
   boundary** (rejected with a clear error). The conversion message collapses all
-  surviving legacy edits into one op, so a `revertFrom` before it would mark that
+  surviving legacy edits into one change, so a `revertFrom` before it would mark that
   message reverted and take pre-`revertFrom` legacy edits with it. Reverting *at*
   the boundary (discarding all converted uncommitted changes together) or after it
   works normally. Accepted deliberately: reverts are rare and near-immediate in
@@ -1577,9 +1577,9 @@ read-before-edit gates) is untouched:
 
 - The agent holds the chat content map (from `buildChatContent` + its own edits).
   `writeFile` emits `{set}`; `editFile` emits an **exact** edit — it knows the
-  replaced span, so the op is `ChangeSet.of([{from, to, insert}], fileLength)` with
+  replaced span, so the change is `ChangeSet.of([{from, to, insert}], fileLength)` with
   no diffing. Each tool edit is applied to the content map, written as a durable
-  `chatOps` row, and broadcast — replacing `capturedYdocChanges`, the `seedOrigin`
+  `chatChanges` row, and broadcast — replacing `capturedYdocChanges`, the `seedOrigin`
   transaction-origin trick, the `updateV2` capture listeners, and the streaming
   events. Pin establishment on first write to an unpinned gadget is unchanged in
   policy (always at current head, never at an observed commit), but **validation
@@ -1592,20 +1592,20 @@ read-before-edit gates) is untouched:
 - **Turn flush** = materialization of the turn segment's rows into the `"changes"`
   message (with `pins`, `createdGadgets`, `addedBindings` as today). The segment is
   selected by the rows' `source` turn identity and is contiguous by construction:
-  human `submitCodeOp` is rejected while a turn is active (§2), and
+  human `submitCodeChange` is rejected while a turn is active (§2), and
   update-from-mainline already aborts when a turn has started (its next-sequence
   re-check), so no foreign rows interleave with a turn's.
 - **Crash/abort semantics change** (deliberately): agent rows are durable and
   broadcast immediately, so a crashed turn's edits are already part of chat content
-  — replay applies messages' ops plus trailing unmaterialized rows and continues;
+  — replay applies messages' changes plus trailing unmaterialized rows and continues;
   `pendingReplayEdits`/`applyPendingEditToYdoc` reconstruction is deleted. An
   *aborted* turn that must discard its edits removes its unmaterialized rows —
   selected by turn identity, and a **contiguous tail** thanks to the mid-turn
-  submission rejection (erasing mid-stream rows would require inverting the ops
+  submission rejection (erasing mid-stream rows would require inverting the changes
   later rows transformed against) — which is a revert-shaped operation: generation
   bump, clients rebuild. (Rare; strictly better than today's silent divergence
   risk.)
-- **Replay** simplifies: `observeUserChanges` diffs read **directly from the op**
+- **Replay** simplifies: `observeUserChanges` diffs read **directly from the change**
   (changed paths and contents are visible — the `observeDeep` rolling-snapshot
   machinery is deleted); `readFile` recomputation at past points uses
   `buildChatContent(through)` for pinned roots and `readCommitFiles(observedCommit)`
@@ -1613,11 +1613,11 @@ read-before-edit gates) is untouched:
   `resetSessionEpoch` keeps its role (clear content, pins, `filesRead` at replayed
   epoch boundaries) with no doc to destroy.
 - **Compaction checkpoints** record pins (new shape, no seedHash) + epoch + a single
-  composed `proposedOp` — bounded by content size, not edit history, which is the
+  composed `proposedChange` — bounded by content size, not edit history, which is the
   compaction win the Part 1 OT section predicted. `acceptedChanges` is deleted
   outright (epochs made it legacy-only; conversion removes legacy), as is the
   checkpoint `observedCodeVersion` legacy discriminator. `foldProposedChanges` /
-  `chatChangeStatuses` keep their exact shape with `composeCodeOp` replacing
+  `chatChangeStatuses` keep their exact shape with `composeCodeChange` replacing
   `Y.mergeUpdatesV2`.
 
 ### 5. Migration — conversion of live legacy chats
@@ -1634,19 +1634,19 @@ per live legacy chat, after commit synthesis in the same `blockConcurrencyWhile`
    anchorCommit}`. Untouched gadgets get **no pin** — they track head live, which is
    the Part 2 lazy semantics and strictly better than the legacy eager view.
 3. Record one synthetic `"changes"` message **for every migrated live chat**:
-   `op = diffFiles(anchorTrees, flattened)`, carrying the pins, flagged
-   **`conversionBoundary`** — with an **empty op and no pins** when the chat has
+   `change = diffFiles(anchorTrees, flattened)`, carrying the pins, flagged
+   **`conversionBoundary`** — with an **empty change and no pins** when the chat has
    nothing to convert, because the boundary itself is load-bearing even then:
    `epoch` points at its sequence, and replay's elision keys on it for chats
    whose agent *read* files without ever editing (those reads were computed
    against the legacy doc and are as unrecoverable as any others). For replay the
-   flag acts like an epoch boundary that re-seeds at (pin bases + this op):
+   flag acts like an epoch boundary that re-seeds at (pin bases + this change):
    messages before it replay as text only — no doc application, **all
    pre-conversion `readFile` results elided** (the existing elision note;
    excluded from `filesRead`, so `editFile`'s gate forces re-reads) and
    pre-conversion user-change diffs replaced with a generic "code was edited"
    note. Reverts may not start before this message (see the revert bullet in §3):
-   the conversion op is all-or-nothing, so partial legacy reverts are impossible
+   the conversion change is all-or-nothing, so partial legacy reverts are impossible
    by construction.
 4. `codeBase = {pins, generation: 0, epoch: <conversion sequence>, revision: 0}`
    — uniformly, since every migrated chat now has a conversion sequence. No
@@ -1661,22 +1661,22 @@ which stay as dead stored data for one release as rollback insurance).
 `update` (nothing can apply it; the conversion boundary supersedes) and doc-marks
 the stamp fields as pre-conversion historical data.
 
-Migration tests to add: conversion determinism (same log → same conversion op), a
+Migration tests to add: conversion determinism (same log → same conversion change), a
 mid-agent-turn legacy chat (replay after conversion elides pre-conversion reads and
-the resumed turn re-reads), drafts folded into the conversion op, an untouched
-gadget left unpinned, a read-only chat (no code involvement: empty-op boundary
+the resumed turn re-reads), drafts folded into the conversion change, an untouched
+gadget left unpinned, a read-only chat (no code involvement: empty-change boundary
 message written, pre-conversion reads still elided, `hasProposedChanges` stays
 false), and the Part 2 suite re-based onto the new pin shape.
 
 ### 6. Wire/API deltas (`workshop-shared/src/api.ts`)
 
-- `CodeOp`/`FileOp`/`TextOp` defined in code-op.ts and referenced by
+- `CodeChange`/`FileChange`/`TextChange` defined in code-change.ts and referenced by
   api.ts (like `CommitInfo` in git-store) — one definition, doc-commented, plain
   JSON.
-- `submitCodeOp(chatId, {generation, revision, clientId, seq, pins?, op}) →
+- `submitCodeChange(chatId, {generation, revision, clientId, seq, pins?, change}) →
   {generation, revision}` replaces `updateCode`; the doc contract describes the
   two-stage validation, the `clientId`/`seq` idempotency semantics (user-scoped
-  per-session last-op records with a request digest: duplicate seq + identical
+  per-session last-change records with a request digest: duplicate seq + identical
   payload → the recorded landing spot returned, no re-apply; same seq with
   different content → rejected loudly; records never pruned; one submission in
   flight per client, enforced by the seq rule), the straggler bridge (a
@@ -1684,22 +1684,22 @@ false), and the Part 2 suite re-based onto the new pin shape.
   generation names where it landed), the active-turn rejection (retryable), and
   the discard-on-throw client obligation for destructive bumps, horizon expiry,
   and seq violations.
-- `AiChatSubscriber`: `opApplied(chatId, generation, revision, author, op,
+- `AiChatSubscriber`: `changeApplied(chatId, generation, revision, author, change,
   submission?)` replaces `draftUpdate` and `draftCleared`; the
   `codeUpdate`/`codeReset` stream event variants are deleted from
   `AiChatStreamEvent`. The generation tag is what lets a client discard delayed
   events from a superseded stream (revisions restart per generation); the
   `submission` echo (`{clientId, seq}`, user rows only) is what lets a submitter
   recognize its own rows.
-- `"changes"` message: `op?: CodeOp` + the generation-qualified
-  `{opsGeneration, throughRevision}` watermark replace `update?: Uint8Array`;
+- `"changes"` message: `change?: CodeChange` + the generation-qualified
+  `{changesGeneration, throughRevision}` watermark replace `update?: Uint8Array`;
   `pins` lose `seedHash`; `mainlineMerge` unchanged; `conversionBoundary?: true`
   added; `observedCodeVersion` doc-marked historical.
 - `ChatCodeBase`/`ChatGadgetPin` reshaped as in §2 (including `prior` — the
   closed generation's terminal-revision marker plus its bridge-ineligible
   `discontinuousGadgets`); `seedHash` and `legacy` gone.
 - `getLegacyChatDocBase` deleted. Checkpoint/history-page `acceptedChanges` and
-  `proposedChanges` replaced by one composed `proposedOp?: CodeOp`.
+  `proposedChanges` replaced by one composed `proposedChange?: CodeChange`.
 - Unchanged: `getCodeAtCommit`, `getCommitLog`, `CommitInfo`/`CommitIdentity`,
   `WorkpieceSummary.commitId`, `merge.commits`/`epochBoundary`/`mergeThrough`,
   `MergeChangesResult`. `WorkpieceSummary.filesRoot` (the Y.Doc root name) is
@@ -1710,39 +1710,40 @@ false), and the Part 2 suite re-based onto the new pin shape.
 ### 7. Frontend
 
 - **OT client state machine** (one small module, shared by editor and diff views):
-  the classic two-buffer client — one in-flight op awaiting its `submitCodeOp` ack,
-  one pending composition of newer local edits; incoming `opApplied` rows transform
-  over both (priority pairing from code-op.ts) and rebase them; ack advances the
+  the classic two-buffer client — one in-flight change awaiting its
+  `submitCodeChange` ack, one pending composition of newer local edits; incoming
+  `changeApplied` rows transform
+  over both (priority pairing from code-change.ts) and rebase them; ack advances the
   known `(generation, revision)`. Because the pending buffer *composes*, rows land
   at ~RTT granularity (everything typed since the last ack rides one submit), not
   per keystroke — the same batching `updateCode` does today — so the live window
   grows slowly even before threshold materialization (though on local workerd
   deployments RTT is near zero and rows can genuinely be per-keystroke — the
-  reason dedupe state is per client, not per op). The client mints a session
+  reason dedupe state is per client, not per change). The client mints a session
   `clientId` whenever it builds or rebuilds local state and numbers submits with
-  `seq`; a transport failure **retries the same `seq`** (never a re-composed op —
+  `seq`; a transport failure **retries the same `seq`** (never a re-composed change —
   the server dedupes it); a *retryable* rejection (active agent turn) keeps
   the queue and resubmits after the turn; a hard rejection (destructive generation
   bump, pin race, buffer-horizon expiry, seq violation) discards local state with
   the existing toast and rebuilds under a fresh `clientId`. **A merge is not a discard**: on a content-preserving
   generation switch the client first processes the old generation's remaining
-  `opApplied` tail — complete when it reaches `codeBase.prior.finalRevision`;
+  `changeApplied` tail — complete when it reaches `codeBase.prior.finalRevision`;
   dropping the tail would strand the pending buffer against missed edits — then
   re-bases locally and keeps submitting. Content is byte-identical for every
   gadget *except* those in `prior.discontinuousGadgets`: those it rebuilds from
-  head and **drops pending ops touching them** (the server would reject them as
+  head and **drops pending changes touching them** (the server would reject them as
   bridge-ineligible anyway — dropping proactively spares the whole queue from the
-  rejection path); for the rest this is bookkeeping, not a rebuild; in-flight and queued ops
-  ride the server's straggler bridge, whose acks name their new-generation landing
-  spots. In the common case (the typist's own keystrokes are the only in-flight
-  thing), typing straight through someone's accept is seamless. ~250 LOC replacing
-  the four-Y.Doc construction in `GadgetCodeInterface.tsx`. It holds `ChangeSet`
-  objects natively (serialization only at the RPC boundary) and owns content for
-  *all* files in the chat, including files no editor has open — which is why it is
-  not `@codemirror/collab` (see the locked decision).
+  rejection path); for the rest this is bookkeeping, not a rebuild; in-flight and
+  queued changes ride the server's straggler bridge, whose acks name their
+  new-generation landing spots. In the common case (the typist's own keystrokes are
+  the only in-flight thing), typing straight through someone's accept is seamless.
+  ~250 LOC replacing the four-Y.Doc construction in `GadgetCodeInterface.tsx`. It
+  holds `ChangeSet` objects natively (serialization only at the RPC boundary) and owns
+  content for *all* files in the chat, including files no editor has open — which is
+  why it is not `@codemirror/collab` (see the locked decision).
 - **Editor: CodeMirror 6** replacing Monaco in `CodeEditor.tsx`. The integration is
   direct rather than an adapter: local transactions' `update.changes` (filtered by
-  a remote-op annotation) feed the client; remote ops dispatch as annotated
+  a remote-change annotation) feed the client; remote changes dispatch as annotated
   transactions with `addToHistory: false`, so undo is CM-native and skips remote
   changes. Extensions: per-language packages for the `getLanguage.ts` set,
   `@codemirror/search`, folding, multi-cursor (default), the option parity list
@@ -1765,13 +1766,13 @@ false), and the Part 2 suite re-based onto the new pin shape.
   OT-bound through the same client.
 - Content layering: head view via `getCodeAtCommit` (unchanged, oid-cached); chat
   view = pin bases (same cache — a pin's base content is just `getCodeAtCommit
-  (baseCommit)`) + composed epoch ops from history + live `opApplied` feed. The
+  (baseCommit)`) + composed epoch changes from history + live `changeApplied` feed. The
   **first-keystroke pin flow simplifies**: the client is already displaying head
   content, so "derive the seed locally" becomes "keep the text you have and declare
   `pins: [{gadgetId, baseCommit: head}]` on the first submit" (one entry per
   newly-touched unpinned gadget) — no derivation, no hash check. `chatCodeDoc.ts`
   and `computeChatDocUpdates`'s blob merging are deleted.
-- Streaming view = the same `opApplied` feed (editing stays locked during agent
+- Streaming view = the same `changeApplied` feed (editing stays locked during agent
   turns, as today).
 - Discard UX narrows to the destructive cases (revert, draft discard, turn abort,
   buffer-horizon expiry) — Part 2's toast, now rarer: merges and materializations
@@ -1780,10 +1781,10 @@ false), and the Part 2 suite re-based onto the new pin shape.
 ## Known edge cases / watch-fors
 
 - **Validate schema before transform, content after transform.** Transform is
-  structural and must only ever see schema-valid ops; length/boundary checks are
-  only meaningful against the content the op will actually apply to.
+  structural and must only ever see schema-valid changes; length/boundary checks are
+  only meaningful against the content the change will actually apply to.
 - **Lone surrogates on the wire**: Cap'n Web WebSocket text frames are UTF-8, where
-  a lone surrogate becomes U+FFFD — the ingestion boundary check (op boundaries on
+  a lone surrogate becomes U+FFFD — the ingestion boundary check (change boundaries on
   code-point boundaries, inserts contain no lone surrogates) is what keeps replicas
   byte-identical, the OT successor of `applyTextEdit`'s guard.
 - **`set('')` vs `remove`**: empty file and absent file are distinct states;
@@ -1793,7 +1794,7 @@ false), and the Part 2 suite re-based onto the new pin shape.
   must keep the buffer's coverage contiguous — a submit based inside a gap has
   nothing to transform against and must hit the reject path, never a hole. The
   per-client dedupe records are deliberately decoupled from this window: they are
-  never pruned (see §2 — expiry would let a delayed retry of a session's first op
+  never pruned (see §2 — expiry would let a delayed retry of a session's first change
   re-apply as a fresh session), and a submit that misses the protocol — an
   unknown session with `seq > 1`, a known session with anything but `record` or
   `record + 1`, or a same-seq submit whose digest differs — fails the reject path
@@ -1801,16 +1802,16 @@ false), and the Part 2 suite re-based onto the new pin shape.
   ordered that way (dedupe first, one record lookup; the reject path as the
   fallback).
 - **Bridged pins must come from the boundary map, never the client**: a bridged
-  op's pin declarations describe the pre-merge world; deriving from anything but
+  change's pin declarations describe the pre-merge world; deriving from anything but
   the recorded boundary commit — the merge's per-gadget commit, or head-at-reset
   for an evaporated content-equal pin (e.g. *current* head, which may have moved
-  since) — would pin content the op wasn't transformed against. Test the
+  since) — would pin content the change wasn't transformed against. Test the
   head-moved-since-merge case (pin lands on a parent of tip) explicitly.
 - **Turn abort = revert-shaped**: removing an aborted turn's rows must bump the
-  generation like any other removal of applied ops. Audit every path that discards
+  generation like any other removal of applied changes. Audit every path that discards
   rows (revert, discard-drafts, abort) for the bump + unlogged-pin rollback pair —
   the Part 2 invariant, now with one uniform justification.
-- **`opApplied` vs metadata delivery races**: `(generation, revision)` makes
+- **`changeApplied` vs metadata delivery races**: `(generation, revision)` makes
   ordering checkable client-side (within a generation apply in order, gap →
   refetch; on a generation switch, **finish the old generation's tail first** —
   completion is checkable against `codeBase.prior.finalRevision`, §7 — and only
@@ -1820,21 +1821,21 @@ false), and the Part 2 suite re-based onto the new pin shape.
   assuming.
 - **`hasProposedChanges` / fold scoping**: unchanged from Part 2, but re-verify the
   fold rules against the conversionBoundary flag (a conversion message *is* a
-  proposed change; an epoch boundary is not — and an **empty** conversion op
+  proposed change; an epoch boundary is not — and an **empty** conversion change
   proposes nothing, so a read-only migrated chat must not show proposed changes).
 - **GC roots**: log pins' `baseCommit`s root closed-epoch reconstruction (as in
   Part 2); conversion messages' pins root the synthesized anchor commits. The
   `observedCommit` elision-tolerance note stands.
-- **Per-op size caps**: ops are content-bounded per file by construction
-  (`set`/`edit` carry at most the file), but a composed epoch op or checkpoint
-  `proposedOp` spanning many files approaches message-size limits the same way
+- **Per-change size caps**: changes are content-bounded per file by construction
+  (`set`/`edit` carry at most the file), but a composed epoch change or checkpoint
+  `proposedChange` spanning many files approaches message-size limits the same way
   snapshots once did — enforce the same caps the gadget file writes already have.
 - **Split diff-view alignment**: Monaco kept the two sides aligned with hatched
   blank view zones; the CM rebuild does the same with block widgets, and the manual
   bidirectional scroll sync must be re-verified against CM's own scroll model
   (rAF-coalesced recompute per keystroke, as today).
 - **Editable diff side under OT**: the modified side is a second live editor on the
-  same file — its local transactions and remote ops flow through the *same* client
+  same file — its local transactions and remote changes flow through the *same* client
   instance as the main editor, or the two editors diverge. One client per chat,
   many views.
 
@@ -1851,19 +1852,19 @@ commit 3 alone need not build); frontend green from commit 5, and the full
 `pnpm build` / `pnpm test` / `pnpm lint` gate applies at the end.
 
 1. **ot-core** (workshop-shared): `@codemirror/state` + `fast-diff` dependencies;
-   `code-op.ts` (wire types, apply/compose/transform/diff, two-stage validation,
+   `code-change.ts` (wire types, apply/compose/transform/diff, two-stage validation,
    priority convention — all doc-commented, both libraries module-private); fuzz +
    validation tests in the workshop-backend workerd suite. No behavior change
    anywhere else.
 2. **API** (workshop-shared): all §6 wire deltas, fully doc-commented; deletion of
    the Yjs update fields, `getLegacyChatDocBase`, and the seed-band contract
    language. No backend keep-compiling stubs (see the green policy above).
-3. **Backend** (workshop-backend): `chatOps` + revision protocol + `submitCodeOp`
-   (per-client `clientId`/`seq` dedupe records, pins[], active-turn rejection, the
-   straggler bridge + retired-row grace buffer, threshold materialization);
-   `buildChatContent`;
-   accept/update-from-mainline/revert on ops; agent path rewrite (append-time pin
-   validation, turn-attributed rows); compaction rework (`proposedOp`); delete
+3. **Backend** (workshop-backend): `chatChanges` + revision protocol +
+   `submitCodeChange` (per-client `clientId`/`seq` dedupe records, pins[],
+   active-turn rejection, the straggler bridge + retired-row grace buffer, threshold
+   materialization); `buildChatContent`;
+   accept/update-from-mainline/revert on changes; agent path rewrite (append-time pin
+   validation, turn-attributed rows); compaction rework (`proposedChange`); delete
    `yjs-seed.ts`, its tests, and both in-band rejection chokepoints (`yjs-files.ts`
    survives until commit 4 — git-migration.ts still imports it). Port
    `chat-code-base.test.ts`'s scenario matrix (generation/pin races, epoch resets,

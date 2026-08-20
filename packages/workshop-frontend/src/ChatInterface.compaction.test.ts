@@ -2,9 +2,9 @@
 
 import { describe, expect, it } from "vitest";
 import type { AiChatMessage, AiChatMessageBody, ChatCodeBase } from "@gadgets/workshop-shared/api";
-import type { CodeOp } from "@gadgets/workshop-shared/code-op";
+import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import {
-  buildChatDisplayEntries, computeChatEpochOps, computeMessageStates,
+  buildChatDisplayEntries, computeChatEpochChanges, computeMessageStates,
   type CompactionBoundary,
 } from "./ChatInterface";
 
@@ -14,8 +14,8 @@ function message(sequence: number, body: AiChatMessageBody): AiChatMessage {
   return { chatId: 1, sequence, timestamp: new Date(sequence * 1000), author: AUTHOR, ...body };
 }
 
-function changes(sequence: number, op: CodeOp): AiChatMessage {
-  return message(sequence, { type: "changes", op });
+function changes(sequence: number, change: CodeChange): AiChatMessage {
+  return message(sequence, { type: "changes", change });
 }
 
 function merge(sequence: number, mergeThrough: number): AiChatMessage {
@@ -26,18 +26,18 @@ function revert(sequence: number, revertFrom: number): AiChatMessage {
   return message(sequence, { type: "revert", revertFrom });
 }
 
-function boundary(to: number, proposedOp?: CodeOp): CompactionBoundary {
-  return { to, summary: "Earlier work", proposedOp };
+function boundary(to: number, proposedChange?: CodeChange): CompactionBoundary {
+  return { to, summary: "Earlier work", proposedChange };
 }
 
 function codeBase(overrides?: Partial<ChatCodeBase>): ChatCodeBase {
   return { pins: [], generation: 0, revision: 0, ...overrides };
 }
 
-// Ops on distinct files, so their compositions are easy to recognize (a union of `set`s).
-const PRE_BOUNDARY: CodeOp = { 1: [["pre.txt", { set: "pre" }]] };
-const LOADED: CodeOp = { 1: [["loaded.txt", { set: "loaded" }]] };
-const OLDER: CodeOp = { 1: [["older.txt", { set: "older" }]] };
+// Changes on distinct files, so their compositions are easy to recognize (a union of `set`s).
+const PRE_BOUNDARY: CodeChange = { 1: [["pre.txt", { set: "pre" }]] };
+const LOADED: CodeChange = { 1: [["loaded.txt", { set: "loaded" }]] };
+const OLDER: CodeChange = { 1: [["older.txt", { set: "older" }]] };
 
 describe("computeMessageStates compaction seeding", () => {
   it("counts the boundary's proposed changes as one entry below the oldest loaded message", () => {
@@ -47,18 +47,18 @@ describe("computeMessageStates compaction seeding", () => {
     );
 
     expect(activeChanges).toEqual([
-      { sequence: 9, op: PRE_BOUNDARY },
-      { sequence: 10, op: LOADED },
+      { sequence: 9, change: PRE_BOUNDARY },
+      { sequence: 10, change: LOADED },
     ]);
   });
 
   it("ignores a boundary that carries no proposed changes", () => {
     const { activeChanges } = computeMessageStates([changes(10, LOADED)], boundary(10));
 
-    expect(activeChanges).toEqual([{ sequence: 10, op: LOADED }]);
+    expect(activeChanges).toEqual([{ sequence: 10, change: LOADED }]);
   });
 
-  // Accepting changes must clear the compacted prefix's op too, or the chat keeps reporting
+  // Accepting changes must clear the compacted prefix's change too, or the chat keeps reporting
   // proposed changes that the user already accepted.
   it("resolves the boundary entry when a merge reaches across it", () => {
     const { activeChanges } = computeMessageStates(
@@ -66,7 +66,7 @@ describe("computeMessageStates compaction seeding", () => {
       boundary(10, PRE_BOUNDARY),
     );
 
-    expect(activeChanges).toEqual([{ sequence: 12, op: OLDER }]);
+    expect(activeChanges).toEqual([{ sequence: 12, change: OLDER }]);
   });
 
   it("keeps the boundary entry when a revert stops above it", () => {
@@ -75,11 +75,11 @@ describe("computeMessageStates compaction seeding", () => {
       boundary(10, PRE_BOUNDARY),
     );
 
-    expect(activeChanges).toEqual([{ sequence: 9, op: PRE_BOUNDARY }]);
+    expect(activeChanges).toEqual([{ sequence: 9, change: PRE_BOUNDARY }]);
   });
 
-  // The boundary's op is the composition of the "changes" messages before it, so it must drop out
-  // the moment those messages load -- otherwise the same edits are counted twice.
+  // The boundary's change is the composition of the "changes" messages before it, so it must
+  // drop out the moment those messages load -- otherwise the same edits are counted twice.
   it("drops the boundary entry once the messages before it have loaded", () => {
     const { activeChanges } = computeMessageStates(
       [changes(5, OLDER), changes(10, LOADED)],
@@ -87,8 +87,8 @@ describe("computeMessageStates compaction seeding", () => {
     );
 
     expect(activeChanges).toEqual([
-      { sequence: 5, op: OLDER },
-      { sequence: 10, op: LOADED },
+      { sequence: 5, change: OLDER },
+      { sequence: 10, change: LOADED },
     ]);
   });
 
@@ -102,64 +102,64 @@ describe("computeMessageStates compaction seeding", () => {
   });
 });
 
-// The durable half of the chat's content: the current epoch's non-reverted ops composed into
-// one, with the oldest loaded boundary's proposedOp standing in for the compacted pages, plus
+// The durable half of the chat's content: the current epoch's non-reverted changes composed into
+// one, with the oldest loaded boundary's proposedChange standing in for the compacted pages, plus
 // the current generation's materialization watermark (see ChatCodeChanges).
-describe("computeChatEpochOps", () => {
-  it("composes non-reverted ops in order", () => {
-    const { epochOp } = computeChatEpochOps([
+describe("computeChatEpochChanges", () => {
+  it("composes non-reverted changes in order", () => {
+    const { epochChange } = computeChatEpochChanges([
       changes(10, LOADED),
       changes(12, OLDER),
     ]);
 
-    expect(epochOp).toEqual({
+    expect(epochChange).toEqual({
       1: [["loaded.txt", { set: "loaded" }], ["older.txt", { set: "older" }]],
     });
   });
 
-  it("skips reverted ops", () => {
-    const { epochOp } = computeChatEpochOps([
+  it("skips reverted changes", () => {
+    const { epochChange } = computeChatEpochChanges([
       changes(10, LOADED),
       revert(11, 10),
       changes(12, OLDER),
     ]);
 
-    expect(epochOp).toEqual(OLDER);
+    expect(epochChange).toEqual(OLDER);
   });
 
-  it("seeds from the boundary's proposed op", () => {
-    const { epochOp } = computeChatEpochOps(
+  it("seeds from the boundary's proposed change", () => {
+    const { epochChange } = computeChatEpochChanges(
       [changes(10, LOADED)],
       boundary(10, PRE_BOUNDARY),
     );
 
-    expect(epochOp).toEqual({
+    expect(epochChange).toEqual({
       1: [["loaded.txt", { set: "loaded" }], ["pre.txt", { set: "pre" }]],
     });
   });
 
-  it("drops the boundary's proposed op when a revert reaches across it", () => {
-    const { epochOp } = computeChatEpochOps(
+  it("drops the boundary's proposed change when a revert reaches across it", () => {
+    const { epochChange } = computeChatEpochChanges(
       [changes(10, LOADED), revert(11, 0)],
       boundary(10, PRE_BOUNDARY),
     );
 
-    expect(epochOp).toBeUndefined();
+    expect(epochChange).toBeUndefined();
   });
 
-  it("drops the boundary op once the messages before it have loaded", () => {
-    const { epochOp } = computeChatEpochOps(
+  it("drops the boundary change once the messages before it have loaded", () => {
+    const { epochChange } = computeChatEpochChanges(
       [changes(5, OLDER), changes(10, LOADED)],
       boundary(10, PRE_BOUNDARY),
     );
 
-    expect(epochOp).toEqual({
+    expect(epochChange).toEqual({
       1: [["loaded.txt", { set: "loaded" }], ["older.txt", { set: "older" }]],
     });
   });
 
   it("keeps a creation-only batch out of the composition", () => {
-    const { epochOp } = computeChatEpochOps([
+    const { epochChange } = computeChatEpochChanges([
       message(10, {
         type: "changes",
         createdGadgets: [{ gadgetId: 1, title: "New", bindingName: "NEW" }],
@@ -167,18 +167,18 @@ describe("computeChatEpochOps", () => {
       changes(11, LOADED),
     ]);
 
-    expect(epochOp).toEqual(LOADED);
+    expect(epochChange).toEqual(LOADED);
   });
 
   // Only the current generation's watermarks position the live-row cursor: revisions restart
   // per generation, so an older generation's watermark says nothing about the current stream.
   it("reports the current generation's materialization watermark", () => {
-    const { rowsThrough } = computeChatEpochOps(
+    const { rowsThrough } = computeChatEpochChanges(
       [
-        message(10, { type: "changes", op: LOADED,
-                      watermark: { opsGeneration: 1, throughRevision: 7 } }),
-        message(12, { type: "changes", op: OLDER,
-                      watermark: { opsGeneration: 2, throughRevision: 3 } }),
+        message(10, { type: "changes", change: LOADED,
+                      watermark: { changesGeneration: 1, throughRevision: 7 } }),
+        message(12, { type: "changes", change: OLDER,
+                      watermark: { changesGeneration: 2, throughRevision: 3 } }),
       ],
       undefined,
       codeBase({ generation: 2 }),
@@ -189,57 +189,57 @@ describe("computeChatEpochOps", () => {
 });
 
 // Accepting changes closes the chat's epoch: the content resets and rebuilds from the new
-// epoch's pins, so ops before ChatCodeBase.epoch -- the epoch-opening merge's sequence -- are no
-// longer part of it. A migrated chat's epoch instead points at its own conversionBoundary
-// *changes* message, whose op is part of the current content, hence the inclusive comparison.
-describe("computeChatEpochOps epoch scoping", () => {
-  it("drops ops from closed epochs, keeping the current epoch's", () => {
-    const { epochOp } = computeChatEpochOps(
+// epoch's pins, so changes before ChatCodeBase.epoch -- the epoch-opening merge's sequence --
+// are no longer part of it. A migrated chat's epoch instead points at its own conversionBoundary
+// *changes* message, whose change is part of the current content, hence the inclusive comparison.
+describe("computeChatEpochChanges epoch scoping", () => {
+  it("drops changes from closed epochs, keeping the current epoch's", () => {
+    const { epochChange } = computeChatEpochChanges(
       [changes(10, OLDER), merge(11, 10), changes(12, LOADED)],
       undefined,
       codeBase({ epoch: 11 }),
     );
 
-    expect(epochOp).toEqual(LOADED);
+    expect(epochChange).toEqual(LOADED);
   });
 
   it("applies no epoch cutoff when epoch is absent", () => {
-    const { epochOp } = computeChatEpochOps(
+    const { epochChange } = computeChatEpochChanges(
       [changes(10, OLDER), merge(11, 10), changes(12, LOADED)],
       undefined,
       codeBase(),
     );
 
-    expect(epochOp).toEqual({
+    expect(epochChange).toEqual({
       1: [["loaded.txt", { set: "loaded" }], ["older.txt", { set: "older" }]],
     });
   });
 
   it("includes the epoch-opening message itself (a conversion boundary)", () => {
-    const { epochOp } = computeChatEpochOps(
+    const { epochChange } = computeChatEpochChanges(
       [
-        message(10, { type: "changes", op: OLDER, conversionBoundary: true }),
+        message(10, { type: "changes", change: OLDER, conversionBoundary: true }),
         changes(12, LOADED),
       ],
       undefined,
       codeBase({ epoch: 10 }),
     );
 
-    expect(epochOp).toEqual({
+    expect(epochChange).toEqual({
       1: [["loaded.txt", { set: "loaded" }], ["older.txt", { set: "older" }]],
     });
   });
 
-  // The boundary's op stands in at sequence `to - 1`, so an epoch boundary past that point
+  // The boundary's change stands in at sequence `to - 1`, so an epoch boundary past that point
   // covers its content too (it was all accepted into commits).
-  it("drops the boundary op when the epoch reaches past it", () => {
-    const { epochOp } = computeChatEpochOps(
+  it("drops the boundary change when the epoch reaches past it", () => {
+    const { epochChange } = computeChatEpochChanges(
       [merge(11, 10), changes(12, LOADED)],
       boundary(10, PRE_BOUNDARY),
       codeBase({ epoch: 11 }),
     );
 
-    expect(epochOp).toEqual(LOADED);
+    expect(epochChange).toEqual(LOADED);
   });
 });
 

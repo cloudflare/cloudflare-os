@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type {
-  AiChatAuthorInfo, AiChatMessage, CodeOpSubmission,
+  AiChatAuthorInfo, AiChatMessage, CodeChangeSubmission,
 } from "@gadgets/workshop-shared/api";
-import { diffFiles, type CodeContent, type CodeOp }
-  from "@gadgets/workshop-shared/code-op";
+import { diffFiles, type CodeContent, type CodeChange }
+  from "@gadgets/workshop-shared/code-change";
 import { keyString } from "@gadgets/typed-storage";
 import type { OverseerDurableObject } from "../src/overseer.js";
 
@@ -15,11 +15,11 @@ declare module "cloudflare:workers" {
   }
 }
 
-// Exercises the chat op-stream lifecycle -- submitCodeOp's validation/transform/dedupe, lazy pin
-// establishment, materialization and its watermark, the accept flow's epoch reset and straggler
-// bridge, update-from-mainline as an op row, and destructive bumps (revert / draft discard) --
-// against the real OverseerImpl running in workerd, over real storage and a real git object
-// store. Each test gets a fresh DO.
+// Exercises the chat change-stream lifecycle -- submitCodeChange's validation/transform/dedupe,
+// lazy pin establishment, materialization and its watermark, the accept flow's epoch reset and
+// straggler bridge, update-from-mainline as a change row, and destructive bumps (revert / draft
+// discard) -- against the real OverseerImpl running in workerd, over real storage and a real git
+// object store. Each test gets a fresh DO.
 
 const USER: AiChatAuthorInfo = { type: "user", id: "alice@example.com", name: "Alice" };
 const BOB: AiChatAuthorInfo = { type: "user", id: "bob@example.com", name: "Bob" };
@@ -29,7 +29,7 @@ const USER_DO_ID = "alice-user-do";
 
 let doCounter = 0;
 async function withImpl(fn: (impl: any) => Promise<void>): Promise<void> {
-  let stub = env.TEST_OVERSEER.getByName(`chat-ops-${++doCounter}`);
+  let stub = env.TEST_OVERSEER.getByName(`chat-changes-${++doCounter}`);
   await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
     await fn((instance as unknown as { impl: any }).impl);
   });
@@ -63,18 +63,18 @@ async function commitFiles(
   });
 }
 
-// Builds the op a client would submit: the diff of one gadget's files from `before` to `after`.
-function editOp(gadgetId: number, before: Record<string, string>,
-                after: Record<string, string>): CodeOp {
+// Builds the change a client would submit: the diff of one gadget's files from `before` to `after`.
+function editChange(gadgetId: number, before: Record<string, string>,
+                    after: Record<string, string>): CodeChange {
   let content = (files: Record<string, string>): CodeContent =>
       new Map([[gadgetId, new Map(Object.entries(files))]]);
   return diffFiles(content(before), content(after));
 }
 
-async function submit(impl: any, chatId: number, submission: CodeOpSubmission,
+async function submit(impl: any, chatId: number, submission: CodeChangeSubmission,
                       author: AiChatAuthorInfo = USER, userId: string = USER_DO_ID)
     : Promise<{generation: number, revision: number}> {
-  return await impl.submitCodeOp(chatId, submission, author, userId);
+  return await impl.submitCodeChange(chatId, submission, author, userId);
 }
 
 function chatMessages(impl: any, chatId: number): AiChatMessage[] {
@@ -90,10 +90,10 @@ async function gadgetContent(
 
 function liveRows(impl: any, chatId: number): any[] {
   let meta = impl.storage.chatMeta.get(chatId)!;
-  return impl.listLiveChatOps(chatId, meta.codeBase?.generation ?? 0);
+  return impl.listLiveChatChanges(chatId, meta.codeBase?.generation ?? 0);
 }
 
-describe("submitCodeOp", () => {
+describe("submitCodeChange", () => {
   it("establishes a pin, appends rows, and materialization stamps the declaration and watermark",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
@@ -103,7 +103,7 @@ describe("submitCodeOp", () => {
     let ack = await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli-a", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
     });
     expect(ack).toEqual({ generation: 0, revision: 1 });
 
@@ -114,7 +114,7 @@ describe("submitCodeOp", () => {
     // A follow-up submission to the already-pinned gadget needs no declaration.
     let ack2 = await submit(impl, 1, {
       generation: 0, revision: 1, clientId: "cli-a", seq: 2,
-      op: editOp(1, { "a.txt": "one\nedited\n" }, { "a.txt": "// top\none\nedited\n" }),
+      change: editChange(1, { "a.txt": "one\nedited\n" }, { "a.txt": "// top\none\nedited\n" }),
     });
     expect(ack2).toEqual({ generation: 0, revision: 2 });
     expect(await gadgetContent(impl, 1, 1)).toEqual({ "a.txt": "// top\none\nedited\n" });
@@ -122,12 +122,12 @@ describe("submitCodeOp", () => {
     // Materialization composes the rows into one "changes" message, stamps the (previously
     // unlogged) pin declaration, and records the generation-qualified watermark; the rows
     // retire but the composed content is unchanged.
-    impl.materializeChatOps(1);
+    impl.materializeChatChanges(1);
     let changes = chatMessages(impl, 1).filter(msg => msg.type === "changes");
     expect(changes).toHaveLength(1);
     expect(changes[0].pins).toEqual([{ gadgetId: 1, baseCommit: c1 }]);
-    expect(changes[0].watermark).toEqual({ opsGeneration: 0, throughRevision: 2 });
-    expect(changes[0].op).toBeDefined();
+    expect(changes[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 2 });
+    expect(changes[0].change).toBeDefined();
     expect(liveRows(impl, 1)).toEqual([]);
     expect(await gadgetContent(impl, 1, 1)).toEqual({ "a.txt": "// top\none\nedited\n" });
 
@@ -146,14 +146,14 @@ describe("submitCodeOp", () => {
     await expect(submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli-a", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
     })).rejects.toThrow(/does not match the gadget's current head/);
 
     // A parent of the head is tolerated: the client raced exactly one merge.
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli-b", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c2 }],
-      op: editOp(1, { "a.txt": "two\n" }, { "a.txt": "xtwo\n" }),
+      change: editChange(1, { "a.txt": "two\n" }, { "a.txt": "xtwo\n" }),
     });
     expect(impl.storage.chatMeta.get(1)!.codeBase!.pins[0].baseCommit).toBe(c2);
   }));
@@ -163,47 +163,47 @@ describe("submitCodeOp", () => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     let c2 = await commitFiles(impl, { "a.txt": "two\n" }, [c1]);
     addGadget(impl, 1, "APP", c2);
-    addGadget(impl, 2, "EMPTY");  // no committed code, not pending: unreachable by ops
+    addGadget(impl, 2, "EMPTY");  // no committed code, not pending: unreachable by changes
     addChat(impl, 1);
 
-    let op = editOp(1, { "a.txt": "two\n" }, { "a.txt": "xtwo\n" });
+    let change = editChange(1, { "a.txt": "two\n" }, { "a.txt": "xtwo\n" });
 
     // A generation the chat never had (or destructively closed) is unbridgeable.
     await expect(submit(impl, 1,
-        { generation: 1, revision: 0, clientId: "c1", seq: 1, op }))
+        { generation: 1, revision: 0, clientId: "c1", seq: 1, change }))
         .rejects.toThrow(/rebuild from fresh metadata/);
 
     // A pin for a gadget with no committed code is meaningless.
     await expect(submit(impl, 1, {
       generation: 0, revision: 0, clientId: "c2", seq: 1,
       pins: [{ gadgetId: 2, baseCommit: c2 }],
-      op: { 2: [["a.txt", { set: "x" }]] },
+      change: { 2: [["a.txt", { set: "x" }]] },
     })).rejects.toThrow(/no committed code/);
 
     // The first modification of a permanent gadget must declare a pin.
     await expect(submit(impl, 1,
-        { generation: 0, revision: 0, clientId: "c3", seq: 1, op }))
+        { generation: 0, revision: 0, clientId: "c3", seq: 1, change }))
         .rejects.toThrow(/must declare a pin/);
 
     // First pin wins; a racing declaration at a different base is refused (the loser's content
     // diverges, so its keystrokes must be discarded)...
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "c4", seq: 1,
-      pins: [{ gadgetId: 1, baseCommit: c2 }], op,
+      pins: [{ gadgetId: 1, baseCommit: c2 }], change,
     });
     await expect(submit(impl, 1, {
       generation: 0, revision: 0, clientId: "c5", seq: 1,
-      pins: [{ gadgetId: 1, baseCommit: c1 }], op,
+      pins: [{ gadgetId: 1, baseCommit: c1 }], change,
     })).rejects.toThrow(/concurrently pinned/);
     // ...but the identical declaration is accepted idempotently.
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "c6", seq: 1,
-      pins: [{ gadgetId: 1, baseCommit: c2 }], op,
+      pins: [{ gadgetId: 1, baseCommit: c2 }], change,
     });
     expect(impl.storage.chatMeta.get(1)!.codeBase!.pins).toHaveLength(1);
   }));
 
-  it("validates the transformed op against current content", () => withImpl(async impl => {
+  it("validates the transformed change against current content", () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     addGadget(impl, 1, "APP", c1);
     addChat(impl, 1);
@@ -212,7 +212,7 @@ describe("submitCodeOp", () => {
     await expect(submit(impl, 1, {
       generation: 0, revision: 0, clientId: "c1", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: { 1: [["a.txt", { edit: [2, [2, "x"], 96] }]] },  // expects a 100-unit file
+      change: { 1: [["a.txt", { edit: [2, [2, "x"], 96] }]] },  // expects a 100-unit file
     })).rejects.toThrow(/length mismatch/);
   }));
 
@@ -226,12 +226,12 @@ describe("submitCodeOp", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "alice", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "middle\n" }, { "a.txt": "top\nmiddle\n" }),
+      change: editChange(1, { "a.txt": "middle\n" }, { "a.txt": "top\nmiddle\n" }),
     });
     let ack = await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "bob", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "middle\n" }, { "a.txt": "middle\nbottom\n" }),
+      change: editChange(1, { "a.txt": "middle\n" }, { "a.txt": "middle\nbottom\n" }),
     }, BOB, "bob-user-do");
     expect(ack).toEqual({ generation: 0, revision: 2 });
 
@@ -247,9 +247,9 @@ describe("submitCodeOp", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "alice", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "middle\n" }, { "a.txt": "top\nmiddle\n" }),
+      change: editChange(1, { "a.txt": "middle\n" }, { "a.txt": "top\nmiddle\n" }),
     });
-    impl.materializeChatOps(1);
+    impl.materializeChatChanges(1);
     expect(liveRows(impl, 1)).toEqual([]);
 
     // Bob is still rooted at revision 0, inside the materialized range: the retired rows are
@@ -257,7 +257,7 @@ describe("submitCodeOp", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "bob", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "middle\n" }, { "a.txt": "middle\nbottom\n" }),
+      change: editChange(1, { "a.txt": "middle\n" }, { "a.txt": "middle\nbottom\n" }),
     }, BOB, "bob-user-do");
     expect(await gadgetContent(impl, 1, 1)).toEqual({ "a.txt": "top\nmiddle\nbottom\n" });
   }));
@@ -270,28 +270,28 @@ describe("submitCodeOp", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "alice", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "middle\n" }, { "a.txt": "top\nmiddle\n" }),
+      change: editChange(1, { "a.txt": "middle\n" }, { "a.txt": "top\nmiddle\n" }),
     });
-    impl.materializeChatOps(1);
+    impl.materializeChatChanges(1);
 
     // Age the retired row past the horizon and trigger the lazy prune with another
     // materialization cycle.
-    for (let row of Array.from(impl.storage.chatOps.list({ prefix: `${keyString(1)}.` }))) {
+    for (let row of Array.from(impl.storage.chatChanges.list({ prefix: `${keyString(1)}.` }))) {
       (row as any).timestamp = new Date(Date.now() - 10 * 60_000);
-      impl.storage.chatOps.put(row);
+      impl.storage.chatChanges.put(row);
     }
     await submit(impl, 1, {
       generation: 0, revision: 1, clientId: "alice", seq: 2,
-      op: editOp(1, { "a.txt": "top\nmiddle\n" }, { "a.txt": "top\nmiddle\nmore\n" }),
+      change: editChange(1, { "a.txt": "top\nmiddle\n" }, { "a.txt": "top\nmiddle\nmore\n" }),
     });
-    impl.materializeChatOps(1);
+    impl.materializeChatChanges(1);
 
     // A submission still rooted at revision 0 has nothing to transform over: reject, never
     // mistransform across the gap.
     await expect(submit(impl, 1, {
       generation: 0, revision: 0, clientId: "bob", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "middle\n" }, { "a.txt": "middle\nbottom\n" }),
+      change: editChange(1, { "a.txt": "middle\n" }, { "a.txt": "middle\nbottom\n" }),
     }, BOB, "bob-user-do")).rejects.toThrow(/rebuild from fresh metadata/);
   }));
 
@@ -306,22 +306,22 @@ describe("submitCodeOp", () => {
     await expect(submit(impl, 1, {
       generation: 0, revision: 0, clientId: "c1", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
     })).rejects.toThrow(/Agent is running/);
   }));
 });
 
-describe("submitCodeOp dedupe", () => {
+describe("submitCodeChange dedupe", () => {
   it("acknowledges a retry with its recorded landing spot without re-applying",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     addGadget(impl, 1, "APP", c1);
     addChat(impl, 1);
 
-    let submission: CodeOpSubmission = {
+    let submission: CodeChangeSubmission = {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
     };
     let ack = await submit(impl, 1, submission);
     expect(await submit(impl, 1, submission)).toEqual(ack);  // retry: same spot, no re-apply
@@ -331,7 +331,7 @@ describe("submitCodeOp dedupe", () => {
     // A same-seq submission with different content is a client bug, rejected loudly.
     await expect(submit(impl, 1, {
       ...submission,
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "yone\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "yone\n" }),
     })).rejects.toThrow(/different content/);
 
     // Sequence discipline: only record+1 continues; anything else is a protocol violation.
@@ -347,15 +347,15 @@ describe("submitCodeOp dedupe", () => {
     addGadget(impl, 1, "APP", c1);
     addChat(impl, 1);
 
-    let submission: CodeOpSubmission = {
+    let submission: CodeChangeSubmission = {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
     };
     let ack = await submit(impl, 1, submission);
 
     // After materialization (rows retired).
-    impl.materializeChatOps(1);
+    impl.materializeChatChanges(1);
     expect(await submit(impl, 1, submission)).toEqual(ack);
 
     // After an epoch reset (generation closed content-preservingly).
@@ -364,12 +364,12 @@ describe("submitCodeOp dedupe", () => {
     expect(await submit(impl, 1, submission)).toEqual(ack);
 
     // After a destructive bump (rows erased): the retry is still recognized -- an unrecognized
-    // one would re-apply as a fresh first op.
+    // one would re-apply as a fresh first change.
     let head = impl.storage.gadgets.get(1)!.commitId!;
     await submit(impl, 1, {
       generation: 1, revision: 0, clientId: "cli2", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: head }],
-      op: editOp(1, { "a.txt": "xone\n" }, { "a.txt": "zxone\n" }),
+      change: editChange(1, { "a.txt": "xone\n" }, { "a.txt": "zxone\n" }),
     });
     impl.discardChatDraftChanges(1);
     expect(await submit(impl, 1, submission)).toEqual(ack);
@@ -383,14 +383,14 @@ describe("submitCodeOp dedupe", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "shared-id", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
     });
 
     // Bob reusing Alice's (public) clientId neither reads nor advances her record: his seq 1
-    // is a fresh first op under his own record, and it actually applies.
+    // is a fresh first change under his own record, and it actually applies.
     await submit(impl, 1, {
       generation: 0, revision: 1, clientId: "shared-id", seq: 1,
-      op: editOp(1, { "a.txt": "xone\n" }, { "a.txt": "xone\nbob\n" }),
+      change: editChange(1, { "a.txt": "xone\n" }, { "a.txt": "xone\nbob\n" }),
     }, BOB, "bob-user-do");
     expect(liveRows(impl, 1)).toHaveLength(2);
     expect(await gadgetContent(impl, 1, 1)).toEqual({ "a.txt": "xone\nbob\n" });
@@ -406,10 +406,10 @@ describe("submitCodeOp dedupe", () => {
     // both pass the pre-prefetch dedupe read before either appends -- the prefetches await
     // non-storage I/O, where the input gate does not hold -- so the synchronous tail's
     // dedupe re-check is what must turn the loser into an acknowledgement.
-    let submission: CodeOpSubmission = {
+    let submission: CodeChangeSubmission = {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
     };
     let [a, b] = await Promise.all([submit(impl, 1, submission), submit(impl, 1, submission)]);
     expect(a).toEqual({ generation: 0, revision: 1 });
@@ -429,7 +429,7 @@ describe("mergeChanges", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
     });
 
     // The accept sweeps the live rows in itself (no prior materialization needed).
@@ -461,9 +461,9 @@ describe("mergeChanges", () => {
     await submit(impl, 1, {
       generation: 1, revision: 0, clientId: "cli", seq: 2,
       pins: [{ gadgetId: 1, baseCommit: head }],
-      op: editOp(1, { "a.txt": "one\nedited\n" }, { "a.txt": "top\none\nedited\n" }),
+      change: editChange(1, { "a.txt": "one\nedited\n" }, { "a.txt": "top\none\nedited\n" }),
     });
-    impl.materializeChatOps(1);
+    impl.materializeChatChanges(1);
     expect(await gadgetContent(impl, 1, 1)).toEqual({ "a.txt": "top\none\nedited\n" });
   }));
 
@@ -476,7 +476,7 @@ describe("mergeChanges", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "mine\none\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "mine\none\n" }),
     });
 
     // Another chat's accept advances the head.
@@ -498,10 +498,10 @@ describe("mergeChanges", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "one\nfirst\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nfirst\n" }),
     });
 
-    // Race a keystroke into the accept's await window: submitCodeOp acknowledges it against the
+    // Race a keystroke into the accept's await window: submitCodeChange acknowledges it against the
     // pre-reset generation (no lock, no log append), so the accept must neither discard it with
     // the epoch reset nor silently sweep the mid-keystroke state -- it gives up, leaving the
     // chat untouched.
@@ -512,7 +512,7 @@ describe("mergeChanges", () => {
         injected = true;
         await submit(impl, 1, {
           generation: 0, revision: 1, clientId: "cli", seq: 2,
-          op: editOp(1, { "a.txt": "one\nfirst\n" }, { "a.txt": "late\none\nfirst\n" }),
+          change: editChange(1, { "a.txt": "one\nfirst\n" }, { "a.txt": "late\none\nfirst\n" }),
         });
       }
       return await origWrite(...args);
@@ -542,7 +542,7 @@ describe("straggler bridge", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "typist", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
     });
     expect(await impl.mergeChanges(1, USER_META, "user-do-id"))
         .toEqual({ outcome: "merged" });
@@ -560,7 +560,7 @@ describe("straggler bridge", () => {
     let ack = await submit(impl, 1, {
       generation: 0, revision: 1, clientId: "typist", seq: 2,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\nedited\n" }, { "a.txt": "one\nedited\nmore\n" }),
+      change: editChange(1, { "a.txt": "one\nedited\n" }, { "a.txt": "one\nedited\nmore\n" }),
     });
     expect(ack).toEqual({ generation: 1, revision: 1 });
 
@@ -586,7 +586,7 @@ describe("straggler bridge", () => {
 
     let ack = await submit(impl, 1, {
       generation: 0, revision: 1, clientId: "typist", seq: 2,
-      op: editOp(1, { "a.txt": "one\nedited\n" }, { "a.txt": "one\nedited\nmore\n" }),
+      change: editChange(1, { "a.txt": "one\nedited\n" }, { "a.txt": "one\nedited\nmore\n" }),
     });
     expect(ack).toEqual({ generation: 1, revision: 1 });
 
@@ -598,7 +598,7 @@ describe("straggler bridge", () => {
         .toEqual({ outcome: "stale" });
   }));
 
-  it("rejects ops touching a bridge-ineligible gadget, reported in prior.discontinuousGadgets",
+  it("rejects changes touching a bridge-ineligible gadget, reported in prior.discontinuousGadgets",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     let d1 = await commitFiles(impl, { "b.txt": "bee\n" });
@@ -611,16 +611,16 @@ describe("straggler bridge", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "typist", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
     });
     await submit(impl, 1, {
       generation: 0, revision: 1, clientId: "typist", seq: 2,
       pins: [{ gadgetId: 2, baseCommit: d1 }],
-      op: editOp(2, { "b.txt": "bee\n" }, { "b.txt": "xbee\n" }),
+      change: editChange(2, { "b.txt": "bee\n" }, { "b.txt": "xbee\n" }),
     });
     await submit(impl, 1, {
       generation: 0, revision: 2, clientId: "typist", seq: 3,
-      op: editOp(2, { "b.txt": "xbee\n" }, { "b.txt": "bee\n" }),
+      change: editChange(2, { "b.txt": "xbee\n" }, { "b.txt": "bee\n" }),
     });
 
     // Mainline moves on gadget 2 (its pin's mergedCommit falls behind), then the merge lands:
@@ -634,12 +634,12 @@ describe("straggler bridge", () => {
     // A straggler touching gadget 2 cannot be carried across; one touching only gadget 1 can.
     await expect(submit(impl, 1, {
       generation: 0, revision: 3, clientId: "typist", seq: 4,
-      op: editOp(2, { "b.txt": "bee\n" }, { "b.txt": "bee\nmore\n" }),
+      change: editChange(2, { "b.txt": "bee\n" }, { "b.txt": "bee\nmore\n" }),
     })).rejects.toThrow(/rebuild from fresh metadata/);
     let head1 = impl.storage.gadgets.get(1)!.commitId!;
     let ack = await submit(impl, 1, {
       generation: 0, revision: 3, clientId: "typist2", seq: 1,
-      op: editOp(1, { "a.txt": "one\nedited\n" }, { "a.txt": "one\nedited\nmore\n" }),
+      change: editChange(1, { "a.txt": "one\nedited\n" }, { "a.txt": "one\nedited\nmore\n" }),
     });
     expect(ack).toEqual({ generation: 1, revision: 1 });
     expect(impl.storage.chatMeta.get(1)!.codeBase!.pins).toEqual(
@@ -658,20 +658,20 @@ describe("straggler bridge", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "typist", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
     });
     await submit(impl, 1, {
       generation: 0, revision: 1, clientId: "typist", seq: 2,
       pins: [{ gadgetId: 2, baseCommit: d1 }],
-      op: editOp(2, { "b.txt": "bee\n" }, { "b.txt": "xbee\n" }),
+      change: editChange(2, { "b.txt": "bee\n" }, { "b.txt": "xbee\n" }),
     });
     await submit(impl, 1, {
       generation: 0, revision: 2, clientId: "typist", seq: 3,
-      op: editOp(2, { "b.txt": "xbee\n" }, { "b.txt": "bee\n" }),
+      change: editChange(2, { "b.txt": "xbee\n" }, { "b.txt": "bee\n" }),
     });
 
     // Mainline moves on gadget 2, but this time the chat updates from mainline first: the
-    // merge op brings the chat's gadget-2 content to d2's tree and advances mergedCommit to d2
+    // merge change brings the chat's gadget-2 content to d2's tree and advances mergedCommit to d2
     // (baseCommit stays d1 -- immutable). The pin is then content-equal to head at the reset.
     let d2 = await commitFiles(impl, { "b.txt": "changed\n" }, [d1]);
     setHead(impl, 2, d2);
@@ -689,14 +689,14 @@ describe("straggler bridge", () => {
     let finalRevision = prior.finalRevision;
     let ack = await submit(impl, 1, {
       generation: 0, revision: finalRevision, clientId: "typist", seq: 4,
-      op: editOp(2, { "b.txt": "changed\n" }, { "b.txt": "changed\nmore\n" }),
+      change: editChange(2, { "b.txt": "changed\n" }, { "b.txt": "changed\nmore\n" }),
     });
     expect(ack).toEqual({ generation: 1, revision: 1 });
     expect(impl.storage.chatMeta.get(1)!.codeBase!.pins).toEqual(
         [{ gadgetId: 2, baseCommit: d2, mergedCommit: d2 }]);
   }));
 
-  it("rejects a bridged op when the new generation pinned the gadget at a different base",
+  it("rejects a bridged change when the new generation pinned the gadget at a different base",
       () => withImpl(async impl => {
     let { head } = await setupMergedChat(impl);
 
@@ -706,15 +706,15 @@ describe("straggler bridge", () => {
     await submit(impl, 1, {
       generation: 1, revision: 0, clientId: "fresh", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c3 }],
-      op: editOp(1, { "a.txt": "one\nedited\ntheirs\n" },
-                 { "a.txt": "one\nedited\ntheirs\nnew\n" }),
+      change: editChange(1, { "a.txt": "one\nedited\ntheirs\n" },
+                         { "a.txt": "one\nedited\ntheirs\nnew\n" }),
     });
 
-    // Carrying a boundary-rooted op onto content pinned at a different base would need a
+    // Carrying a boundary-rooted change onto content pinned at a different base would need a
     // cross-base merge -- update-from-mainline's job, not transform's.
     await expect(submit(impl, 1, {
       generation: 0, revision: 1, clientId: "typist", seq: 2,
-      op: editOp(1, { "a.txt": "one\nedited\n" }, { "a.txt": "one\nedited\nmore\n" }),
+      change: editChange(1, { "a.txt": "one\nedited\n" }, { "a.txt": "one\nedited\nmore\n" }),
     })).rejects.toThrow(/rebuild from fresh metadata/);
   }));
 
@@ -726,14 +726,14 @@ describe("straggler bridge", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "typist", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
     });
     impl.discardChatDraftChanges(1);
     expect(impl.storage.chatMeta.get(1)!.codeBase!.prior).toBeUndefined();
 
     await expect(submit(impl, 1, {
       generation: 0, revision: 1, clientId: "typist", seq: 2,
-      op: editOp(1, { "a.txt": "one\nedited\n" }, { "a.txt": "one\nedited\nmore\n" }),
+      change: editChange(1, { "a.txt": "one\nedited\n" }, { "a.txt": "one\nedited\nmore\n" }),
     })).rejects.toThrow(/rebuild from fresh metadata/);
   }));
 });
@@ -748,14 +748,14 @@ describe("revert and draft discard", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
     });
-    let materialized = impl.materializeChatOps(1)!;
+    let materialized = impl.materializeChatChanges(1)!;
 
     // A live row recorded after the declaration dies with the revert.
     await submit(impl, 1, {
       generation: 0, revision: 1, clientId: "cli", seq: 2,
-      op: editOp(1, { "a.txt": "xone\n" }, { "a.txt": "yxone\n" }),
+      change: editChange(1, { "a.txt": "xone\n" }, { "a.txt": "yxone\n" }),
     });
 
     await impl.revertChanges(1, materialized.sequence, USER);
@@ -764,7 +764,7 @@ describe("revert and draft discard", () => {
     expect(codeBase.pins).toEqual([]);  // the declaring message was reverted
     expect(codeBase).toMatchObject({ generation: 1, revision: 0 });
     expect(codeBase.prior).toBeUndefined();  // destructive: no bridge
-    expect([...impl.storage.chatOps.list({ prefix: `${keyString(1)}.` })]).toEqual([]);
+    expect([...impl.storage.chatChanges.list({ prefix: `${keyString(1)}.` })]).toEqual([]);
 
     // The reverted declaration's base no longer applies during reconstruction.
     expect(await gadgetContent(impl, 1, 1)).toEqual({});
@@ -783,13 +783,13 @@ describe("revert and draft discard", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
     });
-    impl.materializeChatOps(1);
+    impl.materializeChatChanges(1);
     await submit(impl, 1, {
       generation: 0, revision: 1, clientId: "cli", seq: 2,
       pins: [{ gadgetId: 2, baseCommit: d1 }],
-      op: editOp(2, { "b.txt": "bee\n" }, { "b.txt": "ybee\n" }),
+      change: editChange(2, { "b.txt": "bee\n" }, { "b.txt": "ybee\n" }),
     });
 
     impl.discardChatDraftChanges(1);
@@ -811,16 +811,16 @@ describe("revert and draft discard", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
     });
-    let materialized = impl.materializeChatOps(1)!;
+    let materialized = impl.materializeChatChanges(1)!;
     expect(await impl.mergeChanges(1, USER_META, "user-do-id"))
         .toEqual({ outcome: "merged" });
     let head = impl.storage.gadgets.get(1)!.commitId!;
     await submit(impl, 1, {
       generation: 1, revision: 0, clientId: "cli", seq: 2,
       pins: [{ gadgetId: 1, baseCommit: head }],
-      op: editOp(1, { "a.txt": "xone\n" }, { "a.txt": "yxone\n" }),
+      change: editChange(1, { "a.txt": "xone\n" }, { "a.txt": "yxone\n" }),
     });
     expect(liveRows(impl, 1)).toHaveLength(1);
 
@@ -853,7 +853,7 @@ describe("revert and draft discard", () => {
     impl.storage.chats.put({
       chatId: 1, sequence: boundary, timestamp: impl.getChatTimestamp(), author: USER,
       type: "changes", conversionBoundary: true,
-      op: {
+      change: {
         "1": [["a.txt", { set: "one\nlegacy\n" }]],
         "2": [["mine.js", { set: "mine\n" }]],
       },
@@ -871,7 +871,7 @@ describe("revert and draft discard", () => {
     };
     impl.storage.chatMeta.put(meta);
 
-    // The boundary's op is all-or-nothing: a revert cannot start below it.
+    // The boundary's change is all-or-nothing: a revert cannot start below it.
     await expect(impl.revertChanges(1, boundary - 1, USER))
         .rejects.toThrow(/before this chat's conversion/);
 
@@ -888,7 +888,7 @@ describe("revert and draft discard", () => {
 });
 
 describe("updateChatFromMainline", () => {
-  it("merges only pinned-and-behind gadgets as an op row, and its batch cannot be reverted",
+  it("merges only pinned-and-behind gadgets as a change row, and its batch cannot be reverted",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     let d1 = await commitFiles(impl, { "b.txt": "bee\n" });
@@ -900,7 +900,7 @@ describe("updateChatFromMainline", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "one\nchat\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nchat\n" }),
     });
 
     // Mainline advances on both gadgets.
@@ -925,8 +925,8 @@ describe("updateChatFromMainline", () => {
 
     let mainlineBatch = chatMessages(impl, 1)
         .find(msg => msg.type === "changes" && msg.mainlineMerge !== undefined)!;
-    expect(mainlineBatch.op).toBeDefined();
-    expect(mainlineBatch.watermark).toEqual({ opsGeneration: 0, throughRevision: 2 });
+    expect(mainlineBatch.change).toBeDefined();
+    expect(mainlineBatch.watermark).toEqual({ changesGeneration: 0, throughRevision: 2 });
 
     // The still-proposed mainline-merge batch cannot be reverted: it advanced the pin.
     await expect(impl.revertChanges(1, mainlineBatch.sequence, USER))
@@ -943,7 +943,7 @@ describe("updateChatFromMainline", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "one\nsame\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nsame\n" }),
     });
     let c2 = await commitFiles(impl, { "a.txt": "one\nsame\n" }, [c1]);
     setHead(impl, 1, c2);
@@ -951,11 +951,11 @@ describe("updateChatFromMainline", () => {
     let { conflictPaths } = await impl.updateChatFromMainline(1, USER);
     expect(conflictPaths).toEqual([]);
 
-    // No op to deliver (content already matched), but the message durably records the pin
+    // No change to deliver (content already matched), but the message durably records the pin
     // advancement the revert restriction keys on.
     let mainlineBatch = chatMessages(impl, 1)
         .find(msg => msg.type === "changes" && msg.mainlineMerge !== undefined)!;
-    expect(mainlineBatch.op).toBeUndefined();
+    expect(mainlineBatch.change).toBeUndefined();
     expect(impl.storage.chatMeta.get(1)!.codeBase!.pins[0].mergedCommit).toBe(c2);
 
     // And the accept now fast-forwards... to nothing: the chat's content equals head, so there
@@ -978,7 +978,7 @@ describe("updateChatFromMainline", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: e0 }],
-      op: { 1: [["a.txt", { set: "chat\n" }]] },
+      change: { 1: [["a.txt", { set: "chat\n" }]] },
     });
 
     // Another chat wins the race to the gadget's first real content.
@@ -1012,20 +1012,20 @@ describe("updateChatFromMainline", () => {
   }));
 });
 
-describe("agent op appends", () => {
-  it("appendAgentCodeOp pins at the current head and mirrors the pin at append time",
+describe("agent change appends", () => {
+  it("appendAgentCodeChange pins at the current head and mirrors the pin at append time",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     addGadget(impl, 1, "APP", c1);
     addChat(impl, 1);
 
-    let ack = await impl.appendAgentCodeOp(1, AGENT,
+    let ack = await impl.appendAgentCodeChange(1, AGENT,
         { 1: [["a.txt", { set: "one\nagent\n" }]] }, { gadgetId: 1, baseCommit: c1 });
     expect(ack).toEqual({ generation: 0, revision: 1 });
     expect(impl.storage.chatMeta.get(1)!.codeBase!.pins).toEqual(
         [{ gadgetId: 1, baseCommit: c1, mergedCommit: c1 }]);
     expect(await gadgetContent(impl, 1, 1)).toEqual({ "a.txt": "one\nagent\n" });
-    expect(impl.listUnmaterializedChatOps(1)).toHaveLength(1);
+    expect(impl.listUnmaterializedChatChanges(1)).toHaveLength(1);
     expect(impl.undeclaredChatPins(1)).toEqual([{ gadgetId: 1, baseCommit: c1 }]);
 
     // The turn flush materializes the rows and declares the pin.
@@ -1041,7 +1041,7 @@ describe("agent op appends", () => {
     let c2 = await commitFiles(impl, { "a.txt": "two\n" }, [c1]);
     addGadget(impl, 2, "OTHER", c2);
     setHead(impl, 2, c1);
-    await expect(impl.appendAgentCodeOp(1, AGENT,
+    await expect(impl.appendAgentCodeChange(1, AGENT,
         { 2: [["a.txt", { set: "x" }]] }, { gadgetId: 2, baseCommit: c2 }))
         .rejects.toThrow(/no longer the gadget's head/);
   }));
@@ -1057,9 +1057,9 @@ describe("chat content reconstruction", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "one\nchat\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nchat\n" }),
     });
-    let materialized = impl.materializeChatOps(1)!;
+    let materialized = impl.materializeChatChanges(1)!;
 
     expect(await impl.mergeChanges(1, USER_META, "user-do-id"))
         .toEqual({ outcome: "merged" });
@@ -1084,7 +1084,7 @@ describe("chat content reconstruction", () => {
       await submit(impl, 1, {
         generation: 0, revision: i - 1, clientId: "cli", seq: i,
         ...(i === 1 ? { pins: [{ gadgetId: 1, baseCommit: c1 }] } : {}),
-        op: editOp(1, { "a.txt": text }, { "a.txt": next }),
+        change: editChange(1, { "a.txt": text }, { "a.txt": next }),
       });
       text = next;
     }
@@ -1092,7 +1092,7 @@ describe("chat content reconstruction", () => {
     // The 128-row window was materialized into a "changes" message; the stream keeps counting.
     let changes = chatMessages(impl, 1).filter(msg => msg.type === "changes");
     expect(changes).toHaveLength(1);
-    expect(changes[0].watermark).toEqual({ opsGeneration: 0, throughRevision: 128 });
+    expect(changes[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 128 });
     expect(liveRows(impl, 1)).toHaveLength(1);
     expect(impl.storage.chatMeta.get(1)!.codeBase!.revision).toBe(129);
     expect((await gadgetContent(impl, 1, 1))["a.txt"]).toBe(text);
@@ -1106,7 +1106,7 @@ describe("chat content reconstruction", () => {
 
     // Three rows setting *distinct* files (so their composition genuinely accumulates payload
     // rather than collapsing), each ~200K CJK characters = ~600KB of UTF-8 (hand-built `set`
-    // ops: diffing dissimilar strings this large is quadratic). Any two rows compose past the
+    // changes: diffing dissimilar strings this large is quadratic). Any two rows compose past the
     // 1MB byte budget -- though a code-unit measure would put all three at ~600K "characters"
     // and pack them into one oversized message -- so materialization must cut per row.
     let files = ["a.txt", "b.txt", "c.txt"];
@@ -1115,20 +1115,20 @@ describe("chat content reconstruction", () => {
       await submit(impl, 1, {
         generation: 0, revision: i, clientId: "cli", seq: i + 1,
         ...(i === 0 ? { pins: [{ gadgetId: 1, baseCommit: c1 }] } : {}),
-        op: { 1: [[file, { set: text }]] },
+        change: { 1: [[file, { set: text }]] },
       });
     }
 
-    impl.materializeChatOps(1);
+    impl.materializeChatChanges(1);
     let changes = chatMessages(impl, 1).filter(msg => msg.type === "changes");
     expect(changes).toHaveLength(3);
     // The pin declaration rides the first message only; each message's watermark names the
     // rows it absorbed.
     expect(changes[0].pins).toEqual([{ gadgetId: 1, baseCommit: c1 }]);
     expect(changes.map(msg => msg.watermark)).toEqual([
-      { opsGeneration: 0, throughRevision: 1 },
-      { opsGeneration: 0, throughRevision: 2 },
-      { opsGeneration: 0, throughRevision: 3 },
+      { changesGeneration: 0, throughRevision: 1 },
+      { changesGeneration: 0, throughRevision: 2 },
+      { changesGeneration: 0, throughRevision: 3 },
     ]);
     expect(changes[1].pins).toBeUndefined();
     expect(liveRows(impl, 1)).toHaveLength(0);
@@ -1147,23 +1147,23 @@ describe("chat content reconstruction", () => {
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "alice", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      op: editOp(1, { "a.txt": "one\n" }, { "a.txt": "one\nalice\n" }),
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nalice\n" }),
     });
     // Age Alice's row past the split threshold, then Bob types.
-    for (let row of Array.from(impl.storage.chatOps.list({ prefix: `${keyString(1)}.` }))) {
+    for (let row of Array.from(impl.storage.chatChanges.list({ prefix: `${keyString(1)}.` }))) {
       (row as any).timestamp = new Date(Date.now() - 2 * 60_000);
-      impl.storage.chatOps.put(row);
+      impl.storage.chatChanges.put(row);
     }
     await submit(impl, 1, {
       generation: 0, revision: 1, clientId: "bob", seq: 1,
-      op: editOp(1, { "a.txt": "one\nalice\n" }, { "a.txt": "one\nalice\nbob\n" }),
+      change: editChange(1, { "a.txt": "one\nalice\n" }, { "a.txt": "one\nalice\nbob\n" }),
     }, BOB, "bob-user-do");
 
     // Alice's batch was materialized under her name before Bob's row landed.
     let changes = chatMessages(impl, 1).filter(msg => msg.type === "changes");
     expect(changes).toHaveLength(1);
     expect(changes[0].author).toEqual(USER);
-    expect(changes[0].watermark).toEqual({ opsGeneration: 0, throughRevision: 1 });
+    expect(changes[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 1 });
     expect(liveRows(impl, 1)).toHaveLength(1);
   }));
 });

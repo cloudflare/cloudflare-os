@@ -4,7 +4,7 @@ import { keyString } from "@gadgets/typed-storage";
 import type {
   AiChatAuthorInfo, AiChatMessage, BlueprintMetadata, ChatCodeBase,
 } from "@gadgets/workshop-shared/api";
-import { applyCodeOp, type CodeContent } from "@gadgets/workshop-shared/code-op";
+import { applyCodeChange, type CodeContent } from "@gadgets/workshop-shared/code-change";
 import { makeMockStorage } from "./mock-storage";
 import { makeOverseerStorage } from "../src/overseer";
 import { GitStore } from "../src/git-store";
@@ -144,14 +144,14 @@ class LegacyWorkspace {
     return this.storage.chatMeta.get(chatId)?.codeBase;
   }
 
-  /** The chat's converted content: the pin bases with the conversion op applied on top. */
+  /** The chat's converted content: the pin bases with the conversion change applied on top. */
   async convertedContent(chatId: number): Promise<CodeContent> {
     let conversion = this.conversionMessage(chatId);
     let content: CodeContent = new Map();
     for (let pin of conversion.pins ?? []) {
       content.set(pin.gadgetId, await this.gitStore.readCommitFiles(pin.baseCommit));
     }
-    return conversion.op !== undefined ? applyCodeOp(content, conversion.op) : content;
+    return conversion.change !== undefined ? applyCodeChange(content, conversion.change) : content;
   }
 }
 
@@ -221,9 +221,9 @@ describe("migrateCodeLogToGit", () => {
 
     // The chat's every change was merged, so its flatten matches its anchor (its highest
     // referenced version, 7, floored to v4): nothing to convert. The boundary message is still
-    // written -- the epoch points at it -- but carries no op and no pins, and proposes nothing.
+    // written -- the epoch points at it -- but carries no change and no pins, and proposes nothing.
     let conversion = ws.conversionMessage(1);
-    expect(conversion.op).toBeUndefined();
+    expect(conversion.change).toBeUndefined();
     expect(conversion.pins).toBeUndefined();
     expect(ws.codeBase(1)).toEqual(
         { pins: [], generation: 0, epoch: conversion.sequence, revision: 0 });
@@ -282,7 +282,7 @@ describe("migrateCodeLogToGit", () => {
     expect(ws.codeBase(1)!.pins).toEqual([]);
   });
 
-  it("converts uncommitted chat edits into a conversion op pinned at the anchor", async () => {
+  it("converts uncommitted chat edits into a conversion change pinned at the anchor", async () => {
     let ws = new LegacyWorkspace();
     ws.addGadget(50, "APP");
     ws.addGadget(55, "OTHER");  // committed but untouched by the chat: must stay unpinned
@@ -311,15 +311,15 @@ describe("migrateCodeLogToGit", () => {
         { generation: 0, epoch: conversion.sequence, revision: 0 });
     expect(ws.storage.chatMeta.get(5)!.hasProposedChanges).toBe(true);
 
-    // The op re-creates the chat's uncommitted content on top of the pinned tree.
+    // The change re-creates the chat's uncommitted content on top of the pinned tree.
     expect(await ws.convertedContent(5)).toEqual(new Map([
       [50, new Map([["app.js", "base\nagent\n"]])],
     ]));
 
-    // A non-empty conversion op is one proposed batch (on top of the legacy op-less batch that
-    // recorded the original update).
+    // A non-empty conversion change is one proposed batch (on top of the legacy batch with no
+    // change of its own that recorded the original update).
     let proposed = foldProposedChanges(ws.messages(5));
-    expect(proposed.map(batch => batch.op !== undefined)).toEqual([false, true]);
+    expect(proposed.map(batch => batch.change !== undefined)).toEqual([false, true]);
   });
 
   it("converts a read-only chat to an empty boundary that proposes nothing", async () => {
@@ -338,7 +338,7 @@ describe("migrateCodeLogToGit", () => {
     // The boundary is written even with nothing to convert -- the epoch points at it, and
     // replay's elision of the pre-conversion read keys on it -- but it proposes nothing.
     let conversion = ws.conversionMessage(1);
-    expect(conversion.op).toBeUndefined();
+    expect(conversion.change).toBeUndefined();
     expect(conversion.pins).toBeUndefined();
     expect(ws.codeBase(1)).toEqual(
         { pins: [], generation: 0, epoch: conversion.sequence, revision: 0 });
@@ -346,7 +346,7 @@ describe("migrateCodeLogToGit", () => {
     expect(foldProposedChanges(ws.messages(1))).toEqual([]);
   });
 
-  it("folds outstanding drafts into the conversion op and deletes them", async () => {
+  it("folds outstanding drafts into the conversion change and deletes them", async () => {
     let ws = new LegacyWorkspace();
     ws.addGadget(10, "APP");
     ws.addChat(1);
@@ -414,11 +414,11 @@ describe("migrateCodeLogToGit", () => {
 
     await migrateCodeLogToGit(ws.host());
 
-    // No pin for the pending gadget (it has no head to pin); its content rides the op as sets.
+    // No pin for the pending gadget (it has no head to pin); its content rides the change as sets.
     expect(ws.codeBase(1)!.pins).toEqual([]);
     let conversion = ws.conversionMessage(1);
     expect(conversion.pins).toBeUndefined();
-    expect(conversion.op).toEqual({ "60": [["mine.js", { set: "mine\n" }]] });
+    expect(conversion.change).toEqual({ "60": [["mine.js", { set: "mine\n" }]] });
     // The creation is re-recorded on the boundary and the record re-stamped to it, so accept
     // and revert treat creation and content as one (a revert at the boundary rejects the
     // creation rather than stranding a content-less pending gadget).
@@ -431,11 +431,11 @@ describe("migrateCodeLogToGit", () => {
     expect(ws.storage.gadgets.get(10)!.commitId).toBeDefined();
     // The other chat's pending gadget is not the converting chat's to carry.
     expect(ws.codeBase(2)!.pins).toEqual([]);
-    expect(ws.conversionMessage(2).op).toBeUndefined();
+    expect(ws.conversionMessage(2).change).toBeUndefined();
     expect(ws.storage.gadgets.get(70)!.pending).toEqual({ chatId: 2 });
   });
 
-  it("is deterministic: the same log converts to the same op", async () => {
+  it("is deterministic: the same log converts to the same change", async () => {
     let build = () => {
       let ws = new LegacyWorkspace();
       ws.addGadget(10, "APP");
@@ -455,8 +455,8 @@ describe("migrateCodeLogToGit", () => {
     let b = build();
     await migrateCodeLogToGit(a.host());
     await migrateCodeLogToGit(b.host());
-    expect(a.conversionMessage(1).op).toBeDefined();
-    expect(a.conversionMessage(1).op).toEqual(b.conversionMessage(1).op);
+    expect(a.conversionMessage(1).change).toBeDefined();
+    expect(a.conversionMessage(1).change).toEqual(b.conversionMessage(1).change);
     expect(a.codeBase(1)).toEqual(b.codeBase(1));
   });
 
@@ -505,7 +505,7 @@ describe("migrateCodeLogToGit", () => {
     // The hazard: a user draft materialized while mainline was ahead of the agent's version
     // lock carries a later stamp, and its update can reference Yjs items the lower-anchored doc
     // lacks -- Yjs parks them as pending structs and the edits silently vanish from flattened
-    // content. The anchor rule must pick the *max* referenced version so the conversion op
+    // content. The anchor rule must pick the *max* referenced version so the conversion change
     // carries both edits.
     let ws = new LegacyWorkspace();
     ws.addGadget(80, "APP");

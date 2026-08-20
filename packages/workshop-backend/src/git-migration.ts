@@ -1,5 +1,5 @@
 // Migration of pre-git-storage workspaces: synthesizes git commits from the legacy Yjs code log
-// and converts every live chat to the commit-pinned op-stream representation.
+// and converts every live chat to the commit-pinned change-stream representation.
 //
 // Before git-backed code storage, mainline code was a workspace-wide Yjs doc persisted as an
 // incremental update log (the `code`/`snapshots` collections), and each chat's uncommitted
@@ -30,12 +30,12 @@
 // AiChatMessageBody.conversionBoundary): its legacy doc -- the mainline doc at the chat's anchor
 // version, plus its non-reverted "changes" updates, plus any outstanding drafts (which are then
 // deleted) -- is flattened once, and its uncommitted state becomes one synthetic "changes"
-// message whose `op` is the diff of that flatten against the anchor commits' trees, carrying a
+// message whose `change` is the diff of that flatten against the anchor commits' trees, carrying a
 // pin per touched permanent gadget ({baseCommit: anchor, mergedCommit: anchor} -- what arms the
 // accept flow's fast-forward gate). Untouched gadgets get no pin (they track head live, the lazy
 // semantics); gadgets still pending in the chat get their content as plain `set`s with no pin,
 // like any chat-created gadget. The boundary message is written even when there is nothing to
-// convert (empty op, no pins): ChatCodeBase.epoch points at it, and replay keys the elision of
+// convert (empty change, no pins): ChatCodeBase.epoch points at it, and replay keys the elision of
 // pre-conversion tool reads on it. After conversion the chat is an ordinary new-model chat; the
 // pre-conversion messages keep their retired Yjs `update` bytes on disk as rollback insurance,
 // but nothing can apply them (delivery strips them; see hydrateChatMessageForClient).
@@ -52,7 +52,7 @@ import { keyString } from "@gadgets/typed-storage";
 import type {
   AiChatMessage, AiChatMetadata, ChatChangesPin, ChatGadgetPin, CommitIdentity, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
-import { diffFiles, type CodeContent, type CodeOp } from "@gadgets/workshop-shared/code-op";
+import { diffFiles, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { CompactionCheckpoint } from "./agent";
 import type { OverseerStorage } from "./overseer";
 import { chatChangeStatuses, legacyChatBaseVersion } from "./agent-compaction";
@@ -378,7 +378,7 @@ function convertLegacyChat(
 
   // Outstanding drafts fold in (they are strictly newer than every message, and their keys --
   // hence this iteration -- order by timestamp), then are deleted: their content now lives in
-  // the conversion op.
+  // the conversion change.
   for (let draft of Array.from(storage.chatDraftUpdates.list(
       { prefix: `${keyString(meta.id)}.` }))) {
     Y.applyUpdateV2(chatDoc, draft.update);
@@ -411,7 +411,7 @@ function convertLegacyChat(
       pins.push({ gadgetId: gadget.id, baseCommit: floor.commitId,
                   mergedCommit: floor.commitId });
     } else if (gadget.pending.sequence !== undefined) {
-      // A touched pending gadget's files now ride the boundary op, but its creation was
+      // A touched pending gadget's files now ride the boundary change, but its creation was
       // recorded by an earlier message -- a split the new model never produces (a creation's
       // files ride the message that records it) and the accept/revert lifecycle mishandles:
       // reverting at the boundary would erase the files while leaving the creation proposed,
@@ -422,12 +422,12 @@ function convertLegacyChat(
       carriedPending.push(gadget.id);
     }
   }
-  let op: CodeOp | undefined = diffFiles(before, after);
-  if (Object.keys(op).length === 0) op = undefined;
+  let change: CodeChange | undefined = diffFiles(before, after);
+  if (Object.keys(change).length === 0) change = undefined;
 
   // The boundary message is written even when the chat has nothing to convert: the boundary
   // itself is load-bearing (epoch points at it; replay keys pre-conversion elision on it). An
-  // empty boundary carries no op and no pins, and proposes nothing (see foldProposedChanges).
+  // empty boundary carries no change and no pins, and proposes nothing (see foldProposedChanges).
   let sequenceRecord = storage.nextChatSequences.get(meta.id);
   let sequence = sequenceRecord?.nextSequence ?? 0;
   storage.nextChatSequences.put({ chatId: meta.id, nextSequence: sequence + 1 });
@@ -439,11 +439,11 @@ function convertLegacyChat(
     chatId: meta.id,
     sequence,
     timestamp: host.getChatTimestamp(),
-    // Attribution is cosmetic, as on the synthesized commits: the op collapses potentially
+    // Attribution is cosmetic, as on the synthesized commits: the change collapses potentially
     // many authors' edits.
     author: { type: "user", id: host.ownerIdentity.email, name: host.ownerIdentity.name },
     type: "changes",
-    ...(op !== undefined ? { op } : {}),
+    ...(change !== undefined ? { change } : {}),
     ...(pins.length > 0
         ? { pins: pins.map((pin): ChatChangesPin =>
               ({ gadgetId: pin.gadgetId, baseCommit: pin.baseCommit })) }
@@ -463,9 +463,9 @@ function convertLegacyChat(
   }
 
   meta.codeBase = { pins, generation: 0, epoch: sequence, revision: 0 };
-  // A non-empty conversion op is a proposed change (uncommitted content survived the
+  // A non-empty conversion change is a proposed change (uncommitted content survived the
   // conversion); an empty one changes nothing about the chat's proposedness (pre-conversion
   // creation-only batches may still be proposed, which the stored flag already reflects).
-  if (op !== undefined) meta.hasProposedChanges = true;
+  if (change !== undefined) meta.hasProposedChanges = true;
   storage.chatMeta.put(meta);
 }

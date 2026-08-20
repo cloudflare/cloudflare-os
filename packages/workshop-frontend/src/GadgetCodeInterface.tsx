@@ -2,14 +2,14 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } fr
 import { useKumoToastManager } from '@cloudflare/kumo'
 import { DownloadSimple } from '@phosphor-icons/react'
 import { Overseer, WorkpieceId } from '@gadgets/workshop-shared/api'
-import type { CodeOp, FileOp } from '@gadgets/workshop-shared/code-op'
+import type { CodeChange, FileChange } from '@gadgets/workshop-shared/code-change'
 import { RpcStub } from 'capnweb'
 import FileSidebar from './FileSidebar'
 import type { FileChangeStatus, FileSidebarHandle } from './FileSidebar'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import CodeEditor, { type EditSession } from './CodeEditor'
 import CodeDiffEditor from './CodeDiffEditor'
-import type { ChatCodeChanges, ChatLiveOpRows } from './ChatInterface'
+import type { ChatCodeChanges, ChatLiveChangeRows } from './ChatInterface'
 import { ChatOtClient, type RemoteFileEvent } from './otClient'
 import { reportIssue } from './errorReporting'
 import { saveTextToFile } from './fileTransfers'
@@ -20,10 +20,10 @@ import { isTransientRpcError } from './rpcErrors'
 // Committed code is git commits; the gadget's head commit (`headCommitId`, from
 // WorkpieceSummary.commitId) is fetched with Overseer.getCodeAtCommit() -- immutable, so cached
 // by oid -- and is both the read-only view outside any chat and the "original" side of in-chat
-// diffs. A chat's uncommitted changes are a revisioned stream of code ops (see ChatCodeBase in
+// diffs. A chat's uncommitted changes are a revisioned stream of code changes (see ChatCodeBase in
 // the API), tracked here by a per-chat ChatOtClient (see otClient.ts): the chat's content is
-// its pins' base trees plus the epoch's recorded ops plus live rows, and the user's edits are
-// composed locally and submitted through Overseer.submitCodeOp().
+// its pins' base trees plus the epoch's recorded changes plus live rows, and the user's edits are
+// composed locally and submitted through Overseer.submitCodeChange().
 //
 // A gadget not pinned in the chat tracks mainline head live. The user can start editing it
 // without any round trip: the editor shows the head tree, and the first local edit seeds the
@@ -48,11 +48,11 @@ interface GadgetCodeInterfaceProps {
   height?: string | number
   selectedChatId?: number | null
   // The selected chat's durable code state (see ChatCodeChanges): its ChatCodeBase plus the
-  // current epoch's recorded ops, derived together. `undefined` until the chat's metadata and
+  // current epoch's recorded changes, derived together. `undefined` until the chat's metadata and
   // history have loaded; the view stays in its loading state until it arrives.
   chatChanges?: ChatCodeChanges
-  // The selected chat's live op row stream (accepted but not yet materialized rows).
-  liveRows?: ChatLiveOpRows
+  // The selected chat's live change row stream (accepted but not yet materialized rows).
+  liveRows?: ChatLiveChangeRows
   // Gadgets still pending (chat-created) in the selected chat: they have no head commit and
   // their chat content builds up from nothing (see ChatCodeBase).
   pendingGadgetIds?: ReadonlySet<WorkpieceId>
@@ -162,7 +162,7 @@ export default function GadgetCodeInterface({
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
 
   // Per-open-file remote-delta listeners, keyed by `${gadgetId}\u0000${path}` (see EditSession).
-  const fileListenersRef = useRef(new Map<string, Set<(op: FileOp) => void>>())
+  const fileListenersRef = useRef(new Map<string, Set<(change: FileChange) => void>>())
 
   const [clientState, setClientState] =
     useState<{ chatId: number, client: ChatOtClient } | null>(null)
@@ -175,8 +175,8 @@ export default function GadgetCodeInterface({
     const chatId = selectedChatId
     const client = new ChatOtClient({
       fetchCommitFiles: commitId => fetchCommitFiles(currentOverseerRef.current, commitId),
-      submitCodeOp: submission =>
-        currentOverseerRef.current.submitCodeOp(chatId, submission),
+      submitCodeChange: submission =>
+        currentOverseerRef.current.submitCodeChange(chatId, submission),
       isTransientError: isTransientRpcError,
       onRemoteChange: (events: RemoteFileEvent[]) => {
         if (events.length === 0) {
@@ -185,7 +185,7 @@ export default function GadgetCodeInterface({
         } else {
           for (const event of events) {
             fileListenersRef.current.get(`${event.gadgetId}\u0000${event.path}`)
-              ?.forEach(listener => listener(event.op))
+              ?.forEach(listener => listener(event.change))
           }
         }
         if (!contentBumpPendingRef.current) {
@@ -227,7 +227,7 @@ export default function GadgetCodeInterface({
   // replayed at subscribe time (the client dedupes by (generation, revision)) and new rows
   // arrive synchronously from the RPC callback -- before the materialization watermark that
   // absorbs them can prune the buffer, and before the render cycle delivers the durable
-  // snapshot they precede (see ChatLiveOpRows). Declared *before* the durable-state effect so
+  // snapshot they precede (see ChatLiveChangeRows). Declared *before* the durable-state effect so
   // the replay keeps that same row-then-snapshot order into the client's queue on mount.
   useEffect(() => {
     // The chatId gate matters on chat switches: the rows prop lags the selection by a render,
@@ -241,7 +241,7 @@ export default function GadgetCodeInterface({
     if (client !== null && chatChanges !== undefined && chatChanges.chatId === selectedChatId) {
       client.setDurableState({
         codeBase: chatChanges.codeBase,
-        epochOp: chatChanges.epochOp,
+        epochChange: chatChanges.epochChange,
         rowsThrough: chatChanges.rowsThrough,
       })
     }
@@ -399,10 +399,10 @@ export default function GadgetCodeInterface({
     return true
   }, [client])
 
-  const applyLocalFileOps = useCallback((ops: [string, FileOp][]) => {
+  const applyLocalFileChanges = useCallback((changes: [string, FileChange][]) => {
     if (!ensureEditable() || client === null) return false
-    const op: CodeOp = { [workpieceIdRef.current]: ops }
-    client.applyLocalOp(op)
+    const change: CodeChange = { [workpieceIdRef.current]: changes }
+    client.applyLocalChange(change)
     return true
   }, [client, ensureEditable])
 
@@ -424,7 +424,7 @@ export default function GadgetCodeInterface({
         const files = client.getFiles(gadgetId)
         return files !== undefined ? files.get(path) : headFilesRef.current?.get(path)
       },
-      applyLocal: (op: FileOp, docText: string) => {
+      applyLocal: (change: FileChange, docText: string) => {
         try {
           if (!client.hasGadget(gadgetId)) {
             client.ensureGadgetEditable(
@@ -432,10 +432,10 @@ export default function GadgetCodeInterface({
           }
           // Editing a file the chat's content no longer has (e.g. it was deleted in the chat
           // while its editor stayed open) re-creates it with the editor's text.
-          const fileOp: FileOp = client.getFiles(gadgetId)?.has(path)
-            ? op
+          const fileChange: FileChange = client.getFiles(gadgetId)?.has(path)
+            ? change
             : { set: docText }
-          client.applyLocalOp({ [gadgetId]: [[path, fileOp]] })
+          client.applyLocalChange({ [gadgetId]: [[path, fileChange]] })
         } catch (err) {
           // The editor's document drifted from the client's content (a bug); reload it from
           // the client rather than corrupting the chat.
@@ -444,7 +444,7 @@ export default function GadgetCodeInterface({
           setResetToken(token => token + 1)
         }
       },
-      subscribeRemote: (listener: (op: FileOp) => void) => {
+      subscribeRemote: (listener: (change: FileChange) => void) => {
         let listeners = fileListenersRef.current.get(listenerKey)
         if (!listeners) {
           listeners = new Set()
@@ -474,7 +474,7 @@ export default function GadgetCodeInterface({
       toasts.add({ title: `File already exists: ${filename}`, variant: 'error' })
       return
     }
-    if (applyLocalFileOps([[filename, { set: '' }]])) {
+    if (applyLocalFileChanges([[filename, { set: '' }]])) {
       setActiveFile(filename)
       toasts.add({ title: `Created file: ${filename}`, variant: 'success' })
     }
@@ -486,7 +486,7 @@ export default function GadgetCodeInterface({
       toasts.add({ title: 'File not found', variant: 'error' })
       return
     }
-    if (applyLocalFileOps([[filename, { remove: true }]])) {
+    if (applyLocalFileChanges([[filename, { remove: true }]])) {
       if (activeFile === filename) {
         const remaining = displayedFilesRef.current.filter(name => name !== filename)
         setActiveFile(remaining.length > 0 ? remaining[0] : null)
@@ -506,7 +506,7 @@ export default function GadgetCodeInterface({
       toasts.add({ title: `File already exists: ${newName}`, variant: 'error' })
       return
     }
-    if (applyLocalFileOps([[oldName, { remove: true }], [newName, { set: text }]])) {
+    if (applyLocalFileChanges([[oldName, { remove: true }], [newName, { set: text }]])) {
       if (activeFile === oldName) {
         setActiveFile(newName)
       }

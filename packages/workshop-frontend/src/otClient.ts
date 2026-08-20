@@ -1,61 +1,61 @@
 import type {
-  AiChatAuthorInfo, ChatCodeBase, ChatChangesPin, CodeOpSubmission, WorkpieceId,
+  AiChatAuthorInfo, ChatCodeBase, ChatChangesPin, CodeChangeSubmission, WorkpieceId,
 } from '@gadgets/workshop-shared/api'
 import {
-  applyCodeOp, changedGadgets, composeCodeOp, transformCodeOp,
-  type CodeContent, type CodeOp, type FileOp,
-} from '@gadgets/workshop-shared/code-op'
+  applyCodeChange, changedGadgets, composeCodeChange, transformCodeChange,
+  type CodeContent, type CodeChange, type FileChange,
+} from '@gadgets/workshop-shared/code-change'
 
 // The chat-level OT client: the classic two-buffer client behind the code view.
 //
-// A chat's uncommitted code is one revisioned stream of code ops per generation (see
+// A chat's uncommitted code is one revisioned stream of code changes per generation (see
 // ChatCodeBase in the API). This client tracks that stream for one chat: it derives the chat's
-// content (per-pin base trees + the epoch's materialized ops + accepted rows), holds at most one
-// in-flight submitCodeOp() plus one pending composition of newer local edits, transforms both
-// over incoming remote rows (the priority pairing lives in code-op.ts), and rebases them. The
-// pending buffer *composes*, so submissions land at ~RTT granularity -- everything typed since
-// the last ack rides one submit -- not per keystroke.
+// content (per-pin base trees + the epoch's materialized changes + accepted rows), holds at most
+// one in-flight submitCodeChange() plus one pending composition of newer local edits, transforms
+// both over incoming remote rows (the priority pairing lives in code-change.ts), and rebases
+// them. The pending buffer *composes*, so submissions land at ~RTT granularity -- everything
+// typed since the last ack rides one submit -- not per keystroke.
 //
 // Inputs arrive through three paths, each safe to deliver redundantly or out of order across
 // paths (the client holds rows it cannot apply yet and drains them as knowledge arrives):
-//  - setDurableState(): the chat's ChatCodeBase plus the composed op of the current epoch's
+//  - setDurableState(): the chat's ChatCodeBase plus the composed change of the current epoch's
 //    "changes" messages (see ChatCodeChanges in ChatInterface). Also how generation bumps are
 //    learned: a content-preserving bump (a merge's epoch reset, `prior` present) hands the
 //    local buffers across the boundary, so typing straight through someone's accept is
 //    seamless; a destructive bump (revert / draft discard / turn abort) discards local edits
 //    and rebuilds, per ChatCodeBase.generation's contract.
-//  - pushRow(): one AiChatSubscriber.opApplied() row. Deduped by (generation, revision), so
+//  - pushRow(): one AiChatSubscriber.changeApplied() row. Deduped by (generation, revision), so
 //    subscribe-replay after a reconnect is harmless.
-//  - applyLocalOp() (with ensureGadgetEditable() for the first edit to an unpinned gadget):
+//  - applyLocalChange() (with ensureGadgetEditable() for the first edit to an unpinned gadget):
 //    locally-authored edits, composed into the pending buffer and submitted under the
-//    client-generated (clientId, seq) idempotency scheme of Overseer.submitCodeOp().
+//    client-generated (clientId, seq) idempotency scheme of Overseer.submitCodeChange().
 //
 // Base content is never taken from another client: it always comes from
 // getCodeAtCommit(baseCommit) (the delegate's fetch, cacheable by oid) or, for the first local
 // edit to an unpinned gadget, from the head tree the view is already displaying -- which is
 // byte-identical to what the accompanying pin declaration names. The client mints a fresh
 // clientId whenever local state is rebuilt; a transport failure retries the same seq with an
-// identical payload, never a re-composed op (the server's dedupe digest requires it).
+// identical payload, never a re-composed change (the server's dedupe digest requires it).
 
-/** One accepted row of a chat's op stream, as delivered by AiChatSubscriber.opApplied(). */
-export interface ChatOpRow {
+/** One accepted row of a chat's change stream, as delivered by AiChatSubscriber.changeApplied(). */
+export interface ChatChangeRow {
   generation: number
   revision: number
   author: AiChatAuthorInfo
-  op: CodeOp
+  change: CodeChange
   submission?: { clientId: string; seq: number }
 }
 
 /**
  * The durable half of a chat's code state, derived from its metadata and message log together
  * (see ChatCodeChanges in ChatInterface): the ChatCodeBase plus the current epoch's non-reverted
- * "changes" ops composed into one, and the current generation's revision those messages'
- * watermarks reach (rows <= rowsThrough are already inside epochOp; later rows arrive via
- * pushRow()).
+ * "changes" messages composed into one change, and the current generation's revision those
+ * messages' watermarks reach (rows <= rowsThrough are already inside epochChange; later rows
+ * arrive via pushRow()).
  */
 export interface ChatDurableCode {
   codeBase?: ChatCodeBase
-  epochOp?: CodeOp
+  epochChange?: CodeChange
   rowsThrough: number
 }
 
@@ -63,15 +63,16 @@ export interface ChatDurableCode {
 export interface RemoteFileEvent {
   gadgetId: WorkpieceId
   path: string
-  op: FileOp
+  change: FileChange
 }
 
 /** How the client reaches the world. All callbacks may be invoked from async continuations. */
 export interface ChatOtClientDelegate {
   /** Read a commit's flattened file map (Overseer.getCodeAtCommit, cacheable by oid). */
   fetchCommitFiles(commitId: string): Promise<ReadonlyMap<string, string>>
-  /** Overseer.submitCodeOp for this chat. */
-  submitCodeOp(submission: CodeOpSubmission): Promise<{ generation: number; revision: number }>
+  /** Overseer.submitCodeChange for this chat. */
+  submitCodeChange(submission: CodeChangeSubmission)
+      : Promise<{ generation: number; revision: number }>
   /** True for transport-level failures that a retry/reconnect is expected to cure. */
   isTransientError(err: unknown): boolean
   /**
@@ -88,18 +89,18 @@ export interface ChatOtClientDelegate {
   onFatalError(err: unknown): void
 }
 
-const EMPTY_OP: CodeOp = {}
+const EMPTY_CHANGE: CodeChange = {}
 
-function isEmptyOp(op: CodeOp): boolean {
-  return Object.keys(op).length === 0
+function isEmptyChange(change: CodeChange): boolean {
+  return Object.keys(change).length === 0
 }
 
-// Drop the given gadgets' entries from an op (an epoch reset marks gadgets discontinuous:
-// pending ops touching them would be rejected as bridge-ineligible anyway).
-function dropGadgetsFromOp(op: CodeOp, gadgets: ReadonlySet<WorkpieceId>): CodeOp {
-  if (![...gadgets].some(id => id in op)) return op
-  const out: CodeOp = {}
-  for (const [key, entries] of Object.entries(op)) {
+// Drop the given gadgets' entries from a change (an epoch reset marks gadgets discontinuous:
+// pending changes touching them would be rejected as bridge-ineligible anyway).
+function dropGadgetsFromChange(change: CodeChange, gadgets: ReadonlySet<WorkpieceId>): CodeChange {
+  if (![...gadgets].some(id => id in change)) return change
+  const out: CodeChange = {}
+  for (const [key, entries] of Object.entries(change)) {
     const gadgetId = Number(key)
     if (!gadgets.has(gadgetId)) out[gadgetId] = entries
   }
@@ -134,7 +135,7 @@ function isRetryableSubmitRejection(err: unknown): boolean {
 /**
  * The OT client for one chat. Create one per (chat, view) and dispose it on chat switch; feed
  * it durable snapshots and rows as they arrive, and route editor edits through
- * ensureGadgetEditable()/applyLocalOp(). `getContent()` is the chat's uncommitted content as
+ * ensureGadgetEditable()/applyLocalChange(). `getContent()` is the chat's uncommitted content as
  * this client sees it -- committed heads still apply for gadgets absent from it (an unpinned
  * gadget tracks mainline head live).
  */
@@ -142,8 +143,8 @@ export class ChatOtClient {
   readonly #delegate: ChatOtClientDelegate
 
   // ---- server-acked state ----
-  // Content through (#generation, #appliedRevision): pin base trees + epoch message ops + rows.
-  // Treated as immutable (copy-on-write), like everything code-op functions touch.
+  // Content through (#generation, #appliedRevision): pin base trees + epoch message changes + rows.
+  // Treated as immutable (copy-on-write), like everything code-change functions touch.
   #applied: CodeContent = new Map()
   #generation = 0
   #appliedRevision = 0
@@ -151,18 +152,18 @@ export class ChatOtClient {
   // ---- local (unacknowledged) state ----
   // At most one submission in flight (the seq rule makes that a checked invariant server-side),
   // plus the composition of local edits made since it left. `pending` applies on top of
-  // `inflight.op`, which applies on top of #applied. `wire` is the payload as first sent --
-  // retries must resend it byte-identically for the server's dedupe digest -- while `op` is the
-  // same op as transformed over remote rows since, for local display and rebasing. `accepted`
+  // `inflight.change`, which applies on top of #applied. `wire` is the payload as first sent --
+  // retries must resend it byte-identically for the server's dedupe digest -- while `change` is the
+  // same change as transformed over remote rows since, for local display and rebasing. `accepted`
   // is where the server's RPC response said the submission landed: normally the echo row
   // (broadcast before the response) has already cleared the whole record by the time it is
   // set, so it only matters as the lost-echo backstop (see #tryApplyInflightAck).
   #inflight: {
-    wire: CodeOpSubmission
-    op: CodeOp
+    wire: CodeChangeSubmission
+    change: CodeChange
     accepted?: { generation: number; revision: number }
   } | null = null
-  #pending: CodeOp = EMPTY_OP
+  #pending: CodeChange = EMPTY_CHANGE
   // Local seeds for gadgets this client started editing before any pin existed: the head tree
   // the first keystroke was made against. Declared as the pin base on the next submission and
   // dropped once the gadget's content enters #applied (or on any rebuild/reset).
@@ -179,7 +180,7 @@ export class ChatOtClient {
   #latestDurable: ChatDurableCode = { rowsThrough: 0 }
   // Rows not yet applied: held when they run ahead of the state we can apply them to (a future
   // generation before its metadata, a revision gap, a pin we haven't learned yet).
-  #heldRows = new Map<number, Map<number, ChatOpRow>>()
+  #heldRows = new Map<number, Map<number, ChatChangeRow>>()
   // Set while waiting out a content-preserving generation switch (see setDurableState).
   #pendingSwitch: { codeBase: ChatCodeBase; since: number } | null = null
   // Set while the durable watermark has run ahead of the applied revision (see #checkStalls).
@@ -234,7 +235,7 @@ export class ChatOtClient {
 
   /** Whether unacknowledged local edits exist (in flight or still pending). */
   hasLocalEdits(): boolean {
-    return this.#inflight !== null || !isEmptyOp(this.#pending)
+    return this.#inflight !== null || !isEmptyChange(this.#pending)
   }
 
   /** Update the set of gadgets still pending (chat-created) in this chat. */
@@ -299,10 +300,10 @@ export class ChatOtClient {
   // Whether a rebuild would lose anything: pending edits, local seeds, or an in-flight
   // submission not yet known to be durably recorded. An in-flight the server has accepted at a
   // position the durable watermark already covers (or in a generation it has moved past) is
-  // inside the snapshot's epochOp -- or erased with its generation -- so rebuilding from the
+  // inside the snapshot's epochChange -- or erased with its generation -- so rebuilding from the
   // snapshot reproduces the server's truth without losing keystrokes.
   #hasUnsyncedLocalState(): boolean {
-    if (!isEmptyOp(this.#pending) || this.#localSeeds.size > 0) return true
+    if (!isEmptyChange(this.#pending) || this.#localSeeds.size > 0) return true
     if (this.#inflight === null) return false
     const accepted = this.#inflight.accepted
     if (accepted === undefined) return true
@@ -320,7 +321,7 @@ export class ChatOtClient {
     if (this.#fatal || this.#disposed || !this.#ready) return
     if (this.#hasWatermarkGap()) {
       if (!this.#hasUnsyncedLocalState()) {
-        // The missing rows are already inside the snapshot's epochOp and nothing local is at
+        // The missing rows are already inside the snapshot's epochChange and nothing local is at
         // risk: rebuild right away instead of stalling the view for the grace period.
         this.#watermarkGapSince = null
         this.#enqueue(async () => {
@@ -353,8 +354,8 @@ export class ChatOtClient {
     }
   }
 
-  /** Feed one opApplied row. Duplicates (subscribe-replay) are ignored. */
-  pushRow(row: ChatOpRow): void {
+  /** Feed one changeApplied row. Duplicates (subscribe-replay) are ignored. */
+  pushRow(row: ChatChangeRow): void {
     this.#enqueue(async () => {
       let generationRows = this.#heldRows.get(row.generation)
       if (!generationRows) {
@@ -376,7 +377,7 @@ export class ChatOtClient {
       // they are the local replay cache a rebuild draws on (a rebuild starts from the
       // messages' watermark, before rows the server still considers live). Unapplied rows are
       // retained even below the watermark: a row arriving just after the watermark that
-      // absorbed it is still the stream's next step (its content and the epochOp's agree), and
+      // absorbed it is still the stream's next step (its content and the epochChange's agree), and
       // dropping it would wedge the stream at the gap.
       for (const generation of this.#heldRows.keys()) {
         if (generation < this.#generation) this.#heldRows.delete(generation)
@@ -408,12 +409,12 @@ export class ChatOtClient {
 
   // Apply one row (the next in sequence). Returns false if it must wait (a pin the metadata
   // hasn't delivered yet) or if the client's local edits had to be discarded instead.
-  async #applyRow(row: ChatOpRow): Promise<boolean> {
+  async #applyRow(row: ChatChangeRow): Promise<boolean> {
     // Establish bases for gadgets the row touches that content doesn't cover yet. The pin is
     // read from the latest metadata; the metadata carrying it is written in the same
     // synchronous server step as the row, so normally it has already arrived.
     const seeds = new Map<WorkpieceId, ReadonlyMap<string, string>>()
-    for (const gadgetId of changedGadgets(row.op)) {
+    for (const gadgetId of changedGadgets(row.change)) {
       if (this.#applied.has(gadgetId) || seeds.has(gadgetId)) continue
       const pin = (this.#latestDurable.codeBase?.pins ?? []).find(p => p.gadgetId === gadgetId)
       if (pin !== undefined) {
@@ -453,7 +454,7 @@ export class ChatOtClient {
         if (!display.has(gadgetId)) {
           // A newly-visible remote pin: surface its base files so an open editor re-reads.
           // (When we held a matching local seed, the display already shows this content.)
-          for (const [path, text] of files) events.push({ gadgetId, path, op: { set: text } })
+          for (const [path, text] of files) events.push({ gadgetId, path, change: { set: text } })
           display.set(gadgetId, new Map(files))
         }
         this.#localSeeds.delete(gadgetId)
@@ -464,12 +465,12 @@ export class ChatOtClient {
 
     const own = row.submission !== undefined && row.submission.clientId === this.#clientId &&
       this.#inflight !== null && row.submission.seq === this.#inflight.wire.seq
-    this.#applied = applyCodeOp(this.#applied, row.op)
+    this.#applied = applyCodeChange(this.#applied, row.change)
     this.#appliedRevision = row.revision
 
     if (own) {
-      // Our own echo: the broadcast op is our in-flight op as the server transformed it -- the
-      // same transforms we applied locally -- so the display already reflects it.
+      // Our own echo: the broadcast change is our in-flight change as the server transformed it
+      // -- the same transforms we applied locally -- so the display already reflects it.
       this.#inflight = null
       this.#submitBackoffMs = SUBMIT_RETRY_BASE_MS
       this.#delegate.onDirtyState(false)
@@ -480,20 +481,22 @@ export class ChatOtClient {
 
     // A remote row: rebase the local buffers over it (the row has priority -- the server
     // ordered it first) and apply its doubly-transformed form to the display.
-    let displayOp = row.op
+    let displayChange = row.change
     if (this.#inflight !== null) {
-      const { a, b } = transformCodeOp(displayOp, this.#inflight.op)
-      displayOp = a
-      this.#inflight.op = b
+      const { a, b } = transformCodeChange(displayChange, this.#inflight.change)
+      displayChange = a
+      this.#inflight.change = b
     }
-    if (!isEmptyOp(this.#pending)) {
-      const { a, b } = transformCodeOp(displayOp, this.#pending)
-      displayOp = a
+    if (!isEmptyChange(this.#pending)) {
+      const { a, b } = transformCodeChange(displayChange, this.#pending)
+      displayChange = a
       this.#pending = b
     }
-    this.#display = applyCodeOp(this.#display, displayOp)
-    for (const [gadgetKey, entries] of Object.entries(displayOp)) {
-      for (const [path, op] of entries) events.push({ gadgetId: Number(gadgetKey), path, op })
+    this.#display = applyCodeChange(this.#display, displayChange)
+    for (const [gadgetKey, entries] of Object.entries(displayChange)) {
+      for (const [path, change] of entries) {
+        events.push({ gadgetId: Number(gadgetKey), path, change })
+      }
     }
     this.#delegate.onRemoteChange(events)
     return true
@@ -502,9 +505,9 @@ export class ChatOtClient {
   // Backstop for a lost echo: the submission was accepted (the RPC response said where it
   // landed -- see #sendInflight) but its broadcast row never reached us, e.g. it was
   // materialized while we were disconnected so subscribe-replay no longer carries it. Once the
-  // stream reaches the position just below the accepted one, apply our own op exactly as the
-  // echo would have: the broadcast op is our in-flight op as the server transformed it -- the
-  // same transforms we applied locally (see #applyRow's own-echo path).
+  // stream reaches the position just below the accepted one, apply our own change exactly as the
+  // echo would have: the broadcast change is our in-flight change as the server transformed it
+  // -- the same transforms we applied locally (see #applyRow's own-echo path).
   #tryApplyInflightAck(): boolean {
     const accepted = this.#inflight?.accepted
     if (accepted === undefined || accepted.generation !== this.#generation ||
@@ -515,7 +518,7 @@ export class ChatOtClient {
 
     // Seed gadgets our own submission's pin declarations covered (mirrors the local-seed echo
     // path in #applyRow); the display already shows this content.
-    const seedGadgets = changedGadgets(inflight.op)
+    const seedGadgets = changedGadgets(inflight.change)
       .filter(gadgetId => !this.#applied.has(gadgetId) && this.#localSeeds.has(gadgetId))
     if (seedGadgets.length > 0) {
       const applied = new Map(this.#applied)
@@ -526,7 +529,7 @@ export class ChatOtClient {
       this.#applied = applied
     }
 
-    this.#applied = applyCodeOp(this.#applied, inflight.op)
+    this.#applied = applyCodeChange(this.#applied, inflight.change)
     this.#appliedRevision = accepted.revision
     this.#inflight = null
     this.#submitBackoffMs = SUBMIT_RETRY_BASE_MS
@@ -555,16 +558,16 @@ export class ChatOtClient {
     // the whole submission as bridge-ineligible -- and its content basis is gone, so nothing
     // local can be preserved either: take the discard path.
     if (this.#inflight !== null &&
-        changedGadgets(this.#inflight.op).some(id => discontinuous.has(id))) {
+        changedGadgets(this.#inflight.change).some(id => discontinuous.has(id))) {
       return "discard"
     }
 
     this.#pendingSwitch = null
 
-    // Drop pending local ops touching discontinuous gadgets (the server would reject them as
+    // Drop pending local changes touching discontinuous gadgets (the server would reject them as
     // bridge-ineligible; dropping proactively spares the rest of the buffer).
     const droppedPending = [...discontinuous].some(id => String(id) in this.#pending)
-    this.#pending = dropGadgetsFromOp(this.#pending, discontinuous)
+    this.#pending = dropGadgetsFromChange(this.#pending, discontinuous)
 
     // With nothing in flight, submit the pending buffer *now, under the closing generation's
     // claim*, so it rides the server's straggler bridge -- which derives pins from the merge's
@@ -572,33 +575,33 @@ export class ChatOtClient {
     // this client cannot know the boundary commits to declare.) Declarations still ride along
     // for local-seed gadgets, which were unpinned on both sides of the boundary and follow the
     // normal first-touch rule.
-    if (this.#inflight === null && !isEmptyOp(this.#pending)) {
+    if (this.#inflight === null && !isEmptyChange(this.#pending)) {
       const pins: ChatChangesPin[] = changedGadgets(this.#pending)
         .filter(gadgetId => !this.#applied.has(gadgetId) && this.#localSeeds.has(gadgetId))
         .map(gadgetId =>
           ({ gadgetId, baseCommit: this.#localSeeds.get(gadgetId)!.baseCommit }))
-      const submission: CodeOpSubmission = {
+      const submission: CodeChangeSubmission = {
         generation: this.#generation,
         revision: this.#appliedRevision,
         clientId: this.#clientId,
         seq: ++this.#seq,
         ...(pins.length > 0 ? { pins } : {}),
-        op: this.#pending,
+        change: this.#pending,
       }
-      this.#inflight = { wire: submission, op: this.#pending }
-      this.#pending = EMPTY_OP
+      this.#inflight = { wire: submission, change: this.#pending }
+      this.#pending = EMPTY_CHANGE
       void this.#sendInflight()
     }
 
     // Every pin evaporated: the merged content now lives in commits, and unpinned gadgets track
     // head live. Keep entries only for gadgets the local buffers still touch -- for those, the
     // old content equals the boundary commit's tree (that is what content-preserving means), so
-    // local ops keep composing on identical content until the bridged rows re-pin them. Local
+    // local changes keep composing on identical content until the bridged rows re-pin them. Local
     // seeds for such gadgets survive too: they were unpinned on both sides, so their base (the
     // gadget's untouched head) still stands.
     const touched = new Set<WorkpieceId>([
       ...changedGadgets(this.#pending),
-      ...(this.#inflight !== null ? changedGadgets(this.#inflight.op) : []),
+      ...(this.#inflight !== null ? changedGadgets(this.#inflight.change) : []),
     ])
     const carried: CodeContent = new Map()
     for (const gadgetId of touched) {
@@ -628,7 +631,7 @@ export class ChatOtClient {
   }
 
   // Rebuild server-acked state from a durable snapshot, dropping local buffers. This is a
-  // client-session boundary: a fresh clientId, per the submitCodeOp contract.
+  // client-session boundary: a fresh clientId, per the submitCodeChange contract.
   async #rebuild(durable: ChatDurableCode): Promise<void> {
     const codeBase = durable.codeBase ?? { pins: [], generation: 0, revision: 0 }
 
@@ -653,13 +656,13 @@ export class ChatOtClient {
     // ---- synchronous tail ----
     let content: CodeContent = new Map()
     for (const [gadgetId, files] of bases) content.set(gadgetId, new Map(files))
-    if (durable.epochOp !== undefined) content = applyCodeOp(content, durable.epochOp)
+    if (durable.epochChange !== undefined) content = applyCodeChange(content, durable.epochChange)
 
     this.#applied = content
     this.#generation = codeBase.generation
     this.#appliedRevision = durable.rowsThrough
     this.#inflight = null
-    this.#pending = EMPTY_OP
+    this.#pending = EMPTY_CHANGE
     this.#localSeeds.clear()
     this.#pendingSwitch = null
     this.#watermarkGapSince = null
@@ -680,8 +683,8 @@ export class ChatOtClient {
         if (!display.has(gadgetId)) display.set(gadgetId, new Map(seed.files))
       }
     }
-    if (this.#inflight !== null) display = applyCodeOp(display, this.#inflight.op)
-    if (!isEmptyOp(this.#pending)) display = applyCodeOp(display, this.#pending)
+    if (this.#inflight !== null) display = applyCodeChange(display, this.#inflight.change)
+    if (!isEmptyChange(this.#pending)) display = applyCodeChange(display, this.#pending)
     this.#display = display
   }
 
@@ -692,7 +695,7 @@ export class ChatOtClient {
    * Seed local editing state for a gadget the chat has no content for yet (the first keystroke
    * to an unpinned gadget): keep displaying the head tree the user is looking at, and declare
    * `baseCommit` as the pin base on the next submission. No-op if content already exists. A
-   * pending (chat-created) gadget needs no seed (pass its files straight to applyLocalOp).
+   * pending (chat-created) gadget needs no seed (pass its files straight to applyLocalChange).
    */
   ensureGadgetEditable(
     gadgetId: WorkpieceId, headCommitId: string | undefined,
@@ -707,15 +710,15 @@ export class ChatOtClient {
   }
 
   /**
-   * Apply one locally-authored op (which the editor has already applied to its own document):
-   * fold it into the display and the pending buffer, and schedule a submission. The op must fit
+   * Apply one locally-authored change (which the editor has already applied to its own document):
+   * fold it into the display and the pending buffer, and schedule a submission. The change must fit
    * the current display content -- call ensureGadgetEditable() first for a gadget the chat has
    * no content for.
    */
-  applyLocalOp(op: CodeOp): void {
-    if (this.#fatal || this.#disposed || !this.#ready || isEmptyOp(op)) return
-    this.#display = applyCodeOp(this.#display, op)
-    this.#pending = isEmptyOp(this.#pending) ? op : composeCodeOp(this.#pending, op)
+  applyLocalChange(change: CodeChange): void {
+    if (this.#fatal || this.#disposed || !this.#ready || isEmptyChange(change)) return
+    this.#display = applyCodeChange(this.#display, change)
+    this.#pending = isEmptyChange(this.#pending) ? change : composeCodeChange(this.#pending, change)
     this.#scheduleSubmit()
   }
 
@@ -733,7 +736,7 @@ export class ChatOtClient {
 
   #maybeSubmit(): void {
     if (this.#fatal || this.#disposed || !this.#ready) return
-    if (this.#inflight !== null || isEmptyOp(this.#pending)) return
+    if (this.#inflight !== null || isEmptyChange(this.#pending)) return
     if (this.#pendingSwitch !== null) return  // finish the generation handoff first
 
     // Pin declarations: one per touched permanent gadget not yet pinned in the chat. A touched
@@ -752,36 +755,36 @@ export class ChatOtClient {
       pins.push({ gadgetId, baseCommit: seed.baseCommit })
     }
 
-    const submission: CodeOpSubmission = {
+    const submission: CodeChangeSubmission = {
       generation: this.#generation,
       revision: this.#appliedRevision,
       clientId: this.#clientId,
       seq: ++this.#seq,
       ...(pins.length > 0 ? { pins } : {}),
-      op: this.#pending,
+      change: this.#pending,
     }
-    this.#inflight = { wire: submission, op: this.#pending }
-    this.#pending = EMPTY_OP
+    this.#inflight = { wire: submission, change: this.#pending }
+    this.#pending = EMPTY_CHANGE
     void this.#sendInflight()
   }
 
   // Send (and re-send) the in-flight submission until it is accepted or hard-rejected. Runs
-  // outside the task queue: rows must keep applying (and rebasing the in-flight op) while the
+  // outside the task queue: rows must keep applying (and rebasing the in-flight change) while the
   // RPC is out. Retries resend `wire` untouched -- if the previous attempt was actually
   // accepted (a lost response), the server's dedupe digest requires the identical payload; if
   // it wasn't, the server re-derives the same transforms we applied locally from the claimed
-  // revision, so the untransformed op is equally correct.
+  // revision, so the untransformed change is equally correct.
   async #sendInflight(): Promise<void> {
     for (;;) {
       const inflight = this.#inflight
       if (inflight === null || this.#fatal || this.#disposed) return
       try {
-        const accepted = await this.#delegate.submitCodeOp(inflight.wire)
+        const accepted = await this.#delegate.submitCodeChange(inflight.wire)
         // Accepted. The echo row (recognized by clientId/seq) folds it into #applied and
         // clears #inflight -- normally it already has (it is broadcast before the response).
         // Record where the submission landed as the lost-echo backstop: if the row was
         // materialized while we were disconnected, no replay will ever deliver it, and the
-        // drain applies our own op at that position instead (see #tryApplyInflightAck).
+        // drain applies our own change at that position instead (see #tryApplyInflightAck).
         if (this.#inflight === inflight) {
           inflight.accepted = accepted
           this.#enqueue(() => this.#drainHeldRows())
@@ -799,7 +802,7 @@ export class ChatOtClient {
         }
         // Hard rejection: a destructive bump raced us, a pin declaration lost its race, the
         // transform window aged out, or a protocol violation. Discard local edits and rebuild
-        // under a fresh clientId (see Overseer.submitCodeOp).
+        // under a fresh clientId (see Overseer.submitCodeChange).
         console.error('Code submission rejected; discarding local edits:', err)
         this.#enqueue(() => this.#discardLocalAndRebuild())
         return

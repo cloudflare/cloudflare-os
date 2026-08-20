@@ -1,9 +1,9 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ChatChangesPin, ChatCodeBase, ChatGadgetPin, CodeOpSubmission, CommitIdentity, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
-import { applyCodeOp, changedGadgets, composeCodeOp, diffFiles, transformCodeOp,
-  validateCodeOpContent, validateCodeOpSchema,
-  type CodeContent, type CodeOp } from "@gadgets/workshop-shared/code-op";
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ChatChangesPin, ChatCodeBase, ChatGadgetPin, CodeChangeSubmission, CommitIdentity, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
+import { applyCodeChange, changedGadgets, composeCodeChange, diffFiles, transformCodeChange,
+  validateCodeChangeContent, validateCodeChangeSchema,
+  type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import { Gatekeeper, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
@@ -602,9 +602,9 @@ type BoundHookRecord = {
 };
 
 // READ-ONLY LEGACY: one pre-git-storage live draft edit (a Yjs V2 update). Nothing writes or
-// reads these anymore -- uncommitted changes are `chatOps` rows -- but pre-conversion chats may
-// still hold stored drafts, which the git-storage migration folds into each chat's conversion op
-// and then deletes.
+// reads these anymore -- uncommitted changes are `chatChanges` rows -- but pre-conversion chats
+// may still hold stored drafts, which the git-storage migration folds into each chat's conversion
+// change and then deletes.
 type ChatDraftUpdateRecord = {
   chatId: number;
   timestamp: Date;
@@ -613,18 +613,20 @@ type ChatDraftUpdateRecord = {
 };
 
 /**
- * One accepted row of a chat's code-op stream: the uncommitted-changes representation (see
- * ChatCodeBase in the API). Every producer's change -- a user submitCodeOp(), an agent tool
+ * One accepted row of a chat's code-change stream: the uncommitted-changes representation (see
+ * ChatCodeBase in the API). Every producer's change -- a user submitCodeChange(), an agent tool
  * edit, an updateChatFromMainline() merge -- becomes one row, numbered by a per-generation
- * revision counter and broadcast to subscribers as `opApplied`. Rows are periodically
- * *materialized* into a durable "changes" message (see materializeChatOps): the message's `op`
- * re-records their composition and its `watermark` names the rows it absorbed. Exported for the
- * chat-ops tests.
+ * revision counter and broadcast to subscribers as `changeApplied`. Rows are periodically
+ * *materialized* into a durable "changes" message (see materializeChatChanges): the message's
+ * `change` re-records their composition and its `watermark` names the rows it absorbed. Exported
+ * for the chat-changes tests.
  */
-export type ChatOpRecord = {
+export type ChatChangeRecord = {
   chatId: number;
 
-  /** The generation of the chat's op stream this row belongs to (see ChatCodeBase.generation). */
+  /**
+   * The generation of the chat's change stream this row belongs to (see ChatCodeBase.generation).
+   */
   generation: number;
 
   /** 1-based revision within `generation`; rows are contiguous by construction. */
@@ -632,38 +634,38 @@ export type ChatOpRecord = {
 
   timestamp: Date;
   author: AiChatAuthorInfo;
-  op: CodeOp;
+  change: CodeChange;
 
-  /** The submission echo for user rows (see AiChatSubscriber.opApplied); absent otherwise. */
+  /** The submission echo for user rows (see AiChatSubscriber.changeApplied); absent otherwise. */
   submission?: {clientId: string, seq: number};
 
   /** What produced the row. Turn abort keys on "agent"; nothing else dispatches on this yet. */
   source: "user" | "agent" | "mainlineMerge";
 
   /**
-   * Set when the row is no longer live: a "changes" message has materialized it (its op is part
+   * Set when the row is no longer live: a "changes" message has materialized it (its change is part
    * of the message), or its generation was closed by a merge's epoch reset. Retired rows are
    * excluded from content folds and from subscribe-replay; they are retained briefly as a pure
    * transform window -- the grace buffer late submissions (including the straggler bridge)
-   * transform across -- and expire lazily by age (see CHAT_OP_RETIRED_TTL_MS).
+   * transform across -- and expire lazily by age (see CHAT_CHANGE_RETIRED_TTL_MS).
    */
   retired?: true;
 };
 
 /**
- * Per (user, client editing session) submission-dedupe record (see Overseer.submitCodeOp): the
+ * Per (user, client editing session) submission-dedupe record (see Overseer.submitCodeChange): the
  * last accepted seq, where it landed, and a digest of the submission, updated in place at each
  * accept. Lives outside the rows so recognition survives materialization, epoch resets, and
  * destructive bumps; never pruned (an expired record would let a sufficiently delayed retry of
- * a session's first op re-apply as a fresh `seq: 1`), deleted only with the chat.
+ * a session's first change re-apply as a fresh `seq: 1`), deleted only with the chat.
  */
-type ChatOpClientRecord = {
+type ChatChangeClientRecord = {
   chatId: number;
 
   /** The submitting user's User DO id: records are scoped to the authenticated user. */
   userId: string;
 
-  /** The client-minted session token (validated against CHAT_OP_CLIENT_ID_PATTERN). */
+  /** The client-minted session token (validated against CHAT_CHANGE_CLIENT_ID_PATTERN). */
   clientId: string;
 
   /** The last accepted submission's seq. */
@@ -676,17 +678,17 @@ type ChatOpClientRecord = {
   /**
    * SHA-256 (64-hex) of the accepted submission's serialized content. A same-seq retry must
    * match it byte-for-byte: acknowledging different content as "already applied" would silently
-   * strand an op the server never ran.
+   * strand a change the server never ran.
    */
   digest: string;
 };
 
 /**
  * The straggler bridge's record of a chat's most recent content-preserving generation close (a
- * merge's epoch reset; see Overseer.submitCodeOp and ChatCodeBase.prior). Destructive bumps
+ * merge's epoch reset; see Overseer.submitCodeChange and ChatCodeBase.prior). Destructive bumps
  * delete it -- their closed stream is not bridgeable.
  */
-type ChatOpBoundaryRecord = {
+type ChatChangeBoundaryRecord = {
   chatId: number;
 
   /** The closed generation (equals ChatCodeBase.prior.generation while the bridge is open). */
@@ -700,7 +702,7 @@ type ChatOpBoundaryRecord = {
    * the merge's commit for a committed gadget, or head-at-reset for a pin that evaporated with
    * no net change while `mergedCommit` equaled head -- or null when the reset visibly changed
    * the gadget's content (bridge-ineligible; mirrored in ChatCodeBase.prior.discontinuousGadgets).
-   * Bridged ops' pins derive from these commits, never from the client's declarations.
+   * Bridged changes' pins derive from these commits, never from the client's declarations.
    */
   boundaries: {gadgetId: WorkpieceId, commitId: string | null}[];
 };
@@ -805,38 +807,38 @@ type ChatModelDataRecord = {
   message: StoredAssistantMessage;
 };
 
-// If live op rows exist whose newest author differs from a new submission's author and the
+// If live change rows exist whose newest author differs from a new submission's author and the
 // stream has been idle this long, the older author's rows are materialized into their own
-// "changes" message first, keeping attribution per author (see submitCodeOp).
-const CHAT_OP_AUTHOR_SPLIT_MS = 60_000;
+// "changes" message first, keeping attribution per author (see submitCodeChange).
+const CHAT_CHANGE_AUTHOR_SPLIT_MS = 60_000;
 
 // Materialize the live row window into a "changes" message once it grows past this many rows,
 // so a long editing session can't grow the window (and its subscribe-replay cost) without bound.
 // Thanks to the retired-row grace window this stales nobody: a submission based inside the
 // materialized range still transforms over the retired rows.
-const CHAT_OP_MATERIALIZE_THRESHOLD = 128;
+const CHAT_CHANGE_MATERIALIZE_THRESHOLD = 128;
 
 // Materialization splits a batch of rows across consecutive "changes" messages so that no one
-// message's composed op exceeds this size: rows are individually bounded (MAX_CODE_OP_SIZE) but
-// a composition of several is not, and an unstorable message would wedge materialization
-// permanently (rows only retire on success, so accept and turn start would retry the same
-// oversized compose forever). Composition never exceeds the sum of its inputs' sizes, so
-// cutting chunks by that sum keeps every multi-row message under the budget; a single row
-// larger than the budget travels alone, which storage already proved it can hold when the row
-// itself was written. Sizes are the UTF-8 byte length of the op's JSON -- never less than the
-// storage serialization's string payload (which stores at most two bytes per UTF-16 unit), so
+// message's composed change exceeds this size: rows are individually bounded
+// (MAX_CODE_CHANGE_SIZE) but a composition of several is not, and an unstorable message would
+// wedge materialization permanently (rows only retire on success, so accept and turn start would
+// retry the same oversized compose forever). Composition never exceeds the sum of its inputs'
+// sizes, so cutting chunks by that sum keeps every multi-row message under the budget; a single
+// row larger than the budget travels alone, which storage already proved it can hold when the row
+// itself was written. Sizes are the UTF-8 byte length of the change's JSON -- never less than
+// the storage serialization's string payload (which stores at most two bytes per UTF-16 unit), so
 // the budget can't be undershot by multi-byte-heavy content.
-const CHAT_OP_MESSAGE_OP_BUDGET = 1024 * 1024;
+const CHAT_CHANGE_MESSAGE_BUDGET = 1024 * 1024;
 
 // How long retired rows are kept as a transform window before lazy expiry. Late submissions are
 // in-flight-RTT scale, so a minute is generous; a submission whose base has aged out is rejected
 // (the client discards and rebuilds).
-const CHAT_OP_RETIRED_TTL_MS = 60_000;
+const CHAT_CHANGE_RETIRED_TTL_MS = 60_000;
 
-// The shape a CodeOpSubmission.clientId must take. Deliberately strict: the token is
+// The shape a CodeChangeSubmission.clientId must take. Deliberately strict: the token is
 // client-minted (a UUID satisfies this), becomes part of a storage key, and needs no other
 // structure.
-const CHAT_OP_CLIENT_ID_PATTERN = /^[0-9A-Za-z_-]{1,64}$/;
+const CHAT_CHANGE_CLIENT_ID_PATTERN = /^[0-9A-Za-z_-]{1,64}$/;
 
 const AGENT_RESPONSE_DELIVERED_RETENTION_MS = 24 * 60 * 60 * 1000;
 
@@ -962,7 +964,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //   2 = git-backed code: mainline code lives in `gitObjects` as commits synthesized from
       //       the legacy `code` log (see git-migration.ts); gadget records carry a `commitId`,
       //       blueprint records reference commits, historical merge messages carry `commits`,
-      //       and every live chat was converted to the commit-pinned op stream (a
+      //       and every live chat was converted to the commit-pinned change stream (a
       //       `conversionBoundary` changes message plus a `codeBase`). The `code`/`snapshots`
       //       collections are dead stored data from this version on.
       version: 0,
@@ -1017,7 +1019,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // (there's no entry for version 0, the starting empty state). Nothing writes it anymore --
       // mainline code lives in `gitObjects` as commits -- and it is read only by the git-storage
       // migration (git-migration.ts), which collapses each pre-git chat's uncommitted state into
-      // a conversion op; deletion is a later cleanup change. Workspaces initialized after git
+      // a conversion change; deletion is a later cleanup change. Workspaces initialized after git
       // storage never write it at all.
       code: collection<CodeUpdate>()({
         primaryKey: "version"
@@ -1148,7 +1150,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       }),
 
       // READ-ONLY LEGACY: pre-git-storage live drafts. Retained only as migration input (the
-      // conversion op folds them in and deletes them); nothing else reads or writes it, apart
+      // conversion change folds them in and deletes them); nothing else reads or writes it, apart
       // from deleteChat's defensive sweep.
       chatDraftUpdates: collection<ChatDraftUpdateRecord>()({
         primaryKey(record: ChatDraftUpdateRecord) {
@@ -1156,26 +1158,26 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         }
       }),
 
-      // The chats' code-op streams (see ChatOpRecord). Keyed so a generation's rows list in
+      // The chats' code-change streams (see ChatChangeRecord). Keyed so a generation's rows list in
       // revision order under one prefix.
-      chatOps: collection<ChatOpRecord>()({
-        primaryKey(record: ChatOpRecord) {
+      chatChanges: collection<ChatChangeRecord>()({
+        primaryKey(record: ChatChangeRecord) {
           return `${keyString(record.chatId)}.${keyString(record.generation)}.` +
               keyString(record.revision);
         }
       }),
 
-      // Per-(user, client session) submission dedupe records (see ChatOpClientRecord). The
+      // Per-(user, client session) submission dedupe records (see ChatChangeClientRecord). The
       // clientId's validated charset keeps the composed key unambiguous.
-      chatOpClients: collection<ChatOpClientRecord>()({
-        primaryKey(record: ChatOpClientRecord) {
+      chatChangeClients: collection<ChatChangeClientRecord>()({
+        primaryKey(record: ChatChangeClientRecord) {
           return `${keyString(record.chatId)}.${record.userId}:${record.clientId}`;
         }
       }),
 
       // Each chat's most recent content-preserving generation boundary, for the straggler
-      // bridge (see ChatOpBoundaryRecord). At most one per chat.
-      chatOpBoundaries: collection<ChatOpBoundaryRecord>()({
+      // bridge (see ChatChangeBoundaryRecord). At most one per chat.
+      chatChangeBoundaries: collection<ChatChangeBoundaryRecord>()({
         primaryKey: "chatId"
       }),
 
@@ -1260,25 +1262,25 @@ function validateOid(oid: string): string {
   return oid;
 }
 
-// The rejection for a code-op submission whose claimed base cannot be reached from the chat's
+// The rejection for a code-change submission whose claimed base cannot be reached from the chat's
 // current stream: a destructively-closed generation, a transform window that has aged out, or a
 // bridge-ineligible gadget. Final for the client's local state: it must discard its local edits
-// and rebuild from fresh metadata (see Overseer.submitCodeOp).
+// and rebuild from fresh metadata (see Overseer.submitCodeChange).
 function chatStreamGoneError(): Error {
   return new Error("The chat's code base changed (its changes were merged, reverted, or " +
       "discarded) and this edit cannot be carried across; rebuild from fresh metadata.");
 }
 
 // Digest of a submission's content, stored on the per-client dedupe record so a same-seq retry
-// can be verified byte-for-byte (see ChatOpClientRecord.digest). Covers everything that affects
-// what the op does; a conforming retry resends the identical payload, so its serialization --
+// can be verified byte-for-byte (see ChatChangeClientRecord.digest). Covers everything that affects
+// what the change does; a conforming retry resends the identical payload, so its serialization --
 // and hence the digest -- matches.
-async function submissionDigest(submission: CodeOpSubmission): Promise<string> {
+async function submissionDigest(submission: CodeChangeSubmission): Promise<string> {
   let bytes = new TextEncoder().encode(JSON.stringify({
     generation: submission.generation,
     revision: submission.revision,
     pins: submission.pins ?? [],
-    op: submission.op,
+    change: submission.change,
   }));
   return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)).toHex();
 }
@@ -2357,11 +2359,11 @@ class OverseerImpl implements AgentHooks {
   // Commit-backed chat code.
   //
   // Mainline code is git commits (see git-store.ts); a chat's uncommitted changes are one
-  // revisioned stream of code ops -- `chatOps` rows composed on top of pinned commits (see
-  // ChatCodeBase in the API and `@gadgets/workshop-shared/code-op`). A gadget joins the stream
-  // only when its code is first modified in the chat, pinned at the commit its ops compose on
+  // revisioned stream of code changes -- `chatChanges` rows composed on top of pinned commits (see
+  // ChatCodeBase in the API and `@gadgets/workshop-shared/code-change`). A gadget joins the stream
+  // only when its code is first modified in the chat, pinned at the commit its changes compose on
   // top of, while unpinned gadgets track mainline head live. Accepting changes ends the chat's
-  // epoch: the pin set resets and the op stream restarts under a new generation.
+  // epoch: the pin set resets and the change stream restarts under a new generation.
 
   // The chat's code base with the absent record defaulted (see ChatCodeBase: both sides of the
   // wire read an absent record as exactly this). Returns a fresh object when defaulting, so
@@ -2371,7 +2373,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   // AgentHooks implementation: the chat's current code base, whose pins list the gadgets whose
-  // content lives in the chat's op stream.
+  // content lives in the chat's change stream.
   getChatCodeBase(chatId: number): ChatCodeBase | undefined {
     return this.storage.chatMeta.get(chatId)?.codeBase;
   }
@@ -2393,11 +2395,11 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Rebuild a chat's content -- `gadgetId -> (path -> text)` for every gadget whose files live
-  // in the chat's op stream -- from the chat log. Content is epoch-scoped: a merge message with
+  // in the chat's change stream -- from the chat log. Content is epoch-scoped: a merge message with
   // `epochBoundary` (or a migrated chat's `conversionBoundary` changes message) discards
   // everything before it (the merged content lives in commits from then on), and within an
   // epoch each non-reverted "changes" message contributes first the base trees of any pins it
-  // declares, then its op. Commits are immutable, so reconstruction of closed epochs is
+  // declares, then its change. Commits are immutable, so reconstruction of closed epochs is
   // deterministic from the log alone.
   //
   // With `through`, the content is reconstructed *as the log stood at that sequence*: later
@@ -2405,7 +2407,7 @@ class OverseerImpl implements AgentHooks {
   // the caller's viewpoint, so they are excluded outright (a boundary recorded after `through`
   // must not wipe the snapshot it postdates).
   //
-  // Live (unmaterialized) op rows are deliberately NOT included: callers that need them either
+  // Live (unmaterialized) change rows are deliberately NOT included: callers that need them either
   // materialize first (accept, update-from-mainline, UI bundle loads) or apply them on top
   // themselves (getCurrentChatContent, agent replay).
   async buildChatContent(chatId: number, through?: number): Promise<CodeContent> {
@@ -2426,14 +2428,14 @@ class OverseerImpl implements AgentHooks {
       for (let pin of msg.pins ?? []) {
         content.set(pin.gadgetId, await this.gitStore.readCommitFiles(pin.baseCommit));
       }
-      if (msg.op !== undefined) content = applyCodeOp(content, msg.op);
+      if (msg.change !== undefined) content = applyCodeChange(content, msg.change);
     }
     return content;
   }
 
   // Cache of the chat's *current* content -- buildChatContent() plus undeclared meta pins' bases
-  // plus every live op row -- keyed by the (generation, revision) it reflects. Row appends
-  // update it incrementally (see #appendChatOpRow), so the per-keystroke submitCodeOp path
+  // plus every live change row -- keyed by the (generation, revision) it reflects. Row appends
+  // update it incrementally (see #appendChatChangeRow), so the per-keystroke submitCodeChange path
   // never replays the log; anything that rewrites history (revert, epoch reset, draft discard)
   // bumps the generation or is caught by the revision check, and chat deletion clears it via
   // destroyLiveChat.
@@ -2444,8 +2446,8 @@ class OverseerImpl implements AgentHooks {
     this.#chatContentCache.delete(chatId);
   }
 
-  // The chat's current content: what the next op row will apply to. Cached; treat the result as
-  // immutable (it is shared with the cache and with code-op's structure sharing).
+  // The chat's current content: what the next change row will apply to. Cached; treat the result as
+  // immutable (it is shared with the cache and with code-change's structure sharing).
   async getCurrentChatContent(chatId: number, meta: AiChatMetadata): Promise<CodeContent> {
     for (let attempt = 0; ; attempt++) {
       let codeBase = this.chatCodeBase(meta);
@@ -2476,8 +2478,8 @@ class OverseerImpl implements AgentHooks {
         meta = freshMeta;
         continue;
       }
-      for (let row of this.listLiveChatOps(chatId, freshBase.generation)) {
-        content = applyCodeOp(content, row.op);
+      for (let row of this.listLiveChatChanges(chatId, freshBase.generation)) {
+        content = applyCodeChange(content, row.change);
       }
       this.#chatContentCache.set(chatId,
           {generation: freshBase.generation, revision: freshBase.revision, content});
@@ -2489,10 +2491,10 @@ class OverseerImpl implements AgentHooks {
   // included. This is the transform window: a submission based at `afterRevision` rebases over
   // exactly these. Returns undefined if the window has a gap (rows expired past the retention
   // horizon), in which case the submission must be rejected rather than mistransformed.
-  listChatOpsSince(chatId: number, generation: number, afterRevision: number,
-                   throughRevision: number): ChatOpRecord[] | undefined {
+  listChatChangesSince(chatId: number, generation: number, afterRevision: number,
+                       throughRevision: number): ChatChangeRecord[] | undefined {
     if (afterRevision >= throughRevision) return [];
-    let rows = [...this.storage.chatOps.list({
+    let rows = [...this.storage.chatChanges.list({
       prefix: `${keyString(chatId)}.${keyString(generation)}.`,
       startAfter: `${keyString(chatId)}.${keyString(generation)}.${keyString(afterRevision)}`,
       end: `${keyString(chatId)}.${keyString(generation)}.${keyString(throughRevision + 1)}`,
@@ -2506,49 +2508,49 @@ class OverseerImpl implements AgentHooks {
 
   // The generation's live (unretired) rows, in revision order: the rows not yet materialized
   // into a "changes" message.
-  listLiveChatOps(chatId: number, generation: number): ChatOpRecord[] {
-    return [...this.storage.chatOps.list({
+  listLiveChatChanges(chatId: number, generation: number): ChatChangeRecord[] {
+    return [...this.storage.chatChanges.list({
       prefix: `${keyString(chatId)}.${keyString(generation)}.`,
     })].filter(row => !row.retired);
   }
 
-  // Broadcast one accepted row to chat subscribers (see AiChatSubscriber.opApplied).
-  emitChatOpApplied(row: ChatOpRecord): void {
+  // Broadcast one accepted row to chat subscribers (see AiChatSubscriber.changeApplied).
+  emitChatChangeApplied(row: ChatChangeRecord): void {
     for (let subscriber of this.#chatSubscribers) {
-      subscriber.opApplied(row.chatId, row.generation, row.revision, row.author, row.op,
-                           row.submission).catch(() => {
+      subscriber.changeApplied(row.chatId, row.generation, row.revision, row.author, row.change,
+                               row.submission).catch(() => {
         subscriber[Symbol.dispose]();
         this.#chatSubscribers.delete(subscriber);
       });
     }
   }
 
-  // Append one row to the chat's op stream: bump the revision, persist the row, keep the
+  // Append one row to the chat's change stream: bump the revision, persist the row, keep the
   // content cache current, and broadcast. Fully synchronous -- callers finish their git reads
   // first, so the row, the code base, and the cache land atomically under the output gate.
   // `newPins` are pins this row establishes (already validated), and `contentAfter` is the
   // chat content with the row applied (the caller computed it while validating).
-  #appendChatOpRow(chatId: number, meta: AiChatMetadata, author: AiChatAuthorInfo, op: CodeOp,
-                   source: ChatOpRecord["source"],
-                   newPins: ChatGadgetPin[], contentAfter: CodeContent | undefined,
-                   submission?: {clientId: string, seq: number}): ChatOpRecord {
+  #appendChatChangeRow(chatId: number, meta: AiChatMetadata, author: AiChatAuthorInfo,
+                       change: CodeChange, source: ChatChangeRecord["source"],
+                       newPins: ChatGadgetPin[], contentAfter: CodeContent | undefined,
+                       submission?: {clientId: string, seq: number}): ChatChangeRecord {
     let codeBase = this.chatCodeBase(meta);
     codeBase.pins.push(...newPins);
     let revision = codeBase.revision + 1;
     codeBase.revision = revision;
     meta.codeBase = codeBase;
 
-    let row: ChatOpRecord = {
+    let row: ChatChangeRecord = {
       chatId,
       generation: codeBase.generation,
       revision,
       timestamp: this.getChatTimestamp(),
       author,
-      op,
+      change,
       ...(submission !== undefined ? {submission} : {}),
       source,
     };
-    this.storage.chatOps.put(row);
+    this.storage.chatChanges.put(row);
 
     if (contentAfter !== undefined) {
       this.#chatContentCache.set(chatId,
@@ -2560,46 +2562,46 @@ class OverseerImpl implements AgentHooks {
     meta.lastActive = row.timestamp;
     meta.hasProposedChanges = true;
     this.storage.chatMeta.put(meta);
-    this.emitChatOpApplied(row);
+    this.emitChatChangeApplied(row);
     return row;
   }
 
   // Mark the given rows retired (materialized, or their generation closed): excluded from
   // content folds and subscribe-replay, retained briefly as the transform window (see
-  // ChatOpRecord.retired).
-  #retireChatOps(rows: ChatOpRecord[]): void {
+  // ChatChangeRecord.retired).
+  #retireChatChanges(rows: ChatChangeRecord[]): void {
     for (let row of rows) {
       row.retired = true;
-      this.storage.chatOps.put(row);
+      this.storage.chatChanges.put(row);
     }
   }
 
   // Lazily expire retired rows past the retention horizon, and drop retired generations that
   // are no longer bridgeable at all.
-  #pruneRetiredChatOps(chatId: number): void {
-    let cutoff = Date.now() - CHAT_OP_RETIRED_TTL_MS;
-    for (let row of Array.from(this.storage.chatOps.list({prefix: `${keyString(chatId)}.`}))) {
+  #pruneRetiredChatChanges(chatId: number): void {
+    let cutoff = Date.now() - CHAT_CHANGE_RETIRED_TTL_MS;
+    for (let row of Array.from(this.storage.chatChanges.list({prefix: `${keyString(chatId)}.`}))) {
       if (row.retired && row.timestamp.getTime() < cutoff) {
-        this.storage.chatOps.delete(
+        this.storage.chatChanges.delete(
             `${keyString(chatId)}.${keyString(row.generation)}.${keyString(row.revision)}`);
       }
     }
   }
 
-  // Erase every op row of the chat (a destructive bump, or chat deletion): retired rows too,
+  // Erase every change row of the chat (a destructive bump, or chat deletion): retired rows too,
   // since a destructively-closed stream is not bridgeable.
-  deleteAllChatOps(chatId: number): void {
-    for (let row of Array.from(this.storage.chatOps.list({prefix: `${keyString(chatId)}.`}))) {
-      this.storage.chatOps.delete(
+  deleteAllChatChanges(chatId: number): void {
+    for (let row of Array.from(this.storage.chatChanges.list({prefix: `${keyString(chatId)}.`}))) {
+      this.storage.chatChanges.delete(
           `${keyString(chatId)}.${keyString(row.generation)}.${keyString(row.revision)}`);
     }
-    this.storage.chatOpBoundaries.delete(chatId);
+    this.storage.chatChangeBoundaries.delete(chatId);
     this.#chatContentCache.delete(chatId);
   }
 
   // Gadgets whose pin establishment is recorded by a surviving (non-reverted) "changes" message
   // in the chat's current epoch. The complement -- meta pins missing from this set -- is what
-  // materialization must stamp onto its message (see materializeChatOps), and what pin rollback
+  // materialization must stamp onto its message (see materializeChatChanges), and what pin rollback
   // removes when the rows that established them are discarded.
   declaredPinGadgets(chatId: number): Set<WorkpieceId> {
     let messages = [...this.storage.chats.list({prefix: `${keyString(chatId)}.`})];
@@ -2729,7 +2731,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   // The display author for a batch of rows: the shared author, or a "Multiple Authors" marker.
-  normalizeRowAuthor(rows: ChatOpRecord[]): AiChatAuthorInfo {
+  normalizeRowAuthor(rows: ChatChangeRecord[]): AiChatAuthorInfo {
     if (rows.length === 0) {
       throw new Error("Cannot normalize an empty row batch.");
     }
@@ -2755,7 +2757,7 @@ class OverseerImpl implements AgentHooks {
 
     // (Provisional gadget creations need no special accounting here: each is recorded on a
     // "changes" message, which getProposedChanges() already counts.)
-    if (this.listLiveChatOps(chatId, this.chatCodeBase(meta).generation).length > 0 ||
+    if (this.listLiveChatChanges(chatId, this.chatCodeBase(meta).generation).length > 0 ||
         this.getProposedChanges(chatId).length > 0) {
       meta.hasProposedChanges = true;
     } else {
@@ -2766,11 +2768,11 @@ class OverseerImpl implements AgentHooks {
     return meta;
   }
 
-  // Materialize the chat's live op rows into durable "changes" messages -- one, unless the
-  // batch's composed op would exceed CHAT_OP_MESSAGE_OP_BUDGET, in which case consecutive
-  // messages each take a slice of the rows. Each message's `op` is its rows' composition and
+  // Materialize the chat's live change rows into durable "changes" messages -- one, unless the
+  // batch's composed change would exceed CHAT_CHANGE_MESSAGE_BUDGET, in which case consecutive
+  // messages each take a slice of the rows. Each message's `change` is its rows' composition and
   // its `watermark` names the rows it absorbed; the first message additionally stamps `pins`
-  // for any meta pins not yet declared in the log (closing the meta/log loop: submitCodeOp and
+  // for any meta pins not yet declared in the log (closing the meta/log loop: submitCodeChange and
   // the agent's appends establish pins in codeBase atomically with the row that needed them,
   // and this is where the establishment becomes durable log history). The rows are then
   // retired -- kept briefly as a transform window, not deleted -- so late submissions based
@@ -2781,7 +2783,7 @@ class OverseerImpl implements AgentHooks {
   // written when there is anything at all to record (rows, undeclared pins, or extras).
   // `options.author` overrides the row-derived author (required when there are no rows).
   // The returned `sequence` is the first written message's.
-  materializeChatOps(chatId: number, meta?: AiChatMetadata, options?: {
+  materializeChatChanges(chatId: number, meta?: AiChatMetadata, options?: {
     author?: AiChatAuthorInfo,
     allowDuringTurn?: boolean,
     createdGadgets?: {gadgetId: WorkpieceId, title: string, bindingName: string}[],
@@ -2801,7 +2803,7 @@ class OverseerImpl implements AgentHooks {
     }
 
     let codeBase = this.chatCodeBase(meta);
-    let rows = this.listLiveChatOps(chatId, codeBase.generation);
+    let rows = this.listLiveChatChanges(chatId, codeBase.generation);
     let pins = this.undeclaredMetaPins(chatId, meta);
     let hasExtras = (options?.createdGadgets?.length ?? 0) > 0 ||
         (options?.addedBindings?.length ?? 0) > 0 || options?.mainlineMerge !== undefined;
@@ -2815,15 +2817,16 @@ class OverseerImpl implements AgentHooks {
       return;
     }
 
-    // Chunk the batch so no message's composed op exceeds the byte budget (see
-    // CHAT_OP_MESSAGE_OP_BUDGET). No rows means one op-less message carrying the pins/extras.
-    let chunks: ChatOpRecord[][] = rows.length > 0 ? [] : [[]];
+    // Chunk the batch so no message's composed change exceeds the byte budget (see
+    // CHAT_CHANGE_MESSAGE_BUDGET). No rows means one message with no change of its own, carrying
+    // the pins/extras.
+    let chunks: ChatChangeRecord[][] = rows.length > 0 ? [] : [[]];
     let chunkSize = 0;
     for (let row of rows) {
-      let size = new TextEncoder().encode(JSON.stringify(row.op)).byteLength;
+      let size = new TextEncoder().encode(JSON.stringify(row.change)).byteLength;
       let current = chunks[chunks.length - 1];
       if (current === undefined || (chunkSize > 0 && chunkSize + size >
-          CHAT_OP_MESSAGE_OP_BUDGET)) {
+          CHAT_CHANGE_MESSAGE_BUDGET)) {
         chunks.push([row]);
         chunkSize = size;
       } else {
@@ -2834,20 +2837,20 @@ class OverseerImpl implements AgentHooks {
 
     let sequence = this.nextChatSequencePeek(chatId);
     for (let [index, chunk] of chunks.entries()) {
-      let op: CodeOp | undefined;
+      let change: CodeChange | undefined;
       for (let row of chunk) {
-        op = op === undefined ? row.op : composeCodeOp(op, row.op);
+        change = change === undefined ? row.change : composeCodeChange(change, row.change);
       }
       // The pins and extras all ride the first message. Pins-first is correct for the same
       // reason getCurrentChatContent establishes them up front: within a message pins apply
-      // before ops (see buildChatContent), and every batch row touching a pinned gadget was
-      // appended after that pin established, so no earlier chunk's op needs a later pin.
+      // before changes (see buildChatContent), and every batch row touching a pinned gadget was
+      // appended after that pin established, so no earlier chunk's change needs a later pin.
       let first = index === 0;
       this.addChatMessages(chatId, author!, [{
         type: "changes",
-        ...(op !== undefined ? {op} : {}),
+        ...(change !== undefined ? {change} : {}),
         ...(chunk.length > 0
-            ? {watermark: {opsGeneration: codeBase.generation,
+            ? {watermark: {changesGeneration: codeBase.generation,
                            throughRevision: chunk[chunk.length - 1].revision}}
             : {}),
         ...(first && pins.length > 0 ? {pins} : {}),
@@ -2860,8 +2863,8 @@ class OverseerImpl implements AgentHooks {
       }]);
     }
 
-    this.#retireChatOps(rows);
-    this.#pruneRetiredChatOps(chatId);
+    this.#retireChatChanges(rows);
+    this.#pruneRetiredChatChanges(chatId);
     return {sequence, meta: this.getChatMetaOrThrow(chatId)};
   }
 
@@ -2873,7 +2876,7 @@ class OverseerImpl implements AgentHooks {
   }): boolean {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return false;  // chat deleted mid-turn
-    return this.materializeChatOps(chatId, meta, {
+    return this.materializeChatChanges(chatId, meta, {
       author,
       allowDuringTurn: true,
       createdGadgets: extras.createdGadgets,
@@ -2882,27 +2885,28 @@ class OverseerImpl implements AgentHooks {
   }
 
   // AgentHooks implementation: the chat's live (unmaterialized) rows, oldest first. Replay
-  // applies these on top of the messages' ops -- a crashed turn's edits are durable rows even
+  // applies these on top of the messages' changes -- a crashed turn's edits are durable rows even
   // though no "changes" message covers them yet.
-  listUnmaterializedChatOps(chatId: number): {op: CodeOp, generation: number,
-                                              revision: number}[] {
+  listUnmaterializedChatChanges(chatId: number): {change: CodeChange, generation: number,
+                                                  revision: number}[] {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return [];
-    return this.listLiveChatOps(chatId, this.chatCodeBase(meta).generation)
-        .map(row => ({op: row.op, generation: row.generation, revision: row.revision}));
+    return this.listLiveChatChanges(chatId, this.chatCodeBase(meta).generation)
+        .map(row => ({change: row.change, generation: row.generation, revision: row.revision}));
   }
 
-  // AgentHooks implementation: append one agent tool edit to the chat's op stream, durable and
-  // broadcast immediately (this doubles as the streaming preview; see AiChatSubscriber.opApplied).
+  // AgentHooks implementation: append one agent tool edit to the chat's change stream, durable
+  // and broadcast immediately (this doubles as the streaming preview; see
+  // AiChatSubscriber.changeApplied).
   // `pin`, on the first write to an unpinned gadget, is validated against the gadget's *current*
   // head and mirrored into the chat's code base in the same synchronous step that records the
   // row -- head movement after the append merely leaves the chat stale for the accept gate to
   // catch, never retroactively fails the turn.
-  async appendAgentCodeOp(chatId: number, author: AiChatAuthorInfo, op: CodeOp,
-                          pin?: {gadgetId: WorkpieceId, baseCommit: string})
+  async appendAgentCodeChange(chatId: number, author: AiChatAuthorInfo, change: CodeChange,
+                              pin?: {gadgetId: WorkpieceId, baseCommit: string})
       : Promise<{generation: number, revision: number}> {
     let meta = this.getChatMetaOrThrow(chatId);
-    validateCodeOpSchema(op);
+    validateCodeChangeSchema(change);
 
     // Prefetch (awaits) before the synchronous tail.
     let content = await this.getCurrentChatContent(chatId, meta);
@@ -2940,28 +2944,28 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
-    validateCodeOpContent(op, content);
-    let row = this.#appendChatOpRow(chatId, fresh, author, op, "agent", newPins,
-                                    applyCodeOp(content, op));
+    validateCodeChangeContent(change, content);
+    let row = this.#appendChatChangeRow(chatId, fresh, author, change, "agent", newPins,
+                                        applyCodeChange(content, change));
     return {generation: row.generation, revision: row.revision};
   }
 
-  // The (user, clientId, seq) dedupe step of submitCodeOp: returns the recorded landing spot
-  // when the submission is an exact retry of the already-accepted op (OT, unlike a CRDT, does
-  // not tolerate double-application), undefined when it is the next expected op, and throws on
-  // seq misuse. Synchronous; submitCodeOp runs it both before the prefetches (the fast path)
+  // The (user, clientId, seq) dedupe step of submitCodeChange: returns the recorded landing spot
+  // when the submission is an exact retry of the already-accepted change (OT, unlike a CRDT, does
+  // not tolerate double-application), undefined when it is the next expected change, and throws on
+  // seq misuse. Synchronous; submitCodeChange runs it both before the prefetches (the fast path)
   // and again in the synchronous append tail, because a concurrent duplicate can land during
   // the awaits between the two.
-  #dedupeSubmission(clientKey: string, submission: CodeOpSubmission, digest: string)
+  #dedupeSubmission(clientKey: string, submission: CodeChangeSubmission, digest: string)
       : {generation: number, revision: number} | undefined {
-    let clientRecord = this.storage.chatOpClients.get(clientKey);
+    let clientRecord = this.storage.chatChangeClients.get(clientKey);
     if (clientRecord !== undefined) {
       if (submission.seq === clientRecord.seq) {
         if (digest !== clientRecord.digest) {
           throw new Error("A submission reused a seq with different content; discard local " +
               "edits and rebuild under a fresh clientId.");
         }
-        // A retry of the already-accepted op: acknowledge without re-applying.
+        // A retry of the already-accepted change: acknowledge without re-applying.
         return {generation: clientRecord.generation, revision: clientRecord.revision};
       }
       if (submission.seq !== clientRecord.seq + 1) {
@@ -2975,19 +2979,20 @@ class OverseerImpl implements AgentHooks {
     return undefined;
   }
 
-  // The body of Overseer.submitCodeOp() (see the API doc for the full contract): validate,
+  // The body of Overseer.submitCodeChange() (see the API doc for the full contract): validate,
   // dedupe, resolve the claimed stream position (bridging across a content-preserving
   // generation boundary when needed), transform over the rows accepted since, validate the
-  // transformed op against current content, and append/broadcast -- everything from the final
+  // transformed change against current content, and append/broadcast -- everything from the final
   // state re-read through the row write in one synchronous step.
-  async submitCodeOp(chatId: number, submission: CodeOpSubmission, author: AiChatAuthorInfo,
-                     userId: string): Promise<{generation: number, revision: number}> {
+  async submitCodeChange(chatId: number, submission: CodeChangeSubmission,
+                         author: AiChatAuthorInfo, userId: string)
+      : Promise<{generation: number, revision: number}> {
     this.getChatMetaOrThrow(chatId);  // fail fast
     this.#validateSubmissionShape(submission);
     let digest = await submissionDigest(submission);
 
     // Dedupe by (user, clientId, seq) before anything that can reject the base: a retry of an
-    // already-accepted op must get its recorded landing spot back even when its base has since
+    // already-accepted change must get its recorded landing spot back even when its base has since
     // been destructively bumped or an agent turn has started.
     let clientKey = `${keyString(chatId)}.${userId}:${submission.clientId}`;
     let acked = this.#dedupeSubmission(clientKey, submission, digest);
@@ -3007,7 +3012,7 @@ class OverseerImpl implements AgentHooks {
       let codeBase = this.chatCodeBase(meta);
 
       // Resolve the claimed (generation, revision).
-      let bridge: ChatOpBoundaryRecord | undefined;
+      let bridge: ChatChangeBoundaryRecord | undefined;
       if (submission.generation === codeBase.generation) {
         if (submission.revision > codeBase.revision) {
           throw new Error("Submission claims a revision that does not exist yet.");
@@ -3015,8 +3020,8 @@ class OverseerImpl implements AgentHooks {
       } else if (codeBase.prior !== undefined &&
                  submission.generation === codeBase.prior.generation) {
         // The straggler bridge: the claimed generation was closed by a merge (content-
-        // preserving), so the op can be carried across the boundary instead of discarded.
-        bridge = this.storage.chatOpBoundaries.get(chatId);
+        // preserving), so the change can be carried across the boundary instead of discarded.
+        bridge = this.storage.chatChangeBoundaries.get(chatId);
         if (bridge === undefined || bridge.generation !== submission.generation) {
           throw chatStreamGoneError();
         }
@@ -3028,7 +3033,7 @@ class OverseerImpl implements AgentHooks {
       }
 
       // Prefetch: current content, and the git data pin validation needs. Which pins apply
-      // depends on the transform below, but transforms only ever drop file ops, so prefetching
+      // depends on the transform below, but transforms only ever drop file changes, so prefetching
       // for every *declared* pin (plus every bridge boundary commit) covers all cases.
       let content = await this.getCurrentChatContent(chatId, meta);
       let pinData = new Map<string, {head: string, headParents: string[],
@@ -3090,7 +3095,7 @@ class OverseerImpl implements AgentHooks {
       }
 
       // Update the dedupe record in the same synchronous step as the append.
-      this.storage.chatOpClients.put({
+      this.storage.chatChangeClients.put({
         chatId, userId, clientId: submission.clientId, seq: submission.seq,
         generation: result.generation, revision: result.revision, digest,
       });
@@ -3100,28 +3105,28 @@ class OverseerImpl implements AgentHooks {
       // the append (see below); here, cap the live window's size so a long editing session
       // can't grow subscribe-replay without bound. Thanks to the retired-row grace window this
       // stales nobody.
-      if (this.listLiveChatOps(chatId, result.generation).length >=
-          CHAT_OP_MATERIALIZE_THRESHOLD) {
-        this.materializeChatOps(chatId);
+      if (this.listLiveChatChanges(chatId, result.generation).length >=
+          CHAT_CHANGE_MATERIALIZE_THRESHOLD) {
+        this.materializeChatChanges(chatId);
       }
 
       return result;
     }
   }
 
-  // The synchronous core of submitCodeOp: transform, validate, and append, using only
+  // The synchronous core of submitCodeChange: transform, validate, and append, using only
   // prefetched git data. Returns "retry" when prefetched state (a pin's validated head) no
   // longer matches storage.
   #applyValidatedSubmission(
       chatId: number, meta: AiChatMetadata, codeBase: ChatCodeBase,
-      submission: CodeOpSubmission, author: AiChatAuthorInfo, content: CodeContent,
+      submission: CodeChangeSubmission, author: AiChatAuthorInfo, content: CodeContent,
       pinData: Map<string, {head: string, headParents: string[],
                             baseFiles: Map<string, string>}>,
-      bridge: ChatOpBoundaryRecord | undefined)
+      bridge: ChatChangeBoundaryRecord | undefined)
       : {generation: number, revision: number} | "retry" {
-    let transformed = submission.op;
+    let transformed = submission.change;
 
-    // Pin declarations to establish: the client's own, except that a bridged op's declarations
+    // Pin declarations to establish: the client's own, except that a bridged change's declarations
     // describe a world that no longer exists -- for gadgets the boundary map covers, the pin is
     // server-derived from the recorded boundary commit instead.
     let declarations = new Map<WorkpieceId, string>();
@@ -3131,18 +3136,18 @@ class OverseerImpl implements AgentHooks {
 
     if (bridge !== undefined) {
       // Transform over the closed generation's remaining rows to its tip...
-      let oldRows = this.listChatOpsSince(
+      let oldRows = this.listChatChangesSince(
           chatId, bridge.generation, submission.revision, bridge.finalRevision);
       if (oldRows === undefined) throw chatStreamGoneError();
       for (let row of oldRows) {
-        transformed = transformCodeOp(row.op, transformed).b;
+        transformed = transformCodeChange(row.change, transformed).b;
       }
       // ...then across the boundary. For every touched gadget the boundary map covers, the
       // cross-generation step is the identity map (the boundary commit's tree *is* the chat
       // content at the reset); a bridge-ineligible gadget, or one whose current-generation pin
       // sits at a different base than its boundary commit, rejects the whole submission. Client
       // pin declarations for boundary-map gadgets describe the pre-merge world and are ignored
-      // in favor of the map (dropped outright for gadgets the op no longer touches); gadgets
+      // in favor of the map (dropped outright for gadgets the change no longer touches); gadgets
       // unpinned on both sides of the boundary keep the normal first-touch rules.
       let boundaryMap = new Map(bridge.boundaries.map(b => [b.gadgetId, b.commitId]));
       for (let [gadgetId] of declarations) {
@@ -3154,24 +3159,24 @@ class OverseerImpl implements AgentHooks {
         if (commitId === null) throw chatStreamGoneError();
         let existing = codeBase.pins.find(p => p.gadgetId === gadgetId);
         if (existing !== undefined && existing.baseCommit !== commitId) {
-          // Carrying an op rooted at the boundary onto content pinned at a since-moved base
+          // Carrying a change rooted at the boundary onto content pinned at a since-moved base
           // would need a cross-base merge, which is update-from-mainline's job.
           throw chatStreamGoneError();
         }
         declarations.set(gadgetId, commitId);
       }
       // Land in the current generation: transform over all of its rows.
-      let newRows = this.listChatOpsSince(chatId, codeBase.generation, 0, codeBase.revision);
+      let newRows = this.listChatChangesSince(chatId, codeBase.generation, 0, codeBase.revision);
       if (newRows === undefined) throw chatStreamGoneError();
       for (let row of newRows) {
-        transformed = transformCodeOp(row.op, transformed).b;
+        transformed = transformCodeChange(row.change, transformed).b;
       }
     } else {
-      let rows = this.listChatOpsSince(
+      let rows = this.listChatChangesSince(
           chatId, codeBase.generation, submission.revision, codeBase.revision);
       if (rows === undefined) throw chatStreamGoneError();
       for (let row of rows) {
-        transformed = transformCodeOp(row.op, transformed).b;
+        transformed = transformCodeChange(row.change, transformed).b;
       }
     }
 
@@ -3192,7 +3197,7 @@ class OverseerImpl implements AgentHooks {
       let record = this.storage.gadgets.get(gadgetId);
       if (record?.commitId === undefined) {
         // Only a pending gadget lacks a head (every permanent gadget has one, possibly the
-        // empty tree -- see GadgetRecord.commitId); a pending gadget's ops need no pin.
+        // empty tree -- see GadgetRecord.commitId); a pending gadget's changes need no pin.
         throw new Error("Cannot pin a gadget that has no committed code.");
       }
       let prefetched = pinData.get(`${gadgetId}:${baseCommit}`);
@@ -3207,56 +3212,56 @@ class OverseerImpl implements AgentHooks {
       validationContent.set(gadgetId, prefetched.baseFiles);
     }
 
-    // Every gadget the transformed op still touches must have its content in the stream: a pin
-    // (existing or established above), or the gadget is pending in this chat (its ops build its
+    // Every gadget the transformed change still touches must have its content in the stream: a pin
+    // (existing or established above), or the gadget is pending in this chat (its changes build its
     // content up from nothing).
     for (let gadgetId of changedGadgets(transformed)) {
       let record = this.storage.gadgets.get(gadgetId);
       if (record === undefined) {
-        throw new Error(`Code op touches a nonexistent gadget: ${gadgetId}`);
+        throw new Error(`Code change touches a nonexistent gadget: ${gadgetId}`);
       }
       if (record.pending !== undefined) {
         if (record.pending.chatId !== chatId) {
-          throw new Error(`Code op touches a gadget pending in another chat: ${gadgetId}`);
+          throw new Error(`Code change touches a gadget pending in another chat: ${gadgetId}`);
         }
         continue;
       }
       if (!codeBase.pins.some(p => p.gadgetId === gadgetId) &&
           !newPins.some(p => p.gadgetId === gadgetId)) {
         throw new Error("The first modification of a gadget must declare a pin (see " +
-            "CodeOpSubmission.pins).");
+            "CodeChangeSubmission.pins).");
       }
     }
 
-    // Content validation, against exactly what the op will apply to.
-    validateCodeOpContent(transformed, validationContent);
+    // Content validation, against exactly what the change will apply to.
+    validateCodeChangeContent(transformed, validationContent);
 
     // Attribution: if the newest live rows belong to a different author who has gone idle,
     // materialize their batch into its own message first, so one message never blends two
     // authors' sessions. (Two authors typing *concurrently* still share a batch, attributed to
     // "Multiple Authors".)
-    let liveRows = this.listLiveChatOps(chatId, codeBase.generation);
+    let liveRows = this.listLiveChatChanges(chatId, codeBase.generation);
     let latest = liveRows[liveRows.length - 1];
     if (latest !== undefined && !this.sameChatAuthor(latest.author, author) &&
-        Date.now() - latest.timestamp.getTime() > CHAT_OP_AUTHOR_SPLIT_MS) {
-      this.materializeChatOps(chatId, meta);
+        Date.now() - latest.timestamp.getTime() > CHAT_CHANGE_AUTHOR_SPLIT_MS) {
+      this.materializeChatChanges(chatId, meta);
       meta = this.getChatMetaOrThrow(chatId);
       codeBase = this.chatCodeBase(meta);
     }
 
-    let row = this.#appendChatOpRow(
+    let row = this.#appendChatChangeRow(
         chatId, meta, author, transformed, "user", newPins,
-        applyCodeOp(validationContent, transformed),
+        applyCodeChange(validationContent, transformed),
         {clientId: submission.clientId, seq: submission.seq});
     return {generation: row.generation, revision: row.revision};
   }
 
-  // Validation of a CodeOpSubmission beyond its declared type (the trust boundary's stage 1;
-  // see validateCodeOpSchema for the op itself, and that module's header for why neither
+  // Validation of a CodeChangeSubmission beyond its declared type (the trust boundary's stage 1;
+  // see validateCodeChangeSchema for the change itself, and that module's header for why neither
   // re-checks the shape capnweb-validate has already established): value formats, ranges, and
-  // the cross-checks between the pins and the op.
-  #validateSubmissionShape(submission: CodeOpSubmission): void {
-    if (!CHAT_OP_CLIENT_ID_PATTERN.test(submission.clientId)) {
+  // the cross-checks between the pins and the change.
+  #validateSubmissionShape(submission: CodeChangeSubmission): void {
+    if (!CHAT_CHANGE_CLIENT_ID_PATTERN.test(submission.clientId)) {
       throw new Error("Invalid clientId.");
     }
     if (!Number.isSafeInteger(submission.seq) || submission.seq < 1) {
@@ -3266,10 +3271,10 @@ class OverseerImpl implements AgentHooks {
         !Number.isSafeInteger(submission.revision) || submission.revision < 0) {
       throw new Error("Invalid generation/revision.");
     }
-    validateCodeOpSchema(submission.op);
-    let touched = new Set(changedGadgets(submission.op));
+    validateCodeChangeSchema(submission.change);
+    let touched = new Set(changedGadgets(submission.change));
     if (touched.size === 0) {
-      throw new Error("A code op submission must change something.");
+      throw new Error("A code change submission must change something.");
     }
     if (submission.pins !== undefined) {
       let seen = new Set<WorkpieceId>();
@@ -3280,7 +3285,7 @@ class OverseerImpl implements AgentHooks {
         seen.add(pin.gadgetId);
         validateOid(pin.baseCommit);
         if (!touched.has(pin.gadgetId)) {
-          throw new Error("Pin declaration for a gadget the op does not touch.");
+          throw new Error("Pin declaration for a gadget the change does not touch.");
         }
       }
     }
@@ -3292,9 +3297,9 @@ class OverseerImpl implements AgentHooks {
       : Promise<{conflictPaths: string[]}> {
     let meta = this.assertChatNotActive(chatId);
 
-    // Live op rows are part of the chat's current content, so materialize them first: the merge
+    // Live change rows are part of the chat's current content, so materialize them first: the merge
     // must take them as input, and its own row must be recorded after them.
-    let materialized = this.materializeChatOps(chatId, meta);
+    let materialized = this.materializeChatChanges(chatId, meta);
     if (materialized) meta = materialized.meta;
 
     // Everything read from here through the merge computation must still describe the chat when
@@ -3342,11 +3347,11 @@ class OverseerImpl implements AgentHooks {
     }
     conflictPaths.sort();
 
-    // The merge result is delivered as an ordinary op row -- concurrent editors transform
-    // against it like any other remote op -- so it is expressed as a diff of the chat's current
+    // The merge result is delivered as an ordinary change row -- concurrent editors transform
+    // against it like any other remote change -- so it is expressed as a diff of the chat's current
     // content. fast-diff's character-level minimality is a quality bonus for those transforms,
     // not a correctness requirement.
-    let op = diffFiles(content, merged);
+    let change = diffFiles(content, merged);
 
     // The awaits above are interleaving points. The chat lock excludes sibling mutations, but
     // an agent turn could have started, and new messages or rows could have been recorded;
@@ -3373,15 +3378,15 @@ class OverseerImpl implements AgentHooks {
     freshMeta.lastActive = this.getChatTimestamp();
     this.storage.chatMeta.put(freshMeta);
 
-    // Record the merge as a row (broadcast via opApplied), then materialize it into a "changes"
+    // Record the merge as a row (broadcast via changeApplied), then materialize it into a "changes"
     // message carrying `mainlineMerge` -- even when the chat's content already matched mainline
-    // (no op, no conflicts): the message is the durable record that the pins advanced, which
+    // (no change, no conflicts): the message is the durable record that the pins advanced, which
     // the revert guard (revertChanges) depends on. Without it, reverting the chat's earlier
     // proposals could silently regress content the advanced pins claim as merged.
-    if (changedGadgets(op).length > 0) {
-      this.#appendChatOpRow(chatId, freshMeta, author, op, "mainlineMerge", [], merged);
+    if (changedGadgets(change).length > 0) {
+      this.#appendChatChangeRow(chatId, freshMeta, author, change, "mainlineMerge", [], merged);
     }
-    this.materializeChatOps(chatId, undefined, {author, mainlineMerge: {conflictPaths}});
+    this.materializeChatChanges(chatId, undefined, {author, mainlineMerge: {conflictPaths}});
 
     return {conflictPaths};
   }
@@ -3393,11 +3398,11 @@ class OverseerImpl implements AgentHooks {
                      : Promise<MergeChangesResult> {
     let meta = this.assertChatNotActive(chatId);
 
-    // Always merge *everything* the chat proposes: sweep live op rows into a "changes" message
+    // Always merge *everything* the chat proposes: sweep live change rows into a "changes" message
     // first, then accept all proposed changes. Partial accepts are incoherent under the epoch
     // reset below -- an excluded remainder would be rooted in the discarded stream and
     // destroyed with it.
-    let result = this.materializeChatOps(chatId, meta);
+    let result = this.materializeChatChanges(chatId, meta);
     if (result) meta = result.meta;
 
     // Reap crash-orphaned provisional records first: an unstamped record that survives
@@ -3532,11 +3537,11 @@ class OverseerImpl implements AgentHooks {
     }
 
     // Rows accepted during the awaits above are acknowledged content the flatten didn't cover:
-    // submitCodeOp() runs outside the chat lock, appends no message (so the sequence token
+    // submitCodeChange() runs outside the chat lock, appends no message (so the sequence token
     // can't see it), and validated those keystrokes against a generation the epoch reset below
     // hasn't bumped yet. Someone is actively typing, and silently sweeping a mid-keystroke
     // state into the merge would be as wrong as losing it, so give up and let the user retry
-    // once the typing has settled. (The straggler bridge is not a substitute: it carries ops
+    // once the typing has settled. (The straggler bridge is not a substitute: it carries changes
     // that arrive *after* the merge committed, not already-accepted rows the flatten missed.
     // Nothing has been mutated yet, so the rows survive intact.)
     let freshCodeBase = this.chatCodeBase(freshMeta);
@@ -3612,7 +3617,7 @@ class OverseerImpl implements AgentHooks {
     // reset visibly changes the gadget's content (the pin evaporates and the chat snaps to a
     // head it never merged), making it bridge-ineligible and reported in
     // `prior.discontinuousGadgets` so clients rebuild it from head.
-    let boundaries: ChatOpBoundaryRecord["boundaries"] =
+    let boundaries: ChatChangeBoundaryRecord["boundaries"] =
         commits.map(({gadgetId, commitId}) => ({gadgetId, commitId}));
     let committedIds = new Set(commits.map(commit => commit.gadgetId));
     let discontinuousGadgets: WorkpieceId[] = [];
@@ -3628,16 +3633,16 @@ class OverseerImpl implements AgentHooks {
     }
 
     // Close the epoch: everything the chat proposed now lives in commits, so the chat's code
-    // base resets to empty -- every pin evaporates, the op stream restarts at revision 0 under
+    // base resets to empty -- every pin evaporates, the change stream restarts at revision 0 under
     // a new generation, and subsequent edits re-pin lazily against the new heads. The bump is
     // content-preserving: the closed generation's rows are retired (not deleted) as the
     // transform window, the boundary record above opens the straggler bridge, and `prior` tells
     // clients how to hand off (see ChatCodeBase.prior). The reset lands on the freshly-read
     // meta so concurrent changes to other fields (e.g. a title rename during the awaits)
     // survive.
-    this.#retireChatOps(this.listLiveChatOps(chatId, generationToken));
-    this.#pruneRetiredChatOps(chatId);
-    this.storage.chatOpBoundaries.put(
+    this.#retireChatChanges(this.listLiveChatChanges(chatId, generationToken));
+    this.#pruneRetiredChatChanges(chatId);
+    this.storage.chatChangeBoundaries.put(
         {chatId, generation: generationToken, finalRevision: revisionToken, boundaries});
     this.#chatContentCache.delete(chatId);
     freshMeta.codeBase = {
@@ -3692,7 +3697,7 @@ class OverseerImpl implements AgentHooks {
         statuses.get(msg.sequence) === undefined;
 
     // A revert may not start before the chat's conversion boundary (the synthetic message the
-    // git-storage migration wrote; see AiChatMessageBody.conversionBoundary): the boundary's op
+    // git-storage migration wrote; see AiChatMessageBody.conversionBoundary): the boundary's change
     // collapsed every surviving pre-conversion edit into one batch, so a revertFrom below it
     // would mark the boundary reverted while claiming to keep some of the legacy edits it
     // re-recorded -- a partial legacy revert, impossible by construction. Reverting *at* the
@@ -3778,15 +3783,15 @@ class OverseerImpl implements AgentHooks {
     let declared = this.declaredPinGadgets(chatId);
     codeBase.pins = codeBase.pins.filter(pin => declared.has(pin.gadgetId));
 
-    // Erase all op rows: live rows are strictly newer than every materialized message, so they
+    // Erase all change rows: live rows are strictly newer than every materialized message, so they
     // fall inside the reverted range by definition -- and retired rows' transform window is
     // meaningless across a destructive bump, whose erased content nothing can transform onto.
-    // The bump is destructive (`prior` absent, boundary record gone): already-applied ops are
+    // The bump is destructive (`prior` absent, boundary record gone): already-applied changes are
     // erased, so clients whose content contains them must discard local state and rebuild
-    // rather than submit ops rooted in erased history. The stream restarts at revision 0 --
+    // rather than submit changes rooted in erased history. The stream restarts at revision 0 --
     // revisions are scoped to the generation, so a delayed event or retry can't be
     // misattributed to the new stream.
-    this.deleteAllChatOps(chatId);
+    this.deleteAllChatChanges(chatId);
     codeBase.generation += 1;
     codeBase.revision = 0;
     delete codeBase.prior;
@@ -3814,7 +3819,7 @@ class OverseerImpl implements AgentHooks {
   discardChatDraftChanges(chatId: number): void {
     let meta = this.assertChatNotActive(chatId);
     let codeBase = this.chatCodeBase(meta);
-    let rows = this.listLiveChatOps(chatId, codeBase.generation);
+    let rows = this.listLiveChatChanges(chatId, codeBase.generation);
     if (rows.length === 0) {
       return;
     }
@@ -3823,14 +3828,14 @@ class OverseerImpl implements AgentHooks {
     // meta pins those rows established but never declared in a materialized message die with
     // them (nothing else roots in their bases), and the bump is destructive -- the erased rows
     // are content clients already applied, so they must discard local state and rebuild rather
-    // than submit ops rooted in erased history. Any new row-discarding path must do the same,
+    // than submit changes rooted in erased history. Any new row-discarding path must do the same,
     // or `codeBase` and the log disagree and queued client submissions can still reference an
-    // erased base. (The per-client dedupe records survive -- see submitCodeOp: a straggling
+    // erased base. (The per-client dedupe records survive -- see submitCodeChange: a straggling
     // retry of an erased row is still acknowledged with its recorded landing spot instead of
     // being applied twice.)
     let declared = this.declaredPinGadgets(chatId);
     codeBase.pins = codeBase.pins.filter(pin => declared.has(pin.gadgetId));
-    this.deleteAllChatOps(chatId);
+    this.deleteAllChatChanges(chatId);
     codeBase.generation += 1;
     codeBase.revision = 0;
     delete codeBase.prior;
@@ -3844,7 +3849,7 @@ class OverseerImpl implements AgentHooks {
 
 
   // Whether a chat's uncommitted content holds this gadget's files: the gadget is pinned in the
-  // chat, or has no committed code (chat-created gadgets live only in the chat's op stream).
+  // chat, or has no committed code (chat-created gadgets live only in the chat's change stream).
   // Otherwise the gadget tracks mainline head live, and chat context doesn't change what its
   // code reads return. This is the one rule behind every chat-context read of gadget code --
   // previews (loadGadgetWorker), UI bundles, and the agent's file tools all follow the same
@@ -4042,9 +4047,9 @@ class OverseerImpl implements AgentHooks {
   }
 
   // The gadget's file tree as seen from `chatId` (its chat content; the caller is presumed to
-  // have materialized live op rows, see checkChatExistsAndMaterializeOps) or from mainline. A
-  // chat that doesn't own the gadget's code (see chatDocOwnsGadget) reads mainline too: the
-  // gadget's head commit, which a gadget with no commit yet doesn't have -- no files.
+  // have materialized live change rows, see checkChatExistsAndMaterializeChanges) or from
+  // mainline. A chat that doesn't own the gadget's code (see chatDocOwnsGadget) reads mainline
+  // too: the gadget's head commit, which a gadget with no commit yet doesn't have -- no files.
   async readGadgetFiles(gadgetId: WorkpieceId, chatId?: number)
       : Promise<ReadonlyMap<string, string>> {
     let meta = chatId !== undefined ? this.getChatMetaOrThrow(chatId) : undefined;
@@ -4057,14 +4062,14 @@ class OverseerImpl implements AgentHooks {
 
   async getGadgetUiBundle(gadgetId: WorkpieceId, chatId?: number): Promise<UiBundle | null> {
     // TODO: Bundle the UI? For now we just return client.js.
-    this.checkChatExistsAndMaterializeOps(chatId);
+    this.checkChatExistsAndMaterializeChanges(chatId);
     let jsCode = (await this.readGadgetFiles(gadgetId, chatId)).get("client.js");
     return jsCode !== undefined ? {jsCode} : null;
   }
 
   async getGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number)
       : Promise<GadgetExportFormat[]> {
-    this.checkChatExistsAndMaterializeOps(chatId);
+    this.checkChatExistsAndMaterializeChanges(chatId);
     let resolved = await this.#resolveGadgetExportFormats(gadgetId, chatId);
     resolved.gadget?.[Symbol.dispose]();
     return resolved.formats;
@@ -4072,7 +4077,7 @@ class OverseerImpl implements AgentHooks {
 
   async exportGadget(gadgetId: WorkpieceId, formatId: string, chatId?: number)
       : Promise<ReadableStream<Uint8Array>> {
-    this.checkChatExistsAndMaterializeOps(chatId);
+    this.checkChatExistsAndMaterializeChanges(chatId);
     let {formats, handler, gadget} = await this.#resolveGadgetExportFormats(gadgetId, chatId);
     if (!gadget) throw new Error("The Gadget server stub is unavailable.");
     using exportGadget = gadget;
@@ -4093,10 +4098,10 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  checkChatExistsAndMaterializeOps(chatId?: number): void {
+  checkChatExistsAndMaterializeChanges(chatId?: number): void {
     if (chatId !== undefined) {
       let meta = this.getChatMetaOrThrow(chatId);
-      if (!meta.activeAgent) this.materializeChatOps(chatId, meta);
+      if (!meta.activeAgent) this.materializeChatChanges(chatId, meta);
     }
   }
 
@@ -4944,7 +4949,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   // For the given chat ID, return all code changes that are still in the "proposed" state, i.e.
-  // they are neither merged nor reverted. An entry's `op` is absent for batches that record
+  // they are neither merged nor reverted. An entry's `change` is absent for batches that record
   // only gadget creations/binding additions (which still count as proposed changes: they are
   // merged and reverted like code edits).
   //
@@ -4955,10 +4960,10 @@ class OverseerImpl implements AgentHooks {
     let checkpoint = this.getActiveChatCompaction(chatId);
     let seed: ChangeBatch[] = [];
     if (checkpoint) {
-      // A creation-only prefix has no op to carry, so the registry rows it left behind are what
-      // reveal it (see CompactionCheckpoint.proposedOp).
-      if (checkpoint.proposedOp || this.#hasPendingStructure(chatId, checkpoint.compactedTo)) {
-        seed.push({sequence: checkpoint.compactedTo - 1, op: checkpoint.proposedOp});
+      // A creation-only prefix has no change to carry, so the registry rows it left behind are what
+      // reveal it (see CompactionCheckpoint.proposedChange).
+      if (checkpoint.proposedChange || this.#hasPendingStructure(chatId, checkpoint.compactedTo)) {
+        seed.push({sequence: checkpoint.compactedTo - 1, change: checkpoint.proposedChange});
       }
     }
     return foldProposedChanges(
@@ -5010,7 +5015,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   // In-flight chat mutations, keyed by chat, serialized by withChatLock().
-  #chatOpLocks = new Map<number, Promise<unknown>>();
+  #chatChangeLocks = new Map<number, Promise<unknown>>();
 
   // Serializes the chat-mutating operations that read chat state, await (git reads/writes), and
   // write chat state back -- mergeChanges, updateChatFromMainline, revertChanges. The DO is
@@ -5020,15 +5025,15 @@ class OverseerImpl implements AgentHooks {
   // during the awaits (an agent turn starting, drafts, chat deletion) must still be caught by
   // re-reading chat state after the last await -- see the revalidation steps in each caller.
   async withChatLock<T>(chatId: number, fn: () => Promise<T>): Promise<T> {
-    let previous = this.#chatOpLocks.get(chatId) ?? Promise.resolve();
+    let previous = this.#chatChangeLocks.get(chatId) ?? Promise.resolve();
     let run = previous.then(fn, fn);
     // Track completion (success or failure) so the next operation queues behind this one, and
     // clean up the map entry once no operation is pending.
     let settled = run.then(() => {}, () => {});
-    this.#chatOpLocks.set(chatId, settled);
+    this.#chatChangeLocks.set(chatId, settled);
     settled.then(() => {
-      if (this.#chatOpLocks.get(chatId) === settled) {
-        this.#chatOpLocks.delete(chatId);
+      if (this.#chatChangeLocks.get(chatId) === settled) {
+        this.#chatChangeLocks.delete(chatId);
       }
     });
     return run;
@@ -5264,7 +5269,7 @@ class OverseerImpl implements AgentHooks {
         message, (canonicalAttachments?.length ?? 0) > 0);
 
     let meta = this.assertChatNotActive(chatId, true);
-    let result = this.materializeChatOps(chatId, meta);
+    let result = this.materializeChatChanges(chatId, meta);
     if (result) meta = result.meta;
     meta.lastActive = this.getChatTimestamp();
     // A built-in command runs a turn without a prompt: `/compact` compacts and ends.
@@ -5642,7 +5647,7 @@ class OverseerImpl implements AgentHooks {
       // not started via sendChatMessage -- callbacks, resumes) become a durable "changes"
       // message attributed to their own authors, so the turn's appends never share a batch with
       // them. (`allowDuringTurn` because the callers set activeAgent before starting us.)
-      this.materializeChatOps(chatId, undefined, {allowDuringTurn: true});
+      this.materializeChatChanges(chatId, undefined, {allowDuringTurn: true});
 
       // Enforce the optional free-tier usage limit before starting a user-initiated turn. Callback-
       // initiated continuations are exempt so outstanding callbacks are never stranded mid-flow.
@@ -7011,8 +7016,8 @@ class OverseerImpl implements AgentHooks {
       if (msg.type === "changes") {
         // (A message's `pins` need no validation or mirroring here: pins are validated and
         // mirrored into the chat's code base when the establishing row is *appended* -- see
-        // submitCodeOp / appendAgentCodeOp -- and the message merely makes the establishment
-        // durable log history.)
+        // submitCodeChange / appendAgentCodeChange -- and the message merely makes the
+        // establishment durable log history.)
         meta.hasProposedChanges = true;
         this.proposedChangesChanged(chatId);
       }
@@ -9216,10 +9221,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     });
   }
 
-  async submitCodeOp(chatId: number, submission: CodeOpSubmission)
+  async submitCodeChange(chatId: number, submission: CodeChangeSubmission)
       : Promise<{generation: number, revision: number}> {
     let author = await this.#getClientProfile();
-    return await this.impl.submitCodeOp(chatId, submission, author, this.clientUserId);
+    return await this.impl.submitCodeChange(chatId, submission, author, this.clientUserId);
   }
 
   // --- Commit-backed code reads ---
@@ -9838,7 +9843,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       compacted: checkpoint && {
         to: checkpoint.compactedTo,
         summary: checkpoint.summary,
-        proposedOp: checkpoint.proposedOp,
+        proposedChange: checkpoint.proposedChange,
       },
     };
   }
@@ -9936,16 +9941,16 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       }
     }
 
-    // Replay every currently retained (not-yet-materialized) op row so the subscriber can
+    // Replay every currently retained (not-yet-materialized) change row so the subscriber can
     // reconstruct uncommitted chat content without a separate fetch. Rows a "changes" message
     // has absorbed are not replayed -- the message's watermark covers them -- and the rows are
     // delivered after the message catch-up above, matching their position in the stream (rows
     // are strictly newer than every materialized message of their generation). Delivered
     // unconditionally (no startAfter filtering): the client dedupes by (generation, revision).
-    for (let row of this.impl.storage.chatOps.list()) {
+    for (let row of this.impl.storage.chatChanges.list()) {
       if (row.retired) continue;
-      subscriber.opApplied(row.chatId, row.generation, row.revision, row.author, row.op,
-                           row.submission).catch(unsubscribe);
+      subscriber.changeApplied(row.chatId, row.generation, row.revision, row.author, row.change,
+                               row.submission).catch(unsubscribe);
     }
 
     chatMeta.subscribe(metaSubscriber);
@@ -10039,12 +10044,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         checkpoint => compactionKey(chatId, checkpoint.compactedTo));
     for (let key of checkpoints) this.impl.storage.chatCompactions.delete(key);
 
-    // The chat's op stream: rows (retired included), the straggler-bridge boundary, and the
-    // per-client dedupe records (which live exactly as long as the chat -- see submitCodeOp).
-    this.impl.deleteAllChatOps(chatId);
-    for (let record of Array.from(this.impl.storage.chatOpClients.list(
+    // The chat's change stream: rows (retired included), the straggler-bridge boundary, and the
+    // per-client dedupe records (which live exactly as long as the chat -- see submitCodeChange).
+    this.impl.deleteAllChatChanges(chatId);
+    for (let record of Array.from(this.impl.storage.chatChangeClients.list(
         {prefix: `${keyString(chatId)}.`}))) {
-      this.impl.storage.chatOpClients.delete(
+      this.impl.storage.chatChangeClients.delete(
           `${keyString(record.chatId)}.${record.userId}:${record.clientId}`);
     }
 
@@ -10111,7 +10116,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       throw new Error("No AI model available.");
     }
 
-    let result = this.impl.materializeChatOps(chatId, meta);
+    let result = this.impl.materializeChatChanges(chatId, meta);
     if (result) meta = result.meta;
 
     meta.activeAgent = userMeta.aiModel.profile;
@@ -10124,7 +10129,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async finalizeChatDraft(chatId: number): Promise<void> {
     let meta = this.impl.assertChatNotActive(chatId);
-    this.impl.materializeChatOps(chatId, meta);
+    this.impl.materializeChatChanges(chatId, meta);
   }
 
   async discardChatDraftChanges(chatId: number): Promise<void> {
@@ -10532,7 +10537,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async setPinned(_pinned: boolean): Promise<void> { this.#deny(); }
   async deleteSelf(): Promise<void> { this.#deny(); }
   async createGadget(_title: string): Promise<RpcStub<GadgetClient>> { this.#deny(); }
-  async submitCodeOp(_chatId: number, _submission: CodeOpSubmission)
+  async submitCodeChange(_chatId: number, _submission: CodeChangeSubmission)
       : Promise<{generation: number, revision: number}> {
     this.#deny();
   }

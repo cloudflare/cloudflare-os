@@ -10,7 +10,7 @@ import {
 } from '@codemirror/language'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search'
-import type { FileOp, TextOp } from '@gadgets/workshop-shared/code-op'
+import type { FileChange, TextChange } from '@gadgets/workshop-shared/code-change'
 import { codeEditorTheme, monoFont } from './components/codeTheme'
 import { getLanguage } from './getLanguage'
 import { useTheme } from './ThemeContext'
@@ -21,17 +21,17 @@ import { useTheme } from './ThemeContext'
 
 /**
  * An editable file's connection to the chat's OT client (see GadgetCodeInterface): the editor
- * reads the initial text, pushes locally-authored ops, and receives remote deltas. `key`
+ * reads the initial text, pushes locally-authored changes, and receives remote deltas. `key`
  * identifies the document's identity -- when it changes, the editor rebuilds its state from
  * getText() (chat/file switches, client rebuilds); while it is stable, the text evolves only
- * through this editor's own edits and the remote ops delivered to `subscribeRemote`.
+ * through this editor's own edits and the remote changes delivered to `subscribeRemote`.
  */
 export interface EditSession {
   key: string
   getText(): string | undefined
-  /** Push one locally-authored op. `docText` is the document's full text after the op. */
-  applyLocal(op: FileOp, docText: string): void
-  subscribeRemote(cb: (op: FileOp) => void): () => void
+  /** Push one locally-authored change. `docText` is the document's full text after the change. */
+  applyLocal(change: FileChange, docText: string): void
+  subscribeRemote(cb: (change: FileChange) => void): () => void
 }
 
 interface CodeEditorProps {
@@ -58,32 +58,32 @@ export function sessionChangeListener(getSession: () => EditSession | undefined)
     if (!update.docChanged) return
     if (update.transactions.every(tr => tr.annotation(remoteChange) !== true)) {
       getSession()?.applyLocal(
-        { edit: update.changes.toJSON() as TextOp }, update.state.doc.toString())
+        { edit: update.changes.toJSON() as TextChange }, update.state.doc.toString())
     }
   })
 }
 
 /**
- * The remote half of an EditSession binding: streams the session's remote ops into the view as
+ * The remote half of an EditSession binding: streams the session's remote changes into the view as
  * annotated transactions (bypassing the local-edit listener and undo history). `set` covers
  * wholesale replacement (e.g. a newly-seeded base); `remove` clears the document so the view
  * doesn't show stale text a stray keystroke would silently resurrect. Returns an unsubscriber.
  */
 export function connectSessionRemote(view: EditorView, session: EditSession): () => void {
-  return session.subscribeRemote(op => {
-    if ('edit' in op) {
+  return session.subscribeRemote(change => {
+    if ('edit' in change) {
       view.dispatch({
-        changes: specFromTextOp(op.edit),
+        changes: specFromTextChange(change.edit),
         annotations: [remoteChange.of(true), Transaction.addToHistory.of(false)],
       })
-    } else if ('set' in op) {
-      if (view.state.doc.toString() !== op.set) {
+    } else if ('set' in change) {
+      if (view.state.doc.toString() !== change.set) {
         view.dispatch({
-          changes: { from: 0, to: view.state.doc.length, insert: op.set },
+          changes: { from: 0, to: view.state.doc.length, insert: change.set },
           annotations: [remoteChange.of(true), Transaction.addToHistory.of(false)],
         })
       }
-    } else if ('remove' in op) {
+    } else if ('remove' in change) {
       if (view.state.doc.length > 0) {
         view.dispatch({
           changes: { from: 0, to: view.state.doc.length, insert: '' },
@@ -94,7 +94,7 @@ export function connectSessionRemote(view: EditorView, session: EditSession): ()
   })
 }
 
-/** Replace the whole document programmatically (annotated like a remote op). */
+/** Replace the whole document programmatically (annotated like a remote change). */
 export function setDocText(view: EditorView, text: string) {
   if (view.state.doc.toString() !== text) {
     view.dispatch({
@@ -130,7 +130,7 @@ export default function CodeEditor({
     const doc = session ? (session.getText() ?? '') : (text ?? '')
     const extensions: Extension[] = [
       // Split documents only on "\n" so CR and CRLF sequences survive the round trip: the OT
-      // stream's ops are offsets into the exact stored text, and CodeMirror's default splitter
+      // stream's changes are offsets into the exact stored text, and CodeMirror's default splitter
       // would silently normalize other line endings away, desynchronizing the first edit.
       // (Stray \r characters render via highlightSpecialChars below.)
       EditorState.lineSeparator.of('\n'),
@@ -222,14 +222,14 @@ export default function CodeEditor({
   )
 }
 
-// Convert a TextOp (ChangeSet compact JSON) into dispatchable change specs. Going through
+// Convert a TextChange (ChangeSet compact JSON) into dispatchable change specs. Going through
 // specs (rather than ChangeSet.fromJSON) sidesteps length-accounting differences if the doc
 // briefly disagrees -- the specs clip nothing, and a mismatched length throws in dispatch,
 // surfacing bugs rather than corrupting silently.
-function specFromTextOp(op: TextOp): { from: number; to: number; insert: string }[] {
+function specFromTextChange(change: TextChange): { from: number; to: number; insert: string }[] {
   const specs: { from: number; to: number; insert: string }[] = []
   let pos = 0
-  for (const section of op) {
+  for (const section of change) {
     if (typeof section === 'number') {
       pos += section
     } else {

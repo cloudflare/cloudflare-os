@@ -1,6 +1,6 @@
 import {SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT, type AiChatMessage, type AiModelConfig}
   from "@gadgets/workshop-shared/api";
-import {composeCodeOp, type CodeOp} from "@gadgets/workshop-shared/code-op";
+import {composeCodeChange, type CodeChange} from "@gadgets/workshop-shared/code-change";
 import type {Api, Message, Model} from "@earendil-works/pi-ai";
 import type {ChatBindingEntry, CompactionCheckpoint} from "./agent";
 import {zeroUsage} from "./ai-invoke";
@@ -86,10 +86,10 @@ export function startsAgentTurn(message: AiChatMessage): boolean {
 }
 
 /**
- * One batch of code changes, addressed by the chat sequence that recorded it. `op` is absent for
- * a batch that records only gadget creations or binding additions.
+ * One batch of code changes, addressed by the chat sequence that recorded it. `change` is absent
+ * for a batch that records only gadget creations or binding additions.
  */
-export type ChangeBatch = {sequence: number, op?: CodeOp};
+export type ChangeBatch = {sequence: number, change?: CodeChange};
 
 /**
  * Folds `merge` and `revert` over a chat log. A merge accepts through `mergeThrough` inclusively; a
@@ -106,10 +106,10 @@ export function foldProposedChanges(
     if (message.type === "changes") {
       // An empty conversion boundary (see AiChatMessageBody.conversionBoundary) proposes
       // nothing: the chat had no uncommitted legacy content to convert, and the boundary alone
-      // must not make a read-only migrated chat show proposed changes. A boundary *with* an op
+      // must not make a read-only migrated chat show proposed changes. A boundary *with* a change
       // is an ordinary proposed batch.
-      if (!message.conversionBoundary || message.op !== undefined) {
-        proposed.push({sequence: message.sequence, op: message.op});
+      if (!message.conversionBoundary || message.change !== undefined) {
+        proposed.push({sequence: message.sequence, change: message.change});
       }
     } else if (message.type === "merge") {
       while (proposed.length > 0 && proposed[0].sequence <= message.mergeThrough) {
@@ -175,7 +175,7 @@ export function chatChangeStatuses(
  * the migration's pins (see git-migration.ts) fast-forwardable without a spurious
  * update-from-mainline round.
  *
- * Used by the git-storage migration's conversion anchor (the version its conversion op's pins
+ * Used by the git-storage migration's conversion anchor (the version its conversion change's pins
  * resolve at). Migration-internal: nothing else reads the legacy log anymore.
  */
 export function legacyChatBaseVersion(
@@ -435,19 +435,21 @@ export function buildCompactionState(
     }
   }
 
-  // Proposed ops stay addressable by sequence until a merge accepts them or a revert drops
+  // Proposed changes stay addressable by sequence until a merge accepts them or a revert drops
   // them; the checkpoint carries their composition so replay needn't load the compacted
   // messages. A carried-forward prefix is addressed below every message in this span: the
   // previous checkpoint already folded it, so nothing here can accept or revert part of it.
-  // Composition is bounded by content size, not edit count, so `proposedOp` can't grow with
+  // Composition is bounded by content size, not edit count, so `proposedChange` can't grow with
   // history the way merged CRDT updates could.
   let proposed = foldProposedChanges(
       compacted,
-      previous?.proposedOp !== undefined ? [{sequence: -1, op: previous.proposedOp}] : []);
-  let proposedOp: CodeOp | undefined;
+      previous?.proposedChange !== undefined
+          ? [{sequence: -1, change: previous.proposedChange}] : []);
+  let proposedChange: CodeChange | undefined;
   for (let batch of proposed) {
-    if (batch.op === undefined) continue;
-    proposedOp = proposedOp === undefined ? batch.op : composeCodeOp(proposedOp, batch.op);
+    if (batch.change === undefined) continue;
+    proposedChange = proposedChange === undefined
+        ? batch.change : composeCodeChange(proposedChange, batch.change);
   }
 
   return {
@@ -455,6 +457,6 @@ export function buildCompactionState(
     nextChangeId,
     pins: pins.size === 0 ? undefined : [...pins.values()],
     epoch,
-    proposedOp,
+    proposedChange,
   };
 }

@@ -27,9 +27,9 @@
       "types": "./src/external-message-gateway.ts",
       "import": "./src/external-message-gateway.ts"
     },
-    "./code-op": {
-      "types": "./src/code-op.ts",
-      "import": "./src/code-op.ts"
+    "./code-change": {
+      "types": "./src/code-change.ts",
+      "import": "./src/code-change.ts"
     },
     "./theme": {
       "types": "./src/theme.ts",

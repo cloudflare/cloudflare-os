@@ -5,13 +5,13 @@ import { StrictMode, act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { EditorView } from '@codemirror/view'
-import type { FileOp } from '@gadgets/workshop-shared/code-op'
+import type { FileChange } from '@gadgets/workshop-shared/code-change'
 import CodeDiffEditor from './CodeDiffEditor'
 import type { EditSession } from './CodeEditor'
 import { ThemeProvider } from './ThemeContext'
 
 // Mounts the diff editor with a fake EditSession to cover the component wiring: the
-// rAF-coalesced diff recompute, the -N +N pill, the deletion zones, and remote ops flowing
+// rAF-coalesced diff recompute, the -N +N pill, the deletion zones, and remote changes flowing
 // into both the document and the diff layer. Mounted under StrictMode like the real app
 // (main.tsx): its simulated unmount+remount runs effect cleanups against a component instance
 // that lives on, which is exactly what once wedged the recompute scheduler.
@@ -54,24 +54,24 @@ afterAll(() => {
 
 class FakeSession implements EditSession {
   readonly key = 'chat:1:file'
-  readonly applied: FileOp[] = []
-  private listeners = new Set<(op: FileOp) => void>()
+  readonly applied: FileChange[] = []
+  private listeners = new Set<(change: FileChange) => void>()
   constructor(private text: string | undefined) {}
   getText() {
     return this.text
   }
-  applyLocal(op: FileOp, docText: string) {
-    this.applied.push(op)
+  applyLocal(change: FileChange, docText: string) {
+    this.applied.push(change)
     this.text = docText
   }
-  subscribeRemote(cb: (op: FileOp) => void) {
+  subscribeRemote(cb: (change: FileChange) => void) {
     this.listeners.add(cb)
     return () => this.listeners.delete(cb)
   }
-  emitRemote(op: FileOp) {
-    if ('set' in op) this.text = op.set
-    if ('remove' in op) this.text = undefined
-    for (const listener of this.listeners) listener(op)
+  emitRemote(change: FileChange) {
+    if ('set' in change) this.text = change.set
+    if ('remove' in change) this.text = undefined
+    for (const listener of this.listeners) listener(change)
   }
 }
 
@@ -149,7 +149,7 @@ describe('CodeDiffEditor', () => {
     expect(container.textContent).toContain('+2')
   })
 
-  it('folds remote ops into the document and re-diffs', async () => {
+  it('folds remote changes into the document and re-diffs', async () => {
     const session = new FakeSession('hello\nthere')
     await mount(session, 'hello\nworld')
     await act(async () => {

@@ -44,7 +44,7 @@ import WorkpiecePicker, {
 import ChatInterface, {
   type ActiveFileTarget,
   type ChatCodeChanges,
-  type ChatLiveOpRows,
+  type ChatLiveChangeRows,
 } from './ChatInterface'
 import { formatOf } from './components/format/formats'
 import { FormatGlyph } from './components/format/FormatVisuals'
@@ -595,9 +595,9 @@ export default function GadgetEditor() {
   // base and the current epoch's recorded changes, plumbed from the chat subscription into the
   // code view, which layers them over the per-pin commit-derived doc base.
   const [chatChanges, setChatChanges] = useState<ChatCodeChanges | undefined>(undefined)
-  // The selected chat's live (unmaterialized) op row stream, stable per chat; the code view
-  // subscribes to it rather than reading rows through renders (see ChatLiveOpRows).
-  const [liveRows, setLiveRows] = useState<ChatLiveOpRows | undefined>(undefined)
+  // The selected chat's live (unmaterialized) change row stream, stable per chat; the code view
+  // subscribes to it rather than reading rows through renders (see ChatLiveChangeRows).
+  const [liveRows, setLiveRows] = useState<ChatLiveChangeRows | undefined>(undefined)
   const [streamingActiveFileState, setStreamingActiveFileState] = useState<{
     chatId: number
     file: ActiveFileTarget | null | undefined

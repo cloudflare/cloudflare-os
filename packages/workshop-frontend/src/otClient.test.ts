@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import type { CodeOpSubmission } from '@gadgets/workshop-shared/api'
-import { applyCodeOp, transformCodeOp, type CodeContent, type CodeOp }
-  from '@gadgets/workshop-shared/code-op'
-import { ChatOtClient, type ChatOpRow, type ChatOtClientDelegate, type RemoteFileEvent }
+import type { CodeChangeSubmission } from '@gadgets/workshop-shared/api'
+import { applyCodeChange, transformCodeChange, type CodeContent, type CodeChange }
+  from '@gadgets/workshop-shared/code-change'
+import { ChatOtClient, type ChatChangeRow, type ChatOtClientDelegate, type RemoteFileEvent }
   from './otClient'
 
 // Exercises the two-buffer client against a tiny in-test "server": submissions are captured,
@@ -18,8 +18,9 @@ function flush(ms = 5): Promise<void> {
 
 class TestHarness {
   commits = new Map<string, Map<string, string>>()
-  submissions: CodeOpSubmission[] = []
-  submitResult: (submission: CodeOpSubmission) => Promise<{ generation: number; revision: number }> =
+  submissions: CodeChangeSubmission[] = []
+  submitResult:
+      (submission: CodeChangeSubmission) => Promise<{ generation: number; revision: number }> =
     async () => ({ generation: 0, revision: 0 })
   discards = 0
   fatal: unknown = null
@@ -32,7 +33,7 @@ class TestHarness {
       if (!files) throw new Error(`no such commit: ${commitId}`)
       return files
     },
-    submitCodeOp: submission => {
+    submitCodeChange: submission => {
       this.submissions.push(submission)
       return this.submitResult(submission)
     },
@@ -50,17 +51,17 @@ function filesOf(content: CodeContent, gadgetId: number): Record<string, string>
   return Object.fromEntries(content.get(gadgetId) ?? [])
 }
 
-function row(generation: number, revision: number, op: CodeOp,
-             submission?: { clientId: string; seq: number }): ChatOpRow {
+function row(generation: number, revision: number, change: CodeChange,
+             submission?: { clientId: string; seq: number }): ChatChangeRow {
   return {
-    generation, revision, op,
+    generation, revision, change,
     author: submission ? AUTHOR : OTHER,
     ...(submission !== undefined ? { submission } : {}),
   }
 }
 
 describe('ChatOtClient', () => {
-  it('builds content from pin bases, the epoch op, and rows', async () => {
+  it('builds content from pin bases, the epoch change, and rows', async () => {
     const h = new TestHarness()
     h.commits.set('c1', new Map([['a.txt', 'abc']]))
     h.client.setDurableState({
@@ -68,7 +69,7 @@ describe('ChatOtClient', () => {
         pins: [{ gadgetId: 1, baseCommit: 'c1', mergedCommit: 'c1' }],
         generation: 0, revision: 2,
       },
-      epochOp: { 1: [['a.txt', { edit: [3, [0, '!']] }]] },  // append "!"
+      epochChange: { 1: [['a.txt', { edit: [3, [0, '!']] }]] },  // append "!"
       rowsThrough: 1,
     })
     h.client.pushRow(row(0, 2, { 1: [['b.txt', { set: 'new' }]] }))
@@ -98,7 +99,7 @@ describe('ChatOtClient', () => {
     await flush()
 
     h.client.ensureGadgetEditable(1, 'head', new Map([['a.txt', 'abc']]))
-    h.client.applyLocalOp({ 1: [['a.txt', { edit: [3, [0, 'd']] }]] })  // append "d"
+    h.client.applyLocalChange({ 1: [['a.txt', { edit: [3, [0, 'd']] }]] })  // append "d"
     expect(filesOf(h.client.getContent(), 1)).toEqual({ 'a.txt': 'abcd' })
 
     // Hold the RPC response so the echo row (which precedes it in reality) does the clearing.
@@ -112,7 +113,7 @@ describe('ChatOtClient', () => {
     expect(submission.pins).toEqual([{ gadgetId: 1, baseCommit: 'head' }])
     expect(h.client.hasLocalEdits()).toBe(true)
 
-    // The echo row (recognized by clientId/seq) folds the op into acked state.
+    // The echo row (recognized by clientId/seq) folds the change into acked state.
     h.client.setDurableState({
       codeBase: {
         pins: [{ gadgetId: 1, baseCommit: 'head', mergedCommit: 'head' }],
@@ -120,7 +121,7 @@ describe('ChatOtClient', () => {
       },
       rowsThrough: 0,
     })
-    h.client.pushRow(row(0, 1, submission.op,
+    h.client.pushRow(row(0, 1, submission.change,
                          { clientId: submission.clientId, seq: submission.seq }))
     await flush()
     expect(h.client.hasLocalEdits()).toBe(false)
@@ -137,7 +138,7 @@ describe('ChatOtClient', () => {
     // materialized while the client was disconnected, so no replay carries it).
     h.submitResult = async () => ({ generation: 0, revision: 1 })
     h.client.ensureGadgetEditable(1, 'head', new Map([['a.txt', 'abc']]))
-    h.client.applyLocalOp({ 1: [['a.txt', { edit: [3, [0, 'd']] }]] })
+    h.client.applyLocalChange({ 1: [['a.txt', { edit: [3, [0, 'd']] }]] })
     await flush()
 
     expect(h.submissions).toHaveLength(1)
@@ -146,7 +147,7 @@ describe('ChatOtClient', () => {
 
     // The next local edit submits normally at the advanced stream position.
     h.submitResult = async () => ({ generation: 0, revision: 2 })
-    h.client.applyLocalOp({ 1: [['a.txt', { edit: [4, [0, 'e']] }]] })
+    h.client.applyLocalChange({ 1: [['a.txt', { edit: [4, [0, 'e']] }]] })
     await flush()
     expect(h.submissions).toHaveLength(2)
     expect(h.submissions[1].revision).toBe(1)
@@ -163,12 +164,12 @@ describe('ChatOtClient', () => {
     await flush()
     expect(filesOf(h.client.getContent(), 1)).toEqual({ 'a.txt': 'x' })
 
-    // Rows 2..3 were materialized without ever being delivered: the snapshot's epochOp covers
+    // Rows 2..3 were materialized without ever being delivered: the snapshot's epochChange covers
     // them, and with no local edits at risk the client rebuilds right away -- no stall, no
     // discard notice.
     h.client.setDurableState({
       codeBase: { pins: [], generation: 0, revision: 3 },
-      epochOp: { 1: [['a.txt', { set: 'xyz' }]] },
+      epochChange: { 1: [['a.txt', { set: 'xyz' }]] },
       rowsThrough: 3,
     })
     await flush()
@@ -190,11 +191,11 @@ describe('ChatOtClient', () => {
 
     // An unacknowledged local edit is in flight when a watermark outruns the stream.
     h.submitResult = () => new Promise(() => {})
-    h.client.applyLocalOp({ 1: [['a.txt', { edit: [1, [0, 'L']] }]] })
+    h.client.applyLocalChange({ 1: [['a.txt', { edit: [1, [0, 'L']] }]] })
     await flush()
     h.client.setDurableState({
       codeBase: { pins: [], generation: 0, revision: 2 },
-      epochOp: { 1: [['a.txt', { set: 'xy' }]] },
+      epochChange: { 1: [['a.txt', { set: 'xy' }]] },
       rowsThrough: 2,
     })
     await flush(50)
@@ -225,24 +226,24 @@ describe('ChatOtClient', () => {
     })
     await flush()
 
-    // Local: insert "X" at the start. Hold the ack so the op stays in flight.
+    // Local: insert "X" at the start. Hold the ack so the change stays in flight.
     let releaseSubmit: () => void = () => {}
     h.submitResult = () => new Promise(resolve => {
       releaseSubmit = () => resolve({ generation: 0, revision: 2 })
     })
-    h.client.applyLocalOp({ 1: [['a.txt', { edit: [[0, 'X'], 3] }]] })
+    h.client.applyLocalChange({ 1: [['a.txt', { edit: [[0, 'X'], 3] }]] })
     await flush()
     expect(h.submissions).toHaveLength(1)
     const local = h.submissions[0]
 
     // A remote row (ordered first by the server): append "Y".
-    const remote: CodeOp = { 1: [['a.txt', { edit: [3, [0, 'Y']] }]] }
+    const remote: CodeChange = { 1: [['a.txt', { edit: [3, [0, 'Y']] }]] }
     h.client.pushRow(row(0, 1, remote))
     await flush()
     expect(filesOf(h.client.getContent(), 1)).toEqual({ 'a.txt': 'XabcY' })
 
-    // The server transforms the in-flight op over the remote row and broadcasts the result.
-    const serverSide = transformCodeOp(remote, local.op).b
+    // The server transforms the in-flight change over the remote row and broadcasts the result.
+    const serverSide = transformCodeChange(remote, local.change).b
     h.client.pushRow(row(0, 2, serverSide, { clientId: local.clientId, seq: local.seq }))
     releaseSubmit()
     await flush()
@@ -250,7 +251,7 @@ describe('ChatOtClient', () => {
     expect(h.client.hasLocalEdits()).toBe(false)
     // Server-side content: base + remote + transformed local == our display.
     const base: CodeContent = new Map([[1, new Map([['a.txt', 'abc']])]])
-    const serverContent = applyCodeOp(applyCodeOp(base, remote), serverSide)
+    const serverContent = applyCodeChange(applyCodeChange(base, remote), serverSide)
     expect(filesOf(h.client.getContent(), 1)).toEqual(filesOf(serverContent, 1))
   })
 
@@ -264,7 +265,7 @@ describe('ChatOtClient', () => {
     // The row materializes into a message: same content, expressed durably.
     h.client.setDurableState({
       codeBase: { pins: [], generation: 0, revision: 1 },
-      epochOp: { 1: [['a.txt', { set: 'x' }]] },
+      epochChange: { 1: [['a.txt', { set: 'x' }]] },
       rowsThrough: 1,
     })
     await flush()
@@ -280,7 +281,7 @@ describe('ChatOtClient', () => {
     await flush()
     h.submitResult = () => new Promise(() => {})  // never acked
     h.client.ensureGadgetEditable(1, 'head', new Map([['a.txt', 'abc']]))
-    h.client.applyLocalOp({ 1: [['a.txt', { edit: [3, [0, 'd']] }]] })
+    h.client.applyLocalChange({ 1: [['a.txt', { edit: [3, [0, 'd']] }]] })
     await flush()
 
     // A revert: generation bumps with no `prior`.
@@ -303,7 +304,7 @@ describe('ChatOtClient', () => {
         pins: [{ gadgetId: 1, baseCommit: 'head', mergedCommit: 'head' }],
         generation: 0, revision: 1,
       },
-      epochOp: { 1: [['a.txt', { edit: [3, [0, 'd']] }]] },
+      epochChange: { 1: [['a.txt', { edit: [3, [0, 'd']] }]] },
       rowsThrough: 1,
     })
     await flush()
@@ -311,7 +312,7 @@ describe('ChatOtClient', () => {
 
     // Local typing continues right as someone accepts the chat's changes.
     h.submitResult = () => new Promise(() => {})  // in flight across the boundary
-    h.client.applyLocalOp({ 1: [['a.txt', { edit: [4, [0, 'e']] }]] })
+    h.client.applyLocalChange({ 1: [['a.txt', { edit: [4, [0, 'e']] }]] })
     await flush()
     expect(h.submissions).toHaveLength(1)
     expect(h.submissions[0].generation).toBe(0)
@@ -341,7 +342,7 @@ describe('ChatOtClient', () => {
       },
       rowsThrough: 0,
     })
-    h.client.pushRow(row(1, 1, h.submissions[0].op,
+    h.client.pushRow(row(1, 1, h.submissions[0].change,
                          { clientId: h.submissions[0].clientId, seq: h.submissions[0].seq }))
     await flush()
     expect(h.client.hasLocalEdits()).toBe(false)
@@ -356,7 +357,7 @@ describe('ChatOtClient', () => {
         pins: [{ gadgetId: 1, baseCommit: 'head', mergedCommit: 'head' }],
         generation: 0, revision: 1,
       },
-      epochOp: { 1: [['a.txt', { edit: [3, [0, 'd']] }]] },
+      epochChange: { 1: [['a.txt', { edit: [3, [0, 'd']] }]] },
       rowsThrough: 1,
     })
     await flush()
@@ -364,7 +365,7 @@ describe('ChatOtClient', () => {
     // Type... but block the submission from leaving until after the merge lands, so the edit
     // is still a pending (never-submitted) buffer at switch time.
     h.submitResult = () => new Promise(() => {})
-    h.client.applyLocalOp({ 1: [['a.txt', { edit: [4, [0, 'e']] }]] })
+    h.client.applyLocalChange({ 1: [['a.txt', { edit: [4, [0, 'e']] }]] })
     h.client.setDurableState({
       codeBase: {
         pins: [], generation: 1, revision: 0,
@@ -384,7 +385,7 @@ describe('ChatOtClient', () => {
     expect(filesOf(h.client.getContent(), 1)).toEqual({ 'a.txt': 'abcde' })
   })
 
-  it('drops pending ops touching discontinuous gadgets at an epoch reset', async () => {
+  it('drops pending changes touching discontinuous gadgets at an epoch reset', async () => {
     const h = new TestHarness()
     h.commits.set('h1', new Map([['a.txt', 'abc']]))
     h.commits.set('h2', new Map([['b.txt', 'xyz']]))
@@ -400,10 +401,10 @@ describe('ChatOtClient', () => {
     })
     await flush()
     h.submitResult = () => new Promise(() => {})
-    h.client.applyLocalOp({ 2: [['b.txt', { edit: [3, [0, 'w']] }]] })
+    h.client.applyLocalChange({ 2: [['b.txt', { edit: [3, [0, 'w']] }]] })
     await flush()  // the gadget-2 edit is now in flight...
     // ...so this gadget-1 edit stays pending behind it.
-    h.client.applyLocalOp({ 1: [['a.txt', { edit: [3, [0, 'd']] }]] })
+    h.client.applyLocalChange({ 1: [['a.txt', { edit: [3, [0, 'd']] }]] })
     await flush()
 
     // Gadget 1's pin evaporated with content differing from head: bridge-ineligible.
@@ -416,7 +417,7 @@ describe('ChatOtClient', () => {
     })
     await flush()
 
-    // The pending ops on the discontinuous gadget were dropped proactively (the server would
+    // The pending changes on the discontinuous gadget were dropped proactively (the server would
     // reject them as bridge-ineligible); the clean in-flight edit carried across.
     expect(h.discards).toBe(1)
     expect(h.client.hasGadget(1)).toBe(false)
@@ -435,7 +436,7 @@ describe('ChatOtClient', () => {
     })
     await flush()
     h.submitResult = () => new Promise(() => {})
-    h.client.applyLocalOp({ 1: [['a.txt', { edit: [3, [0, 'd']] }]] })
+    h.client.applyLocalChange({ 1: [['a.txt', { edit: [3, [0, 'd']] }]] })
     await flush()
 
     h.client.setDurableState({
@@ -470,7 +471,7 @@ describe('ChatOtClient', () => {
       return { generation: 0, revision: 1 }
     }
     h.client.ensureGadgetEditable(1, 'head', new Map([['a.txt', 'abc']]))
-    h.client.applyLocalOp({ 1: [['a.txt', { edit: [3, [0, 'd']] }]] })
+    h.client.applyLocalChange({ 1: [['a.txt', { edit: [3, [0, 'd']] }]] })
     await flush()
     expect(h.dirty).toContain(true)
     await done  // the retry (after backoff) succeeds
@@ -489,7 +490,7 @@ describe('ChatOtClient', () => {
 
     h.submitResult = async () => { throw new Error('pin conflict') }
     h.client.ensureGadgetEditable(1, 'head', new Map([['a.txt', 'abc']]))
-    h.client.applyLocalOp({ 1: [['a.txt', { edit: [3, [0, 'd']] }]] })
+    h.client.applyLocalChange({ 1: [['a.txt', { edit: [3, [0, 'd']] }]] })
     await flush()
     expect(h.discards).toBe(1)
     expect(h.client.hasGadget(1)).toBe(false)
@@ -497,7 +498,7 @@ describe('ChatOtClient', () => {
     // The next local edit starts a fresh client session.
     h.submitResult = async () => ({ generation: 0, revision: 1 })
     h.client.ensureGadgetEditable(1, 'head', new Map([['a.txt', 'abc']]))
-    h.client.applyLocalOp({ 1: [['a.txt', { edit: [3, [0, 'x']] }]] })
+    h.client.applyLocalChange({ 1: [['a.txt', { edit: [3, [0, 'x']] }]] })
     await flush()
     expect(h.submissions).toHaveLength(2)
     expect(h.submissions[1].clientId).not.toBe(h.submissions[0].clientId)

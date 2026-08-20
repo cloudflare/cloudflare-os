@@ -6,22 +6,22 @@ import {
   foldProposedChanges, getModelTokenLimits, isCompactionTurn, protectRetainedReverts,
   shouldCompactChat, startsAgentTurn,
 } from "../src/agent-compaction";
-import {applyCodeOp, type CodeOp} from "@gadgets/workshop-shared/code-op";
+import {applyCodeChange, type CodeChange} from "@gadgets/workshop-shared/code-change";
 import type {Api, AssistantMessage, Message, Model} from "@earendil-works/pi-ai";
 import type {ChatBindingEntry} from "../src/agent";
 
 const user: AiChatAuthorInfo = {type: "user", id: "user", name: "User"};
 const agent: AiChatAuthorInfo = {type: "agent", id: "model", name: "Agent"};
 
-// A batch's code op: sets one file of gadget 1.
-function op(content: string, filename = "file.js"): CodeOp {
+// A batch's code change: sets one file of gadget 1.
+function codeChange(content: string, filename = "file.js"): CodeChange {
   return {1: [[filename, {set: content}]]};
 }
 
-// The files a composed op produces, naming which batches were folded into it.
-function filesIn(composed: CodeOp | undefined): string[] {
+// The files a composed change produces, naming which batches were folded into it.
+function filesIn(composed: CodeChange | undefined): string[] {
   if (composed === undefined) return [];
-  let content = applyCodeOp(new Map(), composed);
+  let content = applyCodeChange(new Map(), composed);
   return [...(content.get(1)?.keys() ?? [])].toSorted();
 }
 
@@ -263,7 +263,7 @@ describe("compaction boundary", () => {
 describe("retained reverts", () => {
   it("keeps a revert together with the changes it names", () => {
     let messages: AiChatMessage[] = [
-      record(2, agent, {type: "changes", op: op("a")}),
+      record(2, agent, {type: "changes", change: codeChange("a")}),
       record(5, user, {type: "revert", revertFrom: 2}),
     ];
 
@@ -307,7 +307,7 @@ describe("compaction checkpoint state", () => {
           input: {workpiece: "APP", filename: "server.js"},
         }],
       },
-      record(2, agent, {type: "changes", op: op("a")}),
+      record(2, agent, {type: "changes", change: codeChange("a")}),
     ];
 
     let state = buildState(messages, 3);
@@ -316,31 +316,31 @@ describe("compaction checkpoint state", () => {
       ["DOCS", {type: "workpiece", id: 7}],
     ]);
     expect(state.nextChangeId).toBe(1);
-    expect(state.proposedOp).toBeDefined();
+    expect(state.proposedChange).toBeDefined();
   });
 
   // Accepted changes live in commits from their epoch-closing merge on, so the checkpoint
   // carries only the still-proposed composition.
   it("drops accepted changes, composing only still-proposed ones", () => {
     let messages: AiChatMessage[] = [
-      record(0, agent, {type: "changes", op: op("a", "accepted.js")}),
-      record(1, agent, {type: "changes", op: op("b", "proposed.js")}),
+      record(0, agent, {type: "changes", change: codeChange("a", "accepted.js")}),
+      record(1, agent, {type: "changes", change: codeChange("b", "proposed.js")}),
       record(2, user, {type: "merge", mergeThrough: 0, commits: [], epochBoundary: true}),
     ];
 
     let state = buildState(messages, 3);
-    expect(filesIn(state.proposedOp)).toEqual(["proposed.js"]);
+    expect(filesIn(state.proposedChange)).toEqual(["proposed.js"]);
   });
 
   it("keeps a change merged at the boundary sequence when a later revert lands", () => {
     let messages: AiChatMessage[] = [
-      record(0, agent, {type: "changes", op: op("a")}),
+      record(0, agent, {type: "changes", change: codeChange("a")}),
       record(1, user, {type: "merge", mergeThrough: 0, version: 2, commits: []}),
       record(2, user, {type: "revert", revertFrom: 0}),
     ];
 
     let state = buildState(messages, 3);
-    expect(state.proposedOp).toBeUndefined();
+    expect(state.proposedChange).toBeUndefined();
   });
 
   // A creation-only batch leaves no Y.Doc update, so the checkpoint has nothing to carry for it --
@@ -356,7 +356,7 @@ describe("compaction checkpoint state", () => {
     ], 1);
 
     expect(state.chatBindings).toContainEqual(["NEW", {type: "workpiece", id: 2}]);
-    expect(state.proposedOp).toBeUndefined();
+    expect(state.proposedChange).toBeUndefined();
     // It still counts as a batch, so change IDs stay sequential across the boundary.
     expect(state.nextChangeId).toBe(1);
   });
@@ -364,13 +364,13 @@ describe("compaction checkpoint state", () => {
   it("carries a previous checkpoint's proposed state forward", () => {
     let previous = {
       chatId: 1, compactedTo: 3, summary: "earlier",
-      ...buildState([record(0, agent, {type: "changes", op: op("a")})], 1),
+      ...buildState([record(0, agent, {type: "changes", change: codeChange("a")})], 1),
     };
 
     let next = buildCompactionState(
-        [message(3, user, "more"), record(4, agent, {type: "changes", op: op("b")})],
+        [message(3, user, "more"), record(4, agent, {type: "changes", change: codeChange("b")})],
         5, initialBindings, previous);
-    expect(next.proposedOp).toBeDefined();
+    expect(next.proposedChange).toBeDefined();
     expect(next.nextChangeId).toBe(2);
   });
 
@@ -379,13 +379,13 @@ describe("compaction checkpoint state", () => {
   it("accepts a carried-forward prefix when a later merge covers it", () => {
     let previous = {
       chatId: 1, compactedTo: 2, summary: "earlier",
-      ...buildState([record(0, agent, {type: "changes", op: op("a")})], 1),
+      ...buildState([record(0, agent, {type: "changes", change: codeChange("a")})], 1),
     };
 
     let next = buildCompactionState(
         [record(2, user, {type: "merge", mergeThrough: 2, commits: [], epochBoundary: true})],
         3, initialBindings, previous);
-    expect(next.proposedOp).toBeUndefined();
+    expect(next.proposedChange).toBeUndefined();
   });
 
   const pin7 = {gadgetId: 7, baseCommit: "a".repeat(40)};
@@ -393,8 +393,8 @@ describe("compaction checkpoint state", () => {
 
   it("records the pins active at the boundary, dropping reverted declarations", () => {
     let state = buildState([
-      record(0, agent, {type: "changes", op: op("a"), pins: [pin7]}),
-      record(1, agent, {type: "changes", op: op("b"), pins: [pin9]}),
+      record(0, agent, {type: "changes", change: codeChange("a"), pins: [pin7]}),
+      record(1, agent, {type: "changes", change: codeChange("b"), pins: [pin9]}),
       record(2, user, {type: "revert", revertFrom: 1}),
     ], 3);
 
@@ -405,7 +405,8 @@ describe("compaction checkpoint state", () => {
   it("resets pins at an epoch boundary, recording the epoch", () => {
     let previous = {
       chatId: 1, compactedTo: 1, summary: "earlier",
-      ...buildState([record(0, agent, {type: "changes", op: op("a"), pins: [pin7]})], 1),
+      ...buildState(
+          [record(0, agent, {type: "changes", change: codeChange("a"), pins: [pin7]})], 1),
     };
     expect(previous.pins).toEqual([pin7]);
 
@@ -414,34 +415,35 @@ describe("compaction checkpoint state", () => {
         type: "merge", mergeThrough: 1, commits: [{gadgetId: 7, commitId: "c".repeat(40)}],
         epochBoundary: true,
       }),
-      record(2, agent, {type: "changes", op: op("b"), pins: [pin9]}),
+      record(2, agent, {type: "changes", change: codeChange("b"), pins: [pin9]}),
     ], 3, initialBindings, previous);
 
     expect(next.pins).toEqual([pin9]);
     expect(next.epoch).toBe(1);
-    expect(filesIn(next.proposedOp)).toEqual(["file.js"]);
+    expect(filesIn(next.proposedChange)).toEqual(["file.js"]);
   });
 
-  it("an empty conversion boundary proposes nothing; one with an op is a normal batch", () => {
-    // A read-only migrated chat's boundary (no op, no pins) must not surface as a proposed
+  it("an empty conversion boundary proposes nothing; one with a change is a normal batch", () => {
+    // A read-only migrated chat's boundary (no change, no pins) must not surface as a proposed
     // change, while a boundary carrying converted content is an ordinary batch that merges and
     // reverts like any other.
     expect(foldProposedChanges([
       record(0, user, {type: "changes", conversionBoundary: true}),
     ])).toEqual([]);
     let proposed = foldProposedChanges([
-      record(0, user, {type: "changes", conversionBoundary: true, op: op("a")}),
+      record(0, user, {type: "changes", conversionBoundary: true, change: codeChange("a")}),
     ]);
     expect(proposed.map(batch => batch.sequence)).toEqual([0]);
   });
 
   it("treats a conversion boundary as an epoch boundary for pins and the epoch", () => {
     // A migrated chat's conversionBoundary changes message re-seeds the content at (pin bases +
-    // its op), so a checkpoint past one records the boundary as the epoch and only pins
+    // its change), so a checkpoint past one records the boundary as the epoch and only pins
     // established at or after it.
     let state = buildState([
-      record(0, agent, {type: "changes", op: op("a"), pins: [pin7]}),
-      record(1, user, {type: "changes", op: op("b"), pins: [pin9], conversionBoundary: true}),
+      record(0, agent, {type: "changes", change: codeChange("a"), pins: [pin7]}),
+      record(1, user,
+             {type: "changes", change: codeChange("b"), pins: [pin9], conversionBoundary: true}),
     ], 2);
 
     expect(state.pins).toEqual([pin9]);
@@ -477,8 +479,8 @@ describe("summary prompt", () => {
 describe("boundary arithmetic", () => {
   it("summarizes strictly below the boundary and retains from it", () => {
     let messages: AiChatMessage[] = [
-      record(0, agent, {type: "changes", op: op("a")}),
-      record(1, agent, {type: "changes", op: op("b")}),
+      record(0, agent, {type: "changes", change: codeChange("a")}),
+      record(1, agent, {type: "changes", change: codeChange("b")}),
     ];
 
     // compactedTo 1 folds sequence 0 only, so one batch is left for the tail to carry.
