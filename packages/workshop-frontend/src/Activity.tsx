@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Switch, useKumoToastManager } from '@cloudflare/kumo'
 import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
-import { ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
+import { ActionHistoryFilter, ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
 import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle } from './components/HookToggle'
 import { AlwaysApproveButton, ResolveButton } from './components/ResolveButton'
 import { WorkshopButton } from './components/WorkshopControls'
 import { useActions } from './useActions'
+import { useActionHistory } from './useActionHistory'
 import { useAutoApproval, autoApprovalKey, type AutoApprovalEntry } from './useAutoApproval'
 import { useAlwaysApproveTag } from './useAlwaysApproveTag'
 import { useAuthenticatedApi } from './AuthContext'
@@ -19,8 +20,6 @@ import { safeExternalUrl } from './utils/safeExternalUrl'
 import AutoApproveConfirmDialog from './components/AutoApproveConfirmDialog'
 
 export type ActivityView = 'review' | 'history' | 'auto'
-
-type HistoryFilter = 'all' | ActionLogEntry['type']
 
 const PANE_BAR = 'flex h-9 flex-shrink-0 items-center border-b border-kumo-line'
 
@@ -34,7 +33,7 @@ interface ActivityProps {
   autoApproveReloadTrigger?: number
 }
 
-const HISTORY_FILTERS: { value: HistoryFilter; label: string }[] = [
+const HISTORY_FILTERS: { value: ActionHistoryFilter; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'action', label: 'Actions' },
   { value: 'observation', label: 'Observations' },
@@ -117,7 +116,7 @@ export default function Activity({
   autoApproveReloadTrigger,
 }: ActivityProps) {
   const { actionsById, isReady } = useActions(overseer)
-  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
+  const [historyFilter, setHistoryFilter] = useState<ActionHistoryFilter>('all')
   const [processingActions, setProcessingActions] = useState<Set<number>>(new Set())
   const [togglingHooks, setTogglingHooks] = useState<Set<number>>(new Set())
   const [expandedActionId, setExpandedActionId] = useState<number | null>(null)
@@ -130,30 +129,26 @@ export default function Activity({
   } | null>(null)
   const toasts = useKumoToastManager()
 
-  const { pendingActions, historyGroups, historyTotal, historyShown } = useMemo(() => {
-    const records = [...actionsById.values()]
-    const pending = records
+  const pendingActions = useMemo(() =>
+    [...actionsById.values()]
       .filter(record => record.state === 'pending')
-      .toSorted((a, b) => timeValue(a.createdAt) - timeValue(b.createdAt) || a.id - b.id)
-    const resolved = records.filter(record => record.state !== 'pending')
-    const filtered = resolved
-      .filter(record => historyFilter === 'all' || record.type === historyFilter)
-      .toSorted((a, b) =>
-        timeValue(b.appliedAt ?? b.createdAt) - timeValue(a.appliedAt ?? a.createdAt) || b.id - a.id)
+      .toSorted((a, b) => timeValue(a.createdAt) - timeValue(b.createdAt) || a.id - b.id),
+  [actionsById])
+
+  const history = useActionHistory(overseer, historyFilter, view === 'history')
+
+  // Grouped by day in id order (newest first). A day label can repeat when resolution order
+  // differs from creation order — accepted for a paged, creation-ordered log.
+  const historyGroups = useMemo(() => {
     const groups: { label: string; records: ActionLogEntry[] }[] = []
-    for (const record of filtered) {
+    for (const record of history.entries) {
       const label = dayLabel(record.appliedAt ?? record.createdAt)
       const last = groups.at(-1)
       if (last?.label === label) last.records.push(record)
       else groups.push({ label, records: [record] })
     }
-    return {
-      pendingActions: pending,
-      historyGroups: groups,
-      historyTotal: resolved.length,
-      historyShown: filtered.length,
-    }
-  }, [actionsById, historyFilter])
+    return groups
+  }, [history.entries])
 
   const resolveAction = useResolveAction(overseer, setProcessingActions)
 
@@ -268,32 +263,12 @@ export default function Activity({
               </button>
             ))}
             <span className="ml-auto pr-2 text-[11.5px] leading-[17px] tabular-nums text-kumo-inactive">
-              {historyShown} {historyShown === 1 ? 'event' : 'events'}
+              {history.loadedCount} loaded
             </span>
 
           </div>
 
-          {historyTotal === 0 ? (
-            <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-              <p className="m-0 text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
-                No activity yet
-              </p>
-              <p className="mt-1 max-w-xs text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-                Every resource an agent reads or changes is recorded here.
-              </p>
-            </div>
-          ) : historyShown === 0 ? (
-            <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-              <p className="m-0 text-[13px] font-medium text-kumo-default">No matching events</p>
-              <button
-                type="button"
-                onClick={() => setHistoryFilter('all')}
-                className="mt-1.5 cursor-pointer text-[12px] font-medium text-kumo-subtle hover:text-kumo-default"
-              >
-                Show all activity
-              </button>
-            </div>
-          ) : (
+          {history.entries.length > 0 ? (
             <div className="min-h-0 flex-1 overflow-auto">
               <div className="grid grid-cols-[54px_minmax(0,1fr)_auto_16px] items-center gap-3 border-b border-kumo-line bg-kumo-elevated/50 px-5 py-1.5 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive">
                 <span>Time</span>
@@ -302,7 +277,7 @@ export default function Activity({
                 <span />
               </div>
               {historyGroups.map(group => (
-                <section key={group.label}>
+                <section key={group.records[0].id}>
                   <h3 className="sticky top-0 m-0 border-b border-kumo-line bg-kumo-base/90 px-5 py-1 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive backdrop-blur-sm">
                     {group.label}
                   </h3>
@@ -320,6 +295,62 @@ export default function Activity({
                   ))}
                 </section>
               ))}
+              {history.hasMore && (
+                <div className="flex justify-center py-3">
+                  <WorkshopButton onClick={history.loadMore} disabled={history.isLoadingMore}>
+                    {history.isLoadingMore ? 'Loading…' : 'Load older'}
+                  </WorkshopButton>
+                </div>
+              )}
+            </div>
+          ) : history.status === 'error' ? (
+            <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+              <p className="m-0 text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
+                Could not load activity
+              </p>
+              <WorkshopButton className="mt-4" onClick={history.loadMore}>
+                Retry
+              </WorkshopButton>
+            </div>
+          ) : history.hasMore ? (
+            // Idle/loading, or the newest span of the bounded scan held nothing that matches.
+            history.status === 'ready' ? (
+              <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+                <p className="m-0 text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
+                  Nothing in the most recent activity
+                </p>
+                <WorkshopButton
+                  className="mt-4"
+                  onClick={history.loadMore}
+                  disabled={history.isLoadingMore}
+                >
+                  {history.isLoadingMore ? 'Loading…' : 'Load older'}
+                </WorkshopButton>
+              </div>
+            ) : (
+              <div className="flex flex-1 items-center justify-center text-[13px] text-kumo-subtle">
+                Loading activity…
+              </div>
+            )
+          ) : historyFilter === 'all' ? (
+            <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+              <p className="m-0 text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
+                No activity yet
+              </p>
+              <p className="mt-1 max-w-xs text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
+                Every resource an agent reads or changes is recorded here.
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+              <p className="m-0 text-[13px] font-medium text-kumo-default">No matching events</p>
+              <button
+                type="button"
+                onClick={() => setHistoryFilter('all')}
+                className="mt-1.5 cursor-pointer text-[12px] font-medium text-kumo-subtle hover:text-kumo-default"
+              >
+                Show all activity
+              </button>
             </div>
           )}
         </>
