@@ -69,14 +69,18 @@ const WAKE_PROBE_MIN_IDLE_MS = 15000;
 const subscribers = new Set<() => void>();
 const notifySubscribers = () => subscribers.forEach(cb => cb());
 let isConnectionLost = false;
-let reconnecting = false;
 let probing = false;
 let lastProvenAt = Date.now();
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> =>
-  Promise.race([promise, sleep(ms).then((): never => { throw new Error(`timed out after ${ms}ms`); })]);
+const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+};
 
 function getBackendHost(): string {
   // Only the Vite dev server is hosted separately from the backend. Built assets are served from
@@ -91,7 +95,9 @@ function startConnection(): RpcStub<PublicApi> {
   lastConnectTime = Date.now();
   const apiHost = getBackendHost();
   const wsUrl = (window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + apiHost + '/api';
-  return newWebSocketRpcSession<PublicApi>(wsUrl);
+  const stub = newWebSocketRpcSession<PublicApi>(wsUrl);
+  stub.onRpcBroken(handleBroken);
+  return stub;
 }
 
 const disposeQuietly = (stub: RpcStub<PublicApi>) => {
@@ -121,9 +127,7 @@ async function reconnect(): Promise<RpcStub<PublicApi>> {
       continue;
     }
 
-    candidate.onRpcBroken(handleBroken);
     lastProvenAt = Date.now();
-    reconnecting = false;
     isConnectionLost = false;
     console.warn('RPC connection restored.');
     notifySubscribers();
@@ -134,11 +138,10 @@ async function reconnect(): Promise<RpcStub<PublicApi>> {
 // Subscribers hear exactly twice per outage — lost here, restored in `reconnect` — because
 // `currentStub` is replaced once, by a promise, rather than once per attempt.
 function handleBroken(error: unknown) {
-  if (reconnecting) return;  // stale/disposed stub, or recovery already underway
-  reconnecting = true;
+  if (isConnectionLost) return;  // stale/disposed stub, or recovery already underway
+  isConnectionLost = true;
 
   console.warn('RPC connection lost:', error);
-  isConnectionLost = true;
 
   // Publish a stub for the connection we have not made yet, so the dead one stops being reachable
   // immediately. capnweb queues calls pipelined onto an unresolved `RpcPromise` and delivers them,
@@ -153,14 +156,14 @@ function handleBroken(error: unknown) {
 // tab-visible / network-online signals probe the connection instead of letting the user's next
 // action hang on a zombie socket.
 async function probeOnWake() {
-  if (reconnecting || probing || Date.now() - lastProvenAt < WAKE_PROBE_MIN_IDLE_MS) return;
+  if (isConnectionLost || probing || Date.now() - lastProvenAt < WAKE_PROBE_MIN_IDLE_MS) return;
   probing = true;
   const suspect = currentStub;
   try {
     await withTimeout(suspect.ping(), WAKE_PROBE_TIMEOUT_MS);
     lastProvenAt = Date.now();
   } catch (error) {
-    if (currentStub !== suspect || reconnecting) return;  // a real broken event won the race
+    if (currentStub !== suspect || isConnectionLost) return;  // a real broken event won the race
     console.warn('Connection unresponsive after wake:', error);
     // Disposal fires onRpcBroken → handleBroken recovers. Its skip-first-backoff path retries
     // immediately — right for "the network just came back".
@@ -178,7 +181,6 @@ window.addEventListener('online', () => void probeOnWake());
 // Current stub. handleBroken() will replace this on disconnect.
 installWorkshopErrorReporting()
 let currentStub = startConnection();
-currentStub.onRpcBroken(handleBroken);
 
 const router = createRouter()
 applyStoredThemeMode()
