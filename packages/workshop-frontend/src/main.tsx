@@ -1,7 +1,7 @@
 import { StrictMode, useState, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import { RouterProvider } from '@tanstack/react-router'
-import { RpcStub, newWebSocketRpcSession } from 'capnweb'
+import { RpcPromise, RpcStub, newWebSocketRpcSession } from 'capnweb'
 import { PublicApi, ServerConfig } from '@gadgets/workshop-shared/api'
 import { RpcContext } from './RpcContext'
 import { ServerConfigContext, ServerConfigErrorContext } from './ServerConfigContext'
@@ -98,18 +98,10 @@ const disposeQuietly = (stub: RpcStub<PublicApi>) => {
   try { stub[Symbol.dispose](); } catch { /* already broken */ }
 };
 
-// A reconnect attempt only becomes `currentStub` after a probe RPC round-trips: capnweb queues
-// sends while the socket is still CONNECTING, so an unproven stub looks fine until everything
-// pipelined onto it fails at once. Proving first means subscribers hear exactly twice per
-// outage — lost, then restored — instead of once per failed attempt.
-async function handleBroken(error: unknown) {
-  if (reconnecting) return;  // stale/disposed stub, or recovery already underway
-  reconnecting = true;
-
-  console.warn('RPC connection lost:', error);
-  isConnectionLost = true;
-  notifySubscribers();  // `currentStub` stays the dead one, so stub-keyed effects don't re-fire
-
+// Connects with jittered backoff until a candidate answers a probe, and resolves only to that
+// proven connection: capnweb queues sends while a socket is still CONNECTING, so an unproven stub
+// looks fine right up until everything pipelined onto it fails at once.
+async function reconnect(): Promise<RpcStub<PublicApi>> {
   // Fast recovery from one-off blips: skip the first backoff if the dying connection was up a while.
   let skipSleep = Date.now() - lastConnectTime >= INITIAL_BACKOFF_MS;
   let backoff = INITIAL_BACKOFF_MS;
@@ -130,14 +122,31 @@ async function handleBroken(error: unknown) {
     }
 
     candidate.onRpcBroken(handleBroken);
-    currentStub = candidate;
     lastProvenAt = Date.now();
     reconnecting = false;
     isConnectionLost = false;
     console.warn('RPC connection restored.');
     notifySubscribers();
-    return;
+    return candidate;
   }
+}
+
+// Subscribers hear exactly twice per outage — lost here, restored in `reconnect` — because
+// `currentStub` is replaced once, by a promise, rather than once per attempt.
+function handleBroken(error: unknown) {
+  if (reconnecting) return;  // stale/disposed stub, or recovery already underway
+  reconnecting = true;
+
+  console.warn('RPC connection lost:', error);
+  isConnectionLost = true;
+
+  // Publish a stub for the connection we have not made yet, so the dead one stops being reachable
+  // immediately. capnweb queues calls pipelined onto an unresolved `RpcPromise` and delivers them,
+  // in order, once it resolves — so work issued during the outage waits for the replacement
+  // instead of failing against a socket known to be gone. The `RpcPromise` takes ownership of its
+  // resolution, keeping the proven stub on a single disposal path.
+  currentStub = new RpcPromise<PublicApi>(reconnect());
+  notifySubscribers();
 }
 
 // Passive close detection misses sockets killed during laptop sleep or tab throttling, so on
