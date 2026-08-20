@@ -1,20 +1,19 @@
 // The operational-transform representation of uncommitted code changes.
 //
-// A chat's uncommitted state is (will be, once the op-stream protocol replaces the Yjs one) a
-// sequence of `CodeOp`s applied on top of committed gadget code (see ChatCodeBase in the API):
-// every producer -- human keystrokes, agent tool edits, update-from-mainline merges -- expresses
-// its change as an op against the chat content as of some revision, and the Overseer serializes
-// them into one revisioned stream per chat. Unlike a CRDT update, an op carries no base content
-// and no identity graph: it is purely "a change relative to revision N", which is what makes it
+// A chat's uncommitted state is a sequence of `CodeOp`s applied on top of committed gadget code
+// (see ChatCodeBase in the API): every producer -- human keystrokes, agent tool edits,
+// update-from-mainline merges -- expresses its change as an op against the chat content as of
+// some revision, and the server serializes them into one revisioned stream per chat. An op
+// carries no base content, only "a change relative to revision N", which is what lets it
 // compose with git-backed storage (the base is always some commit's tree plus earlier ops).
 //
 // This module is the single owner of the op invariants: the wire types, application,
 // composition, transformation, diffing, the ingestion validation, and the priority convention
 // all live here and nowhere else. The text-OT core is `@codemirror/state`'s ChangeSet (the
-// substrate of @codemirror/collab), and op generation uses `fast-diff`; both are module-private
-// implementation details on the server, the same way git-store.ts privatizes isomorphic-git --
-// invariant ownership, not a swappability shim. The wire carries our own plain-JSON types
-// (structurally ChangeSet's compact JSON form), keeping the RPC contract self-describing.
+// substrate of @codemirror/collab), and op generation uses `fast-diff`; both are private to
+// this module -- not because they might be swapped out, but so the invariants stay in one
+// place. The wire carries our own plain-JSON types (structurally ChangeSet's compact JSON
+// form), keeping the RPC contract self-describing.
 //
 // Priority convention (fixed here, used identically on both sides of the wire): for two ops
 // made concurrently against the same revision, *the op the server ordered earlier comes first*
@@ -32,10 +31,11 @@
 // Validation's resource-exhaustion goal is deliberately modest: reject anything the caps rule
 // out in at most one linear pass over input the RPC layer already parsed (with cheap early
 // exits where they fall out naturally), and no more. Op producers hold edit rights, and a user
-// who can edit the workspace can do far worse than burn its DO's CPU; the isolate memory limit
-// bounds the blast radius. The size caps exist first for correctness -- composed ops become
-// stored rows and RPC messages, which have hard size limits of their own -- not as a DoS
-// defense, so don't grow this file chasing sub-linear rejection of every hostile shape.
+// who can edit the workspace can do far worse than burn the workspace server's CPU; the
+// isolate memory limit bounds the blast radius. The size caps exist first for correctness --
+// composed ops get stored and travel in RPC messages, both of which have hard size limits of
+// their own -- not as a DoS defense, so don't grow this file chasing sub-linear rejection of
+// every hostile shape.
 
 import { ChangeSet, Text } from "@codemirror/state";
 import fastDiff from "fast-diff";
@@ -81,16 +81,15 @@ export type FileOp = { edit: TextOp } | { set: string } | { remove: true };
  * content can legitimately contain a file named `__proto__` or `constructor`), and such names
  * must never be object keys on the wire -- Cap'n Web deletes prototype-shadowing keys (and
  * `toJSON`) from every object it deserializes, so a path-keyed map would silently lose those
- * files in RPC transit, and a plain `__proto__` assignment corrupts the object being built
- * besides. Gadget ids are safe as keys precisely because the canonical-decimal rule excludes
- * every such name.
+ * files in RPC transit. Gadget ids are safe as keys precisely because the canonical-decimal
+ * rule excludes every such name.
  */
 export type CodeOp = { [gadgetId: string]: [path: string, op: FileOp][] };
 
 // =======================================================================================
 // Content model
 
-/** One gadget's file contents: `path -> text`, the same shape git-store's commit trees flatten to. */
+/** One gadget's file contents: `path -> text`, the same flattened shape Overseer.getCodeAtCommit() returns. */
 export type GadgetFiles = Map<string, string>;
 
 /**
@@ -106,8 +105,8 @@ export type CodeContent = Map<number, GadgetFiles>;
 /**
  * Maximum length, in UTF-16 code units, of a single file's text that an op may produce (a
  * `set`'s content or an `edit`'s after-length). Backstop, not a product limit: gadget files are
- * source code, and each becomes one git loose object in a storage record capped at 2MB (see
- * git-store.ts) -- 512K code units stays under that even for incompressible worst-case UTF-8.
+ * source code, and each must fit in a git storage record capped at 2MB -- 512K code units stays
+ * under that even for incompressible worst-case UTF-8.
  */
 export const MAX_FILE_TEXT_LENGTH = 512 * 1024;
 
@@ -123,11 +122,9 @@ export const MAX_FILE_PATH_LENGTH = 1024;
  * Maximum total size of one `CodeOp`, measured as a proxy for its serialized size: each file
  * entry costs a fixed overhead plus its path length plus its payload -- a `set`'s content
  * length, or an `edit`'s weighted section count plus its inserted-text length (`remove` costs
- * nothing beyond the overhead). Counting entries and sections, not just inserted text, is what
- * bounds stored op rows, RPC messages, and transform work even for ops made of many
- * payload-free parts (mass removes, zero-progress edit sections). `validateCodeOpSchema`
- * enforces it as a running budget, rejecting an oversized op before walking (or re-parsing) the
- * rest of it.
+ * nothing beyond the overhead). Counting entries and sections, not just inserted text, bounds
+ * storage, RPC messages, and transform work even for ops made of many payload-free parts (mass
+ * removes). Enforced by `validateCodeOpSchema`.
  */
 export const MAX_CODE_OP_SIZE = 2 * 1024 * 1024;
 
@@ -278,13 +275,14 @@ export interface TransformedCodeOps {
  * the side the server ordered *earlier*, which fixes the priority convention: at equal
  * positions, `a`'s inserts precede `b`'s.
  *
- * Both sides of the wire use this one function. The server rebases an incoming op over the rows
- * already accepted since the op's claimed revision (each row is `a`, the incoming op is `b`); a
- * client holding unacknowledged local edits rebases them over each incoming broadcast row (the
- * row is `a` -- the server accepted it first -- and updates its display with the transformed
- * `a` while keeping the transformed `b` as its new pending op).
+ * Both sides of the wire use this one function. The server rebases an incoming op over the ops
+ * already accepted since the op's claimed revision (each accepted op is `a`, the incoming op is
+ * `b`); a client holding unacknowledged local edits rebases them over each incoming broadcast
+ * op (the broadcast op is `a` -- the server accepted it first -- and the client updates its
+ * display with the transformed `a` while keeping the transformed `b` as its new pending op).
  *
- * Per-path rules (one rule, covering delete-vs-edit and create-vs-create):
+ * Per-path rules (`set` and `remove` behave alike, so these also cover delete-vs-edit and
+ * create-vs-create):
  * - edit vs edit: delegated to the text OT core under the documented pairing;
  * - `set`/`remove` vs an opposing `edit`: the `set`/`remove` survives unchanged and the `edit`
  *   is dropped, regardless of order -- its base was wholesale-replaced, so there is nothing
@@ -442,22 +440,19 @@ export function changedGadgets(op: CodeOp): number[] {
  * decimal gadget keys; non-empty entry lists of `[path, FileOp]` pairs with non-empty,
  * duplicate-free paths; exactly one variant per `FileOp`), that every `edit` parses as a
  * ChangeSet whose sections are non-negative integers that each retain, delete, or insert
- * something (do-nothing padding is rejected) and whose inserted line strings contain no "\n"
- * (an embedded newline would desynchronize the OT core's line metadata from the text,
- * corrupting editor documents built from the op), and the size caps: `MAX_FILE_TEXT_LENGTH`
- * per produced file, `MAX_FILE_PATH_LENGTH` per path, and `MAX_CODE_OP_SIZE` for the op
- * overall. Throws on the first violation. Content-dependent checks (lengths, boundaries) are
- * stage 2: `validateCodeOpContent`.
- *
- * The op size cap is enforced as a *running budget*, not an after-the-fact sum: an edit's
- * section count is pre-checked in O(1) and the budget is re-checked as each section's cost
- * accrues, so a hostile op is rejected before its sections are walked -- and in particular
- * before `ChangeSet.fromJSON` materializes a second copy of an oversized edit.
+ * something (do-nothing padding is rejected) and whose inserted line strings contain no "\n",
+ * and the size caps: `MAX_FILE_TEXT_LENGTH` per produced file, `MAX_FILE_PATH_LENGTH` per
+ * path, and `MAX_CODE_OP_SIZE` for the op overall. Throws on the first violation.
+ * Content-dependent checks (lengths, boundaries) are stage 2: `validateCodeOpContent`.
  */
 export function validateCodeOpSchema(op: CodeOp): void {
   if (typeof op !== "object" || op === null || Array.isArray(op)) {
     throw new Error("code op must be an object");
   }
+  // The size cap is enforced as a running budget, not an after-the-fact sum: an edit's section
+  // count is pre-checked in O(1) and the budget re-checked as each section's cost accrues, so a
+  // hostile op is rejected before its sections are walked -- and in particular before
+  // `ChangeSet.fromJSON` materializes a second copy of an oversized edit.
   let remaining = MAX_CODE_OP_SIZE;
   for (let [gadgetKey, fileOps] of Object.entries(op)) {
     let gadgetId = Number(gadgetKey);
