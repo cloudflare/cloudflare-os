@@ -164,8 +164,8 @@ describe('buildDiffModel', () => {
 
   it('counts multi-run diffs across separated chunks', () => {
     const model = buildDiffModel({
-      original: 'a1\nsame1\nsame2\nsame3\nb1',
-      modified: 'a2\nsame1\nsame2\nsame3\nb2',
+      original: 'head old\nsame1\nsame2\nsame3\ntail old',
+      modified: 'head new\nsame1\nsame2\nsame3\ntail new',
       hasOriginal: true,
       hasModified: true,
     })
@@ -174,6 +174,69 @@ describe('buildDiffModel', () => {
     expect(model.deletions).toBe(2)
     expect(run(model, 0).modifiedStart).toBe(1)
     expect(run(model, 1).modifiedStart).toBe(5)
+  })
+
+  it('expands a sub-word edit to whole-word inline highlights', () => {
+    const model = buildDiffModel({
+      original: 'the cat sat',
+      modified: 'the bat sat',
+      hasOriginal: true,
+      hasModified: true,
+    })
+    const change = run(model)
+    expect(change.pairedModifiedLines.has(1)).toBe(true)
+    const modText = change.inlineModifiedRanges.get(1)!
+      .map(s => 'the bat sat'.slice(s.startCol - 1, s.endCol - 1)).join('')
+    expect(modText).toBe('bat')
+    const origText = change.inlineOriginalRanges.get(1)!
+      .map(s => 'the cat sat'.slice(s.startCol - 1, s.endCol - 1)).join('')
+    expect(origText).toBe('cat')
+  })
+
+  it('highlights only the replaced word of a mostly-unchanged sentence', () => {
+    const original = 'these two sentences are mostly the same'
+    const modified = 'these two sentences are nearly the same'
+    const model = buildDiffModel({ original, modified, hasOriginal: true, hasModified: true })
+    expect(model.changes.length).toBe(1)
+    const change = run(model)
+    const modText = change.inlineModifiedRanges.get(1)!
+      .map(s => modified.slice(s.startCol - 1, s.endCol - 1)).join('')
+    expect(modText).toBe('nearly')
+    const origText = change.inlineOriginalRanges.get(1)!
+      .map(s => original.slice(s.startCol - 1, s.endCol - 1)).join('')
+    expect(origText).toBe('mostly')
+  })
+
+  it('splits unrelated sentences that only share letters into deletion and addition', () => {
+    // A char-minimal diff finds plenty of common letters here; at word granularity nothing
+    // is preserved, so the lines render as a whole-line deletion plus addition.
+    const model = buildDiffModel({
+      original: 'The quick brown fox jumps over the dog',
+      modified: 'Some entirely unrelated sentence goes here',
+      hasOriginal: true,
+      hasModified: true,
+    })
+    expect(model.changes.length).toBe(2)
+    const deletion = run(model, 0)
+    const addition = run(model, 1)
+    expect(deletion.modifiedCount).toBe(0)
+    expect(deletion.originalCount).toBe(1)
+    expect(addition.originalCount).toBe(0)
+    expect(addition.modifiedCount).toBe(1)
+    expect(deletion.inlineOriginalRanges.size).toBe(0)
+    expect(addition.inlineModifiedRanges.size).toBe(0)
+  })
+
+  it('splits a line rewritten into different words despite shared characters', () => {
+    // "a1" -> "a2" shares its first character, but the whole word changed: no pairing.
+    const model = buildDiffModel({
+      original: 'a1', modified: 'a2', hasOriginal: true, hasModified: true,
+    })
+    expect(model.changes.length).toBe(2)
+    expect(run(model, 0).originalCount).toBe(1)
+    expect(run(model, 0).modifiedCount).toBe(0)
+    expect(run(model, 1).modifiedCount).toBe(1)
+    expect(run(model, 1).originalCount).toBe(0)
   })
 
   it('keeps an unchanged line between two nearby edits out of both runs', () => {

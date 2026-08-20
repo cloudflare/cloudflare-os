@@ -1,16 +1,19 @@
 import { Text } from '@codemirror/state'
-import { diff } from '@codemirror/merge'
+import { diff, presentableDiff } from '@codemirror/merge'
 
 // The diff view's model, built in two passes with @codemirror/merge's Myers diff:
 //
 // 1. A line-level diff (each distinct line mapped to a one-char token, the standard trick)
 //    yields Monaco-style changed line ranges: exact line alignment, with unchanged lines never
 //    swallowed into a neighboring change. (@codemirror/merge's own Chunk.build was tried
-//    first, but its presentable diff word-aligns changes -- expanding a plain line deletion
-//    over an unchanged neighbor -- and its chunking merges changes separated by a single
-//    unchanged line.)
-// 2. A char-level diff over each changed region provides the inline highlights and the
-//    replacement-vs-unrelated heuristic.
+//    first, but its chunking merges changes separated by a single unchanged line, and its
+//    word-aligned diff can expand a plain line deletion over an unchanged neighbor. Neither
+//    problem applies inside a region pass 1 already fixed, so pass 2 can use it freely.)
+// 2. A word-aligned diff (presentableDiff) over each changed region provides the inline
+//    highlights and the replacement-vs-unrelated heuristic. Word granularity matters for
+//    both: a char-minimal diff highlights the letters two unrelated sentences happen to
+//    share, and counting those letters as "preserved" fools the replacement heuristic into
+//    pairing lines that should render as a plain deletion plus addition.
 //
 // Both texts are split on "\n" only, matching the editors' lineSeparator facet, so every
 // offset and line number in the model maps exactly onto the editor documents.
@@ -45,14 +48,14 @@ export type ChangeRun = {
   /** Lines paired with an opposite-side line (replacement). Unpaired lines are pure adds/deletes. */
   pairedModifiedLines: Set<number>
   pairedOriginalLines: Set<number>
-  /** Char-level changed spans by 1-based line number, rendered only on paired lines. */
+  /** Word-aligned changed spans by 1-based line number, rendered only on paired lines. */
   inlineModifiedRanges: Map<number, LineSlice[]>
   inlineOriginalRanges: Map<number, LineSlice[]>
 }
 
 export type Side = 'modified' | 'original'
 
-/** Max line length (chars) eligible for inline char-level highlighting. */
+/** Max line length (chars) eligible for inline highlighting. */
 export const MAX_INLINE_DIFF_LINE_LENGTH = 1024
 
 /** Max deleted lines shown in a single change before truncation kicks in. */
@@ -64,7 +67,7 @@ export const DELETED_HEAD_TAIL = 48
 /** Minimum non-whitespace preservation on both sides to count as a real replacement. */
 const MIN_REPLACEMENT_PRESERVATION = 0.3
 
-// Bound the char-precise diff on pathological inputs, like MergeView's default does.
+// Bound the underlying char diff on pathological inputs, like MergeView's default does.
 const DIFF_CONFIG = { scanLimit: 500 }
 
 export type BuildArgs = {
@@ -301,14 +304,14 @@ function buildRangeRuns({
     }]
   }
 
-  // Char-minimal diff over the changed region, in absolute document offsets.
+  // Word-aligned diff over the changed region, in absolute document offsets.
   const origFrom = originalText.line(origStart).from
   const origRegion = originalText.sliceString(origFrom,
     originalText.line(origStart + origCount - 1).to)
   const modFrom = modifiedText.line(modStart).from
   const modRegion = modifiedText.sliceString(modFrom,
     modifiedText.line(modStart + modCount - 1).to)
-  const charChanges = diff(origRegion, modRegion, DIFF_CONFIG)
+  const charChanges = presentableDiff(origRegion, modRegion, DIFF_CONFIG)
 
   const isReplacement =
     preservedFraction(origRegion, charChanges.map(c => [c.fromA, c.toA]))
