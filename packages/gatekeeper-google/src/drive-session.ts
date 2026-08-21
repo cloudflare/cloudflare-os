@@ -1,6 +1,6 @@
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { CursorPager, type Pager } from "./cursor";
-import type { DriveApi, DriveFile, DriveListFilesOptions } from "./drive-api";
+import { hasDriveCreationMarker, type DriveApi, type DriveFile, type DriveListFilesOptions } from "./drive-api";
 import type { ObserverCheck } from "./observers";
 import type {
   DriveEntry, DriveListOptions, DriveOrder, DriveScope, DriveSearchQuery,
@@ -18,6 +18,47 @@ export type DriveBindingScope =
   | { kind: "account" }
   | { kind: "sharedDrive"; driveId: string }
   | { kind: "file"; fileId: string };
+
+/** How a creation destination is authorized under the per-file OAuth grant. */
+export type DriveCreationParentAuthority = "root" | "appCreated";
+
+/** Canonical destination metadata safe to persist after observation authorization. */
+export type DriveCreationParent = {
+  id: string;
+  name: string;
+  authority: DriveCreationParentAuthority;
+};
+
+/** Whether current provider metadata remains inside immutable binding authority. */
+export function isDriveFileInScope(scope: DriveBindingScope, file: DriveFile): boolean {
+  switch (scope.kind) {
+    case "account": return true;
+    case "sharedDrive": return file.driveId === scope.driveId || file.id === scope.driveId;
+    case "file": return file.id === scope.fileId;
+  }
+}
+
+/** Validate current provider metadata as a writable creation destination. */
+export function validateDriveCreationParent(
+  scope: DriveBindingScope, file: DriveFile, authority: DriveCreationParentAuthority,
+): DriveCreationParent {
+  if (scope.kind === "file" || !isDriveFileInScope(scope, file)) {
+    throw new Error("The requested file is outside this Drive binding.");
+  }
+  if (file.mimeType !== FOLDER_MIME_TYPE) {
+    throw new Error("Drive creation parent must identify a folder");
+  }
+  if (file.trashed !== false) {
+    throw new Error("Drive creation parent is trashed");
+  }
+  if (authority === "appCreated" && !hasDriveCreationMarker(file)) {
+    throw new Error("Drive creation parent must be the root or a folder created by this app");
+  }
+  if (file.capabilities?.canAddChildren !== true) {
+    throw new Error("Drive creation parent does not allow adding children");
+  }
+  return { id: file.id, name: file.name, authority };
+}
 
 type DriveSessionApi = Pick<DriveApi, "listFiles" | "getFile" | "getDrive">;
 
@@ -159,6 +200,25 @@ export class DriveSessionCore {
     }
   }
 
+  /** Resolve, validate, and authorize observation of a creation destination. */
+  async resolveCreationParent(parentId?: string): Promise<DriveCreationParent> {
+    if (this.#scope.kind === "file") this.#outsideScope();
+    if (parentId !== undefined && !parentId.trim()) {
+      throw new Error("parentId must not be empty");
+    }
+    let requestedId = parentId ??
+      (this.#scope.kind === "sharedDrive" ? this.#scope.driveId : "root");
+    let parent = await this.#api.getFile(requestedId);
+    let authority: DriveCreationParentAuthority = parentId === undefined ? "root" : "appCreated";
+    let resolved = validateDriveCreationParent(this.#scope, parent, authority);
+    await this.#authorizeIds(
+      [parent.id],
+      "Check Google Drive creation destination",
+      "Check that the requested creation destination belongs to this Drive binding.",
+    );
+    return resolved;
+  }
+
   async list(options: DriveListOptions = {}): Promise<Pager<DriveEntry>> {
     if (options.directParentId) await this.#assertParent(options.directParentId);
     if (this.#scope.kind === "file") return this.#exactFileCursor();
@@ -180,7 +240,7 @@ export class DriveSessionCore {
   async getEntry(fileId: string): Promise<DriveEntry> {
     if (this.#scope.kind === "file" && fileId !== this.#scope.fileId) this.#outsideScope();
     let file = await this.#api.getFile(fileId);
-    if (!this.#inScope(file)) this.#outsideScope();
+    if (!isDriveFileInScope(this.#scope, file)) this.#outsideScope();
     let entry = driveFileToEntry(file);
     await this.#authorizeIds([file.id], "Read Google Drive metadata",
       `Read metadata for Drive file ${file.id}.`);
@@ -195,7 +255,7 @@ export class DriveSessionCore {
   ): Promise<string> {
     if (this.#scope.kind === "file" && fileId !== this.#scope.fileId) this.#outsideScope();
     let file = await this.#api.getFile(fileId);
-    if (!this.#inScope(file)) this.#outsideScope();
+    if (!isDriveFileInScope(this.#scope, file)) this.#outsideScope();
     await this.#authorizeIds(
       [file.id],
       `Open ${description} from Google Drive`,
@@ -214,7 +274,9 @@ export class DriveSessionCore {
         let page = await this.#api.listFiles({ ...query, ...this.#corpus(), pageToken });
         return { items: page.files, ...(page.nextPageToken ? { nextPageToken: page.nextPageToken } : {}) };
       },
-      buildEntries: async files => files.filter(file => this.#inScope(file)).map(driveFileToEntry),
+      buildEntries: async files => files
+        .filter(file => isDriveFileInScope(this.#scope, file))
+        .map(driveFileToEntry),
       authorize: async entries => {
         await this.#authorizeIds(entries.map(entry => entry.id), "Read Google Drive metadata",
           `Read metadata for ${entries.length} Drive ${entries.length === 1 ? "entry" : "entries"}.`);
@@ -244,19 +306,11 @@ export class DriveSessionCore {
       : { corpora: "user" };
   }
 
-  #inScope(file: DriveFile): boolean {
-    switch (this.#scope.kind) {
-      case "account": return true;
-      case "sharedDrive":
-        return file.driveId === this.#scope.driveId || file.id === this.#scope.driveId;
-      case "file": return file.id === this.#scope.fileId;
-    }
-  }
 
   async #assertParent(parentId: string): Promise<void> {
     if (this.#scope.kind === "file") this.#outsideScope();
     let parent = await this.#api.getFile(parentId);
-    if (!this.#inScope(parent)) this.#outsideScope();
+    if (!isDriveFileInScope(this.#scope, parent)) this.#outsideScope();
     if (parent.mimeType !== FOLDER_MIME_TYPE) throw new Error("directParentId must identify a folder");
     await this.#authorizeIds([parent.id], "Check Google Drive folder",
       "Check that the requested parent folder belongs to this Drive binding.");

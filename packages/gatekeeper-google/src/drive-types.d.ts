@@ -109,12 +109,40 @@ export type DriveSearchQuery = {
   order?: DriveOrder;
 };
 
+/** The native Drive item kind supported by creation methods. */
+export type DriveCreationKind = "googleDoc" | "googleSheet" | "folder";
+
+/** Options for creating a blank native Drive item. */
+export interface DriveCreationOptions {
+  /** Non-empty name for the new item. */
+  name: string;
+  /** Destination folder ID; defaults to the binding root and otherwise must name a folder created by this app. */
+  parentId?: string;
+}
+
+/** Reference used to query the outcome of an asynchronous Drive creation. */
+export interface DriveCreationHandle {
+  /** Sequential action identifier within this binding. */
+  id: number;
+  /** Requested item kind. */
+  kind: DriveCreationKind;
+  /** Requested item name. */
+  name: string;
+}
+
+/** Current outcome of a Drive creation request. Failed attempts remain pending and can be retried or rejected. */
+export type DriveCreationOutcome =
+  | { status: "pending"; lastError?: string }
+  | { status: "rejected" }
+  | { status: "reverted" }
+  | { status: "created"; kind: DriveCreationKind; entry: DriveEntry };
+
 /**
  * Read-only metadata discovery and native Google Docs/Sheets access within the selected Drive scope.
  *
  * Methods do not follow shortcut targets, edit Drive, or read non-native file contents.
  */
-export interface GoogleDriveSession {
+export interface GoogleDriveReadSession {
   /** Return the immutable binding scope with current display metadata. */
   getScope(): Promise<DriveScope>;
 
@@ -150,4 +178,16 @@ export interface GoogleDriveSession {
    * finished.
    */
   openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetSession>;
+}
+
+/** Drive account or shared-drive access, including blank native item creation. */
+export interface GoogleDriveSession extends GoogleDriveReadSession {
+  /** Queue creation of a blank native Google Doc. */
+  createGoogleDoc(options: DriveCreationOptions): Promise<DriveCreationHandle>;
+  /** Queue creation of a blank native Google Sheet. */
+  createGoogleSheet(options: DriveCreationOptions): Promise<DriveCreationHandle>;
+  /** Queue creation of a folder. */
+  createFolder(options: DriveCreationOptions): Promise<DriveCreationHandle>;
+  /** Read the current outcome. Old terminal outcomes are retained only within the binding's bounded history. */
+  getCreationResult(handle: DriveCreationHandle): Promise<DriveCreationOutcome>;
 }

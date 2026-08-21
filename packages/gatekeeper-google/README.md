@@ -146,7 +146,7 @@ User — see Step 4.)
 
 You can also see your connected accounts and add and remove them in the settings (accessed through the account menu in the upper-right).
 
-## Google Drive read-only bindings
+## Google Drive bindings
 
 Drive exposes three permanent resource URL forms:
 
@@ -156,11 +156,15 @@ Drive exposes three permanent resource URL forms:
 
 Despite the `/folders/` URL, the second resource is a Google Workspace shared drive, not an individual folder. Google uses a shared drive's ID for its root folder too. The gatekeeper confirms the ID with `drives.get`, so it rejects ordinary folder IDs.
 
-The agent-facing `GoogleDriveSession` reports the binding scope, lists entries, runs structured metadata searches, and fetches one entry by ID. Listing and search return disposable RPC cursors. A parent filter means direct children only, never recursive descendants. For a native Google Doc or Sheet, `openGoogleDoc()` or `openGoogleSheet()` returns an independently disposable, read-only nested session. Docs expose metadata and Markdown content; Sheets expose spreadsheet metadata and bounded A1 range reads.
+The agent-facing Drive sessions report the binding scope, list entries, run structured metadata searches, and fetch one entry by ID. Listing and search return disposable RPC cursors. A parent filter means direct children only, never recursive descendants. For a native Google Doc or Sheet, `openGoogleDoc()` or `openGoogleSheet()` returns an independently disposable, read-only nested session. Docs expose metadata and Markdown content; Sheets expose spreadsheet metadata and bounded A1 range reads.
 
-Every native open re-fetches Drive metadata, enforces the immutable account, shared-drive, or exact-file scope, and checks the exact MIME type before authorizing the observation. A folder, shortcut, non-native blob, wrong native type, or out-of-scope file cannot mint a content capability. The Drive API exposes no raw `q` strings, writes, shortcut traversal, arbitrary download or export, or Workers AI extraction. Direct Google Doc bindings retain their existing editing API; Drive-opened Docs do not expose it.
+Account and shared-drive bindings also queue creation of blank native Google Docs, blank native Google Sheets, and folders. An omitted destination means the My Drive root for an account binding or the bound shared-drive root; callers may instead name an in-scope writable folder by immutable ID. Exact-file bindings remain read-only, even when the selected file is a folder.
 
-Account-wide and exact-file Drive bindings request `documents.readonly` and `spreadsheets.readonly` in addition to `drive.metadata.readonly`. An older metadata-only connection is therefore prompted to expand consent before it is treated as granting either resource. Shared-drive bindings remain on `drive.readonly`, which Google accepts for native Docs and Sheets reads, so they do not request redundant scopes.
+Each create call returns an asynchronous handle and submits a manual approval that names the destination. The new item contains no initial content and inherits the destination folder's permissions. `getCreationResult()` reports pending, rejected, failed, created, or reverted state. Revert moves an item to Drive trash; it never permanently deletes it.
+
+Every native open and creation destination lookup re-fetches Drive metadata, enforces the immutable account, shared-drive, or exact-file scope, and checks the exact MIME type and current capability before authorizing the observation. A folder, shortcut, non-native blob, wrong native type, or out-of-scope file cannot mint a content capability. The Drive API exposes no agent-authored raw `q` strings, generic upload or write primitive, shortcut traversal, arbitrary download or export, or Workers AI extraction. Direct Google Doc bindings retain their existing editing API; Drive-opened Docs do not expose it.
+
+Account bindings request `drive.metadata.readonly`, `documents.readonly`, `spreadsheets.readonly`, and `drive.file`. Shared-drive bindings request `drive.readonly` plus `drive.file`. The new scope limits write access to files this app creates or the user explicitly opens with it; the gatekeeper further restricts creation to an authorized destination in the bound scope. Older account and shared-drive connections are prompted to expand consent. Exact-file bindings remain on the three read-only scopes, and direct Google Doc and Spreadsheet grants are unchanged.
 
 Account and shared-drive bindings remember every file ID whose metadata or native content a workspace has read. Before each collaborator opens the workspace, the gatekeeper requires an explicit Drive grant and rechecks all remembered IDs with fresh batched `files.get` calls. Before a new result page or native child capability is disclosed, it checks the file ID against every existing observer and excludes observers who cannot access it. Exact-file bindings perform the same fresh check for their single file on each share attempt. Google batch requests contain at most 100 `files.get` subrequests; there is deliberately no cached access verdict, so revoked access fails closed on the next open.
 

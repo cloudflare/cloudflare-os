@@ -11,7 +11,7 @@ export default {
   }),
   render({ values, setValues, ui }) {
     return <Section>
-      <Field label="Google Workspace shared drive" description="Choose a shared drive owned by an organization rather than an individual. Search its files and read native Google Docs and Sheets.">
+      <Field label="Google Workspace shared drive" description="Choose an organization-owned shared drive. Search its files, read native Google Docs and Sheets, and create blank Docs, Sheets, and folders in writable destinations.">
         <Autocomplete
           name="driveId"
           value={values.driveId}

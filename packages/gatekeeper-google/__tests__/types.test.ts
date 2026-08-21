@@ -93,4 +93,44 @@ describe("embedded agent declarations", () => {
     );
     expect(driveTypes).not.toContain("GoogleDocSession>");
   });
+
+  it("splits Drive creation authority from read-only sessions", () => {
+    const types = [
+      "declare class RpcTarget {}",
+      source("docs-read-types.txt"),
+      source("docs-types.txt"),
+      source("sheets-types.d.ts"),
+      source("drive-types.txt"),
+      `
+        declare const account: GoogleDriveSession;
+        declare const sharedDrive: GoogleDriveSession;
+        declare const file: GoogleDriveReadSession;
+        declare const nestedDoc: GoogleDocReadSession;
+        declare const directDoc: GoogleDocSession;
+        declare const sheet: GoogleSpreadsheetSession;
+
+        account.createGoogleDoc({ name: "Quarterly plan" });
+        account.createGoogleSheet({ name: "Forecast", parentId: "folder-1" });
+        account.createFolder({ name: "Archive" });
+        account.getCreationResult({ id: 1, kind: "googleDoc", name: "Quarterly plan" });
+        sharedDrive.createGoogleDoc({ name: "Quarterly plan" });
+        sharedDrive.createGoogleSheet({ name: "Forecast" });
+        sharedDrive.createFolder({ name: "Archive", parentId: "folder-2" });
+        sharedDrive.getCreationResult({ id: 2, kind: "folder", name: "Archive" });
+
+        // @ts-expect-error Exact-file Drive sessions remain read-only.
+        file.createGoogleDoc({ name: "Denied" });
+        // @ts-expect-error Exact-file Drive sessions cannot query creation actions.
+        file.getCreationResult({ id: 1, kind: "googleDoc", name: "Denied" });
+        // @ts-expect-error Nested Docs sessions expose no Drive creation methods.
+        nestedDoc.createFolder({ name: "Denied" });
+        // @ts-expect-error Direct Docs bindings retain only their existing document API.
+        directDoc.createGoogleDoc({ name: "Denied" });
+        // @ts-expect-error Nested and direct Sheets sessions expose no Drive creation methods.
+        sheet.createGoogleSheet({ name: "Denied" });
+      `,
+    ].join("\n");
+
+    expect(compileAgentTypes(types)).toEqual([]);
+  });
 });

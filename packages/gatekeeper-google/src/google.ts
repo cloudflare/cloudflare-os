@@ -17,7 +17,10 @@ import { DriveApi } from "./drive-api";
 import {
   DriveSessionCore, GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, type DriveBindingScope,
 } from "./drive-session";
-import type { DriveEntry, DriveListOptions, DriveSearchQuery, GoogleDriveSession } from "./drive-types";
+import type {
+  DriveCreationHandle, DriveCreationKind, DriveCreationOptions, DriveCreationOutcome, DriveEntry,
+  DriveListOptions, DriveSearchQuery, GoogleDriveSession,
+} from "./drive-types";
 import { BigQueryApi, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
   BigQueryDataset, BigQueryDryRunResult, BigQueryField, BigQueryProject,
@@ -74,6 +77,12 @@ import {
 } from "./resources";
 import { ObserverCheck, ObserverTracker } from "./observers";
 import { CursorPager, Pager } from "./cursor";
+import { formatApprovalField, sanitizeApprovalTitle } from "./approval-format";
+import { PendingActionStore } from "./pending-action-store";
+import {
+  assertDriveCreationCapacity, DriveCreationCoordinator, readDriveCreationState,
+  submitDriveCreation, validateDriveCreationName, type DriveCreationStorage,
+} from "./drive-creation";
 
 const GOOGLE_DOC_TYPES_CODE = [DOCS_READ_TYPES_CODE, DOCS_TYPES_CODE].join("\n");
 const GOOGLE_DRIVE_TYPES_CODE = [
@@ -997,43 +1006,6 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
   }
 }
 
-class PendingActionStore<Action> {
-  #kv: DurableObjectStorage["kv"];
-
-  constructor(kv: DurableObjectStorage["kv"]) {
-    this.#kv = kv;
-  }
-
-  #actionKey(id: number): string {
-    return `pending:action:${id}`;
-  }
-
-  submit(action: Action): number {
-    let id = this.#kv.get<number>("pending:nextActionId") ?? 1;
-    this.#kv.put("pending:nextActionId", id + 1);
-    this.#kv.put(this.#actionKey(id), action);
-    return id;
-  }
-
-  get(id: number): Action | undefined {
-    return this.#kv.get<Action>(this.#actionKey(id));
-  }
-
-  put(id: number, action: Action): void {
-    this.#kv.put(this.#actionKey(id), action);
-  }
-
-  list(): {id: number, action: Action}[] {
-    return [...this.#kv.list<Action>({prefix: "pending:action:"})]
-        .map(([key, action]) => ({id: Number(key.slice("pending:action:".length)), action}))
-        .filter(({id}) => Number.isFinite(id))
-        .toSorted((a, b) => a.id - b.id);
-  }
-
-  remove(id: number): void {
-    this.#kv.delete(this.#actionKey(id));
-  }
-}
 
 // =======================================================================================
 // Gmail capability stubs
@@ -1180,17 +1152,6 @@ class GmailSessionImpl extends RpcTarget implements GmailSession {
   }
 }
 
-function sanitizeApprovalTitle(value: string): string {
-  return value.replace(/[\r\n]+/g, " ").slice(0, 200);
-}
-
-function formatApprovalField(label: string, value: string): string {
-  // Use a fence longer than any backtick run in the value, so untrusted email
-  // fields render verbatim and cannot forge surrounding approval Markdown.
-  let fence = "```";
-  while (value.includes(fence)) fence += "`";
-  return `**${label}:**\n\n${fence}\n${value}\n${fence}`;
-}
 
 function describeOutboundMessage(intro: string, message: GmailOutboundMessage): string {
   let fields = [
@@ -2974,6 +2935,7 @@ type GoogleDriveGatekeeperImplProps = {
 export class GoogleDriveGatekeeperImpl
     extends DurableObject<Env, GoogleDriveGatekeeperImplProps>
     implements Gatekeeper<GoogleDriveSession> {
+  #creationCoordinator = new DriveCreationCoordinator();
   #tokens = new AccessTokenCache(opts => {
     let account = this.ctx.exports.UserAccount.get(
       this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
@@ -2991,7 +2953,7 @@ export class GoogleDriveGatekeeperImpl
       return {
         url: GOOGLE_DRIVE_RESOURCE.urlPattern,
         title: "Google Drive Account",
-        snippet: "Find files and folders and read native Google Docs and Sheets in My Drive or Shared with me",
+        snippet: "Find files and folders, read native Google Docs and Sheets, and create blank Docs, Sheets, and folders in My Drive or Shared with me",
         suggestedBindingName: "GOOGLE_DRIVE",
         tsType: "GoogleDriveSession",
       };
@@ -3001,7 +2963,7 @@ export class GoogleDriveGatekeeperImpl
       return {
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.driveId)}`,
         title: drive.name,
-        snippet: `Find files and folders and read native Google Docs and Sheets in organization-owned shared drive "${drive.name}"`,
+        snippet: `Find files and folders, read native Google Docs and Sheets, and create blank Docs, Sheets, and folders in organization-owned shared drive "${drive.name}"`,
         suggestedBindingName: "GOOGLE_DRIVE",
         tsType: "GoogleDriveSession",
       };
@@ -3010,9 +2972,9 @@ export class GoogleDriveGatekeeperImpl
     return {
       url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
       title: file.name,
-      snippet: `Read metadata and, when native, Google Doc or Sheet content from Drive file "${file.name}"`,
+      snippet: `Read-only metadata and, when native, Google Doc or Sheet content from Drive file "${file.name}"`,
       suggestedBindingName: "GOOGLE_DRIVE",
-      tsType: "GoogleDriveSession",
+      tsType: "GoogleDriveReadSession",
     };
   }
 
@@ -3034,16 +2996,30 @@ export class GoogleDriveGatekeeperImpl
       new GoogleDocsApi(getDriveAccessToken),
       new GoogleSheetsApi(getDriveAccessToken),
       this.ctx.props.scope,
+      this.ctx.storage.kv,
       approvalQueue.dup(),
       prepareObservation,
     );
   }
 
-  /** Read-only — no side-effecting actions. */
-  async applyAction(_action: number): Promise<void> {}
-  async rejectAction(_action: number): Promise<void> {}
-  revertAction(_action: number): Promise<void> {
-    throw new Error("Google Drive gatekeeper has no writable actions to revert");
+  async applyAction(action: number): Promise<void> {
+    await this.#creationCoordinator.apply(this.#creationRuntime(), action);
+  }
+
+  async rejectAction(action: number): Promise<void> {
+    await this.#creationCoordinator.reject(this.#creationRuntime(), action);
+  }
+
+  async revertAction(action: number): Promise<void> {
+    await this.#creationCoordinator.revert(this.#creationRuntime(), action);
+  }
+
+  #creationRuntime() {
+    return {
+      storage: this.ctx.storage.kv,
+      api: new DriveApi(opts => this.#getAccessToken(opts)),
+      scope: this.ctx.props.scope,
+    };
   }
 
   #observerTracker(): ObserverTracker<string, Fetcher<GoogleVerifierApi>> {
@@ -3140,12 +3116,15 @@ export class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSess
   #docsApi: GoogleDocsApi;
   #sheetsApi: GoogleSheetsApi;
   #approvalQueue: RpcStub<ApprovalQueue>;
+  #scope: DriveBindingScope;
+  #storage: DriveCreationStorage;
 
   constructor(
     driveApi: DriveApi,
     docsApi: GoogleDocsApi,
     sheetsApi: GoogleSheetsApi,
     scope: DriveBindingScope,
+    storage: DriveCreationStorage,
     approvalQueue: RpcStub<ApprovalQueue>,
     prepareObservation?: (fileIds: string[]) => Promise<ObserverCheck<string>>,
   ) {
@@ -3153,6 +3132,8 @@ export class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSess
     this.#driveApi = driveApi;
     this.#docsApi = docsApi;
     this.#sheetsApi = sheetsApi;
+    this.#scope = scope;
+    this.#storage = storage;
     this.#approvalQueue = approvalQueue;
     this.#core = new DriveSessionCore({
       api: driveApi,
@@ -3180,6 +3161,46 @@ export class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSess
 
   getEntry(fileId: string): Promise<DriveEntry> {
     return this.#core.getEntry(fileId);
+  }
+
+  createGoogleDoc(options: DriveCreationOptions): Promise<DriveCreationHandle> {
+    return this.#submitCreation("googleDoc", options);
+  }
+
+  createGoogleSheet(options: DriveCreationOptions): Promise<DriveCreationHandle> {
+    return this.#submitCreation("googleSheet", options);
+  }
+
+  createFolder(options: DriveCreationOptions): Promise<DriveCreationHandle> {
+    return this.#submitCreation("folder", options);
+  }
+
+  async getCreationResult(handle: DriveCreationHandle): Promise<DriveCreationOutcome> {
+    let state = readDriveCreationState(this.#storage, handle.id);
+    if (state.status !== "created") return state;
+    return {
+      status: "created",
+      kind: state.kind,
+      entry: await this.#core.getEntry(state.fileId),
+    };
+  }
+
+  async #submitCreation(
+    kind: DriveCreationKind, options: DriveCreationOptions,
+  ): Promise<DriveCreationHandle> {
+    if (this.#scope.kind === "file") {
+      throw new Error("The requested file is outside this Drive binding.");
+    }
+    validateDriveCreationName(options.name);
+    assertDriveCreationCapacity(this.#storage);
+    let parent = await this.#core.resolveCreationParent(options.parentId);
+    return submitDriveCreation({
+      storage: this.#storage,
+      approvalQueue: this.#approvalQueue,
+      kind,
+      name: options.name,
+      parent,
+    });
   }
 
   async openGoogleDoc(fileId: string): Promise<GoogleDocReadSession> {

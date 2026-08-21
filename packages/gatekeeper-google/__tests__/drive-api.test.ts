@@ -38,6 +38,14 @@ const jsonResponse = (body: unknown, status = 200) =>
 
 const api = (token = "tok") => new DriveApi(async () => token);
 
+const CREATION_REQUEST_ID = "123e4567-e89b-42d3-a456-426614174000";
+const DRIVE_FILE_ITEM_FIELDS = [
+  "id", "name", "mimeType", "modifiedTime", "size", "parents", "driveId",
+  "owners(displayName,emailAddress)", "webViewLink",
+  "shortcutDetails(targetId,targetMimeType)", "trashed", "appProperties",
+  "capabilities(canAddChildren,canTrash)",
+].join(",");
+
 function batchResponse(results: { status: number; body?: string }[]): Response {
   let boundary = "drive_test_boundary";
   let body = results.map((result, index) => [
@@ -53,7 +61,10 @@ function batchResponse(results: { status: number; body?: string }[]): Response {
   return new Response(body, { headers: { "Content-Type": `multipart/mixed; boundary=${boundary}` } });
 }
 
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 describe("escapeDriveQueryLiteral", () => {
   it("leaves an ordinary value alone", () => {
@@ -244,6 +255,214 @@ describe("metadata lookup", () => {
     await expect(api().listFiles()).rejects.toThrow("Google Drive response was too large");
     expect(cancelled).toBe(true);
     expect(pulls).toBeLessThan(4);
+  });
+});
+
+describe("creation mutations", () => {
+  it.each([
+    ["Google Doc", "application/vnd.google-apps.document"],
+    ["Google Sheet", "application/vnd.google-apps.spreadsheet"],
+    ["folder", "application/vnd.google-apps.folder"],
+  ] as const)("creates a metadata-only %s in one resolved parent", async (name, mimeType) => {
+    let created = {
+      id: `created-${name}`, name, mimeType, parents: ["parent-1"], trashed: false,
+      appProperties: { gadgetsCreationRequestId: CREATION_REQUEST_ID },
+      capabilities: { canAddChildren: mimeType.endsWith("folder"), canTrash: true },
+    };
+    let calls = stubFetch([jsonResponse(created)]);
+
+    await expect(api().createFile({
+      name, mimeType, parentId: "parent-1", requestId: CREATION_REQUEST_ID,
+    })).resolves.toEqual(created);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.pathname).toBe("/drive/v3/files");
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].headers.get("Content-Type")).toBe("application/json");
+    expect(calls[0].url.searchParams.get("supportsAllDrives")).toBe("true");
+    expect(calls[0].url.searchParams.get("ignoreDefaultVisibility")).toBe("true");
+    expect(calls[0].url.searchParams.get("fields")).toBe(DRIVE_FILE_ITEM_FIELDS);
+    expect(JSON.parse(calls[0].body ?? "")).toEqual({
+      name,
+      mimeType,
+      parents: ["parent-1"],
+      appProperties: { gadgetsCreationRequestId: CREATION_REQUEST_ID },
+    });
+    expect(calls[0].body).not.toContain("driveId");
+  });
+
+  it("uses a finite timeout for create requests", async () => {
+    let timeout = vi.spyOn(AbortSignal, "timeout");
+    stubFetch([jsonResponse({ id: "created-1", name: "Plan" })]);
+
+    await api().createFile({
+      name: "Plan", mimeType: "application/vnd.google-apps.document",
+      parentId: "parent-1", requestId: CREATION_REQUEST_ID,
+    });
+
+    expect(timeout).toHaveBeenCalledWith(30_000);
+  });
+
+  it("refreshes once on a create 401 and replays the exact metadata body", async () => {
+    let drive = new DriveApi(async opts => opts?.forceRefresh ? "fresh" : "stale");
+    let calls = stubFetch([
+      new Response("expired", { status: 401 }),
+      jsonResponse({ id: "created-1", name: "Plan" }),
+    ]);
+
+    await drive.createFile({
+      name: "Plan", mimeType: "application/vnd.google-apps.document",
+      parentId: "parent-1", requestId: CREATION_REQUEST_ID,
+    });
+
+    expect(calls.map(call => call.headers.get("Authorization")))
+      .toEqual(["Bearer stale", "Bearer fresh"]);
+    expect(calls[0].body).toBe(calls[1].body);
+  });
+
+  it.each([429, 503])("does not transiently replay a create after HTTP %i", async status => {
+    let calls = stubFetch([new Response("retry later", { status })]);
+
+    await expect(api().createFile({
+      name: "Plan", mimeType: "application/vnd.google-apps.document",
+      parentId: "parent-1", requestId: CREATION_REQUEST_ID,
+    })).rejects.toThrow(`Google Drive API request failed: ${status}`);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("does not replay a create after a network failure", async () => {
+    let calls = stubFetch(() => { throw new Error("network unavailable"); });
+
+    await expect(api().createFile({
+      name: "Plan", mimeType: "application/vnd.google-apps.document",
+      parentId: "parent-1", requestId: CREATION_REQUEST_ID,
+    })).rejects.toThrow("network unavailable");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rejects malformed create metadata instead of trusting it", async () => {
+    stubFetch([jsonResponse({ id: 42, name: "Plan" })]);
+
+    await expect(api().createFile({
+      name: "Plan", mimeType: "application/vnd.google-apps.document",
+      parentId: "parent-1", requestId: CREATION_REQUEST_ID,
+    })).rejects.toThrow("Invalid Google Drive file response");
+  });
+
+  it("rejects malformed JSON without exposing its contents", async () => {
+    stubFetch([new Response("not-json-with-secret-prose")]);
+
+    await expect(api().createFile({
+      name: "Plan", mimeType: "application/vnd.google-apps.document",
+      parentId: "parent-1", requestId: CREATION_REQUEST_ID,
+    })).rejects.toThrow("Invalid Google Drive JSON response");
+  });
+
+  it("bounds a create response before parsing it", async () => {
+    let pulls = 0;
+    let cancelled = false;
+    let body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls <= 3) controller.enqueue(new Uint8Array(3_000_000));
+        else controller.close();
+      },
+      cancel() { cancelled = true; },
+    });
+    stubFetch([new Response(body)]);
+
+    await expect(api().createFile({
+      name: "Plan", mimeType: "application/vnd.google-apps.document",
+      parentId: "parent-1", requestId: CREATION_REQUEST_ID,
+    })).rejects.toThrow("Google Drive response was too large");
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(4);
+  });
+
+  it("finds one prior create only through its private generated marker", async () => {
+    let found = {
+      id: "created-1", name: "Plan", mimeType: "application/vnd.google-apps.document",
+      parents: ["parent-1"], trashed: false,
+      appProperties: { gadgetsCreationRequestId: CREATION_REQUEST_ID },
+      capabilities: { canTrash: true },
+    };
+    let calls = stubFetch([jsonResponse({ files: [found] })]);
+
+    await expect(api().findFileByCreationRequestId(CREATION_REQUEST_ID)).resolves.toEqual(found);
+
+    let params = calls[0].url.searchParams;
+    expect(calls[0].method).toBeUndefined();
+    expect(params.get("q")).toBe(
+      `appProperties has { key='gadgetsCreationRequestId' and value='${CREATION_REQUEST_ID}' }`,
+    );
+    expect(params.get("pageSize")).toBe("2");
+    expect(params.get("spaces")).toBe("drive");
+    expect(params.get("supportsAllDrives")).toBe("true");
+    expect(params.get("includeItemsFromAllDrives")).toBe("true");
+    expect(params.get("fields")).toBe(`nextPageToken,files(${DRIVE_FILE_ITEM_FIELDS})`);
+  });
+
+  it("follows short marker pages until the result set is exhausted", async () => {
+    let found = { id: "created-1", name: "Plan" };
+    let calls = stubFetch([
+      jsonResponse({ files: [found], nextPageToken: "next-page" }),
+      jsonResponse({ files: [] }),
+    ]);
+
+    await expect(api().findFileByCreationRequestId(CREATION_REQUEST_ID)).resolves.toEqual(found);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].url.searchParams.get("pageToken")).toBe("next-page");
+  });
+
+  it("fails closed when marker matches are split across pages", async () => {
+    let calls = stubFetch([
+      jsonResponse({ files: [{ id: "created-1", name: "Plan" }], nextPageToken: "next-page" }),
+      jsonResponse({ files: [{ id: "created-2", name: "Plan" }] }),
+    ]);
+
+    await expect(api().findFileByCreationRequestId(CREATION_REQUEST_ID))
+      .rejects.toThrow("Multiple Google Drive files matched one creation request");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("returns no prior create when the generated marker is absent", async () => {
+    stubFetch([jsonResponse({ files: [] })]);
+    await expect(api().findFileByCreationRequestId(CREATION_REQUEST_ID))
+      .resolves.toBeUndefined();
+  });
+
+  it("fails closed when more than one file has the generated marker", async () => {
+    stubFetch([jsonResponse({
+      files: [{ id: "created-1", name: "Plan" }, { id: "created-2", name: "Plan" }],
+    })]);
+
+    await expect(api().findFileByCreationRequestId(CREATION_REQUEST_ID))
+      .rejects.toThrow("Multiple Google Drive files matched one creation request");
+  });
+
+  it("rejects a non-generated marker before issuing a query", async () => {
+    let calls = stubFetch([]);
+    await expect(api().findFileByCreationRequestId("x' or trashed = false"))
+      .rejects.toThrow("Invalid Google Drive creation request ID");
+    expect(calls).toEqual([]);
+  });
+
+  it("trashes with a metadata-only shared-drive PATCH", async () => {
+    let calls = stubFetch([jsonResponse({ id: "created/1", name: "Plan", trashed: true })]);
+
+    await expect(api().trashFile("created/1")).resolves.toBeUndefined();
+
+    expect(calls[0].url.pathname).toBe("/drive/v3/files/created%2F1");
+    expect(calls[0].method).toBe("PATCH");
+    expect(calls[0].url.searchParams.get("supportsAllDrives")).toBe("true");
+    expect(calls[0].url.searchParams.get("fields")).toBe(DRIVE_FILE_ITEM_FIELDS);
+    expect(JSON.parse(calls[0].body ?? "")).toEqual({ trashed: true });
+  });
+
+  it("rejects a trash response whose postcondition is false", async () => {
+    stubFetch([jsonResponse({ id: "created-1", name: "Plan", trashed: false })]);
+    await expect(api().trashFile("created-1"))
+      .rejects.toThrow("Google Drive did not trash the requested file");
   });
 });
 

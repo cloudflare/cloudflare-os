@@ -11,7 +11,7 @@ export default {
   }),
   render({ values, setValues, ui }) {
     return <Section>
-      <Field label="File" description="Search recent non-folder files. A selected native Google Doc or Sheet also provides read-only content.">
+      <Field label="File" description="Search recent non-folder files and choose one read-only file binding. Native Google Docs and Sheets also expose read-only content.">
         <Autocomplete
           name="fileId"
           value={values.fileId}
