@@ -4003,6 +4003,11 @@ export function buildChatDisplayEntries(
   const isVisibleSavedChangesMessage = (msg: AiChatMessage): msg is ChangeChatMessage =>
     msg.type === "changes" &&
     msg.author.type === "user" &&
+    // A conversion boundary is the git-storage migration's bookkeeping, not a user action (see
+    // AiChatMessageBody.conversionBoundary), so it never displays. Its content still reaches
+    // the proposed-changes views, and the "Pending changes" banner's discard-all is the way to
+    // discard it.
+    msg.conversionBoundary !== true &&
     (changeStatus.get(msg.sequence) ?? "pending") === "pending";
 
   for (let i = 0; i < messages.length; ) {
@@ -6436,6 +6441,14 @@ function ChatInterface({
     return latest;
   }, [completedAgentTurnMessageSeqs]);
 
+  // The current epoch's opening sequence (see ChatCodeBase.epoch), zero when the epoch spans the
+  // whole chat. A *pending* changes message before it exists only in chats converted from
+  // pre-git storage -- its content rides the conversion boundary's collapsed change, and the
+  // server refuses to revert it individually -- so no per-message discard affordance is offered
+  // below the epoch. (In merge-opened epochs every pre-epoch change is already merged, so the
+  // cutoff changes nothing there.)
+  const chatEpoch = currentChatMetadata?.codeBase?.epoch ?? 0;
+
   const pendingChangeByTurnItemSeq = useMemo(() => {
     const out = new Map<number, PendingTurnChanges>();
     let lastAgentMessageSeq: number | null = null;
@@ -6492,6 +6505,7 @@ function ChatInterface({
       if (
         m.type === "changes" &&
         m.author.type !== "user" &&
+        m.sequence >= chatEpoch &&
         (messageStates.changeStatus.get(m.sequence) ?? "pending") === "pending"
       ) {
         const createdTitles = (m.createdGadgets ?? []).map((g) => g.title);
@@ -6507,7 +6521,7 @@ function ChatInterface({
     }
 
     return out;
-  }, [currentMessages, messageStates]);
+  }, [currentMessages, messageStates, chatEpoch]);
 
   // Accepted creations remain in the transcript; reverted ones disappear.
   const createdGadgetsByTurnItemSeq = useMemo(() => {
@@ -7494,6 +7508,10 @@ function ChatInterface({
                                 {label}
                               </span>
                               <div className="flex flex-shrink-0 items-center gap-1 opacity-100 transition-opacity duration-150 ease-out sm:opacity-0 sm:group-hover/savedChanges:opacity-100 sm:group-focus-within/savedChanges:opacity-100">
+                                {/* Edits from before the current epoch (i.e. before the chat's
+                                    conversion to git-backed storage) can't be discarded
+                                    individually -- only the banner's discard-all covers them. */}
+                                {entry.message.sequence >= chatEpoch && (
                                 <Tooltip content={discardLabel} asChild>
                                   <button
                                     type="button"
@@ -7505,6 +7523,7 @@ function ChatInterface({
                                     <ArrowUUpLeft size={15} />
                                   </button>
                                 </Tooltip>
+                                )}
                                 <Tooltip content={formatFullTimestamp(entry.message.timestamp)} asChild>
                                   <span className="px-1 font-mono text-[11px] leading-4 text-kumo-inactive">
                                     {entry.message.timestamp.toLocaleTimeString([], {

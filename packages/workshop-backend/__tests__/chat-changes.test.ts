@@ -835,20 +835,24 @@ describe("revert and draft discard", () => {
     expect(codeBase).toMatchObject({ generation: 2, revision: 0 });
   }));
 
-  it("refuses a revert from before the conversion boundary, but allows one at it",
-      () => withImpl(async impl => {
-    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
-    addGadget(impl, 1, "APP", c1);
-    addChat(impl, 1);
-
-    // Seed the shape the git-storage migration leaves behind (see git-migration.ts): a
-    // pre-conversion message, then the conversion boundary carrying the collapsed legacy edits
-    // (a pinned gadget's edit plus a carried pending creation, whose record the migration
-    // re-stamped onto the boundary), mirrored into codeBase.
+  // Seeds the shape the git-storage migration leaves behind (see git-migration.ts): legacy
+  // pre-conversion messages (optionally including a surviving "changes" message, which
+  // post-conversion is a content-less proposed marker -- its Yjs payload is retired and its
+  // content lives in the boundary's collapsed change), then the conversion boundary carrying
+  // the collapsed legacy edits (a pinned gadget's edit plus a carried pending creation, whose
+  // record the migration re-stamped onto the boundary), mirrored into codeBase. Returns the
+  // boundary's sequence.
+  function seedConvertedChat(impl: any, c1: string, legacyChanges: boolean): number {
     impl.storage.chats.put({
       chatId: 1, sequence: impl.nextChatSequence(1), timestamp: impl.getChatTimestamp(),
       author: USER, type: "message", message: "legacy history",
     });
+    if (legacyChanges) {
+      impl.storage.chats.put({
+        chatId: 1, sequence: impl.nextChatSequence(1), timestamp: impl.getChatTimestamp(),
+        author: AGENT, type: "changes",
+      });
+    }
     let boundary = impl.nextChatSequence(1);
     impl.storage.chats.put({
       chatId: 1, sequence: boundary, timestamp: impl.getChatTimestamp(), author: USER,
@@ -869,19 +873,51 @@ describe("revert and draft discard", () => {
       pins: [{ gadgetId: 1, baseCommit: c1, mergedCommit: c1 }],
       generation: 0, epoch: boundary, revision: 0,
     };
+    meta.hasProposedChanges = true;
     impl.storage.chatMeta.put(meta);
+    return boundary;
+  }
 
-    // The boundary's change is all-or-nothing: a revert cannot start below it.
-    await expect(impl.revertChanges(1, boundary - 1, USER))
-        .rejects.toThrow(/before this chat's conversion/);
+  it("discard-all reverts through the conversion boundary and its legacy batches",
+      () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+    let boundary = seedConvertedChat(impl, c1, true);
 
-    // Reverting *at* the boundary discards everything the conversion carried over, together:
-    // the pin rolls back, the content empties, and the carried creation is rejected (its
-    // re-stamped record falls in the reverted range) instead of lingering content-less.
+    // Reverting at (or anywhere above) the legacy batch while erasing the boundary would strand
+    // the batch: its content lives only in the boundary's collapsed change. Refused.
+    await expect(impl.revertChanges(1, boundary, USER))
+        .rejects.toThrow(/discarded together/);
+
+    // The banner's discard-all (revertFrom 0) covers everything and works: the pin rolls back,
+    // the content empties, the carried creation is rejected, and nothing stays proposed (the
+    // content-less legacy batch included -- without that, the chat would report pending changes
+    // forever).
+    await impl.revertChanges(1, 0, USER);
+    let meta = impl.storage.chatMeta.get(1)!;
+    expect(meta.codeBase!.pins).toEqual([]);
+    expect(meta.codeBase).toMatchObject({ generation: 1, revision: 0 });
+    expect(meta.hasProposedChanges).toBeUndefined();
+    expect(await gadgetContent(impl, 1, 1)).toEqual({});
+    expect(impl.storage.gadgets.get(2)).toBeUndefined();
+  }));
+
+  it("allows a revert at the conversion boundary when no earlier batch is proposed",
+      () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+    let boundary = seedConvertedChat(impl, c1, false);
+
+    // Nothing before the boundary is proposed, so discarding from the boundary onward strands
+    // nothing: the pin rolls back, the content empties, and the carried creation is rejected
+    // (its re-stamped record falls in the reverted range) instead of lingering content-less.
     await impl.revertChanges(1, boundary, USER);
-    let codeBase = impl.storage.chatMeta.get(1)!.codeBase!;
-    expect(codeBase.pins).toEqual([]);
-    expect(codeBase).toMatchObject({ generation: 1, revision: 0 });
+    let meta = impl.storage.chatMeta.get(1)!;
+    expect(meta.codeBase!.pins).toEqual([]);
+    expect(meta.codeBase).toMatchObject({ generation: 1, revision: 0 });
+    expect(meta.hasProposedChanges).toBeUndefined();
     expect(await gadgetContent(impl, 1, 1)).toEqual({});
     expect(impl.storage.gadgets.get(2)).toBeUndefined();
   }));

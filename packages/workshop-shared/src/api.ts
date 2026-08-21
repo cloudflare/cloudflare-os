@@ -1999,8 +1999,10 @@ export interface Overseer extends RpcTarget {
    * number in the chat thread be reverted.
    *
    * Throws if the range covers a still-proposed mainline merge (see
-   * AiChatMessageBody.mainlineMerge for why such a message cannot be erased), or if `revertFrom`
-   * precedes the chat's conversion boundary (see AiChatMessageBody.conversionBoundary).
+   * AiChatMessageBody.mainlineMerge for why such a message cannot be erased), or if the range
+   * erases the chat's conversion boundary while keeping an earlier still-proposed batch (see
+   * AiChatMessageBody.conversionBoundary; a revert covering everything, `revertFrom` 0, always
+   * satisfies this).
    *
    * Pins declared by reverted messages are removed from ChatCodeBase (a pin survives a revert
    * iff its declaring message survives), and changes not yet materialized into a message are erased
@@ -2597,9 +2599,12 @@ export type AiChatMessageBody = {
    * into one diff against the chat's pinned commits. It acts as an epoch boundary: messages
    * before it are text-only history whose code payloads are no longer available. Present even
    * when the chat had nothing to convert (then with no `change` and no `pins`), because
-   * ChatCodeBase.epoch needs a message to point at. Overseer.revertChanges() refuses a
-   * `revertFrom` before this message: the conversion change is all-or-nothing, so the pre-migration
-   * history it collapsed cannot be partially reverted.
+   * ChatCodeBase.epoch needs a message to point at. The conversion change is all-or-nothing:
+   * Overseer.revertChanges() refuses a range that erases this message while keeping any earlier
+   * still-proposed batch (those batches' content was collapsed into this one and cannot survive
+   * it), so the boundary and the pre-migration batches it collapsed are only ever discarded
+   * together. Clients never display this message: the user took no action, and the migration it
+   * records is not theirs to action.
    */
   conversionBoundary?: true;
 

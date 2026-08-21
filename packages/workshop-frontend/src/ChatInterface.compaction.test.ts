@@ -318,3 +318,31 @@ describe("announcing a compaction", () => {
       ["announce-1", "message", "compactionCut", "message", "announce-3"]);
   });
 });
+
+// The git-storage migration's conversion boundary is a user-attributed "changes" message the
+// user never actually wrote (see AiChatMessageBody.conversionBoundary), so it never displays:
+// its content still reaches the proposed-changes views and the "Pending changes" banner, whose
+// discard-all is the affordance for discarding it.
+describe("conversion boundary display", () => {
+  const USER = { type: "user", id: "alice@example.com", name: "Alice" } as const;
+  const userMessage = (sequence: number, body: AiChatMessageBody): AiChatMessage =>
+    ({ chatId: 1, sequence, timestamp: new Date(sequence * 1000), author: USER, ...body });
+
+  it("hides conversion boundaries entirely, empty or not", () => {
+    const bodies: AiChatMessageBody[] = [
+      { type: "changes", conversionBoundary: true },
+      { type: "changes", change: LOADED, conversionBoundary: true },
+    ];
+    for (const body of bodies) {
+      expect(buildChatDisplayEntries([userMessage(10, body)], new Map())).toEqual([]);
+    }
+  });
+
+  // Ordinary user-authored changes messages (materialized drafts) keep displaying.
+  it("still shows ordinary saved edits", () => {
+    const entries = buildChatDisplayEntries(
+      [userMessage(10, { type: "changes", change: LOADED })], new Map());
+
+    expect(entries.map(entry => entry.type)).toEqual(["savedChanges"]);
+  });
+});

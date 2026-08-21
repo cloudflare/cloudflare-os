@@ -3702,19 +3702,21 @@ class OverseerImpl implements AgentHooks {
         msg.type === "changes" && msg.sequence >= revertFrom &&
         statuses.get(msg.sequence) === undefined;
 
-    // A revert may not start before the chat's conversion boundary (the synthetic message the
-    // git-storage migration wrote; see AiChatMessageBody.conversionBoundary): the boundary's change
-    // collapsed every surviving pre-conversion edit into one batch, so a revertFrom below it
-    // would mark the boundary reverted while claiming to keep some of the legacy edits it
-    // re-recorded -- a partial legacy revert, impossible by construction. Reverting *at* the
-    // boundary (discarding everything the conversion carried over, together) or after it works
-    // normally.
+    // A revert that erases the chat's conversion boundary (the synthetic message the git-storage
+    // migration wrote; see AiChatMessageBody.conversionBoundary) must also cover every earlier
+    // still-proposed "changes" message: the boundary's change collapsed the surviving
+    // pre-conversion edits into one batch, and the legacy messages that recorded them survive
+    // only as content-less proposed markers, so a revert erasing the boundary while keeping any
+    // of them would leave the chat forever proposing batches whose content is unreconstructable.
+    // Reverting everything (the discard-all path's revertFrom 0) or from after the boundary
+    // works normally.
     let boundary = messages.find(msg => msg.type === "changes" && msg.conversionBoundary);
-    if (boundary !== undefined && revertFrom < boundary.sequence) {
-      throw new Error("Cannot revert to a point before this chat's conversion to git-backed " +
-          "storage: the pre-conversion changes were collapsed into a single batch and can " +
-          "only be reverted together. Revert from the conversion point or a later change " +
-          "instead.");
+    if (boundary !== undefined && revertFrom <= boundary.sequence &&
+        messages.some(msg => msg.type === "changes" && msg.sequence < revertFrom &&
+                      statuses.get(msg.sequence) === undefined)) {
+      throw new Error("Cannot discard these changes by themselves: changes from before this " +
+          "chat's conversion to git-backed storage were collapsed into a single batch and can " +
+          "only be discarded together. Discard all of the chat's pending changes instead.");
     }
 
     // A still-proposed mainline merge (see updateChatFromMainline) cannot be reverted: it
