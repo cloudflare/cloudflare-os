@@ -301,6 +301,12 @@ export class SharingManager {
    * wart: the still-live link is re-redeemable anyway, so the removal never durably excluded this
    * recipient; a revoked link's re-added edge is inert (below); and a removal that visibly
    * affects anyone restarts the DO within ~100ms, killing a parked open before it confirms.
+   * Note the race is narrower than it looks: a pending-only recipient is invisible to
+   * listCollaborators too, so the removal UI cannot even target one mid-verification -- a racing
+   * removal was necessarily aimed at an edge some earlier open had already confirmed. And the
+   * re-add grants no incremental authority: the recipient holds the live link and can re-redeem
+   * it manually whether or not this confirm lands. The durable exclusion is revoking the link
+   * (computeEffectiveRoles skips revoked links, which inerts every edge referencing one).
    *
    * Confirming cannot resurrect revoked authority: effective-role resolution already excludes
    * revoked links, so an edge confirmed after its link was revoked grants nothing (it lingers
