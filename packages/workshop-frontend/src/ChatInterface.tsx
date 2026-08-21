@@ -5740,6 +5740,29 @@ function ChatInterface({
     if (applyActionLogUpdateToCachedMessages(record)) scheduleUpdate();
   });
 
+  // On (re)connect, re-fetch cached action cards still shown as pending or blank: a resolution
+  // that happened while we were away isn't replayed by the pending-only subscription.
+  useEffect(() => {
+    let cancelled = false;
+    for (const locations of cacheRef.current.actionMessages.values()) {
+      const location = locations.values().next().value;
+      if (!location) continue;
+      const msg = cacheRef.current.messages.get(location.chatId)?.[location.sequence];
+      if (msg?.type !== "action") continue;
+      if (msg.actionLog && msg.actionLog.state !== "pending") continue;
+
+      overseer.getChatMessage(location.chatId, location.sequence).then((fetched) => {
+        if (cancelled || fetched?.type !== "action" || !fetched.actionLog) return;
+        // Resolution is monotonic: never regress a card another channel already resolved.
+        const current = cacheRef.current.messages.get(location.chatId)?.[location.sequence];
+        if (fetched.actionLog.state === "pending" && current?.type === "action" &&
+            current.actionLog && current.actionLog.state !== "pending") return;
+        if (applyActionLogUpdateToCachedMessages(fetched.actionLog)) scheduleUpdate();
+      }, (err) => console.error("Failed to refresh action card:", err));
+    }
+    return () => { cancelled = true; };
+  }, [overseer]);
+
   // Reset per-chat UI state when selectedChatId changes
   useEffect(() => {
     setExpandedToolCalls(new Set());
