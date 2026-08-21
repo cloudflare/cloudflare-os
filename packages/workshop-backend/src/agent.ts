@@ -1131,15 +1131,19 @@ export async function runAgent(
   let recordedBindingAdditions = new Map<string, number>();
   let bindingAdditionKey = (gadgetId: WorkpieceId, name: string) => `${gadgetId}:${name}`;
 
-  // Track which files have been read in this session, keyed by (workpieceId, filename). Edits
+  // Track which files have been read in this session, per workpiece by filename. Edits
   // aren't allowed before reading. The value is the commit an unpinned read observed
-  // (AiToolCall.observedCommit), or undefined for reads served from the session doc; editFile's
-  // gate uses it to require that the read saw the file's *current* committed content before
-  // anchoring a pin at head. Deliberately not carried across a compaction boundary: an
+  // (AiToolCall.observedCommit), or undefined for reads served from the session content;
+  // editFile's gate uses it to require that the read saw the file's *current* committed content
+  // before anchoring a pin at head. Deliberately not carried across a compaction boundary: an
   // edit has to quote the text it replaces, and a read the summary swallowed no longer tells the
   // agent what that text is, so re-reading is both required and correct.
-  let filesRead = new Map<string, string | undefined>();
-  let fileKey = (workpieceId: WorkpieceId, filename: string) => `${workpieceId}:${filename}`;
+  let filesRead = new Map<WorkpieceId, Map<string, string | undefined>>();
+  let markFileRead = (workpieceId: WorkpieceId, filename: string, commit?: string) => {
+    let files = filesRead.get(workpieceId);
+    if (files === undefined) filesRead.set(workpieceId, files = new Map());
+    files.set(filename, commit);
+  };
 
   // Resolve a file tool's optional `workpiece` parameter -- the chat binding name of the target
   // workpiece -- to a workpiece id (or undefined, meaning the workspace's default gadget,
@@ -1195,14 +1199,41 @@ export async function runAgent(
   // An epoch boundary (an epochBoundary merge, or a migrated chat's conversionBoundary changes
   // message) closed the chat's epoch: everything before it lives in commits from then on, the
   // content restarts empty, and gadgets re-pin lazily.
-  let resetSessionEpoch = () => {
+  //
+  // Read-before-edit knowledge crosses the boundary only where it re-anchors to a commit: a
+  // gadget pinned in the new epoch skips editFile's freshness gate on the strength of a
+  // filesRead entry, so every surviving entry must be byte-identical at the gadget's base when
+  // next consulted. A gadget the merge committed had its files in the chat's session (pinned,
+  // or a covered creation), so all its entries were tracking the session -- the file's
+  // evolution since each read/write was in the model's context -- and the merge committed
+  // exactly that session content: every entry re-anchors to the merge's commit. Other gadgets
+  // were unpinned (or had no net change and no commit): commit-stamped entries keep their
+  // stamps, session-served ones have nothing to anchor to and drop. The
+  // entry then survives only if the file is unchanged from its stamp to the gadget's base
+  // beyond the boundary (stampedReadBase -- the same freshness rule the stamped-read replay
+  // applies); everything else is dropped, so editFile forces a re-read. A conversion boundary
+  // passes no commits: session knowledge from the retired legacy representation has nothing to
+  // anchor to.
+  let resetSessionEpoch = async (boundarySequence: number,
+                                 mergeCommits?: Map<WorkpieceId, string>) => {
     sessionContent = new Map();
     pinnedGadgets.clear();
     pendingReplayEdits = [];
-    // Read-before-edit knowledge is epoch-scoped: the content those reads were served from is
-    // gone, and a gadget pinned in the new epoch skips editFile's freshness gate on the
-    // strength of a filesRead entry -- which must therefore never be a previous epoch's read.
-    filesRead.clear();
+    let survivors = new Map<WorkpieceId, Map<string, string | undefined>>();
+    for (let [workpieceId, files] of filesRead) {
+      let base = stampedReadBase(workpieceId, boundarySequence);
+      if (base === undefined) continue;
+      let mergeCommit = mergeCommits?.get(workpieceId);
+      for (let [filename, observed] of files) {
+        let stamp = mergeCommit ?? observed;
+        if (stamp === undefined) continue;
+        if ((await changedPaths(stamp, base)).has(filename)) continue;
+        let target = survivors.get(workpieceId);
+        if (target === undefined) survivors.set(workpieceId, target = new Map());
+        target.set(filename, stamp);
+      }
+    }
+    filesRead = survivors;
   };
 
   // Establishes a pin's base tree in the session content during replay and marks the gadget
@@ -1262,9 +1293,23 @@ export async function runAgent(
     await applyReplayedPin(upcoming);
   };
 
-  // The current base for judging whether a stamped read's content is stale (see the readFile
-  // replay case): the pin's base commit for gadgets pinned since, else the live head.
-  let stampedReadBase = (workpieceId: WorkpieceId): string | undefined => {
+  // The base commit-anchored knowledge from before `afterSequence` must match to still be
+  // current: the base of the gadget's next surviving pin declaration after that point, else
+  // (never pinned since) the pin of the chat's live code base -- established by unmaterialized
+  // rows, so declared nowhere yet -- else the live head. The next *pin* rather than the final
+  // head because a pin is where the model's belief chain re-roots: from the pin on, the file's
+  // evolution is in the model's own context (its edits, user-change diffs, revert notes), so
+  // knowledge that matches the pin base stays current through it (and across an epoch boundary,
+  // where resetSessionEpoch re-anchors it to the merge's commit). Between the knowledge and that
+  // pin the gadget was unpinned -- tracking head, with nothing chat-local in between -- so a
+  // plain per-file comparison is exactly the freshness question.
+  let stampedReadBase = (workpieceId: WorkpieceId, afterSequence: number): string | undefined => {
+    for (let msg of chatMessages) {
+      if (msg.sequence <= afterSequence || msg.type !== "changes") continue;
+      if (chatMessageStatus.get(msg.sequence) === "reverted") continue;
+      let pin = (msg.pins ?? []).find(p => p.gadgetId === workpieceId);
+      if (pin !== undefined) return pin.baseCommit;
+    }
     for (let pin of hooks.getChatCodeBase(chatId)?.pins ?? []) {
       if (pin.gadgetId === workpieceId) return pin.baseCommit;
     }
@@ -1493,13 +1538,15 @@ export async function runAgent(
                     };
                   } else if (toolCall.observedCommit !== undefined) {
                     // The read was served from committed code (the workpiece was unpinned; see
-                    // the live tool). If the file has since changed relative to the gadget's
-                    // current base, the model's memory of it is stale: elide the content and
-                    // direct the agent to re-read. The file stays out of filesRead, so
+                    // the live tool). If the file has since changed relative to the base the
+                    // read's knowledge next reaches (stampedReadBase -- the next pin if the
+                    // gadget pinned after the read, since from there the file's evolution is in
+                    // the model's own context), its memory of it is stale: elide the content
+                    // and direct the agent to re-read. The file stays out of filesRead, so
                     // editFile's gate rejects edits anchored to the elided read too.
                     let {workpieceId} = hooks.resolveWorkpieceRoot(
                         resolveToolWorkpieceId(toolCall.input.workpiece));
-                    let base = stampedReadBase(workpieceId);
+                    let base = stampedReadBase(workpieceId, msg.sequence);
                     let stale = base === undefined ||
                         (await changedPaths(toolCall.observedCommit, base))
                             .has(toolCall.input.filename);
@@ -1518,8 +1565,8 @@ export async function runAgent(
                         throw new Error("File missing from its observed commit.");
                       }
                       toolOutput = {text: value};
-                      filesRead.set(fileKey(workpieceId, toolCall.input.filename),
-                                    toolCall.observedCommit);
+                      markFileRead(workpieceId, toolCall.input.filename,
+                                   toolCall.observedCommit);
                     }
                   } else {
                     let {workpieceId} =
@@ -1543,7 +1590,7 @@ export async function runAgent(
                     }
 
                     toolOutput = {text: value};
-                    filesRead.set(fileKey(workpieceId, toolCall.input.filename), undefined);
+                    markFileRead(workpieceId, toolCall.input.filename);
                   }
                   break;
                 }
@@ -1558,7 +1605,7 @@ export async function runAgent(
                     content: toolCall.input.content,
                   });
                   toolOutput = {text: jsonToolResultText({success: true, changeId: nextChangeId})};
-                  filesRead.set(fileKey(workpieceId, toolCall.input.filename), undefined);
+                  markFileRead(workpieceId, toolCall.input.filename);
                   break;
                 }
                 case "editFile": {
@@ -1573,6 +1620,10 @@ export async function runAgent(
                     replacement: toolCall.input.replacement,
                   });
                   toolOutput = {text: jsonToolResultText({success: true, changeId: nextChangeId})};
+                  // Like writeFile: a successful edit leaves the agent knowing the file's exact
+                  // resulting content (the gate guaranteed the before-content, and the edit is
+                  // its own), so it counts as session knowledge for further edits.
+                  markFileRead(workpieceId, toolCall.input.filename);
                   break;
                 }
                 case "describeBinding":
@@ -1704,7 +1755,7 @@ export async function runAgent(
         // that no pre-conversion message discharges (none carries a change or watermark), and they
         // must not leak into the post-boundary epoch. The pre-boundary log contributes no changes
         // or pins, so the rest of the reset is a no-op either way.
-        if (msg.conversionBoundary) resetSessionEpoch();
+        if (msg.conversionBoundary) await resetSessionEpoch(msg.sequence);
 
         if (chatMessageStatus.get(msg.sequence) !== "reverted") {
           // Pins this batch establishes enter the content before the change applies (a no-op for
@@ -1790,8 +1841,12 @@ export async function runAgent(
 
       case "merge":
         // Nothing to tell the agent, but a boundary merge closed the chat's epoch: the session
-        // doc restarts empty and later pins re-seed lazily.
-        if (msg.epochBoundary) resetSessionEpoch();
+        // content restarts empty, later pins re-seed lazily, and read-before-edit knowledge
+        // re-anchors to the merge's commits (see resetSessionEpoch).
+        if (msg.epochBoundary) {
+          await resetSessionEpoch(msg.sequence,
+              new Map(msg.commits.map(c => [c.gadgetId, c.commitId])));
+        }
         break;
 
       case "slashCommand":
@@ -2314,7 +2369,7 @@ export async function runAgent(
               if (fileContent === undefined) {
                 throw new Error("File does not exist.");
               }
-              filesRead.set(fileKey(resolved.workpieceId, filename), head);
+              markFileRead(resolved.workpieceId, filename, head);
               return toolResult(fileContent, {observedCommit: head});
             }
           }
@@ -2323,7 +2378,7 @@ export async function runAgent(
           if (text === undefined) {
             throw new Error("File does not exist.");
           }
-          filesRead.set(fileKey(resolved.workpieceId, filename), undefined);
+          markFileRead(resolved.workpieceId, filename);
           return toolResult(text);
         } catch (error) {
           toolCallNotes.set(toolCallId, {
@@ -2366,7 +2421,7 @@ export async function runAgent(
 
           // The agent knows exactly what's in the file, so add it to the `filesRead` set so
           // that it can make further edits without rewriting.
-          filesRead.set(fileKey(resolved.workpieceId, filename), undefined);
+          markFileRead(resolved.workpieceId, filename);
 
           return toolResult(jsonToolResultText({success: true, changeId: nextChangeId}));
         } catch (error) {
@@ -2400,8 +2455,8 @@ export async function runAgent(
         try {
           let resolved =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
-          let key = fileKey(resolved.workpieceId, filename);
-          if (!filesRead.has(key)) {
+          let readFiles = filesRead.get(resolved.workpieceId);
+          if (readFiles === undefined || !readFiles.has(filename)) {
             throw new Error("You must read a file before you can edit it.");
           }
 
@@ -2414,7 +2469,7 @@ export async function runAgent(
           if (!pinnedGadgets.has(resolved.workpieceId)) {
             let head = hooks.getGadgetHead(resolved.workpieceId);
             if (head !== undefined) {
-              let observed = filesRead.get(key);
+              let observed = readFiles.get(filename);
               if (observed === undefined ||
                   (await changedPaths(observed, head)).has(filename)) {
                 throw new Error("The file's committed content has changed since you read it. " +
@@ -2440,6 +2495,10 @@ export async function runAgent(
             let edit = replaceSpanChange(before.length, pos, textToReplace, replacement);
             await appendAgentEdit(
                 resolved.workpieceId, {[resolved.workpieceId]: [[filename, {edit}]]}, pin);
+            // Like writeFile: the agent knows the file's exact resulting content, so the entry
+            // becomes session knowledge (the gadget is pinned now, so a commit stamp -- which
+            // predates this edit -- would be the wrong thing to carry forward).
+            markFileRead(resolved.workpieceId, filename);
           } else {
             // A no-op edit appends no change row, so nothing will supersede its streamed
             // preview; withdraw it explicitly.
