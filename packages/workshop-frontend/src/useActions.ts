@@ -1,15 +1,28 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { RpcStub, RpcTarget } from 'capnweb'
 import { ActionLogEntry, ActionsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
 
-// One ref-counted subscription per Overseer stub, shared across consumers.
-// `startAfter: epoch 0` asks the backend to replay full history through the
-// subscriber, avoiding a stale-state race against a separate `listActions()`.
+// One ref-counted store per Overseer stub, shared across consumers. On subscribe the server
+// replays currently-pending records through entry() before resolving the call, so replay and
+// live updates arrive as one ordered stream and the RPC resolving is the "settled" signal.
+// Resolved history is demand-paged separately (see useActionHistory).
+
+export type ActionsState = {
+  /**
+   * 'checking' until the subscription (and its pending replay) settles; 'error' if it failed
+   * (`pending` keeps whatever was gathered).
+   */
+  status: 'checking' | 'ready' | 'error'
+
+  /** Pending-review records found so far, oldest first (createdAt, then id). */
+  pending: readonly ActionLogEntry[]
+}
 
 type Store = {
-  actionsById: Map<number, ActionLogEntry>
-  pendingActionsById: Map<number, ActionLogEntry>
-  isReady: boolean
+  // Immutable object handed to useSyncExternalStore; rebuilt from the staged fields on commit.
+  snapshot: ActionsState
+  stagedPending: Map<number, ActionLogEntry>
+  stagedEntries: Map<number, ActionLogEntry>
   refCount: number
   listeners: Set<() => void>
   entryListeners: Set<(record: ActionLogEntry) => void>
@@ -18,15 +31,20 @@ type Store = {
   notifyScheduled: boolean
 }
 
+const EMPTY_STATE: ActionsState = {
+  status: 'checking',
+  pending: [],
+}
+
 const stores = new WeakMap<RpcStub<Overseer>, Store>()
 
 function getStore(overseer: RpcStub<Overseer>): Store {
   let store = stores.get(overseer)
   if (!store) {
     store = {
-      actionsById: new Map(),
-      pendingActionsById: new Map(),
-      isReady: false,
+      snapshot: EMPTY_STATE,
+      stagedPending: new Map(),
+      stagedEntries: new Map(),
       refCount: 0,
       listeners: new Set(),
       entryListeners: new Set(),
@@ -39,71 +57,76 @@ function getStore(overseer: RpcStub<Overseer>): Store {
   return store
 }
 
-function notify(store: Store) {
+function commit(store: Store, status: ActionsState['status'] = store.snapshot.status): void {
+  // Entries arrive in ascending id order, so this sort is near-free at pending-count scale.
+  const pending = [...store.stagedPending.values()].toSorted((a, b) =>
+    new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() || a.id - b.id)
+  store.snapshot = { status, pending }
   for (const listener of store.listeners) listener()
 }
 
+// Coalesce bursts of entries into one snapshot per frame. Status transitions commit synchronously
+// instead (see openSubscription) so a throttled background tab still settles.
 function scheduleNotify(store: Store) {
   if (store.notifyScheduled) return
   store.notifyScheduled = true
 
   window.requestAnimationFrame(() => {
     store.notifyScheduled = false
-    store.actionsById = new Map(store.pendingActionsById)
-    notify(store)
+    commit(store)
   })
 }
 
 function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
   const generation = ++store.generation
-  store.actionsById = new Map()
-  store.pendingActionsById = new Map()
-  store.isReady = false
+  store.stagedPending = new Map()
+  store.stagedEntries = new Map()
+  store.snapshot = EMPTY_STATE
 
   class ActionsSubscriberImpl extends RpcTarget implements ActionsSubscriber {
     entry(record: ActionLogEntry): void {
       if (store.generation !== generation) return
-      store.pendingActionsById.set(record.id, record)
+      store.stagedEntries.set(record.id, record)
+      if (record.state === 'pending') store.stagedPending.set(record.id, record)
+      else store.stagedPending.delete(record.id)
       scheduleNotify(store)
-      for (const listener of store.entryListeners) listener(record)
+      for (const listener of store.entryListeners) {
+        try {
+          listener(record)
+        } catch (err) {
+          console.error('Action entry listener failed:', err)
+        }
+      }
     }
 
-    ready(): void {
-      if (store.generation !== generation) return
-      store.actionsById = new Map(store.pendingActionsById)
-      store.isReady = true
-      notify(store)
-    }
+    // Settledness is signalled by subscribeToActions() resolving: replayed entries are delivered
+    // on the same ordered stream, before the resolution.
+    ready(): void {}
   }
 
-  ;(async () => {
-    try {
-      const sub = await overseer.subscribeToActions(
-        new ActionsSubscriberImpl() as unknown as RpcStub<ActionsSubscriber>,
-        new Date(0),
-      )
-      if (store.generation !== generation) {
-        sub[Symbol.dispose]()
-        return
-      }
-      store.subscription = sub
-    } catch (err) {
-      if (store.generation === generation) {
-        store.isReady = true
-        notify(store)
-        console.error('Failed to subscribe to actions:', err)
-      }
+  overseer.subscribeToActions(
+    new ActionsSubscriberImpl() as unknown as RpcStub<ActionsSubscriber>,
+  ).then(sub => {
+    if (store.generation !== generation) {
+      sub[Symbol.dispose]()
+      return
     }
-  })()
+    store.subscription = sub
+    commit(store, 'ready')
+  }, (error: unknown) => {
+    if (store.generation !== generation) return
+    console.error('Failed to load pending actions:', error)
+    commit(store, 'error')
+  })
 }
 
 function closeSubscription(store: Store) {
   store.generation++
   store.subscription?.[Symbol.dispose]()
   store.subscription = null
-  store.actionsById = new Map()
-  store.pendingActionsById = new Map()
-  store.isReady = false
+  store.stagedPending = new Map()
+  store.stagedEntries = new Map()
+  store.snapshot = EMPTY_STATE
 }
 
 function acquire(overseer: RpcStub<Overseer>): Store {
@@ -125,15 +148,8 @@ function release(overseer: RpcStub<Overseer>) {
   }
 }
 
-export type UseActionsResult = {
-  actionsById: Map<number, ActionLogEntry>
-  isReady: boolean
-}
-
-const EMPTY_MAP: Map<number, ActionLogEntry> = new Map()
-
-/** Subscribe to the gadget's action log. Pass `null` to no-op. */
-export function useActions(overseer: RpcStub<Overseer> | null): UseActionsResult {
+/** Subscribe to the gadget's action log. Pass `null` to no-op ('checking', empty maps). */
+export function useActions(overseer: RpcStub<Overseer> | null): ActionsState {
   useEffect(() => {
     if (!overseer) return
     acquire(overseer)
@@ -147,51 +163,46 @@ export function useActions(overseer: RpcStub<Overseer> | null): UseActionsResult
     return () => { store.listeners.delete(cb) }
   }, [overseer])
   const getSnapshot = useCallback(() => {
-    if (!overseer) return EMPTY_MAP
-    return stores.get(overseer)?.actionsById ?? EMPTY_MAP
-  }, [overseer])
-  const getIsReady = useCallback(() => {
-    if (!overseer) return false
-    return stores.get(overseer)?.isReady ?? false
+    if (!overseer) return EMPTY_STATE
+    return stores.get(overseer)?.snapshot ?? EMPTY_STATE
   }, [overseer])
 
-  const actionsById = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-  const isReady = useSyncExternalStore(subscribe, getIsReady, getIsReady)
-
-  return { actionsById, isReady }
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
 /**
- * Per-entry callback variant. Fires once for every existing action on mount
- * (replay) and once per live update — no separate seeding needed.
+ * Per-entry callback variant. Fires once per received entry (replayed pendings and live updates
+ * alike); on mount it replays the records already received this session. That covers patching
+ * content fetched over the same stub: anything fetched reflects the log at fetch time, and
+ * everything that changed since arrived through the stream.
  */
 export function useActionEntries(
   overseer: RpcStub<Overseer> | null,
   onEntry: (record: ActionLogEntry) => void,
 ): void {
-  // Stable listener identity; latest callback read via ref so updating
-  // `onEntry` doesn't resubscribe.
   const callbackRef = useRef(onEntry)
   callbackRef.current = onEntry
-  const [stableListener] = useState(() => (record: ActionLogEntry) => {
-    callbackRef.current(record)
-  })
 
   useEffect(() => {
     if (!overseer) return
+
+    function listener(record: ActionLogEntry): void {
+      callbackRef.current(record)
+    }
+
     const store = acquire(overseer)
-    store.entryListeners.add(stableListener)
+    store.entryListeners.add(listener)
 
     // Retained until `release()` drops refCount to 0 and deletes the store, so late
-    // consumers can replay entries while a shared subscription is still alive.
-    for (const record of store.pendingActionsById.values()) {
-      stableListener(record)
+    // consumers can replay already-received entries while a shared subscription is still alive.
+    for (const record of store.stagedEntries.values()) {
+      listener(record)
     }
 
     return () => {
       const s = stores.get(overseer)
-      s?.entryListeners.delete(stableListener)
+      s?.entryListeners.delete(listener)
       release(overseer)
     }
-  }, [overseer, stableListener])
+  }, [overseer])
 }

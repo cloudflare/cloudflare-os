@@ -1,16 +1,16 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Popover } from '@cloudflare/kumo'
 import { ArrowRight, Pulse } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
-import type { ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
+import type { Overseer } from '@gadgets/workshop-shared/api'
 import { CountBadge } from './components/CountBadge'
 import { ResolveButton } from './components/ResolveButton'
 import { formatRelativeTime, type ActivityView } from './Activity'
+import { useActions } from './useActions'
 import { useResolveAction } from './useResolveAction'
 
 interface ActivityNotificationsProps {
   overseer: RpcStub<Overseer>
-  pendingActions: ActionLogEntry[]
   onViewActivity: (view: ActivityView) => void
 }
 
@@ -18,16 +18,12 @@ const PREVIEW_LIMIT = 3
 
 export default function ActivityNotifications({
   overseer,
-  pendingActions,
   onViewActivity,
 }: ActivityNotificationsProps) {
   const [open, setOpen] = useState(false)
   const [processing, setProcessing] = useState<Set<number>>(new Set())
   const resolveAction = useResolveAction(overseer, setProcessing)
-
-  const pending = useMemo(() => pendingActions.toSorted((a, b) =>
-    new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() || a.id - b.id),
-  [pendingActions])
+  const { status, pending } = useActions(overseer)
 
   const openFullView = (view: ActivityView) => {
     setOpen(false)
@@ -69,7 +65,10 @@ export default function ActivityNotifications({
 
         {pending.length === 0 ? (
           <p className="m-0 px-3.5 pb-3 pt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-            Nothing is waiting on you.
+            {status === 'error'
+              ? 'Could not check for requests — reload the page to try again.'
+              : status === 'checking' ? 'Checking for pending requests…'
+              : 'Nothing is waiting on you.'}
           </p>
         ) : (
           <div className="max-h-[min(58vh,420px)] overflow-y-auto pb-1">

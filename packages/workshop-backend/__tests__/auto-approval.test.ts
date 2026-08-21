@@ -1,12 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
-import { AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn } from "../src/auto-approval.js";
+import { AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn, DRAIN_PAGE_SIZE }
+    from "../src/auto-approval.js";
 import type { ActionRecord, AutoApproveTagRecord } from "../src/overseer.js";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import { makeMockStorage } from "./mock-storage.js";
 
 function makeStorage(): AutoApprovalStorage {
   return createTypedStorage(makeMockStorage(), {
+    singletons: { nextActionId: 0 },
     collections: {
       actions: collection<ActionRecord>()({ primaryKey: "id" }),
       autoApproveTags: collection<AutoApproveTagRecord>()({
@@ -44,6 +46,8 @@ function putAction(
       autoApprovable: opts.autoApprovable ?? true,
     },
   });
+  // Keep nextActionId ahead of every stored id, as the real allocator does.
+  if (id >= storage.nextActionId.get()) storage.nextActionId.put(id + 1);
 }
 
 function getAction(storage: AutoApprovalStorage, id: number): ActionRecord & {type: "action"} {
@@ -210,5 +214,81 @@ describe("AutoApprovalDrainer.drain", () => {
     expect(apply.calls).toEqual([1, 2]);
     expect(getAction(storage, 1).state).toBe("approved");
     expect(getAction(storage, 2).state).toBe("approved");
+  });
+
+  it("pages through a large log, applying eligible actions in ascending order", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    let eligible: number[] = [];
+    for (let id = 0; id < DRAIN_PAGE_SIZE * 2 + 30; id++) {
+      if (id % 5 === 0) {
+        putAction(storage, id, { gatekeeperId: GK + 1 });   // other gatekeeper: skipped, not a gate
+      } else if (id % 5 === 1) {
+        putAction(storage, id, { state: "approved" });      // already resolved
+      } else {
+        putAction(storage, id);
+        eligible.push(id);
+      }
+    }
+
+    let { applyFn, calls } = makeImmediateApply(storage);
+    await new AutoApprovalDrainer(storage, applyFn).drain(GK);
+
+    expect(calls).toEqual(eligible);
+  });
+
+  it("halts at a manual gate encountered in a later page", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    let gateId = DRAIN_PAGE_SIZE + 5;
+    for (let id = 0; id < DRAIN_PAGE_SIZE + 20; id++) {
+      putAction(storage, id, { autoApprovable: id !== gateId });
+    }
+
+    let { applyFn, calls } = makeImmediateApply(storage);
+    await new AutoApprovalDrainer(storage, applyFn).drain(GK);
+
+    expect(calls).toEqual(Array.from({ length: gateId }, (_, i) => i));
+    expect(getAction(storage, gateId).state).toBe("pending");
+    expect(getAction(storage, gateId + 1).state).toBe("pending");
+  });
+
+  it("halts when an apply fails, leaving it and everything after pending", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    putAction(storage, 1);
+    putAction(storage, 2);
+    putAction(storage, 3);
+
+    let inner = makeImmediateApply(storage);
+    let applyFn: ApplyPendingActionFn = (record, resolvedBy, autoApproved) => {
+      if (record.id === 2) throw new Error("apply failed");
+      return inner.applyFn(record, resolvedBy, autoApproved);
+    };
+    await new AutoApprovalDrainer(storage, applyFn).drain(GK);
+
+    expect(inner.calls).toEqual([1]);
+    expect(getAction(storage, 2).state).toBe("pending");
+    expect(getAction(storage, 3).state).toBe("pending");
+  });
+
+  // An action created after a drain captured its bound is out of that drain's scope; the creation
+  // path is responsible for its own drain() call (which the rerun flag folds in -- see the
+  // parked-mid-apply test above).
+  it("leaves actions created past the drain's bound for their own drain call", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    putAction(storage, 1);
+
+    let apply = makeControlledApply(storage);
+    let drainer = new AutoApprovalDrainer(storage, apply.applyFn);
+    let first = drainer.drain(GK);   // captures throughId = 2
+
+    putAction(storage, 2);           // arrives mid-drain, with no accompanying drain() call
+    apply.releaseNext();
+    await first;
+
+    expect(apply.calls).toEqual([1]);
+    expect(getAction(storage, 2).state).toBe("pending");
   });
 });

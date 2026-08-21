@@ -1763,10 +1763,13 @@ export interface Overseer extends RpcTarget {
   newAgentSpawnerGatekeeper(config: AgentSpawnerConfig): Promise<GatekeeperClient<any>>;
 
   /**
-   * List history of actions.
-   * TODO: This should be paginated.
+   * Fetch one page of resolved action history, newest first by id (creation order). Page size is
+   * a server constant, and the server also caps the raw records examined per call, so a filtered
+   * page may be short or even empty while older history remains: absence of `nextBeforeId` is the
+   * only terminator.
    */
-  listActions(): Promise<ActionLogEntry[]>;
+  listActions(options?: {beforeId?: number, filter?: ActionHistoryFilter})
+      : Promise<ActionHistoryPage>;
 
   /**
    * Approve an action that is currently in the "pending" state. The action will be performed on
@@ -1841,7 +1844,15 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Subscribe to action adds/updates. Dispose the returned stub to unsubscribe.
-   * If `startAfter` is set, replay actions changed after that timestamp.
+   *
+   * On subscribe, currently-pending records are replayed through the subscriber (the server scans
+   * the log in bounded internal pages; ordering relative to live updates is simply the stream
+   * order), then ready() fires. Resolved history is fetched separately via listActions().
+   *
+   * `startAfter` is deprecated: its presence switches the replay from pending-only to every
+   * record, since pre-deploy clients derive their entire history view from replay. The value
+   * itself is ignored. New clients must omit it and page history via listActions().
+   * TODO: Delete it once pre-deploy clients have cycled out.
    */
   subscribeToActions(subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date): Promise<RpcStub<{}>>;
 
@@ -2458,6 +2469,28 @@ export type AiChatHistoryPage = {
      */
     proposedChange?: CodeChange;
   };
+};
+
+/** Type filter for listActions(): one specific record type, or "all" for every resolved record. */
+export type ActionHistoryFilter = "all" | ActionLogEntry["type"];
+
+/**
+ * Whether a record passes an ActionHistoryFilter. Shared by the server's listActions() paging and
+ * the client's live-merge so the two ends of the wire can't drift.
+ */
+export function matchesActionHistoryFilter(
+    record: {type: ActionLogEntry["type"]}, filter: ActionHistoryFilter): boolean {
+  return filter === "all" || record.type === filter;
+}
+
+/** One page of resolved action history from listActions(). */
+export type ActionHistoryPage = {
+  /** Resolved records, descending id (creation order, newest first). May be short or empty while
+   * older history remains — absence of `nextBeforeId` is the only terminator. */
+  entries: ActionLogEntry[];
+
+  /** Smallest raw id examined. Pass as `beforeId` for the older page. */
+  nextBeforeId?: number;
 };
 
 export type AiChatAuthorInfo = {
