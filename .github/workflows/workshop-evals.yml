@@ -1,0 +1,154 @@
+name: Workshop evals
+
+# Live agent evals: every run boots a workerd Workshop and drives a real model, so this is kept out
+# of regular CI. It runs on demand, and on a pull request only when someone adds the `run-evals`
+# label. Add a schedule after results have durable ingestion; expiring workflow artifacts do not
+# support trend analysis or regression alerts across runs.
+on:
+  workflow_dispatch:
+    inputs:
+      trials:
+        description: Repetitions per task and model
+        default: "10"
+      models:
+        description: Comma-separated agent models, or blank for the defaults
+        default: ""
+  pull_request:
+    types: [labeled, synchronize]
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24.19.0"
+  # Manual runs want statistics; a labelled pull request wants a quick read.
+  WORKSHOP_EVAL_TRIALS: ${{ inputs.trials || (github.event_name == 'pull_request' && '3' || '10') }}
+  WORKSHOP_EVAL_MODELS: ${{ inputs.models }}
+
+# One eval run at a time. Each is long and spends real inference; overlapping runs would multiply
+# that spend and queue 8 more runners behind the ones already going. Log attribution is safe either
+# way, since each trial filters on its own fresh workspace.
+concurrency:
+  group: workshop-evals-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  evals:
+    name: ${{ matrix.expectation }} (shard ${{ matrix.shard }}/6)
+    # A fork's pull request cannot reach the secrets, and would spend this repository's inference
+    # budget if it could. Same guard as bonk-pr.yml.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id &&
+       contains(github.event.pull_request.labels.*.name, 'run-evals'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      # Workers AI rate-limits per account, and every shard runs an agent that makes many model
+      # calls per turn. Running all twelve jobs at once earns a wall of 429s, which the scorer
+      # correctly leaves unscored -- so the run completes having measured almost nothing. Cap the
+      # concurrency instead; raise it only against a measured limit for the account in use.
+      max-parallel: 4
+      matrix:
+        expectation: [required, frontier]
+        # A trial builds a whole application, so it costs minutes, not seconds: the tasks in this
+        # suite run 3-7 minutes each. Six shards keeps a ten-trial run inside the job timeout.
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Ahead of setup-node, which shells out to `pnpm store path` to find the directory it caches.
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The harness boots the real workshop-backend Worker, whose `src/generated/` codegen is
+      # gitignored. Without this the Worker fails to bundle and every trial dies at startup.
+      - name: Build
+        run: pnpm build
+
+      - name: Run evals
+        working-directory: packages/workshop-evals
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+          WORKSHOP_EVAL_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
+          WORKSHOP_EVAL_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          WORKSHOP_EVAL_SHARD: ${{ matrix.shard }}/6
+        run: pnpm run eval:${{ matrix.expectation }}
+
+      - name: Upload results
+        # Frontier tasks are expected to fail and required tasks are worth diagnosing when they do,
+        # so the report is always kept.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: eval-results-${{ matrix.expectation }}-${{ matrix.shard }}
+          path: packages/workshop-evals/.wrangler/evals/
+          retention-days: 30
+
+  summary:
+    name: Summary
+    needs: evals
+    if: always() && needs.evals.result != 'skipped'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download shard results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: shards
+          pattern: eval-results-*
+
+      # Each shard reduced separately, because the reducer refuses a duplicated run ID and merging
+      # raw reports would hide a genuine collision rather than report it.
+      - name: Summarize
+        working-directory: packages/workshop-evals
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          reports=("$GITHUB_WORKSPACE"/shards/*/*.json)
+          if [[ ${#reports[@]} -eq 0 ]]; then
+            echo "No eval reports were produced." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          for report in "${reports[@]}"; do
+            name="$(basename "$(dirname "$report")")"
+            pnpm run eval:summary "$report" "$name"
+            cat ".wrangler/evals/$name.md" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Upload summaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: eval-summaries
+          path: packages/workshop-evals/.wrangler/evals/*.json
+          retention-days: 30

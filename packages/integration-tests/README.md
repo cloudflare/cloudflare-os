@@ -7,9 +7,10 @@ toolkit those tests are built from. Part of `pnpm test`, so CI runs it like any 
 pnpm --filter @gadgets/integration-tests test:run
 ```
 
-`workshop-backend/__integration__` also covers more than one module. It runs in-process under
-`@cloudflare/vitest-pool-workers`, so it reaches Durable Object internals through `cloudflare:test`.
-This package runs out-of-process and reaches only the public Cap'n Web API.
+Two other suites also cover more than one module. `workshop-backend/__integration__` runs in-process
+under `@cloudflare/vitest-pool-workers` and reaches Durable Object internals. `packages/workshop-evals`
+adds a live model to this toolkit. [`docs/integration-testing.md`](../../docs/integration-testing.md)
+compares all four.
 
 ## The toolkit
 

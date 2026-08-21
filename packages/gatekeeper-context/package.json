@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./context-types": "./src/context-types.ts"
+  },
   "scripts": {
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
     "deploy": "vp run --no-cache build:app && wrangler deploy",
