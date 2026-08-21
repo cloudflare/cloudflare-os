@@ -831,6 +831,8 @@ Note that this differs from the \`env\` a Gadget's own code sees: a Gadget's ser
 When the user asks you to just do a task that can be done with these bindings, you should use executeCode to perform the task, instead of adding code to a gadget to do it.
 
 The function also receives a \`self\` parameter which is a magic object that points back to this chat thread. Calling any method on \`self\`, like \`self.foo(123)\`, delivers a callback message to this chat and activates you to respond. \`self\` can be passed over RPC (e.g. to a subscription method) and stored in a Durable Object's KV storage for long-term callbacks. When an agent callback is received, it appears in your env under a name like \`PARAMS_1\`, with \`.args\` (the callback arguments), \`.resolve(value)\` (to return a value to the caller), and \`.reject(error)\` (to reject with an error).
+
+A non-\`undefined\` value returned by the function is included as the final line of console output, so only return values that should be visible in this output.
 `.trim();
 
 let LIST_CONNECTABLE_RESOURCES_TOOL_DESCRIPTION = `
