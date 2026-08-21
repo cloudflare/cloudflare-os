@@ -9937,18 +9937,15 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     let self = this;
     function deliverMessage(record: AiChatMessage) {
+      if (record.type === "action") {
+        let actionRecord = self.impl.storage.actions.get(record.actionId);
+        if (actionRecord) record.actionLog = actionRecordToLog(actionRecord);
+      }
       subscriber.message(self.impl.hydrateChatMessageForClient(record)).catch(unsubscribe);
     }
 
     let msgSubscriber = {
       add(record: AiChatMessage) {
-        if (record.type == "action") {
-          let actionRecord = self.impl.storage.actions.get(record.actionId);
-          if (actionRecord) {
-            record.actionLog = actionRecordToLog(actionRecord);
-          }
-        }
-
         deliverMessage(record);
       },
       update(oldRecord: AiChatMessage, newRecord: AiChatMessage): void {
