@@ -33,7 +33,7 @@ Authorization is capability-based: `open()` computes the caller's effective role
 
 There are two ways to grant someone collaborator access:
 
-**Direct add.** The owner or an existing collaborator enters a username (email address) in the Share modal. The system looks up the corresponding user account; if it exists, a collaborator record is created. The target user does not receive an in-product notification -- the sharer is expected to send them a link or tell them out of band.
+**Direct add.** The owner or an existing collaborator enters a username (an email address on OAuth/CF Access deployments; a normalized alphanumeric handle on password deployments) in the Share modal. The system looks up the corresponding user account; if it exists, a collaborator record is created. The target user does not receive an in-product notification -- the sharer is expected to send them a link or tell them out of band.
 
 **Share link.** Any collaborator (or the owner) can create a share link, which encodes a secret key in the URL as a `#share=<key>` fragment. Anyone who opens this link is automatically added as a collaborator. A link is a durable handle that owns one or more keys: creating it mints its first key, and "copying" the link later mints another key for the same link. The raw key is shown to the creator only once at mint time and is never stored server-side, so re-copying can't reproduce an old key -- it mints a new one. Any of a link's keys can be redeemed by multiple people, or the same person multiple times, until the link is revoked, which invalidates every key minted for it.
 
@@ -42,6 +42,8 @@ Share key security: the server generates a random 128-bit key and stores only it
 Storage shape: a link is its first key. The `shareKeys` table holds one row per key: the row for the first key carries the link's metadata and is keyed by that key's hash, which serves as the link id. Each later copy stores only an `alias` pointing back at that id.
 
 Share key redemption and gadget opening happen atomically in a single RPC call (`openGadget(id, shareKey)`), which allows subsequent calls to be pipelined on the returned `Overseer` stub without waiting for a separate redemption step.
+
+Redemption is **pending until verified**: redeeming a key writes the recipient's `shareKey` edge with a `pending` flag, which grants no authority to anyone -- the recipient is invisible to `listCollaborators`, to everyone's effective roles, and to the sensitive-observation coverage guard. Only the open() that performed the redemption counts the edge (to compute the role it must verify the recipient for); the edge is confirmed when that open's observer verification succeeds and severed when it fails, so a refused (or still-verifying) recipient never holds authority. A stale pending edge left by a crashed open is inert and settles on the next redemption of the same link.
 
 ### Home page behavior
 
@@ -97,22 +99,21 @@ This does mean removed collaborators and revoked links accumulate in storage. Li
 
 ### Effective-role algorithm
 
-The core is a **fixed-point role-propagation computation** implemented in `SharingManager.computeEffectiveRoles()`. It computes the effective role of every collaborator (given an optional hypothetical change), returning a map from profile ID to effective role (absence from the map means no access). It is the single source of truth: `open()`, `hasAnyShares()`, the listing RPCs, and the preview methods all derive from it.
+The core is a **fixed-point role-propagation computation** implemented in `SharingManager.computeEffectiveRoles()`. It computes the effective role of every collaborator (given an optional hypothetical change), returning a map from profile ID to effective role (absence from the map means no access). It is the single source of truth: `open()`, the listing RPCs, and the preview methods all derive from it.
 
-Inputs (all optional; used to model a hypothetical change in preview):
-- `removedUser` -- a profile ID to treat as removed (excluded from the graph).
+Inputs (all optional; used to model a hypothetical change):
+- `removedUser` -- a profile ID to treat as removed (excluded from the graph). Used by preview.
 - `removedEdge` -- a single user edge (`{target, sharer}`) to treat as removed. Used to preview a non-owner removing only their own edge.
-- `revokedLinkId` -- a share link ID to treat as revoked.
-- `overrides` -- profile IDs pinned to at least a given role regardless of their edges.
+- `revokedLinkId` -- a share link ID to treat as revoked. Used by preview.
+- `assumePendingLink` -- a `{profileId, linkId}` pair whose pending edge is counted as though it were confirmed. Unlike the removal-shaped preview inputs, this models a hypothetical *grant*: the open() that just redeemed the link counting its own edge to compute the role it must verify for. Every other pending edge contributes nothing.
 
 The algorithm:
 
 1. **Build the candidate set.** Load all collaborators except the (hypothetically) removed user.
 2. **Collect share-link metadata.** Build a map from link ID to `{creator, role}`, skipping links that are `revoked` (or the hypothetical `revokedLinkId`).
-3. **Initialize** the role map with any `overrides`.
-4. **Iterate to fixed point.** Repeatedly scan all collaborators. For each edge, compute the role it grants -- `min(edge role, sharer's effective role)`, where the sharer (or share link creator) is the owner (always `build`) or another collaborator's current effective role -- and raise the collaborator's role to the maximum across their valid edges. Raising one collaborator's role may unlock or raise others on the next pass.
-5. **Converge.** Roles only ever increase, so the loop terminates when a full pass changes nothing.
-6. **Return the role map.** Collaborators absent from the map have no access; collaborators present with a lower role than before have been downgraded.
+3. **Iterate to fixed point.** Repeatedly scan all collaborators. For each edge, compute the role it grants -- `min(edge role, sharer's effective role)`, where the sharer (or share link creator) is the owner (always `build`) or another collaborator's current effective role -- and raise the collaborator's role to the maximum across their valid edges. Pending `shareKey` edges are skipped (except the one named by `assumePendingLink`). Raising one collaborator's role may unlock or raise others on the next pass.
+4. **Converge.** Roles only ever increase, so the loop terminates when a full pass changes nothing.
+5. **Return the role map.** Collaborators absent from the map have no access; collaborators present with a lower role than before have been downgraded.
 
 This handles arbitrary graph shapes: diamonds (a user reachable via two independent paths), cycles (mutual adds), and deep chains.
 
@@ -150,13 +151,17 @@ Authorization is enforced at `open()`: the method computes the caller's effectiv
 
 Because the role is recomputed from the graph on every `open()`, the live computation is the *sole* source of truth for access -- there is no eager cleanup whose bugs could grant access to an unreachable user. This is what makes lazy revocation safe: severing an edge is enough to deny access, even though the unreachable records linger in storage.
 
+A share-key redemption goes through the same gate without ever granting interim authority: the redeemed edge is written pending (see "Adding collaborators"), the redeeming open() verifies the recipient against the role the edge *would* grant, and only a successful verification confirms the edge. After confirming, the role is re-derived from the live graph and re-checked -- which is what denies a redeemer whose link was revoked while their verification was in flight -- and capped at the role verification covered: a role raised mid-verification (say, an owner grant landing while the recipient sat on the configuration modal) takes effect at their next open, which verifies at the wider role's scope. Confirming additionally requires the workspace's connection/binding topology to be unchanged since verification began: any change (a connection or gadget binding added or removed while the recipient sat on the modal) denies the open and reverts the redemption, and a retry re-verifies against the new topology.
+
 ### Terminating live sessions on revocation
 
 Authorization is only checked at `open()`, so a session that is *already* open is not re-checked per message. Without intervention, a collaborator who was just removed or downgraded could keep using their live session until something else disconnected them. To close this gap, `removeCollaborator`/`revokeShareLink` proactively restart the gadget's Overseer DO via `ctx.abort()` whenever the change actually removed or downgraded someone (i.e. the returned `AffectedCollaborator[]` is non-empty; pure no-op removals don't restart). Aborting forcibly disconnects every client; each reconnects and re-runs `open()`, which re-evaluates the now-changed permission graph -- sending removed users to the terminal access-denied page and handing downgraded users their reduced capability (the editor swaps to the `use` view automatically based on `metadata.role`). Since removals are rare (and DOs restart unpredictably anyway, so reconnects are already cheap), the disruption is acceptable.
 
-Two precautions surround the abort (`OverseerImpl.scheduleRevocationRestart`): the severed edge is flushed with `ctx.storage.sync()` first (because `ctx.abort()` does not respect the output gate, a restart could otherwise come back with the change lost), and the abort is delayed ~100ms so the triggering RPC's response reaches the caller -- typically the owner, who is also connected -- before their own connection drops. The disconnect reaches the browser through the existing `notifyClosed` plumbing: when the Overseer DO aborts, the per-session `notifyClosed` stub is disposed without being called, which `AuthenticatedApiImpl` treats as a lost connection and reacts to by killing the browser WebSocket, forcing a reconnect.
+Two precautions surround the abort (`OverseerImpl.scheduleRevocationRestart`): the severed edge is flushed with `ctx.storage.sync()` first (because `ctx.abort()` does not respect the output gate, a restart could otherwise come back with the change lost), and the abort is delayed ~100ms so the triggering RPC's response reaches the caller -- typically the owner, who is also connected -- before their own connection drops. The disconnect reaches the browser through the existing `notifyClosed` plumbing: when the Overseer DO aborts, the per-session `notifyClosed` stub is disposed without being called, which `AuthenticatedApiImpl` treats as a lost connection and reacts to by killing the browser WebSocket, forcing a reconnect. The client discards its retained share key on the first successful open, so this forced reconnect after a removal is keyless and lands the removed collaborator on the access-denied page rather than silently re-redeeming the still-active link (which would undo the removal and break the assumption stated above). The residual is unchanged: the *link* itself survives a collaborator removal under the lazy model, so a recipient who kept the URL can still re-redeem it manually until the owner revokes it -- the discard removes only the client's automatic re-grant.
 
-Note this is only needed for removals/downgrades. Granting or raising access never strands anyone, and `containsRestrictedData` cannot strand a session either: an observation that would set that flag is *blocked* (rather than applied) if the gadget is already shared, so the flag only ever flips to true on a gadget with no other sessions to evict.
+Note this is only needed for removals/downgrades. Granting or raising access never strands anyone, and `containsRestrictedData` cannot strand a session either: an observation carrying that flag is *blocked* (rather than applied) unless every current collaborator *in whose verification scope the producing gatekeeper falls* is already a verified observer of it (coverage is held to each collaborator's role scope; see docs/observers.md edge case 4), so no live session ever belongs to someone the flag would newly exclude.
+
+One party the restart deliberately does not cover is a redeemer whose share link is revoked *while their first open is still verifying them*: their edge is pending, so it is invisible to the revocation's affected-set computation and no restart targets them. They are denied anyway -- after verification confirms the edge, `authorizeCollaborator` re-derives the role from the live graph, where the revoked link contributes nothing.
 
 ## Future work
 
