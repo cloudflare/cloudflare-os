@@ -1,6 +1,7 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { BigQueryApi } from "./bigquery-api";
+import { PUBLIC_DATA_PROJECTS } from "./bigquery-resource";
 import { GoogleCalendarApi } from "./calendar-api";
 import { GoogleAccessToken } from "./google-api";
 import { AccessTokenProvider, AccessTokenRequest } from "./auth-retry";
@@ -166,6 +167,24 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
           subtitle: project.friendlyName,
         }));
     });
+  }
+
+  /**
+   * The public-data projects a "BigQuery Public Data" connection may read.
+   *
+   * Served over RPC rather than duplicated into the configurator `.tsx`, which the sandbox strips
+   * imports from and so cannot read the allowlist it is offering. One copy, so the list the picker
+   * shows and the list `connect()` enforces cannot drift.
+   */
+  async listPublicProjects(query: string): Promise<ConfiguratorOption[]> {
+    return PUBLIC_DATA_PROJECTS
+        .filter(project => optionMatches([project.projectId, project.title, project.description], query))
+        .map(project => ({
+          value: project.projectId,
+          title: project.title,
+          subtitle: project.description,
+          meta: project.projectId,
+        }));
   }
 
   async listDatasets(projectId: string, query: string): Promise<ConfiguratorOption[]> {

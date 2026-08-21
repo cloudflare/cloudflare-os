@@ -333,6 +333,20 @@ function routerGatekeeperServices(gatekeepers: string[]): PreviewService[] {
   }));
 }
 
+// Gatekeeper vars a preview sets differently from a real deployment.
+//
+// Only for flags whose committed default is "off so a deployment opts in", never for anything that
+// weakens a security boundary: a preview is a throwaway instance whose whole purpose is to try the
+// branch out, so a feature nobody can see is a feature nobody reviews. Same reasoning as the dev
+// server's DEV_GATEKEEPER_VAR_DEFAULTS, and these must stay plain-text safe -- every var's value is
+// printed in Wrangler's deploy summary and this workflow's logs are public.
+const PREVIEW_GATEKEEPER_VARS: Record<string, Record<string, string>> = {
+  // Public BigQuery datasets are the natural thing to demo a data gadget against, and the
+  // connection provably cannot read the reviewer's own project -- only Google's public ones, which
+  // any signed-in account can already read. See packages/gatekeeper-google/src/bigquery-resource.ts.
+  "gatekeeper-google": { ENABLE_BIGQUERY_PUBLIC_DATA: "true" },
+};
+
 function applyGatekeeper(
   pkgName: string,
   config: StagingConfig,
@@ -343,6 +357,7 @@ function applyGatekeeper(
     // Every gatekeeper is mounted under the router's origin, exactly as manifest-lib.ts
     // templates it for real instances ($PUBLIC_BASE_URL/gatekeeper/<short>).
     BASE_URL: `${baseUrl}/gatekeeper/${gatekeeperShortName(pkgName)}`,
+    ...PREVIEW_GATEKEEPER_VARS[pkgName],
   };
   config.previews = {
     observability: previewObservability(config),

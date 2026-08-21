@@ -15,6 +15,10 @@ import type {
 import { docToMarkdown, markdownToDocRequests, computeReplaceOperations, DocSnapshot } from "./markdown-converter";
 import { BigQueryApi, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
+  BIGQUERY_PUBLIC_DATA_DISABLED_MESSAGE, bigQueryPublicDataEnabled, bigQueryResourceUrl,
+  isPublicDataProject,
+} from "./bigquery-resource";
+import {
   BigQueryDataset, BigQueryDryRunResult, BigQueryField, BigQueryProject,
   BigQueryQueryOptions, BigQueryQueryResult, BigQuerySession, BigQueryTable,
 } from "./bigquery-types";
@@ -40,6 +44,7 @@ import {
   GoogleSheetsConfiguratorUI,
 } from "./google-configurators";
 import BIGQUERY_CONFIGURATOR_HTML from "./generated/bigquery-configurator-ui.txt";
+import BIGQUERY_PUBLIC_CONFIGURATOR_HTML from "./generated/bigquery-public-configurator-ui.txt";
 import CALENDAR_CONFIGURATOR_HTML from "./generated/calendar-configurator-ui.txt";
 import GMAIL_CONFIGURATOR_HTML from "./generated/gmail-configurator-ui.txt";
 import GOOGLE_DOC_CONFIGURATOR_HTML from "./generated/google-doc-configurator-ui.txt";
@@ -52,10 +57,10 @@ import {
   validateGmailQueryForGrouping, validateGmailRecipientCount, validateOutboundInput,
 } from "./gmail-validate";
 import {
-  AUTH_SCOPES, BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
-  GOOGLE_DOC_RESOURCE, GOOGLE_SHEETS_RESOURCE, LEGACY_GRANTED_RESOURCE_URL_PATTERNS,
-  RESOURCE_BY_KIND, SUPPORTED_RESOURCES, grantedResourcesFromScopes, parseResourceUrl,
-  resourceUrlPatternsToOAuthScopes,
+  AUTH_SCOPES, BIGQUERY_PUBLIC_RESOURCE, BIGQUERY_RESOURCE, GMAIL_RESOURCE,
+  GOOGLE_CALENDAR_RESOURCE, GOOGLE_DOC_RESOURCE, GOOGLE_SHEETS_RESOURCE,
+  LEGACY_GRANTED_RESOURCE_URL_PATTERNS, RESOURCE_BY_KIND, SUPPORTED_RESOURCES,
+  grantedResourcesFromScopes, parseResourceUrl, resourceUrlPatternsToOAuthScopes,
 } from "./resources";
 import { ObserverCheck, ObserverTracker } from "./observers";
 import { CursorPager, Pager } from "./cursor";
@@ -115,6 +120,9 @@ type Env = Cloudflare.Env & {
   // OAuth app credentials (wrangler secrets / .dev.vars); not in wrangler.jsonc.
   CLIENT_ID?: string;
   CLIENT_SECRET?: string;
+  // "true" offers the "BigQuery Public Data" connection. Committed as "false" in wrangler.jsonc and
+  // defaulted on by the dev server; see `bigQueryPublicDataEnabled`.
+  ENABLE_BIGQUERY_PUBLIC_DATA?: string;
 }
 
 // Well-known Gmail system label IDs — derived from GmailSystemLabel so the
@@ -189,6 +197,24 @@ const NOT_CONFIGURED_HTML = `<!DOCTYPE html>
     </div>
   </body>
 </html>`;
+
+/**
+ * The resources this deployment offers, which is all of them unless BigQuery Public Data is
+ * switched off (the default -- see `bigQueryPublicDataEnabled`).
+ *
+ * Presentation only: hiding a resource keeps it out of the picker and the admin panel, but
+ * `connect()` and `startSession()` are what refuse to mint or use the capability, so a URL that
+ * never went through the picker is still rejected.
+ *
+ * RESOURCE_SCOPES itself is deliberately left whole. It maps a resource to the OAuth scopes it
+ * needs -- a fact about Google, not about this deployment -- and narrowing it would make a
+ * previously-granted account's `reconnect()` throw on its own recorded grant.
+ */
+function supportedResourcesFor(env: Env): SupportedResource[] {
+  if (bigQueryPublicDataEnabled(env)) return SUPPORTED_RESOURCES;
+  return SUPPORTED_RESOURCES.filter(
+      resource => resource.urlPattern !== BIGQUERY_PUBLIC_RESOURCE.urlPattern);
+}
 
 const GOOGLE_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(GOOGLE_LOGO_SVG)}`;
 
@@ -319,7 +345,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
-    return SUPPORTED_RESOURCES;
+    return supportedResourcesFor(this.env);
   }
 
   async getTypeScriptTypes(): Promise<string> {
@@ -678,7 +704,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
-    return SUPPORTED_RESOURCES;
+    return supportedResourcesFor(this.env);
   }
 
   async getGatekeeperClassFor(url: string): Promise<{
@@ -712,12 +738,24 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
         };
         return {class: this.ctx.exports.GoogleCalendarGatekeeperImpl({props}), resource};
       }
-      case "bigquery": {
+      case "bigquery":
+      case "bigqueryPublic": {
+        let publicData = target.kind === "bigqueryPublic";
+        // The chokepoint: a resourceUrl becomes a capability here, so this is where the deployment
+        // flag has to bite. Hiding the resource from the picker is not enough -- an agent
+        // connection request or a hand-entered URL reaches this directly. The allowlist check for
+        // the data project lives in the parser, so an unallowlisted project never reaches the
+        // props at all.
+        if (publicData && !bigQueryPublicDataEnabled(this.env)) {
+          throw new Error(BIGQUERY_PUBLIC_DATA_DISABLED_MESSAGE);
+        }
         let props: BigQueryGatekeeperImplProps = {
           userObjectId,
-          scopedProjectId: target.projectId,
+          billingProjectId: target.billingProjectId,
+          scopedProjectId: target.dataProjectId,
           scopedDatasetId: target.datasetId,
           scopedTableId: target.tableId,
+          publicData: publicData ? true : undefined,
         };
         return {class: this.ctx.exports.BigQueryGatekeeperImpl({props}), resource};
       }
@@ -735,6 +773,18 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     if (resourceUrlPattern === BIGQUERY_RESOURCE.urlPattern) {
       return {
         iframeHtml: BIGQUERY_CONFIGURATOR_HTML,
+        ui: new RpcStub(new BigQueryConfiguratorUI(getToken)),
+      };
+    }
+
+    if (resourceUrlPattern === BIGQUERY_PUBLIC_RESOURCE.urlPattern) {
+      if (!bigQueryPublicDataEnabled(this.env)) {
+        throw new Error(BIGQUERY_PUBLIC_DATA_DISABLED_MESSAGE);
+      }
+      // Same capability as the private configurator: it needs the very same project, dataset and
+      // table listings, plus the public-project allowlist it cannot import for itself.
+      return {
+        iframeHtml: BIGQUERY_PUBLIC_CONFIGURATOR_HTML,
         ui: new RpcStub(new BigQueryConfiguratorUI(getToken)),
       };
     }
@@ -2903,10 +2953,24 @@ type BigQueryDatasetRef = { projectId: string; datasetId: string };
 
 type BigQueryGatekeeperImplProps = {
   userObjectId: string;
-  // When set, narrows the session's authority. Project is required for any narrower scope.
-  scopedProjectId?: string;
+  // The project the query jobs are billed to. Equals `scopedProjectId` for an ordinary binding;
+  // for a public-data binding it is one of the user's own projects, since a public project cannot
+  // run jobs.
+  //
+  // Optional only for backwards compatibility: these props are persisted with the binding, and
+  // bindings created before billing and data scope were split carry no `billingProjectId`. Read it
+  // through `#billingProject()`, which falls back to the scoped project -- what those bindings
+  // always meant.
+  billingProjectId?: string;
+  // The only project whose data this session may read. Narrower scopes require it.
+  scopedProjectId: string;
   scopedDatasetId?: string;
   scopedTableId?: string;
+  // Set iff `scopedProjectId` is an allowlisted public-data project. Such a session reads data
+  // every authenticated Google user can already read, so its observations neither prohibit sharing
+  // nor need a per-dataset IAM check on each observer. Re-verified against the allowlist when a
+  // session starts, so removing a project from the list disables existing bindings too.
+  publicData?: true;
 };
 
 @validateRpc()
@@ -2923,21 +2987,33 @@ export class BigQueryGatekeeperImpl
     return this.#tokens.get(opts);
   }
 
+  /** The project that pays for this binding's query jobs. See `billingProjectId` on the props. */
+  #billingProject(): string {
+    return this.ctx.props.billingProjectId ?? this.ctx.props.scopedProjectId;
+  }
+
   async describe(): Promise<ResourceDescription> {
-    let { scopedProjectId: p, scopedDatasetId: d, scopedTableId: t } = this.ctx.props;
-    let path = p ? (d ? (t ? `/${p}/${d}/${t}` : `/${p}/${d}`) : `/${p}`) : "";
-    let label = t ? `${p}.${d}.${t}` : d ? `${p}.${d}` : p ?? null;
+    let { scopedProjectId: p, scopedDatasetId: d, scopedTableId: t, publicData } = this.ctx.props;
+    let label = t ? `${p}.${d}.${t}` : d ? `${p}.${d}` : p;
+    let target = t
+        ? `table "${label}"`
+        : d ? `dataset "${label}"` : `datasets in project "${p}"`;
     return {
-      url: `https://${BIGQUERY_HOST}${path}`,
-      title: label ? `BigQuery (${label})` : "BigQuery",
-      snippet: t
-          ? `Query BigQuery table "${p}.${d}.${t}" (read-only)`
-          : d
-              ? `Query BigQuery dataset "${p}.${d}" (read-only)`
-              : p
-                  ? `Query BigQuery datasets in project "${p}" (read-only)`
-                  : "Browse BigQuery projects and datasets (read-only)",
-      suggestedBindingName: "BIGQUERY",
+      url: bigQueryResourceUrl({
+        kind: publicData ? "public" : "private",
+        billingProjectId: this.#billingProject(),
+        dataProjectId: p,
+        datasetId: d,
+        tableId: t,
+      }),
+      title: publicData ? `BigQuery Public Data (${label})` : `BigQuery (${label})`,
+      snippet: publicData
+          // Name the billing project: it is the one thing about a public binding the user is on
+          // the hook for, and the one project it provably cannot read.
+          ? `Query public ${target} (read-only), billed to "${this.#billingProject()}"`
+          : `Query BigQuery ${target} (read-only)`,
+      // A distinct name so a workspace can hold a public and a private BigQuery binding at once.
+      suggestedBindingName: publicData ? "BIGQUERY_PUBLIC" : "BIGQUERY",
       tsType: "BigQuerySession",
     };
   }
@@ -2951,14 +3027,32 @@ export class BigQueryGatekeeperImpl
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<BigQuerySession> {
+    let { scopedProjectId, publicData } = this.ctx.props;
+    // Re-assert both preconditions here rather than trusting the props alone. `connect()` checked
+    // them, but the props outlive that call and are persisted with the binding, so this is what
+    // makes turning the deployment flag off -- or dropping a project from PUBLIC_DATA_PROJECTS --
+    // disable the bindings that already exist, instead of leaving them reading a project we no
+    // longer vouch for as public and, on that basis, exempt from the sharing prohibition.
+    if (publicData) {
+      if (!bigQueryPublicDataEnabled(this.env)) {
+        throw new Error(BIGQUERY_PUBLIC_DATA_DISABLED_MESSAGE);
+      }
+      if (!isPublicDataProject(scopedProjectId)) {
+        throw new Error(
+          `"${scopedProjectId}" is no longer a recognized public BigQuery project, so this ` +
+          `connection is disabled. Remove it and connect a current public dataset instead.`);
+      }
+    }
     let api = new BigQueryApi(opts => this.#getAccessToken(opts));
     return new BigQuerySessionImpl(
       api,
       approvalQueue.dup(),
-      this.ctx.props.scopedProjectId,
+      this.#billingProject(),
+      scopedProjectId,
       this.ctx.props.scopedDatasetId,
       this.ctx.props.scopedTableId,
-      datasets => this.#observers.prepareObservation(datasets),
+      publicData ?? false,
+      datasets => this.#prepareDatasetObservation(datasets),
     );
   }
 
@@ -2992,6 +3086,21 @@ export class BigQueryGatekeeperImpl
     });
   }
 
+  /**
+   * Records the datasets an observation reveals and reports observers to exclude.
+   *
+   * A public-data binding tracks nothing. `hasDatasetAccess` asks whether an observer's own token
+   * can reach a dataset, which is not a meaningful question about one that grants dataViewer to
+   * every authenticated user: the probe would pass for everyone, and recording the dataset would
+   * only give `addObserver` something to block sharing on when it transiently fails.
+   */
+  #prepareDatasetObservation(
+    datasets: BigQueryDatasetRef[],
+  ): Promise<ObserverCheck<BigQueryDatasetRef>> {
+    if (this.ctx.props.publicData) return Promise.resolve({ pendingSets: [], commit() {} });
+    return this.#observers.prepareObservation(datasets);
+  }
+
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     await this.#observers.addObserver(id, user as unknown as Fetcher<GoogleVerifierApi>);
   }
@@ -3005,26 +3114,35 @@ export class BigQueryGatekeeperImpl
 class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
   #api: BigQueryApi;
   #approvalQueue: RpcStub<ApprovalQueue>;
-  #scopedProjectId?: string;
+  #billingProjectId: string;
+  #scopedProjectId: string;
   #scopedDatasetId?: string;
   #scopedTableId?: string;
-  // Records the datasets an observation reveals and returns observers to exclude.
+  // Whether #scopedProjectId is an allowlisted public-data project, in which case nothing this
+  // session returns needs to prohibit sharing the workspace.
+  #publicData: boolean;
+  // Records the datasets an observation reveals and returns observers to exclude (see
+  // BigQueryGatekeeperImpl.#prepareDatasetObservation).
   #observe: (datasets: BigQueryDatasetRef[]) => Promise<ObserverCheck<BigQueryDatasetRef>>;
 
   constructor(
     api: BigQueryApi,
     approvalQueue: RpcStub<ApprovalQueue>,
-    scopedProjectId: string | undefined,
+    billingProjectId: string,
+    scopedProjectId: string,
     scopedDatasetId: string | undefined,
     scopedTableId: string | undefined,
+    publicData: boolean,
     observe: (datasets: BigQueryDatasetRef[]) => Promise<ObserverCheck<BigQueryDatasetRef>>,
   ) {
     super();
     this.#api = api;
     this.#approvalQueue = approvalQueue;
+    this.#billingProjectId = billingProjectId;
     this.#scopedProjectId = scopedProjectId;
     this.#scopedDatasetId = scopedDatasetId;
     this.#scopedTableId = scopedTableId;
+    this.#publicData = publicData;
     this.#observe = observe;
   }
 
@@ -3055,33 +3173,31 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
 
   // --- helpers -----------------------------------------------------------
 
-  // Pick the project to bill the query against. When scoped, the scoped project is used and
-  // the caller cannot override. When unscoped, the caller must declare a default project via
-  // `defaultDataset.projectId` (BigQuery requires a billing project on every query).
-  #billingProject(): string {
-    if (this.#scopedProjectId) return this.#scopedProjectId;
-    throw new Error(
-      "This session is not scoped to a project. Connect to a specific BigQuery project " +
-      "(e.g. https://bigquery.googleapis.com/my-project) to run queries.");
-  }
-
-  #effectiveDataset(opts: { defaultDataset?: string } | undefined): string | undefined {
-    if (this.#scopedDatasetId) {
-      if (opts?.defaultDataset && opts.defaultDataset !== this.#scopedDatasetId) {
-        throw new Error(
-          `Cannot override defaultDataset to "${opts.defaultDataset}" — this connection is ` +
-          `scoped to "${this.#scopedDatasetId}".`);
-      }
-      return this.#scopedDatasetId;
+  // Resolve the default dataset for unqualified table references. Always in the scoped (readable)
+  // project, which is not necessarily the billing project: BigQuery takes the two independently,
+  // and a public-data session resolves bare names against Google's project while billing the
+  // user's.
+  #effectiveDataset(opts: { defaultDataset?: string } | undefined):
+      { projectId: string; datasetId: string } | undefined {
+    let datasetId = this.#scopedDatasetId ?? opts?.defaultDataset;
+    if (this.#scopedDatasetId && opts?.defaultDataset &&
+        opts.defaultDataset !== this.#scopedDatasetId) {
+      throw new Error(
+        `Cannot override defaultDataset to "${opts.defaultDataset}" — this connection is ` +
+        `scoped to "${this.#scopedDatasetId}".`);
     }
-    return opts?.defaultDataset;
+    return datasetId ? { projectId: this.#scopedProjectId, datasetId } : undefined;
   }
 
+  // The single check that gives a public-data binding its security property: `#scopedProjectId` is
+  // the *public* project, so a query touching anything in the billing project -- which is the
+  // user's own -- is rejected here. Such a binding spends the user's money but cannot read a byte
+  // of their data.
+  //
   // Note: callers can still probe whether out-of-scope tables exist by attempting queries
   // and observing which error class fires (out-of-scope vs. not-found vs. DML-rejected).
   // The data is protected; the namespace is partly leaky.
   #checkScopedTables(referenced: string[]): void {
-    if (!this.#scopedProjectId) throw new Error("BigQuery queries require a project-scoped binding.");
     // Empty referencedTables is fine for project-only scope (e.g. `SELECT 1`,
     // `SELECT CURRENT_TIMESTAMP()`) — there are no tables to scope-check. Only require
     // at least one referenced table when the binding narrows to a specific dataset or
@@ -3156,7 +3272,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
   // --- API ---------------------------------------------------------------
 
   async query(sql: string, opts?: BigQueryQueryOptions): Promise<BigQueryQueryResult> {
-    let billingProject = this.#billingProject();
+    let billingProject = this.#billingProjectId;
     let defaultDataset = this.#effectiveDataset(opts);
     let maxBytes = opts?.maximumBytesBilled ?? DEFAULT_MAX_BYTES_BILLED;
 
@@ -3182,12 +3298,12 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
       title: `BigQuery query: ${preview}`,
       description:
         `SQL preview: \`${preview}\`${sql.length > preview.length ? "..." : ""}\n` +
-        (defaultDataset ? `Default dataset: \`${defaultDataset}\`\n` : "") +
+        (defaultDataset ? `Default dataset: \`${defaultDataset.datasetId}\`\n` : "") +
         `Billing project: \`${billingProject}\`\n` +
         `Referenced tables: ${estimate.referencedTables.join(", ")}\n` +
         `Estimated bytes processed: ${estimate.bytesProcessed.toLocaleString()}\n` +
         `Maximum bytes billed: ${maxBytes.toLocaleString()}.`,
-      prohibitAllSharing: true,
+      prohibitAllSharing: !this.#publicData,
     });
 
     let result = await this.#api.query(billingProject, sql, {
@@ -3203,7 +3319,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     sql: string,
     opts?: Pick<BigQueryQueryOptions, "defaultDataset" | "params">,
   ): Promise<BigQueryDryRunResult> {
-    let billingProject = this.#billingProject();
+    let billingProject = this.#billingProjectId;
     let defaultDataset = this.#effectiveDataset(opts);
 
     let estimate = await this.#api.dryRun(billingProject, sql, {
@@ -3219,40 +3335,37 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
       description:
         `Estimated bytes processed: ${estimate.bytesProcessed.toLocaleString()}\n` +
         `Referenced tables: ${estimate.referencedTables.join(", ") || "(none)"}`,
-      prohibitAllSharing: true,
+      prohibitAllSharing: !this.#publicData,
     });
 
     return estimate;
   }
 
   async getProject(): Promise<BigQueryProject> {
-    let result: BigQueryProject = { projectId: this.#scopedProjectId! };
+    let result: BigQueryProject = { projectId: this.#scopedProjectId };
     // Echoes the project id the Gadget was bound to — reveals no dataset data, so no attribution.
     await this.#authorizeDatasets([], {
       title: "Get BigQuery project",
       description: `Returned the scoped project: \`${this.#scopedProjectId}\`.`,
-      prohibitAllSharing: true,
+      prohibitAllSharing: !this.#publicData,
     });
     return result;
   }
 
   async listDatasets(projectId?: string): Promise<BigQueryDataset[]> {
-    if (this.#scopedProjectId && projectId && projectId !== this.#scopedProjectId) {
+    if (projectId && projectId !== this.#scopedProjectId) {
       throw new Error(
         `Cannot list datasets in "${projectId}" — this connection is scoped to ` +
         `"${this.#scopedProjectId}".`);
     }
-    let p = this.#scopedProjectId ?? projectId;
-    if (!p) {
-      throw new Error("listDatasets requires a projectId when the session is unscoped.");
-    }
+    let p = this.#scopedProjectId;
 
     if (this.#scopedDatasetId) {
       let dataset = await this.#api.getDataset(p, this.#scopedDatasetId);
       await this.#authorizeDatasets([{ projectId: p, datasetId: this.#scopedDatasetId }], {
         title: `List datasets in ${p}`,
         description: `Returned scoped dataset \`${p}.${this.#scopedDatasetId}\` (1 dataset).`,
-        prohibitAllSharing: true,
+        prohibitAllSharing: !this.#publicData,
       });
       return [dataset];
     }
@@ -3262,13 +3375,13 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     await this.#authorizeDatasets(result.map(ds => ({ projectId: p, datasetId: ds.datasetId })), {
       title: `List datasets in ${p}`,
       description: `Listed ${result.length} dataset(s) in \`${p}\`.`,
-      prohibitAllSharing: true,
+      prohibitAllSharing: !this.#publicData,
     });
     return result;
   }
 
   async listTables(datasetId?: string, projectId?: string): Promise<BigQueryTable[]> {
-    if (this.#scopedProjectId && projectId && projectId !== this.#scopedProjectId) {
+    if (projectId && projectId !== this.#scopedProjectId) {
       throw new Error(
         `Cannot list tables in project "${projectId}" — this connection is scoped to ` +
         `"${this.#scopedProjectId}".`);
@@ -3278,17 +3391,16 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
         `Cannot list tables in dataset "${datasetId}" — this connection is scoped to ` +
         `"${this.#scopedDatasetId}".`);
     }
-    let p = this.#scopedProjectId ?? projectId;
+    let p = this.#scopedProjectId;
     let d = this.#scopedDatasetId ?? datasetId;
-    if (!p) throw new Error("listTables requires a projectId when the session is unscoped.");
-    if (!d) throw new Error("listTables requires a datasetId when the session is unscoped.");
+    if (!d) throw new Error("listTables requires a datasetId when the connection allows any.");
 
     if (this.#scopedTableId) {
       let { table } = await this.#api.getTable(p, d, this.#scopedTableId);
       await this.#authorizeDatasets([{ projectId: p, datasetId: d }], {
         title: `List tables in ${p}.${d}`,
         description: `Returned scoped table \`${p}.${d}.${this.#scopedTableId}\` (1 table).`,
-        prohibitAllSharing: true,
+        prohibitAllSharing: !this.#publicData,
       });
       return [table];
     }
@@ -3297,7 +3409,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     await this.#authorizeDatasets([{ projectId: p, datasetId: d }], {
       title: `List tables in ${p}.${d}`,
       description: `Listed ${result.length} table(s) in \`${p}.${d}\`.`,
-      prohibitAllSharing: true,
+      prohibitAllSharing: !this.#publicData,
     });
     return result;
   }
@@ -3307,7 +3419,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     datasetId?: string,
     projectId?: string,
   ): Promise<{ table: BigQueryTable; schema: BigQueryField[] }> {
-    if (this.#scopedProjectId && projectId && projectId !== this.#scopedProjectId) {
+    if (projectId && projectId !== this.#scopedProjectId) {
       throw new Error(
         `Cannot describe table in project "${projectId}" — this connection is scoped to ` +
         `"${this.#scopedProjectId}".`);
@@ -3322,19 +3434,18 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
         `Cannot describe table "${tableId}" — this connection is scoped to ` +
         `"${this.#scopedTableId}".`);
     }
-    let p = this.#scopedProjectId ?? projectId;
+    let p = this.#scopedProjectId;
     let d = this.#scopedDatasetId ?? datasetId;
     let t = this.#scopedTableId ?? tableId;
-    if (!p) throw new Error("describeTable requires a projectId when the session is unscoped.");
-    if (!d) throw new Error("describeTable requires a datasetId when the session is unscoped.");
-    if (!t) throw new Error("describeTable requires a tableId when the session is unscoped.");
+    if (!d) throw new Error("describeTable requires a datasetId when the connection allows any.");
+    if (!t) throw new Error("describeTable requires a tableId when the connection allows any.");
 
     let result = await this.#api.getTable(p, d, t);
     await this.#authorizeDatasets([{ projectId: p, datasetId: d }], {
       title: `Describe ${p}.${d}.${t}`,
       description:
         `Described table \`${p}.${d}.${t}\` (${result.schema.length} columns).`,
-      prohibitAllSharing: true,
+      prohibitAllSharing: !this.#publicData,
     });
     return result;
   }

@@ -30,6 +30,18 @@ type ListOptions = {
   maxResults?: number;
 };
 
+/**
+ * `BigQueryQueryOptions` as this layer takes it: the default dataset carries its own project id.
+ *
+ * The agent-facing `defaultDataset` stays a plain dataset name, because a session may only read one
+ * project and so never has a project to name. But that project is not necessarily the one being
+ * billed -- a public-data binding bills the user's project and reads Google's -- so the wire form
+ * has to state it.
+ */
+type ApiQueryOptions = Omit<BigQueryQueryOptions, "defaultDataset"> & {
+  defaultDataset?: { projectId: string; datasetId: string };
+};
+
 function listPageLimit(options?: ListOptions): number {
   return Math.max(1, Math.min(LIST_MAX_PAGES, Math.floor(options?.maxPages ?? LIST_MAX_PAGES)));
 }
@@ -339,7 +351,7 @@ export class BigQueryApi {
   async query(
     billingProject: string,
     sql: string,
-    opts: BigQueryQueryOptions = {},
+    opts: ApiQueryOptions = {},
   ): Promise<BigQueryQueryResult> {
     // Single absolute deadline for the whole query (initial submit + any poll iterations).
     // Each individual server call is capped at the remaining time so total wall-clock stays
@@ -355,7 +367,7 @@ export class BigQueryApi {
     };
 
     if (opts.defaultDataset) {
-      body.defaultDataset = { projectId: billingProject, datasetId: opts.defaultDataset };
+      body.defaultDataset = opts.defaultDataset;
     }
 
     let parameters = buildQueryParameters(opts.params);
@@ -418,7 +430,7 @@ export class BigQueryApi {
   async dryRun(
     billingProject: string,
     sql: string,
-    opts: Pick<BigQueryQueryOptions, "defaultDataset" | "params"> = {},
+    opts: Pick<ApiQueryOptions, "defaultDataset" | "params"> = {},
   ): Promise<BigQueryDryRunResult & {
     statementType?: string;
     ddlOperationPerformed?: string;
@@ -431,10 +443,7 @@ export class BigQueryApi {
       useLegacySql: false,
     };
     if (opts.defaultDataset) {
-      queryConfig.defaultDataset = {
-        projectId: billingProject,
-        datasetId: opts.defaultDataset,
-      };
+      queryConfig.defaultDataset = opts.defaultDataset;
     }
     let parameters = buildQueryParameters(opts.params);
     if (parameters) {

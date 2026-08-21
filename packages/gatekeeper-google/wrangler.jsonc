@@ -28,6 +28,14 @@
       "new_sqlite_classes": [ "GoogleSheetsGatekeeperImpl" ]
     }
   ],
+  "vars": {
+    // Set to "true" to offer the "BigQuery Public Data" connection, which queries Google's public
+    // datasets (bigquery-public-data and friends) billed to a project the user picks. Off by
+    // default: a deployment should opt in to a new data source rather than acquire one from a repo
+    // update, and the queries cost the user money. `pnpm dev-server` turns it on for local
+    // development.
+    "ENABLE_BIGQUERY_PUBLIC_DATA": "false"
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,

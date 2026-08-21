@@ -9,9 +9,11 @@
 import type { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import type { CalendarAvailabilityMode } from "./calendar-types";
 import { validateGmailLabelName, validateGmailQueryForGrouping } from "./gmail-validate";
-
-/** Host serving the synthetic BigQuery resource URLs. */
-export const BIGQUERY_HOST = "bigquery.googleapis.com";
+import type { BigQueryResourceScope } from "./bigquery-resource";
+import {
+  BIGQUERY_HOST, BIGQUERY_PUBLIC_HOST, BIGQUERY_PUBLIC_RESOURCE_URL_PATTERN,
+  BIGQUERY_RESOURCE_URL_PATTERN, parseBigQueryResourceUrl,
+} from "./bigquery-resource";
 
 /**
  * Scopes requested on every connection, to identify the account (name, email, avatar). Tied to no
@@ -63,23 +65,37 @@ export const GOOGLE_CALENDAR_RESOURCE: SupportedResource = {
 
 /** A BigQuery project, optionally narrowed to a dataset or table. */
 export const BIGQUERY_RESOURCE: SupportedResource = {
-  urlPattern: `https://${BIGQUERY_HOST}/:projectId/*`,
+  urlPattern: BIGQUERY_RESOURCE_URL_PATTERN,
   title: "BigQuery",
   description:
       "Choose a Google Cloud project, then optionally narrow access to a dataset or table.",
   grantable: true,
 };
 
+/** A curated public BigQuery project, billed to a project of the user's own. */
+export const BIGQUERY_PUBLIC_RESOURCE: SupportedResource = {
+  urlPattern: BIGQUERY_PUBLIC_RESOURCE_URL_PATTERN,
+  title: "BigQuery Public Data",
+  description:
+      "Query Google's public datasets. Billed to a project you choose, but unable to read that " +
+      "project's own data.",
+  grantable: true,
+};
+
 /**
  * The resources an account connected before per-resource scope tracking implicitly received.
  *
- * Frozen. Adding an entry short-circuits `ensureResources`, so a legacy account would be reported
- * as already holding a grant it never made and would never be re-prompted for consent.
+ * Frozen with one deliberate exception. Adding an entry short-circuits `ensureResources`, so a
+ * legacy account would be reported as already holding a grant it never made and would never be
+ * re-prompted for consent — which is exactly why BigQuery Public Data may be listed: it needs no
+ * scope beyond the one a BigQuery grant already carries, so the reported grant is one the account
+ * really did make.
  */
 export const LEGACY_GRANTED_RESOURCE_URL_PATTERNS = [
   GMAIL_RESOURCE.urlPattern,
   GOOGLE_DOC_RESOURCE.urlPattern,
   BIGQUERY_RESOURCE.urlPattern,
+  BIGQUERY_PUBLIC_RESOURCE.urlPattern,
 ];
 
 /** The OAuth scopes each grantable resource needs. */
@@ -120,6 +136,17 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
     scopes: [
       // `bigquery` (not `bigquery.readonly`): dry-runs go through `jobs.insert` for scope
       // enforcement, which `readonly` doesn't permit. Read-only is enforced at the API layer.
+      "https://www.googleapis.com/auth/bigquery",
+    ],
+  },
+  {
+    resource: BIGQUERY_PUBLIC_RESOURCE,
+    // Deliberately the same single scope as BIGQUERY_RESOURCE: reading a public project needs no
+    // additional authority, only a project to bill. Because the sets are identical,
+    // `grantedResourcesFromScopes` hands this resource to anyone who has already granted BigQuery,
+    // so the new connection type needs no re-consent — and records no grant wider than the one
+    // actually made.
+    scopes: [
       "https://www.googleapis.com/auth/bigquery",
     ],
   },
@@ -175,7 +202,11 @@ export type ResourceTarget =
   | { kind: "doc"; documentId: string }
   | { kind: "sheets"; spreadsheetId: string }
   | { kind: "calendar"; calendarId: string; availabilityMode: CalendarAvailabilityMode }
-  | { kind: "bigquery"; projectId: string; datasetId?: string; tableId?: string };
+  // Both BigQuery kinds carry the same {@link BigQueryResourceScope} fields — a data project, a
+  // billing project, and an optional narrowing. They are separate kinds only because they are
+  // separate grantable resources, which is what {@link RESOURCE_BY_KIND} has to tell apart; the
+  // scope's own `private`/`public` discriminant is dropped here so there is one source of truth.
+  | ({ kind: "bigquery" | "bigqueryPublic" } & Omit<BigQueryResourceScope, "kind">);
 
 /** The grantable resource each {@link ResourceTarget} kind belongs to. */
 export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource> = {
@@ -184,6 +215,7 @@ export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource>
   sheets: GOOGLE_SHEETS_RESOURCE,
   calendar: GOOGLE_CALENDAR_RESOURCE,
   bigquery: BIGQUERY_RESOURCE,
+  bigqueryPublic: BIGQUERY_PUBLIC_RESOURCE,
 };
 
 /**
@@ -210,7 +242,8 @@ export function parseResourceUrl(url: string): ResourceTarget {
     case "mail.google.com": return parseGmailUrl(parsed);
     case "docs.google.com": return parseDocsUrl(parsed);
     case "calendar.google.com": return parseCalendarUrl(parsed);
-    case BIGQUERY_HOST: return parseBigQueryUrl(parsed);
+    case BIGQUERY_HOST:
+    case BIGQUERY_PUBLIC_HOST: return parseBigQueryTarget(url, parsed);
   }
   throw new Error(`Unsupported Google resource URL host: ${parsed.hostname}`);
 }
@@ -287,24 +320,17 @@ function parseCalendarUrl(parsed: URL): ResourceTarget {
   return { kind: "calendar", calendarId, availabilityMode };
 }
 
-function parseBigQueryUrl(parsed: URL): ResourceTarget {
-  if (parsed.search || parsed.hash) {
-    throw new Error("BigQuery resource URLs must not include query strings or fragments.");
+/**
+ * Both BigQuery hosts. The grammar itself lives in `bigquery-resource.ts`, which is pure and
+ * dependency-free so the configurators' inline copies of it can be pinned against one unit test;
+ * this only maps the scope it returns onto the resource kind it belongs to.
+ */
+function parseBigQueryTarget(url: string, parsed: URL): ResourceTarget {
+  let scope = parseBigQueryResourceUrl(url);
+  if (!scope) {
+    // Unreachable: the caller only dispatches here on the two hosts the parser recognizes.
+    throw new Error(`Unsupported Google resource URL host: ${parsed.hostname}`);
   }
-
-  // Synthetic path: /<projectId>/<datasetId>/<tableId> (each segment optional after the first).
-  let segments = parsed.pathname.split("/").filter(Boolean).map(s => decodeURIComponent(s));
-  if (segments.length > 3) {
-    throw new Error(
-        "BigQuery resource URLs must be /<projectId>, /<projectId>/<datasetId>, " +
-        "or /<projectId>/<datasetId>/<tableId>.");
-  }
-  let [projectId, datasetId, tableId] = segments;
-  if (!projectId) {
-    throw new Error("BigQuery resource URLs must include a project ID.");
-  }
-  if (tableId && !datasetId) {
-    throw new Error("Cannot scope to a table without specifying a dataset.");
-  }
-  return { kind: "bigquery", projectId, datasetId, tableId };
+  let { kind, ...rest } = scope;
+  return { kind: kind === "public" ? "bigqueryPublic" : "bigquery", ...rest };
 }

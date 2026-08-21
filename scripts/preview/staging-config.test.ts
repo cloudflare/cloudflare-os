@@ -408,6 +408,17 @@ test("every gatekeeper is mounted under the router's origin", () => {
   assert.equal(gatekeeperShortName("gatekeeper-mcp-portal"), "mcp-portal");
 });
 
+test("previews enable BigQuery Public Data, which real deployments opt into", () => {
+  const { configs } = buildAll();
+
+  // Off in the committed wrangler.jsonc (and so in the release manifest), on here, so a reviewer
+  // can actually exercise the connection on a preview.
+  assert.equal(previewsOf(configs, "gatekeeper-google").vars?.ENABLE_BIGQUERY_PUBLIC_DATA, "true");
+  // Only where it is asked for: the override must not leak onto every gatekeeper.
+  assert.equal(previewsOf(configs, "gatekeeper-github").vars?.ENABLE_BIGQUERY_PUBLIC_DATA,
+      undefined);
+});
+
 test("each preview's context collections are namespaced to that preview", () => {
   const { configs } = buildAll();
   const context = previewsOf(configs, "workshop-backend").services

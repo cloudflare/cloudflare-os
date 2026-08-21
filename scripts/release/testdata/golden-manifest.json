@@ -408,7 +408,8 @@
       },
       "shortName": "google",
       "vars": {
-        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/google"
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/google",
+        "ENABLE_BIGQUERY_PUBLIC_DATA": "false"
       }
     },
     "gatekeeper-homeassistant": {

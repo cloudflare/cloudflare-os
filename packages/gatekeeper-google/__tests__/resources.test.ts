@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_DOC_RESOURCE,
-  GOOGLE_SHEETS_RESOURCE, IDENTITY_SCOPES, LEGACY_GRANTED_RESOURCE_URL_PATTERNS, RESOURCE_BY_KIND,
-  RESOURCE_SCOPES, SUPPORTED_RESOURCES, grantedResourcesFromScopes, parseResourceUrl,
-  resourceUrlPatternsToOAuthScopes, validateResourceUrlPatterns,
+  BIGQUERY_PUBLIC_RESOURCE, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
+  GOOGLE_DOC_RESOURCE, GOOGLE_SHEETS_RESOURCE, IDENTITY_SCOPES,
+  LEGACY_GRANTED_RESOURCE_URL_PATTERNS, RESOURCE_BY_KIND, RESOURCE_SCOPES, SUPPORTED_RESOURCES,
+  grantedResourcesFromScopes, parseResourceUrl, resourceUrlPatternsToOAuthScopes,
+  validateResourceUrlPatterns,
 } from "../src/resources";
 
 /** The message `parseResourceUrl` rejects `url` with. Fails the test if it accepts it. */
@@ -26,6 +27,7 @@ describe("resource declarations", () => {
       "https://docs.google.com/spreadsheets/d/:spreadsheetId/*",
       "https://calendar.google.com/calendar/:calendarId/*",
       "https://bigquery.googleapis.com/:projectId/*",
+      "https://public.bigquery.googleapis.com/:billingProjectId/:dataProjectId/*",
     ]);
   });
 
@@ -35,13 +37,20 @@ describe("resource declarations", () => {
   });
 
   // Adding an entry short-circuits ensureResources, so a legacy account would be treated as
-  // already holding a grant it never made and would never be re-prompted for consent.
-  it("keeps the legacy granted set frozen at Gmail, Doc and BigQuery", () => {
+  // already holding a grant it never made and would never be re-prompted for consent. BigQuery
+  // Public Data is the one admissible entry: it shares BigQuery's single scope exactly, so the
+  // grant it reports is one the account really made.
+  it("keeps the legacy granted set frozen at Gmail, Doc and both BigQuery resources", () => {
     expect(LEGACY_GRANTED_RESOURCE_URL_PATTERNS).toEqual([
       GMAIL_RESOURCE.urlPattern,
       GOOGLE_DOC_RESOURCE.urlPattern,
       BIGQUERY_RESOURCE.urlPattern,
+      BIGQUERY_PUBLIC_RESOURCE.urlPattern,
     ]);
+    for (let pattern of LEGACY_GRANTED_RESOURCE_URL_PATTERNS) {
+      let entry = RESOURCE_SCOPES.find(e => e.resource.urlPattern === pattern)!;
+      expect(entry.scopes.every(scope => IDENTITY_SCOPES.includes(scope))).toBe(false);
+    }
   });
 
   it("maps every parse kind to a declared resource", () => {
@@ -281,21 +290,26 @@ describe("parseResourceUrl", () => {
     });
   });
 
+  // The grammar itself is `bigquery-resource.test.ts`'s job; these only pin the mapping from a
+  // parsed scope onto the resource kind, which is what picks the grantable resource.
   describe("bigquery", () => {
     it.each([
       ["project", "https://bigquery.googleapis.com/proj",
-        { projectId: "proj", datasetId: undefined, tableId: undefined }],
+        { billingProjectId: "proj", dataProjectId: "proj", datasetId: undefined,
+          tableId: undefined }],
       ["dataset", "https://bigquery.googleapis.com/proj/ds",
-        { projectId: "proj", datasetId: "ds", tableId: undefined }],
+        { billingProjectId: "proj", dataProjectId: "proj", datasetId: "ds", tableId: undefined }],
       ["table", "https://bigquery.googleapis.com/proj/ds/tbl",
-        { projectId: "proj", datasetId: "ds", tableId: "tbl" }],
+        { billingProjectId: "proj", dataProjectId: "proj", datasetId: "ds", tableId: "tbl" }],
     ])("scopes to a %s", (_name, url, expected) => {
       expect(parseResourceUrl(url)).toEqual({ kind: "bigquery", ...expected });
     });
 
     it("tolerates redundant slashes and decodes segments", () => {
-      expect(parseResourceUrl("https://bigquery.googleapis.com//proj//my%20ds/"))
-        .toEqual({ kind: "bigquery", projectId: "proj", datasetId: "my ds", tableId: undefined });
+      expect(parseResourceUrl("https://bigquery.googleapis.com//proj//my%20ds/")).toEqual({
+        kind: "bigquery", billingProjectId: "proj", dataProjectId: "proj", datasetId: "my ds",
+        tableId: undefined,
+      });
     });
 
     it.each([
@@ -305,6 +319,29 @@ describe("parseResourceUrl", () => {
       ["a fragment", "https://bigquery.googleapis.com/proj#x", /query strings or fragments/],
     ])("rejects %s", (_name, url, message) => {
       expect(() => parseResourceUrl(url)).toThrow(message);
+    });
+  });
+
+  describe("bigquery public data", () => {
+    it("maps an allowlisted public URL to its own resource kind", () => {
+      expect(parseResourceUrl(
+          "https://public.bigquery.googleapis.com/my-billing/bigquery-public-data/census/pop"))
+        .toEqual({
+          kind: "bigqueryPublic", billingProjectId: "my-billing",
+          dataProjectId: "bigquery-public-data", datasetId: "census", tableId: "pop",
+        });
+    });
+
+    it("keeps the two BigQuery kinds on disjoint hosts", () => {
+      expect(RESOURCE_BY_KIND.bigqueryPublic).not.toBe(RESOURCE_BY_KIND.bigquery);
+      expect(new URL(BIGQUERY_PUBLIC_RESOURCE.urlPattern).hostname)
+        .not.toBe(new URL(BIGQUERY_RESOURCE.urlPattern).hostname);
+    });
+
+    it("rejects a data project that is not allowlisted", () => {
+      expect(() => parseResourceUrl(
+          "https://public.bigquery.googleapis.com/my-billing/someones-private-project"))
+        .toThrow(/is not a known public BigQuery project/);
     });
   });
 });

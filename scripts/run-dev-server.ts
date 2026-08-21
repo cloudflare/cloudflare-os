@@ -432,6 +432,20 @@ const PASSTHROUGH_GATEKEEPER_VARS: Record<string, string[]> = {
     "MCP_PORTAL_TRUST_ANNOTATIONS", "MCP_ALLOW_INSECURE",
   ],
   "gatekeeper-mcp": ["MCP_ALLOW_INSECURE"],
+  "gatekeeper-google": ["ENABLE_BIGQUERY_PUBLIC_DATA"],
+};
+
+// Vars whose committed `wrangler.jsonc` value is the safe production default, but whose useful
+// value locally is the other one. Applied before PASSTHROUGH_GATEKEEPER_VARS, so the shell or the
+// root `.dev.vars` still wins -- `ENABLE_BIGQUERY_PUBLIC_DATA=false pnpm dev-server` turns it back
+// off.
+//
+// A dev-only default rather than a committed "true": the same file feeds the release manifest, so
+// flipping it there would enable the feature for every deployment built from this repo.
+const DEV_GATEKEEPER_VAR_DEFAULTS: Record<string, Record<string, string>> = {
+  // Public datasets are the natural playground for a locally-built data gadget, and nothing
+  // private is reachable through the connection.
+  "gatekeeper-google": { ENABLE_BIGQUERY_PUBLIC_DATA: "true" },
 };
 
 for (const gk of gatekeepers) {
@@ -446,6 +460,8 @@ for (const gk of gatekeepers) {
     if (config.vars.CLIENT_ID === undefined) config.vars.CLIENT_ID = process.env[shared.id];
     if (config.vars.CLIENT_SECRET === undefined) config.vars.CLIENT_SECRET = process.env[shared.secret];
   }
+
+  Object.assign(config.vars, DEV_GATEKEEPER_VAR_DEFAULTS[gk.name] ?? {});
 
   // The shell wins over the committed default, so `MCP_ALLOW_INSECURE=true` can override the
   // `"false"` in wrangler.jsonc without editing it.

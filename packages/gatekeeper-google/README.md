@@ -79,7 +79,56 @@ included). Across all resource types, the gatekeeper can request:
 - `spreadsheets.readonly` to read metadata and cell values from selected Google spreadsheets.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
 - `calendar.events` to manage selected calendar and check calendar availability.
-- `bigquery` for BigQuery dry-runs and queries. This is intentionally broader than `bigquery.readonly` because dry-runs use `jobs.insert`; the gatekeeper enforces read-only SQL and resource scope checks before running queries.
+- `bigquery` for BigQuery dry-runs and queries. This is intentionally broader than `bigquery.readonly` because dry-runs use `jobs.insert`; the gatekeeper enforces read-only SQL and resource scope checks before running queries. The same single scope covers both BigQuery resource types, so a user who has already granted BigQuery can add a **BigQuery Public Data** connection without re-consenting.
+
+## BigQuery Public Data
+
+**Off by default.** This connection type is only offered when the Google gatekeeper is deployed
+with the var `ENABLE_BIGQUERY_PUBLIC_DATA=true`; `wrangler.jsonc` commits `"false"`, so a
+deployment opts in rather than acquiring a new data source from a repo update, and the release
+manifest carries the var so an operator can see and flip it. `pnpm dev-server` defaults it to
+`"true"` for local development — set `ENABLE_BIGQUERY_PUBLIC_DATA=false` in your shell or the root
+`.dev.vars` to turn it back off there.
+
+The flag is enforced in four places, so switching it off disables connections that already exist
+rather than just hiding the option: the resource is dropped from `getSupportedResources()`, the
+configurator refuses to open, `connect()` refuses to mint a capability for a
+`public.bigquery.googleapis.com` URL, and `startSession()` refuses to start. (It is an env var, not
+an `AdminConfig` entry, so it can't be flipped from a compromised admin session. Admins can still
+disable the resource on top of it, as they can any other.)
+
+When enabled, the gatekeeper offers **BigQuery Public Data** alongside the ordinary **BigQuery**
+connection: a connection to one of Google's public projects — `bigquery-public-data`, `patents-public-data`,
+`gdelt-bq`, `nyc-tlc`, `openaq`, or `bigquery-samples` — which grant read access to every
+authenticated Google user. The allowlist is `PUBLIC_DATA_PROJECTS` in `src/bigquery-resource.ts`;
+adding an entry is a one-line data change, and removing one disables the bindings that name it
+(the list is re-checked when a session starts, not only when the binding is created).
+
+Such a connection names **two** projects, because a public project can be read but not billed:
+
+- a **billing project** — one of the user's own, which the query jobs are charged to, and
+- a **data project** — the public one, the only project whose tables the connection may reference.
+
+That split is the point. The session's scope is the *public* project, so the existing
+`referencedTables` check rejects any query touching the billing project: the connection spends the
+user's money but cannot read a byte of their data. Because it provably reads only data anyone
+signed in to Google can already read, its observations do **not** set `prohibitAllSharing` — so a
+workspace built on one stays shareable and can still perform actions, rather than dropping into the
+lockdown mode that reading a private BigQuery dataset triggers.
+
+Costs still apply: public tables are large and the queries bill the user's project. The default
+100 GB `maximumBytesBilled` cap and the mandatory dry-run gate apply exactly as they do to a
+private connection, and each observation reports the billing project and the estimated bytes.
+
+The two types use distinct synthetic resource URLs:
+
+```
+BigQuery              https://bigquery.googleapis.com/<project>[/<dataset>[/<table>]]
+BigQuery Public Data  https://public.bigquery.googleapis.com/<billingProject>/<dataProject>[/<dataset>[/<table>]]
+```
+
+Distinct hostnames rather than a marker segment, so the two `URLPattern`s stay disjoint and one URL
+never matches both resource types.
 
 ### Step 4: Test Users
 
@@ -135,7 +184,7 @@ User — see Step 4.)
 2. Create or open a gadget.
 3. Navigate to the **Connections** tab.
 4. Click **+ New Connection**.
-5. Choose a Google resource type: Gmail, Google Doc, Google Spreadsheet, Google Calendar, or BigQuery.
+5. Choose a Google resource type: Gmail, Google Doc, Google Spreadsheet, Google Calendar, or BigQuery. (BigQuery Public Data also appears under `pnpm dev-server`, which enables it by default — see below.)
 6. If prompted, connect a Google account.
 7. You should be redirected to Google's consent screen in a new tab.
 8. The consent screen acts extra-scary since this is an "unverified" test app.

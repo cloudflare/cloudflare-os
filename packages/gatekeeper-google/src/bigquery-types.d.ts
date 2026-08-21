@@ -127,6 +127,14 @@ export type BigQueryQueryOptions = {
  * the underlying tables referenced by views, so querying a view may be rejected if the view reads
  * tables outside this binding's scope.
  *
+ * Public data connections: a "BigQuery Public Data" connection is scoped to one of Google's public
+ * projects (e.g. `bigquery-public-data`), which any Google account can read, and separately names
+ * one of the user's own projects to bill the query jobs to. Only the public project is readable:
+ * a query referencing a table in the billing project — or in any other project — is rejected, so a
+ * join between a public table and the user's own data is not possible through this connection.
+ * Reading through it does not lock the workspace down or prohibit sharing it, since anyone signed
+ * in to Google could read the same rows.
+ *
  * BigQuery uses Google Standard SQL by default. Legacy SQL is not supported.
  */
 export interface BigQuerySession {
