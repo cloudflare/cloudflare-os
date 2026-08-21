@@ -82,9 +82,9 @@ jobs:
       - name: Run evals
         working-directory: packages/workshop-evals
         env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.WORKSHOP_EVAL_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.WORKSHOP_EVAL_API_TOKEN }}
-          WORKSHOP_EVAL_GATEWAY_ID: ${{ secrets.WORKSHOP_EVAL_GATEWAY_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+          WORKSHOP_EVAL_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
           WORKSHOP_EVAL_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
           WORKSHOP_EVAL_SHARD: ${{ matrix.shard }}/6
         run: pnpm run eval:${{ matrix.expectation }}
