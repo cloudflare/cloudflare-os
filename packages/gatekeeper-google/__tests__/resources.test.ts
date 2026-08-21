@@ -38,8 +38,8 @@ describe("resource declarations", () => {
   it("describes the whole-account Drive authority exactly", () => {
     expect(GOOGLE_DRIVE_RESOURCE.description).toBe(
       "Find files and folders anywhere this Google account can read in Drive, including shared " +
-      "drives. Full-text search examines indexed file content, descriptions, and OCR text; " +
-      "results contain metadata only.",
+      "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
+      "results contain metadata only, while native Google Docs and Sheets can be opened read-only.",
     );
   });
 
@@ -84,7 +84,9 @@ describe("resource declarations", () => {
       GOOGLE_SHARED_DRIVE_RESOURCE.description,
       GOOGLE_DRIVE_FILE_RESOURCE.description,
     ]).toEqual([
-      "Find files and folders and read native Google Docs and Sheets anywhere this Google account can read in Drive, including shared drives it belongs to.",
+      "Find files and folders anywhere this Google account can read in Drive, including shared " +
+      "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
+      "results contain metadata only, while native Google Docs and Sheets can be opened read-only.",
       "Find files and folders, and read native Google Docs and Sheets, in one organization-owned shared drive.",
       "Read metadata and, for a native Google Doc or Sheet, content from one Drive file.",
     ]);
@@ -131,15 +133,20 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
   });
 
   it("requires account and file grants to expand beyond metadata-only consent", () => {
+    const drivePatterns = [
+      GOOGLE_DRIVE_RESOURCE.urlPattern,
+      GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern,
+      GOOGLE_DRIVE_FILE_RESOURCE.urlPattern,
+    ];
     const oldMetadataGrant = [
       ...IDENTITY_SCOPES,
       "https://www.googleapis.com/auth/drive.metadata.readonly",
     ];
-    const granted = grantedResourcesFromScopes(oldMetadataGrant);
+    const granted = resourcesCoveredByScopes(drivePatterns, oldMetadataGrant);
 
     expect(granted).not.toContain(GOOGLE_DRIVE_RESOURCE.urlPattern);
     expect(granted).not.toContain(GOOGLE_DRIVE_FILE_RESOURCE.urlPattern);
-    expect(grantedResourcesFromScopes([
+    expect(resourcesCoveredByScopes(drivePatterns, [
       ...IDENTITY_SCOPES,
       "https://www.googleapis.com/auth/drive.readonly",
     ])).toContain(GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern);

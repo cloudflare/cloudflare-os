@@ -275,8 +275,7 @@ export class DriveSessionCore {
     description: string,
   ): Promise<string> {
     if (this.#scope.kind === "file" && fileId !== this.#scope.fileId) this.#outsideScope();
-    let file = await this.#api.getFile(fileId);
-    if (!this.#inScope(file)) this.#outsideScope();
+    let file = await this.#getFileInScope(fileId);
     await this.#authorizeIds(
       [file.id],
       `Open ${description} from Google Drive`,

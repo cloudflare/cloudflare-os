@@ -535,6 +535,20 @@ describe("Drive native sessions", () => {
     expect(authorizations).toEqual([]);
   });
 
+  it.each([403, 404])(
+    "normalizes a %s shared-drive probe failure without authorizing or tracking it",
+    async status => {
+      let { session, prepared, authorizations } = core({
+        scope: { kind: "sharedDrive", driveId: "drive-1" },
+        getFile: async () => { throw new DriveApiRequestError(status); },
+      });
+
+      await expect(session.openNativeFile("foreign", docMime, "Google Doc"))
+        .rejects.toThrow(new Error("The requested file is outside this Drive binding."));
+      expect(prepared).toEqual([]);
+      expect(authorizations).toEqual([]);
+    },
+  );
   it.each([
     ["wrong native type", sheetMime, undefined],
     ["folder", "application/vnd.google-apps.folder", undefined],

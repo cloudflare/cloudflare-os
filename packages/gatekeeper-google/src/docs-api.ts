@@ -19,6 +19,7 @@ export type GoogleDocsDocument = {
   revisionId: string;
   body: { content: StructuralElement[] };
   lists: Record<string, DocList>;
+  namedRanges: Record<string, unknown>;
 }
 
 /** A list definition, referenced by paragraphs that are list items. */
@@ -83,6 +84,47 @@ export type TextStyle = {
   link?: { url: string };
 }
 
+type GoogleDocsTabContent = Pick<GoogleDocsDocument, "body"> & {
+  lists?: GoogleDocsDocument["lists"];
+  namedRanges?: GoogleDocsDocument["namedRanges"];
+};
+
+type GoogleDocsTab = {
+  documentTab?: GoogleDocsTabContent;
+  childTabs?: GoogleDocsTab[];
+};
+
+type GoogleDocsResponse = Pick<
+  GoogleDocsDocument, "documentId" | "title" | "revisionId"
+> & { tabs?: GoogleDocsTab[] };
+
+type GoogleDocsWriteMarker = { name: string; rangeStart: number };
+
+function singleTabDocument(document: GoogleDocsResponse): GoogleDocsDocument {
+  let tabs = document.tabs;
+  if (!tabs || tabs.length === 0) {
+    throw new Error("Google Docs returned no document tab");
+  }
+
+  let [tab] = tabs;
+  if (tabs.length !== 1 || tab.childTabs?.length) {
+    throw new Error("Multi-tab Google Docs are not supported");
+  }
+  let tabContent = tab.documentTab;
+  if (!tabContent) {
+    throw new Error("Google Docs returned a tab without document content");
+  }
+
+  return {
+    documentId: document.documentId,
+    title: document.title,
+    revisionId: document.revisionId,
+    body: tabContent.body,
+    lists: tabContent.lists ?? {},
+    namedRanges: tabContent.namedRanges ?? {},
+  };
+}
+
 // ---------------------------------------------------------------------------
 // API client
 // ---------------------------------------------------------------------------
@@ -108,13 +150,17 @@ export class GoogleDocsApi {
     });
   }
 
-  /** Fetch the full document. */
+  /** Fetch and normalize a single-tab document. */
   async getDocument(documentId: string): Promise<GoogleDocsDocument> {
-    return this.#request(
-      `${DOCS_API_BASE}/${encodeURIComponent(documentId)}`,
+    let document = await this.#request<GoogleDocsResponse>(
+      `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?includeTabsContent=true`,
       {},
       "get document",
     );
+    if (document.documentId !== documentId) {
+      throw new Error("Google Docs returned a different document");
+    }
+    return singleTabDocument(document);
   }
 
   /**
@@ -136,20 +182,37 @@ export class GoogleDocsApi {
   /**
    * Send a batchUpdate request to modify the document.
    *
-   * If `targetRevisionId` is provided, the update is applied against that
-   * revision. Google Docs will merge the changes with any concurrent edits
-   * (OT-style). The revision ID should come from a previous `getDocument()`
-   * call.
+   * `revisionId` is normally a merge target. A marked write instead requires that exact revision,
+   * so concurrent retries cannot both commit. The ID should come from `getDocument()`.
    *
    * Returns the new revision ID after the update.
    */
   async batchUpdate(
     documentId: string,
-    requests: any[],
-    targetRevisionId?: string,
+    requests: unknown[],
+    revisionId?: string,
+    writeMarker?: GoogleDocsWriteMarker,
   ): Promise<string> {
-    let body: any = { requests };
-    if (targetRevisionId) body.writeControl = { targetRevisionId };
+    let markedRequests = writeMarker
+      ? [{
+          createNamedRange: {
+            name: writeMarker.name,
+            range: {
+              startIndex: writeMarker.rangeStart,
+              endIndex: writeMarker.rangeStart + 1,
+            },
+          },
+        }, ...requests]
+      : requests;
+    let body: {
+      requests: unknown[];
+      writeControl?: { requiredRevisionId: string } | { targetRevisionId: string };
+    } = { requests: markedRequests };
+    if (revisionId) {
+      body.writeControl = writeMarker
+        ? { requiredRevisionId: revisionId }
+        : { targetRevisionId: revisionId };
+    }
 
     let result = await this.#request<{
       writeControl?: { requiredRevisionId?: string };

@@ -12,6 +12,6 @@ export interface GoogleDocReadSession {
   /** Return current document metadata. */
   getMetadata(): Promise<DocMetadata>;
 
-  /** Return the document body converted to Markdown. */
+  /** Return the document body as Markdown. Throws if the document has multiple tabs. */
   getContent(): Promise<string>;
 }

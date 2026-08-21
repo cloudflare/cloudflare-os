@@ -61,14 +61,6 @@ function valuesFromUrlPattern(resourceUrl: string, resourceUrlPattern: string) {
   return out;
 }
 
-const configurableValues = (
-  configurator: { initialValuesFromResourceUrl?: (context: {
-    resourceUrl: string; resourceUrlPattern: string; ui: never;
-  }) => unknown },
-  resourceUrl: string,
-  resourceUrlPattern: string,
-) => configurator.initialValuesFromResourceUrl!({ resourceUrl, resourceUrlPattern, ui: noUi });
-
 const renderedCopy = (configurator: { render?: (context: never) => unknown }) =>
   JSON.stringify(configurator.render!({ values: {}, setValues() {}, ui: noUi } as never));
 describe("Gmail configurator URLs", () => {
@@ -136,7 +128,7 @@ describe("Drive configurator URLs", () => {
 
   it("explains native Doc and Sheet reads at every Drive scope", () => {
     expect(renderedCopy(driveAccountConfigurator)).toContain(
-      "Returns metadata for every item and read-only content sessions for native Docs and Sheets.",
+      "native Google Docs and Sheets can be opened in read-only content sessions.",
     );
     expect(renderedCopy(sharedDriveConfigurator)).toContain(
       "Search its files and read native Google Docs and Sheets.",

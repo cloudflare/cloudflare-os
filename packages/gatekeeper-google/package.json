@@ -23,6 +23,7 @@
     "@cloudflare/vitest-pool-workers": "catalog:",
     "miniflare": "5.20260801.0-alpha",
     "typescript": "catalog:",
+    "typescript6": "npm:typescript@6.0.3",
     "vitest": "catalog:",
     "wrangler": "catalog:"
   }

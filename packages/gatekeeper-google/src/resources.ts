@@ -171,13 +171,13 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   },
   {
     resource: GOOGLE_SHARED_DRIVE_RESOURCE,
-    // `drive.readonly` (not `drive.metadata.readonly`, which is all this gatekeeper reads): the
-    // shared-drive picker and the binding's own `getScope` go through `drives.list`/`drives.get`,
-    // and those two methods accept only `drive` and `drive.readonly`. It is a restricted scope
-    // granting account-wide *content* read, so it is the one Drive resource whose consent is
-    // strictly wider than the authority the binding exercises. Narrowing it means dropping both
-    // calls: resolving a shared drive's name through `files.get` on the drive root instead, and
-    // giving up drive enumeration in the configurator.
+    // `drive.readonly` (not `drive.metadata.readonly`): the shared-drive picker and the binding's
+    // `getScope` use `drives.list`/`drives.get`, which accept nothing narrower. The same scope already
+    // authorizes native Docs and Sheets content, so do not add redundant API scopes. It is a
+    // restricted scope granting account-wide content access, strictly wider than the authority the
+    // shared-drive binding exercises. Narrowing it means dropping both calls: resolving a shared
+    // drive's name through `files.get` on the drive root instead, and giving up drive enumeration in
+    // the configurator.
     scopes: ["https://www.googleapis.com/auth/drive.readonly"],
   },
   {

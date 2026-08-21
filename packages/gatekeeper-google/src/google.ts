@@ -96,11 +96,32 @@ import {
   type GoogleOAuthEnv,
   type GoogleOAuthState,
 } from "./oauth";
+import {
+  DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
+} from "./type-bundle";
 
-const GOOGLE_DOC_TYPES_CODE = [DOCS_READ_TYPES_CODE, DOCS_TYPES_CODE].join("\n");
-const GOOGLE_DRIVE_TYPES_CODE = [
-  DOCS_READ_TYPES_CODE, SHEETS_TYPES_CODE, DRIVE_TYPES_CODE,
-].join("\n");
+let googleDocTypesCode: string | undefined;
+let driveAgentTypesCode: string | undefined;
+let googleDriveTypesCode: string | undefined;
+
+function getGoogleDocTypesCode(): string {
+  return googleDocTypesCode ??= [
+    DOCS_READ_TYPES_CODE,
+    stripTypeModulePrefix(DOCS_TYPES_CODE, DOCS_TYPES_MODULE_PREFIX),
+  ].join("\n");
+}
+
+function getDriveAgentTypesCode(): string {
+  return driveAgentTypesCode ??= stripTypeModulePrefix(
+    DRIVE_TYPES_CODE, DRIVE_TYPES_MODULE_PREFIX,
+  );
+}
+
+function getGoogleDriveTypesCode(): string {
+  return googleDriveTypesCode ??= [
+    DOCS_READ_TYPES_CODE, SHEETS_TYPES_CODE, getDriveAgentTypesCode(),
+  ].join("\n");
+}
 
 // Vendor id = GATEKEEPER_<NAME> binding suffix (lowercased).
 const VENDOR_ID = "google";
@@ -404,8 +425,8 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 
   async getTypeScriptTypes(): Promise<string> {
     return [
-      TYPES_CODE, GOOGLE_DOC_TYPES_CODE, SHEETS_TYPES_CODE, CALENDAR_TYPES_CODE,
-      BIGQUERY_TYPES_CODE, DRIVE_TYPES_CODE,
+      TYPES_CODE, getGoogleDocTypesCode(), SHEETS_TYPES_CODE, CALENDAR_TYPES_CODE,
+      BIGQUERY_TYPES_CODE, getDriveAgentTypesCode(),
     ].join("\n");
   }
 }
@@ -1788,6 +1809,7 @@ type GoogleDocActionBase = {
   documentId: string;
   submittedAt: number;
   baseRevisionId: string;
+  writeId?: string;
   invalidatedReason?: string;
 }
 
@@ -2010,7 +2032,7 @@ export class GoogleDocGatekeeperImpl
   }
 
   async getTypeScriptTypes(): Promise<string> {
-    return GOOGLE_DOC_TYPES_CODE;
+    return getGoogleDocTypesCode();
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
@@ -2037,45 +2059,54 @@ export class GoogleDocGatekeeperImpl
     if (pendingIndex === -1) {
       throw new Error(`Unknown pending Google Doc action: ${actionId}`);
     }
-    let pendingRecord = pending[pendingIndex];
-
-    let action = pendingRecord.action;
+    let action = pending[pendingIndex].action;
     if (action.invalidatedReason) {
       pendingActions.remove(actionId);
       this.#simulationCache.current = undefined;
       return;
     }
 
-    let firstPending = pending.find(({action}) => !action.invalidatedReason);
+    let firstPending = pending.find(record => !record.action.invalidatedReason);
     if (firstPending?.id !== actionId) {
       throw new Error(
         `Google Doc edits must be approved in order. Approve earlier edit ` +
         `${firstPending?.id} before edit ${actionId}.`);
     }
 
+    if (!action.writeId) {
+      action.writeId = crypto.randomUUID();
+      pendingActions.put(actionId, action);
+    }
+    // deferred: retain receipts; garbage-collect them if named-range growth becomes a real limit.
+    let writeMarkerName = `gadgets-write-${action.writeId}`;
     let api = new GoogleDocsApi(opts => this.#getAccessToken(opts));
     let doc = await api.getDocument(action.documentId);
     let snapshot = docToMarkdown(doc);
-    let requests: any[];
-    try {
-      requests = materializeGoogleDocAction(snapshot, action);
-    } catch (error) {
-      logger.error("dropping stale Google Doc action during apply", {
-        event: "google.doc.action.apply.stale.dropped",
-        actionId, error,
-      });
-      pendingActions.remove(actionId);
-      this.#simulationCache.current = undefined;
-      await this.ctx.storage.put("docSnapshot", snapshot);
-      invalidateUnreplayableGoogleDocActions(
-          pendingActions,
-          snapshot.markdown,
-          pending.slice(pendingIndex + 1),
-          `Pending Google Doc edits could not be replayed after edit ${actionId} was dropped`);
-      return;
-    }
-    if (requests.length > 0) {
-      await api.batchUpdate(action.documentId, requests, snapshot.revisionId);
+    let requests: any[] = [];
+    if (!Object.hasOwn(doc.namedRanges, writeMarkerName)) {
+      try {
+        requests = materializeGoogleDocAction(snapshot, action);
+      } catch (error) {
+        logger.error("dropping stale Google Doc action during apply", {
+          event: "google.doc.action.apply.stale.dropped",
+          actionId, error,
+        });
+        pendingActions.remove(actionId);
+        this.#simulationCache.current = undefined;
+        await this.ctx.storage.put("docSnapshot", snapshot);
+        invalidateUnreplayableGoogleDocActions(
+            pendingActions,
+            snapshot.markdown,
+            pending.slice(pendingIndex + 1),
+            `Pending Google Doc edits could not be replayed after edit ${actionId} was dropped`);
+        return;
+      }
+      if (requests.length > 0) {
+        await api.batchUpdate(action.documentId, requests, snapshot.revisionId, {
+          name: writeMarkerName,
+          rangeStart: snapshot.bodyEndIndex - 1,
+        });
+      }
     }
     pendingActions.remove(actionId);
     this.#simulationCache.current = undefined;
@@ -2269,6 +2300,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       documentId: this.#documentId,
       submittedAt: Date.now(),
       baseRevisionId: snapshot.revisionId,
+      writeId: crypto.randomUUID(),
       oldMarkdown,
       newMarkdown,
     };
@@ -2305,6 +2337,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       documentId: this.#documentId,
       submittedAt: Date.now(),
       baseRevisionId: snapshot.revisionId,
+      writeId: crypto.randomUUID(),
       markdown,
     };
 
@@ -3052,7 +3085,7 @@ export class GoogleDriveGatekeeperImpl
   }
 
   async getTypeScriptTypes(): Promise<string> {
-    return GOOGLE_DRIVE_TYPES_CODE;
+    return getGoogleDriveTypesCode();
   }
 
   async getAutoApprovableActions() {

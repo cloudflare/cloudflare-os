@@ -47,7 +47,14 @@ export function buildDoc(
     });
   }
 
-  return { documentId: "doc-1", title: "Fixture", revisionId: "rev-1", body: { content }, lists };
+  return {
+    documentId: "doc-1",
+    title: "Fixture",
+    revisionId: "rev-1",
+    body: { content },
+    lists,
+    namedRanges: {},
+  };
 }
 
 /** A single-level bullet list definition, for paragraphs carrying a matching `bullet`. */
