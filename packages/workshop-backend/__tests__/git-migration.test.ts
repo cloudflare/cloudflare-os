@@ -1,174 +1,11 @@
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
-import { keyString } from "@gadgets/typed-storage";
-import type {
-  AiChatAuthorInfo, AiChatMessage, BlueprintMetadata, ChatCodeBase,
-} from "@gadgets/workshop-shared/api";
-import { applyCodeChange, type CodeContent } from "@gadgets/workshop-shared/code-change";
-import { makeMockStorage } from "./mock-storage";
-import { makeOverseerStorage } from "../src/overseer";
-import { GitStore } from "../src/git-store";
-import {
-  HISTORY_COMMIT_GAP_MS, migrateCodeLogToGit, type GitMigrationHost,
-} from "../src/git-migration";
+import type { AiChatMessage, BlueprintMetadata } from "@gadgets/workshop-shared/api";
+import { HISTORY_COMMIT_GAP_MS, migrateCodeLogToGit } from "../src/git-migration";
 import { foldProposedChanges, legacyChatBaseVersion } from "../src/agent-compaction";
-
-const USER: AiChatAuthorInfo = { type: "user", id: "alice@example.com", name: "Alice" };
-const AGENT: AiChatAuthorInfo = { type: "agent", id: "some-model", name: "Agent" };
-const OWNER = { name: "Alice", email: "alice@example.com" };
-
-const T0 = Date.UTC(2024, 0, 1);
-const MINUTE = 60_000;
-
-/**
- * Builds a synthetic pre-git-storage workspace on mock storage: a legacy code log written the
- * way the old updateCode() wrote it (incremental V2 updates against one workspace-wide doc,
- * versions drawn from the shared change counter -- so `skipVersions` models the gaps that
- * non-code changes left), plus gadget records, chats (with legacy Yjs-update messages and
- * drafts), and blueprint records.
- */
-class LegacyWorkspace {
-  storage = makeOverseerStorage(makeMockStorage());
-  gitStore = new GitStore(this.storage.gitObjects);
-
-  #doc = new Y.Doc();
-  #version = 0;
-  #updates: Uint8Array[] = [];
-  #timestamp = 0;
-
-  constructor() {
-    // Legacy workspaces always wrote an (often empty) version 1 at initialization.
-    this.edit(T0, () => {});
-  }
-
-  /** Applies `fn` to the mainline doc and records the resulting update as the next version. */
-  edit(timestampMs: number, fn: (doc: Y.Doc) => void): number {
-    let captured: Uint8Array[] = [];
-    let handler = (update: Uint8Array) => captured.push(update);
-    this.#doc.on("updateV2", handler);
-    this.#doc.transact(() => fn(this.#doc));
-    this.#doc.off("updateV2", handler);
-    let update = captured.length > 0
-        ? Y.mergeUpdatesV2(captured) : Y.encodeStateAsUpdateV2(new Y.Doc());
-    this.#updates.push(update);
-    let version = ++this.#version;
-    this.storage.code.put({ version, timestamp: new Date(timestampMs), update });
-    return version;
-  }
-
-  /** Models non-code changes consuming versions from the shared counter (binding edits etc.). */
-  skipVersions(count: number): void {
-    this.#version += count;
-  }
-
-  /** A fresh doc replaying the recorded log through `version` ("current" = all of it). */
-  docAt(version: number | "current"): Y.Doc {
-    let doc = new Y.Doc();
-    let count = version === "current" ? this.#updates.length : version;
-    for (let update of this.#updates.slice(0, count)) {
-      Y.applyUpdateV2(doc, update);
-    }
-    return doc;
-  }
-
-  addGadget(id: number, bindingName: string,
-            pending?: { chatId: number, sequence?: number }): void {
-    this.storage.gadgets.put({
-      id, title: bindingName, created: new Date(T0), bindingName, bindings: {},
-      ...(pending !== undefined ? { pending } : {}),
-    });
-  }
-
-  addChat(id: number): void {
-    this.storage.chatMeta.put(
-        { id, title: "Chat", started: new Date(T0), lastActive: new Date(T0 + id) });
-  }
-
-  addMessage(chatId: number, author: AiChatAuthorInfo, body: object): number {
-    // Sequences come from the real counter collection, exactly as the legacy system allocated
-    // them (the migration's conversion message continues the same counter).
-    let sequence = this.storage.nextChatSequences.get(chatId)?.nextSequence ?? 0;
-    this.storage.nextChatSequences.put({ chatId, nextSequence: sequence + 1 });
-    // Legacy bodies (e.g. merge messages without `commits`, changes messages carrying a retired
-    // Yjs `update`) are exactly what the migration consumes, so this deliberately bypasses the
-    // current wire type.
-    this.storage.chats.put({
-      chatId, sequence, timestamp: new Date(T0 + ++this.#timestamp), author, ...body,
-    } as AiChatMessage);
-    return sequence;
-  }
-
-  /** Records a legacy live draft (see ChatDraftUpdateRecord in overseer.ts). */
-  addDraft(chatId: number, update: Uint8Array): void {
-    this.storage.chatDraftUpdates.put({
-      chatId, timestamp: new Date(T0 + ++this.#timestamp), author: USER, update,
-    });
-  }
-
-  host(defaultGadgetId?: number): GitMigrationHost {
-    return {
-      storage: this.storage,
-      gitStore: this.gitStore,
-      ownerIdentity: OWNER,
-      defaultGadgetId,
-      gadgetRootName: (id) => id === defaultGadgetId ? "" : `${id}`,
-      getActiveChatCompaction: (chatId) => {
-        let compactedTo = this.storage.chatMeta.get(chatId)?.compactedTo;
-        return compactedTo === undefined ? undefined
-            : this.storage.chatCompactions.get(
-                `${keyString(chatId)}.${keyString(compactedTo)}`);
-      },
-      // The shared counter keeps conversion timestamps unique against every message's (the
-      // chats collection's byTimestamp index is unique), like the real getChatTimestamp().
-      getChatTimestamp: () => new Date(T0 + ++this.#timestamp),
-    };
-  }
-
-  mergeMessages(chatId: number): Extract<AiChatMessage, { type: "merge" }>[] {
-    return [...this.storage.chats.list({ prefix: `${keyString(chatId)}.` })]
-        .filter(msg => msg.type === "merge");
-  }
-
-  messages(chatId: number): AiChatMessage[] {
-    return [...this.storage.chats.list({ prefix: `${keyString(chatId)}.` })];
-  }
-
-  conversionMessage(chatId: number): Extract<AiChatMessage, { type: "changes" }> {
-    let found = this.messages(chatId).filter(
-        msg => msg.type === "changes" && msg.conversionBoundary);
-    expect(found).toHaveLength(1);
-    return found[0] as Extract<AiChatMessage, { type: "changes" }>;
-  }
-
-  codeBase(chatId: number): ChatCodeBase | undefined {
-    return this.storage.chatMeta.get(chatId)?.codeBase;
-  }
-
-  /** The chat's converted content: the pin bases with the conversion change applied on top. */
-  async convertedContent(chatId: number): Promise<CodeContent> {
-    let conversion = this.conversionMessage(chatId);
-    let content: CodeContent = new Map();
-    for (let pin of conversion.pins ?? []) {
-      content.set(pin.gadgetId, await this.gitStore.readCommitFiles(pin.baseCommit));
-    }
-    return conversion.change !== undefined ? applyCodeChange(content, conversion.change) : content;
-  }
-}
-
-function setFile(doc: Y.Doc, root: string, name: string, text: string): void {
-  doc.getMap<Y.Text>(root).set(name, new Y.Text(text));
-}
-
-// Captures the update of one edit made against `doc` (a chat-local edit, never applied to the
-// mainline log).
-function captureEdit(doc: Y.Doc, fn: (doc: Y.Doc) => void): Uint8Array {
-  let captured: Uint8Array[] = [];
-  let handler = (update: Uint8Array) => captured.push(update);
-  doc.on("updateV2", handler);
-  doc.transact(() => fn(doc));
-  doc.off("updateV2", handler);
-  return Y.mergeUpdatesV2(captured);
-}
+import {
+  AGENT, LegacyWorkspace, MINUTE, OWNER, T0, USER, captureEdit, expectHeadsMatchDoc, setFile,
+} from "./legacy-workspace";
 
 describe("migrateCodeLogToGit", () => {
   it("synthesizes commits at merge points and backfills merge messages", async () => {
@@ -188,6 +25,9 @@ describe("migrateCodeLogToGit", () => {
 
     let { commits } = await migrateCodeLogToGit(ws.host());
     expect(commits).toBe(3);
+
+    // Every head tree must equal an independent replay of the recorded update log.
+    await expectHeadsMatchDoc(ws.storage, ws.gitStore, ws.docAt("current"));
 
     // The head is the merge-point chain's tip: v3 was neither a merge point nor a gap, so it
     // folded into the v4 commit. The chain is rooted at the synthesized version-0 empty-tree
@@ -266,6 +106,9 @@ describe("migrateCodeLogToGit", () => {
 
     let { commits } = await migrateCodeLogToGit(ws.host());
     expect(commits).toBe(4);  // two empty roots, two content commits
+
+    // Every head tree must equal an independent replay of the recorded update log.
+    await expectHeadsMatchDoc(ws.storage, ws.gitStore, ws.docAt("current"));
 
     // Each gadget's chain has exactly its empty root plus the commit where its own files
     // changed.
@@ -482,6 +325,10 @@ describe("migrateCodeLogToGit", () => {
     ws.storage.blueprints.put({ id: "bp-deleted", metadata, gadgetId: 70, codeVersion: 2 });
 
     await migrateCodeLogToGit(ws.host(60));
+
+    // Every head tree must equal an independent replay of the recorded update log (the default
+    // gadget's root is "").
+    await expectHeadsMatchDoc(ws.storage, ws.gitStore, ws.docAt("current"), 60);
 
     // Each blueprint points at the commit whose tree is exactly the exported snapshot, even
     // though mainline moved on (bp-default) or the gadget is gone (bp-deleted).
