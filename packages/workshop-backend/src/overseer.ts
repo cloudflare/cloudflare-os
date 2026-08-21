@@ -92,7 +92,7 @@ export default class extends WorkerEntrypoint {
         }
       }
     }
-    await agent(self, env, this.ctx);
+    return await agent(self, env, this.ctx);
   }
 }
 `;
@@ -169,7 +169,19 @@ interface CodeModeEntrypoint extends WorkerEntrypoint {
         resolve: NativeRpcStub<(v: unknown) => void>,
         reject: NativeRpcStub<(e: unknown) => void>
       }>,
-      restoreForger?: NativeRpcStub<RestoreForgerImpl>): Promise<void>;
+      restoreForger?: NativeRpcStub<RestoreForgerImpl>): Promise<unknown>;
+}
+
+/** Appends a code-mode module's return value to its console output. */
+export function appendCodeModeReturnValue(log: string, value: unknown): string {
+  if (value === undefined) return log;
+  let rendered: string;
+  try {
+    let json = value !== null && typeof value === "object" &&
+        (Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype);
+    rendered = json ? JSON.stringify(value) : String(value);
+  } catch { rendered = "[unserializable return value]"; }
+  return `${log}${log && rendered ? "\n" : ""}${rendered}`;
 }
 
 interface RestoreForgerEntrypoint extends WorkerEntrypoint {
@@ -5650,10 +5662,11 @@ class OverseerImpl implements AgentHooks {
       }
 
       let error: string | undefined;
+      let returnValue: unknown;
       try {
         // The forger is a transient stub argument, so the capability to forge persistent
         // gadget-restore stubs lives exactly as long as this run() call.
-        await entrypoint.run(selfStub, callbackResolvers,
+        returnValue = await entrypoint.run(selfStub, callbackResolvers,
             new RestoreForgerImpl(this, chatId, bindings));
       } catch (err) {
         if (err instanceof Error && err.stack) {
@@ -5683,7 +5696,7 @@ class OverseerImpl implements AgentHooks {
         log += `\n\nUncaught exception: ${error}`;
       }
 
-      return log;
+      return appendCodeModeReturnValue(log, returnValue);
     } finally {
       this.#codeModeOutputSubscribers.delete(executionId);
       this.#codeModeResolvers.delete(executionId);
