@@ -44,6 +44,21 @@ function keyEdge(keyId: string, role: CollaboratorRole = "build"): PermissionEdg
   return { type: "shareKey", keyId, created: new Date(), role };
 }
 
+function pendingKeyEdge(keyId: string, role: CollaboratorRole = "build"): PermissionEdge {
+  return { type: "shareKey", keyId, created: new Date(), role, pending: true };
+}
+
+// Redeem `rawKey` for `profileId` and confirm the redemption, as a successful open() does.
+// Redemption alone adds only a pending edge, which grants nothing.
+async function redeemConfirmed(
+    mgr: SharingManager, rawKey: string, profileId: string): Promise<string | null> {
+  let linkId = await mgr.redeemShareKey({
+    rawKey, profileId, fetchProfile: async () => profile(profileId),
+  });
+  if (linkId !== null) mgr.confirmShareKeyRedemption(profileId, linkId);
+  return linkId;
+}
+
 function seedCollaborator(storage: SharingStorage, id: string, addedBy: PermissionEdge[]) {
   storage.collaborators.put({ profile: profile(id), addedBy });
 }
@@ -96,27 +111,6 @@ describe("authorization", () => {
     expect(mgr.getEffectiveRole("a")).toBe("use");
     expect(mgr.getEffectiveRole("b")).toBe("build");
   });
-
-  it("hasAnyShares reflects current reachability, not table membership", () => {
-    let { storage, mgr } = makeManager();
-    expect(mgr.hasAnyShares()).toBe(false);
-
-    // An active share link counts as a share.
-    seedLink(storage, "k1", OWNER);
-    expect(mgr.hasAnyShares()).toBe(true);
-
-    // A revoked link does not.
-    storage.shareKeys.put({ id: "k1", created: new Date(), createdBy: OWNER, revoked: true });
-    expect(mgr.hasAnyShares()).toBe(false);
-
-    // A reachable collaborator counts.
-    seedCollaborator(storage, "a", [userEdge(OWNER)]);
-    expect(mgr.hasAnyShares()).toBe(true);
-
-    // A collaborator whose record lingers but is unreachable does not.
-    storage.collaborators.put({ profile: profile("a"), addedBy: [] });
-    expect(mgr.hasAnyShares()).toBe(false);
-  });
 });
 
 describe("redeemShareKey", () => {
@@ -140,10 +134,7 @@ describe("redeemShareKey", () => {
     let { storage, mgr } = makeManager();
     let { key } = await mgr.createShareLink({ caller: owner, role: "use" });
 
-    await mgr.redeemShareKey({
-      rawKey: key, profileId: "a",
-      fetchProfile: async () => profile("a"),
-    });
+    await redeemConfirmed(mgr, key, "a");
 
     expect(storage.collaborators.get("a")!.addedBy)
         .toEqual([expect.objectContaining({ type: "shareKey", role: "use" })]);
@@ -169,14 +160,8 @@ describe("redeemShareKey", () => {
     let { storage, mgr } = makeManager();
     let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
 
-    await mgr.redeemShareKey({
-      rawKey: key, profileId: "a",
-      fetchProfile: async () => profile("a"),
-    });
-    await mgr.redeemShareKey({
-      rawKey: key, profileId: "a",
-      fetchProfile: async () => profile("a"),
-    });
+    await redeemConfirmed(mgr, key, "a");
+    await redeemConfirmed(mgr, key, "a");
 
     expect(storage.collaborators.get("a")!.addedBy).toHaveLength(1);
   });
@@ -189,6 +174,304 @@ describe("redeemShareKey", () => {
       fetchProfile: async () => profile("a"),
     });
     expect(storage.collaborators.get("a")).toBeUndefined();
+  });
+
+  it("returns the link id while there is a pending edge to settle, null once confirmed", async () => {
+    let { mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+
+    let redeem = () => mgr.redeemShareKey({
+      rawKey: key, profileId: "a",
+      fetchProfile: async () => profile("a"),
+    });
+    await expect(redeem()).resolves.toBe(linkId);  // added a pending edge
+    await expect(redeem()).resolves.toBe(linkId);  // still pending -> this attempt settles it too
+    mgr.confirmShareKeyRedemption("a", linkId);
+    await expect(redeem()).resolves.toBeNull();    // confirmed edge -> nothing to settle
+
+    await expect(mgr.redeemShareKey({
+      rawKey: "00112233445566778899aabbccddeeff", profileId: "b",
+      fetchProfile: async () => profile("b"),
+    })).resolves.toBeNull();  // unknown key
+  });
+
+  it("revertShareKeyRedemption makes a brand-new recipient unreachable again", async () => {
+    let { storage, mgr } = makeManager();
+    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
+
+    let redeemed = await mgr.redeemShareKey({
+      rawKey: key, profileId: "a",
+      fetchProfile: async () => profile("a"),
+    });
+    mgr.revertShareKeyRedemption("a", redeemed!);
+
+    // The record lingers edge-less (lazy model), granting nothing.
+    expect(storage.collaborators.get("a")!.addedBy).toEqual([]);
+    expect(mgr.getEffectiveRole("a")).toBeUndefined();
+    expect(ids(mgr.listCollaborators())).toEqual([]);
+  });
+
+  it("a redemption that raced a completed one merges instead of clobbering", async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+
+    // While A's redemption is fetching the profile (the one await), a concurrent redemption of
+    // the same key completes fully -- redeem plus confirm. A's re-read after the await must find
+    // that record and settle against it, not overwrite it with a fresh pending edge.
+    let result = await mgr.redeemShareKey({
+      rawKey: key, profileId: "a",
+      fetchProfile: async () => {
+        await redeemConfirmed(mgr, key, "a");
+        return profile("a");
+      },
+    });
+
+    // The confirmed edge means there is nothing for A to settle...
+    expect(result).toBeNull();
+    let edges = storage.collaborators.get("a")!.addedBy;
+    expect(edges).toEqual([expect.objectContaining({ type: "shareKey", keyId: linkId })]);
+    expect(edges[0]).not.toHaveProperty("pending");
+
+    // ...and A's failed-verification revert (which only severs pending edges) leaves the
+    // concurrent open's grant intact.
+    mgr.revertShareKeyRedemption("a", linkId);
+    expect(storage.collaborators.get("a")!.addedBy).toHaveLength(1);
+    expect(mgr.getEffectiveRole("a")).toBe("build");
+  });
+
+  it("a redemption that raced a still-pending one settles the shared edge", async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+
+    // The concurrent redemption is still mid-verification: its pending edge is found on the
+    // re-read, not duplicated, and A gets the link id back so it settles the edge itself.
+    let result = await mgr.redeemShareKey({
+      rawKey: key, profileId: "a",
+      fetchProfile: async () => {
+        await mgr.redeemShareKey({
+          rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+        });
+        return profile("a");
+      },
+    });
+
+    expect(result).toBe(linkId);
+    expect(storage.collaborators.get("a")!.addedBy).toEqual(
+        [expect.objectContaining({ type: "shareKey", keyId: linkId, pending: true })]);
+  });
+
+  it("revertShareKeyRedemption severs only the redeemed edge", async () => {
+    let { storage, mgr } = makeManager();
+    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
+    seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
+
+    let redeemed = await mgr.redeemShareKey({
+      rawKey: key, profileId: "a",
+      fetchProfile: async () => profile("a"),
+    });
+    // The pending grant is visible only to the verifying open itself.
+    expect(mgr.getEffectiveRole("a")).toBe("use");
+    expect(mgr.getEffectiveRole("a", redeemed!)).toBe("build");
+
+    mgr.revertShareKeyRedemption("a", redeemed!);
+
+    // The pre-existing user edge survives; only the shareKey grant is gone.
+    expect(storage.collaborators.get("a")!.addedBy).toEqual([
+      expect.objectContaining({ type: "user", sharer: OWNER, role: "use" }),
+    ]);
+    expect(mgr.getEffectiveRole("a")).toBe("use");
+  });
+
+  it("a throwing assertGrantAllowed rejects a new recipient with nothing persisted", async () => {
+    let { storage, mgr } = makeManager();
+    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
+
+    await expect(mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+      assertGrantAllowed: () => { throw new Error("sharing is closed"); },
+    })).rejects.toThrow(/sharing is closed/);
+
+    // No collaborator record and no edge were written.
+    expect(storage.collaborators.get("a")).toBeUndefined();
+  });
+
+  it("does not invoke assertGrantAllowed for an already-confirmed edge", async () => {
+    let { mgr } = makeManager();
+    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
+    await redeemConfirmed(mgr, key, "a");
+
+    // A confirmed edge is an existing grant, not a new one: the redemption stays a no-op even
+    // when policy forbids new sharing (a collaborator re-opening with a retained key).
+    await expect(mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+      assertGrantAllowed: () => { throw new Error("sharing is closed"); },
+    })).resolves.toBeNull();
+  });
+
+  it("gates settling a still-pending edge, leaving it untouched on refusal", async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+    });
+
+    // Settling a pending edge completes a new grant, so it is refused too.
+    await expect(mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+      assertGrantAllowed: () => { throw new Error("sharing is closed"); },
+    })).rejects.toThrow(/sharing is closed/);
+
+    // The pre-existing pending edge survives for its own open to settle.
+    expect(storage.collaborators.get("a")!.addedBy).toEqual([
+      expect.objectContaining({ type: "shareKey", keyId: linkId, pending: true }),
+    ]);
+  });
+
+  it("invokes a passing assertGrantAllowed once and writes the pending edge", async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+
+    let calls = 0;
+    await expect(mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+      assertGrantAllowed: () => { calls++; },
+    })).resolves.toBe(linkId);
+
+    expect(calls).toBe(1);
+    expect(storage.collaborators.get("a")!.addedBy).toEqual([
+      expect.objectContaining({ type: "shareKey", keyId: linkId, pending: true }),
+    ]);
+  });
+});
+
+describe("pending redemptions", () => {
+  it("a pending redemption grants nothing until confirmed", async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+    });
+
+    // The edge exists but is pending: invisible to roles, listings, and downstream grants.
+    expect(storage.collaborators.get("a")!.addedBy)
+        .toEqual([expect.objectContaining({ type: "shareKey", keyId: linkId, pending: true })]);
+    expect(mgr.getEffectiveRole("a")).toBeUndefined();
+    expect(ids(mgr.listCollaborators())).toEqual([]);
+    seedCollaborator(storage, "b", [userEdge("a")]);
+    expect(mgr.getEffectiveRole("b")).toBeUndefined();
+
+    mgr.confirmShareKeyRedemption("a", linkId);
+    expect(mgr.getEffectiveRole("a")).toBe("build");
+    expect(ids(mgr.listCollaborators())).toEqual(["a", "b"]);
+  });
+
+  it("assumePendingLink models the grant only for the verifying profile", async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "c", fetchProfile: async () => profile("c"),
+    });
+
+    // The verifying open counts its own pending edge...
+    expect(mgr.getEffectiveRole("c", linkId)).toBe("build");
+    // ...but the edge contributes nothing to anyone else's role, even in the same computation:
+    // a user downstream of c stays unreachable when the open verifying a different profile asks.
+    seedCollaborator(storage, "a", [userEdge("c")]);
+    expect(mgr.getEffectiveRole("a", linkId)).toBeUndefined();
+  });
+
+  it("assumePendingLink is bounded by the link creator's effective role", () => {
+    let { storage, mgr } = makeManager();
+    // "s" created a build link but is themselves only a "use" collaborator.
+    seedCollaborator(storage, "s", [userEdge(OWNER, "use")]);
+    seedLink(storage, "k1", "s", "build");
+    seedCollaborator(storage, "a", [pendingKeyEdge("k1", "build")]);
+    expect(mgr.getEffectiveRole("a", "k1")).toBe("use");
+  });
+
+  it("assumePendingLink grants nothing for a revoked link", async () => {
+    let { mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+    });
+    mgr.revokeShareLink(owner, linkId, []);
+    expect(mgr.getEffectiveRole("a", linkId)).toBeUndefined();
+  });
+
+  it("confirmShareKeyRedemption clears the pending flag and is idempotent", async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "use" });
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+    });
+
+    mgr.confirmShareKeyRedemption("a", linkId);
+    mgr.confirmShareKeyRedemption("a", linkId);
+
+    let edges = storage.collaborators.get("a")!.addedBy;
+    expect(edges).toEqual([expect.objectContaining({ type: "shareKey", keyId: linkId })]);
+    expect(edges[0]).not.toHaveProperty("pending");
+    expect(mgr.getEffectiveRole("a")).toBe("use");
+  });
+
+  it("confirmShareKeyRedemption re-adds an edge a concurrent revert severed", async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "use" });
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+    });
+
+    // A parallel open of the same link failed verification and reverted while this open's
+    // verification was succeeding. The successful open's confirm must still land the grant.
+    mgr.revertShareKeyRedemption("a", linkId);
+    expect(storage.collaborators.get("a")!.addedBy).toEqual([]);
+
+    mgr.confirmShareKeyRedemption("a", linkId);
+    expect(storage.collaborators.get("a")!.addedBy)
+        .toEqual([expect.objectContaining({ type: "shareKey", keyId: linkId, role: "use" })]);
+    expect(mgr.getEffectiveRole("a")).toBe("use");
+  });
+
+  it("revertShareKeyRedemption leaves a confirmed edge alone", async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+    await redeemConfirmed(mgr, key, "a");
+
+    // A parallel open of the same link failed verification after this one confirmed; its revert
+    // must not take away the grant the successful open established.
+    mgr.revertShareKeyRedemption("a", linkId);
+
+    expect(storage.collaborators.get("a")!.addedBy).toHaveLength(1);
+    expect(mgr.getEffectiveRole("a")).toBe("build");
+  });
+
+  it("a redemption confirmed after its link was revoked grants nothing", async () => {
+    let { mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+    });
+    mgr.revokeShareLink(owner, linkId, []);
+
+    // Confirming cannot resurrect revoked authority: the confirmed edge is inert.
+    mgr.confirmShareKeyRedemption("a", linkId);
+    expect(mgr.getEffectiveRole("a")).toBeUndefined();
+    expect(ids(mgr.listCollaborators())).toEqual([]);
+  });
+
+  it("a pending build edge does not raise the caller's sharing authority", async () => {
+    let { storage, mgr } = makeManager();
+    seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
+    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+    });
+
+    // Sharing mutators read the live graph, where the pending edge is invisible: "a" is still
+    // only a "use" collaborator and cannot mint build-role grants.
+    await expect(mgr.createShareLink({ caller: collab("a"), role: "build" }))
+        .rejects.toThrow(/higher than your own/);
   });
 });
 
@@ -469,10 +752,7 @@ describe("revokeShareLink", () => {
 
     mgr.revokeShareLink(owner, linkId, []);
 
-    await mgr.redeemShareKey({
-      rawKey: key, profileId: "a",
-      fetchProfile: async () => profile("a"),
-    });
+    await redeemConfirmed(mgr, key, "a");
     expect(storage.collaborators.get("a")).toBeUndefined();
   });
 
@@ -501,6 +781,26 @@ describe("createShareLink", () => {
     expect(() => mgr.createShareLink({ caller: collab("a"), role: "build" }))
         .rejects.toThrow(/higher than your own/);
   });
+
+  it("a throwing assertGrantAllowed aborts with nothing persisted", async () => {
+    let { storage, mgr } = makeManager();
+    await expect(mgr.createShareLink({
+      caller: owner, role: "build",
+      assertGrantAllowed: () => { throw new Error("sharing is closed"); },
+    })).rejects.toThrow(/sharing is closed/);
+    // The minted key was discarded, never stored.
+    expect([...storage.shareKeys.list()]).toEqual([]);
+  });
+
+  it("invokes assertGrantAllowed once and persists the grant when it passes", async () => {
+    let { mgr } = makeManager();
+    let calls = 0;
+    let { linkId } = await mgr.createShareLink({
+      caller: owner, role: "use", assertGrantAllowed: () => { calls++; },
+    });
+    expect(calls).toBe(1);
+    expect(mgr.listShareLinkRecords().map(r => r.id)).toEqual([linkId]);
+  });
 });
 
 describe("newShareLinkKey", () => {
@@ -521,8 +821,8 @@ describe("newShareLinkKey", () => {
     expect(listed[0].note).toBe("team");
 
     // Both secrets redeem, and a user redeeming both gets a single (deduplicated) edge.
-    await mgr.redeemShareKey({ rawKey: key1, profileId: "a", fetchProfile: async () => profile("a") });
-    await mgr.redeemShareKey({ rawKey: key2, profileId: "a", fetchProfile: async () => profile("a") });
+    await redeemConfirmed(mgr, key1, "a");
+    await redeemConfirmed(mgr, key2, "a");
     expect(storage.collaborators.get("a")!.addedBy).toHaveLength(1);
     expect(mgr.getEffectiveRole("a")).toBe("use");
   });
@@ -540,7 +840,7 @@ describe("newShareLinkKey", () => {
 
     // Neither the original nor the copied secret can be redeemed anymore.
     for (let rawKey of [key1, key2]) {
-      await mgr.redeemShareKey({ rawKey, profileId: "a", fetchProfile: async () => profile("a") });
+      await redeemConfirmed(mgr, rawKey, "a");
     }
     expect(storage.collaborators.get("a")).toBeUndefined();
   });
@@ -560,6 +860,23 @@ describe("newShareLinkKey", () => {
     seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
     expect(mgr.newShareLinkKey({ caller: collab("a"), linkId: "k1" }))
         .rejects.toThrow(/higher than your own/);
+  });
+
+  it("a throwing assertGrantAllowed aborts the copy with nothing persisted", async () => {
+    let { storage, mgr } = makeManager();
+    let { linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+
+    await expect(mgr.newShareLinkKey({
+      caller: owner, linkId,
+      assertGrantAllowed: () => { throw new Error("sharing is closed"); },
+    })).rejects.toThrow(/sharing is closed/);
+    // Only the original link record remains; the aborted copy's key was never stored.
+    expect([...storage.shareKeys.list()].map(r => r.id)).toEqual([linkId]);
+
+    let calls = 0;
+    await mgr.newShareLinkKey({ caller: owner, linkId, assertGrantAllowed: () => { calls++; } });
+    expect(calls).toBe(1);
+    expect([...storage.shareKeys.list()]).toHaveLength(2);
   });
 
   it("cannot manage a link through the id of one of its copies", async () => {
@@ -595,8 +912,7 @@ describe("pre-copy share keys", () => {
 
     // Such a link can also be copied, and the copy grants the same access.
     let { key } = await mgr.newShareLinkKey({ caller: owner, linkId: "hash1" });
-    await mgr.redeemShareKey(
-        { rawKey: key, profileId: "b", fetchProfile: async () => profile("b") });
+    await redeemConfirmed(mgr, key, "b");
     expect(mgr.getEffectiveRole("b")).toBe("use");
   });
 });
