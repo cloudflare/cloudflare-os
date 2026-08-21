@@ -1070,19 +1070,20 @@ export type ObservationDescription = {
   //   can help detect situations where the gadget could leak information.
 
   /**
-   * If true, then this observation contains sensitive information that MUST NOT be shared with
-   * ANYONE except the account owner. This means:
-   * - If the gadget is shared already, authorizeObservation() must throw an exception to block
-   *   the observation.
-   * - All future sharing of the gadget is prohibited.
-   * - Once observed, the gadget goes into "lockdown mode" where it can no longer perform any
-   *   actions, only make observations. This prevents the gadget from leaking data through other
-   *   gatekeepers.
+   * If true, then this observation contains sensitive information that must only be shown to
+   * people who are verified to have access to the same data. This means:
+   * - If the gadget is shared, authorizeObservation() throws unless every current collaborator
+   *   is already a verified observer of this gatekeeper (via `addObserver()`; see the overseer's
+   *   coverage guard). Collaborators are (re-)verified every time they open the gadget, so a
+   *   gatekeeper whose `addObserver()` always throws is effectively unshareable once it has made
+   *   one of these observations.
+   * - Once observed, the gadget goes into a restricted mode where it can no longer perform any
+   *   actions or fetch from the public web, only make observations. This prevents the gadget
+   *   from leaking the data through other gatekeepers.
    *
-   * TODO(someday): This was added as a stopgap in order to be able to make certain sensitive data
-   *   sources available to internal users. In the longer-term, it should be possible to share
-   *   sensitive data as long as the recipients also have access to that same data, but this
-   *   requires a more complex policy framework to compute.
+   * TODO(someday): The restricted mode is still a blunt instrument. It should be possible to
+   *   perform actions whose visibility is limited to people verified to have access to the same
+   *   data, but this requires a more complex policy framework to compute.
    */
   containsRestrictedData?: boolean;
 

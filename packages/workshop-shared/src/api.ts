@@ -1254,8 +1254,10 @@ export type GadgetMetadata = {
   role?: CollaboratorRole;
 
   /**
-   * True when the gadget has observed data marked as share-prohibited. Such gadgets can no longer
-   * be shared with additional users or links.
+   * True when the gadget has observed data marked as containing restricted data (see
+   * `ObservationDescription.containsRestrictedData`). Such gadgets can still be shared, but
+   * collaborators must be verified (per gatekeeper) to have access to the same data, and the
+   * workspace can no longer perform actions or fetch from the public web.
    */
   containsRestrictedData?: boolean;
 
@@ -3966,6 +3968,16 @@ export type PermissionEdge = {
    * resolves to this id, so redeeming any of them yields this one edge.
    */
   keyId: string;
+
+  /**
+   * Present while the redeeming open()'s observer verification has not yet succeeded. A pending
+   * edge grants no authority to anyone -- only the open() that performed the redemption counts
+   * it, to compute the role it is verifying for. Verification success confirms the edge (clears
+   * the flag); failure severs it. A stale pending edge left behind by a crashed open() is inert
+   * and self-heals: the next redemption of the same link re-verifies and settles it. Edges
+   * written before this field existed lack it and read as confirmed.
+   */
+  pending?: true;
 });
 
 /** Information about a single collaborator, returned by list/add operations. */
