@@ -267,7 +267,7 @@ try {
     runBuild(
       "format blueprints",
       process.execPath,
-      [join(WORKSHOP_BACKEND_DIR, "scripts", "build-format-blueprints.mjs")],
+      [join(WORKSHOP_BACKEND_DIR, "scripts", "build-format-blueprints.ts")],
       WORKSHOP_BACKEND_DIR,
     ),
     runBuild("configurator UIs",

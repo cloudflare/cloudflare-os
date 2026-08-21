@@ -8,6 +8,14 @@
     "plural": "Sheets",
     "icon": "table"
   },
-  "author": { "type": "user", "name": "Cloudflare", "id": "agent@cloudflare.com" },
-  "revision": 8
+  "author": {
+    "type": "user",
+    "name": "Cloudflare",
+    "id": "agent@cloudflare.com"
+  },
+  "revision": 8,
+  "created": "2026-08-01T09:32:31.280Z",
+  "version": 6,
+  "lastUpdated": "2026-08-12T18:09:36.267Z",
+  "bindings": {}
 }

@@ -8,10 +8,10 @@
     "deploy": "wrangler deploy",
     "build:worker": "node build-browser-runtime.mjs && pnpm exec capnweb-validate build --out .wrangler/validate",
     "clean": "rm -rf dist",
-    "test:integration": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest run --config vitest.integration.config.ts",
-    "test:run": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest run && vitest run --config vitest.integration.config.ts",
-    "test:watch": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest",
-    "import:format-blueprint": "node --experimental-strip-types --no-warnings scripts/import-format-blueprint.mjs"
+    "test:integration": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.ts && vitest run --config vitest.integration.config.ts",
+    "test:run": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.ts && vitest run && vitest run --config vitest.integration.config.ts",
+    "test:watch": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.ts && vitest",
+    "import:format-blueprint": "node scripts/import-format-blueprint.ts"
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.3.0",

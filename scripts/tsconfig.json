@@ -19,5 +19,5 @@
     // The root sets allowJs; oxlint-plugin.mjs stays untyped.
     "checkJs": false
   },
-  "include": ["**/*.ts"]
+  "include": ["**/*.ts", "../packages/workshop-backend/scripts/*.ts"]
 }

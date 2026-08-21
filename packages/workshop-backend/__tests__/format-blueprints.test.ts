@@ -62,12 +62,12 @@ describe("bundled format blueprints", () => {
       // No owning user: these belong to the deployment, so the owner-anchored featured toggle
       // must not apply to them.
       expect(record.ownerId).toBeUndefined();
-      // Presentation comes from the sidecar, not from whatever the archive was called in the
+      // Presentation comes from the source manifest, not from whatever the archive was called in the
       // workspace it was exported from.
       expect(record.metadata.title).toBe(entry.title);
       expect(record.metadata.description).toBe(entry.description);
       expect(record.metadata.author).toEqual(entry.author);
-      // The sidecar's declaration is written into the installed blueprint, so from here on the
+      // The manifest's declaration is written into the installed blueprint, so from here on the
       // blueprint declares its own format like any other.
       expect(record.metadata.output).toEqual(entry.output);
       // ...and it survives the same validation an uploaded archive's would.
@@ -137,6 +137,19 @@ describe("bundled format blueprints", () => {
       expect(formatBlueprintsManifestVersion()).not.toBe(before);
     } finally {
       entry.revision = original;
+    }
+  });
+
+  it.skipIf(FORMAT_BLUEPRINTS.length === 0)(
+      "changes the manifest version when bundled source changes", () => {
+    let entry = FORMAT_BLUEPRINTS[0];
+    let before = formatBlueprintsManifestVersion();
+    let original = entry.contentHash;
+    try {
+      entry.contentHash = `${original}-changed`;
+      expect(formatBlueprintsManifestVersion()).not.toBe(before);
+    } finally {
+      entry.contentHash = original;
     }
   });
 

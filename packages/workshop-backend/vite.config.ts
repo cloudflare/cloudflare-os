@@ -19,7 +19,7 @@ export default {
        * not the contents of the directory it names, so edits inside it would replay a stale module.
        */
       'build:format-blueprints': {
-        command: 'node scripts/build-format-blueprints.mjs',
+        command: 'node scripts/build-format-blueprints.ts',
         cache: false,
       },
       /**
