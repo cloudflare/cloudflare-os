@@ -1,5 +1,7 @@
 import type { JsonValue } from "@vitest-evals/core";
 import type { WorkpieceId } from "@gadgets/workshop-shared/api";
+import type { AgentSession } from "@gadgets/integration-tests/agent-session";
+import type { GatekeeperSpec } from "@gadgets/integration-tests/harness";
 import type { EvalVerifier } from "./verifier.js";
 
 /** Whether a task is expected to pass today, or tracks capability the agent does not yet have. */
@@ -45,6 +47,10 @@ export type EvalTask = {
   title: string;
   /** Whether a failure is a regression or an expected frontier gap. */
   expectation: EvalExpectation;
+  /** Real gatekeeper Workers this task needs in addition to the Workshop. */
+  gatekeepers?: readonly GatekeeperSpec[];
+  /** Prepare the fresh user and workspace before the first prompt. */
+  prepare?(session: AgentSession): Promise<void>;
   /**
    * Prompts run in order against one fresh workspace and one chat. Later turns see the earlier
    * turns' provisional changes, so a multi-turn task measures whether extending the work erodes

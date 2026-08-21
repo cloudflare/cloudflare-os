@@ -101,7 +101,7 @@ export function createWorkshopHarness(task: EvalTask) {
       const network = new NetworkInterceptor([], { passThroughHosts: MODEL_HOSTS });
       network.install();
       const harness = await startHarness({
-        gatekeepers: [],
+        gatekeepers: [...(task.gatekeepers ?? [])],
         enableGadgetExecution: true,
         patchWorkshop: config => workshopConfig(config, gateway),
       });
@@ -116,6 +116,7 @@ export function createWorkshopHarness(task: EvalTask) {
         // Before the first prompt, so the agent's system prompt reliably carries the deployment's
         // standard output formats rather than racing their fire-and-forget install.
         await session.waitForOutputFormats();
+        await task.prepare?.(session);
 
         const turns: EvalTurnResult[] = [];
         let history: readonly AiChatMessage[] = [];

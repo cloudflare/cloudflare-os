@@ -1,5 +1,6 @@
 import type { EvalExpectation, EvalTask } from "../src/task.js";
 import appointmentDesk from "./appointment-desk.task.js";
+import contextRepairDesk from "./context-repair-desk.task.js";
 import expenseLedger from "./expense-ledger.task.js";
 import orgChart from "./org-chart.task.js";
 import pantryKitchen from "./pantry-kitchen.task.js";
@@ -17,6 +18,7 @@ import timeTracker from "./time-tracker.task.js";
  */
 export const evalTasks: readonly EvalTask[] = [
   appointmentDesk,
+  contextRepairDesk,
   expenseLedger,
   orgChart,
   pantryKitchen,

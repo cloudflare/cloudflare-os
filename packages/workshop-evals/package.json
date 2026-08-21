@@ -13,6 +13,7 @@
     "eval:summary": "node --experimental-strip-types --no-warnings src/summary.ts"
   },
   "dependencies": {
+    "@gadgets/gatekeeper-context": "workspace:*",
     "@gadgets/integration-tests": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "@vitest-evals/core": "0.16.1",
