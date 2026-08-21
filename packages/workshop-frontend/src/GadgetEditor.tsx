@@ -779,9 +779,18 @@ export default function GadgetEditor() {
     || streamingActiveFile != null
   const layoutModeReady = chatListReady && (codeStateReady || hasCodeRelatedState)
 
+  // Whether any gadget has committed code, known synchronously from the workpiece summaries (a
+  // head commit only exists once a chat's changes have been accepted). `hasCode` can't serve
+  // here: it reflects the *fetched* head tree, so on the first accept the proposed changes clear
+  // before the new head's tree arrives, and simple mode must not flash on during that window --
+  // the URL-alignment effect below would strip the chat from the URL, dropping the user back to
+  // the chat list once the tree loads and the mode flips back. (Kept out of layoutModeReady /
+  // hasCodeRelatedState so initial-load sequencing is unchanged.)
+  const hasCommittedCode = allGadgets.some(g => g.commitId !== undefined)
+
   // Wait for all initial subscriptions before choosing the new-workspace chat-only layout.
-  const simpleMode = layoutModeReady && !hasCodeRelatedState && singleInitialChat
-    && visibleGadgets.length <= 1
+  const simpleMode = layoutModeReady && !hasCodeRelatedState && !hasCommittedCode
+    && singleInitialChat && visibleGadgets.length <= 1
   const hasAnyApps = allGadgets.length > 0
   const showingActivity = workspaceView?.mode === 'activity'
   const showFullEditor = layoutModeReady && (
