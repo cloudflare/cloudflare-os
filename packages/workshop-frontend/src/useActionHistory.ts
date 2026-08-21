@@ -12,6 +12,16 @@ type View = {
   isLoadingMore: boolean
 }
 
+type HistorySession = {
+  frontier: number | undefined
+  inFlight: boolean
+  hasLoadedPage: boolean
+}
+
+function createHistorySession(): HistorySession {
+  return { frontier: undefined, inFlight: false, hasLoadedPage: false }
+}
+
 const INITIAL: View = { byId: new Map(), status: 'idle', hasMore: true, isLoadingMore: false }
 
 /**
@@ -31,45 +41,41 @@ export function useActionHistory(
   active: boolean,
 ) {
   const [view, setView] = useState<View>(INITIAL)
-  // Paging bookkeeping lives outside render state so pages chain without stale-closure hazards.
-  // `frontier` is the next page's beforeId; undefined once `exhausted` (or before the first page).
-  const sessionRef = useRef({
-    generation: 0, frontier: undefined as number | undefined,
-    started: false, inFlight: false, exhausted: false, pages: 0,
-  })
+  // `frontier` is undefined before the first page and after the terminal page;
+  // `hasLoadedPage` distinguishes those states.
+  const sessionRef = useRef(createHistorySession())
 
   useEffect(() => {
-    sessionRef.current = {
-      generation: sessionRef.current.generation + 1, frontier: undefined,
-      started: false, inFlight: false, exhausted: false, pages: 0,
-    }
+    sessionRef.current = createHistorySession()
     setView(INITIAL)
   }, [overseer, filter])
 
   const loadMore = useCallback(() => {
     const session = sessionRef.current
-    if (!overseer || session.inFlight || session.exhausted) return
-    const { generation } = session
-    const first = !session.started
-    session.started = true
+    if (!overseer || session.inFlight ||
+        (session.hasLoadedPage && session.frontier === undefined)) return
+    const first = !session.hasLoadedPage
     session.inFlight = true
     setView(prev => first ? { ...prev, status: 'loading' } : { ...prev, isLoadingMore: true })
 
     overseer.listActions({ beforeId: session.frontier, filter }).then(page => {
-      if (sessionRef.current.generation !== generation) return
+      if (sessionRef.current !== session) return
       session.inFlight = false
+      session.hasLoadedPage = true
       session.frontier = page.nextBeforeId
-      session.exhausted = page.nextBeforeId === undefined
-      session.pages++
       setView(prev => {
         const byId = new Map(prev.byId)
         for (const record of page.entries) byId.set(record.id, record)
-        return { byId, status: 'ready', hasMore: !session.exhausted, isLoadingMore: false }
+        return {
+          byId,
+          status: 'ready',
+          hasMore: page.nextBeforeId !== undefined,
+          isLoadingMore: false,
+        }
       })
     }, (err: unknown) => {
-      if (sessionRef.current.generation !== generation) return
+      if (sessionRef.current !== session) return
       session.inFlight = false
-      if (first) session.started = false  // let the next loadMore() retry as a first load
       console.error('Failed to load action history:', err)
       setView(prev => ({
         ...prev,
@@ -80,12 +86,12 @@ export function useActionHistory(
   }, [overseer, filter])
 
   useEffect(() => {
-    if (active && !sessionRef.current.started) loadMore()
+    if (active && !sessionRef.current.hasLoadedPage) loadMore()
   }, [active, loadMore])
 
   useActionEntries(overseer, record => {
     const session = sessionRef.current
-    if (session.pages === 0) return
+    if (!session.hasLoadedPage) return
     if (record.state === 'pending') return
     if (filter !== 'all' && record.type !== filter) return
     if (session.frontier !== undefined && record.id < session.frontier) return
@@ -97,7 +103,7 @@ export function useActionHistory(
   })
 
   const entries = useMemo(
-    () => [...view.byId.values()].toSorted((a, b) => b.id - a.id),
+    () => Array.from(view.byId.values()).sort((a, b) => b.id - a.id),
     [view.byId])
 
   return {
@@ -105,7 +111,6 @@ export function useActionHistory(
     status: view.status,
     hasMore: view.hasMore,
     isLoadingMore: view.isLoadingMore,
-    loadedCount: entries.length,
     loadMore,
   }
 }

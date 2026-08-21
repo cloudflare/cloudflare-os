@@ -16,10 +16,7 @@ import { useActionHistory } from './useActionHistory'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-// The shared action store coalesces snapshot commits through rAF; queue frames manually so
-// nothing fires outside act().
-const rafQueue: FrameRequestCallback[] = []
-vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => rafQueue.push(cb))
+vi.stubGlobal('requestAnimationFrame', () => 0)
 
 function entry(id: number, over: Partial<Record<string, unknown>> = {}): ActionLogEntry {
   return {
@@ -34,7 +31,7 @@ function entry(id: number, over: Partial<Record<string, unknown>> = {}): ActionL
   } as ActionLogEntry
 }
 
-type ListOptions = { beforeId?: number; limit?: number; filter?: ActionHistoryFilter } | undefined
+type ListOptions = Parameters<Overseer['listActions']>[0]
 
 function makeOverseer() {
   const listCalls: ListOptions[] = []
@@ -53,6 +50,7 @@ function makeOverseer() {
       subscriber = sub as ActionsSubscriber
       return { [Symbol.dispose]: () => {} } as RpcStub<{}>
     },
+    scanPendingActions: async () => ({ entries: [], throughId: 0 }),
     [Symbol.dispose]: () => {},
   } as unknown as RpcStub<Overseer>
   return {
@@ -101,7 +99,6 @@ describe('useActionHistory', () => {
     act(() => root?.unmount())
     root = undefined
     container?.remove()
-    rafQueue.length = 0
   })
 
   it('fetches nothing until activated, then loads the first page', async () => {
@@ -118,22 +115,33 @@ describe('useActionHistory', () => {
     expect(latest.status).toBe('ready')
     expect(latest.entries.map(e => e.id)).toEqual([30, 20])
     expect(latest.hasMore).toBe(true)
-    expect(latest.loadedCount).toBe(2)
+
+    await render(server.overseer, 'all', false)
+    await render(server.overseer, 'all', true)
+    expect(server.listCalls).toHaveLength(1)
   })
 
-  it('continues from the cursor and dedupes by id', async () => {
+  it('continues from the cursor, dedupes by id, and ignores blocked loads', async () => {
     const server = makeOverseer()
     await render(server.overseer, 'all', true)
-    await server.resolvePage({ entries: [entry(30), entry(20)], nextBeforeId: 10 })
 
     act(() => latest.loadMore())
+    expect(server.listCalls).toHaveLength(1)
+
+    await server.resolvePage({ entries: [entry(30), entry(20)], nextBeforeId: 10 })
+    act(() => latest.loadMore())
+    act(() => latest.loadMore())
     expect(latest.isLoadingMore).toBe(true)
+    expect(server.listCalls).toHaveLength(2)
     expect(server.listCalls[1]).toEqual({ beforeId: 10, filter: 'all' })
 
     await server.resolvePage({ entries: [entry(20), entry(5)] })
     expect(latest.entries.map(e => e.id)).toEqual([30, 20, 5])
     expect(latest.hasMore).toBe(false)
     expect(latest.isLoadingMore).toBe(false)
+
+    act(() => latest.loadMore())
+    expect(server.listCalls).toHaveLength(2)
   })
 
   it('keeps hasMore after an empty page that carries a cursor', async () => {
@@ -149,16 +157,22 @@ describe('useActionHistory', () => {
     expect(server.listCalls[1]).toEqual({ beforeId: 400, filter: 'all' })
   })
 
-  it('resets and refetches when the filter changes', async () => {
+  it('resets on filter change and ignores the stale in-flight page', async () => {
     const server = makeOverseer()
     await render(server.overseer, 'all', true)
-    await server.resolvePage({ entries: [entry(30)] })
-    expect(latest.entries.length).toBe(1)
 
     await render(server.overseer, 'action', true)
     expect(latest.entries).toEqual([])
     expect(latest.status).toBe('loading')
     expect(server.listCalls[1]).toEqual({ beforeId: undefined, filter: 'action' })
+
+    await server.resolvePage({ entries: [entry(30)] })
+    expect(latest.entries).toEqual([])
+    expect(latest.status).toBe('loading')
+
+    await server.resolvePage({ entries: [entry(20)] })
+    expect(latest.entries.map(e => e.id)).toEqual([20])
+    expect(latest.status).toBe('ready')
   })
 
   it('resets and refetches when the stub changes', async () => {
@@ -175,6 +189,10 @@ describe('useActionHistory', () => {
     // The abandoned stub's in-flight page must not leak into the new session.
     await first.resolvePage({ entries: [entry(9)] })
     expect(latest.entries).toEqual([])
+    expect(latest.status).toBe('loading')
+
+    await second.resolvePage({ entries: [entry(40)] })
+    expect(latest.entries.map(e => e.id)).toEqual([40])
   })
 
   it('recovers from a failed first load on retry', async () => {
@@ -185,9 +203,31 @@ describe('useActionHistory', () => {
     expect(latest.status).toBe('error')
 
     act(() => latest.loadMore())
+    expect(server.listCalls[1]).toEqual({ beforeId: undefined, filter: 'all' })
     await server.resolvePage({ entries: [entry(30)] })
     expect(latest.status).toBe('ready')
     expect(latest.entries.map(e => e.id)).toEqual([30])
+    vi.restoreAllMocks()
+  })
+
+  it('preserves a later page cursor and entries when retrying after failure', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const server = makeOverseer()
+    await render(server.overseer, 'all', true)
+    await server.resolvePage({ entries: [entry(30)], nextBeforeId: 10 })
+
+    act(() => latest.loadMore())
+    await server.rejectPage(new Error('nope'))
+    expect(latest.status).toBe('ready')
+    expect(latest.entries.map(e => e.id)).toEqual([30])
+    expect(latest.hasMore).toBe(true)
+    expect(latest.isLoadingMore).toBe(false)
+
+    act(() => latest.loadMore())
+    expect(server.listCalls[2]).toEqual({ beforeId: 10, filter: 'all' })
+    await server.resolvePage({ entries: [entry(5)] })
+    expect(latest.entries.map(e => e.id)).toEqual([30, 5])
+    expect(latest.hasMore).toBe(false)
     vi.restoreAllMocks()
   })
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { RpcStub, RpcTarget } from 'capnweb'
 import { ActionLogEntry, ActionsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
 
@@ -26,10 +26,8 @@ export type ActionsState = {
 type Store = {
   // Immutable object handed to useSyncExternalStore; rebuilt from the staged fields on commit.
   snapshot: ActionsState
-  stagedStatus: ActionsState['status']
   stagedPending: Map<number, ActionLogEntry>
   stagedLive: Map<number, ActionLogEntry>
-  liveSeenIds: Set<number>
   refCount: number
   listeners: Set<() => void>
   entryListeners: Set<(record: ActionLogEntry) => void>
@@ -51,10 +49,8 @@ function getStore(overseer: RpcStub<Overseer>): Store {
   if (!store) {
     store = {
       snapshot: EMPTY_STATE,
-      stagedStatus: 'checking',
       stagedPending: new Map(),
       stagedLive: new Map(),
-      liveSeenIds: new Set(),
       refCount: 0,
       listeners: new Set(),
       entryListeners: new Set(),
@@ -67,9 +63,9 @@ function getStore(overseer: RpcStub<Overseer>): Store {
   return store
 }
 
-function commit(store: Store) {
+function commit(store: Store, status: ActionsState['status'] = store.snapshot.status): void {
   store.snapshot = {
-    status: store.stagedStatus,
+    status,
     pendingById: new Map(store.stagedPending),
     liveById: new Map(store.stagedLive),
   }
@@ -90,16 +86,14 @@ function scheduleNotify(store: Store) {
 
 function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
   const generation = ++store.generation
-  store.stagedStatus = 'checking'
+  let failed = false
   store.stagedPending = new Map()
   store.stagedLive = new Map()
-  store.liveSeenIds = new Set()
   store.snapshot = EMPTY_STATE
 
   class ActionsSubscriberImpl extends RpcTarget implements ActionsSubscriber {
     entry(record: ActionLogEntry): void {
       if (store.generation !== generation) return
-      store.liveSeenIds.add(record.id)
       store.stagedLive.set(record.id, record)
       if (record.state === 'pending') store.stagedPending.set(record.id, record)
       else store.stagedPending.delete(record.id)
@@ -111,11 +105,28 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
     ready(): void {}
   }
 
-  const fail = (err: unknown) => {
-    if (store.generation !== generation) return
-    console.error('Failed to load pending actions:', err)
-    store.stagedStatus = 'error'
-    commit(store)
+  function fail(error: unknown): void {
+    if (store.generation !== generation || failed) return
+    failed = true
+    console.error('Failed to load pending actions:', error)
+    commit(store, 'error')
+  }
+
+  async function scanPending(): Promise<void> {
+    let page = await overseer.scanPendingActions()
+    for (;;) {
+      if (store.generation !== generation || failed) return
+      for (const record of page.entries) {
+        if (!store.stagedLive.has(record.id)) store.stagedPending.set(record.id, record)
+      }
+      if (page.nextCursor === undefined) {
+        commit(store, 'ready')
+        return
+      }
+      scheduleNotify(store)
+      page = await overseer.scanPendingActions(
+        { cursor: page.nextCursor, throughId: page.throughId })
+    }
   }
 
   overseer.subscribeToActions(
@@ -130,31 +141,15 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
 
   // One scan page in flight at a time; the first page fixes the scan's upper bound, so records
   // created after this point arrive via the subscription only.
-  ;(async () => {
-    let page = await overseer.scanPendingActions()
-    for (;;) {
-      if (store.generation !== generation) return
-      for (const record of page.entries) {
-        if (!store.liveSeenIds.has(record.id)) store.stagedPending.set(record.id, record)
-      }
-      if (page.nextCursor === undefined) break
-      scheduleNotify(store)
-      page = await overseer.scanPendingActions(
-        { cursor: page.nextCursor, throughId: page.throughId })
-    }
-    store.stagedStatus = 'ready'
-    commit(store)
-  })().catch(fail)
+  scanPending().catch(fail)
 }
 
 function closeSubscription(store: Store) {
   store.generation++
   store.subscription?.[Symbol.dispose]()
   store.subscription = null
-  store.stagedStatus = 'checking'
   store.stagedPending = new Map()
   store.stagedLive = new Map()
-  store.liveSeenIds = new Set()
   store.snapshot = EMPTY_STATE
 }
 
@@ -209,29 +204,29 @@ export function useActionEntries(
   overseer: RpcStub<Overseer> | null,
   onEntry: (record: ActionLogEntry) => void,
 ): void {
-  // Stable listener identity; latest callback read via ref so updating
-  // `onEntry` doesn't resubscribe.
   const callbackRef = useRef(onEntry)
   callbackRef.current = onEntry
-  const [stableListener] = useState(() => (record: ActionLogEntry) => {
-    callbackRef.current(record)
-  })
 
   useEffect(() => {
     if (!overseer) return
+
+    function listener(record: ActionLogEntry): void {
+      callbackRef.current(record)
+    }
+
     const store = acquire(overseer)
-    store.entryListeners.add(stableListener)
+    store.entryListeners.add(listener)
 
     // Retained until `release()` drops refCount to 0 and deletes the store, so late
     // consumers can replay live-received entries while a shared subscription is still alive.
     for (const record of store.stagedLive.values()) {
-      stableListener(record)
+      listener(record)
     }
 
     return () => {
       const s = stores.get(overseer)
-      s?.entryListeners.delete(stableListener)
+      s?.entryListeners.delete(listener)
       release(overseer)
     }
-  }, [overseer, stableListener])
+  }, [overseer])
 }
