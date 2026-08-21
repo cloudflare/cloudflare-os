@@ -14,19 +14,26 @@
 // denied at open() time. Because the graph is never destructively pruned, revocation is reversible:
 // re-adding a removed collaborator restores them and, transitively, everyone they had shared with.
 // (Records and revoked keys accumulate in storage; a future GC could reclaim long-dead entries.)
+// A third graph state exists alongside live and unreachable: a *pending* shareKey edge (see
+// `redeemShareKey`) grants no authority to anyone until the redeeming open()'s verification
+// confirms it.
 //
-// NOTE: The `prohibitAllSharing` policy flag intentionally does NOT live here. It is a broader
-// "is this gadget allowed to communicate with anyone other than the owner?" policy (it also
-// gates gatekeeper writes and web fetches) and is expected to grow into a separate policy engine.
-// The Overseer enforces that flag; this module only exposes `hasAnyShares()` so the policy can
-// ask about the current sharing state.
+// NOTE: The sensitive-data (`containsRestrictedData`) policy intentionally does NOT live here.
+// It is a broader "what may this gadget do after reading restricted data?" policy (it gates
+// gatekeeper writes and web fetches, and requires per-gatekeeper observer verification of
+// collaborators) and is expected to grow into a separate policy engine. The Overseer enforces
+// it; this module only answers questions about the sharing graph.
 
 import { AiChatAuthorInfo, CollaboratorInfo, PermissionEdge, CollaboratorRole, AffectedCollaborator }
     from "@gadgets/workshop-shared/api";
 import { Collection, NonUniqueIndex } from "@gadgets/typed-storage";
 
-// Roles are totally ordered: build > use. Higher rank means strictly more access.
-function roleRank(role: CollaboratorRole): number {
+/**
+ * Roles are totally ordered: build > use. Higher rank means strictly more access. Exported so
+ * role comparisons elsewhere (e.g. the Overseer's `requireRole` floor) rank rather than
+ * string-compare, which stays correct if a role is ever added between the two.
+ */
+export function roleRank(role: CollaboratorRole): number {
   return role === "build" ? 2 : 1;
 }
 
@@ -156,26 +163,6 @@ export class SharingManager {
    */
   constructor(private storage: SharingStorage, private ownerProfileId: string) {}
 
-  // ---------------------------------------------------------------------------------------
-  // Sharing-state queries
-
-  /**
-   * True if anyone other than the owner can currently access the gadget. Used by the Overseer's
-   * `prohibitAllSharing` policy to decide whether a sensitive observation must be blocked.
-   *
-   * Because removed collaborators and revoked links linger in storage (the lazy revocation model;
-   * see the module header and removeCollaborator/revokeShareLink), this must reflect *current*
-   * reachability, not mere table membership: a collaborator with a live path from the owner, or
-   * an un-revoked share link whose keys anyone could still redeem.
-   */
-  hasAnyShares(): boolean {
-    if (this.computeEffectiveRoles().size > 0) return true;
-    for (let link of this.#listLinks()) {
-      if (!link.revoked) return true;
-    }
-    return false;
-  }
-
   // Every share link, revoked or not. Aliases are skipped.
   *#listLinks(): Generator<ShareLinkRecord> {
     for (let record of this.storage.shareKeys.list()) {
@@ -199,68 +186,181 @@ export class SharingManager {
   /**
    * The effective role of `profileId` -- the maximum role reachable from the owner through valid
    * permission edges -- or undefined if the user has no access. The owner always has "build".
+   *
+   * `assumePendingLink` optionally names a link whose pending edge on this profile is counted as
+   * though it were confirmed. It is used by the open() that just performed a redemption (see
+   * `redeemShareKey`) to compute the role it must verify the recipient for; the pending edge
+   * still grants nothing to anyone else.
    */
-  getEffectiveRole(profileId: string): CollaboratorRole | undefined {
+  getEffectiveRole(profileId: string, assumePendingLink?: string): CollaboratorRole | undefined {
     if (profileId === this.ownerProfileId) return "build";
-    return this.computeEffectiveRoles().get(profileId);
+    return this.computeEffectiveRoles({
+      assumePendingLink: assumePendingLink !== undefined
+          ? { profileId, linkId: assumePendingLink } : null,
+    }).get(profileId);
   }
 
   /**
    * Redeem a raw share key on behalf of a user opening the gadget. If the key exists, ensures the
-   * user is a collaborator with a `shareKey` edge for its link (adding the edge if missing, or
-   * creating the collaborator record if they're new). Does nothing if the key is unknown.
+   * user is a collaborator with a *pending* `shareKey` edge for its link (adding the edge if
+   * missing, or creating the collaborator record if they're new). Does nothing if the key is
+   * unknown.
+   *
+   * A pending edge grants no authority to anyone: the recipient is invisible to
+   * listCollaborators and to everyone's effective roles until the redeeming open()'s observer
+   * verification settles the redemption -- success confirms the edge
+   * (`confirmShareKeyRedemption`), failure severs it (`revertShareKeyRedemption`). Only the
+   * verifying open itself counts the edge, via `getEffectiveRole(profileId, linkId)`.
    *
    * The raw key is hashed internally; the plaintext is never stored. `fetchProfile` is invoked
    * (an RPC, in production) only when a brand-new collaborator must be created, so existing
-   * collaborators are redeemed without any RPC.
+   * collaborators are redeemed without any RPC. Because that fetch yields, the collaborator
+   * record is re-read after it resolves and any record a concurrent redemption wrote meanwhile
+   * is merged into rather than overwritten.
    *
    * A key whose link is revoked behaves like an unknown key (it cannot be redeemed).
+   *
+   * `assertGrantAllowed` is the same optional policy check createShareLink/newShareLinkKey take:
+   * redeeming a key admits a new party, so once policy forbids new sharing the callback refuses
+   * redemption too -- both writing a fresh pending edge and settling a not-yet-confirmed one
+   * (settling completes a new grant). It runs synchronously with the return of the link id, after
+   * every await, and a throw persists nothing. It is NOT invoked for an already-*confirmed* edge
+   * (an existing grant; re-opening with a retained key stays a no-op) nor for unknown/revoked
+   * keys. The policy itself stays out of this module, per the module header.
+   *
+   * Returns the redeemed link's id when there is now a pending edge for the caller to settle --
+   * whether this call added it, or a concurrent (or crashed) redemption of the same link left one
+   * mid-verification; each such open verifies and confirms/reverts independently. Returns null
+   * when the call changed nothing: an unknown or revoked key, or an already-*confirmed* edge for
+   * this link (redeeming a second key of the same link is a no-op).
    */
   async redeemShareKey(opts: {
     rawKey: string;
     profileId: string;
     fetchProfile: () => Promise<AiChatAuthorInfo>;
-  }): Promise<void> {
+    assertGrantAllowed?: () => void;
+  }): Promise<string | null> {
     let hash = await hashShareKey(opts.rawKey);
     let keyRecord = this.storage.shareKeys.get(hash);
-    if (!keyRecord) return;
+    if (!keyRecord) return null;
 
     // Edges point at the link, not the individual key, so a link's keys collapse to one grant.
     // A copy of a link is an alias; follow it to the link that owns the metadata.
     let link = keyRecord.alias === undefined
         ? keyRecord : asLink(this.storage.shareKeys.get(keyRecord.alias));
-    if (!link || link.revoked) return;
+    if (!link || link.revoked) return null;
     let linkId = link.id;
     let role = link.role ?? "build";
 
     let existing = this.storage.collaborators.get(opts.profileId);
-    if (existing) {
-      // User is already a collaborator. Only add an edge if they don't already have one for this
-      // link (redeeming a second key of the same link is a no-op).
-      let alreadyHasEdge = existing.addedBy.some(
-          e => e.type === "shareKey" && e.keyId === linkId);
-      if (!alreadyHasEdge) {
-        existing.addedBy.push({
-          type: "shareKey",
-          keyId: linkId,
-          created: new Date(),
-          role,
-        });
-        this.storage.collaborators.put(existing);
-      }
-    } else {
-      // New collaborator -- need full profile from their user DO.
+    if (!existing) {
+      // New collaborator -- need full profile from their user DO. The fetch yields, so a
+      // concurrent redemption may have created the record meanwhile: re-read and merge rather
+      // than blindly put. A stale put would overwrite an edge the concurrent open already wrote
+      // (possibly confirmed), and this open's later failed verification would then revert it --
+      // erasing a grant whose recipient holds a live capability, exactly the ghost the pending
+      // model exists to prevent.
       let profile = await opts.fetchProfile();
-      this.storage.collaborators.put({
-        profile,
-        addedBy: [{
-          type: "shareKey",
-          keyId: linkId,
-          created: new Date(),
-          role,
-        }],
-      });
+      existing = this.storage.collaborators.get(opts.profileId) ?? { profile, addedBy: [] };
     }
+
+    // A confirmed edge for this link means a prior redemption fully succeeded, so there is
+    // nothing to settle (and no new grant, so no policy check). A still-pending one means another
+    // redemption of this link is mid-verification (or crashed): leave it untouched and let this
+    // attempt verify and confirm/revert it independently -- but settling it would complete a new
+    // grant, so it is policy-gated like writing one.
+    for (let edge of existing.addedBy) {
+      if (edge.type === "shareKey" && edge.keyId === linkId) {
+        if (!edge.pending) return null;
+        opts.assertGrantAllowed?.();
+        return linkId;
+      }
+    }
+    opts.assertGrantAllowed?.();
+    existing.addedBy.push({
+      type: "shareKey",
+      keyId: linkId,
+      created: new Date(),
+      role,
+      pending: true,
+    });
+    this.storage.collaborators.put(existing);
+    return linkId;
+  }
+
+  /**
+   * Confirm the pending `shareKey` edge a just-completed `redeemShareKey` added: the redeeming
+   * open()'s observer verification succeeded, so the grant becomes real and the recipient now
+   * counts in everyone's effective roles. Idempotent -- confirming an already-confirmed edge
+   * changes nothing. If a concurrent revert (a parallel open of the same link whose verification
+   * failed) severed the edge mid-flight, it is re-added confirmed at the link's current role.
+   *
+   * The missing-edge re-add also fires when the *owner's* removeCollaborator raced this
+   * verification: pending edges are invisible to the affected-set computation, so the removal
+   * severed the edge without a revocation restart, and this confirm quietly re-grants. Accepted
+   * wart: the still-live link is re-redeemable anyway, so the removal never durably excluded this
+   * recipient; a revoked link's re-added edge is inert (below); and a removal that visibly
+   * affects anyone restarts the DO within ~100ms, killing a parked open before it confirms.
+   * Note the race is narrower than it looks: a pending-only recipient is invisible to
+   * listCollaborators too, so the removal UI cannot even target one mid-verification -- a racing
+   * removal was necessarily aimed at an edge some earlier open had already confirmed. And the
+   * re-add grants no incremental authority: the recipient holds the live link and can re-redeem
+   * it manually whether or not this confirm lands. The durable exclusion is revoking the link
+   * (computeEffectiveRoles skips revoked links, which inerts every edge referencing one).
+   *
+   * Confirming cannot resurrect revoked authority: effective-role resolution already excludes
+   * revoked links, so an edge confirmed after its link was revoked grants nothing (it lingers
+   * inert, like any edge of a revoked link under the lazy model).
+   *
+   * `assertGrantAllowed` is the same optional policy check redeemShareKey takes, re-asserted
+   * here because redemption is two-phase: the gate at redeemShareKey ran synchronously with the
+   * *pending* write, but this confirm is the *granting* write, separated from it by the
+   * redeeming open()'s await windows (observer verification, capsule reconciliation). A policy
+   * change landing in that window -- a restricted-data producer removed, closing the workspace
+   * to new sharing -- must refuse the grant, so the check runs again in this synchronous block,
+   * before the pending flag is cleared or the missing edge re-added. A throw persists nothing.
+   * It is NOT invoked for an already-confirmed edge (an existing grant, not a new one --
+   * matching redeemShareKey).
+   */
+  confirmShareKeyRedemption(
+      profileId: string, linkId: string, assertGrantAllowed?: () => void): void {
+    let record = this.storage.collaborators.get(profileId);
+    if (!record) return;
+    for (let edge of record.addedBy) {
+      if (edge.type === "shareKey" && edge.keyId === linkId) {
+        if (edge.pending) {
+          assertGrantAllowed?.();
+          delete edge.pending;
+          this.storage.collaborators.put(record);
+        }
+        return;
+      }
+    }
+    assertGrantAllowed?.();
+    record.addedBy.push({
+      type: "shareKey",
+      keyId: linkId,
+      created: new Date(),
+      role: asLink(this.storage.shareKeys.get(linkId))?.role ?? "build",
+    });
+    this.storage.collaborators.put(record);
+  }
+
+  /**
+   * Sever the still-pending `shareKey` edge a just-completed `redeemShareKey` added, restoring
+   * the graph to its pre-redemption state. Used when the redeeming user is refused *after*
+   * redemption, so a refused recipient never persists in the sharing graph. They can redeem the
+   * same key again once whatever refused them is fixed. An edge a concurrent open of the same
+   * link already *confirmed* is left alone -- that open verified this user, and its grant must
+   * survive this attempt's failure. Lazy like removeCollaborator: the collaborator record itself
+   * is retained, even if now edge-less.
+   */
+  revertShareKeyRedemption(profileId: string, linkId: string): void {
+    let record = this.storage.collaborators.get(profileId);
+    if (!record) return;
+    record.addedBy = record.addedBy.filter(
+        e => !(e.type === "shareKey" && e.keyId === linkId && e.pending));
+    this.storage.collaborators.put(record);
   }
 
   // ---------------------------------------------------------------------------------------
@@ -288,8 +388,8 @@ export class SharingManager {
 
   /**
    * Add a collaborator with a `user` edge from the caller, granting `role`. The caller is
-   * responsible for resolving `profile` (via RPC) and for any policy checks (e.g.
-   * `prohibitAllSharing`). The caller may not grant a role higher than their own effective role.
+   * responsible for resolving `profile` (via RPC) and for any policy checks. The caller may not
+   * grant a role higher than their own effective role.
    */
   addCollaborator(opts: {
     caller: SharingCaller;
@@ -432,7 +532,18 @@ export class SharingManager {
   }
 
   async createShareLink(
-      opts: { caller: SharingCaller; role: CollaboratorRole; note?: string })
+      opts: {
+        caller: SharingCaller;
+        role: CollaboratorRole;
+        note?: string;
+        /**
+         * Optional policy check invoked synchronously with the grant's storage write, after
+         * every await, so a policy change cannot slip between check and grant. A throw aborts
+         * the call with nothing persisted (the minted key is discarded, never stored). The
+         * policy itself stays out of this module, per the module header.
+         */
+        assertGrantAllowed?: () => void;
+      })
       : Promise<{ key: string; linkId: string }> {
     let callerRole = this.#requireCallerRole(opts.caller);
     if (roleRank(opts.role) > roleRank(callerRole)) {
@@ -441,6 +552,7 @@ export class SharingManager {
 
     // The link is stored as its first key: the record is keyed by that key's hash.
     let { key, hash } = await this.#mintKey();
+    opts.assertGrantAllowed?.();
     this.storage.shareKeys.put({
       id: hash,
       note: opts.note,
@@ -452,7 +564,12 @@ export class SharingManager {
   }
 
   /** Mints another key for an existing link. */
-  async newShareLinkKey(opts: { caller: SharingCaller; linkId: string }): Promise<{ key: string }> {
+  async newShareLinkKey(opts: {
+    caller: SharingCaller;
+    linkId: string;
+    /** See createShareLink: run synchronously with the put, a throw persists nothing. */
+    assertGrantAllowed?: () => void;
+  }): Promise<{ key: string }> {
     let link = this.#requireLink(opts.linkId);
     if (link.revoked) {
       throw new Error("Share link not found.");
@@ -467,6 +584,7 @@ export class SharingManager {
     }
 
     let { key, hash } = await this.#mintKey();
+    opts.assertGrantAllowed?.();
     this.storage.shareKeys.put({ id: hash, alias: link.id });
     return { key };
   }
@@ -563,15 +681,21 @@ export class SharingManager {
    *   - `removedUser`: a profileId treated as removed (excluded from the graph entirely).
    *   - `removedEdge`: a single user edge (target ← sharer) treated as removed.
    *   - `revokedLinkId`: a link treated as revoked (its edges contribute nothing).
+   *   - `assumePendingLink`: the named profile's own pending edge for the named link is counted
+   *     as though it were confirmed. Unlike the removal-shaped options above, this models a
+   *     hypothetical *grant*: the open() that just redeemed the link counting its own edge to
+   *     compute the role it must verify for. Every other pending edge still contributes nothing.
    */
   computeEffectiveRoles(opts: {
     removedUser?: string | null;
     removedEdge?: { target: string; sharer: string } | null;
     revokedLinkId?: string | null;
+    assumePendingLink?: { profileId: string; linkId: string } | null;
   } = {}): Map<string, CollaboratorRole> {
     let removedUser = opts.removedUser ?? null;
     let removedEdge = opts.removedEdge ?? null;
     let revokedLinkId = opts.revokedLinkId ?? null;
+    let assumePendingLink = opts.assumePendingLink ?? null;
 
     // Map linkId → {creator, role}, excluding revoked links (the persisted `revoked` flag, and the
     // hypothetical `revokedLinkId` used by preview).
@@ -608,6 +732,13 @@ export class SharingManager {
         for (let edge of record.addedBy) {
           let granted: CollaboratorRole | undefined;
           if (edge.type === "shareKey") {
+            // A pending edge grants nothing to anyone, except to the one open() currently
+            // verifying its redemption (modeled by assumePendingLink).
+            if (edge.pending &&
+                !(assumePendingLink && id === assumePendingLink.profileId &&
+                  edge.keyId === assumePendingLink.linkId)) {
+              continue;
+            }
             let info = linkInfo.get(edge.keyId);
             if (!info) continue;  // link revoked or no longer exists
             let creatorRole = sharerRole(info.creator);

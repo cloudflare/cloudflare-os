@@ -12,7 +12,32 @@
   "compatibility_date": "2026-02-02",
   "compatibility_flags": ["experimental", "allow_irrevocable_stub_storage"],
 
-  // DO classes are reached via ctx.exports; no durable_objects binding needed.
+  // Lets the control surface submit external chat messages through the Workshop's gateway
+  // entrypoint the way a real chat-integration worker (bound with its own `source` prop) would.
+  // The harness always boots workshop-backend as the primary worker, so the name resolves.
+  "services": [
+    {
+      "binding": "WORKSHOP_EXTERNAL_MESSAGES",
+      "service": "workshop-backend",
+      "entrypoint": "ExternalMessageGateway",
+      "props": { "source": "test" }
+    }
+  ],
+
+  // The Workshop's Overseer namespace, so the control surface can derive the DO id behind an
+  // external gadgetKey -- the same name-derived id the gateway targets -- for tests to open the
+  // workspace over the web API. The binding only derives ids; it never reaches an instance.
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "WORKSHOP_OVERSEER",
+        "class_name": "OverseerDurableObject",
+        "script_name": "workshop-backend"
+      }
+    ]
+  },
+
+  // This worker's own DO classes are reached via ctx.exports; no durable_objects binding needed.
   "migrations": [
     {
       "tag": "v0",

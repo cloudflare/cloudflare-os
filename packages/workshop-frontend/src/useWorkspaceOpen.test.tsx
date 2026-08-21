@@ -33,8 +33,20 @@ function disposableStub<T extends object>(value: T, dispose = vi.fn<() => void>(
   return Object.assign(value, { [Symbol.dispose]: dispose }) as T & Disposable
 }
 
+// The identity the mocked session reports, and the stamp share-key retention stores under it.
+const WHOAMI_USER = { type: 'user', id: 'person@example.com', name: 'Person' }
+
 function api(overseer: RpcStub<Overseer>): RpcStub<AuthenticatedApi> {
-  return { openGadget: () => overseer } as unknown as RpcStub<AuthenticatedApi>
+  return {
+    openGadget: () => overseer,
+    whoami: async () => WHOAMI_USER,
+  } as unknown as RpcStub<AuthenticatedApi>
+}
+
+const RETAINED_V2_KEY = 'gadgets:retained-share-key:v2:workspace-1'
+
+function retainedEntry(key: string, userId = WHOAMI_USER.id): string {
+  return JSON.stringify({ key, userId })
 }
 
 const METADATA = {
@@ -71,6 +83,8 @@ describe('useWorkspaceOpen', () => {
     act(() => root?.unmount())
     container?.remove()
     document.title = ''
+    window.location.hash = ''
+    sessionStorage.clear()
     vi.restoreAllMocks()
   })
 
@@ -106,6 +120,203 @@ describe('useWorkspaceOpen', () => {
 
     expect(overseerDispose).toHaveBeenCalledOnce()
     expect(subscriptionDispose).toHaveBeenCalledOnce()
+  })
+
+  it('persists the fragment share key and re-sends it after a reload', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    window.location.hash = '#share=deadbeef'
+    const sentKeys: (string | undefined)[] = []
+    const deniedOverseer = disposableStub({
+      subscribeToMetadata: vi.fn<() => Promise<RpcStub<{}>>>(async () => {
+        throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied)
+      }),
+    }) as unknown as RpcStub<Overseer>
+    const authenticatedApi = {
+      openGadget: (_id: string, shareKey?: string) => {
+        sentKeys.push(shareKey)
+        return deniedOverseer
+      },
+      whoami: async () => WHOAMI_USER,
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    function Probe() {
+      useWorkspaceOpen({
+        id: 'workspace-1',
+        authenticatedApi,
+        onInvalidShareKey: () => {},
+        onMetadata: () => {},
+        // The app strips the fragment before the open is issued; mirror that here so the
+        // second mount can only recover the key from storage.
+        onShareKeyConsumed: () => { window.location.hash = '' },
+      })
+      return null
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<Probe />))
+    expect(sentKeys).toEqual(['deadbeef'])
+    expect(window.location.hash).toBe('')
+    // The persisted entry is stamped with the capturing session's identity.
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('deadbeef'))
+
+    // A reload drops the hook's in-memory ref: unmount and mount a fresh root. The failed open
+    // never cleared the persisted key, so the fresh mount re-sends it instead of dead-ending on
+    // the access-denied page.
+    act(() => root!.unmount())
+    root = createRoot(container)
+    await act(async () => root!.render(<Probe />))
+    expect(sentKeys).toEqual(['deadbeef', 'deadbeef'])
+  })
+
+  it('clears the persisted key on a successful open', async () => {
+    window.location.hash = '#share=cafe'
+    const sentKeys: (string | undefined)[] = []
+    const overseer = disposableStub({
+      subscribeToMetadata: vi.fn<
+        (callback: (metadata: GadgetMetadata) => void) => Promise<RpcStub<{}>>
+      >(async callback => {
+          callback(METADATA)
+          return disposableStub({}) as RpcStub<{}>
+        }),
+    }) as unknown as RpcStub<Overseer>
+    const authenticatedApi = {
+      openGadget: (_id: string, shareKey?: string) => {
+        sentKeys.push(shareKey)
+        return overseer
+      },
+      whoami: async () => WHOAMI_USER,
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    let retry!: () => void
+    function Probe() {
+      const state = useWorkspaceOpen({
+        id: 'workspace-1',
+        authenticatedApi,
+        onInvalidShareKey: () => {},
+        onMetadata: () => {},
+        onShareKeyConsumed: () => { window.location.hash = '' },
+      })
+      retry = state.retry
+      return null
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<Probe />))
+    expect(sentKeys).toEqual(['cafe'])
+    // The open succeeded, so the persisted secret is gone -- even though the identity stamp
+    // that writes it resolves asynchronously alongside the open...
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull()
+
+    // ...and so is the in-memory ref: a retry resolves keylessly from the confirmed edge.
+    await act(async () => retry())
+    expect(sentKeys).toEqual(['cafe', undefined])
+  })
+
+  it('a reconnect after a successful open retries keylessly', async () => {
+    // The owner-removal scenario: the revocation restart kills the WebSocket, useAuth swaps in
+    // a new authenticatedApi while the editor stays mounted, and the open effect re-runs. A
+    // retained key here would silently re-redeem the still-active link, undoing the removal.
+    window.location.hash = '#share=cafe'
+    const sentKeys: (string | undefined)[] = []
+    const overseer = disposableStub({
+      subscribeToMetadata: vi.fn<
+        (callback: (metadata: GadgetMetadata) => void) => Promise<RpcStub<{}>>
+      >(async callback => {
+          callback(METADATA)
+          return disposableStub({}) as RpcStub<{}>
+        }),
+    }) as unknown as RpcStub<Overseer>
+    // Each call yields a distinct stub identity, like a fresh post-reconnect connection.
+    const keyedApi = () => ({
+      openGadget: (_id: string, shareKey?: string) => {
+        sentKeys.push(shareKey)
+        return overseer
+      },
+      whoami: async () => WHOAMI_USER,
+    } as unknown as RpcStub<AuthenticatedApi>)
+
+    function Probe({ authenticatedApi }: { authenticatedApi: RpcStub<AuthenticatedApi> }) {
+      useWorkspaceOpen({
+        id: 'workspace-1',
+        authenticatedApi,
+        onInvalidShareKey: () => {},
+        onMetadata: () => {},
+        onShareKeyConsumed: () => { window.location.hash = '' },
+      })
+      return null
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<Probe authenticatedApi={keyedApi()} />))
+    expect(sentKeys).toEqual(['cafe'])
+
+    await act(async () => root!.render(<Probe authenticatedApi={keyedApi()} />))
+    expect(sentKeys).toEqual(['cafe', undefined])
+  })
+
+  it('ignores and sweeps a retained key stamped by a different user', async () => {
+    // The shared-tab user switch: A's failed keyed open left a retained entry, A logged out
+    // without the sweep landing (or the entry predates it), and B opens the same workspace. The
+    // key must not be redeemed under B's account, and the stale entry goes away.
+    sessionStorage.setItem(RETAINED_V2_KEY, retainedEntry('cafe', 'someone-else@example.com'))
+    const sentKeys: (string | undefined)[] = []
+    const overseer = disposableStub({
+      subscribeToMetadata: vi.fn<
+        (callback: (metadata: GadgetMetadata) => void) => Promise<RpcStub<{}>>
+      >(async callback => {
+          callback(METADATA)
+          return disposableStub({}) as RpcStub<{}>
+        }),
+    }) as unknown as RpcStub<Overseer>
+    const authenticatedApi = {
+      openGadget: (_id: string, shareKey?: string) => {
+        sentKeys.push(shareKey)
+        return overseer
+      },
+      whoami: async () => WHOAMI_USER,
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={authenticatedApi} />))
+
+    expect(sentKeys).toEqual([undefined])
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull()
+  })
+
+  it('neither attaches nor sweeps the retained key when identity cannot be resolved', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // A transport failure leaves the identity unknown: the entry may well belong to this user,
+    // so it must survive for a later attempt, but the key must not be attached blind.
+    sessionStorage.setItem(RETAINED_V2_KEY, retainedEntry('cafe'))
+    const sentKeys: (string | undefined)[] = []
+    const deniedOverseer = disposableStub({
+      subscribeToMetadata: vi.fn<() => Promise<RpcStub<{}>>>(async () => {
+        throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied)
+      }),
+    }) as unknown as RpcStub<Overseer>
+    const authenticatedApi = {
+      openGadget: (_id: string, shareKey?: string) => {
+        sentKeys.push(shareKey)
+        return deniedOverseer
+      },
+      whoami: async () => { throw new Error('connection lost') },
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={authenticatedApi} />))
+
+    expect(sentKeys).toEqual([undefined])
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('cafe'))
   })
 
   it('clears loaded metadata and title and disposes the failed stub after access is denied', async () => {

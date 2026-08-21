@@ -44,9 +44,9 @@ export type PublicDataProject = {
  * The projects a public-data binding is allowed to read.
  *
  * An allowlist rather than free text, because it is what makes a public binding's "reads only
- * public data" label true: that label is why such a binding is exempted from `prohibitAllSharing`
- * (see `BigQuerySessionImpl`), and free text would let a binding titled "public data" read
- * whatever private project the user's own token happens to reach.
+ * public data" label true: that label is why such a binding is exempted from
+ * `containsRestrictedData` (see `BigQuerySessionImpl`), and free text would let a binding titled
+ * "public data" read whatever private project the user's own token happens to reach.
  *
  * Every entry grants `roles/bigquery.dataViewer` to `allAuthenticatedUsers`. Adding one is a
  * one-line data change; removing one correctly disables existing bindings, since the allowlist is

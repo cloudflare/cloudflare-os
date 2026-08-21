@@ -41,7 +41,7 @@ import type { ProductAnalyticsConnectionType, ProductAnalyticsGadgetInput } from
 import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker";
 import { completeAgentCatalogSnapshot, normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
-import { SharingManager, SharingCaller, CollaboratorRecord, ShareKeyRecord } from "./sharing";
+import { SharingManager, SharingCaller, CollaboratorRecord, ShareKeyRecord, roleRank } from "./sharing";
 import { AutoApprovalDrainer } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext, traced } from "./observability";
@@ -1009,8 +1009,13 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       nextChatId: 0,
       nextHookId: 0,
 
-      // True if any past observation was authorized that had the `prohibitAllSharing` flag set
-      // in its `ObservationDescription`.
+      // True if any past observation was authorized that had the `containsRestrictedData` flag
+      // set in its `ObservationDescription`. While set, the workspace may not perform actions or
+      // fetch from the public web.
+      //
+      // NOTE: The property CANNOT be renamed to match the flag: the typed-storage key is the
+      // property name, so a rename would silently unlatch every workspace that has already
+      // observed restricted data.
       prohibitAllSharing: false,
     },
 
@@ -1345,6 +1350,22 @@ export function sanitizeMessageFormatRefs(
 
   if (accepted.length === 0) return undefined;
   return accepted.toSorted((a, b) => a.position - b.position);
+}
+
+// Action records written before commit 6b778a18 carry `containsRestrictedData` under its
+// pre-rename name, `prohibitAllSharing`. Records are data at rest and are never rewritten, so
+// this shape is permanent (matching the latch singleton, which kept its historical storage key)
+// and the tolerance can never be removed.
+type LegacyObservationDescription = ObservationDescription & { prohibitAllSharing?: boolean };
+
+/**
+ * Whether a persisted observation description carries the restricted-data flag, under either its
+ * current name or the pre-rename one still present on older records. Exported for its unit test;
+ * every read of the flag off a persisted record must go through this.
+ */
+export function observationContainsRestrictedData(description: ObservationDescription): boolean {
+  let d: LegacyObservationDescription = description;
+  return (d.containsRestrictedData ?? d.prohibitAllSharing) === true;
 }
 
 class OverseerImpl implements AgentHooks {
@@ -4356,15 +4377,8 @@ class OverseerImpl implements AgentHooks {
 
   async authorizeObservation(gatekeeperId: number, description: ObservationDescription,
                              caller: GatekeeperCaller): Promise<void> {
-    if (description.prohibitAllSharing) {
-      if ((await this.getSharingManager()).hasAnyShares()) {
-        throw new Error(
-            "This observation was blocked because it contains sensitive data that must only be " +
-            "shown to the account owner, but this workspace is shared with other users. Try again " +
-            "from a workspace that is not shared.");
-      }
-
-      this.storage.prohibitAllSharing.put(true);
+    if (description.containsRestrictedData) {
+      await this.#assertSensitiveObservationCoverage(gatekeeperId);
     }
 
     // Forward exclusion: the gatekeeper may name observers who must not see this observation. Since
@@ -4374,6 +4388,12 @@ class OverseerImpl implements AgentHooks {
     // observers-implementation-plan.md §5 Step 5.
     if (description.excludeObservers && description.excludeObservers.length > 0) {
       await this.#enforceExcludeObservers(description.excludeObservers);
+    }
+
+    // Latch restricted mode only once every gate above has passed: a blocked observation delivers
+    // no data, so it must not leave the workspace restricted.
+    if (description.containsRestrictedData) {
+      this.storage.prohibitAllSharing.put(true);
     }
 
     let actionId = this.storage.nextActionId.get();
@@ -4488,6 +4508,119 @@ class OverseerImpl implements AgentHooks {
         this.storage.chatAttachmentContent.delete(content.fileId);
       }
     });
+  }
+
+  // Enforce an observation's `containsRestrictedData`: it may proceed only if every current
+  // collaborator has been verified to have access to the data source producing it, i.e. holds an
+  // observer record whose account choices cover this gatekeeper. Observer verification normally
+  // runs when a collaborator enters (see authorizeCollaborator), but that alone leaves a
+  // live-session gap: a collaborator added and opened before this gatekeeper existed (or before
+  // it read anything sensitive) may hold a session that was never verified against it, and must
+  // not watch sensitive observations arrive. Coverage is held to each collaborator's own
+  // verification scope (#inScopeGatekeepers of their role): ensureObserver never verifies a "use"
+  // collaborator against a gatekeeper no gadget binds, so demanding coverage there would block the
+  // read permanently and make the error's remedy (re-open the workspace) a lie. Unredeemed share
+  // links do NOT block: redemption is gated at open(), where ensureObserver runs before the new
+  // collaborator sees anything -- and a redemption stays *pending* (invisible to effective roles,
+  // hence to listCollaborators here) until that verification succeeds, so neither a
+  // mid-verification nor a refused recipient ever counts here. A pending redeemer being
+  // invisible is safe only because authorizeCollaborator denies the redeeming open if the
+  // connection/binding topology changed while its verification was in flight: a redeemer is
+  // never confirmed against a scope narrower than what exists at confirm time, so anyone this
+  // guard can't see is either denied or was verified against the producer being checked.
+  async #assertSensitiveObservationCoverage(gatekeeperId: number): Promise<void> {
+    let sharing = await this.getSharingManager();
+    let collaborators = sharing.listCollaborators();
+    if (collaborators.length === 0) return;
+
+    // A gatekeeper that can't verify observers -- no vendor account behind it, or a legacy
+    // record with no creationSpec -- can never have covered anyone, so any current collaborator
+    // blocks the observation (conservative).
+    let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
+    let vendorId: string | null = null;
+    if (gatekeeper) {
+      try {
+        vendorId = observerVendorId(gatekeeper);
+      } catch {
+        // Legacy connection with no creationSpec: treat as unverifiable.
+      }
+    }
+    // Computed from the gadget bindings directly rather than via #inScopeGatekeepers, which
+    // throws if *any* record is a legacy connection -- an unrelated legacy record must not make
+    // this gatekeeper's sensitive reads fail.
+    let inUseScope =
+        vendorId !== null && this.#gadgetBoundGatekeeperIds().has(gatekeeperId);
+
+    for (let collaborator of collaborators) {
+      // A verifiable gatekeeper outside a "use" collaborator's scope is one the UI can't invoke
+      // and ensureObserver can't cover; only the unverifiable case above blocks regardless of
+      // role. The skip also covers a *formerly*-bound producer (unbinding shrinks use scope
+      // live) and a *never*-bound one reachable only through chat bindings, whose restricted
+      // data the agent may have persisted with no "use" collaborator ever verified against it
+      // -- both accepted residuals; see docs/observers.md edge case 4. An absent role means
+      // "build" (see CollaboratorInfo), which fails safe here.
+      if (vendorId && (collaborator.role ?? "build") === "use" && !inUseScope) continue;
+      let observer = vendorId ? this.storage.observers.get(collaborator.profile.id) : undefined;
+      if (!observer || !(gatekeeperId in observer.accountChoices)) {
+        // The message reaches sandboxed gadget code and agent output -- an audience that can't
+        // otherwise list collaborators -- so it names the collaborator but omits their profile
+        // id, which is the full email on OAuth/CF Access deployments. The name is never a full
+        // email on any path (password usernames are normalized alphanumeric handles, OAuth
+        // display names default to the email local-part), which is what makes keeping it
+        // acceptable for this audience.
+        throw new Error(
+            "This observation was blocked because it contains sensitive data, but this " +
+            `workspace is shared with ${collaborator.profile.name}, ` +
+            "who has not been verified to have access to that data. They must re-open the " +
+            "workspace (which verifies their access) or be removed from it before this data " +
+            "can be read.");
+      }
+    }
+  }
+
+  // The connection ids through which this workspace has read restricted data -- the producers the
+  // `prohibitAllSharing` latch guards. Derived by scanning the action log for observations whose
+  // description carries `containsRestrictedData` (under either of its names -- see
+  // observationContainsRestrictedData): action records are never deleted, so the set survives the
+  // producer connection's removal, and the latch is written in the same synchronous block that
+  // persists the record (authorizeObservation), so a latched workspace always yields a non-empty
+  // set. Built-in tool observations are skipped: they name no connection, and the
+  // BUILTIN_TOOL_GATEKEEPER_ID sentinel could never match a gatekeeper record (built-ins also
+  // never latch). Cold paths only (connection removal and sharing mutators), so the full scan is
+  // fine.
+  restrictedProducerIds(): Set<WorkpieceId> {
+    let producers = new Set<WorkpieceId>();
+    for (let record of this.storage.actions.list()) {
+      if (record.type === "observation" &&
+          observationContainsRestrictedData(record.description) &&
+          record.gatekeeperId !== BUILTIN_TOOL_GATEKEEPER_ID) {
+        producers.add(record.gatekeeperId);
+      }
+    }
+    return producers;
+  }
+
+  // Refuse a new sharing grant once the workspace has read restricted data through a connection
+  // that no longer exists. A new collaborator's verification anchors on the producer connection's
+  // record (ensureObserver and the coverage guard); with the record gone there is nothing to
+  // verify them against, while the restricted data persists in chat history and storage. Grants
+  // that predate the removal are untouched -- this guards only new ones, which includes share-key
+  // *redemption* (open() passes this as redeemShareKey's assertGrantAllowed), so outstanding keys
+  // die with the producer rather than staying redeemable. Removing a *verifiable*
+  // producer already requires zero collaborators and zero share links (see
+  // GatekeeperClientImpl.remove()), so this bites after any producer was removed while the
+  // workspace was unshared, or after an unverifiable producer -- exempt from the removal guard
+  // as its own remedy -- was removed while links were outstanding.
+  assertNewSharingAllowed(): void {
+    if (!this.storage.prohibitAllSharing.get()) return;
+    for (let id of this.restrictedProducerIds()) {
+      if (!this.storage.gatekeepers.get(id)) {
+        throw new Error(
+            "This workspace can no longer be shared: it read sensitive data through a connection " +
+            "that has since been removed, so new collaborators can no longer be verified for " +
+            "access to that data.");
+      }
+    }
   }
 
   // Enforce an observation's `excludeObservers`. For each named opaque observerId:
@@ -7670,23 +7803,40 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // Gatekeeper ids bound by some non-provisional gadget -- everything the gadget UI can invoke,
+  // and therefore all of a "use" collaborator's verification scope.
+  #gadgetBoundGatekeeperIds(): Set<WorkpieceId> {
+    let boundIds = new Set<WorkpieceId>();
+    for (let gadget of this.storage.gadgets.list()) {
+      // Provisional gadgets and binding edges aren't visible to "use" collaborators, so they
+      // don't bring gatekeepers into scope.
+      if (gadget.pending) continue;
+      for (let [, edge] of this.visibleBindings(gadget)) {
+        boundIds.add(edge.target);
+      }
+    }
+    return boundIds;
+  }
+
+  // The raw inputs every role's verification scope is derived from (see #inScopeGatekeepers):
+  // the connection set and the gadget-bound subset, serialized for cheap equality.
+  // authorizeCollaborator compares this across a pending redemption's verification to detect a
+  // scope change mid-flight. Raw inputs rather than #inScopeGatekeepers output: that helper
+  // throws on legacy records, and a removal or bind-change must register just like an addition
+  // -- including of connections no verification could cover.
+  #verificationScopeFingerprint(): string {
+    let connectionIds =
+        [...this.storage.gatekeepers.list()].map(gk => gk.id).toSorted((a, b) => a - b);
+    let boundIds = [...this.#gadgetBoundGatekeeperIds()].toSorted((a, b) => a - b);
+    return JSON.stringify([connectionIds, boundIds]);
+  }
+
   // Selects the gatekeepers a non-owner observer with the given `role` must be verified against:
   //   - "build" collaborators (full access): every account-requiring gatekeeper.
   //   - "use" collaborators (UI only): only account-requiring gatekeepers bound by some gadget,
   //     since that is all the UI can invoke.
   #inScopeGatekeepers(role: CollaboratorRole): GatekeeperRecord[] {
-    let boundIds: Set<WorkpieceId> | undefined;
-    if (role === "use") {
-      boundIds = new Set();
-      for (let gadget of this.storage.gadgets.list()) {
-        // Provisional gadgets and binding edges aren't visible to "use" collaborators, so they
-        // don't bring gatekeepers into scope.
-        if (gadget.pending) continue;
-        for (let [, edge] of this.visibleBindings(gadget)) {
-          boundIds.add(edge.target);
-        }
-      }
-    }
+    let boundIds = role === "use" ? this.#gadgetBoundGatekeeperIds() : undefined;
 
     let result: GatekeeperRecord[] = [];
     for (let gk of this.storage.gatekeepers.list()) {
@@ -7762,6 +7912,85 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // The authorization gate every non-owner entry point (open(), receiveExternalMessage()) must
+  // pass through: resolve the caller's effective role, then verify them as an observer of
+  // everything this workspace has read. Returns null for no access; verification failures throw.
+  // A caller that requires at least `requireRole` (e.g. receiveExternalMessage needs "build")
+  // passes it so an insufficient role is denied *before* verification runs -- otherwise the caller
+  // would be verified (real addObserver calls, a persisted observer record) only to be turned
+  // away, or worse, told to fix a verification failure that can never grant them access.
+  // `configureCb` is forwarded to ensureObserver to prompt for unconfigured account choices;
+  // without it, verification is non-interactive and an unconfigured binding denies access.
+  // `pendingLinkId` names a share-key redemption this same open() just performed (see
+  // redeemShareKey): the redeemed edge is pending -- it grants no authority to anyone -- so the
+  // role is computed as though it were confirmed, verification runs against that hypothetical
+  // role, and only on success is the edge confirmed for real.
+  async authorizeCollaborator(
+      profileId: string,
+      clientUser: DurableObjectStub<UserDurableObject>,
+      opts: {
+        configureCb?: RpcStub<ObserverConfigCallback>;
+        requireRole?: CollaboratorRole;
+        pendingLinkId?: string;
+      } = {}): Promise<CollaboratorRole | null> {
+    let sharing = await this.getSharingManager();
+    let role = sharing.getEffectiveRole(profileId, opts.pendingLinkId);
+    if (!role || (opts.requireRole && roleRank(role) < roleRank(opts.requireRole))) return null;
+
+    // For a pending redemption, snapshot the verification-scope inputs in the same synchronous
+    // tick as ensureObserver's own #inScopeGatekeepers snapshot. ensureObserver may park
+    // unboundedly on the recipient's configuration modal, and a connection added (or a binding
+    // made) in that window would otherwise be invisible to the verification yet covered by the
+    // confirmed grant -- an already-confirmed collaborator in the same window is caught by the
+    // coverage guard, but a pending redeemer is invisible to it.
+    let scopeBefore =
+        opts.pendingLinkId !== undefined ? this.#verificationScopeFingerprint() : null;
+
+    await this.ensureObserver(profileId, clientUser, role, opts.configureCb);
+    if (opts.pendingLinkId === undefined) return role;
+
+    // Deny on *any* topology change -- additions, removals, and bind-changes alike -- rather
+    // than re-verifying: the throw lands in open()'s catch, which severs the pending edge, and
+    // the recipient's retained share key makes the retry re-redeem and re-verify against the
+    // full new topology (where the redemption policy gate refuses if a producer is now gone).
+    // This check, the confirm, and the role re-derivation below form one synchronous block, so
+    // any change landing after it sees the recipient in listCollaborators() and the coverage
+    // guard fail-closes -- the same protection ordinary opens have.
+    if (scopeBefore !== this.#verificationScopeFingerprint()) {
+      throw new Error(
+          "A connection or binding changed in this workspace while your access was being " +
+          "verified. Open the workspace again to retry.");
+    }
+
+    // Re-assert the redemption policy in the same synchronous block as the granting write. The
+    // gate at redeemShareKey ran with the *pending* write, before this open's await windows
+    // (ensureCapsules, ensureObserver); a restricted-data producer removed *before* the
+    // fingerprint snapshot above was taken is absent from both fingerprints -- an unverifiable
+    // producer's remove() skips the share-link guard entirely -- so the scope check cannot catch
+    // it, and confirming would admit a recipient nobody can verify for the restricted data. The
+    // throw lands in open()'s catch, which severs the pending edge.
+    sharing.confirmShareKeyRedemption(
+        profileId, opts.pendingLinkId, () => this.assertNewSharingAllowed());
+    // Re-derive the role from the live graph now that the edge is confirmed. Pending edges are
+    // invisible to revokeShareLink's affected-set computation, so no revocation restart aborts a
+    // mid-verification redeemer whose link was revoked while verification waited (possibly on the
+    // configuration modal) -- this re-check is what denies them: a revoked link contributes
+    // nothing, so the role collapses. The just-confirmed edge then lingers inert, like any edge
+    // of a revoked link under the lazy model.
+    let confirmed = sharing.getEffectiveRole(profileId);
+    if (!confirmed ||
+        (opts.requireRole && roleRank(confirmed) < roleRank(opts.requireRole))) {
+      return null;
+    }
+    // Decreases pass through (this re-derivation is the revocation catch above), but an increase
+    // -- say an owner grant of "build" landing while verification waited on the configuration
+    // modal -- must not ride out on this open: ensureObserver verified the caller at `role`, and
+    // a wider role widens the gatekeeper scope that verification must cover. The raise takes
+    // effect at the caller's next open, exactly as it does for an ordinary (keyless) open, which
+    // returns the role it verified at.
+    return roleRank(confirmed) < roleRank(role) ? confirmed : role;
+  }
+
   // Bring a non-owner `profileId` into compliance as an observer for their `role`, so that they may
   // open the Gadget. May invoke `configureCb` to ask the user to choose connected accounts for
   // gatekeeper bindings they haven't configured yet. Re-runs `addObserver` (re-verification) for
@@ -7793,6 +8022,9 @@ class OverseerImpl implements AgentHooks {
     let observerId = record?.observerId ?? crypto.randomUUID();
     // Gatekeepers we successfully registered the observer with during this call.
     let newlyAdded = new Set<number>();
+    // Gatekeepers that refused (or whose account was gone) during this call -- see fail() below,
+    // which scrubs each from the persisted observer record as the failure is determined.
+    let invalidated = new Set<number>();
 
     // Failures from the previous pass, keyed by gatekeeper id: an already-configured binding whose
     // chosen account was disconnected, or which the gatekeeper refused.
@@ -7883,6 +8115,21 @@ class OverseerImpl implements AgentHooks {
 
           let fail = (reason: string, err?: unknown) => {
             failures.set(gk.id, {accountId, reason});
+            // The coverage guard (#assertSensitiveObservationCoverage) reads the *persisted*
+            // record from other turns, so until this gatekeeper is scrubbed from it, the record
+            // keeps admitting this producer's restricted observations to the collaborator's
+            // still-live sessions -- even though the live check just refused them. Scrub it
+            // synchronously with the failure determination (the record is re-read because the
+            // awaits since load may have let a concurrent open update it; get/put are synchronous
+            // in this single-threaded DO, so nothing lands between the check and the write).
+            // Scoped to the failed gatekeeper: coverage elsewhere stays intact, and a repaired
+            // pass re-persists full coverage at step 6.
+            invalidated.add(gk.id);
+            let persisted = this.storage.observers.get(profileId);
+            if (persisted && gk.id in persisted.accountChoices) {
+              delete persisted.accountChoices[gk.id];
+              this.storage.observers.put(persisted);
+            }
             this.logger.warn("observer verification failed", {
               event: "gatekeeper.observer.verify.failed",
               gatekeeperId: gk.id, vendorId, accountId, observerId, error: err,
@@ -7936,9 +8183,12 @@ class OverseerImpl implements AgentHooks {
         break;
       }
     } catch (err) {
-      // Best-effort remove all the observers that were newly-added since we didn't persist the
-      // user's observer record.
-      await this.#removeObserverFromGatekeepers(observerId, [...newlyAdded]);
+      // Best-effort deregistration: the newly-added observers were never persisted, and a
+      // gatekeeper that refused this call may still hold a registration from an earlier
+      // successful open (its persisted coverage was already scrubbed in fail(), and
+      // removeObserver is idempotent per the interface contract).
+      await this.#removeObserverFromGatekeepers(
+          observerId, [...new Set([...newlyAdded, ...invalidated])]);
       throw err;
     }
 
@@ -8231,46 +8481,71 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let role: CollaboratorRole = "build";
 
     if (!isOwner) {
-      if (this.impl.storage.prohibitAllSharing.get()) {
-        // `prohibitAllSharing` can only have been set when the gadget had no shares (see
-        // `authorizeObservation`), and no new shares can be created while it's set, so any
-        // non-owner reaching here is necessarily unauthorized.
-        throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
-      }
-
       let sharing = await this.impl.getSharingManager();
 
       // If a share key was provided, redeem it. The owner already has full access and should not
-      // appear in the collaborators table.
+      // appear in the collaborators table. Redemption adds only a *pending* edge, which grants
+      // nothing to anyone until observer verification below confirms it; the redeemed link id is
+      // kept so authorizeCollaborator can verify against the hypothetical grant and confirm it on
+      // success, and so a refusal severs the still-pending edge.
+      let redeemedLinkId: string | null = null;
       if (shareKey) {
-        await sharing.redeemShareKey({
+        redeemedLinkId = await sharing.redeemShareKey({
           rawKey: shareKey,
           profileId,
           fetchProfile: () => clientUser.whoami(),
+          // An outstanding key is a new grant vector, so redemption is policy-gated like the
+          // grant-creating mutators. Without this, keys minted before an exempted
+          // (unverifiable-producer) removal -- or on a legacy-latched workspace whose producer is
+          // gone -- would still admit unverified recipients.
+          assertGrantAllowed: () => this.impl.assertNewSharingAllowed(),
         });
       }
-
-      // Check authorization. Compute the caller's effective role from the permission graph; this
-      // both authorizes the session and determines which capability we hand back.
-      //
-      // An unauthorized caller (no effective role -- never had access, or was removed) gets a
-      // distinct denial without workspace metadata. A removed collaborator who reconnects after
-      // their session is force-restarted lands here and sees the terminal access-denied page.
-      let effectiveRole = sharing.getEffectiveRole(profileId);
-      if (!effectiveRole) {
-        throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
-      }
-      role = effectiveRole;
 
       // Ambient reconciliation may attach Gatekeepers after open() starts. Finish it before taking
       // the observer snapshot so every capability exposed to this collaborator has an observer.
       await ensureCapsules;
 
-      // Verify the caller may observe everything this Gadget has read through its in-scope
-      // gatekeepers, configuring their connected accounts if needed. This runs only after a valid
-      // role is confirmed, so it never reveals gatekeeper or resource metadata to an unauthorized
-      // user. The prohibitAllSharing short-circuit above still wins -- lockdown takes precedence.
-      await this.impl.ensureObserver(profileId, clientUser, role, configureObservers);
+      // Check authorization: compute the caller's effective role from the permission graph, then
+      // verify they may observe everything this Gadget has read through its in-scope gatekeepers,
+      // configuring their connected accounts if needed. Observer verification runs only after a
+      // valid role is confirmed, so it never reveals gatekeeper or resource metadata to an
+      // unauthorized user -- who instead gets a distinct denial without workspace metadata. (A
+      // removed collaborator who reconnects after their session is force-restarted lands there
+      // and sees the terminal access-denied page.) Verification is also what enforces sensitive
+      // (`containsRestrictedData`) data access: a gatekeeper that has read such data admits a
+      // collaborator only if addObserver() verifies them, and refuses everyone if it cannot
+      // verify anyone.
+      let effectiveRole: CollaboratorRole | null;
+      try {
+        effectiveRole = await this.impl.authorizeCollaborator(
+            profileId, clientUser,
+            {configureCb: configureObservers, pendingLinkId: redeemedLinkId ?? undefined});
+      } catch (err) {
+        // Verification refused the caller. If this open() had just redeemed a share key, sever
+        // the still-pending edge it added, so a refused recipient never persists in the sharing
+        // graph. (An edge a concurrent open of the same link already confirmed is left alone.)
+        // They can redeem the same key again once their access is fixed. (The revert persists
+        // despite the rethrow: DO storage is not rolled back when an RPC throws.)
+        if (redeemedLinkId) {
+          sharing.revertShareKeyRedemption(profileId, redeemedLinkId);
+        }
+        throw err;
+      }
+      if (!effectiveRole) {
+        // A null role means the redeemed link's creator is currently unreachable in the
+        // permission graph -- or the link itself was revoked while verification was in flight
+        // (authorizeCollaborator re-derives the role after confirming the edge). Sever any
+        // still-pending edge here too: otherwise the recipient persists as an inert collaborator
+        // who springs back -- unverified -- if the creator regains access. In the revoked-link
+        // case the edge was already confirmed, so this is a no-op and the confirmed edge lingers
+        // inert (lazy model).
+        if (redeemedLinkId) {
+          sharing.revertShareKeyRedemption(profileId, redeemedLinkId);
+        }
+        throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+      }
+      role = effectiveRole;
 
       // Fire-and-forget a call to the collaborator's user DO so the gadget appears on
       // (or is refreshed on) their home page.
@@ -8343,15 +8618,26 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       ownerId = callerId;
     }
 
-    // Caller must be the owner or a build collaborator.
+    // Caller must be the owner or a build collaborator. The agent's reply can surface anything
+    // the workspace has already read (chat history, gadget storage), so a collaborator passes the
+    // same authorization gate as open() -- but non-interactively: with no way to configure
+    // accounts here, an unverified caller is sent to open the workspace, which is where
+    // verification happens. Requiring "build" up front means a "use" collaborator gets the plain
+    // denial below rather than being verified (or told to fix a verification failure) for access
+    // this path can never grant them.
     if (ownerId !== callerId) {
-      if (this.impl.storage.prohibitAllSharing.get()) {
+      let role: CollaboratorRole | null;
+      try {
+        role = await this.impl.authorizeCollaborator(
+            callerProfile.id, caller, {requireRole: "build"});
+      } catch (err) {
         return {
           accepted: false,
-          message: "This workspace has sharing disabled, so only its owner can access it.",
+          message: "Your access to the data this workspace has read could not be verified. Open " +
+              "the workspace in your browser to verify your access, then try again. " +
+              `(${stringifyError(err)})`,
         };
       }
-      let role = (await this.impl.getSharingManager()).getEffectiveRole(callerProfile.id);
       if (role !== "build") {
         return {
           accepted: false,
@@ -9029,7 +9315,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
-      sharingProhibited: this.impl.storage.prohibitAllSharing.get(),
+      containsRestrictedData: this.impl.storage.prohibitAllSharing.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -9048,7 +9334,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
-      sharingProhibited: this.impl.storage.prohibitAllSharing.get(),
+      containsRestrictedData: this.impl.storage.prohibitAllSharing.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -9070,9 +9356,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
-    let sharingProhibitedSubscriber = {
+    let restrictedDataSubscriber = {
       update(value: boolean | undefined) {
-        metadata.sharingProhibited = value;
+        metadata.containsRestrictedData = value;
         callback(metadata).catch(unsubscribe);
       }
     };
@@ -9080,13 +9366,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let unsubscribe = () => {
       this.impl.storage.title.unsubscribe(titleSubscriber);
       this.impl.storage.totalCost.unsubscribe(costSubscriber);
-      this.impl.storage.prohibitAllSharing.unsubscribe(sharingProhibitedSubscriber);
+      this.impl.storage.prohibitAllSharing.unsubscribe(restrictedDataSubscriber);
       callback[Symbol.dispose]();
     };
 
     this.impl.storage.title.subscribe(titleSubscriber);
     this.impl.storage.totalCost.subscribe(costSubscriber);
-    this.impl.storage.prohibitAllSharing.subscribe(sharingProhibitedSubscriber);
+    this.impl.storage.prohibitAllSharing.subscribe(restrictedDataSubscriber);
 
     callback(metadata).catch(unsubscribe);
 
@@ -10262,8 +10548,18 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // --- Collaborator management ---
   //
   // The sharing/permission logic lives in SharingManager (./sharing). These methods handle only
-  // the RPC-bound pieces (resolving profiles via User DOs, the `prohibitAllSharing` policy) and
-  // delegate the rest.
+  // the RPC-bound pieces (resolving profiles via User DOs) and delegate the rest. Note that
+  // sharing stays available even after the workspace observes sensitive data
+  // (`containsRestrictedData`): whether a given collaborator may actually see that data is
+  // enforced per-gatekeeper by observer verification (authorizeCollaborator at every non-owner
+  // entry point, and the coverage guard in authorizeObservation), not by blocking sharing
+  // wholesale. The one exception: once latched, if a connection that read the sensitive data has
+  // since been removed, verification has lost its anchor, so the grant-creating mutators
+  // (addCollaborator, createShareLink, newShareLinkKey -- and share-key redemption in open())
+  // refuse -- see assertNewSharingAllowed.
+  // The keepUsers re-rooting inside removeCollaborator/revokeShareLink needs no such check: it
+  // re-grants existing collaborators at no more than their prior role, so there is no new party
+  // and no new verification obligation.
 
   async listObserverRequirements(
       role: CollaboratorRole): Promise<ObserverBindingNeed[]> {
@@ -10284,13 +10580,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       return null;
     }
 
-    if (this.impl.storage.prohibitAllSharing.get()) {
-      throw new Error(
-          "This workspace has observed sensitive data. To prevent leaks, the workspace cannot be " +
-          "shared.");
-    }
-
-    return (await this.impl.getSharingManager()).addCollaborator({
+    let sharing = await this.impl.getSharingManager();
+    // Asserted in the same synchronous block as the grant's storage write (after every await): a
+    // check ahead of the awaits above could pass, a concurrent producer-connection removal land
+    // during the yield, and the grant still be written past it.
+    this.impl.assertNewSharingAllowed();
+    return sharing.addCollaborator({
       caller: this.#sharingCaller(),
       profile,
       role,
@@ -10343,25 +10638,20 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async createShareLink(role: CollaboratorRole, note?: string)
       : Promise<{ key: string; linkId: string }> {
-    if (this.impl.storage.prohibitAllSharing.get()) {
-      throw new Error(
-          "This workspace has observed sensitive data. To prevent leaks, the workspace cannot be " +
-          "shared.");
-    }
-
-    return (await this.impl.getSharingManager())
-        .createShareLink({ caller: this.#sharingCaller(), role, note });
+    return (await this.impl.getSharingManager()).createShareLink({
+      caller: this.#sharingCaller(), role, note,
+      assertGrantAllowed: () => this.impl.assertNewSharingAllowed(),
+    });
   }
 
   async newShareLinkKey(linkId: string): Promise<{ key: string }> {
-    if (this.impl.storage.prohibitAllSharing.get()) {
-      throw new Error(
-          "This workspace has observed sensitive data. To prevent leaks, the workspace cannot be " +
-          "shared.");
-    }
-
-    return (await this.impl.getSharingManager())
-        .newShareLinkKey({ caller: this.#sharingCaller(), linkId });
+    return (await this.impl.getSharingManager()).newShareLinkKey({
+      caller: this.#sharingCaller(), linkId,
+      // A fresh key is a new grant vector even though the link already exists: it is reachable
+      // here when an unverifiable producer was removed while links were outstanding (which the
+      // removal guard deliberately allows as a remedy).
+      assertGrantAllowed: () => this.impl.assertNewSharingAllowed(),
+    });
   }
 
   async listShareLinks(): Promise<ShareLinkInfo[]> {
@@ -11017,6 +11307,43 @@ class GatekeeperClientImpl<Session extends RpcCompatible<Session>>
 
   async remove(): Promise<void> {
     let record = this.impl.storage.gatekeepers.get(this.id);
+    // A connection that has read restricted data is the anchor observer verification runs
+    // against: while the workspace is shared, deleting its record would let a never-verified
+    // collaborator open unchecked even though the data persists in chat history and storage.
+    // Outstanding share links count as shared too: redemption is gated at open() only while the
+    // record exists, so a link redeemed after removal would grant the same unchecked access.
+    // The guard applies only to the connections that themselves read restricted data (the
+    // producers, derived from the action log): the latch is workspace-wide, but a non-producer
+    // connection anchors no restricted-data verification, so it stays removable while shared.
+    // Unverifiable records (legacy, or no vendor account behind them) anchor no verification --
+    // removing one is itself a remedy -- so they stay removable too.
+    if (record && this.impl.storage.prohibitAllSharing.get()) {
+      let vendorId: string | null = null;
+      try {
+        vendorId = observerVendorId(record);
+      } catch {
+        // Legacy connection with no creationSpec: unverifiable, exempt from the guard.
+      }
+      if (vendorId !== null) {
+        // An empty producer set with the latch set should be impossible: the latch and the action
+        // record are written in one synchronous block, built-in observations never latch, and
+        // records that predate the flag's rename still read correctly (see
+        // observationContainsRestrictedData). If it ever happens anyway, fall back to guarding
+        // every connection rather than none.
+        let producers = this.impl.restrictedProducerIds();
+        if (producers.size === 0 || producers.has(this.id)) {
+          let sharing = await this.impl.getSharingManager();
+          if (sharing.listCollaborators().length > 0 ||
+              sharing.listShareLinkRecords().length > 0) {
+            throw new Error(
+                "This connection cannot be removed: it has read sensitive data into this " +
+                "workspace, and the workspace is shared. Collaborators are verified against this " +
+                "connection before they may see that data, so remove all collaborators and revoke " +
+                "all share links first.");
+          }
+        }
+      }
+    }
     this.impl.removeGatekeeper(this.id);
     this.impl.recordGadgetAnalytics({
       event_name: "connection_removed",

@@ -1710,8 +1710,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
    * personal to extend to any non-owner observer (a Gmail mailbox has no per-recipient ACL we could
    * verify an observer against — the mailing-list decomposition discussed in the plan is explicitly
    * out of scope). So no non-owner observer may ever observe Gmail data: addObserver always throws.
-   * (This is enforced here in addition to any prohibitAllSharing usage, so the lockdown holds even
-   * when sharing is otherwise permitted.) removeObserver is a no-op since none is ever recorded.
+   * (This is enforced here in addition to any containsRestrictedData usage, so the restriction
+   * holds even when sharing is otherwise permitted.) removeObserver is a no-op since none is ever
+   * recorded.
    */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     throw new Error(
@@ -2967,8 +2968,8 @@ type BigQueryGatekeeperImplProps = {
   scopedDatasetId?: string;
   scopedTableId?: string;
   // Set iff `scopedProjectId` is an allowlisted public-data project. Such a session reads data
-  // every authenticated Google user can already read, so its observations neither prohibit sharing
-  // nor need a per-dataset IAM check on each observer. Re-verified against the allowlist when a
+  // every authenticated Google user can already read, so its observations are not restricted data
+  // and its observers need no per-dataset IAM check. Re-verified against the allowlist when a
   // session starts, so removing a project from the list disables existing bindings too.
   publicData?: true;
 };
@@ -3032,7 +3033,7 @@ export class BigQueryGatekeeperImpl
     // them, but the props outlive that call and are persisted with the binding, so this is what
     // makes turning the deployment flag off -- or dropping a project from PUBLIC_DATA_PROJECTS --
     // disable the bindings that already exist, instead of leaving them reading a project we no
-    // longer vouch for as public and, on that basis, exempt from the sharing prohibition.
+    // longer vouch for as public and unmarked as restricted data on that basis.
     if (publicData) {
       if (!bigQueryPublicDataEnabled(this.env)) {
         throw new Error(BIGQUERY_PUBLIC_DATA_DISABLED_MESSAGE);
@@ -3119,7 +3120,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
   #scopedDatasetId?: string;
   #scopedTableId?: string;
   // Whether #scopedProjectId is an allowlisted public-data project, in which case nothing this
-  // session returns needs to prohibit sharing the workspace.
+  // session returns is restricted data.
   #publicData: boolean;
   // Records the datasets an observation reveals and returns observers to exclude (see
   // BigQueryGatekeeperImpl.#prepareDatasetObservation).
@@ -3303,7 +3304,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
         `Referenced tables: ${estimate.referencedTables.join(", ")}\n` +
         `Estimated bytes processed: ${estimate.bytesProcessed.toLocaleString()}\n` +
         `Maximum bytes billed: ${maxBytes.toLocaleString()}.`,
-      prohibitAllSharing: !this.#publicData,
+      containsRestrictedData: !this.#publicData,
     });
 
     let result = await this.#api.query(billingProject, sql, {
@@ -3335,7 +3336,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
       description:
         `Estimated bytes processed: ${estimate.bytesProcessed.toLocaleString()}\n` +
         `Referenced tables: ${estimate.referencedTables.join(", ") || "(none)"}`,
-      prohibitAllSharing: !this.#publicData,
+      containsRestrictedData: !this.#publicData,
     });
 
     return estimate;
@@ -3347,7 +3348,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     await this.#authorizeDatasets([], {
       title: "Get BigQuery project",
       description: `Returned the scoped project: \`${this.#scopedProjectId}\`.`,
-      prohibitAllSharing: !this.#publicData,
+      containsRestrictedData: !this.#publicData,
     });
     return result;
   }
@@ -3365,7 +3366,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
       await this.#authorizeDatasets([{ projectId: p, datasetId: this.#scopedDatasetId }], {
         title: `List datasets in ${p}`,
         description: `Returned scoped dataset \`${p}.${this.#scopedDatasetId}\` (1 dataset).`,
-        prohibitAllSharing: !this.#publicData,
+        containsRestrictedData: !this.#publicData,
       });
       return [dataset];
     }
@@ -3375,7 +3376,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     await this.#authorizeDatasets(result.map(ds => ({ projectId: p, datasetId: ds.datasetId })), {
       title: `List datasets in ${p}`,
       description: `Listed ${result.length} dataset(s) in \`${p}\`.`,
-      prohibitAllSharing: !this.#publicData,
+      containsRestrictedData: !this.#publicData,
     });
     return result;
   }
@@ -3400,7 +3401,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
       await this.#authorizeDatasets([{ projectId: p, datasetId: d }], {
         title: `List tables in ${p}.${d}`,
         description: `Returned scoped table \`${p}.${d}.${this.#scopedTableId}\` (1 table).`,
-        prohibitAllSharing: !this.#publicData,
+        containsRestrictedData: !this.#publicData,
       });
       return [table];
     }
@@ -3409,7 +3410,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     await this.#authorizeDatasets([{ projectId: p, datasetId: d }], {
       title: `List tables in ${p}.${d}`,
       description: `Listed ${result.length} table(s) in \`${p}.${d}\`.`,
-      prohibitAllSharing: !this.#publicData,
+      containsRestrictedData: !this.#publicData,
     });
     return result;
   }
@@ -3445,7 +3446,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
       title: `Describe ${p}.${d}.${t}`,
       description:
         `Described table \`${p}.${d}.${t}\` (${result.schema.length} columns).`,
-      prohibitAllSharing: !this.#publicData,
+      containsRestrictedData: !this.#publicData,
     });
     return result;
   }

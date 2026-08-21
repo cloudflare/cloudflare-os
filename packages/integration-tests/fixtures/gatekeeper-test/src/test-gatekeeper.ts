@@ -20,12 +20,15 @@
 // is one control knob here, `allow`, and the reason string is what carries the distinction to the
 // user. Tests exercise both narratives by choosing reason text.
 
-import { DurableObject, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
+import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import type {
   AccountDescription, ActionKind, ApprovalQueue, Gatekeeper, GatekeeperConnectCallback,
   GatekeeperUser, GatekeeperUserVerifier, ResourceDescription, ResourceConfiguratorFrame,
   SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  ChatGatewayRpcTarget, GadgetResponse,
+} from "@gadgets/workshop-shared/external-message-gateway";
 
 // Nothing but classes and the default handler may be exported from a Worker entry module: workerd
 // treats every named export as an entrypoint and rejects anything that isn't one.
@@ -57,13 +60,22 @@ const AVATAR = {
 type VerifyOutcome = { allow: true } | { allow: false; reason: string };
 
 export class TestControl extends DurableObject<Cloudflare.Env> {
-  setVerifyOutcome(label: string, outcome: VerifyOutcome): void {
-    this.ctx.storage.kv.put(`outcome:${label}`, outcome);
+  /**
+   * An outcome may target one bound resource (`resourceUrl` present) or the whole account. The
+   * resource-specific entry wins, so a test can refuse an account at one producer while the same
+   * account keeps passing everywhere else.
+   */
+  setVerifyOutcome(label: string, outcome: VerifyOutcome, resourceUrl?: string): void {
+    this.ctx.storage.kv.put(
+        resourceUrl !== undefined ? `outcome:${label}|${resourceUrl}` : `outcome:${label}`,
+        outcome);
   }
 
-  getVerifyOutcome(label: string): VerifyOutcome {
+  getVerifyOutcome(label: string, resourceUrl: string): VerifyOutcome {
     // Default to admitting: a collaborator's first open has to be able to succeed.
-    return this.ctx.storage.kv.get<VerifyOutcome>(`outcome:${label}`) ?? { allow: true };
+    return this.ctx.storage.kv.get<VerifyOutcome>(`outcome:${label}|${resourceUrl}`)
+        ?? this.ctx.storage.kv.get<VerifyOutcome>(`outcome:${label}`)
+        ?? { allow: true };
   }
 
   recordAmbientVerification(label: string): void {
@@ -217,8 +229,46 @@ export class TestVerifier
 // ---------------------------------------------------------------------------
 // Gatekeeper (one per bound resource, running as a facet under the gadget's Overseer)
 
-/** No operations: these tests never open a gadget's session, only verify observers. */
-export type TestSession = Record<string, never>;
+/**
+ * A live session against a Test Thing, opened via `GatekeeperClient.openSession()`.
+ *
+ * The two methods exist so tests can drive the overseer's observation/action policy through the
+ * same `ApprovalQueue` funnel a shipping gatekeeper uses: `readThing()` records an observation
+ * (optionally marked `containsRestrictedData`, to trip the sensitive-data coverage guard and the
+ * restricted-mode latch), and `doThing()` submits an action (which restricted mode blocks).
+ */
+export class TestSession extends RpcTarget {
+  #queue: RpcStub<ApprovalQueue>;
+  #title: string;
+
+  constructor(queue: RpcStub<ApprovalQueue>, title: string) {
+    super();
+    this.#queue = queue;
+    this.#title = title;
+  }
+
+  async readThing(restricted?: boolean): Promise<string> {
+    await this.#queue.authorizeObservation({
+      title: `Read ${this.#title}`,
+      description: `The test read ${this.#title}.`,
+      ...(restricted ? { containsRestrictedData: true } : {}),
+    });
+    return `the contents of ${this.#title}`;
+  }
+
+  async doThing(): Promise<void> {
+    await this.#queue.submitAction(0, {
+      title: `Poke ${this.#title}`,
+      description: `The test poked ${this.#title}.`,
+      implementsRevert: false,
+    });
+  }
+
+  /** The session owns the queue stub dup'd in startSession(); release it with the session. */
+  [Symbol.dispose]() {
+    this.#queue[Symbol.dispose]();
+  }
+}
 
 export class TestGatekeeper
     extends DurableObject<Cloudflare.Env, BindingProps> implements Gatekeeper<TestSession> {
@@ -251,8 +301,15 @@ export class TestGatekeeper
     return [];
   }
 
-  async startSession(_approvalQueue: RpcStub<ApprovalQueue>): Promise<TestSession> {
-    return {};
+  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<TestSession> {
+    // The session calls the queue after startSession() returns, so it owns a duplicate.
+    let queue = approvalQueue.dup();
+    try {
+      return new TestSession(queue, (await this.describe()).title);
+    } catch (err) {
+      queue[Symbol.dispose]?.();
+      throw err;
+    }
   }
 
   /**
@@ -269,7 +326,8 @@ export class TestGatekeeper
       this.ctx.storage.kv.put(`observer:${id}`, label);
       return;
     }
-    const outcome = await control(this.ctx.exports).getVerifyOutcome(label);
+    const outcome =
+        await control(this.ctx.exports).getVerifyOutcome(label, this.ctx.props.resourceUrl);
     if (!outcome.allow) throw new Error(outcome.reason);
     this.ctx.storage.kv.put(`observer:${id}`, label);
   }
@@ -309,8 +367,16 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+/**
+ * Discards Gadget responses. The control endpoint below only asserts on the submission result,
+ * and the rejection paths under test return before any response is produced.
+ */
+class DevNullChatGateway extends RpcTarget implements ChatGatewayRpcTarget {
+  async onGadgetResponse(_response: GadgetResponse): Promise<void> {}
+}
+
 export default {
-  async fetch(req: Request, _env: Cloudflare.Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(req: Request, env: Cloudflare.Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
 
     let body: unknown;
@@ -325,20 +391,24 @@ export default {
       }
     }
 
-    // Set what addObserver() should do for one account.
-    // Body: {"label": "...", "allow": false, "reason": "..."}
+    // Set what addObserver() should do for one account -- everywhere, or (with `resourceUrl`) at
+    // one bound resource only, which wins over the account-wide entry.
+    // Body: {"label": "...", "allow": false, "reason": "...", "resourceUrl": "..."}
     if (url.pathname === "/control/verify-outcome" && req.method === "POST") {
-      const { label, allow, reason } = body as Record<string, unknown>;
+      const { label, allow, reason, resourceUrl } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
       if (typeof allow !== "boolean") return badRequest("`allow` must be a boolean");
       if (reason !== undefined && typeof reason !== "string") {
         return badRequest("`reason` must be a string when present");
       }
+      if (resourceUrl !== undefined && !isNonEmptyString(resourceUrl)) {
+        return badRequest("`resourceUrl` must be a non-empty string when present");
+      }
 
       const outcome: VerifyOutcome = allow
         ? { allow: true }
         : { allow: false, reason: reason ?? "The test gatekeeper refused this account." };
-      await control(ctx.exports).setVerifyOutcome(label, outcome);
+      await control(ctx.exports).setVerifyOutcome(label, outcome, resourceUrl);
       return new Response(null, { status: 204 });
     }
 
@@ -346,6 +416,38 @@ export default {
       const { label } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
       return Response.json({ count: await control(ctx.exports).getAmbientVerificationCount(label) });
+    }
+
+    // Submit an external chat message through the Workshop's ExternalMessageGateway entrypoint,
+    // the way a chat-integration worker would, so tests can drive receiveExternalMessage().
+    // Body: {"callerEmail", "gadgetKey", "chatKey", "messageKey", "gadgetTitle", "prompt"}
+    // -> SubmitExternalMessageResult
+    if (url.pathname === "/control/submit-external-message" && req.method === "POST") {
+      const fields =
+          ["callerEmail", "gadgetKey", "chatKey", "messageKey", "gadgetTitle", "prompt"] as const;
+      const input = {} as Record<(typeof fields)[number], string>;
+      for (const field of fields) {
+        const value = (body as Record<string, unknown>)[field];
+        if (!isNonEmptyString(value)) return badRequest(`\`${field}\` must be a non-empty string`);
+        input[field] = value;
+      }
+      // The instance becomes a stub when it crosses the RPC boundary; the parameter type can only
+      // name the stub side of that.
+      const chatGatewayRpcTarget =
+          new DevNullChatGateway() as unknown as RpcStub<ChatGatewayRpcTarget>;
+      return Response.json(await env.WORKSHOP_EXTERNAL_MESSAGES.submitExternalMessage(
+          { ...input, chatGatewayRpcTarget }));
+    }
+
+    // Map an external gadgetKey to the Overseer id the gateway targets -- the DO named
+    // "<source>:<gadgetKey>", where "test" is the `source` prop on WORKSHOP_EXTERNAL_MESSAGES --
+    // so a test can open the same workspace over the web API, which addresses by DO id string.
+    // Body: {"gadgetKey": "..."} -> {"gadgetId": "..."}
+    if (url.pathname === "/control/external-gadget-id" && req.method === "POST") {
+      const { gadgetKey } = body as Record<string, unknown>;
+      if (!isNonEmptyString(gadgetKey)) return badRequest("`gadgetKey` must be a non-empty string");
+      return Response.json(
+          { gadgetId: env.WORKSHOP_OVERSEER.idFromName(`test:${gadgetKey}`).toString() });
     }
 
     // Make this Worker issue a subrequest, so a test can prove that Worker-originated fetches really
