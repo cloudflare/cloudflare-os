@@ -13,6 +13,9 @@ import type {
   GoogleSpreadsheetSession, SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode,
 } from "./sheets-types";
 import { docToMarkdown, markdownToDocRequests, computeReplaceOperations, DocSnapshot } from "./markdown-converter";
+import { DriveApi } from "./drive-api";
+import { DriveSessionCore, type DriveBindingScope } from "./drive-session";
+import type { DriveEntry, DriveListOptions, DriveSearchQuery, GoogleDriveSession } from "./drive-types";
 import { BigQueryApi, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
   BigQueryDataset, BigQueryDryRunResult, BigQueryField, BigQueryProject,
@@ -32,18 +35,25 @@ import DOCS_TYPES_CODE from "./docs-types.txt";
 import BIGQUERY_TYPES_CODE from "./bigquery-types.txt";
 import CALENDAR_TYPES_CODE from "./calendar-types.txt";
 import SHEETS_TYPES_CODE from "./sheets-types.txt";
+import DRIVE_TYPES_CODE from "./drive-types.txt";
 import {
   BigQueryConfiguratorUI,
   CalendarConfiguratorUI,
   GmailConfiguratorUI,
   GoogleDocConfiguratorUI,
   GoogleSheetsConfiguratorUI,
+  DriveAccountConfiguratorUI,
+  DriveFileConfiguratorUI,
+  SharedDriveConfiguratorUI,
 } from "./google-configurators";
 import BIGQUERY_CONFIGURATOR_HTML from "./generated/bigquery-configurator-ui.txt";
 import CALENDAR_CONFIGURATOR_HTML from "./generated/calendar-configurator-ui.txt";
 import GMAIL_CONFIGURATOR_HTML from "./generated/gmail-configurator-ui.txt";
 import GOOGLE_DOC_CONFIGURATOR_HTML from "./generated/google-doc-configurator-ui.txt";
 import GOOGLE_SHEETS_CONFIGURATOR_HTML from "./generated/google-sheets-configurator-ui.txt";
+import DRIVE_ACCOUNT_CONFIGURATOR_HTML from "./generated/drive-account-configurator-ui.txt";
+import DRIVE_FILE_CONFIGURATOR_HTML from "./generated/drive-file-configurator-ui.txt";
+import SHARED_DRIVE_CONFIGURATOR_HTML from "./generated/shared-drive-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
@@ -53,8 +63,10 @@ import {
 } from "./gmail-validate";
 import {
   AUTH_SCOPES, BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
-  GOOGLE_DOC_RESOURCE, GOOGLE_SHEETS_RESOURCE, LEGACY_GRANTED_RESOURCE_URL_PATTERNS,
-  RESOURCE_BY_KIND, SUPPORTED_RESOURCES, grantedResourcesFromScopes, parseResourceUrl,
+  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_RESOURCE,
+  GOOGLE_SHARED_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, LEGACY_GRANTED_RESOURCE_URL_PATTERNS,
+  RESOURCE_BY_KIND, SUPPORTED_RESOURCES, grantedResourcesFromScopes, hasDriveResourceGrant,
+  parseResourceUrl,
   resourceUrlPatternsToOAuthScopes,
 } from "./resources";
 import { ObserverCheck, ObserverTracker } from "./observers";
@@ -721,6 +733,20 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
         };
         return {class: this.ctx.exports.BigQueryGatekeeperImpl({props}), resource};
       }
+      case "driveAccount":
+      case "sharedDrive":
+      case "driveFile": {
+        let scope: DriveBindingScope;
+        if (target.kind === "driveAccount") {
+          scope = { kind: "account" };
+        } else if (target.kind === "sharedDrive") {
+          scope = { kind: "sharedDrive", driveId: target.driveId };
+        } else {
+          scope = { kind: "file", fileId: target.fileId };
+        }
+        let props: GoogleDriveGatekeeperImplProps = { userObjectId, scope };
+        return { class: this.ctx.exports.GoogleDriveGatekeeperImpl({ props }), resource };
+      }
     }
   }
 
@@ -764,6 +790,27 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       return {
         iframeHtml: GOOGLE_SHEETS_CONFIGURATOR_HTML,
         ui: new RpcStub(new GoogleSheetsConfiguratorUI(getToken)),
+      };
+    }
+
+    if (resourceUrlPattern === GOOGLE_DRIVE_RESOURCE.urlPattern) {
+      return {
+        iframeHtml: DRIVE_ACCOUNT_CONFIGURATOR_HTML,
+        ui: new RpcStub(new DriveAccountConfiguratorUI()),
+      };
+    }
+
+    if (resourceUrlPattern === GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern) {
+      return {
+        iframeHtml: SHARED_DRIVE_CONFIGURATOR_HTML,
+        ui: new RpcStub(new SharedDriveConfiguratorUI(getToken)),
+      };
+    }
+
+    if (resourceUrlPattern === GOOGLE_DRIVE_FILE_RESOURCE.urlPattern) {
+      return {
+        iframeHtml: DRIVE_FILE_CONFIGURATOR_HTML,
+        ui: new RpcStub(new DriveFileConfiguratorUI(getToken)),
       };
     }
 
@@ -862,6 +909,7 @@ export interface GoogleVerifierApi extends GatekeeperUserVerifier {
   hasCalendarWriterAccess(calendarId: string): Promise<boolean>;
   hasCalendarFreeBusyAccess(calendarId: string): Promise<boolean>;
   hasDatasetAccess(projectId: string, datasetId: string): Promise<boolean>;
+  verifyDriveFiles(fileIds: string[]): Promise<{ baselineAllowed: boolean; allowed: boolean[] }>;
 }
 
 @validateRpc()
@@ -925,6 +973,19 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
       if (isNoAccessStatus(httpStatusFromError(error))) return false;
       throw error;
     }
+  }
+
+  async verifyDriveFiles(
+    fileIds: string[],
+  ): Promise<{ baselineAllowed: boolean; allowed: boolean[] }> {
+    let account = this.ctx.exports.UserAccount.get(
+      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
+    let granted = await account.getGrantedResourceUrlPatterns();
+    let baselineAllowed = hasDriveResourceGrant(granted);
+    if (!baselineAllowed) return { baselineAllowed, allowed: fileIds.map(() => false) };
+
+    let api = new DriveApi(opts => this.#getToken(opts));
+    return { baselineAllowed, allowed: await api.checkFileAccess(fileIds) };
   }
 }
 
@@ -2885,6 +2946,167 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
       this.#pendingActions.remove(actionId);
       throw error;
     }
+  }
+}
+
+// =======================================================================================
+// Google Drive Gatekeeper
+// =======================================================================================
+
+const DRIVE_OBSERVATION_PREFIX = "observedDriveFile:";
+const DRIVE_BASELINE_DENIED_MESSAGE =
+  "This collaborator has not granted Google Drive access, so they cannot observe this binding.";
+
+type GoogleDriveGatekeeperImplProps = {
+  userObjectId: string;
+  scope: DriveBindingScope;
+};
+
+@validateRpc()
+export class GoogleDriveGatekeeperImpl
+    extends DurableObject<Env, GoogleDriveGatekeeperImplProps>
+    implements Gatekeeper<GoogleDriveSession> {
+  #tokens = new AccessTokenCache(opts => {
+    let account = this.ctx.exports.UserAccount.get(
+      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
+    return account.getAccessToken(opts);
+  });
+
+  #getAccessToken(opts?: AccessTokenRequest): Promise<string> {
+    return this.#tokens.get(opts);
+  }
+
+  async describe(): Promise<ResourceDescription> {
+    let api = new DriveApi(opts => this.#getAccessToken(opts));
+    let { scope } = this.ctx.props;
+    if (scope.kind === "account") {
+      return {
+        url: GOOGLE_DRIVE_RESOURCE.urlPattern,
+        title: "Google Drive Account",
+        snippet: "Find files and folders in My Drive or Shared with me (metadata only)",
+        suggestedBindingName: "GOOGLE_DRIVE",
+        tsType: "GoogleDriveSession",
+      };
+    }
+    if (scope.kind === "sharedDrive") {
+      let drive = await api.getDrive(scope.driveId);
+      return {
+        url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.driveId)}`,
+        title: drive.name,
+        snippet: `Find files and folders in organization-owned shared drive "${drive.name}" (metadata only)`,
+        suggestedBindingName: "GOOGLE_DRIVE",
+        tsType: "GoogleDriveSession",
+      };
+    }
+    let file = await api.getFile(scope.fileId);
+    return {
+      url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
+      title: file.name,
+      snippet: `Read metadata for Drive file "${file.name}"`,
+      suggestedBindingName: "GOOGLE_DRIVE",
+      tsType: "GoogleDriveSession",
+    };
+  }
+
+  async getTypeScriptTypes(): Promise<string> {
+    return DRIVE_TYPES_CODE;
+  }
+
+  async getAutoApprovableActions() {
+    return [];
+  }
+
+  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleDriveSession> {
+    let prepareObservation = this.ctx.props.scope.kind === "file"
+      ? undefined
+      : (fileIds: string[]) => this.#observerTracker().prepareObservation(fileIds);
+    return new GoogleDriveSessionImpl(
+      new DriveApi(opts => this.#getAccessToken(opts)),
+      this.ctx.props.scope,
+      approvalQueue.dup(),
+      prepareObservation,
+    );
+  }
+
+  /** Read-only — no side-effecting actions. */
+  async applyAction(_action: number): Promise<void> {}
+  async rejectAction(_action: number): Promise<void> {}
+  revertAction(_action: number): Promise<void> {
+    throw new Error("Google Drive gatekeeper has no writable actions to revert");
+  }
+
+  #observerTracker(): ObserverTracker<string, Fetcher<GoogleVerifierApi>> {
+    let { scope } = this.ctx.props;
+    if (scope.kind === "sharedDrive") {
+      let key = `${DRIVE_OBSERVATION_PREFIX}${encodeURIComponent(scope.driveId)}`;
+      if (this.ctx.storage.kv.get(key) === undefined) this.ctx.storage.kv.put(key, "observed");
+    }
+    return new ObserverTracker<string, Fetcher<GoogleVerifierApi>>(this.ctx.storage.kv, {
+      setPrefix: DRIVE_OBSERVATION_PREFIX,
+      encode: encodeURIComponent,
+      decode: decodeURIComponent,
+      verifyBatch: (verifier, fileIds) => verifier.verifyDriveFiles([...fileIds]),
+      baselineDeniedMessage: DRIVE_BASELINE_DENIED_MESSAGE,
+      deniedMessage: fileId =>
+        `This collaborator cannot access Drive file ${fileId}, whose metadata this workspace has read.`,
+      maxTrackedSets: null,
+    });
+  }
+
+  async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
+    let verifier = user as unknown as Fetcher<GoogleVerifierApi>;
+    let { scope } = this.ctx.props;
+    if (scope.kind !== "file") {
+      await this.#observerTracker().addObserver(id, verifier);
+      return;
+    }
+    let result = await verifier.verifyDriveFiles([scope.fileId]);
+    if (!result.baselineAllowed) {
+      throw new Error(DRIVE_BASELINE_DENIED_MESSAGE);
+    }
+    if (result.allowed.length !== 1 || !result.allowed[0]) {
+      throw new Error("This collaborator cannot access the Drive file bound to this workspace.");
+    }
+  }
+
+  async removeObserver(id: string): Promise<void> {
+    if (this.ctx.props.scope.kind !== "file") this.#observerTracker().removeObserver(id);
+  }
+}
+
+@validateRpc()
+class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSession {
+  #core: DriveSessionCore;
+
+  constructor(
+    api: DriveApi,
+    scope: DriveBindingScope,
+    approvalQueue: RpcStub<ApprovalQueue>,
+    prepareObservation?: (fileIds: string[]) => Promise<ObserverCheck<string>>,
+  ) {
+    super();
+    this.#core = new DriveSessionCore({
+      api,
+      scope,
+      prepareObservation,
+      authorize: description => approvalQueue.authorizeObservation(description),
+    });
+  }
+
+  getScope() {
+    return this.#core.getScope();
+  }
+
+  async list(options?: DriveListOptions): Promise<Cursor<DriveEntry>> {
+    return new RpcCursor(await this.#core.list(options));
+  }
+
+  async search(query: DriveSearchQuery): Promise<Cursor<DriveEntry>> {
+    return new RpcCursor(await this.#core.search(query));
+  }
+
+  getEntry(fileId: string): Promise<DriveEntry> {
+    return this.#core.getEntry(fileId);
   }
 }
 

@@ -35,7 +35,7 @@ class FakeVerifier {
 let kv: FakeKv;
 
 function makeTracker(overrides: Partial<{
-  maxTrackedSets: number;
+  maxTrackedSets: number | null;
   concurrency: number;
   recordObservers: boolean;
   hasAccess: (verifier: FakeVerifier, value: string) => Promise<boolean>;
@@ -283,6 +283,88 @@ describe("addObserver", () => {
       let tracker = makeTracker({ maxTrackedSets: 3 });
       await expect(tracker.addObserver("reader", allow("s0", "s1", "s2"))).resolves.toBeUndefined();
     });
+  it("allows explicitly unbounded tracking for batched verifiers", async () => {
+    fill(1_000);
+    let tracker = makeTracker({ maxTrackedSets: null });
+    await expect(tracker.prepareObservation(["extra"])).resolves.toMatchObject({
+      pendingSets: ["extra"],
+    });
+  });
+});
+});
+
+describe("bulk verification", () => {
+  function makeBulkTracker(verifyBatch: (
+    verifier: FakeVerifier, values: readonly string[],
+  ) => Promise<{ baselineAllowed: boolean; allowed: boolean[] }>) {
+    return new ObserverTracker<string, FakeVerifier>(kv, {
+      setPrefix: "set:",
+      encode: value => encodeURIComponent(value),
+      decode: encoded => decodeURIComponent(encoded),
+      verifyBatch,
+      deniedMessage: value => `no access to ${value}`,
+      baselineDeniedMessage: "no Drive grant",
+      maxTrackedSets: null,
+    });
+  }
+
+  it("checks every tracked set in one verifier call on open", async () => {
+    kv.put("set:a", "observed");
+    kv.put("set:b", "pending");
+    let verifyBatch = vi.fn(async (_verifier: FakeVerifier, values: readonly string[]) => ({
+      baselineAllowed: true, allowed: values.map(() => true),
+    }));
+
+    await makeBulkTracker(verifyBatch).addObserver("reader", allow());
+    expect(verifyBatch).toHaveBeenCalledTimes(1);
+    expect(verifyBatch).toHaveBeenCalledWith(expect.any(FakeVerifier), ["a", "b"]);
+  });
+
+  it("checks the Drive grant even when no files have been observed", async () => {
+    let verifyBatch = vi.fn(async () => ({ baselineAllowed: false, allowed: [] }));
+    await expect(makeBulkTracker(verifyBatch).addObserver("reader", allow()))
+      .rejects.toThrow("no Drive grant");
+    expect(verifyBatch).toHaveBeenCalledOnce();
+    expect(verifyBatch).toHaveBeenCalledWith(expect.any(FakeVerifier), []);
+  });
+
+  it("stages the observer so a concurrent new disclosure verifies it", async () => {
+    kv.put("set:a", "observed");
+    let release!: () => void;
+    let opening = new Promise<void>(resolve => { release = resolve; });
+    let verifyBatch = vi.fn(async (_verifier: FakeVerifier, values: readonly string[]) => {
+      if (values.includes("a")) await opening;
+      return { baselineAllowed: true, allowed: values.map(value => value !== "b") };
+    });
+    let tracker = makeBulkTracker(verifyBatch);
+
+    let admission = tracker.addObserver("reader", allow());
+    await vi.waitFor(() => expect([...tracker.observers()].map(([id]) => id)).toEqual(["reader"]));
+    let check = await tracker.prepareObservation(["b"]);
+    expect(check.excludeObservers).toEqual(["reader"]);
+
+    release();
+    await expect(admission).resolves.toBeUndefined();
+  });
+
+  it("checks one pending batch per existing observer", async () => {
+    let verifyBatch = vi.fn(async (_verifier: FakeVerifier, values: readonly string[]) => ({
+      baselineAllowed: true, allowed: values.map(() => true),
+    }));
+    let tracker = makeBulkTracker(verifyBatch);
+    await tracker.addObserver("one", allow());
+    await tracker.addObserver("two", allow());
+    verifyBatch.mockClear();
+
+    await tracker.prepareObservation(["a", "b"]);
+    expect(verifyBatch).toHaveBeenCalledTimes(2);
+    expect(verifyBatch.mock.calls.map(call => call[1])).toEqual([["a", "b"], ["a", "b"]]);
+  });
+
+  it("rejects a malformed verifier result rather than admitting unchecked files", async () => {
+    kv.put("set:a", "observed");
+    let tracker = makeBulkTracker(async () => ({ baselineAllowed: true, allowed: [] }));
+    await expect(tracker.addObserver("reader", allow())).rejects.toThrow(/one result per set/);
   });
 });
 

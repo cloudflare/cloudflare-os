@@ -381,6 +381,12 @@
             "GoogleSheetsGatekeeperImpl"
           ],
           "tag": "v3"
+        },
+        {
+          "new_sqlite_classes": [
+            "GoogleDriveGatekeeperImpl"
+          ],
+          "tag": "v4"
         }
       ],
       "modules": [

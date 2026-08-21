@@ -10,6 +10,9 @@ import type { CalendarConfiguratorRpc } from "./configurator/calendar-configurat
 import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-types";
 import type { GoogleDocConfiguratorRpc } from "./configurator/google-doc-configurator-types";
 import type { GoogleSheetsConfiguratorRpc } from "./configurator/google-sheets-configurator-types";
+import type { DriveAccountConfiguratorRpc } from "./configurator/drive-account-configurator-types";
+import type { DriveFileConfiguratorRpc } from "./configurator/drive-file-configurator-types";
+import type { SharedDriveConfiguratorRpc } from "./configurator/shared-drive-configurator-types";
 
 type ConfiguratorOption = { value: string; title: string; subtitle?: string; meta?: string };
 /**
@@ -229,5 +232,63 @@ export class GoogleSheetsConfiguratorUI extends RpcTarget implements GoogleSheet
     return listDriveFiles(
       this, query, "application/vnd.google-apps.spreadsheet", "Google Sheets",
     );
+  }
+}
+
+@validateRpc()
+export class DriveAccountConfiguratorUI extends RpcTarget implements DriveAccountConfiguratorRpc {}
+
+@validateRpc()
+export class SharedDriveConfiguratorUI extends RpcTarget implements SharedDriveConfiguratorRpc {
+  constructor(getToken: () => Promise<GoogleAccessToken>) {
+    super();
+    googleTokenGetters.set(this, getToken);
+  }
+
+  async listSharedDrives(query: string): Promise<ConfiguratorOption[]> {
+    let drive = new DriveApi(googleTokenProvider(this));
+    try {
+      let { drives } = await drive.listDrives({ nameContains: query });
+      return drives.map(item => ({ value: item.id, title: item.name, subtitle: item.id }));
+    } catch (error) {
+      if (error instanceof DriveApiDisabledError) {
+        throw new Error(
+          "Shared-drive search requires the Google Drive API to be enabled for this OAuth project.",
+          { cause: error });
+      }
+      throw error;
+    }
+  }
+}
+
+@validateRpc()
+export class DriveFileConfiguratorUI extends RpcTarget implements DriveFileConfiguratorRpc {
+  constructor(getToken: () => Promise<GoogleAccessToken>) {
+    super();
+    googleTokenGetters.set(this, getToken);
+  }
+
+  async listDriveFiles(query: string): Promise<ConfiguratorOption[]> {
+    let drive = new DriveApi(googleTokenProvider(this));
+    try {
+      let { files } = await drive.listFiles({
+        nameContains: query, excludeMimeTypes: ["application/vnd.google-apps.folder"],
+      });
+      return files.map(file => ({
+        value: file.id,
+        title: file.name,
+        subtitle: [
+          file.mimeType,
+          file.modifiedTime ? `Modified ${new Date(file.modifiedTime).toLocaleDateString()}` : undefined,
+        ].filter(Boolean).join(" · ") || undefined,
+      }));
+    } catch (error) {
+      if (error instanceof DriveApiDisabledError) {
+        throw new Error(
+          "Drive file search requires the Google Drive API to be enabled for this OAuth project.",
+          { cause: error });
+      }
+      throw error;
+    }
   }
 }

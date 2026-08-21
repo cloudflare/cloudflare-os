@@ -8,8 +8,8 @@ This package provides Google OAuth integration for Gadgets. It serves two purpos
   which becomes the user's identity.
   The sign-in grant is transient (discarded right after the email is read).
 - **Connections:** when a user connects Google (or signs in and later connects it), the scopes for
-  the selected resources (Gmail, Docs, Sheets, Calendar, or BigQuery — see below) are requested so
-  gadgets can access those APIs on the user's behalf.
+  the selected resources (Gmail, Docs, Sheets, Drive, Calendar, or BigQuery — see below) are requested
+  so gadgets can access those APIs on the user's behalf.
 
 A single Google OAuth client is used for both. Set it up as follows.
 
@@ -29,7 +29,7 @@ If you're running this project locally and want to use Google API integrations, 
 
 ### Step 2: Enable Required APIs
 
-You'll need to enable the Google APIs that you want to use. Currently supported: Gmail, Google Docs, Google Sheets, Google Calendar, and BigQuery.
+You'll need to enable the Google APIs that you want to use. Currently supported: Gmail, Google Docs, Google Sheets, Google Drive, Google Calendar, and BigQuery.
 
 1. In the left sidebar, go to **APIs & Services** > **Library** (or [click here](https://console.cloud.google.com/apis/library))
 2. Search for "Gmail API"
@@ -51,7 +51,7 @@ You'll need to enable the Google APIs that you want to use. Currently supported:
 18. Click on **BigQuery API** in the results
 19. Click **Enable**
 
-The Google Drive API is used only to search and display document and spreadsheet metadata in the resource pickers. Document reads and edits still go through the Google Docs API, and spreadsheet reads go through the Google Sheets API.
+The Google Drive API powers the Docs and Sheets resource pickers and the read-only Drive metadata bindings described below. Document reads and edits still go through the Google Docs API, and spreadsheet reads go through the Google Sheets API.
 
 ### Step 3: Configure the OAuth Consent Screen
 
@@ -75,7 +75,8 @@ included). Across all resource types, the gatekeeper can request:
 - `openid`, `userinfo.profile`, and `userinfo.email` to identify the connected account.
 - `gmail.modify` for Gmail thread reads, organization, replies, forwards, and sending. This single scope already includes label access and sending.
 - `documents` for Google Docs reads and edits.
-- `drive.metadata.readonly` so the resource pickers can search Google Docs and Sheets by title.
+- `drive.metadata.readonly` for the Docs and Sheets pickers, connected-account Drive metadata, and exact-file metadata.
+- `drive.readonly` for metadata search within one shared drive; the gatekeeper still exposes metadata only.
 - `spreadsheets.readonly` to read metadata and cell values from selected Google spreadsheets.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
 - `calendar.events` to manage selected calendar and check calendar availability.
@@ -135,15 +136,29 @@ User — see Step 4.)
 2. Create or open a gadget.
 3. Navigate to the **Connections** tab.
 4. Click **+ New Connection**.
-5. Choose a Google resource type: Gmail, Google Doc, Google Spreadsheet, Google Calendar, or BigQuery.
+5. Choose a Google resource type: Gmail, Google Doc, Google Spreadsheet, Google Drive, Google Calendar, or BigQuery.
 6. If prompted, connect a Google account.
 7. You should be redirected to Google's consent screen in a new tab.
 8. The consent screen acts extra-scary since this is an "unverified" test app.
 9. After granting access, the tab closes, and you're back to Gadgets.
-10. Use the picker to choose the mailbox scope, document, project, dataset, or table to connect.
+10. Use the picker to choose the mailbox scope, document, Drive account/shared-drive/file scope, project, dataset, or table to connect.
 11. Create the connection. Ask the agent what it can do, or ask it to write a gadget using the new binding.
 
 You can also see your connected accounts and add and remove them in the settings (accessed through the account menu in the upper-right).
+
+## Google Drive read-only bindings
+
+Drive exposes three permanent resource URL forms:
+
+- `https://drive.google.com/drive/my-drive` selects the connected account's My Drive and items shared directly with it in Shared with me (`corpora=user`).
+- `https://drive.google.com/drive/folders/<driveId>` selects one Google Workspace shared drive, where the organization rather than an individual owns the files.
+- `https://drive.google.com/file/d/<fileId>/view` selects one file by its immutable ID.
+
+Despite the `/folders/` URL, the second resource is a Google Workspace shared drive, not an individual folder. Google uses a shared drive's ID for its root folder too. The gatekeeper confirms the ID with `drives.get`, so it rejects ordinary folder IDs.
+
+The agent-facing `GoogleDriveSession` returns metadata only. It can report the binding scope, list entries, run structured metadata searches, and fetch one entry by ID. Listing and search return disposable RPC cursors. A parent filter means direct children only, never recursive descendants. The API does not expose raw Drive `q` strings, file contents, writes, shortcut traversal, native Docs or Sheets sessions, or Workers AI extraction.
+
+Account and shared-drive bindings remember every file ID whose metadata a workspace has read. Before each collaborator opens the workspace, the gatekeeper requires an explicit Drive grant and rechecks all remembered IDs with fresh batched `files.get` calls. Before a new result page is disclosed, it checks the page's IDs against every existing observer and excludes observers who cannot access them. Exact-file bindings perform the same fresh check for their single file on each share attempt. Google batch requests contain at most 100 `files.get` subrequests; there is deliberately no cached access verdict, so revoked access fails closed on the next open.
 
 ## Troubleshooting
 
