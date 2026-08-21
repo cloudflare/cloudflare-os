@@ -4,8 +4,7 @@ import {
   AGENT_CATALOG_MAX_TITLE_LENGTH, boundAgentCatalog,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  completeAgentCatalogSnapshot, formatAgentCatalogPrompt,
-  formatAlwaysAvailableResourcesPrompt, normalizeAgentCatalog,
+  formatAgentCatalogPrompt, formatAlwaysAvailableResourcesPrompt, normalizeAgentCatalog,
 } from "../src/agent-catalog";
 
 describe("normalizeAgentCatalog", () => {
@@ -129,42 +128,5 @@ describe("boundAgentCatalog", () => {
   });
 });
 
-describe("completeAgentCatalogSnapshot", () => {
-  it("loads each catalog once and preserves null snapshots", async () => {
-    let calls: number[] = [];
-    let first = await completeAgentCatalogSnapshot(undefined, [2, 1], async gatekeeperId => {
-      calls.push(gatekeeperId);
-      return gatekeeperId === 1 ? {entries: []} : null;
-    });
-    let second = await completeAgentCatalogSnapshot(first.snapshots, [2, 1], async gatekeeperId => {
-      calls.push(gatekeeperId);
-      return {entries: []};
-    });
-
-    expect(first).toEqual({
-      snapshots: [
-        {gatekeeperId: 1, catalog: {entries: []}},
-        {gatekeeperId: 2, catalog: null},
-      ],
-      changed: true,
-    });
-    expect(second).toEqual({snapshots: first.snapshots, changed: false});
-    expect(calls.toSorted()).toEqual([1, 2]);
-  });
-
-  it("prunes snapshots for removed gatekeepers", async () => {
-    let result = await completeAgentCatalogSnapshot([
-      {gatekeeperId: 1, catalog: {entries: []}},
-      {gatekeeperId: 2, catalog: null},
-    ], [1], async () => {
-      throw new Error("existing catalogs must not be reloaded");
-    });
-
-    expect(result).toEqual({
-      snapshots: [{gatekeeperId: 1, catalog: {entries: []}}],
-      changed: true,
-    });
-  });
-});
 
 

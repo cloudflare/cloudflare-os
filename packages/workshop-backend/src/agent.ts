@@ -13,7 +13,7 @@ import {
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
 import { webFetch as webFetchImpl, WebFetchEnv, formatWebFetchResult } from "./web-fetch";
-import { AgentCatalogSnapshot, formatAlwaysAvailableResourcesPrompt } from "./agent-catalog";
+import { formatAlwaysAvailableResourcesPrompt } from "./agent-catalog";
 import { formatInstanceInstructions } from "./admin-config";
 import type { AiGatewayLogRoute } from "./ai-gateway";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
@@ -67,11 +67,6 @@ export type AiChatAgentContext = {
    */
   alwaysAvailableCapsuleIds?: WorkpieceId[];
 
-  /**
-   * Cached discovery catalogs for the always-available resources, keyed per gatekeeper.
-   * Regenerable: re-fetched when missing/stale (see prepareChatBindings).
-   */
-  alwaysAvailableCatalogs?: AgentCatalogSnapshot[];
 };
 
 /**

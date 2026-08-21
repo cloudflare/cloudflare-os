@@ -1,7 +1,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, CodeUpdate, CodeSubscriber, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
-import { Gatekeeper, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
+import { AgentCatalog, Gatekeeper, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -32,7 +32,7 @@ import { recordAnalytics } from "./analytics";
 import { reportIssue } from "@gadgets/backend-utils/error-reporting";
 import type { ProductAnalyticsConnectionType, ProductAnalyticsGadgetInput } from "./analytics";
 import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker";
-import { completeAgentCatalogSnapshot, normalizeAgentCatalog } from "./agent-catalog";
+import { normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
 import { SharingManager, SharingCaller, CollaboratorRecord, ShareKeyRecord } from "./sharing";
 import { AutoApprovalDrainer } from "./auto-approval";
@@ -4943,13 +4943,16 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
-    // Complete/refresh the cached discovery catalogs for the frozen ambient set.
-    let {snapshots, changed} = await completeAgentCatalogSnapshot(
-        context.alwaysAvailableCatalogs,
-        ambientIds,
-        async gatekeeperId => {
+    // Load the discovery catalogs for the frozen ambient set.
+    //
+    // Deliberately not cached on the chat. A catalog says what the session can reach *now*, so a
+    // cached one can never show a skill added after the chat opened, and a cached failure reads as
+    // an empty library for the rest of the chat. Rebuilding it costs one call per ambient
+    // gatekeeper per turn, which is the same call the chat already makes to build its bindings.
+    let catalogs = new Map(await Promise.all(ambientIds.map(
+        async (gatekeeperId): Promise<[number, AgentCatalog | null]> => {
           let record = this.storage.gatekeepers.get(gatekeeperId);
-          if (!record) return null;  // disconnected since the chat froze its set — no catalog.
+          if (!record) return [gatekeeperId, null];  // disconnected since the chat froze its set.
           try {
             using authorizer = new RpcStub<ObservationAuthorizer>(new ApprovalQueueImpl(
                 this, gatekeeperId, {from: "agent", chatId}));
@@ -4962,7 +4965,7 @@ class OverseerImpl implements AgentHooks {
             let facet = this.getGatekeeperFacet(gatekeeperId) as unknown as CatalogGatekeeperFacet;
             let catalog = await facet.getAgentCatalog(
                 authorizer as unknown as ObservationAuthorizer);
-            return catalog ? normalizeAgentCatalog(catalog) : null;
+            return [gatekeeperId, catalog ? normalizeAgentCatalog(catalog) : null];
           } catch (error) {
             reportIssue("overseer.catalog-fallback", error, {
               handled: true,
@@ -4974,13 +4977,10 @@ class OverseerImpl implements AgentHooks {
               event: "agent.catalog.load.failed",
               gatekeeperId, resourceTitle: record.resourceTitle, error,
             });
-            return null;
+            // The next turn loads it again, so one failure costs this turn's catalog and no more.
+            return [gatekeeperId, null];
           }
-        });
-    if (changed) {
-      context.alwaysAvailableCatalogs = snapshots;
-      dirty = true;
-    }
+        })));
     if (dirty) {
       // The work above is async, so the chat could have been deleted meanwhile. Don't resurrect
       // its per-chat storage: deleteChat is the single cleanup point (see its comment) and
@@ -4992,7 +4992,6 @@ class OverseerImpl implements AgentHooks {
 
     // Materialize the seed entries, skipping targets that no longer exist (mirroring env build);
     // ambient entries carry their catalogs.
-    let catalogs = new Map(snapshots.map(entry => [entry.gatekeeperId, entry.catalog]));
     let ambientSet = new Set(ambientIds);
     let result: SeedBindingInfo[] = [];
     for (let [name, target] of Object.entries(seedMap)) {
