@@ -40,12 +40,24 @@
 // pre-conversion messages keep their retired Yjs `update` bytes on disk as rollback insurance,
 // but nothing can apply them (delivery strips them; see hydrateChatMessageForClient).
 //
+// One repair predates all of that: the multi-gadget migration (version 0 -> 1, see
+// OverseerImpl.#migrateStorage) counted only *mainline* code as gadget content, so a workspace
+// whose only code was proposed-but-unaccepted chat changes migrated to zero gadgets -- leaving
+// that content orphaned in the legacy root "", which no gadget record owns (and which the
+// conversion would otherwise silently drop, since the registry is its enumeration source of
+// truth). Such content is still the workspace's implicit single gadget, so the migration
+// creates its record (via the createDefaultGadget host callback) before synthesizing chains:
+// the record is permanent -- several chats may propose against the same root, and each must pin
+// one shared head -- gets the ordinary version-0 empty-tree root as its head, and each affected
+// chat then converts like any other: pinned at the empty tree with its files as proposed sets.
+//
 // The migration runs in the Overseer constructor under blockConcurrencyWhile, gated by the
 // `version` singleton (see OverseerImpl.#migrateToGitStorage). It is re-runnable: object writes
 // are content-addressed (recommitting identical history yields identical oids), every record
 // rewrite is deterministic from storage state, and all record writes (chat conversion included)
 // happen in one synchronous tail, so a crashed run is simply redone. (Defensively, a chat that
-// already has a codeBase is skipped: it was converted by a previous run.)
+// already has a codeBase is skipped: it was converted by a previous run. A re-run after the
+// default gadget's creation flushed sees defaultGadgetId set and doesn't create it again.)
 
 import * as Y from "yjs";
 import { keyString } from "@gadgets/typed-storage";
@@ -86,6 +98,16 @@ export interface GitMigrationHost {
 
   /** The workspace's default gadget, which legacy records reference by omission. */
   defaultGadgetId: WorkpieceId | undefined;
+
+  /**
+   * Create the workspace's default gadget record and record it as the default gadget, returning
+   * its id. Called at most once, only when `defaultGadgetId` is undefined and a live chat still
+   * proposes content in the legacy root "" (see the module comment). The record is created
+   * head-less: the migration roots it at the version-0 empty tree and assigns its head like any
+   * other permanent gadget's, before the migration's critical section ends. After the call,
+   * `gadgetRootName` must map the returned id to "".
+   */
+  createDefaultGadget(): WorkpieceId;
 
   /** Maps a gadget to its legacy Y.Doc root name (the default gadget's is ""). */
   gadgetRootName(id: WorkpieceId): string;
@@ -192,6 +214,8 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
   type LegacyMergeMessage = Extract<AiChatMessage, { type: "merge" }>;
   let legacyMerges: LegacyMergeMessage[] = [];
   let chatAnchors = new Map<number, number>();
+  let defaultGadgetId = host.defaultGadgetId;
+  let orphanedRootContent = false;
   for (let meta of Array.from(storage.chatMeta.list())) {
     let messages = [...storage.chats.list({ prefix: `${keyString(meta.id)}.` })];
     for (let msg of messages) {
@@ -203,7 +227,24 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
     let anchor = legacyChatBaseVersion(host.getActiveChatCompaction(meta.id), messages);
     let resolved = floorLogVersion(anchor === "current" ? finalVersion : anchor);
     if (resolved > 0) points.add(resolved);
-    if (meta.codeBase === undefined) chatAnchors.set(meta.id, resolved);
+    if (meta.codeBase === undefined) {
+      chatAnchors.set(meta.id, resolved);
+      if (defaultGadgetId === undefined && !orphanedRootContent) {
+        orphanedRootContent = chatDocHasLegacyRootContent(storage, meta.id, messages);
+      }
+    }
+  }
+
+  // Recover chat content the multi-gadget migration orphaned (see the module comment): with no
+  // default gadget, a live chat's content in the legacy root "" belongs to no gadget record and
+  // the conversion below would drop it. Create the workspace's implicit gadget so that content
+  // converts into ordinary proposed changes against its empty-tree head. (When defaultGadgetId
+  // is defined but the gadget was since deleted, leftover root-"" content stays ignored, like
+  // every deleted gadget's -- the user deleted that gadget.) The mainline log cannot hold
+  // root-"" content here: any pre-multi-gadget mainline code would have made that migration
+  // create the gadget record, so orphaned content only ever lives in chats.
+  if (orphanedRootContent) {
+    defaultGadgetId = host.createDefaultGadget();
   }
 
   // Blueprint pins. Tracks the referenced gadget even when it has since been deleted from the
@@ -219,7 +260,7 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
   }
   for (let record of storage.blueprints.list()) {
     if (record.codeVersion === undefined || record.commitId !== undefined) continue;
-    let gadgetId = record.gadgetId ?? host.defaultGadgetId;
+    let gadgetId = record.gadgetId ?? defaultGadgetId;
     if (gadgetId === undefined) continue;  // unresolvable; left as-is below
     track(gadgetId);
     let resolved = floorLogVersion(record.codeVersion);
@@ -326,7 +367,7 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
   // because the resolved version was made a commit point above.)
   for (let record of Array.from(storage.blueprints.list())) {
     if (record.codeVersion === undefined || record.commitId !== undefined) continue;
-    let gadgetId = record.gadgetId ?? host.defaultGadgetId;
+    let gadgetId = record.gadgetId ?? defaultGadgetId;
     let state = gadgetId === undefined ? undefined : tracked.get(gadgetId);
     let floor = state === undefined
         ? undefined : chainFloor(state, floorLogVersion(record.codeVersion));
@@ -346,6 +387,27 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
   }
 
   return { commits };
+}
+
+// Whether a live pre-git chat's uncommitted doc holds content in the legacy root "". Applies the
+// same construction rule as convertLegacyChat (non-reverted "changes" updates plus outstanding
+// drafts, which are left in place here), minus the anchor state: when the workspace has no
+// default gadget the mainline log holds nothing for root "" (see the caller), so the chat's own
+// updates are the root's only possible source. Size alone decides, mirroring the conversion's
+// own diff-against-empty-anchor condition.
+function chatDocHasLegacyRootContent(
+    storage: GitMigrationHost["storage"], chatId: number, messages: AiChatMessage[]): boolean {
+  let statuses = chatChangeStatuses(messages);
+  let doc = new Y.Doc();
+  for (let msg of messages) {
+    if (msg.type !== "changes" || statuses.get(msg.sequence) === "reverted") continue;
+    let update = (msg as StoredChangesMessage).update;
+    if (update !== undefined) Y.applyUpdateV2(doc, update);
+  }
+  for (let draft of storage.chatDraftUpdates.list({ prefix: `${keyString(chatId)}.` })) {
+    Y.applyUpdateV2(doc, draft.update);
+  }
+  return readDocFiles(doc, "").size > 0;
 }
 
 // Converts one live pre-git chat: flatten its legacy doc (anchor state + non-reverted "changes"

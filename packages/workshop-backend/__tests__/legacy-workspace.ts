@@ -117,6 +117,19 @@ export class LegacyWorkspace {
       gitStore: this.gitStore,
       ownerIdentity: OWNER,
       defaultGadgetId,
+      createDefaultGadget: () => {
+        // Mirrors OverseerImpl.ensureDefaultGadget(undefined): allocate from the real counter,
+        // record the default (so gadgetRootName below maps it to ""), leave the head to the
+        // migration. A fixed `created` keeps synthesized empty-tree commits deterministic.
+        let id = this.storage.nextGatekeeperId.get();
+        this.storage.nextGatekeeperId.put(id + 1);
+        this.storage.defaultGadgetId.put(id);
+        defaultGadgetId = id;
+        this.storage.gadgets.put({
+          id, title: "Workspace", created: new Date(T0), bindingName: "GADGET", bindings: {},
+        });
+        return id;
+      },
       gadgetRootName: (id) => id === defaultGadgetId ? "" : `${id}`,
       getActiveChatCompaction: (chatId) => {
         let compactedTo = this.storage.chatMeta.get(chatId)?.compactedTo;

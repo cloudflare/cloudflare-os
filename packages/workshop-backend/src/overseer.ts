@@ -1746,6 +1746,7 @@ class OverseerImpl implements AgentHooks {
       gitStore: this.gitStore,
       ownerIdentity: await this.#ownerCommitIdentity(),
       defaultGadgetId: this.defaultGadgetId,
+      createDefaultGadget: () => this.ensureDefaultGadget(undefined),
       gadgetRootName: (id) => this.gadgetRootName(id),
       getActiveChatCompaction: (chatId) => this.getActiveChatCompaction(chatId),
       getChatTimestamp: () => this.getChatTimestamp(),
@@ -2118,13 +2119,17 @@ class OverseerImpl implements AgentHooks {
 
   // Auto-create the workspace's single gadget and record it as the default gadget. New workspaces
   // normally start with zero gadgets and the agent creates gadgets explicitly (never assigning
-  // `defaultGadgetId`); the exception is blueprint instantiation, which still creates a fresh
-  // workspace containing one gadget and is the only remaining caller. `commitId` is the gadget's
-  // initial commit, written by the caller beforehand: every permanent gadget is born with a head
-  // (see GadgetRecord.commitId).
-  // TODO(multi-gadget): Remove once blueprint instantiation is reworked (plan phase 5).
-  ensureDefaultGadget(commitId: string): void {
-    if (this.defaultGadgetId !== undefined) return;
+  // `defaultGadgetId`); the exceptions are blueprint instantiation, which still creates a fresh
+  // workspace containing one gadget, and the git-storage migration, which recovers the implicit
+  // gadget of a legacy workspace whose only code was chat-proposed (see migrateCodeLogToGit).
+  // `commitId` is the gadget's initial commit, written by the caller beforehand: every permanent
+  // gadget is born with a head (see GadgetRecord.commitId). Only the migration may omit it -- it
+  // synthesizes and assigns the head itself before its blockConcurrencyWhile critical section
+  // ends, so nothing can observe the momentarily head-less record.
+  // TODO(multi-gadget): Remove the blueprint-instantiation use once blueprint instantiation is
+  // reworked (plan phase 5).
+  ensureDefaultGadget(commitId: string | undefined): WorkpieceId {
+    if (this.defaultGadgetId !== undefined) return this.defaultGadgetId;
     let id = this.allocateWorkpieceId();
     // Set defaultGadgetId first so subscribers computing gadgetRootName() see the legacy names.
     this.storage.defaultGadgetId.put(id);
@@ -2136,8 +2141,9 @@ class OverseerImpl implements AgentHooks {
       // This only runs in a fresh workspace with no gadgets, so the name can't conflict.
       bindingName: "GADGET",
       bindings: {},
-      commitId,
+      ...(commitId !== undefined ? { commitId } : {}),
     });
+    return id;
   }
 
   // Fallback bookkeeping target for hooks bound from executeCode when we can't tell which gadget

@@ -240,6 +240,104 @@ describe("migrateCodeLogToGit", () => {
     ]));
   });
 
+  it("recovers chat content orphaned by the zero-gadget multi-gadget migration", async () => {
+    // A pre-multi-gadget workspace whose only code was proposed-but-unaccepted chat changes: the
+    // multi-gadget migration saw no mainline code and created no gadget records, leaving the
+    // chat's content orphaned in the legacy root "", which no gadget owns.
+    let ws = new LegacyWorkspace();  // code log: only the empty init version
+    ws.addChat(1);
+    let base = ws.docAt("current");
+    ws.addMessage(1, USER, { type: "message", message: "make me a gadget" });
+    ws.addMessage(1, AGENT, { type: "changes", observedCodeVersion: 1,
+        update: captureEdit(base, doc => setFile(doc, "", "server.js", "hello\n")) });
+    ws.addMessage(1, AGENT, { type: "changes", observedCodeVersion: 1,
+        update: captureEdit(base, doc => setFile(doc, "", "client.js", "world\n")) });
+
+    await migrateCodeLogToGit(ws.host());
+
+    // The workspace's implicit gadget was created: permanent, headed at the empty tree (nothing
+    // was ever accepted), and recorded as the default gadget so legacy references resolve.
+    let gadgets = [...ws.storage.gadgets.list()];
+    expect(gadgets).toHaveLength(1);
+    let gadget = gadgets[0];
+    expect(gadget.pending).toBeUndefined();
+    expect(ws.storage.defaultGadgetId.get()).toBe(gadget.id);
+    expect(await ws.gitStore.readCommitFiles(gadget.commitId!)).toEqual(new Map());
+
+    // The chat converts like any other: pinned at the empty tree, its files as proposed sets.
+    let conversion = ws.conversionMessage(1);
+    expect(conversion.pins).toEqual([{ gadgetId: gadget.id, baseCommit: gadget.commitId }]);
+    expect(ws.codeBase(1)!.pins).toEqual(
+        [{ gadgetId: gadget.id, baseCommit: gadget.commitId, mergedCommit: gadget.commitId }]);
+    expect(ws.storage.chatMeta.get(1)!.hasProposedChanges).toBe(true);
+    expect(await ws.convertedContent(1)).toEqual(new Map([
+      [gadget.id, new Map([["server.js", "hello\n"], ["client.js", "world\n"]])],
+    ]));
+  });
+
+  it("shares one recovered default gadget among all chats proposing legacy-root content",
+     async () => {
+    let ws = new LegacyWorkspace();
+    ws.addChat(1);
+    ws.addChat(2);
+    ws.addMessage(1, AGENT, { type: "changes", observedCodeVersion: 1,
+        update: captureEdit(ws.docAt("current"), doc => setFile(doc, "", "a.js", "one\n")) });
+    ws.addMessage(2, AGENT, { type: "changes", observedCodeVersion: 1,
+        update: captureEdit(ws.docAt("current"), doc => setFile(doc, "", "b.js", "two\n")) });
+
+    await migrateCodeLogToGit(ws.host());
+
+    // Both chats pin the same permanent gadget at the same empty-tree base: whichever accepts
+    // first wins, and the other goes ordinarily stale (update-from-mainline, not data loss).
+    let gadgets = [...ws.storage.gadgets.list()];
+    expect(gadgets).toHaveLength(1);
+    let gadget = gadgets[0];
+    for (let chatId of [1, 2]) {
+      expect(ws.codeBase(chatId)!.pins).toEqual(
+          [{ gadgetId: gadget.id, baseCommit: gadget.commitId, mergedCommit: gadget.commitId }]);
+    }
+    expect(await ws.convertedContent(1)).toEqual(new Map([
+      [gadget.id, new Map([["a.js", "one\n"]])],
+    ]));
+    expect(await ws.convertedContent(2)).toEqual(new Map([
+      [gadget.id, new Map([["b.js", "two\n"]])],
+    ]));
+  });
+
+  it("does not recover legacy-root content whose proposing changes were all reverted",
+     async () => {
+    let ws = new LegacyWorkspace();
+    ws.addChat(1);
+    let reverted = ws.addMessage(1, AGENT, { type: "changes", observedCodeVersion: 1,
+        update: captureEdit(ws.docAt("current"), doc => setFile(doc, "", "a.js", "no\n")) });
+    ws.addMessage(1, USER, { type: "revert", revertFrom: reverted });
+
+    await migrateCodeLogToGit(ws.host());
+
+    // The user rejected the content, so no gadget materializes and the boundary is empty.
+    expect([...ws.storage.gadgets.list()]).toEqual([]);
+    expect(ws.storage.defaultGadgetId.get()).toBeUndefined();
+    let conversion = ws.conversionMessage(1);
+    expect(conversion.change).toBeUndefined();
+    expect(conversion.pins).toBeUndefined();
+  });
+
+  it("recovers legacy-root content that exists only as an outstanding draft", async () => {
+    let ws = new LegacyWorkspace();
+    ws.addChat(1);
+    ws.addDraft(1, captureEdit(ws.docAt("current"),
+        doc => setFile(doc, "", "a.js", "typed\n")));
+
+    await migrateCodeLogToGit(ws.host());
+
+    let gadgets = [...ws.storage.gadgets.list()];
+    expect(gadgets).toHaveLength(1);
+    expect(await ws.convertedContent(1)).toEqual(new Map([
+      [gadgets[0].id, new Map([["a.js", "typed\n"]])],
+    ]));
+    expect([...ws.storage.chatDraftUpdates.list()]).toEqual([]);
+  });
+
   it("carries a pending gadget's files as plain sets, re-stamping its creation", async () => {
     let ws = new LegacyWorkspace();
     ws.addGadget(10, "APP");
