@@ -559,7 +559,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
 
   const handleAddCollaborator = async () => {
     const username = addUsername.trim()
-    if (!username || containsRestrictedData || addingRef.current) return
+    if (!username || addingRef.current) return
 
     addingRef.current = true
     setAdding(true)
@@ -585,7 +585,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }
 
   const handleCreateShareLink = async () => {
-    if (containsRestrictedData || creatingLinkRef.current) return
+    if (creatingLinkRef.current) return
     creatingLinkRef.current = true
     setCreatingLink(true)
     try {
@@ -611,7 +611,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   // Copy a share link again. Secrets are never stored, so the previously-shown URL can't be
   // re-displayed. We mint a new secret for the same logical link and copy that.
   const handleCopyShareLink = async (linkId: string) => {
-    if (containsRestrictedData || copyingLinkRef.current) return
+    if (copyingLinkRef.current) return
     copyingLinkRef.current = true
     setCopyingLinkId(linkId)
     try {
@@ -775,23 +775,17 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
           className="chat-panel min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-6 sm:px-6"
           onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
         >
-          {containsRestrictedData ? (
-            <div className="flex h-full flex-col items-center justify-center px-6 py-12 text-center">
-              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-kumo-warning-tint text-kumo-warning">
-                <ShieldWarning size={22} weight="duotone" />
+          {containsRestrictedData && (
+            <div className="mb-3 flex items-start gap-2.5 rounded-2xl bg-kumo-warning-tint px-3 py-2.5">
+              <div className="grid h-6 w-6 shrink-0 place-items-center text-kumo-warning">
+                <ShieldWarning size={18} weight="duotone" />
               </div>
-              <p className="mt-3 text-[14px] leading-5 font-medium tracking-[-0.3px] text-kumo-default">
-                This workspace can’t be shared
-              </p>
-              <p className="mt-1.5 max-w-[320px] text-balance text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-subtle">
-                It has observed sensitive data that can only be accessed by you, the owner.
-              </p>
-              <p className="mt-2 max-w-[320px] text-balance text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-subtle">
-                To share something similar, create a blueprint from a gadget in this workspace, then use it to create a new workspace.
+              <p className="text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-default">
+                This workspace has read sensitive data. People you invite must be verified to have
+                access to the same data — some may be unable to open it.
               </p>
             </div>
-          ) : (
-          <>
+          )}
           <div className={`sticky top-0 z-10 bg-kumo-base pb-3 transition-shadow duration-200 ${scrolled ? 'themed-bottom-shadow border-b border-kumo-line/60' : ''}`}>
           <div
             className="themed-compact-shadow grid min-h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-kumo-line/80 bg-kumo-base p-1.5 pl-3 transition-[border-color,box-shadow] focus-within:border-kumo-fill sm:flex sm:overflow-hidden"
@@ -821,20 +815,18 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
               data-bwignore="true"
               data-form-type="other"
               className="h-9 min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:hidden"
-              disabled={containsRestrictedData}
             />
             <RoleMenu
               ariaLabel="Access to grant"
               value={addRole}
               onValueChange={setAddRole}
-              disabled={containsRestrictedData}
               container={menuContainer}
             />
             <WorkshopButton
               tone="primary"
               className="col-span-3 w-full !rounded-xl sm:col-span-1 sm:w-auto sm:min-w-[68px]"
               onClick={handleAddCollaborator}
-              disabled={!addUsername.trim() || adding || containsRestrictedData}
+              disabled={!addUsername.trim() || adding}
             >
               {adding ? 'Inviting…' : 'Invite'}
             </WorkshopButton>
@@ -911,16 +903,16 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                       placeholder="Name this link (optional)…"
                       aria-label="Share link name (optional)"
                       className="h-9 min-w-0 flex-1 border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive"
-                      disabled={creatingLink || containsRestrictedData}
+                      disabled={creatingLink}
                     />
                     <RoleMenu
                       ariaLabel="Access granted by link"
                       value={newLinkRole}
                       onValueChange={setNewLinkRole}
-                      disabled={creatingLink || containsRestrictedData}
+                      disabled={creatingLink}
                       container={menuContainer}
                     />
-                    <WorkshopButton tone="primary" className="shrink-0 !rounded-xl" onClick={handleCreateShareLink} disabled={creatingLink || containsRestrictedData}>
+                    <WorkshopButton tone="primary" className="shrink-0 !rounded-xl" onClick={handleCreateShareLink} disabled={creatingLink}>
                       {creatingLink ? 'Creating…' : 'Create link'}
                     </WorkshopButton>
                     <WorkshopIconButton aria-label="Cancel creating link" onClick={() => setShowLinkComposer(false)}>
@@ -932,7 +924,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
               <button
                 type="button"
                 onClick={() => setShowLinkComposer(true)}
-                disabled={containsRestrictedData}
                 className="themed-compact-shadow flex h-12 w-full cursor-pointer items-center justify-center gap-1.5 rounded-2xl border border-kumo-line/80 bg-kumo-base px-3 text-[13px] font-medium text-kumo-subtle transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-elevated/60 hover:text-kumo-default active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Link size={14} /> Create a share link
@@ -1078,7 +1069,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                               className="!h-7 !w-7"
                               onClick={() => handleCopyShareLink(sk.linkId)}
                               aria-label={`Copy ${sk.note || 'share link'}`}
-                              disabled={confirmationBusy || copyingLinkId === sk.linkId || containsRestrictedData}
+                              disabled={confirmationBusy || copyingLinkId === sk.linkId}
                             >
                               {copiedLinkId === sk.linkId ? <Check size={13} weight="bold" /> : <Copy size={13} />}
                             </WorkshopIconButton>
@@ -1123,8 +1114,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                 })}
               </div>
           </section>
-          )}
-          </>
           )}
         </div>
       </Dialog>
