@@ -831,6 +831,8 @@ Note that this differs from the \`env\` a Gadget's own code sees: a Gadget's ser
 When the user asks you to just do a task that can be done with these bindings, you should use executeCode to perform the task, instead of adding code to a gadget to do it.
 
 The function also receives a \`self\` parameter which is a magic object that points back to this chat thread. Calling any method on \`self\`, like \`self.foo(123)\`, delivers a callback message to this chat and activates you to respond. \`self\` can be passed over RPC (e.g. to a subscription method) and stored in a Durable Object's KV storage for long-term callbacks. When an agent callback is received, it appears in your env under a name like \`PARAMS_1\`, with \`.args\` (the callback arguments), \`.resolve(value)\` (to return a value to the caller), and \`.reject(error)\` (to reject with an error).
+
+The function's return value is discarded and will not appear in the tool result. Use \`console.log()\` for every value you need to inspect. Before the function returns, explicitly log the result of the operation when it will help confirm what happened.
 `.trim();
 
 let LIST_CONNECTABLE_RESOURCES_TOOL_DESCRIPTION = `
@@ -2790,7 +2792,10 @@ export async function runAgent(
               "`env` and `ctx` are the usual objects passed to Cloudflare Workers event " +
               "handlers. `env` contains the bindings, and `ctx` contains various functions " +
               "and information related to the execution context. `self` is a magic object " +
-              "that points back to this chat thread.",
+              "that points back to this chat thread.\n" +
+              "\n" +
+              "The function's return value is discarded. Use `console.log()` for every value " +
+              "you need to inspect or report."
         }),
       }),
       execute: async (toolCallId, {code}) => {
