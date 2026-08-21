@@ -305,19 +305,32 @@ export class SharingManager {
    * Confirming cannot resurrect revoked authority: effective-role resolution already excludes
    * revoked links, so an edge confirmed after its link was revoked grants nothing (it lingers
    * inert, like any edge of a revoked link under the lazy model).
+   *
+   * `assertGrantAllowed` is the same optional policy check redeemShareKey takes, re-asserted
+   * here because redemption is two-phase: the gate at redeemShareKey ran synchronously with the
+   * *pending* write, but this confirm is the *granting* write, separated from it by the
+   * redeeming open()'s await windows (observer verification, capsule reconciliation). A policy
+   * change landing in that window -- a restricted-data producer removed, closing the workspace
+   * to new sharing -- must refuse the grant, so the check runs again in this synchronous block,
+   * before the pending flag is cleared or the missing edge re-added. A throw persists nothing.
+   * It is NOT invoked for an already-confirmed edge (an existing grant, not a new one --
+   * matching redeemShareKey).
    */
-  confirmShareKeyRedemption(profileId: string, linkId: string): void {
+  confirmShareKeyRedemption(
+      profileId: string, linkId: string, assertGrantAllowed?: () => void): void {
     let record = this.storage.collaborators.get(profileId);
     if (!record) return;
     for (let edge of record.addedBy) {
       if (edge.type === "shareKey" && edge.keyId === linkId) {
         if (edge.pending) {
+          assertGrantAllowed?.();
           delete edge.pending;
           this.storage.collaborators.put(record);
         }
         return;
       }
     }
+    assertGrantAllowed?.();
     record.addedBy.push({
       type: "shareKey",
       keyId: linkId,

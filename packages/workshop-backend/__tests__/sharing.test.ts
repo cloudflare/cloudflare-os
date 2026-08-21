@@ -415,6 +415,56 @@ describe("pending redemptions", () => {
     expect(mgr.getEffectiveRole("a")).toBe("use");
   });
 
+  it("confirmShareKeyRedemption gates settling a pending edge, leaving it pending on refusal",
+      async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+    });
+
+    // The redemption gate passed with the pending write, but policy changed before the confirm
+    // (the redeeming open's await windows): the confirm is the granting write, so it re-asserts.
+    expect(() => mgr.confirmShareKeyRedemption("a", linkId,
+        () => { throw new Error("sharing is closed"); })).toThrow(/sharing is closed/);
+
+    // The edge is still pending, granting nothing.
+    expect(storage.collaborators.get("a")!.addedBy)
+        .toEqual([expect.objectContaining({ type: "shareKey", keyId: linkId, pending: true })]);
+    expect(mgr.getEffectiveRole("a")).toBeUndefined();
+    expect(ids(mgr.listCollaborators())).toEqual([]);
+  });
+
+  it("confirmShareKeyRedemption gates the missing-edge re-add too", async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+    });
+
+    // A concurrent revert (or a racing owner removal) severed the pending edge; the re-add is a
+    // granting write like any other, so the policy refuses it with nothing persisted.
+    mgr.revertShareKeyRedemption("a", linkId);
+    expect(() => mgr.confirmShareKeyRedemption("a", linkId,
+        () => { throw new Error("sharing is closed"); })).toThrow(/sharing is closed/);
+
+    expect(storage.collaborators.get("a")!.addedBy).toEqual([]);
+    expect(mgr.getEffectiveRole("a")).toBeUndefined();
+  });
+
+  it("confirmShareKeyRedemption does not invoke the gate for an already-confirmed edge",
+      async () => {
+    let { mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+    await redeemConfirmed(mgr, key, "a");
+
+    // A confirmed edge is an existing grant, not a new one: re-confirming stays a no-op even
+    // when policy forbids new sharing.
+    expect(() => mgr.confirmShareKeyRedemption("a", linkId,
+        () => { throw new Error("sharing is closed"); })).not.toThrow();
+    expect(mgr.getEffectiveRole("a")).toBe("build");
+  });
+
   it("confirmShareKeyRedemption re-adds an edge a concurrent revert severed", async () => {
     let { storage, mgr } = makeManager();
     let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "use" });

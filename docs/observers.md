@@ -498,10 +498,14 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    `createShareLink`, `newShareLinkKey` — and `redeemShareKey` at open(). Gating redemption is
    what makes the unverifiable-producer exemption above safe despite outstanding keys: once any
    producer is gone, those keys are dead too — refused before a pending edge is written, and
-   before a not-yet-confirmed edge is settled. Each check runs in the same synchronous block as
-   the grant's storage write, so a concurrent connection removal cannot slip between the check
-   and the grant. Existing grants are untouched: a *confirmed* edge skips the redemption gate,
-   so a collaborator re-opening with a retained key stays a no-op.
+   before a not-yet-confirmed edge is settled. The grant-creating mutators check synchronously
+   with their storage write, so a concurrent connection removal cannot slip between the check
+   and the grant. Redemption is two-phase, so it checks twice: once synchronously with the
+   *pending* write (`redeemShareKey`), and again in the *confirm's* synchronous block
+   (`confirmShareKeyRedemption`, the granting write) — the two are separated by the redeeming
+   open()'s await windows, so a producer removed anywhere between redemption and confirm still
+   refuses the grant. Existing grants are untouched: a *confirmed* edge skips both checks, so a
+   collaborator re-opening with a retained key stays a no-op.
 
 ---
 
