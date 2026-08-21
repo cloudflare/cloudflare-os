@@ -2,76 +2,25 @@
 /* eslint-disable react/react-in-jsx-scope */
 
 import { act } from 'react'
-import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
-import type {
-  ActionHistoryFilter,
-  ActionHistoryPage,
-  ActionLogEntry,
-  ActionsSubscriber,
-  Overseer,
-} from '@gadgets/workshop-shared/api'
+import type { ActionHistoryFilter, ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
+import { entry as pendingEntry, makeOverseer, makeTestRoot } from './action-test-harness'
 import { useActionHistory } from './useActionHistory'
 
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
-
-vi.stubGlobal('requestAnimationFrame', () => 0)
-
+// History pages carry resolved records.
 function entry(id: number, over: Partial<Record<string, unknown>> = {}): ActionLogEntry {
-  return {
-    id,
-    resourceTitle: `Resource ${id}`,
-    createdAt: new Date(1700000000000 + id * 60_000),
+  return pendingEntry(id, {
     appliedAt: new Date(1700000000000 + id * 60_000),
     state: 'approved',
-    type: 'action',
-    description: { title: `Action ${id}`, description: '', implementsRevert: false },
     ...over,
-  } as ActionLogEntry
-}
-
-type ListOptions = Parameters<Overseer['listActions']>[0]
-
-function makeOverseer() {
-  const listCalls: ListOptions[] = []
-  const pendingPages: Array<{
-    resolve: (page: ActionHistoryPage) => void
-    reject: (err: unknown) => void
-  }> = []
-  let subscriber: ActionsSubscriber | undefined
-  const overseer = {
-    listActions: (options?: ListOptions) => {
-      listCalls.push(options)
-      return new Promise<ActionHistoryPage>((resolve, reject) =>
-        pendingPages.push({ resolve, reject }))
-    },
-    subscribeToActions: async (sub: unknown) => {
-      subscriber = sub as ActionsSubscriber
-      return { [Symbol.dispose]: () => {} } as RpcStub<{}>
-    },
-    [Symbol.dispose]: () => {},
-  } as unknown as RpcStub<Overseer>
-  return {
-    overseer,
-    listCalls,
-    async resolvePage(page: ActionHistoryPage) {
-      await act(async () => { pendingPages.shift()!.resolve(page) })
-    },
-    async rejectPage(err: unknown) {
-      await act(async () => { pendingPages.shift()!.reject(err) })
-    },
-    async emit(record: ActionLogEntry) {
-      await act(async () => { subscriber!.entry(record) })
-    },
-  }
+  })
 }
 
 type HookResult = ReturnType<typeof useActionHistory>
 
 describe('useActionHistory', () => {
-  let root: Root | undefined
-  let container: HTMLDivElement | undefined
+  const view = makeTestRoot()
   let latest: HookResult
 
   function Probe({ overseer, filter, active }: {
@@ -85,26 +34,17 @@ describe('useActionHistory', () => {
 
   async function render(overseer: RpcStub<Overseer> | null, filter: ActionHistoryFilter,
       active: boolean) {
-    if (!root) {
-      container = document.createElement('div')
-      document.body.append(container)
-      root = createRoot(container)
-    }
-    await act(async () =>
-      root!.render(<Probe overseer={overseer} filter={filter} active={active} />))
+    await view.render(<Probe overseer={overseer} filter={filter} active={active} />)
   }
 
-  afterEach(() => {
-    act(() => root?.unmount())
-    root = undefined
-    container?.remove()
-  })
+  afterEach(() => view.cleanup())
 
   it('fetches nothing until activated, then loads the first page', async () => {
     const server = makeOverseer()
     await render(server.overseer, 'all', false)
     expect(server.listCalls).toEqual([])
-    expect(latest.status).toBe('idle')
+    expect(latest.status).toBe('loading')
+    expect(latest.hasMore).toBe(false)
 
     await render(server.overseer, 'all', true)
     expect(server.listCalls).toEqual([{ beforeId: undefined, filter: 'all' }])
@@ -203,6 +143,7 @@ describe('useActionHistory', () => {
     expect(latest.loadMoreFailed).toBe(false)  // first-load failure is owned by status
 
     act(() => latest.loadMore())
+    expect(latest.status).toBe('loading')
     expect(server.listCalls[1]).toEqual({ beforeId: undefined, filter: 'all' })
     await server.resolvePage({ entries: [entry(30)] })
     expect(latest.status).toBe('ready')

@@ -40,7 +40,6 @@ const HISTORY_FILTERS: { value: ActionHistoryFilter; label: string }[] = [
   { value: 'bindHook', label: 'Hooks' },
 ]
 
-
 function formatClockTime(date: Date): string {
   return new Date(date).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
@@ -105,6 +104,18 @@ function TypeIcon({ record, className }: { record: ActionLogEntry; className?: s
   return <ShieldCheck {...props} />
 }
 
+function LoadOlderButton({ history, className }: {
+  history: { loadMore: () => void; isLoadingMore: boolean }
+  className?: string
+}) {
+  return (
+    <WorkshopButton className={className} onClick={history.loadMore}
+        disabled={history.isLoadingMore}>
+      {history.isLoadingMore ? 'Loading…' : 'Load older'}
+    </WorkshopButton>
+  )
+}
+
 export default function Activity({
   overseer,
   view,
@@ -112,7 +123,7 @@ export default function Activity({
   onAutoApproveChange,
   autoApproveReloadTrigger,
 }: ActivityProps) {
-  const { status: pendingStatus, pendingById } = useActions(overseer)
+  const { status: pendingStatus, pending: pendingActions } = useActions(overseer)
   const [historyFilter, setHistoryFilter] = useState<ActionHistoryFilter>('all')
   const [processingActions, setProcessingActions] = useState<Set<number>>(new Set())
   const [togglingHooks, setTogglingHooks] = useState<Set<number>>(new Set())
@@ -125,13 +136,6 @@ export default function Activity({
     actionLabel: string
   } | null>(null)
   const toasts = useKumoToastManager()
-
-  const pendingActions = useMemo(() => {
-    const entries = Array.from(pendingById.values())
-    entries.sort((a, b) =>
-      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() || a.id - b.id)
-    return entries
-  }, [pendingById])
 
   const history = useActionHistory(overseer, historyFilter, view === 'history')
 
@@ -308,9 +312,7 @@ export default function Activity({
             </div>
           ) : history.hasMore && (
             <div className="flex justify-center py-3">
-              <WorkshopButton onClick={history.loadMore} disabled={history.isLoadingMore}>
-                {history.isLoadingMore ? 'Loading…' : 'Load older'}
-              </WorkshopButton>
+              <LoadOlderButton history={history} />
             </div>
           )}
         </div>
@@ -330,27 +332,21 @@ export default function Activity({
       )
     }
 
-    if (history.hasMore && history.status === 'ready') {
+    if (history.status === 'loading') {
       return (
-        <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-          <p className="m-0 text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
-            Nothing in the most recent activity
-          </p>
-          <WorkshopButton
-            className="mt-4"
-            onClick={history.loadMore}
-            disabled={history.isLoadingMore}
-          >
-            {history.isLoadingMore ? 'Loading…' : 'Load older'}
-          </WorkshopButton>
+        <div className="flex flex-1 items-center justify-center text-[13px] text-kumo-subtle">
+          Loading activity…
         </div>
       )
     }
 
     if (history.hasMore) {
       return (
-        <div className="flex flex-1 items-center justify-center text-[13px] text-kumo-subtle">
-          Loading activity…
+        <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+          <p className="m-0 text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
+            Nothing in the most recent activity
+          </p>
+          <LoadOlderButton className="mt-4" history={history} />
         </div>
       )
     }

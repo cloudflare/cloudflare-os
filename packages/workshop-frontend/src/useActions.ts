@@ -10,15 +10,12 @@ import { ActionLogEntry, ActionsSubscriber, Overseer } from '@gadgets/workshop-s
 export type ActionsState = {
   /**
    * 'checking' until the subscription (and its pending replay) settles; 'error' if it failed
-   * (pendingById keeps whatever was gathered).
+   * (`pending` keeps whatever was gathered).
    */
   status: 'checking' | 'ready' | 'error'
 
-  /** Pending-review records found so far. */
-  pendingById: ReadonlyMap<number, ActionLogEntry>
-
-  /** Every record received this session (adds and updates, at their latest state). */
-  entriesById: ReadonlyMap<number, ActionLogEntry>
+  /** Pending-review records found so far, oldest first (createdAt, then id). */
+  pending: readonly ActionLogEntry[]
 }
 
 type Store = {
@@ -36,8 +33,7 @@ type Store = {
 
 const EMPTY_STATE: ActionsState = {
   status: 'checking',
-  pendingById: new Map(),
-  entriesById: new Map(),
+  pending: [],
 }
 
 const stores = new WeakMap<RpcStub<Overseer>, Store>()
@@ -62,11 +58,10 @@ function getStore(overseer: RpcStub<Overseer>): Store {
 }
 
 function commit(store: Store, status: ActionsState['status'] = store.snapshot.status): void {
-  store.snapshot = {
-    status,
-    pendingById: new Map(store.stagedPending),
-    entriesById: new Map(store.stagedEntries),
-  }
+  // Entries arrive in ascending id order, so this sort is near-free at pending-count scale.
+  const pending = [...store.stagedPending.values()].sort((a, b) =>
+    new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() || a.id - b.id)
+  store.snapshot = { status, pending }
   for (const listener of store.listeners) listener()
 }
 

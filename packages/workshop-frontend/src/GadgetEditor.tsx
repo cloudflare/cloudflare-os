@@ -55,7 +55,7 @@ import { GadgetPresence } from './components/GadgetPresence'
 import BlueprintModal from './BlueprintModal'
 import TopBarNotice from './TopBarNotice'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
-import { useActions } from './useActions'
+import { useActionEntries, useActions } from './useActions'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
 import ReconnectingChip from './components/ReconnectingChip'
 import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
@@ -749,17 +749,24 @@ export default function GadgetEditor() {
       ? streamingActiveFile.filename
       : undefined
 
-  const { status: pendingStatus, pendingById, entriesById } = useActions(overseer?.stub ?? null)
-  // Hook bindings change once in a while, but `entriesById` is a fresh Map on every action-log
-  // frame. Track just the bindHook enable states so the refetch isn't driven at animation rate.
-  // listHooks() below is the authoritative initial source; entries only trigger refetches.
-  const hookSignature = useMemo(() => {
-    const parts: string[] = []
-    for (const record of entriesById.values()) {
-      if (record.type === 'bindHook') parts.push(`${record.hookId}:${record.enabled}`)
-    }
-    return parts.join()
-  }, [entriesById])
+  const overseerStub = overseer?.stub ?? null
+  const { pending: pendingActions } = useActions(overseerStub)
+  // Hook bindings change once in a while; fold the entry stream into a signature over just the
+  // bindHook enable states, in state only when it changes, so the refetch below isn't driven at
+  // animation rate. listHooks() is the authoritative initial source; entries only trigger
+  // refetches. useActionEntries replays already-received entries on mount, repopulating the ref
+  // after the reset when the stub changes.
+  const hookStatesRef = useRef(new Map<number, string>())
+  const [hookSignature, setHookSignature] = useState('')
+  useEffect(() => {
+    hookStatesRef.current = new Map()
+    setHookSignature('')
+  }, [overseerStub])
+  useActionEntries(overseerStub, record => {
+    if (record.type !== 'bindHook') return
+    hookStatesRef.current.set(record.id, `${record.hookId}:${record.enabled}`)
+    setHookSignature([...hookStatesRef.current.values()].join())
+  })
   const [hookedGadgetIds, setHookedGadgetIds] = useState<ReadonlySet<WorkpieceId>>(NO_GADGETS)
   useEffect(() => {
     if (!overseer || metadata === null || isUseOnly) return
@@ -772,7 +779,7 @@ export default function GadgetEditor() {
     // Clear on teardown so a workspace switch never shows the previous workspace's indicators.
     return () => { cancelled = true; setHookedGadgetIds(NO_GADGETS) }
   }, [overseer, hookSignature, metadata !== null, isUseOnly])
-  const pendingActionCount = pendingById.size
+  const pendingActionCount = pendingActions.length
 
   // Whether the *selected* gadget has code. When no gadget is selected, the code interface is
   // unmounted and raw `hasCode` can't update, but a gadget-less workspace has no code to show.
@@ -1463,13 +1470,7 @@ export default function GadgetEditor() {
             </span>
           )}
 
-          <ActivityNotifications
-            overseer={overseer.stub}
-            pendingById={pendingById}
-            isChecking={pendingStatus === 'checking'}
-            isError={pendingStatus === 'error'}
-            onViewActivity={openActivity}
-          />
+          <ActivityNotifications overseer={overseer.stub} onViewActivity={openActivity} />
 
           {showReconnecting && <ReconnectingChip />}
 

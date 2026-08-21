@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RpcStub } from 'capnweb'
+import { matchesActionHistoryFilter } from '@gadgets/workshop-shared/api'
 import type { ActionHistoryFilter, ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
 import { useActionEntries } from './useActions'
 
-export type ActionHistoryStatus = 'idle' | 'loading' | 'ready' | 'error'
+export type ActionHistoryStatus = 'loading' | 'ready' | 'error'
 
 type View = {
   byId: ReadonlyMap<number, ActionLogEntry>
@@ -23,8 +24,10 @@ function createHistorySession(): HistorySession {
   return { frontier: undefined, inFlight: false, hasLoadedPage: false }
 }
 
+// 'loading' from the start: nothing is fetched until `active`, but the panel isn't visible (and
+// the status unread) until then either, and the first fetch follows immediately.
 const INITIAL: View = {
-  byId: new Map(), status: 'idle', hasMore: true, isLoadingMore: false, loadMoreFailed: false,
+  byId: new Map(), status: 'loading', hasMore: false, isLoadingMore: false, loadMoreFailed: false,
 }
 
 /**
@@ -100,7 +103,7 @@ export function useActionHistory(
     const session = sessionRef.current
     if (!session.hasLoadedPage) return
     if (record.state === 'pending') return
-    if (filter !== 'all' && record.type !== filter) return
+    if (!matchesActionHistoryFilter(record, filter)) return
     if (session.frontier !== undefined && record.id < session.frontier) return
     setView(prev => {
       const byId = new Map(prev.byId)
