@@ -42,14 +42,14 @@ async function tolerate<T>(
   }
 }
 
-function workshopConfig(config: WorkerConfig, gateway: GatewayConfig): void {
+function workshopConfig(config: WorkerConfig, gateway: GatewayConfig, direct: boolean): void {
+  if (direct) return;
   config.vars = {
     ...config.vars,
     CF_AI_GATEWAY: gateway.gatewayId,
     CF_AI_GATEWAY_ACCOUNT_ID: gateway.accountId,
     CF_AI_GATEWAY_API_TOKEN: gateway.apiToken,
     CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,google,cloudflare",
-    ...(usesDirectWorkersAi() ? { CF_AI_GATEWAY_WAI_DIRECT: "true" } : {}),
   };
 }
 
@@ -98,17 +98,29 @@ export function createWorkshopHarness(task: EvalTask) {
         runId: input.runId,
       });
       const gateway = parseGatewayEnvironment();
+      const direct = usesDirectWorkersAi();
       const network = new NetworkInterceptor([], { passThroughHosts: MODEL_HOSTS });
       network.install();
       const harness = await startHarness({
         gatekeepers: [...(task.gatekeepers ?? [])],
         enableGadgetExecution: true,
-        patchWorkshop: config => workshopConfig(config, gateway),
+        patchWorkshop: config => workshopConfig(config, gateway, direct),
       });
       let disposable: AgentSession | undefined;
       try {
         const session = await AgentSession.create(harness.url, {
           modelId: input.model,
+          ...(direct ? {
+            userModel: {
+              profile: { type: "agent", id: input.model, name: input.model },
+              config: {
+                provider: "cloudflare",
+                model: input.model,
+                accountId: gateway.accountId,
+                apiToken: gateway.apiToken,
+              },
+            },
+          } : {}),
           usernamePrefix: "eval",
           timeoutMs: agentTurnTimeoutMs(task.turns.length),
         });
@@ -149,7 +161,7 @@ export function createWorkshopHarness(task: EvalTask) {
         const gadgets = await tolerate("source capture", warnings, [], async () =>
           captureSource(
               await session.acceptChanges(), workpieces, directory, diagnostics.sandboxViolations));
-        const usage = usesDirectWorkersAi()
+        const usage = direct
           ? incompleteGatewayUsage()
           : await tolerate("gateway telemetry", warnings, incompleteGatewayUsage(), () =>
             collectAgentGatewayUsage(
