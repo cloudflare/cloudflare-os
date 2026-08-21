@@ -8,8 +8,14 @@
 // rather than as a resource the backend rejects after the user has filled the form.
 
 import { describe, expect, it } from "vitest";
+import driveAccountConfigurator from "../src/configurator/drive-account-configurator-ui";
+import driveFileConfigurator from "../src/configurator/drive-file-configurator-ui";
 import gmailConfigurator from "../src/configurator/gmail-configurator-ui";
-import { GMAIL_RESOURCE, parseResourceUrl } from "../src/resources";
+import sharedDriveConfigurator from "../src/configurator/shared-drive-configurator-ui";
+import {
+  GMAIL_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHARED_DRIVE_RESOURCE,
+  parseResourceUrl,
+} from "../src/resources";
 
 // The configurators never call `ui` from these two methods; it is present only to satisfy the
 // context type, and touching it is a bug.
@@ -25,6 +31,18 @@ const gmailValues = (resourceUrl: string) =>
     resourceUrl, resourceUrlPattern: GMAIL_RESOURCE.urlPattern, ui: noUi,
   });
 
+const configurableUrl = (
+  configurator: { resourceUrl?: (context: { values: Record<string, unknown>; ui: never }) => string },
+  values: Record<string, unknown>,
+) => configurator.resourceUrl!({ values, ui: noUi });
+
+const configurableValues = (
+  configurator: { initialValuesFromResourceUrl?: (context: {
+    resourceUrl: string; resourceUrlPattern: string; ui: never;
+  }) => unknown },
+  resourceUrl: string,
+  resourceUrlPattern: string,
+) => configurator.initialValuesFromResourceUrl!({ resourceUrl, resourceUrlPattern, ui: noUi });
 describe("Gmail configurator URLs", () => {
   it.for([
     ["the whole mailbox", { mode: "all" }, { kind: "gmail" }],
@@ -78,5 +96,31 @@ describe("Gmail configurator URLs", () => {
 
     expect(gmailValues(inbox)).toEqual({ mode: "all" });
     expect(parseResourceUrl(inbox)).toEqual({ kind: "gmail" });
+  });
+});
+
+describe("Drive configurator URLs", () => {
+  it("mints the whole-account resource", () => {
+    let url = configurableUrl(driveAccountConfigurator, { scope: "account" });
+    expect(url).toBe(GOOGLE_DRIVE_RESOURCE.urlPattern);
+    expect(parseResourceUrl(url)).toEqual({ kind: "driveAccount" });
+  });
+
+  it("round-trips an encoded shared-drive ID", () => {
+    let values = { driveId: "shared/id with spaces" };
+    let url = configurableUrl(sharedDriveConfigurator, values);
+    expect(parseResourceUrl(url)).toEqual({ kind: "sharedDrive", driveId: values.driveId });
+    expect(configurableValues(
+      sharedDriveConfigurator, url, GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern,
+    )).toEqual(values);
+  });
+
+  it("round-trips an encoded file ID", () => {
+    let values = { fileId: "file/id with spaces" };
+    let url = configurableUrl(driveFileConfigurator, values);
+    expect(parseResourceUrl(url)).toEqual({ kind: "driveFile", fileId: values.fileId });
+    expect(configurableValues(
+      driveFileConfigurator, url, GOOGLE_DRIVE_FILE_RESOURCE.urlPattern,
+    )).toEqual(values);
   });
 });

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_DOC_RESOURCE,
+  GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHARED_DRIVE_RESOURCE,
   GOOGLE_SHEETS_RESOURCE, IDENTITY_SCOPES, LEGACY_GRANTED_RESOURCE_URL_PATTERNS, RESOURCE_BY_KIND,
-  RESOURCE_SCOPES, SUPPORTED_RESOURCES, grantedResourcesFromScopes, parseResourceUrl,
+  RESOURCE_SCOPES, SUPPORTED_RESOURCES, grantedResourcesFromScopes, hasDriveResourceGrant, parseResourceUrl,
   resourceUrlPatternsToOAuthScopes, validateResourceUrlPatterns,
 } from "../src/resources";
 
@@ -25,6 +26,9 @@ describe("resource declarations", () => {
       "https://docs.google.com/document/d/:docId/*",
       "https://docs.google.com/spreadsheets/d/:spreadsheetId/*",
       "https://calendar.google.com/calendar/:calendarId/*",
+      "https://drive.google.com/drive/my-drive",
+      "https://drive.google.com/drive/folders/:driveId",
+      "https://drive.google.com/file/d/:fileId/view",
       "https://bigquery.googleapis.com/:projectId/*",
     ]);
   });
@@ -71,6 +75,15 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
     ]);
   });
 
+  it.each([
+    [GOOGLE_DRIVE_RESOURCE, "https://www.googleapis.com/auth/drive.metadata.readonly"],
+    [GOOGLE_SHARED_DRIVE_RESOURCE, "https://www.googleapis.com/auth/drive.readonly"],
+    [GOOGLE_DRIVE_FILE_RESOURCE, "https://www.googleapis.com/auth/drive.metadata.readonly"],
+  ] as const)("uses the permanent least-privilege scope for $urlPattern", (resource, scope) => {
+    expect(resourceUrlPatternsToOAuthScopes([resource.urlPattern])).toEqual([
+      ...IDENTITY_SCOPES, scope,
+    ]);
+  });
   it("deduplicates scopes shared between resources", () => {
     let scopes = resourceUrlPatternsToOAuthScopes(
       [GOOGLE_DOC_RESOURCE.urlPattern, GOOGLE_SHEETS_RESOURCE.urlPattern]);
@@ -115,6 +128,20 @@ describe("grantedResourcesFromScopes", () => {
   });
 });
 
+describe("hasDriveResourceGrant", () => {
+  it("accepts each explicit Drive resource and rejects historical non-Drive grants", () => {
+    for (let resource of [
+      GOOGLE_DRIVE_RESOURCE, GOOGLE_SHARED_DRIVE_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE,
+    ]) {
+      expect(hasDriveResourceGrant([resource.urlPattern])).toBe(true);
+    }
+    expect(hasDriveResourceGrant([])).toBe(false);
+    expect(hasDriveResourceGrant([GOOGLE_DOC_RESOURCE.urlPattern, GOOGLE_SHEETS_RESOURCE.urlPattern]))
+      .toBe(false);
+    expect(hasDriveResourceGrant(LEGACY_GRANTED_RESOURCE_URL_PATTERNS)).toBe(false);
+  });
+});
+
 describe("validateResourceUrlPatterns", () => {
   it("accepts undefined and every known pattern", () => {
     expect(() => validateResourceUrlPatterns(undefined)).not.toThrow();
@@ -134,13 +161,13 @@ describe("parseResourceUrl", () => {
     // full mailbox binding. The caller derives the resource -- and hence the admin disable check
     // and the recorded typeUrlPattern -- from what this returns.
     it.each([
-      "https://drive.google.com/drive/folders/abc",
-      "https://drive.google.com/file/d/abc/view",
+      "https://drive.google.com/drive/folders/",
+      "https://drive.google.com/file/d/abc",
       "https://groups.google.com/g/team",
       "https://mail.google.com.evil.example/",
       "https://example.com/",
     ])("rejects %s instead of falling back to Gmail", url => {
-      expect(() => parseResourceUrl(url)).toThrow(/Unsupported Google resource URL/);
+      expect(() => parseResourceUrl(url)).toThrow(/Unsupported Google/);
     });
 
     it("rejects a docs.google.com path that is neither a doc nor a sheet", () => {
@@ -278,6 +305,23 @@ describe("parseResourceUrl", () => {
     it("rejects a missing calendar ID", () => {
       expect(() => parseResourceUrl("https://calendar.google.com/calendar/"))
         .toThrow(/no calendar ID found/);
+    });
+  });
+
+  describe("Drive", () => {
+    it.each([
+      ["account", "https://drive.google.com/drive/my-drive", { kind: "driveAccount" }],
+      ["shared drive", "https://drive.google.com/drive/folders/DRIVE123",
+        { kind: "sharedDrive", driveId: "DRIVE123" }],
+      ["file", "https://drive.google.com/file/d/FILE123/view",
+        { kind: "driveFile", fileId: "FILE123" }],
+    ] as const)("scopes to one %s", (_name, url, expected) => {
+      expect(parseResourceUrl(url)).toEqual(expected);
+    });
+
+    it("rejects paths outside the permanent Drive grammar", () => {
+      expect(() => parseResourceUrl("https://drive.google.com/drive/u/0/my-drive"))
+        .toThrow(/Unsupported Google Drive resource URL/);
     });
   });
 

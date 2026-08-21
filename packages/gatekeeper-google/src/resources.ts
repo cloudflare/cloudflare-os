@@ -70,6 +70,30 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
+/** Metadata for files and folders visible to the connected Google Drive account. */
+export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
+  urlPattern: "https://drive.google.com/drive/my-drive",
+  title: "Google Drive Account",
+  description: "Find files and folders in your My Drive or Shared with me.",
+  grantable: true,
+};
+
+/** Metadata across one Google Workspace shared drive, keyed by its immutable drive ID. */
+export const GOOGLE_SHARED_DRIVE_RESOURCE: SupportedResource = {
+  urlPattern: "https://drive.google.com/drive/folders/:driveId",
+  title: "Google Workspace Shared Drive",
+  description: "Find files and folders in one organization-owned shared drive.",
+  grantable: true,
+};
+
+/** Metadata for one immutable Drive file ID. */
+export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
+  urlPattern: "https://drive.google.com/file/d/:fileId/view",
+  title: "Google Drive File",
+  description: "Read metadata for one Drive file.",
+  grantable: true,
+};
+
 /**
  * The resources an account connected before per-resource scope tracking implicitly received.
  *
@@ -116,6 +140,18 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
     ],
   },
   {
+    resource: GOOGLE_DRIVE_RESOURCE,
+    scopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+  },
+  {
+    resource: GOOGLE_SHARED_DRIVE_RESOURCE,
+    scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+  },
+  {
+    resource: GOOGLE_DRIVE_FILE_RESOURCE,
+    scopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+  },
+  {
     resource: BIGQUERY_RESOURCE,
     scopes: [
       // `bigquery` (not `bigquery.readonly`): dry-runs go through `jobs.insert` for scope
@@ -125,8 +161,19 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   },
 ];
 
+const DRIVE_RESOURCE_PATTERNS = new Set([
+  GOOGLE_DRIVE_RESOURCE.urlPattern,
+  GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern,
+  GOOGLE_DRIVE_FILE_RESOURCE.urlPattern,
+]);
+
 /** Every grantable resource, in declaration order. */
 export const SUPPORTED_RESOURCES: SupportedResource[] = RESOURCE_SCOPES.map(entry => entry.resource);
+
+/** Whether a historical grant explicitly included any Google Drive resource. */
+export function hasDriveResourceGrant(resourceUrlPatterns: readonly string[]): boolean {
+  return resourceUrlPatterns.some(pattern => DRIVE_RESOURCE_PATTERNS.has(pattern));
+}
 
 /** Rejects any pattern that is not a known grantable resource. */
 export function validateResourceUrlPatterns(resourceUrlPatterns?: string[]): void {
@@ -175,7 +222,10 @@ export type ResourceTarget =
   | { kind: "doc"; documentId: string }
   | { kind: "sheets"; spreadsheetId: string }
   | { kind: "calendar"; calendarId: string; availabilityMode: CalendarAvailabilityMode }
-  | { kind: "bigquery"; projectId: string; datasetId?: string; tableId?: string };
+  | { kind: "bigquery"; projectId: string; datasetId?: string; tableId?: string }
+  | { kind: "driveAccount" }
+  | { kind: "sharedDrive"; driveId: string }
+  | { kind: "driveFile"; fileId: string };
 
 /** The grantable resource each {@link ResourceTarget} kind belongs to. */
 export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource> = {
@@ -184,6 +234,9 @@ export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource>
   sheets: GOOGLE_SHEETS_RESOURCE,
   calendar: GOOGLE_CALENDAR_RESOURCE,
   bigquery: BIGQUERY_RESOURCE,
+  driveAccount: GOOGLE_DRIVE_RESOURCE,
+  sharedDrive: GOOGLE_SHARED_DRIVE_RESOURCE,
+  driveFile: GOOGLE_DRIVE_FILE_RESOURCE,
 };
 
 /**
@@ -211,6 +264,7 @@ export function parseResourceUrl(url: string): ResourceTarget {
     case "docs.google.com": return parseDocsUrl(parsed);
     case "calendar.google.com": return parseCalendarUrl(parsed);
     case BIGQUERY_HOST: return parseBigQueryUrl(parsed);
+    case "drive.google.com": return parseDriveUrl(parsed);
   }
   throw new Error(`Unsupported Google resource URL host: ${parsed.hostname}`);
 }
@@ -285,6 +339,18 @@ function parseCalendarUrl(parsed: URL): ResourceTarget {
   let availabilityMode: CalendarAvailabilityMode =
       parsed.searchParams.get("availability") === "allVisible" ? "allVisible" : "thisCalendar";
   return { kind: "calendar", calendarId, availabilityMode };
+}
+
+function parseDriveUrl(parsed: URL): ResourceTarget {
+  if (/^\/drive\/my-drive\/?$/.test(parsed.pathname)) return { kind: "driveAccount" };
+
+  let sharedDrive = /^\/drive\/folders\/([^/]+)\/?$/.exec(parsed.pathname);
+  if (sharedDrive) return { kind: "sharedDrive", driveId: decodeURIComponent(sharedDrive[1]) };
+
+  let file = /^\/file\/d\/([^/]+)\/view\/?$/.exec(parsed.pathname);
+  if (file) return { kind: "driveFile", fileId: decodeURIComponent(file[1]) };
+
+  throw new Error(`Unsupported Google Drive resource URL: ${describeUrl(parsed)}`);
 }
 
 function parseBigQueryUrl(parsed: URL): ResourceTarget {

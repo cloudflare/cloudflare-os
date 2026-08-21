@@ -49,8 +49,15 @@ export type ObserverTrackerOptions<T, V> = {
   /** Reversible encoding of one set's identity. Must round-trip through {@link decode}. */
   encode(value: T): string;
   decode(encoded: string): T;
-  /** Whether the observer's own credentials reach this set. */
-  hasAccess(verifier: V, value: T): Promise<boolean>;
+  /** Whether the observer's own credentials reach one set. Mutually exclusive with `verifyBatch`. */
+  hasAccess?(verifier: V, value: T): Promise<boolean>;
+  /** Verifies the observer's baseline grant and every supplied set in one RPC. */
+  verifyBatch?(verifier: V, values: readonly T[]): Promise<{
+    baselineAllowed: boolean;
+    allowed: boolean[];
+  }>;
+  /** The error thrown when bulk verification finds that the baseline grant is absent. */
+  baselineDeniedMessage?: string;
   /** The error thrown when a joining observer cannot reach `value`. */
   deniedMessage(value: T): string;
   /**
@@ -60,15 +67,9 @@ export type ObserverTrackerOptions<T, V> = {
   recordObservers?: boolean;
   /**
    * Distinct sets this binding may track before {@link ObserverTracker.prepareObservation} starts
-   * refusing reads.
-   *
-   * Verifying an observer costs one round trip per tracked set, and the overseer re-runs it on
-   * every open, so an unbounded set makes opening the gadget unboundedly expensive. The cap is
-   * enforced when a set is *recorded* rather than when an observer joins, because the alternative
-   * is worse: a binding that has already read past the cap can never be verified against, which
-   * locks out the collaborators already using it as well as new ones, with no way back.
+   * refusing reads. `null` is reserved for bulk verifiers whose per-open RPC count stays bounded.
    */
-  maxTrackedSets?: number;
+  maxTrackedSets?: number | null;
   /** Concurrent verifier round trips. Bounded to stay inside the Workers subrequest limits. */
   concurrency?: number;
 };
@@ -107,12 +108,20 @@ export class ObserverTracker<T, V> {
     if (options.setPrefix === OBSERVER_PREFIX) {
       throw new Error(`setPrefix must not collide with the observer prefix ${OBSERVER_PREFIX}`);
     }
+    if ((options.hasAccess === undefined) === (options.verifyBatch === undefined)) {
+      throw new Error("Configure exactly one observer access verifier");
+    }
+    if (options.verifyBatch && !options.baselineDeniedMessage) {
+      throw new Error("A bulk verifier requires baselineDeniedMessage");
+    }
     this.#kv = kv;
     this.#options = options;
   }
 
-  get #maxTrackedSets(): number {
-    return this.#options.maxTrackedSets ?? DEFAULT_MAX_TRACKED_SETS;
+  get #maxTrackedSets(): number | null {
+    return this.#options.maxTrackedSets === undefined
+      ? DEFAULT_MAX_TRACKED_SETS
+      : this.#options.maxTrackedSets;
   }
 
   get #concurrency(): number {
@@ -166,24 +175,38 @@ export class ObserverTracker<T, V> {
     let untracked = pendingSets.filter(
       value => this.#kv.get<ObservedSetState>(this.#setKey(value)) === undefined);
     let tracked = this.listTracked().length;
-    if (tracked + untracked.length > this.#maxTrackedSets) {
+    let maxTrackedSets = this.#maxTrackedSets;
+    if (maxTrackedSets !== null && tracked + untracked.length > maxTrackedSets) {
       throw new Error(
         `This binding has read ${tracked} distinct items, the most it can track while remaining ` +
         "shareable. Bind a narrower scope.");
     }
     for (let value of untracked) this.#kv.put(this.#setKey(value), "pending");
 
-    // One flat queue over (observer, set) pairs: nesting two Promise.alls would multiply out to an
-    // unbounded number of concurrent round trips.
     let observers = [...this.observers()];
-    let pairs = observers.flatMap(
-      ([id, verifier]) => pendingSets.map(value => ({ id, verifier, value })));
-    let access = await mapWithConcurrency(
-      pairs, this.#concurrency, pair => this.#options.hasAccess(pair.verifier, pair.value));
-
     let denied = new Set<string>();
-    for (let [index, pair] of pairs.entries()) {
-      if (!access[index]) denied.add(pair.id);
+    if (this.#options.verifyBatch) {
+      let verifyBatch = this.#options.verifyBatch;
+      let results = await mapWithConcurrency(
+        observers, this.#concurrency, ([, verifier]) => verifyBatch(verifier, pendingSets));
+      for (let [index, [id]] of observers.entries()) {
+        let result = results[index];
+        if (result.allowed.length !== pendingSets.length) {
+          throw new Error("Bulk observer verification must return one result per set");
+        }
+        if (!result.baselineAllowed || result.allowed.includes(false)) denied.add(id);
+      }
+    } else {
+      let hasAccess = this.#options.hasAccess!;
+      // One flat queue over (observer, set) pairs: nesting two Promise.alls would multiply out to an
+      // unbounded number of concurrent round trips.
+      let pairs = observers.flatMap(
+        ([id, verifier]) => pendingSets.map(value => ({ id, verifier, value })));
+      let access = await mapWithConcurrency(
+        pairs, this.#concurrency, pair => hasAccess(pair.verifier, pair.value));
+      for (let [index, pair] of pairs.entries()) {
+        if (!access[index]) denied.add(pair.id);
+      }
     }
 
     return {
@@ -198,28 +221,46 @@ export class ObserverTracker<T, V> {
   /**
    * Admits `id` as an observer, or throws naming the first set they cannot reach.
    *
-   * Re-lists after each round of checks, so a set observed while this was awaiting is covered too.
-   * The tracked set is bounded by {@link ObserverTrackerOptions.maxTrackedSets} at record time, so
-   * this needs no bound of its own.
+   * A bulk verifier is staged in storage before its single RPC. A disclosure interleaved with that
+   * RPC therefore checks the joining observer itself, closing the admission race without a second
+   * full re-check. Per-set verification retains the legacy re-list loop.
    */
   async addObserver(id: string, verifier: V): Promise<void> {
+    let recordObserver = this.#options.recordObservers ?? true;
+    let observerKey = `${OBSERVER_PREFIX}${id}`;
+    if (this.#options.verifyBatch) {
+      if (recordObserver) this.#kv.put(observerKey, verifier);
+      try {
+        let tracked = this.listTracked();
+        let result = await this.#options.verifyBatch(verifier, tracked);
+        if (result.allowed.length !== tracked.length) {
+          throw new Error("Bulk observer verification must return one result per set");
+        }
+        if (!result.baselineAllowed) throw new Error(this.#options.baselineDeniedMessage);
+        let deniedIndex = result.allowed.indexOf(false);
+        if (deniedIndex >= 0) throw new Error(this.#options.deniedMessage(tracked[deniedIndex]));
+        return;
+      } catch (error) {
+        if (recordObserver && this.#kv.get<V>(observerKey) === verifier) {
+          this.#kv.delete(observerKey);
+        }
+        throw error;
+      }
+    }
+
+    let hasAccess = this.#options.hasAccess!;
     let checked = new Set<string>();
     for (;;) {
       let tracked = this.listTracked();
-
       let pending = tracked.filter(value => !checked.has(this.#options.encode(value)));
       if (pending.length === 0) {
-        if (this.#options.recordObservers ?? true) {
-          this.#kv.put(`${OBSERVER_PREFIX}${id}`, verifier);
-        }
+        if (recordObserver) this.#kv.put(observerKey, verifier);
         return;
       }
-
       let access = await mapWithConcurrency(
-        pending, this.#concurrency, value => this.#options.hasAccess(verifier, value));
+        pending, this.#concurrency, value => hasAccess(verifier, value));
       let deniedIndex = access.indexOf(false);
       if (deniedIndex >= 0) throw new Error(this.#options.deniedMessage(pending[deniedIndex]));
-
       for (let value of pending) checked.add(this.#options.encode(value));
     }
   }

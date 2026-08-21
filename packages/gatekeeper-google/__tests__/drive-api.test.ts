@@ -12,12 +12,17 @@ const API_DISABLED_BODY = JSON.stringify({
   },
 });
 
-/** Installs a fetch stub and returns the URLs and headers it was called with. */
+/** Installs a fetch stub and returns the requests it was called with. */
 function stubFetch(responses: Response[] | (() => Response)) {
-  let calls: { url: URL; headers: Headers }[] = [];
+  let calls: { url: URL; headers: Headers; method?: string; body?: string }[] = [];
   let queue = Array.isArray(responses) ? [...responses] : null;
   vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
-    calls.push({ url: new URL(url), headers: new Headers(init.headers) });
+    calls.push({
+      url: new URL(url),
+      headers: new Headers(init.headers),
+      method: init.method,
+      ...(init.body === undefined || init.body === null ? {} : { body: String(init.body) }),
+    });
     if (queue) {
       let next = queue.shift();
       if (!next) throw new Error("unexpected extra fetch");
@@ -32,6 +37,21 @@ const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status });
 
 const api = (token = "tok") => new DriveApi(async () => token);
+
+function batchResponse(results: { status: number; body?: string }[]): Response {
+  let boundary = "drive_test_boundary";
+  let body = results.map((result, index) => [
+    `--${boundary}`,
+    "Content-Type: application/http",
+    `Content-ID: <response-item-${index}>`,
+    "",
+    `HTTP/1.1 ${result.status} Test`,
+    "Content-Type: application/json",
+    "",
+    result.body ?? "{}",
+  ].join("\r\n")).join("\r\n") + `\r\n--${boundary}--\r\n`;
+  return new Response(body, { headers: { "Content-Type": `multipart/mixed; boundary=${boundary}` } });
+}
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -74,6 +94,21 @@ describe("buildDriveQuery", () => {
 
   it("trims the name fragment", () => {
     expect(buildDriveQuery({ nameContains: "  q3  " })).toBe("trashed = false and name contains 'q3'");
+  });
+  it("ANDs every structured search filter and ORs MIME types", () => {
+    expect(buildDriveQuery({
+      nameContains: "Quarter",
+      fullTextContains: "budget",
+      mimeTypes: ["application/pdf", "text/plain"],
+      modifiedAfter: "2026-01-01T00:00:00Z",
+      modifiedBefore: "2026-02-01T00:00:00Z",
+      directParentId: "folder-1",
+    })).toBe(
+      "trashed = false and name contains 'Quarter' and fullText contains 'budget' and " +
+      "(mimeType = 'application/pdf' or mimeType = 'text/plain') and " +
+      "modifiedTime > '2026-01-01T00:00:00Z' and " +
+      "modifiedTime < '2026-02-01T00:00:00Z' and 'folder-1' in parents",
+    );
   });
 });
 
@@ -131,6 +166,155 @@ describe("listFiles", () => {
   it("omits nextPageToken on the last page rather than reporting it undefined", async () => {
     stubFetch([jsonResponse({ files: [] })]);
     expect("nextPageToken" in await api().listFiles()).toBe(false);
+  });
+  it("targets one shared-drive corpus when requested", async () => {
+    let calls = stubFetch([jsonResponse({ files: [] })]);
+    await api().listFiles({ corpora: "drive", driveId: "shared-1" });
+    let params = calls[0].url.searchParams;
+    expect(params.get("corpora")).toBe("drive");
+    expect(params.get("driveId")).toBe("shared-1");
+    expect(params.get("spaces")).toBe("drive");
+  });
+
+  it("can preserve Drive relevance order by omitting orderBy", async () => {
+    let calls = stubFetch([jsonResponse({ files: [] })]);
+    await api().listFiles({ orderBy: null });
+    expect(calls[0].url.searchParams.has("orderBy")).toBe(false);
+  });
+  it("rejects malformed file metadata instead of trusting Google's response", async () => {
+    stubFetch([jsonResponse({ files: [{ id: 42, name: "not-valid" }] })]);
+    await expect(api().listFiles()).rejects.toThrow("Invalid Google Drive file response");
+  });
+});
+
+describe("listDrives", () => {
+  it("returns shared-drive picker options and forwards pagination", async () => {
+    let calls = stubFetch([jsonResponse({
+      drives: [{ id: "drive-1", name: "Product" }], nextPageToken: "p2",
+    })]);
+
+    expect(await api().listDrives({ pageToken: "p1" })).toEqual({
+      drives: [{ id: "drive-1", name: "Product" }], nextPageToken: "p2",
+    });
+    expect(calls[0].url.pathname).toBe("/drive/v3/drives");
+    expect(calls[0].url.searchParams.get("pageSize")).toBe("100");
+    expect(calls[0].url.searchParams.get("pageToken")).toBe("p1");
+  });
+
+  it("rejects malformed shared-drive metadata", async () => {
+    stubFetch([jsonResponse({ drives: [{ id: "drive-1", name: false }] })]);
+    await expect(api().listDrives()).rejects.toThrow("Invalid Google shared-drive response");
+  });
+});
+
+describe("metadata lookup", () => {
+  it("gets one file with shared-drive support and the public metadata fields", async () => {
+    let file = {
+      id: "file/1", name: "Plan", mimeType: "application/pdf",
+      modifiedTime: "2026-01-02T03:04:05Z",
+    };
+    let calls = stubFetch([jsonResponse(file)]);
+
+    expect(await api().getFile("file/1")).toEqual(file);
+    expect(calls[0].url.pathname).toBe("/drive/v3/files/file%2F1");
+    expect(calls[0].url.searchParams.get("supportsAllDrives")).toBe("true");
+    let fields = calls[0].url.searchParams.get("fields");
+    expect(fields).toContain("shortcutDetails");
+    expect(fields).not.toMatch(/createdTime|photoLink|iconLink|thumbnailLink/);
+  });
+
+  it("gets current shared-drive metadata by stable ID", async () => {
+    let calls = stubFetch([jsonResponse({ id: "drive/1", name: "Current name" })]);
+    expect(await api().getDrive("drive/1")).toEqual({ id: "drive/1", name: "Current name" });
+    expect(calls[0].url.pathname).toBe("/drive/v3/drives/drive%2F1");
+  });
+  it("cancels an oversized JSON response before reading the remaining stream", async () => {
+    let pulls = 0;
+    let cancelled = false;
+    let body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls <= 3) controller.enqueue(new Uint8Array(3_000_000));
+        else controller.close();
+      },
+      cancel() { cancelled = true; },
+    });
+    stubFetch([new Response(body)]);
+
+    await expect(api().listFiles()).rejects.toThrow("Google Drive response was too large");
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(4);
+  });
+});
+
+describe("bulk access verification", () => {
+  it("maps fresh files.get outcomes back to the requested ID order", async () => {
+    let calls = stubFetch([batchResponse([
+      { status: 200 }, { status: 403 }, { status: 404 },
+    ])]);
+    await expect(api().checkFileAccess(["one", "two", "three"]))
+      .resolves.toEqual([true, false, false]);
+    expect(calls[0].url.href).toBe("https://www.googleapis.com/batch/drive/v3");
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].body).toContain("GET /drive/v3/files/one?fields=id&supportsAllDrives=true");
+  });
+
+  it("limits each Google batch to 100 file IDs without imposing a total cap", async () => {
+    let calls = stubFetch([
+      batchResponse(Array.from({ length: 100 }, () => ({ status: 200 }))),
+      batchResponse([{ status: 200 }]),
+    ]);
+    await expect(api().checkFileAccess(
+      Array.from({ length: 101 }, (_, index) => `file-${index}`),
+    )).resolves.toHaveLength(101);
+    expect(calls).toHaveLength(2);
+    expect(calls.map(call => call.body?.match(/GET \/drive\/v3\/files\//g)?.length))
+      .toEqual([100, 1]);
+  });
+
+  it("checks no Google endpoint for an empty file set", async () => {
+    let calls = stubFetch([]);
+    await expect(api().checkFileAccess([])).resolves.toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("distinguishes an API-disabled inner response", async () => {
+    stubFetch([batchResponse([{ status: 403, body: API_DISABLED_BODY }])]);
+    await expect(api().checkFileAccess(["one"]))
+      .rejects.toBeInstanceOf(DriveApiDisabledError);
+  });
+
+  it("does not infer API disablement from unstructured error text", async () => {
+    let body = JSON.stringify({ error: { message: "accessNotConfigured" } });
+    stubFetch([batchResponse([{ status: 403, body }])]);
+    await expect(api().checkFileAccess(["one"])).resolves.toEqual([false]);
+  });
+
+  it("cancels an oversized batch response before reading the remaining stream", async () => {
+    let pulls = 0;
+    let cancelled = false;
+    let body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls <= 3) controller.enqueue(new Uint8Array(600_000));
+        else controller.close();
+      },
+      cancel() { cancelled = true; },
+    });
+    stubFetch([new Response(body, {
+      headers: { "Content-Type": "multipart/mixed; boundary=response_boundary" },
+    })]);
+
+    await expect(api().checkFileAccess(["one"]))
+      .rejects.toThrow("Google Drive batch response was too large");
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(4);
+  });
+
+  it("fails a transient inner response instead of reporting an access denial", async () => {
+    stubFetch([batchResponse([{ status: 429 }])]);
+    await expect(api().checkFileAccess(["one"]))
+      .rejects.toThrow("Google Drive batch subrequest failed: 429");
   });
 });
 
