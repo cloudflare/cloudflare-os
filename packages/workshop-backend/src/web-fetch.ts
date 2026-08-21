@@ -281,6 +281,12 @@ export async function webFetch(
   const timeoutId = setTimeout(() => abortController.abort(), FETCH_TIMEOUT_MS);
 
   let response: Response;
+  let finalUrl: URL;
+  let contentType: string;
+  let bytes: Uint8Array;
+  let truncated: boolean;
+  // The timeout covers the body too: a response whose headers arrive promptly but whose body
+  // then stalls would otherwise hold the tool call open indefinitely.
   try {
     response = await fetch(parsed.toString(), {
       method: "GET",
@@ -291,6 +297,27 @@ export async function webFetch(
       },
       signal: abortController.signal,
     });
+
+    // `response.url` is set by the runtime to the final URL after any redirects. Fall back
+    // to the original URL if it happens to be empty.
+    finalUrl = response.url ? new URL(response.url) : parsed;
+    contentType = response.headers.get("content-type") ?? "";
+
+    // Respect the Content-Signal header (https://contentsignals.org/). If the site
+    // explicitly sets `ai-input=no`, we must not feed its content to the AI agent.
+    if (contentSignalDenies(response, "ai-input")) {
+      try {
+        await response.body?.cancel();
+      } catch {
+        // Ignore.
+      }
+      throw new Error(
+        `The site at ${finalUrl} sets Content-Signal: ai-input=no, indicating that ` +
+          `it does not permit its content to be used as AI input.`,
+      );
+    }
+
+    ({ bytes, truncated } = await readBodyCapped(response, maxBytes));
   } catch (err) {
     if (
       err instanceof Error &&
@@ -302,27 +329,6 @@ export async function webFetch(
   } finally {
     clearTimeout(timeoutId);
   }
-
-  // `response.url` is set by the runtime to the final URL after any redirects. Fall back
-  // to the original URL if it happens to be empty.
-  const finalUrl = response.url ? new URL(response.url) : parsed;
-  const contentType = response.headers.get("content-type") ?? "";
-
-  // Respect the Content-Signal header (https://contentsignals.org/). If the site
-  // explicitly sets `ai-input=no`, we must not feed its content to the AI agent.
-  if (contentSignalDenies(response, "ai-input")) {
-    try {
-      await response.body?.cancel();
-    } catch {
-      // Ignore.
-    }
-    throw new Error(
-      `The site at ${finalUrl} sets Content-Signal: ai-input=no, indicating that ` +
-        `it does not permit its content to be used as AI input.`,
-    );
-  }
-
-  const { bytes, truncated } = await readBodyCapped(response, maxBytes);
 
   let body: string;
   if (input.raw) {
