@@ -13,12 +13,19 @@
 const UNAVAILABLE_APIS: readonly { readonly pattern: RegExp; readonly reason: string }[] = [
   { pattern: /\blocalStorage\b/, reason: "throws: the UI frame has an opaque origin" },
   { pattern: /\bsessionStorage\b/, reason: "throws: the UI frame has an opaque origin" },
+  {
+    pattern: /\b(?:globalThis|window|self)\.fetch\s*\(/,
+    reason: "blocked: Gadget code has no outbound network",
+  },
   { pattern: /\bXMLHttpRequest\b/, reason: "blocked by the frame's connect-src policy" },
   { pattern: /\bEventSource\b/, reason: "blocked by the frame's connect-src policy" },
   { pattern: /\bnew\s+WebSocket\s*\(/, reason: "blocked by the frame's connect-src policy" },
   { pattern: /\bwindow\.open\s*\(/, reason: "the host replaces it with a no-op" },
   { pattern: /\bwindow\.print\s*\(/, reason: "PDF export belongs to the platform, not the Gadget" },
-  { pattern: /\bwindow\.(?:alert|confirm|prompt)\s*\(/, reason: "the frame sandbox blocks modals" },
+  {
+    pattern: /\b(?:globalThis|window)\.(?:alert|confirm|prompt)\s*\(/,
+    reason: "the frame sandbox blocks modals",
+  },
 ];
 
 /** One use of an API that does not work inside a Gadget. */
