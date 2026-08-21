@@ -11,7 +11,7 @@ export default {
     `https://drive.google.com/file/d/${encodeURIComponent(values.fileId ?? "")}/view`,
   render({ values, setValues, ui }) {
     return <Section>
-      <Field label="File" description="Search recent non-folder files visible to the connected account.">
+      <Field label="File" description="Search recent non-folder files. A selected native Google Doc or Sheet also provides read-only content.">
         <Autocomplete
           name="fileId"
           value={values.fileId}

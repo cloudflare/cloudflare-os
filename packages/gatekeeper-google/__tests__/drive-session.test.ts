@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { DriveSessionCore, driveFileToEntry } from "../src/drive-session";
 import { DriveApiRequestError, type DriveFile, type DriveListFilesOptions } from "../src/drive-api";
+import type { ObserverCheck } from "../src/observers";
+import { driveObserverTracker } from "../src/drive-observers";
+import { FakeKv } from "./fake-kv";
 
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
@@ -23,6 +26,7 @@ function core(overrides: {
     files: DriveFile[];
     nextPageToken?: string;
   }>;
+  prepareObservation?: (ids: string[]) => Promise<ObserverCheck<string>>;
   authorize?: (description: ObservationDescription) => Promise<void>;
   observerIds?: () => string[];
 } = {}) {
@@ -36,14 +40,14 @@ function core(overrides: {
   let session = new DriveSessionCore({
     api: { listFiles, getFile, getDrive },
     scope: overrides.scope ?? { kind: "account" },
-    prepareObservation: async (ids: string[]) => {
+    prepareObservation: overrides.prepareObservation ?? (async (ids: string[]) => {
       prepared.push(ids);
       return {
         excludeObservers: ["excluded"],
         pendingSets: ids,
         commit: () => events.push("commit"),
       };
-    },
+    }),
     observerIds: overrides.observerIds ?? (() => ["excluded"]),
     authorize: async (description: ObservationDescription) => {
       authorizations.push(description);
@@ -420,6 +424,176 @@ describe("Drive parent folder probe", () => {
     expect(listFiles).not.toHaveBeenCalled();
     expect(prepared).toEqual([]);
     expect(authorizations).toEqual([]);
+  });
+});
+
+describe("Drive native sessions", () => {
+  const docMime = "application/vnd.google-apps.document";
+  const sheetMime = "application/vnd.google-apps.spreadsheet";
+
+  it.each([
+    ["account Doc", { kind: "account" } as const, docMime, "Google Doc"],
+    ["account Sheet", { kind: "account" } as const, sheetMime, "Google Sheet"],
+    ["shared-drive Doc", { kind: "sharedDrive", driveId: "drive-1" } as const,
+      docMime, "Google Doc"],
+    ["shared-drive Sheet", { kind: "sharedDrive", driveId: "drive-1" } as const,
+      sheetMime, "Google Sheet"],
+    ["exact-file Doc", { kind: "file", fileId: "file-1" } as const,
+      docMime, "Google Doc"],
+    ["exact-file Sheet", { kind: "file", fileId: "file-1" } as const,
+      sheetMime, "Google Sheet"],
+  ])("opens an in-scope native %s", async (_name, scope, mimeType, description) => {
+    let { session, getFile } = core({
+      scope,
+      getFile: async id => file({
+        id,
+        mimeType,
+        ...(scope.kind === "sharedDrive" ? { driveId: scope.driveId } : {}),
+      }),
+    });
+
+    await expect(session.openNativeFile("file-1", mimeType, description))
+      .resolves.toBe("file-1");
+    expect(getFile).toHaveBeenCalledWith("file-1");
+  });
+
+  it("rejects a mismatched provider file ID before authorizing", async () => {
+    let { session, prepared, authorizations } = core({
+      getFile: async () => file({ id: "file-2", mimeType: docMime }),
+    });
+
+    await expect(session.openNativeFile("file-1", docMime, "Google Doc"))
+      .rejects.toThrow(/outside this Drive binding/);
+    expect(prepared).toEqual([]);
+    expect(authorizations).toEqual([]);
+  });
+
+  // Excluding today's observers is not enough: nothing durable would stop a collaborator admitted
+  // afterwards from inheriting the history, so the probed id is tracked like any other read.
+  it.each([403, 404])(
+    "tracks an account-scope %s probe so later observers are checked against it",
+    async status => {
+      let { session, prepared, authorizations, events } = core({
+        getFile: async () => { throw new DriveApiRequestError(status); },
+      });
+
+      await expect(session.openNativeFile("file-1", docMime, "Google Doc"))
+        .rejects.toBeInstanceOf(DriveApiRequestError);
+      expect(prepared).toEqual([["file-1"]]);
+      expect(events).toEqual(["authorize", "commit"]);
+      expect(authorizations).toEqual([{
+        title: "Check Google Drive file access",
+        description: "Check whether the connected account can access Drive file file-1.",
+        excludeObservers: ["excluded"],
+      }]);
+    },
+  );
+
+  // Through the real tracker: the probe is what a collaborator who joins afterwards is measured
+  // against, which is the only thing that keeps them out of the history that holds its result.
+  it("locks out a collaborator admitted after a failed probe", async () => {
+    let kv = new FakeKv();
+    let track = driveObserverTracker<string>(kv, { kind: "account" },
+      async (_verifier, fileIds) => ({ baselineAllowed: true, allowed: fileIds.map(() => false) }));
+    let session = new DriveSessionCore({
+      api: {
+        listFiles: async () => ({ files: [] }),
+        getFile: async () => { throw new DriveApiRequestError(404); },
+        getDrive: async (id: string) => ({ id, name: "Current shared drive" }),
+      },
+      scope: { kind: "account" },
+      prepareObservation: fileIds => track.prepareObservation(fileIds),
+      observerIds: () => [...track.observers()].map(([id]) => id),
+      authorize: async () => {},
+    });
+
+    await expect(session.openNativeFile("file-1", docMime, "Google Doc"))
+      .rejects.toBeInstanceOf(DriveApiRequestError);
+
+    await expect(track.addObserver("late", "verifier"))
+      .rejects.toThrow(/cannot access Drive file file-1/);
+    expect([...track.observers()]).toEqual([]);
+  });
+
+  it("rejects another exact-file ID before calling Google", async () => {
+    let { session, getFile } = core({ scope: { kind: "file", fileId: "file-1" } });
+
+    await expect(session.openNativeFile("file-2", docMime, "Google Doc"))
+      .rejects.toThrow(/outside this Drive binding/);
+    expect(getFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects a foreign shared-drive file without authorizing or tracking it", async () => {
+    let { session, prepared, authorizations } = core({
+      scope: { kind: "sharedDrive", driveId: "drive-1" },
+      getFile: async id => file({ id, driveId: "drive-2", mimeType: docMime }),
+    });
+
+    await expect(session.openNativeFile("foreign", docMime, "Google Doc"))
+      .rejects.toThrow(/outside this Drive binding/);
+    expect(prepared).toEqual([]);
+    expect(authorizations).toEqual([]);
+  });
+
+  it.each([
+    ["wrong native type", sheetMime, undefined],
+    ["folder", "application/vnd.google-apps.folder", undefined],
+    ["blob", "application/pdf", undefined],
+    ["shortcut", "application/vnd.google-apps.shortcut", { targetId: "target-1" }],
+  ])("observes a %s before rejecting its MIME type", async (_name, mimeType, shortcutDetails) => {
+    let { session, prepared, authorizations, events } = core({
+      getFile: async id => file({ id, mimeType, shortcutDetails }),
+    });
+
+    await expect(session.openNativeFile("file-1", docMime, "Google Doc"))
+      .rejects.toThrow(/not a Google Doc/);
+    expect(prepared).toEqual([["file-1"]]);
+    expect(authorizations).toEqual([expect.objectContaining({ excludeObservers: ["excluded"] })]);
+    expect(events).toEqual(["authorize", "commit"]);
+  });
+
+  it("never follows a shortcut target implicitly", async () => {
+    let getFile = vi.fn(async (id: string) => file({
+      id,
+      mimeType: "application/vnd.google-apps.shortcut",
+      shortcutDetails: { targetId: "target-1", targetMimeType: docMime },
+    }));
+    let { session } = core({ getFile });
+
+    await expect(session.openNativeFile("shortcut-1", docMime, "Google Doc"))
+      .rejects.toThrow(/not a Google Doc/);
+    expect(getFile).toHaveBeenCalledTimes(1);
+    expect(getFile).toHaveBeenCalledWith("shortcut-1");
+  });
+
+  it("forwards observer exclusions and commits only after authorization", async () => {
+    let { session, authorizations, events } = core({
+      getFile: async id => file({ id, mimeType: docMime }),
+    });
+
+    await session.openNativeFile("file-1", docMime, "Google Doc");
+
+    expect(authorizations).toEqual([expect.objectContaining({
+      title: "Open Google Doc from Google Drive",
+      excludeObservers: ["excluded"],
+    })]);
+    expect(events).toEqual(["authorize", "commit"]);
+  });
+
+  it("leaves a denied file observation pending rather than observed", async () => {
+    let state = "unknown";
+    let { session } = core({
+      getFile: async id => file({ id, mimeType: docMime }),
+      prepareObservation: async ids => {
+        state = "pending";
+        return { pendingSets: ids, commit: () => { state = "observed"; } };
+      },
+      authorize: async () => { throw new Error("denied"); },
+    });
+
+    await expect(session.openNativeFile("file-1", docMime, "Google Doc"))
+      .rejects.toThrow("denied");
+    expect(state).toBe("pending");
   });
 });
 

@@ -11,7 +11,7 @@ export default {
     `https://drive.google.com/drive/folders/${encodeURIComponent(values.driveId ?? "")}`,
   render({ values, setValues, ui }) {
     return <Section>
-      <Field label="Google Workspace shared drive" description="Choose a shared drive owned by an organization rather than an individual.">
+      <Field label="Google Workspace shared drive" description="Choose a shared drive owned by an organization rather than an individual. Search its files and read native Google Docs and Sheets.">
         <Autocomplete
           name="driveId"
           value={values.driveId}

@@ -683,6 +683,35 @@ describe("auth retry", () => {
     expect(calls).toHaveLength(2);
   });
 
+  // A resource whose scopes grew leaves this Durable Object memoizing a token minted under the
+  // narrower grant. Only the token a reconnect stored can fix the 403, and minting cannot produce it.
+  it("replays a 403 once with the stored token when a reconnect changed it", async () => {
+    let drive = new DriveApi(async opts => opts?.reloadStored ? "widened" : "narrow");
+    let calls = stubFetch([
+      new Response("insufficient scopes", { status: 403 }),
+      jsonResponse({ files: [{ id: "1", name: "a" }] }),
+    ]);
+
+    expect((await drive.listFiles()).files).toHaveLength(1);
+    expect(calls.map(call => call.headers.get("Authorization")))
+      .toEqual(["Bearer narrow", "Bearer widened"]);
+  });
+
+  it("surfaces a 403 without replaying it when the stored token is unchanged", async () => {
+    let requests: unknown[] = [];
+    let drive = new DriveApi(async opts => {
+      requests.push(opts);
+      return "tok";
+    });
+    let calls = stubFetch(() => new Response("insufficient scopes", { status: 403 }));
+
+    await expect(drive.listFiles()).rejects.toThrow("403");
+    // One reload asked for, and no mint: an insufficient grant must not buy a token exchange per
+    // call, and the same token would 403 again anyway.
+    expect(requests).toEqual([undefined, { reloadStored: true }]);
+    expect(calls).toHaveLength(1);
+  });
+
   it("retries a 429, which a raw fetch would have surfaced as a failure", async () => {
     let drive = new DriveApi(async () => "tok");
     let calls = stubFetch([

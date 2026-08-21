@@ -66,7 +66,7 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
 };
 
 /**
- * Metadata for every file and folder the connected Google Drive account can read.
+ * Files, folders, and read-only native Google Docs and Sheets available to the connected account.
  *
  * Whole-account, not just My Drive: listings set `includeItemsFromAllDrives`, so a shared drive the
  * account belongs to is inside this grant.
@@ -76,24 +76,24 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
   title: "Google Drive Account",
   description:
       "Find files and folders anywhere this Google account can read in Drive, including shared " +
-      "drives. Full-text search examines indexed file content, descriptions, and OCR text; " +
-      "results contain metadata only.",
+      "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
+      "results contain metadata only, while native Google Docs and Sheets can be opened read-only.",
   grantable: true,
 };
 
-/** Metadata across one Google Workspace shared drive, keyed by its immutable drive ID. */
+/** Files, folders, and read-only native content in one Google Workspace shared drive. */
 export const GOOGLE_SHARED_DRIVE_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/drive/folders/:driveId",
   title: "Google Workspace Shared Drive",
-  description: "Find files and folders in one organization-owned shared drive.",
+  description: "Find files and folders, and read native Google Docs and Sheets, in one organization-owned shared drive.",
   grantable: true,
 };
 
-/** Metadata for one immutable Drive file ID. */
+/** Metadata and, when native, read-only content for one immutable Drive file ID. */
 export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/file/d/:fileId/view",
   title: "Google Drive File",
-  description: "Read metadata for one Drive file.",
+  description: "Read metadata and, for a native Google Doc or Sheet, content from one Drive file.",
   grantable: true,
 };
 
@@ -163,7 +163,11 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   },
   {
     resource: GOOGLE_DRIVE_RESOURCE,
-    scopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+    scopes: [
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+    ],
   },
   {
     resource: GOOGLE_SHARED_DRIVE_RESOURCE,
@@ -178,7 +182,11 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   },
   {
     resource: GOOGLE_DRIVE_FILE_RESOURCE,
-    scopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+    scopes: [
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+    ],
   },
   {
     resource: BIGQUERY_RESOURCE,
@@ -241,6 +249,52 @@ export function resourcesCoveredByScopes(
       .filter(entry => requested.has(entry.resource.urlPattern) &&
                        entry.scopes.every(scope => granted.has(scope)))
       .map(entry => entry.resource.urlPattern);
+}
+
+/**
+ * One connected account's recorded consent, as stored on its Durable Object.
+ *
+ * Three generations of account, newest first. An account that consented since grants became
+ * recorded states both fields. An account that recorded scopes but not resources states only
+ * `oauthScopes`. An account from before scope tracking states neither.
+ */
+export type RecordedResourceGrant = {
+  /** The resource `urlPattern`s the user chose, when the account recorded them. */
+  resourceUrlPatterns?: readonly string[];
+  /** The OAuth scopes Google returned, when the account recorded them. */
+  oauthScopes?: readonly string[];
+};
+
+/**
+ * Every resource this account is known to have consented to, as a reconnect must re-request it.
+ *
+ * This is the set a reconnect or scope expansion must ask Google for. Filtering a *recorded* intent
+ * through the current scopes would silently drop a resource whose scope requirements have grown
+ * since it was granted, and the consent screen would then request only what the account already
+ * holds, leaving that binding permanently unusable.
+ *
+ * The two fallbacks are the frozen lists above, for the account generations that recorded less. The
+ * scope-only generation is filtered by its own scopes, because there the list is an *inference* and
+ * not a statement of intent: unfiltered, a Gmail-only account reconnecting would be asked to grant
+ * writable Docs, writable Calendar, Sheets and BigQuery, and would have them recorded once it
+ * accepted. That generation cannot express an outgrown grant either — a resource whose scopes it no
+ * longer covers is indistinguishable from one it never held — so there is nothing to keep.
+ */
+export function recordedResourceUrlPatterns(grant: RecordedResourceGrant): string[] {
+  if (grant.resourceUrlPatterns !== undefined) return [...grant.resourceUrlPatterns];
+  if (grant.oauthScopes === undefined) return [...LEGACY_GRANTED_RESOURCE_URL_PATTERNS];
+  return resourcesCoveredByScopes(SCOPE_DERIVED_RESOURCE_URL_PATTERNS, grant.oauthScopes);
+}
+
+/**
+ * The subset of {@link recordedResourceUrlPatterns} whose every OAuth scope is currently held.
+ *
+ * This is what `ensureResources` decides against, so it fails closed: a scope the user declined,
+ * or one a resource gained after it was granted, retracts the grant that needed it and re-prompts.
+ */
+export function grantedResourceUrlPatterns(grant: RecordedResourceGrant): string[] {
+  if (grant.oauthScopes === undefined) return [...LEGACY_GRANTED_RESOURCE_URL_PATTERNS];
+  return resourcesCoveredByScopes(recordedResourceUrlPatterns(grant), grant.oauthScopes);
 }
 
 /** A resource URL resolved to the binding parameters its gatekeeper takes. */

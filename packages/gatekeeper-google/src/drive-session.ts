@@ -8,6 +8,10 @@ import type {
 
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 const SHORTCUT_MIME_TYPE = "application/vnd.google-apps.shortcut";
+/** Exact MIME type for native Google Docs files. */
+export const GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document";
+/** Exact MIME type for native Google Sheets files. */
+export const GOOGLE_SHEET_MIME_TYPE = "application/vnd.google-apps.spreadsheet";
 
 // Agent-supplied query values go in the approval description, so each value and the whole string
 // are capped. They are not logged and they stay out of the title.
@@ -22,7 +26,14 @@ export type DriveBindingScope =
 
 type DriveSessionApi = Pick<DriveApi, "listFiles" | "getFile" | "getDrive">;
 
-type DriveSessionCoreOptions = {
+/**
+ * Everything one Drive session core enforces and reports through.
+ *
+ * `authorize` is part of the construction because it is the one thing that differs between the
+ * cores a session builds: they share its scope and observer tracking, but a capability handed to
+ * the caller -- a cursor -- authorizes through an approval queue with its own lifetime.
+ */
+export type DriveSessionCoreOptions = {
   api: DriveSessionApi;
   scope: DriveBindingScope;
   prepareObservation(fileIds: string[]): Promise<ObserverCheck<string>>;
@@ -257,6 +268,26 @@ export class DriveSessionCore {
     return entry;
   }
 
+  /** Validate and authorize one native file before a nested content session is created. */
+  async openNativeFile(
+    fileId: string,
+    expectedMimeType: string,
+    description: string,
+  ): Promise<string> {
+    if (this.#scope.kind === "file" && fileId !== this.#scope.fileId) this.#outsideScope();
+    let file = await this.#api.getFile(fileId);
+    if (!this.#inScope(file)) this.#outsideScope();
+    await this.#authorizeIds(
+      [file.id],
+      `Open ${description} from Google Drive`,
+      `Check current metadata for Drive file ${file.id} and open it as a ${description}.`,
+    );
+    if (file.mimeType !== expectedMimeType) {
+      throw new Error(`The requested Drive file is not a ${description}.`);
+    }
+    return file.id;
+  }
+
   #cursor(query: DriveListFilesOptions, denyEmptySearch = false): Pager<DriveEntry> {
     let hasDisclosedEntries = false;
     return new CursorPager<DriveFile, DriveEntry>({
@@ -329,13 +360,23 @@ export class DriveSessionCore {
     try {
       file = await this.#api.getFile(fileId);
     } catch (err) {
-      if (this.#scope.kind === "sharedDrive" && err instanceof DriveApiRequestError &&
-          !err.isQuotaExceeded && (err.status === 403 || err.status === 404)) {
-        this.#outsideScope();
+      if (err instanceof DriveApiRequestError && !err.isQuotaExceeded &&
+          (err.status === 403 || err.status === 404)) {
+        if (this.#scope.kind === "sharedDrive") this.#outsideScope();
+        if (this.#scope.kind === "account") {
+          // Tracked like a successful read rather than merely hidden from today's observers. An
+          // ObservationDescription's exclusion binds only the observers named in it — there is no
+          // per-thread hiding — so with none registered the result would be disclosed with nothing
+          // durable recorded, and a collaborator admitted later would inherit the history unchecked.
+          // Committing the id makes every future addObserver() verify it, and a file this account
+          // cannot reach is one no observer can reach either, so that admission fails closed.
+          await this.#authorizeIds([fileId], "Check Google Drive file access",
+            `Check whether the connected account can access Drive file ${fileId}.`);
+        }
       }
       throw err;
     }
-    if (!this.#inScope(file)) this.#outsideScope();
+    if (file.id !== fileId || !this.#inScope(file)) this.#outsideScope();
     return file;
   }
 

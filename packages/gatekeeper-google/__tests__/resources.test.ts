@@ -3,8 +3,9 @@ import {
   BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_DOC_RESOURCE,
   GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHARED_DRIVE_RESOURCE,
   GOOGLE_SHEETS_RESOURCE, IDENTITY_SCOPES, LEGACY_GRANTED_RESOURCE_URL_PATTERNS, RESOURCE_BY_KIND,
-  RESOURCE_SCOPES, SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SUPPORTED_RESOURCES, hasDriveResourceGrant,
-  parseResourceUrl, resourceUrlPatternsToOAuthScopes, resourcesCoveredByScopes,
+  RESOURCE_SCOPES, SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SUPPORTED_RESOURCES,
+  grantedResourceUrlPatterns, hasDriveResourceGrant, parseResourceUrl,
+  recordedResourceUrlPatterns, resourceUrlPatternsToOAuthScopes, resourcesCoveredByScopes,
   validateResourceUrlPatterns,
 } from "../src/resources";
 
@@ -76,6 +77,18 @@ describe("resource declarations", () => {
     }
     expect(new Set(Object.values(RESOURCE_BY_KIND)).size).toBe(SUPPORTED_RESOURCES.length);
   });
+
+  it("advertises native Docs and Sheets only on Drive resources", () => {
+    expect([
+      GOOGLE_DRIVE_RESOURCE.description,
+      GOOGLE_SHARED_DRIVE_RESOURCE.description,
+      GOOGLE_DRIVE_FILE_RESOURCE.description,
+    ]).toEqual([
+      "Find files and folders and read native Google Docs and Sheets anywhere this Google account can read in Drive, including shared drives it belongs to.",
+      "Find files and folders, and read native Google Docs and Sheets, in one organization-owned shared drive.",
+      "Read metadata and, for a native Google Doc or Sheet, content from one Drive file.",
+    ]);
+  });
 });
 
 describe("resourceUrlPatternsToOAuthScopes", () => {
@@ -96,17 +109,40 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
     ]);
   });
 
-  // Pins the permanent scope each Drive resource is keyed to. Only the first two are
-  // least-privilege: the shared drive needs `drive.readonly` because `drives.list`/`drives.get`
-  // accept nothing narrower, which is why it is the one resource consenting wider than it reads.
+  // Pins every permanent scope each Drive resource needs. Account and exact-file bindings require
+  // the metadata scope plus the native Docs and Sheets read scopes. The shared drive needs the wider
+  // `drive.readonly` scope because `drives.list`/`drives.get` accept nothing narrower.
   it.each([
-    [GOOGLE_DRIVE_RESOURCE, "https://www.googleapis.com/auth/drive.metadata.readonly"],
-    [GOOGLE_SHARED_DRIVE_RESOURCE, "https://www.googleapis.com/auth/drive.readonly"],
-    [GOOGLE_DRIVE_FILE_RESOURCE, "https://www.googleapis.com/auth/drive.metadata.readonly"],
-  ] as const)("pins the permanent scope for $urlPattern", (resource, scope) => {
+    [GOOGLE_DRIVE_RESOURCE, [
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+    ]],
+    [GOOGLE_SHARED_DRIVE_RESOURCE, ["https://www.googleapis.com/auth/drive.readonly"]],
+    [GOOGLE_DRIVE_FILE_RESOURCE, [
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+    ]],
+  ] as const)("pins the permanent scopes for $urlPattern", (resource, scopes) => {
     expect(resourceUrlPatternsToOAuthScopes([resource.urlPattern])).toEqual([
-      ...IDENTITY_SCOPES, scope,
+      ...IDENTITY_SCOPES, ...scopes,
     ]);
+  });
+
+  it("requires account and file grants to expand beyond metadata-only consent", () => {
+    const oldMetadataGrant = [
+      ...IDENTITY_SCOPES,
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+    ];
+    const granted = grantedResourcesFromScopes(oldMetadataGrant);
+
+    expect(granted).not.toContain(GOOGLE_DRIVE_RESOURCE.urlPattern);
+    expect(granted).not.toContain(GOOGLE_DRIVE_FILE_RESOURCE.urlPattern);
+    expect(grantedResourcesFromScopes([
+      ...IDENTITY_SCOPES,
+      "https://www.googleapis.com/auth/drive.readonly",
+    ])).toContain(GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern);
   });
   it("deduplicates scopes shared between resources", () => {
     let scopes = resourceUrlPatternsToOAuthScopes(
@@ -400,5 +436,54 @@ describe("parseResourceUrl", () => {
     ])("rejects %s", (_name, url, message) => {
       expect(() => parseResourceUrl(url)).toThrow(message);
     });
+  });
+});
+
+describe("recorded account grants", () => {
+  // An account that connected Drive before the resource required the native Docs and Sheets read
+  // scopes. The grant no longer holds, but a reconnect must still request it: filtering it out
+  // first would ask Google only for the scopes the account already has, and the binding could
+  // never be repaired.
+  const staleDriveGrant = {
+    resourceUrlPatterns: [GOOGLE_DRIVE_RESOURCE.urlPattern],
+    oauthScopes: [...IDENTITY_SCOPES, "https://www.googleapis.com/auth/drive.metadata.readonly"],
+  };
+
+  it("keeps a scope-outgrown grant requestable while reporting it as not granted", () => {
+    expect(grantedResourceUrlPatterns(staleDriveGrant)).toEqual([]);
+    expect(recordedResourceUrlPatterns(staleDriveGrant))
+      .toEqual([GOOGLE_DRIVE_RESOURCE.urlPattern]);
+  });
+
+  it("requests the same resources it reports for a current grant", () => {
+    const grant = {
+      resourceUrlPatterns: [GOOGLE_DRIVE_RESOURCE.urlPattern],
+      oauthScopes: resourceUrlPatternsToOAuthScopes([GOOGLE_DRIVE_RESOURCE.urlPattern]),
+    };
+    expect(grantedResourceUrlPatterns(grant)).toEqual([GOOGLE_DRIVE_RESOURCE.urlPattern]);
+    expect(recordedResourceUrlPatterns(grant)).toEqual([GOOGLE_DRIVE_RESOURCE.urlPattern]);
+  });
+
+  it("falls back to the historical grant for a pre-recording account", () => {
+    expect(recordedResourceUrlPatterns({})).toEqual(LEGACY_GRANTED_RESOURCE_URL_PATTERNS);
+    expect(grantedResourceUrlPatterns({})).toEqual(LEGACY_GRANTED_RESOURCE_URL_PATTERNS);
+  });
+
+  it("infers every pre-recording resource a scope-only account's scopes cover", () => {
+    const grant = {
+      oauthScopes: resourceUrlPatternsToOAuthScopes(
+        SUPPORTED_RESOURCES.map(resource => resource.urlPattern)),
+    };
+    expect(recordedResourceUrlPatterns(grant)).toEqual(SCOPE_DERIVED_RESOURCE_URL_PATTERNS);
+    expect(grantedResourceUrlPatterns(grant)).toEqual(SCOPE_DERIVED_RESOURCE_URL_PATTERNS);
+  });
+
+  // The inference is the whole of what a scope-only account states, so a reconnect must not widen
+  // it: requesting the frozen list unfiltered would put writable Docs and Calendar on a Gmail-only
+  // account's consent screen, and record them once accepted.
+  it("requests only what a scope-only account's scopes already cover", () => {
+    const grant = { oauthScopes: resourceUrlPatternsToOAuthScopes([GMAIL_RESOURCE.urlPattern]) };
+    expect(recordedResourceUrlPatterns(grant)).toEqual([GMAIL_RESOURCE.urlPattern]);
+    expect(grantedResourceUrlPatterns(grant)).toEqual([GMAIL_RESOURCE.urlPattern]);
   });
 });

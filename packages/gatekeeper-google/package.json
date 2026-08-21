@@ -7,7 +7,7 @@
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
     "deploy": "vp run --no-cache build:configurator && wrangler deploy",
     "clean": "rm -rf dist src/generated",
-    "test:run": "vitest run"
+    "test:run": "vitest run && vitest run -c vitest.worker.config.ts"
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
@@ -20,6 +20,8 @@
     "postal-mime": "^2.7.6"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "miniflare": "5.20260801.0-alpha",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"
