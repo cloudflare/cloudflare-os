@@ -76,9 +76,12 @@ export interface ChatOtClientDelegate {
   /** True for transport-level failures that a retry/reconnect is expected to cure. */
   isTransientError(err: unknown): boolean
   /**
-   * Remote content changed. `events` carries per-file deltas for open editors (empty when the
-   * change is coarse, e.g. an epoch reset); consumers of derived state should re-read either
-   * way.
+   * Remote content changed. `events` carries per-file deltas for open editors; an *empty* array
+   * means the change is coarse (a rebuild or epoch reset) and open editors must reload from the
+   * client wholesale. Notifications that would change nothing an editor displays -- our own
+   * submission's echo, a doubly-transformed no-op remote row -- are not delivered at all, so
+   * empty never means "no-op" (a spurious coarse signal would needlessly rebuild editors,
+   * dropping focus and selection).
    */
   onRemoteChange(events: RemoteFileEvent[]): void
   /** Queued local edits were discarded (hard rejection or destructive generation bump). */
@@ -470,12 +473,14 @@ export class ChatOtClient {
 
     if (own) {
       // Our own echo: the broadcast change is our in-flight change as the server transformed it
-      // -- the same transforms we applied locally -- so the display already reflects it.
+      // -- the same transforms we applied locally -- so the display already reflects it and
+      // editors are notified only of the seed events above (usually none). An empty call would
+      // read as a coarse reset (see ChatOtClientDelegate.onRemoteChange).
       this.#inflight = null
       this.#submitBackoffMs = SUBMIT_RETRY_BASE_MS
       this.#delegate.onDirtyState(false)
       this.#scheduleSubmit()
-      this.#delegate.onRemoteChange(events)
+      if (events.length > 0) this.#delegate.onRemoteChange(events)
       return true
     }
 
@@ -498,7 +503,9 @@ export class ChatOtClient {
         events.push({ gadgetId: Number(gadgetKey), path, change })
       }
     }
-    this.#delegate.onRemoteChange(events)
+    // A row whose doubly-transformed form changed no displayed file (and surfaced no seeds)
+    // is a display no-op: deliver nothing rather than a spurious coarse reset.
+    if (events.length > 0) this.#delegate.onRemoteChange(events)
     return true
   }
 

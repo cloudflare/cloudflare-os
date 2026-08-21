@@ -810,8 +810,11 @@ export default function GadgetCodeInterface({
     if (!ensureEditable() || client === null) return false
     const change: CodeChange = { [workpieceIdRef.current]: changes }
     client.applyLocalChange(change)
+    // Local edits get no client notification (our own echo is silent -- see
+    // ChatOtClientDelegate.onRemoteChange), so re-derive the file list and statuses here.
+    bumpContentVersion()
     return true
-  }, [client, ensureEditable])
+  }, [client, ensureEditable, bumpContentVersion])
 
   // The active file's editing session (see EditSession in CodeEditor). Identity is stable
   // across content changes -- the editor patches its document from remote deltas -- and rolls
@@ -854,6 +857,9 @@ export default function GadgetCodeInterface({
             ? change
             : { set: docText }
           client.applyLocalChange({ [gadgetId]: [[path, fileChange]] })
+          // Local edits get no client notification (our own echo is silent -- see
+          // ChatOtClientDelegate.onRemoteChange), so re-derive the sidebar's diff statuses here.
+          bumpContentVersion()
         } catch (err) {
           // The editor's document drifted from the client's content (a bug); reload it from
           // the client rather than corrupting the chat.
@@ -875,7 +881,8 @@ export default function GadgetCodeInterface({
         }
       },
     }
-  }, [branchMode, client, activeFile, workpieceId, selectedChatId, resetToken])
+  }, [branchMode, client, activeFile, workpieceId, selectedChatId, resetToken,
+      bumpContentVersion])
 
   // ---- file management (create / delete / rename / download) --------------------------------
 

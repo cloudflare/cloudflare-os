@@ -114,6 +114,7 @@ describe('ChatOtClient', () => {
     expect(h.client.hasLocalEdits()).toBe(true)
 
     // The echo row (recognized by clientId/seq) folds the change into acked state.
+    h.remoteEvents.length = 0
     h.client.setDurableState({
       codeBase: {
         pins: [{ gadgetId: 1, baseCommit: 'head', mergedCommit: 'head' }],
@@ -126,6 +127,50 @@ describe('ChatOtClient', () => {
     await flush()
     expect(h.client.hasLocalEdits()).toBe(false)
     expect(filesOf(h.client.getContent(), 1)).toEqual({ 'a.txt': 'abcd' })
+    // The echo changes nothing displayed, so it must deliver no notification at all -- in
+    // particular not an empty events array, which means a coarse change and would make the code
+    // view rebuild its open editors (dropping focus and selection) after every acked keystroke.
+    expect(h.remoteEvents).toEqual([])
+
+    // The same holds for a subsequent keystroke's echo, once the gadget's content is acked.
+    h.client.applyLocalChange({ 1: [['a.txt', { edit: [4, [0, 'e']] }]] })
+    await flush()
+    expect(h.submissions).toHaveLength(2)
+    const second = h.submissions[1]
+    h.client.pushRow(row(0, 2, second.change,
+                         { clientId: second.clientId, seq: second.seq }))
+    await flush()
+    expect(h.client.hasLocalEdits()).toBe(false)
+    expect(filesOf(h.client.getContent(), 1)).toEqual({ 'a.txt': 'abcde' })
+    expect(h.remoteEvents).toEqual([])
+  })
+
+  it('stays silent on a remote row whose transformed form changes nothing displayed', async () => {
+    const h = new TestHarness()
+    h.commits.set('c1', new Map([['a.txt', 'abc']]))
+    h.client.setDurableState({
+      codeBase: {
+        pins: [{ gadgetId: 1, baseCommit: 'c1', mergedCommit: 'c1' }],
+        generation: 0, revision: 0,
+      },
+      rowsThrough: 0,
+    })
+    await flush()
+    h.remoteEvents.length = 0
+
+    // Our own remove is in flight when another author's identical remove lands first.
+    h.submitResult = () => new Promise(() => {})
+    h.client.applyLocalChange({ 1: [['a.txt', { remove: true }]] })
+    await flush()
+    expect(h.submissions).toHaveLength(1)
+
+    // The row transforms to a display no-op (remove vs remove: the earlier writer's side is
+    // dropped): no notification -- especially not an empty (coarse) one, which would rebuild
+    // open editors.
+    h.client.pushRow(row(0, 1, { 1: [['a.txt', { remove: true }]] }))
+    await flush()
+    expect(h.remoteEvents).toEqual([])
+    expect(filesOf(h.client.getContent(), 1)).toEqual({})
   })
 
   it('clears an accepted submission from the ack alone when its echo row never arrives', async () => {
