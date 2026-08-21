@@ -10,6 +10,9 @@ import type {
   AccountDescription, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 
+/** Canonical callback-target base paired with this package's Cap'n Web instance. */
+export { RpcTarget };
+
 /**
  * Poll `attempt` until it returns non-null.
  *

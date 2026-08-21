@@ -121,3 +121,32 @@ it("uninstall restores the fetch that install captured", async () => {
   await expect(fetch("https://later.test/")).rejects.toThrow(/Unmocked outbound request/);
   interceptor.uninstall();
 });
+
+it("passes an allowed host through to the real fetch, body intact", async () => {
+  const seen: { url: string; method: string; body: string }[] = [];
+  const captured = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    seen.push({ url: request.url, method: request.method, body: await request.text() });
+    return Response.json({ ok: true });
+  }) as typeof globalThis.fetch;
+
+  const interceptor = new NetworkInterceptor([], { passThroughHosts: ["allowed.test"] });
+  interceptor.install();
+  try {
+    const response = await fetch("https://allowed.test/v1/chat", {
+      method: "POST",
+      body: JSON.stringify({ prompt: "hello" }),
+    });
+    expect(await response.json()).toEqual({ ok: true });
+    // A handler never receives a body, so passing one through has to bypass handlers entirely.
+    expect(seen).toEqual([
+      { url: "https://allowed.test/v1/chat", method: "POST", body: '{"prompt":"hello"}' },
+    ]);
+
+    await expect(fetch("https://denied.test/probe")).rejects.toThrow(/Unmocked outbound request/);
+  } finally {
+    interceptor.uninstall();
+    globalThis.fetch = captured;
+  }
+});

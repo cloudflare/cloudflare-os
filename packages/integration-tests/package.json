@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./agent-session": "./src/agent-session.ts",
     "./harness": "./src/harness.ts",
     "./network-interceptor": "./src/network-interceptor.ts",
     "./rpc-client": "./src/rpc-client.ts"
@@ -17,6 +18,7 @@
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "jsonc-parser": "^3.3.1",
+    "yjs": "^13.6.31",
     "zod": "^4.4.3"
   },
   "devDependencies": {
