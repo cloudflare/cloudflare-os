@@ -13,6 +13,8 @@ interface ActivityNotificationsProps {
   pendingById: ReadonlyMap<number, ActionLogEntry>
   /** True while the background scan for already-pending requests is still running. */
   isChecking: boolean
+  /** True when that scan failed; requests gathered before the failure still render. */
+  isError: boolean
   onViewActivity: (view: ActivityView) => void
 }
 
@@ -22,6 +24,7 @@ export default function ActivityNotifications({
   overseer,
   pendingById,
   isChecking,
+  isError,
   onViewActivity,
 }: ActivityNotificationsProps) {
   const [open, setOpen] = useState(false)
@@ -75,7 +78,9 @@ export default function ActivityNotifications({
 
         {pending.length === 0 ? (
           <p className="m-0 px-3.5 pb-3 pt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-            {isChecking ? 'Checking for pending requests…' : 'Nothing is waiting on you.'}
+            {isError
+              ? 'Could not check for requests — reload the page to try again.'
+              : isChecking ? 'Checking for pending requests…' : 'Nothing is waiting on you.'}
           </p>
         ) : (
           <div className="max-h-[min(58vh,420px)] overflow-y-auto pb-1">
