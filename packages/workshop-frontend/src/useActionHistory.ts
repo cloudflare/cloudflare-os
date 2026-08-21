@@ -10,6 +10,7 @@ type View = {
   status: ActionHistoryStatus
   hasMore: boolean
   isLoadingMore: boolean
+  loadMoreFailed: boolean
 }
 
 type HistorySession = {
@@ -22,7 +23,9 @@ function createHistorySession(): HistorySession {
   return { frontier: undefined, inFlight: false, hasLoadedPage: false }
 }
 
-const INITIAL: View = { byId: new Map(), status: 'idle', hasMore: true, isLoadingMore: false }
+const INITIAL: View = {
+  byId: new Map(), status: 'idle', hasMore: true, isLoadingMore: false, loadMoreFailed: false,
+}
 
 /**
  * Demand-loads resolved action history, one page at a time, newest first by id (creation order).
@@ -56,7 +59,9 @@ export function useActionHistory(
         (session.hasLoadedPage && session.frontier === undefined)) return
     const first = !session.hasLoadedPage
     session.inFlight = true
-    setView(prev => first ? { ...prev, status: 'loading' } : { ...prev, isLoadingMore: true })
+    setView(prev => first
+      ? { ...prev, status: 'loading' }
+      : { ...prev, isLoadingMore: true, loadMoreFailed: false })
 
     overseer.listActions({ beforeId: session.frontier, filter }).then(page => {
       if (sessionRef.current !== session) return
@@ -71,6 +76,7 @@ export function useActionHistory(
           status: 'ready',
           hasMore: page.nextBeforeId !== undefined,
           isLoadingMore: false,
+          loadMoreFailed: false,
         }
       })
     }, (err: unknown) => {
@@ -81,6 +87,7 @@ export function useActionHistory(
         ...prev,
         status: first ? 'error' : prev.status,
         isLoadingMore: false,
+        loadMoreFailed: !first,
       }))
     })
   }, [overseer, filter])
@@ -111,6 +118,7 @@ export function useActionHistory(
     status: view.status,
     hasMore: view.hasMore,
     isLoadingMore: view.isLoadingMore,
+    loadMoreFailed: view.loadMoreFailed,
     loadMore,
   }
 }

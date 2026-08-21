@@ -200,6 +200,7 @@ describe('useActionHistory', () => {
     await render(server.overseer, 'all', true)
     await server.rejectPage(new Error('nope'))
     expect(latest.status).toBe('error')
+    expect(latest.loadMoreFailed).toBe(false)  // first-load failure is owned by status
 
     act(() => latest.loadMore())
     expect(server.listCalls[1]).toEqual({ beforeId: undefined, filter: 'all' })
@@ -218,13 +219,16 @@ describe('useActionHistory', () => {
     act(() => latest.loadMore())
     await server.rejectPage(new Error('nope'))
     expect(latest.status).toBe('ready')
+    expect(latest.loadMoreFailed).toBe(true)
     expect(latest.entries.map(e => e.id)).toEqual([30])
     expect(latest.hasMore).toBe(true)
     expect(latest.isLoadingMore).toBe(false)
 
     act(() => latest.loadMore())
+    expect(latest.loadMoreFailed).toBe(false)  // cleared as soon as the retry starts
     expect(server.listCalls[2]).toEqual({ beforeId: 10, filter: 'all' })
     await server.resolvePage({ entries: [entry(5)] })
+    expect(latest.loadMoreFailed).toBe(false)
     expect(latest.entries.map(e => e.id)).toEqual([30, 5])
     expect(latest.hasMore).toBe(false)
     vi.restoreAllMocks()

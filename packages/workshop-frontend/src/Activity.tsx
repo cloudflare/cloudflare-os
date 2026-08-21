@@ -299,7 +299,14 @@ export default function Activity({
               ))}
             </section>
           ))}
-          {history.hasMore && (
+          {history.loadMoreFailed ? (
+            <div className="flex items-center justify-center gap-3 py-3">
+              <span className="text-[12px] leading-4 text-kumo-inactive">
+                Couldn't load older activity
+              </span>
+              <WorkshopButton onClick={history.loadMore}>Retry</WorkshopButton>
+            </div>
+          ) : history.hasMore && (
             <div className="flex justify-center py-3">
               <WorkshopButton onClick={history.loadMore} disabled={history.isLoadingMore}>
                 {history.isLoadingMore ? 'Loading…' : 'Load older'}
