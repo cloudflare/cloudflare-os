@@ -1,12 +1,10 @@
 name: Workshop evals
 
 # Live agent evals: every run boots a workerd Workshop and drives a real model, so this is kept out
-# of CI. It runs nightly, on demand, and on a pull request only when someone adds the `run-evals`
-# label. The `main` push trigger is deliberately absent: a merge that regresses the agent is caught
-# by the following night's run, and running on every merge would serialise the queue behind them.
+# of regular CI. It runs on demand, and on a pull request only when someone adds the `run-evals`
+# label. Add a schedule after results have durable ingestion; expiring workflow artifacts do not
+# support trend analysis or regression alerts across runs.
 on:
-  schedule:
-    - cron: "0 5 * * *"
   workflow_dispatch:
     inputs:
       trials:
@@ -23,7 +21,7 @@ permissions:
 
 env:
   NODE_VERSION: "24.19.0"
-  # Nightly and dispatch runs want statistics; a labelled pull request wants a quick read.
+  # Manual runs want statistics; a labelled pull request wants a quick read.
   WORKSHOP_EVAL_TRIALS: ${{ inputs.trials || (github.event_name == 'pull_request' && '3' || '10') }}
   WORKSHOP_EVAL_MODELS: ${{ inputs.models }}
 
@@ -55,8 +53,7 @@ jobs:
       matrix:
         expectation: [required, frontier]
         # A trial builds a whole application, so it costs minutes, not seconds: the tasks in this
-        # suite run 3-7 minutes each. Six shards keeps a nightly run of ten trials inside the job
-        # timeout with room to spare.
+        # suite run 3-7 minutes each. Six shards keeps a ten-trial run inside the job timeout.
         shard: [1, 2, 3, 4, 5, 6]
     steps:
       - name: Check out repository

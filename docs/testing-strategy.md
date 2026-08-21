@@ -144,14 +144,18 @@ A Gadget's own code has no network at all. The platform gives its Worker no outb
 | | Gate 1 | Gate 2 |
 |---|---|---|
 | Workflow | `ci.yml` | `workshop-evals.yml` |
-| Trigger | every pull request, and every push to `main` | 05:00 UTC each night, on demand, or the `run-evals` label |
+| Trigger | every pull request, and every push to `main` | on demand, or the `run-evals` label |
 | Command | `pnpm build`, `pnpm test`, `pnpm lint` | `pnpm eval:required`, `pnpm eval:frontier` |
-| Trials | not applicable | 10 at night, 3 on a pull request |
+| Trials | not applicable | 10 on a manual run, 3 on a pull request |
 | Blocks a merge | yes | only with the label |
 
 Gate 2 runs 6 shards for each task set, and it limits the matrix to 4 jobs at a time. Workers AI
 applies a rate limit for each account, and one trial makes many model calls. More jobs at once return
 HTTP 429, and the run then measures very little.
+
+Gate 2 has no schedule until its results flow into durable experiment storage. Workflow artifacts
+expire after 30 days, so scheduled runs cannot yet show a long-term trend or trigger a regression
+alert against a stable baseline.
 
 Each task carries one of two states:
 
