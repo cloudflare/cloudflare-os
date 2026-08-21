@@ -749,17 +749,17 @@ export default function GadgetEditor() {
       ? streamingActiveFile.filename
       : undefined
 
-  const { status: pendingStatus, pendingById, liveById } = useActions(overseer?.stub ?? null)
-  // Hook bindings change once in a while, but `liveById` is a fresh Map on every action-log
+  const { status: pendingStatus, pendingById, entriesById } = useActions(overseer?.stub ?? null)
+  // Hook bindings change once in a while, but `entriesById` is a fresh Map on every action-log
   // frame. Track just the bindHook enable states so the refetch isn't driven at animation rate.
-  // listHooks() below is the authoritative initial source; live entries only trigger refetches.
+  // listHooks() below is the authoritative initial source; entries only trigger refetches.
   const hookSignature = useMemo(() => {
     const parts: string[] = []
-    for (const record of liveById.values()) {
+    for (const record of entriesById.values()) {
       if (record.type === 'bindHook') parts.push(`${record.hookId}:${record.enabled}`)
     }
     return parts.join()
-  }, [liveById])
+  }, [entriesById])
   const [hookedGadgetIds, setHookedGadgetIds] = useState<ReadonlySet<WorkpieceId>>(NO_GADGETS)
   useEffect(() => {
     if (!overseer || metadata === null || isUseOnly) return

@@ -50,7 +50,6 @@ function makeOverseer() {
       subscriber = sub as ActionsSubscriber
       return { [Symbol.dispose]: () => {} } as RpcStub<{}>
     },
-    scanPendingActions: async () => ({ entries: [], throughId: 0 }),
     [Symbol.dispose]: () => {},
   } as unknown as RpcStub<Overseer>
   return {

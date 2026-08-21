@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, PendingActionsPage, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitIdentity, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitIdentity, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, changedGadgets, composeCodeChange, diffFiles, transformCodeChange,
   validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -1298,14 +1298,11 @@ const LISTING_REFRESH_BATCH = 16;
 // Longest noun accepted on a format reference. Denormalized display data.
 const MAX_FORMAT_REF_NOUN = 128;
 
-/** Raw records examined per scanPendingActions() page. Exported for tests. */
+/** Raw records examined per page of subscribeToActions()'s pending replay. Exported for tests. */
 export const PENDING_SCAN_PAGE_SIZE = 256;
 
-/** listActions() entries returned per page by default. Exported for tests. */
+/** listActions() entries returned per page. Exported for tests. */
 export const HISTORY_PAGE_DEFAULT_LIMIT = 50;
-
-/** Hard max on listActions() entries returned per page. Exported for tests. */
-export const HISTORY_PAGE_MAX_LIMIT = 100;
 
 /**
  * Cap on raw records a single listActions() call examines, so a filtered scan over a huge log
@@ -9379,14 +9376,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return result;
   }
 
-  async listActions(options?: {beforeId?: number, limit?: number, filter?: ActionHistoryFilter})
+  async listActions(options?: {beforeId?: number, filter?: ActionHistoryFilter})
       : Promise<ActionHistoryPage> {
     let {beforeId, filter = "all"} = options ?? {};
     if (beforeId !== undefined && (!Number.isSafeInteger(beforeId) || beforeId < 0)) {
       throw new TypeError(`Invalid beforeId: ${beforeId}`);
     }
-    let limit = Math.min(Math.max(options?.limit ?? HISTORY_PAGE_DEFAULT_LIMIT, 1),
-        HISTORY_PAGE_MAX_LIMIT);
 
     let entries: ActionLogEntry[] = [];
     let scanned = 0;
@@ -9398,12 +9393,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       if (record.state === "pending") continue;
       if (filter !== "all" && record.type !== filter) continue;
       entries.push(actionRecordToLog(record));
-      if (entries.length >= limit) break;
+      if (entries.length >= HISTORY_PAGE_DEFAULT_LIMIT) break;
     }
 
     // Either cap hit means older records may remain; falling out below both means the scan
     // reached the start of the log.
-    let more = scanned >= HISTORY_PAGE_SCAN_CAP || entries.length >= limit;
+    let more = scanned >= HISTORY_PAGE_SCAN_CAP || entries.length >= HISTORY_PAGE_DEFAULT_LIMIT;
     return {entries, nextBeforeId: more ? lastId : undefined};
   }
 
@@ -9751,7 +9746,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // agent sees it the next time the user sends a message (see the connectionRequest history case).
   }
 
-  async subscribeToActions(subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date)
+  async subscribeToActions(subscriber: RpcStub<ActionsSubscriber>, _startAfter?: Date)
       : Promise<RpcStub<{}>> {
     let actions = this.impl.storage.actions;
 
@@ -9782,18 +9777,27 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     actions.subscribe(dbSubscriber);
     subscribed = true;
 
-    // Replay actions changed since `startAfter`; resolved actions use `appliedAt`,
-    // pending actions use `createdAt`.
-    if (startAfter !== undefined) {
-      let startAfterTimestamp = startAfter.valueOf();
-      for (let record of actions.list()) {
+    // Replay currently-pending records before returning. nextActionId bounds the sweep: records
+    // created past it are delivered by the live subscription registered above. Pages are
+    // synchronous snapshots; the yield between pages keeps a huge log from starving other RPCs.
+    try {
+      let end = this.impl.storage.nextActionId.get();
+      let cursor: number | undefined;
+      for (;;) {
         if (disposed) break;
-        let appliedAt = record.type === "action" ? record.appliedAt : undefined;
-        let recordTimestamp = (appliedAt ?? record.createdAt).valueOf();
-        if (recordTimestamp > startAfterTimestamp) {
-          subscriber.entry(actionRecordToLog(record)).catch(unsubscribe);
+        let page = [...actions.list({startAfter: cursor, end, limit: PENDING_SCAN_PAGE_SIZE})];
+        for (let record of page) {
+          if (record.state === "pending") {
+            subscriber.entry(actionRecordToLog(record)).catch(unsubscribe);
+          }
         }
+        if (page.length < PENDING_SCAN_PAGE_SIZE) break;
+        cursor = page.at(-1)!.id;
+        await scheduler.wait(0);
       }
+    } catch (err) {
+      unsubscribe();
+      throw err;  // rejecting the subscribe call is the client's error signal
     }
 
     if (!disposed) subscriber.ready().catch(unsubscribe);
@@ -9804,38 +9808,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         unsubscribe();
       }
     });
-  }
-
-  // @validateRpc covers shapes; the semantic checks are here. The scan loop is synchronous (no
-  // awaits), so each page is a consistent snapshot.
-  async scanPendingActions(options?: {cursor?: number, throughId?: number})
-      : Promise<PendingActionsPage> {
-    let {cursor, throughId} = options ?? {};
-    for (let [name, value] of Object.entries({cursor, throughId})) {
-      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
-        throw new TypeError(`Invalid ${name}: ${value}`);
-      }
-    }
-    if (cursor !== undefined && throughId === undefined) {
-      throw new TypeError("scanPendingActions: cursor requires throughId.");
-    }
-    let nextActionId = this.impl.storage.nextActionId.get();
-    if (throughId !== undefined && throughId > nextActionId) {
-      throw new TypeError(`Invalid throughId: ${throughId} > ${nextActionId}`);
-    }
-    throughId ??= nextActionId;
-
-    let entries: ActionLogEntry[] = [];
-    let scanned = 0;
-    let lastId = 0;
-    for (let record of this.impl.storage.actions.list(
-        {startAfter: cursor, end: throughId, limit: PENDING_SCAN_PAGE_SIZE})) {
-      ++scanned;
-      lastId = record.id;
-      if (record.state === "pending") entries.push(actionRecordToLog(record));
-    }
-    return {entries, throughId,
-            nextCursor: scanned >= PENDING_SCAN_PAGE_SIZE ? lastId : undefined};
   }
 
   async listChats(): Promise<AiChatMetadata[]> {
@@ -10485,7 +10457,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 // viewers' names, profile IDs, and roles. Every other
 // method throws "Unauthorized", with a few exceptions: subscribeToConsoleLogs() and
 // subscribeToActions() return inert subscriptions (they never deliver data), and
-// scanPendingActions() / listActions() return empty terminal pages, rather than denying.
+// listActions() returns an empty terminal page, rather than denying.
 // The editor calls all of these speculatively from its top-level hooks, before it has switched to
 // the use-only view; an inert result lets those calls resolve quietly instead of surfacing
 // as spurious client-side errors, while still revealing nothing to the "use" collaborator.
@@ -10635,14 +10607,10 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     this.#deny();
   }
   // Inert (see class comment): the editor pages the action log speculatively before it knows its
-  // role, so answer with empty terminal pages instead of denying.
-  async listActions(_options?: {beforeId?: number, limit?: number, filter?: ActionHistoryFilter})
+  // role, so answer with an empty terminal page instead of denying.
+  async listActions(_options?: {beforeId?: number, filter?: ActionHistoryFilter})
       : Promise<ActionHistoryPage> {
     return {entries: []};
-  }
-  async scanPendingActions(_options?: {cursor?: number, throughId?: number})
-      : Promise<PendingActionsPage> {
-    return {entries: [], throughId: 0};
   }
   async approveAction(_id: number): Promise<void> { this.#deny(); }
   async rejectAction(_id: number): Promise<void> { this.#deny(); }

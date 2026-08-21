@@ -10,7 +10,6 @@ import type {
   ActionsSubscriber,
   ActionState,
   Overseer,
-  PendingActionsPage,
 } from '@gadgets/workshop-shared/api'
 import { useActionEntries, useActions, type ActionsState } from './useActions'
 
@@ -36,43 +35,28 @@ function entry(id: number, state: ActionState = 'pending'): ActionLogEntry {
   } as ActionLogEntry
 }
 
-type ScanOptions = Parameters<Overseer['scanPendingActions']>[0]
-
+// Mocks the server side of subscribeToActions: replayed and live records alike are pushed through
+// the captured subscriber's entry(); resolving the call is the "replay complete" signal.
 function makeOverseer() {
-  const callOrder: Array<'subscribe' | 'scan'> = []
   const subscribeCalls: unknown[][] = []
-  const scanCalls: ScanOptions[] = []
   const pendingSubscribes: Array<{
     resolve: (sub: RpcStub<{}>) => void
-    reject: (err: unknown) => void
-  }> = []
-  const pendingScans: Array<{
-    resolve: (page: PendingActionsPage) => void
     reject: (err: unknown) => void
   }> = []
   const subscriptionDispose = vi.fn<() => void>()
   let subscriber: ActionsSubscriber | undefined
   const overseer = {
     subscribeToActions: (...args: unknown[]) => {
-      callOrder.push('subscribe')
       subscribeCalls.push(args)
       subscriber = args[0] as ActionsSubscriber
       return new Promise<RpcStub<{}>>((resolve, reject) =>
         pendingSubscribes.push({ resolve, reject }))
     },
-    scanPendingActions: (options?: ScanOptions) => {
-      callOrder.push('scan')
-      scanCalls.push(options)
-      return new Promise<PendingActionsPage>((resolve, reject) =>
-        pendingScans.push({ resolve, reject }))
-    },
     [Symbol.dispose]: () => {},
   } as unknown as RpcStub<Overseer>
   return {
     overseer,
-    callOrder,
     subscribeCalls,
-    scanCalls,
     subscriptionDispose,
     async resolveSubscription() {
       await act(async () => {
@@ -82,12 +66,6 @@ function makeOverseer() {
     },
     async rejectSubscription(err: unknown) {
       await act(async () => { pendingSubscribes.shift()!.reject(err) })
-    },
-    async resolveScan(page: PendingActionsPage) {
-      await act(async () => { pendingScans.shift()!.resolve(page) })
-    },
-    async rejectScan(err: unknown) {
-      await act(async () => { pendingScans.shift()!.reject(err) })
     },
     async emit(record: ActionLogEntry) {
       await act(async () => { subscriber!.entry(record) })
@@ -122,48 +100,32 @@ describe('useActions', () => {
     vi.restoreAllMocks()
   })
 
-  it('subscribes live-only and stays checking until the scan drains', async () => {
+  it('stays checking through the replay and settles when the subscribe call resolves', async () => {
     const server = makeOverseer()
     await render(<Probe overseer={server.overseer} />)
 
-    expect(server.callOrder.slice(0, 2)).toEqual(['subscribe', 'scan'])
     // No startAfter: the legacy full replay must not be requested.
     expect(server.subscribeCalls).toEqual([[expect.anything()]])
     expect(latest.status).toBe('checking')
-    expect(server.scanCalls).toEqual([undefined])
 
-    await server.resolveScan({ entries: [entry(1)], throughId: 10, nextCursor: 5 })
-    expect(server.scanCalls[1]).toEqual({ cursor: 5, throughId: 10 })
+    await server.emit(entry(1))
     expect(latest.status).toBe('checking')
     flushFrames()
-    expect([...latest.pendingById.keys()]).toEqual([1])  // counts accumulate mid-scan
+    expect([...latest.pendingById.keys()]).toEqual([1])  // counts accumulate mid-replay
 
-    await server.resolveScan({ entries: [entry(7)], throughId: 10 })
+    await server.emit(entry(7))
+    await server.resolveSubscription()  // settles synchronously, no frame needed
     expect(latest.status).toBe('ready')
     expect([...latest.pendingById.keys()]).toEqual([1, 7])
-    expect(latest.liveById.size).toBe(0)  // scan-found records are not "live"
+    expect([...latest.entriesById.keys()]).toEqual([1, 7])
     flushFrames()
     expect(latest.status).toBe('ready')
-  })
-
-  it('lets a live update win over a stale scan page', async () => {
-    const server = makeOverseer()
-    await render(<Probe overseer={server.overseer} />)
-    await server.resolveSubscription()
-
-    await server.emit(entry(3, 'approved'))  // resolved live before its scan page arrives
-    await server.resolveScan({ entries: [entry(3, 'pending'), entry(4)], throughId: 10 })
-
-    expect(latest.status).toBe('ready')
-    expect([...latest.pendingById.keys()]).toEqual([4])
-    expect(latest.liveById.get(3)?.state).toBe('approved')
   })
 
   it('removes a pending record when it resolves live', async () => {
     const server = makeOverseer()
     await render(<Probe overseer={server.overseer} />)
     await server.resolveSubscription()
-    await server.resolveScan({ entries: [], throughId: 0 })
 
     await server.emit(entry(9))
     flushFrames()
@@ -172,85 +134,49 @@ describe('useActions', () => {
     await server.emit(entry(9, 'rejected'))
     flushFrames()
     expect(latest.pendingById.size).toBe(0)
-    expect(latest.liveById.get(9)?.state).toBe('rejected')
+    expect(latest.entriesById.get(9)?.state).toBe('rejected')
   })
 
   it('fences a released store and disposes its late-arriving subscription', async () => {
     const server = makeOverseer()
     await render(<Probe overseer={server.overseer} />)
+    await server.emit(entry(1))
 
     act(() => root!.unmount())
     root = undefined
 
     await server.resolveSubscription()
     expect(server.subscriptionDispose).toHaveBeenCalledOnce()
-    // The abandoned scan settling must not throw or resurrect state.
-    await server.resolveScan({ entries: [entry(1)], throughId: 2 })
+    // A late entry on the fenced generation must not throw or resurrect state.
+    await server.emit(entry(2))
   })
 
-  it('starts a fresh scan when the stub changes', async () => {
+  it('starts a fresh subscription when the stub changes', async () => {
     const first = makeOverseer()
     await render(<Probe overseer={first.overseer} />)
-    await first.resolveScan({ entries: [entry(1)], throughId: 2 })
+    await first.emit(entry(1))
+    await first.resolveSubscription()
     expect(latest.status).toBe('ready')
 
     const second = makeOverseer()
     await render(<Probe overseer={second.overseer} />)
-    expect(second.scanCalls).toEqual([undefined])
+    expect(second.subscribeCalls).toHaveLength(1)
     expect(latest.status).toBe('checking')
     expect(latest.pendingById.size).toBe(0)
   })
 
-  it('reports error but keeps gathered pendings and the live subscription when the scan fails', async () => {
+  it('reports error but keeps gathered pendings when the subscribe call fails', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const server = makeOverseer()
     await render(<Probe overseer={server.overseer} />)
-    await server.resolveSubscription()
 
-    await server.resolveScan({ entries: [entry(1)], throughId: 10, nextCursor: 5 })
-    await server.rejectScan(new Error('DO overloaded'))
+    await server.emit(entry(1))
+    await server.rejectSubscription(new Error('DO overloaded'))
 
     expect(latest.status).toBe('error')
     expect([...latest.pendingById.keys()]).toEqual([1])
     flushFrames()
     expect(latest.status).toBe('error')
-
-    await server.emit(entry(2))
-    flushFrames()
-    expect(latest.status).toBe('error')
-    expect([...latest.pendingById.keys()]).toEqual([1, 2])
-    expect(latest.liveById.get(2)?.state).toBe('pending')
-  })
-
-  it('latches a subscription rejection and stops the in-flight scan', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-    const server = makeOverseer()
-    await render(<Probe overseer={server.overseer} />)
-
-    await server.rejectSubscription(new Error('subscription failed'))
-    expect(latest.status).toBe('error')
-
-    await server.resolveScan({ entries: [entry(1)], throughId: 10, nextCursor: 5 })
-    flushFrames()
-    expect(latest.status).toBe('error')
-    expect(latest.pendingById.size).toBe(0)
-    expect(server.scanCalls).toEqual([undefined])
-  })
-
-  it('continues after an empty nonterminal page and settles on the terminal page', async () => {
-    const server = makeOverseer()
-    await render(<Probe overseer={server.overseer} />)
-
-    await server.resolveScan({ entries: [], throughId: 10, nextCursor: 5 })
-    expect(latest.status).toBe('checking')
-    expect(server.scanCalls[1]).toEqual({ cursor: 5, throughId: 10 })
-
-    await server.resolveScan({ entries: [], throughId: 10 })
-    expect(latest.status).toBe('ready')
-    expect(latest.pendingById.size).toBe(0)
-    expect(latest.liveById.size).toBe(0)
-    flushFrames()
-    expect(latest.status).toBe('ready')
   })
 
   it('updates a late listener without replaying and disposes after the last consumer', async () => {
@@ -287,7 +213,6 @@ describe('useActions', () => {
     await server.resolveSubscription()
     await server.emit(entry(1))
     await server.emit(entry(2, 'approved'))
-    await server.resolveScan({ entries: [entry(5)], throughId: 10 })  // scan-found, not live
 
     await render(
       <Harness onEntry={firstCallback} showActions={true} showEntries={true} />)

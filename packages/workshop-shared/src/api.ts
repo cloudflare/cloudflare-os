@@ -1763,12 +1763,12 @@ export interface Overseer extends RpcTarget {
   newAgentSpawnerGatekeeper(config: AgentSpawnerConfig): Promise<GatekeeperClient<any>>;
 
   /**
-   * Fetch one page of resolved action history, newest first by id (creation order). `limit`
-   * defaults to 50 (max 100). The server also caps the raw records examined per call, so a
-   * filtered page may be short or even empty while older history remains: absence of
-   * `nextBeforeId` is the only terminator.
+   * Fetch one page of resolved action history, newest first by id (creation order). Page size is
+   * a server constant, and the server also caps the raw records examined per call, so a filtered
+   * page may be short or even empty while older history remains: absence of `nextBeforeId` is the
+   * only terminator.
    */
-  listActions(options?: {beforeId?: number, limit?: number, filter?: ActionHistoryFilter})
+  listActions(options?: {beforeId?: number, filter?: ActionHistoryFilter})
       : Promise<ActionHistoryPage>;
 
   /**
@@ -1845,23 +1845,14 @@ export interface Overseer extends RpcTarget {
   /**
    * Subscribe to action adds/updates. Dispose the returned stub to unsubscribe.
    *
-   * If `startAfter` is set, replay actions changed after that timestamp. That full-log replay is
-   * a legacy path slated for removal: new clients omit it and page instead, via
-   * scanPendingActions() for pending review and listActions() for resolved history.
+   * On subscribe, currently-pending records are replayed through the subscriber (the server scans
+   * the log in bounded internal pages; ordering relative to live updates is simply the stream
+   * order), then ready() fires. Resolved history is fetched separately via listActions().
+   *
+   * `startAfter` is deprecated and ignored — kept only so stale clients' calls still validate.
+   * TODO: Delete it once pre-deploy clients have cycled out.
    */
   subscribeToActions(subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date): Promise<RpcStub<{}>>;
-
-  /**
-   * Scan the action log for pending records, one bounded slice of raw records per call. Start
-   * with no options; the first page fixes `throughId` as the scan's exclusive upper bound.
-   * Continue by passing that `throughId` back along with the returned `nextCursor` as `cursor`,
-   * until `nextCursor` is absent.
-   *
-   * As with getChatHistory(), subscribe first: call subscribeToActions() before the first page so
-   * records created or resolved mid-scan aren't missed. Actions at or above `throughId` arrive
-   * via the subscription only.
-   */
-  scanPendingActions(options?: {cursor?: number, throughId?: number}): Promise<PendingActionsPage>;
 
   /** List past AI chats. */
   listChats(): Promise<AiChatMetadata[]>;
@@ -2476,20 +2467,6 @@ export type AiChatHistoryPage = {
      */
     proposedChange?: CodeChange;
   };
-};
-
-/** One page of a scanPendingActions() scan. */
-export type PendingActionsPage = {
-  /** Pending records found in the scanned id range, ascending. May be empty while the scan is
-   * unfinished — absence of `nextCursor` is the only termination signal. */
-  entries: ActionLogEntry[];
-
-  /** Exclusive scan upper bound, captured on the first call. Pass back unchanged on every
-   * continuation; actions created later arrive via subscribeToActions() instead. */
-  throughId: number;
-
-  /** Largest raw id examined. Pass as `cursor` to continue. Absent = scan complete. */
-  nextCursor?: number;
 };
 
 export type ActionHistoryFilter = "all" | ActionLogEntry["type"];

@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
+import type { RpcStub } from "capnweb";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
-import type { Overseer } from "@gadgets/workshop-shared/api";
+import type { ActionLogEntry, ActionsSubscriber, Overseer } from "@gadgets/workshop-shared/api";
 import {
-  HISTORY_PAGE_DEFAULT_LIMIT, HISTORY_PAGE_MAX_LIMIT, HISTORY_PAGE_SCAN_CAP,
+  HISTORY_PAGE_DEFAULT_LIMIT, HISTORY_PAGE_SCAN_CAP,
   OverseerDurableObject, PENDING_SCAN_PAGE_SIZE,
 } from "../src/overseer.js";
 import type { ActionRecord } from "../src/overseer.js";
@@ -40,13 +41,6 @@ function putAction(storage: TestStorage, id: number, opts: {
   if (id >= storage.nextActionId.get()) storage.nextActionId.put(id + 1);
 }
 
-function resolve(storage: TestStorage, id: number, state: "approved" | "rejected" = "approved") {
-  let record = storage.actions.get(id)!;
-  record.state = state;
-  if (record.type === "action") record.appliedAt = new Date();
-  storage.actions.put(record);
-}
-
 // Forges a client interface over the mock storage via open(), mirroring
 // overseer-hooks.test.ts's makeTargetOverseer. `role` picks the returned interface class.
 async function makeClient(storage: TestStorage, role: "build" | "use" = "build"): Promise<Overseer> {
@@ -80,14 +74,30 @@ async function makeClient(storage: TestStorage, role: "build" | "use" = "build")
   return overseer.open(userId, `${userId}-profile`, new NativeRpcStub<() => void>(() => {}));
 }
 
-describe("scanPendingActions", () => {
-  it("returns an empty terminal page for an empty log", async () => {
-    let client = await makeClient(makeStorage());
+// Hand-rolled ActionsSubscriber stub. `events` interleaves entry ids with "ready", so tests can
+// assert both content and ordering of the delivered stream.
+function makeSubscriber() {
+  let events: Array<number | "ready"> = [];
+  let subscriber = {
+    entry: async (record: ActionLogEntry) => { events.push(record.id); },
+    ready: async () => { events.push("ready"); },
+    dup: () => subscriber,
+    onRpcBroken: () => {},
+    [Symbol.dispose]: () => {},
+  };
+  return { subscriber: subscriber as unknown as RpcStub<ActionsSubscriber>, events };
+}
 
-    expect(await client.scanPendingActions()).toEqual({ entries: [], throughId: 0 });
+describe("subscribeToActions", () => {
+  it("fires ready immediately on an empty log", async () => {
+    let client = await makeClient(makeStorage());
+    let { subscriber, events } = makeSubscriber();
+
+    using _sub = await client.subscribeToActions(subscriber);
+    expect(events).toEqual(["ready"]);
   });
 
-  it("returns only pending records, of any type, ascending", async () => {
+  it("replays only pending records, of any type, ascending, then ready", async () => {
     let storage = makeStorage();
     putAction(storage, 0);                                          // pending action
     putAction(storage, 1, { state: "approved" });
@@ -96,98 +106,58 @@ describe("scanPendingActions", () => {
     putAction(storage, 4, { state: "rejected" });
     putAction(storage, 5);
     let client = await makeClient(storage);
+    let { subscriber, events } = makeSubscriber();
 
-    let page = await client.scanPendingActions();
-    expect(page.entries.map(e => e.id)).toEqual([0, 3, 5]);
-    expect(page.throughId).toBe(6);
-    expect(page.nextCursor).toBeUndefined();
+    using _sub = await client.subscribeToActions(subscriber);
+    expect(events).toEqual([0, 3, 5, "ready"]);
   });
 
-  it("pages through a large log without gaps or duplicates", async () => {
+  it("sweeps a multi-page log without gaps or duplicates", async () => {
     let storage = makeStorage();
-    let expected: number[] = [];
+    let expected: Array<number | "ready"> = [];
     for (let id = 0; id < PENDING_SCAN_PAGE_SIZE * 2 + 40; id++) {
       let pending = id % 3 !== 0;
       putAction(storage, id, { state: pending ? "pending" : "approved" });
       if (pending) expected.push(id);
     }
+    expected.push("ready");
     let client = await makeClient(storage);
+    let { subscriber, events } = makeSubscriber();
 
-    let ids: number[] = [];
-    let pages = 0;
-    let page = await client.scanPendingActions();
-    let throughId = page.throughId;
-    for (;;) {
-      pages++;
-      ids.push(...page.entries.map(e => e.id));
-      if (page.nextCursor === undefined) break;
-      page = await client.scanPendingActions({ cursor: page.nextCursor, throughId });
-      expect(page.throughId).toBe(throughId);
-    }
-
-    expect(pages).toBe(3);
-    expect(ids).toEqual(expected);
+    using _sub = await client.subscribeToActions(subscriber);
+    expect(events).toEqual(expected);
   });
 
-  it("yields one trailing empty terminal page on an exact page boundary", async () => {
+  it("delivers a record created mid-sweep live, exactly once", async () => {
     let storage = makeStorage();
-    for (let id = 0; id < PENDING_SCAN_PAGE_SIZE; id++) putAction(storage, id);
+    // One full page plus one, so the sweep yields between pages.
+    for (let id = 0; id <= PENDING_SCAN_PAGE_SIZE; id++) putAction(storage, id);
     let client = await makeClient(storage);
+    let { subscriber, events } = makeSubscriber();
 
-    let first = await client.scanPendingActions();
-    expect(first.entries.length).toBe(PENDING_SCAN_PAGE_SIZE);
-    expect(first.nextCursor).toBe(PENDING_SCAN_PAGE_SIZE - 1);
+    let pending = client.subscribeToActions(subscriber);
+    let lateId = PENDING_SCAN_PAGE_SIZE + 1;
+    putAction(storage, lateId);  // past the sweep's bound: live subscription only
+    using _sub = await pending;
 
-    let last = await client.scanPendingActions(
-        { cursor: first.nextCursor, throughId: first.throughId });
-    expect(last).toEqual({ entries: [], throughId: first.throughId });
+    expect(events.filter(e => e === lateId)).toEqual([lateId]);
+    expect(events.at(-1)).toBe("ready");
+    expect(events.filter(e => typeof e === "number").toSorted((a, b) => a - b))
+        .toEqual([...Array(lateId + 1).keys()]);
   });
 
-  it("excludes records created after the scan started", async () => {
-    let storage = makeStorage();
-    for (let id = 0; id < PENDING_SCAN_PAGE_SIZE + 1; id++) putAction(storage, id);
-    let client = await makeClient(storage);
-
-    let first = await client.scanPendingActions();
-    putAction(storage, PENDING_SCAN_PAGE_SIZE + 1);  // arrives mid-scan
-    let second = await client.scanPendingActions(
-        { cursor: first.nextCursor, throughId: first.throughId });
-
-    expect(second.entries.map(e => e.id)).toEqual([PENDING_SCAN_PAGE_SIZE]);
-    expect(second.nextCursor).toBeUndefined();
-  });
-
-  it("reports records resolved between pages at their read-time state", async () => {
-    let storage = makeStorage();
-    for (let id = 0; id < PENDING_SCAN_PAGE_SIZE + 2; id++) putAction(storage, id);
-    let client = await makeClient(storage);
-
-    let first = await client.scanPendingActions();
-    resolve(storage, PENDING_SCAN_PAGE_SIZE);  // resolved before its page is read
-    let second = await client.scanPendingActions(
-        { cursor: first.nextCursor, throughId: first.throughId });
-
-    expect(second.entries.map(e => e.id)).toEqual([PENDING_SCAN_PAGE_SIZE + 1]);
-  });
-
-  it.each([
-    ["cursor without throughId", { cursor: 5 }],
-    ["negative cursor", { cursor: -1, throughId: 3 }],
-    ["non-integer throughId", { throughId: 1.5 }],
-  ])("rejects %s", async (_name, options) => {
+  it("stops delivering after the subscription is disposed", async () => {
     let storage = makeStorage();
     putAction(storage, 0);
     let client = await makeClient(storage);
+    let { subscriber, events } = makeSubscriber();
 
-    await expect(client.scanPendingActions(options)).rejects.toThrow(TypeError);
-  });
+    let sub = await client.subscribeToActions(subscriber);
+    sub[Symbol.dispose]();
+    await scheduler.wait(0);  // let the stub's disposer run
+    putAction(storage, 1);
 
-  it("rejects a throughId beyond nextActionId", async () => {
-    let storage = makeStorage();
-    putAction(storage, 0);
-    let client = await makeClient(storage);
-
-    await expect(client.scanPendingActions({ throughId: 2 })).rejects.toThrow("Invalid throughId");
+    expect(events).toEqual([0, "ready"]);
   });
 });
 
@@ -231,17 +201,6 @@ describe("listActions", () => {
     expect(second.nextBeforeId).toBeUndefined();
   });
 
-  it("clamps the limit to the hard max", async () => {
-    let storage = makeStorage();
-    for (let id = 0; id < HISTORY_PAGE_MAX_LIMIT + 20; id++) {
-      putAction(storage, id, { state: "approved" });
-    }
-    let client = await makeClient(storage);
-
-    let page = await client.listActions({ limit: 10000 });
-    expect(page.entries.length).toBe(HISTORY_PAGE_MAX_LIMIT);
-  });
-
   it("caps raw records scanned, returning a short page with a cursor", async () => {
     let storage = makeStorage();
     // Old resolved records buried under more than a scan-cap of pending ones.
@@ -271,7 +230,7 @@ describe("listActions", () => {
     let ids: number[] = [];
     let beforeId: number | undefined;
     do {
-      let page = await client.listActions({ beforeId, limit: 25 });
+      let page = await client.listActions({ beforeId });
       ids.push(...page.entries.map(e => e.id));
       beforeId = page.nextBeforeId;
     } while (beforeId !== undefined);
@@ -287,13 +246,17 @@ describe("listActions", () => {
 });
 
 describe("UseOverseerInterface", () => {
-  it("answers both paged reads with empty terminal pages", async () => {
+  it("answers listActions with an empty terminal page and the subscription inertly", async () => {
     let storage = makeStorage();
     putAction(storage, 0);
     putAction(storage, 1, { state: "approved" });
     let client = await makeClient(storage, "use");
+    let { subscriber, events } = makeSubscriber();
 
-    expect(await client.scanPendingActions()).toEqual({ entries: [], throughId: 0 });
     expect(await client.listActions()).toEqual({ entries: [] });
+
+    using _sub = await client.subscribeToActions(subscriber);
+    putAction(storage, 2);
+    expect(events).toEqual(["ready"]);  // settled empty; nothing replayed or delivered
   });
 });
