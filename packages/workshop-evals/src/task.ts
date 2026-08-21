@@ -49,6 +49,8 @@ export type EvalTask = {
   expectation: EvalExpectation;
   /** Real gatekeeper Workers this task needs in addition to the Workshop. */
   gatekeepers?: readonly GatekeeperSpec[];
+  /** Auto-provisioned gatekeeper accounts the fresh user needs before its workspace opens. */
+  ambientVendors?: readonly string[];
   /** Prepare the fresh user and workspace before the first prompt. */
   prepare?(session: AgentSession): Promise<void>;
   /**

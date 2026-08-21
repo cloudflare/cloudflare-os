@@ -61,8 +61,8 @@ export default defineEvalTask({
   title: "Repair desk from private context",
   expectation: "frontier",
   gatekeepers: [{ binding: "CONTEXT", dir: CONTEXT_GATEKEEPER_DIR }],
+  ambientVendors: ["context"],
   prepare: async session => {
-    await session.provisionAmbientAccount("context");
     const frame = await session.getGatekeeperApp("context");
     if (frame === null) throw new Error("Context Library management UI is unavailable");
     using context = frame.ui as RpcStub<ContextApi>;

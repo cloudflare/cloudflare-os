@@ -110,6 +110,7 @@ export function createWorkshopHarness(task: EvalTask) {
       try {
         const session = await AgentSession.create(harness.url, {
           modelId: input.model,
+          ambientVendors: task.ambientVendors,
           ...(direct ? {
             userModel: {
               profile: { type: "agent", id: input.model, name: input.model },
