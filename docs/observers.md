@@ -410,7 +410,16 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    throws and denies the open.
 3. **Underlying resource access revoked** — caught at the next open because `addObserver`
    re-runs the live check and throws; the open is denied. Consistent with the lazy-revocation
-   model in `sharing.ts`.
+   model in `sharing.ts`. The denial also scrubs each failed gatekeeper from the collaborator's
+   persisted observer record (and best-effort de-registers them gatekeeper-side), so the
+   sensitive-observation coverage guard (edge case 4) blocks that producer's later restricted
+   observations — including to the collaborator's still-live sessions — until a successful
+   re-open re-persists coverage, or the collaborator is removed. The residual under the lazy
+   model: a collaborator who never re-opens keeps their record and any live session, but once
+   scrubbed they *block* that producer's restricted reads like any unverified collaborator.
+   An operational failure (vendor outage, expired credential) scrubs the same way — the
+   overseer cannot tell it from a settled denial, so coverage fails closed until a repaired
+   re-open.
 4. **`containsRestrictedData` interaction** — a sensitive observation is admitted only if every
    current collaborator *in whose role-scope the producing gatekeeper falls* holds an observer
    record covering it
@@ -507,6 +516,9 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
     opens do not (record covers them) but still re-run `addObserver`.
   - a thrown `addObserver` denies the open and triggers best-effort `removeObserver` rollback on
     bindings added in the same pass, and does not persist the record.
+  - a failure against an *already-covered* binding scrubs that binding from the persisted record,
+    so coverage fails closed after a revocation (edge case 3) instead of admitting the producer's
+    restricted reads on stale coverage.
   - missing account → binding reported as a need to the callback; callback rejection denies open.
 - **`authorizeObservation` exclusion:** observation naming a still-authorized observer throws;
   observation naming an observer who lost access proceeds and deletes that observer record (+

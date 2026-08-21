@@ -64,12 +64,16 @@ async function provisionAccount(api: RpcStub<AuthenticatedApi>): Promise<Connect
   });
 }
 
-/** Tell the fixture gatekeeper whether to admit `label` as an observer. */
+/**
+ * Tell the fixture gatekeeper whether to admit `label` as an observer -- everywhere, or (with
+ * `resourceUrl`) at one bound resource only, which wins over the account-wide outcome.
+ */
 async function setVerifyOutcome(
-    label: string, outcome: { allow: true } | { allow: false; reason: string }): Promise<void> {
+    label: string, outcome: { allow: true } | { allow: false; reason: string },
+    resourceUrl?: string): Promise<void> {
   const res = await harness.fetchWorker(
     TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/verify-outcome",
-    { method: "POST", body: JSON.stringify({ label, ...outcome }) });
+    { method: "POST", body: JSON.stringify({ label, resourceUrl, ...outcome }) });
   if (res.status !== 204) {
     throw new Error(`Setting the verify outcome failed with ${res.status}: ${await res.text()}`);
   }
@@ -287,6 +291,42 @@ describe("sensitive observations", () => {
       expect(error).not.toBeNull();
       expect(error!.message).toMatch(/could not confirm/i);
       expect(error!.message).toContain(reason);
+    });
+  });
+
+  it.concurrent("a failed re-verification scrubs coverage for just the failed producer",
+      async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "scrub");
+      // A second producer, so the test can prove the scrub is scoped to the one that refused.
+      const accounts = await listConnectedAccounts(ws.aliceApi);
+      const account = accounts.find(a => a.vendorId === TEST_VENDOR_ID)!;
+      const second = await ws.overseer.newGatekeeper(account.id, thingUrl("scrub-2"));
+      if (!second) throw new Error("Failed to create the second test connection");
+      const secondSession: any = await second.openSession();
+
+      // Bob verifies against both producers, so both restricted reads are admitted.
+      const bob = await addBob(publicApi, ws);
+      (await bobOpens(ws.gadgetId, bob.bobApi, bob.bobAccount))[Symbol.dispose]();
+      await expect(ws.session.readThing(true)).resolves.toContain("scrub");
+      await expect(secondSession.readThing(true)).resolves.toContain("scrub-2");
+
+      // Bob's access to the first producer's resource is revoked; his next open is denied...
+      await setVerifyOutcome(
+          bob.bobLabel, { allow: false, reason: "Access revoked." }, thingUrl("scrub"));
+      await expect(bobOpens(ws.gadgetId, bob.bobApi, bob.bobAccount))
+          .rejects.toThrow(/could not confirm/i);
+
+      // ...and the failure scrubbed his persisted coverage for that producer, so its restricted
+      // reads fail closed against his older live session rather than keep flowing to it...
+      await expect(ws.session.readThing(true)).rejects.toThrow(/has not been verified/i);
+      // ...while the producer he still passes stays covered (the scrub is scoped).
+      await expect(secondSession.readThing(true)).resolves.toContain("scrub-2");
+
+      // A repaired re-open re-verifies him and re-persists full coverage.
+      await setVerifyOutcome(bob.bobLabel, { allow: true }, thingUrl("scrub"));
+      (await bobOpens(ws.gadgetId, bob.bobApi, bob.bobAccount))[Symbol.dispose]();
+      await expect(ws.session.readThing(true)).resolves.toContain("scrub");
     });
   });
 

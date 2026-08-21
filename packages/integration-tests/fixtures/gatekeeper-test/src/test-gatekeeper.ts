@@ -60,13 +60,22 @@ const AVATAR = {
 type VerifyOutcome = { allow: true } | { allow: false; reason: string };
 
 export class TestControl extends DurableObject<Cloudflare.Env> {
-  setVerifyOutcome(label: string, outcome: VerifyOutcome): void {
-    this.ctx.storage.kv.put(`outcome:${label}`, outcome);
+  /**
+   * An outcome may target one bound resource (`resourceUrl` present) or the whole account. The
+   * resource-specific entry wins, so a test can refuse an account at one producer while the same
+   * account keeps passing everywhere else.
+   */
+  setVerifyOutcome(label: string, outcome: VerifyOutcome, resourceUrl?: string): void {
+    this.ctx.storage.kv.put(
+        resourceUrl !== undefined ? `outcome:${label}|${resourceUrl}` : `outcome:${label}`,
+        outcome);
   }
 
-  getVerifyOutcome(label: string): VerifyOutcome {
+  getVerifyOutcome(label: string, resourceUrl: string): VerifyOutcome {
     // Default to admitting: a collaborator's first open has to be able to succeed.
-    return this.ctx.storage.kv.get<VerifyOutcome>(`outcome:${label}`) ?? { allow: true };
+    return this.ctx.storage.kv.get<VerifyOutcome>(`outcome:${label}|${resourceUrl}`)
+        ?? this.ctx.storage.kv.get<VerifyOutcome>(`outcome:${label}`)
+        ?? { allow: true };
   }
 
   recordAmbientVerification(label: string): void {
@@ -317,7 +326,8 @@ export class TestGatekeeper
       this.ctx.storage.kv.put(`observer:${id}`, label);
       return;
     }
-    const outcome = await control(this.ctx.exports).getVerifyOutcome(label);
+    const outcome =
+        await control(this.ctx.exports).getVerifyOutcome(label, this.ctx.props.resourceUrl);
     if (!outcome.allow) throw new Error(outcome.reason);
     this.ctx.storage.kv.put(`observer:${id}`, label);
   }
@@ -381,20 +391,24 @@ export default {
       }
     }
 
-    // Set what addObserver() should do for one account.
-    // Body: {"label": "...", "allow": false, "reason": "..."}
+    // Set what addObserver() should do for one account -- everywhere, or (with `resourceUrl`) at
+    // one bound resource only, which wins over the account-wide entry.
+    // Body: {"label": "...", "allow": false, "reason": "...", "resourceUrl": "..."}
     if (url.pathname === "/control/verify-outcome" && req.method === "POST") {
-      const { label, allow, reason } = body as Record<string, unknown>;
+      const { label, allow, reason, resourceUrl } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
       if (typeof allow !== "boolean") return badRequest("`allow` must be a boolean");
       if (reason !== undefined && typeof reason !== "string") {
         return badRequest("`reason` must be a string when present");
       }
+      if (resourceUrl !== undefined && !isNonEmptyString(resourceUrl)) {
+        return badRequest("`resourceUrl` must be a non-empty string when present");
+      }
 
       const outcome: VerifyOutcome = allow
         ? { allow: true }
         : { allow: false, reason: reason ?? "The test gatekeeper refused this account." };
-      await control(ctx.exports).setVerifyOutcome(label, outcome);
+      await control(ctx.exports).setVerifyOutcome(label, outcome, resourceUrl);
       return new Response(null, { status: 204 });
     }
 
