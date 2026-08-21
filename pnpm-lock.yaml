@@ -810,7 +810,7 @@ importers:
         specifier: ^1.40.0
         version: 1.40.5
       jose:
-        specifier: ^6.2.5
+        specifier: ^6.2.8
         version: 6.2.8
       yjs:
         specifier: ^13.6.31
