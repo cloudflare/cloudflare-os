@@ -4,6 +4,7 @@ import type {
   AuthenticatedApi, CodeSubscriber, CodeUpdate, GadgetClient, OutputFormatOffer, Overseer, PublicApi,
   WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber,
 } from "@gadgets/workshop-shared/api";
+import type { GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import * as Y from "yjs";
 import {
   AgentTurnCompletion, buildSourceSnapshot, loadAllChatHistory,
@@ -259,6 +260,22 @@ export class AgentSession implements Disposable {
     this.#assertUsable();
     return this.#overseer.getGadget(id);
   }
+
+  /** Provision one optional auto-provisioned gatekeeper account for this session's user. */
+  provisionAmbientAccount(vendorId: string): Promise<void> {
+    this.#assertUsable();
+    return this.#authenticatedApi.provisionAmbientAccount(vendorId);
+  }
+
+  /**
+   * Open a gatekeeper's management capability. The caller owns and must dispose the returned UI
+   * stub; the session does not retain it.
+   */
+  getGatekeeperApp(vendorId: string): Promise<GatekeeperUiFrame | null> {
+    this.#assertUsable();
+    return this.#authenticatedApi.getGatekeeperApp(vendorId);
+  }
+
 
   /**
    * Connect a caller-owned, typed verifier stub to accepted code or this session's chat branch.
