@@ -2474,6 +2474,15 @@ export type AiChatHistoryPage = {
 /** Type filter for listActions(): one specific record type, or "all" for every resolved record. */
 export type ActionHistoryFilter = "all" | ActionLogEntry["type"];
 
+/**
+ * Whether a record passes an ActionHistoryFilter. Shared by the server's listActions() paging and
+ * the client's live-merge so the two ends of the wire can't drift.
+ */
+export function matchesActionHistoryFilter(
+    record: {type: ActionLogEntry["type"]}, filter: ActionHistoryFilter): boolean {
+  return filter === "all" || record.type === filter;
+}
+
 /** One page of resolved action history from listActions(). */
 export type ActionHistoryPage = {
   /** Resolved records, descending id (creation order, newest first). May be short or empty while

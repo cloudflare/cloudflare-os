@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitIdentity, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, matchesActionHistoryFilter, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitIdentity, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, changedGadgets, composeCodeChange, diffFiles, transformCodeChange,
   validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -9391,7 +9391,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       ++scanned;
       lastId = record.id;
       if (record.state === "pending") continue;
-      if (filter !== "all" && record.type !== filter) continue;
+      if (!matchesActionHistoryFilter(record, filter)) continue;
       entries.push(actionRecordToLog(record));
       if (entries.length >= HISTORY_PAGE_DEFAULT_LIMIT) break;
     }
@@ -9888,7 +9888,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       end: beforeSequence === undefined ? undefined : compactionKey(chatId, beforeSequence),
     })];
     return {
-      messages: await Promise.all(result.map((msg) => this.#getChatMessageForClient(msg))),
+      messages: result.map((msg) => this.#getChatMessageForClient(msg)),
       compacted: checkpoint && {
         to: checkpoint.compactedTo,
         summary: checkpoint.summary,
@@ -9902,7 +9902,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return msg && this.#getChatMessageForClient(msg);
   }
 
-  async #getChatMessageForClient(msg: AiChatMessage): Promise<AiChatMessage> {
+  // Synchronous so subscribeToChat's deliverMessage can issue message() in the same turn as the
+  // metadata()/deleted() calls around it, preserving cross-callback delivery order.
+  #getChatMessageForClient(msg: AiChatMessage): AiChatMessage {
     if (msg.type === "action") {
       let record = this.impl.storage.actions.get(msg.actionId);
       if (record) {
@@ -9940,11 +9942,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     let self = this;
     function deliverMessage(record: AiChatMessage) {
-      if (record.type === "action") {
-        let actionRecord = self.impl.storage.actions.get(record.actionId);
-        if (actionRecord) record.actionLog = actionRecordToLog(actionRecord);
-      }
-      subscriber.message(self.impl.hydrateChatMessageForClient(record)).catch(unsubscribe);
+      subscriber.message(self.#getChatMessageForClient(record)).catch(unsubscribe);
     }
 
     let msgSubscriber = {
