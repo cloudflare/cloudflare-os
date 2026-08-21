@@ -59,7 +59,7 @@ function getStore(overseer: RpcStub<Overseer>): Store {
 
 function commit(store: Store, status: ActionsState['status'] = store.snapshot.status): void {
   // Entries arrive in ascending id order, so this sort is near-free at pending-count scale.
-  const pending = [...store.stagedPending.values()].sort((a, b) =>
+  const pending = [...store.stagedPending.values()].toSorted((a, b) =>
     new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() || a.id - b.id)
   store.snapshot = { status, pending }
   for (const listener of store.listeners) listener()
