@@ -27,6 +27,8 @@ export type AgentSessionOptions = {
   modelId?: string;
   /** Model to add to the fresh user before its workspace opens. */
   userModel?: { profile: AiChatAuthorInfo; config: AiModelConfig };
+  /** Optional auto-provisioned gatekeeper accounts to create before the workspace opens. */
+  ambientVendors?: readonly string[];
   /** Alphanumeric prefix for the fresh account name. */
   usernamePrefix?: string;
   /** Hard limit for each agent turn. Defaults to two minutes. */
@@ -176,6 +178,9 @@ export class AgentSession implements Disposable {
       if (options.userModel !== undefined) {
         await authenticatedApi.addModel(options.userModel.profile, options.userModel.config);
       }
+      for (const vendorId of options.ambientVendors ?? []) {
+        await authenticatedApi.provisionAmbientAccount(vendorId);
+      }
       overseer = await authenticatedApi.newGadget();
       const [metadata, models] = await Promise.all([
         overseer.getMetadata(),
@@ -266,12 +271,6 @@ export class AgentSession implements Disposable {
     return this.#overseer.getGadget(id);
   }
 
-  /** Provision one optional auto-provisioned gatekeeper account for this session's user. */
-  provisionAmbientAccount(vendorId: string): Promise<void> {
-    this.#assertUsable();
-    return this.#authenticatedApi.provisionAmbientAccount(vendorId);
-  }
-
   /**
    * Open a gatekeeper's management capability. The caller owns and must dispose the returned UI
    * stub; the session does not retain it.
@@ -280,7 +279,6 @@ export class AgentSession implements Disposable {
     this.#assertUsable();
     return this.#authenticatedApi.getGatekeeperApp(vendorId);
   }
-
 
   /**
    * Connect a caller-owned, typed verifier stub to accepted code or this session's chat branch.
