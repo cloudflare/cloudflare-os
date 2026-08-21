@@ -313,7 +313,7 @@ export default function ObserverConfigModal({
 
   return (
     <Dialog.Root open disablePointerDismissal onOpenChange={open => { if (!open) onCancel() }}>
-      <Dialog className="p-6" size="lg">
+      <Dialog className="responsive-dialog overflow-y-auto p-6" size="lg">
         <Dialog.Title className="mb-2 text-lg font-semibold">
           {isRetry ? 'Verify your access again' : 'Verify your access'}
         </Dialog.Title>

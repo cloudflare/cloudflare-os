@@ -279,8 +279,8 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
 
   return (
     <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose() }}>
-      <Dialog className="!z-[1000] !w-[min(640px,calc(100vw-32px))] overflow-hidden bg-kumo-base p-0 !top-[10%] !-translate-y-0" size="lg">
-          <div className="flex items-start justify-between gap-4 border-b border-kumo-line px-4 py-5 sm:px-6">
+      <Dialog className="responsive-dialog !z-[1000] !flex !w-[min(640px,calc(100vw-32px))] flex-col overflow-hidden bg-kumo-base p-0 !top-[10%] !-translate-y-0" size="lg">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-kumo-line px-4 py-5 sm:px-6">
             <div className="flex min-w-0 items-start gap-3">
               <div className="min-w-0">
               <Dialog.Title className="text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
@@ -307,13 +307,10 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
             />
           </div>
 
-          <div
-            className={formMode !== 'list' ? 'flex flex-col' : ''}
-            style={formMode !== 'list' ? { maxHeight: 'calc(80vh - 80px)' } : undefined}
-          >
+          <div className="min-h-0 flex-1">
             {formMode !== 'list' ? (
-              <>
-                <div className="flex-1 overflow-y-auto chat-panel space-y-5 px-4 py-5 sm:px-6">
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="chat-panel min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6">
                   <div className="space-y-3">
                     <WorkshopInput
                       placeholder="Title"
@@ -421,7 +418,7 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
                   ) : null}
                 </div>
 
-                <div className="border-t border-kumo-line px-4 py-4 sm:px-6">
+                <div className="shrink-0 border-t border-kumo-line px-4 py-4 sm:px-6">
                   {createError && (
                     <div className="mb-3 flex items-start gap-2 rounded-lg border border-l-2 border-l-kumo-brand border-y-kumo-line border-r-kumo-line bg-kumo-base px-3 py-2 text-[12px] leading-[18px] font-normal tracking-[-0.2px] text-kumo-default">
                       <Warning size={14} weight="fill" className="mt-0.5 shrink-0 text-kumo-brand" />
@@ -453,9 +450,9 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
                     </WorkshopButton>
                   </div>
                 </div>
-              </>
+              </div>
             ) : (
-              <div className="space-y-4 px-4 py-5 sm:px-6">
+              <div className="h-full min-h-0 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
               <button
                 type="button"
                 onClick={() => {

@@ -70,7 +70,7 @@ export default function AccountSelectionModal() {
     // role="alertdialog" + no close affordance: the choice is mandatory, so it isn't dismissible by
     // clicking outside.
     <Dialog.Root open role="alertdialog">
-      <Dialog className="p-6 sm:w-[480px]" size="base">
+      <Dialog className="responsive-dialog overflow-y-auto p-6 sm:w-[480px]" size="base">
         <Dialog.Title className="text-lg font-semibold mb-2 flex items-center gap-2">
           <Warning size={22} weight="bold" className="text-kumo-warning" />
           Choose a Cloudflare account

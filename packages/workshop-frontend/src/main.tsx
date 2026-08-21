@@ -1,7 +1,7 @@
 import { StrictMode, useState, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import { RouterProvider } from '@tanstack/react-router'
-import { RpcStub, newWebSocketRpcSession } from 'capnweb'
+import { RpcPromise, RpcStub, newWebSocketRpcSession } from 'capnweb'
 import { PublicApi, ServerConfig } from '@gadgets/workshop-shared/api'
 import { RpcContext } from './RpcContext'
 import { ServerConfigContext, ServerConfigErrorContext } from './ServerConfigContext'
@@ -56,7 +56,31 @@ async function devAutoLogin(stub: RpcStub<PublicApi>): Promise<void> {
 //
 // Anyway, I pulled the connection management out into these globals instead.
 let lastConnectTime: number = 0;
-let backoff: number = 1000;
+
+const INITIAL_BACKOFF_MS = 1000;
+const MAX_BACKOFF_MS = 10000;
+// Generous probe deadlines let a slow-but-alive backend settle instead of connect/dispose looping
+// (or, on wake, tearing down a healthy socket under load).
+const RECONNECT_PROBE_TIMEOUT_MS = 20000;
+const WAKE_PROBE_TIMEOUT_MS = 10000;
+const WAKE_PROBE_MIN_IDLE_MS = 15000;
+
+// Callbacks to call whenever `currentStub` or connection state is updated.
+const subscribers = new Set<() => void>();
+const notifySubscribers = () => subscribers.forEach(cb => cb());
+let isConnectionLost = false;
+let probing = false;
+let lastProvenAt = Date.now();
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+};
 
 function getBackendHost(): string {
   // Only the Vite dev server is hosted separately from the backend. Built assets are served from
@@ -71,52 +95,92 @@ function startConnection(): RpcStub<PublicApi> {
   lastConnectTime = Date.now();
   const apiHost = getBackendHost();
   const wsUrl = (window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + apiHost + '/api';
-  return newWebSocketRpcSession<PublicApi>(wsUrl);
+  const stub = newWebSocketRpcSession<PublicApi>(wsUrl);
+  stub.onRpcBroken(handleBroken);
+  return stub;
 }
 
-async function handleBroken(error: any) {
+const disposeQuietly = (stub: RpcStub<PublicApi>) => {
+  try { stub[Symbol.dispose](); } catch { /* already broken */ }
+};
+
+// Connects with jittered backoff until a candidate answers a probe, and resolves only to that
+// proven connection: capnweb queues sends while a socket is still CONNECTING, so an unproven stub
+// looks fine right up until everything pipelined onto it fails at once.
+async function reconnect(): Promise<RpcStub<PublicApi>> {
+  // Fast recovery from one-off blips: skip the first backoff if the dying connection was up a while.
+  let skipSleep = Date.now() - lastConnectTime >= INITIAL_BACKOFF_MS;
+  let backoff = INITIAL_BACKOFF_MS;
+  for (;;) {
+    if (!skipSleep) {
+      await sleep(backoff * (0.85 + 0.3 * Math.random()));  // jittered against stampedes
+      backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+    }
+    skipSleep = false;
+
+    const candidate = startConnection();
+    try {
+      await withTimeout(candidate.ping(), RECONNECT_PROBE_TIMEOUT_MS);
+    } catch (probeError) {
+      console.debug('Reconnect attempt failed:', probeError);
+      disposeQuietly(candidate);
+      continue;
+    }
+
+    lastProvenAt = Date.now();
+    isConnectionLost = false;
+    console.warn('RPC connection restored.');
+    notifySubscribers();
+    return candidate;
+  }
+}
+
+// Subscribers hear exactly twice per outage — lost here, restored in `reconnect` — because
+// `currentStub` is replaced once, by a promise, rather than once per attempt.
+function handleBroken(error: unknown) {
+  if (isConnectionLost) return;  // stale/disposed stub, or recovery already underway
+  isConnectionLost = true;
+
   console.warn('RPC connection lost:', error);
 
-  isConnectionLost = true;
-  for (let cb of notifyCurrentStubUpdated) { cb(); }
+  // Publish a stub for the connection we have not made yet, so the dead one stops being reachable
+  // immediately. capnweb queues calls pipelined onto an unresolved `RpcPromise` and delivers them,
+  // in order, once it resolves — so work issued during the outage waits for the replacement
+  // instead of failing against a socket known to be gone. The `RpcPromise` takes ownership of its
+  // resolution, keeping the proven stub on a single disposal path.
+  currentStub = new RpcPromise<PublicApi>(reconnect());
+  notifySubscribers();
+}
 
-  let timeSinceConnect = Date.now() - lastConnectTime;
-  if (timeSinceConnect < backoff) {
-    let waitTime = backoff - timeSinceConnect;
-    console.warn(`Will try again in ${Math.round(waitTime / 1000)} seconds...`)
-    await new Promise(resolve => setTimeout(resolve, waitTime));
-    console.warn(`Retrying connection...`);
-    backoff = Math.min(backoff * 2, 10000);
-  } else {
-    backoff = 1000;
-  }
-
-  currentStub = startConnection();
-  currentStub.onRpcBroken(handleBroken);
-
-  // Don't clear isConnectionLost here — the new connection hasn't proven
-  // it works yet. It gets cleared by markConnectionRestored() once the
-  // app successfully communicates with the backend.
-  for (let cb of notifyCurrentStubUpdated) {
-    cb();
+// Passive close detection misses sockets killed during laptop sleep or tab throttling, so on
+// tab-visible / network-online signals probe the connection instead of letting the user's next
+// action hang on a zombie socket.
+async function probeOnWake() {
+  if (isConnectionLost || probing || Date.now() - lastProvenAt < WAKE_PROBE_MIN_IDLE_MS) return;
+  probing = true;
+  const suspect = currentStub;
+  try {
+    await withTimeout(suspect.ping(), WAKE_PROBE_TIMEOUT_MS);
+    lastProvenAt = Date.now();
+  } catch (error) {
+    if (currentStub !== suspect || isConnectionLost) return;  // a real broken event won the race
+    console.warn('Connection unresponsive after wake:', error);
+    // Disposal fires onRpcBroken → handleBroken recovers. Its skip-first-backoff path retries
+    // immediately — right for "the network just came back".
+    disposeQuietly(suspect);
+  } finally {
+    probing = false;
   }
 }
 
-// Callbacks to call whenever `currentStub` or connection state is updated.
-let notifyCurrentStubUpdated: Set<() => void> = new Set();
-let isConnectionLost = false;
-
-/** Called externally (e.g., by auth) to indicate the connection is alive. */
-export function markConnectionRestored() {
-  if (!isConnectionLost) return;
-  isConnectionLost = false;
-  for (let cb of notifyCurrentStubUpdated) { cb(); }
-}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') void probeOnWake();
+});
+window.addEventListener('online', () => void probeOnWake());
 
 // Current stub. handleBroken() will replace this on disconnect.
 installWorkshopErrorReporting()
 let currentStub = startConnection();
-currentStub.onRpcBroken(handleBroken);
 
 const router = createRouter()
 applyStoredThemeMode()
@@ -130,9 +194,32 @@ function AppWithConnection() {
   const [serverConfigError, setServerConfigError] = useState(false);
 
   useEffect(() => {
-    let cb = () => setRpcState({ stub: currentStub, connectionLost: isConnectionLost });
-    notifyCurrentStubUpdated.add(cb);
-    return () => { notifyCurrentStubUpdated.delete(cb); };
+    const viewport = window.visualViewport;
+    const updateHeight = () => {
+      const height = viewport?.height ?? window.innerHeight;
+      const top = viewport?.offsetTop ?? 0;
+      document.documentElement.style.setProperty('--app-height', `${height}px`);
+      document.documentElement.style.setProperty('--app-top', `${top}px`);
+      document.documentElement.style.setProperty(
+        '--app-bottom',
+        `${Math.max(0, window.innerHeight - top - height)}px`,
+      );
+    };
+    updateHeight();
+    viewport?.addEventListener('resize', updateHeight);
+    viewport?.addEventListener('scroll', updateHeight);
+    window.addEventListener('resize', updateHeight);
+    return () => {
+      viewport?.removeEventListener('resize', updateHeight);
+      viewport?.removeEventListener('scroll', updateHeight);
+      window.removeEventListener('resize', updateHeight);
+    };
+  }, []);
+
+  useEffect(() => {
+    const cb = () => setRpcState({ stub: currentStub, connectionLost: isConnectionLost });
+    subscribers.add(cb);
+    return () => { subscribers.delete(cb); };
   }, []);
 
   // Fetch deployment config once the (re)connected stub is available. Re-fetch on reconnect so a
@@ -167,8 +254,12 @@ function AppWithConnection() {
       <RpcContext.Provider value={rpcState}>
         <ServerConfigErrorContext.Provider value={serverConfigError}>
           <ServerConfigContext.Provider value={serverConfig}>
-            <AnnouncementBanner />
-            <RouterProvider router={router} />
+            <div className="app-viewport flex min-w-0 flex-col overflow-hidden">
+              <AnnouncementBanner />
+              <div className="h-full min-h-0 flex-1">
+                <RouterProvider router={router} />
+              </div>
+            </div>
           </ServerConfigContext.Provider>
         </ServerConfigErrorContext.Provider>
       </RpcContext.Provider>

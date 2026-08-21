@@ -20,8 +20,8 @@ name: Preview
 # that a future edit which weakens the trigger still does not leak the token. They are not what
 # makes this safe today.
 #
-# The `cache: pnpm` below is deliberate and is not a poisoning path: a fork PR's Actions cache is
-# scoped to `refs/pull/<n>/merge` and cannot be read from another PR or from `main`.
+# The setup-vp `cache: true` below is deliberate and is not a poisoning path: a fork PR's Actions
+# cache is scoped to `refs/pull/<n>/merge` and cannot be read from another PR or from `main`.
 
 on:
   pull_request:
@@ -80,18 +80,20 @@ jobs:
         with:
           persist-credentials: false
 
-      # Ahead of setup-node, which shells out to `pnpm store path` to find the directory it caches.
+      # Vite+ downloads its own pnpm for `vp install` and exposes no shim, so this is what puts
+      # `pnpm` on PATH — for the steps below, and for the bare `pnpm` preview.ts spawns.
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # Vite+ resolves its own version from the `vite-plus` catalog entry, and installs the pnpm
+      # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not
+      # needed.
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          cache: true
+          run-install: true
 
       - name: Deploy preview
         env:
@@ -200,17 +202,20 @@ jobs:
           ref: refs/pull/${{ github.event.pull_request.number }}/head
           persist-credentials: false
 
+      # Vite+ downloads its own pnpm for `vp install` and exposes no shim, so this is what puts
+      # `pnpm` on PATH — for the steps below, and for the bare `pnpm` preview.ts spawns.
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # Vite+ resolves its own version from the `vite-plus` catalog entry, and installs the pnpm
+      # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not
+      # needed.
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          cache: true
+          run-install: true
 
       - name: Delete preview
         env:
@@ -242,17 +247,20 @@ jobs:
         with:
           persist-credentials: false
 
+      # Vite+ downloads its own pnpm for `vp install` and exposes no shim, so this is what puts
+      # `pnpm` on PATH — for the steps below, and for the bare `pnpm` preview.ts spawns.
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # Vite+ resolves its own version from the `vite-plus` catalog entry, and installs the pnpm
+      # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not
+      # needed.
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          cache: true
+          run-install: true
 
       - name: Sweep previews whose PR is closed, or older than 7 days
         env:

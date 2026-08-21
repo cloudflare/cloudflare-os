@@ -5,6 +5,7 @@ import type React from 'react'
 import type { MutableRefObject, Dispatch, SetStateAction } from 'react'
 import type { SelectableItem } from './ResourcePicker'
 import { getPlaceholderRanges } from './resourceMatching'
+import { isImeComposing } from './keyboardEvent'
 
 /**
  * Handle arrow-key navigation and Tab (placeholder advance / item activation)
@@ -23,6 +24,7 @@ export function handlePickerKeyDown(
   itemsRef: MutableRefObject<SelectableItem[]>,
   activateRef: MutableRefObject<((index: number) => void) | null>,
 ): void {
+  if (isImeComposing(e)) return
   const items = itemsRef.current
   if (items.length === 0) return
 

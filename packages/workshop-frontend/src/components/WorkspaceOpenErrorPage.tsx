@@ -57,7 +57,7 @@ export default function WorkspaceOpenErrorPage({ kind, onRetry, onGoToWorkspaces
   }, [])
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-kumo-base px-6 py-12">
+    <div className="flex min-h-full items-center justify-center bg-kumo-base px-6 py-12">
       <section
         aria-atomic="true"
         aria-describedby={descriptionId}

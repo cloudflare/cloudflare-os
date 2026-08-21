@@ -89,6 +89,7 @@ export default function CodeDiffEditor({
   const themeCompartment = useRef(new Compartment())
   const originalThemeCompartment = useRef(new Compartment())
   const readOnlyCompartment = useRef(new Compartment())
+  const wrapCompartment = useRef(new Compartment())
 
   const sessionRef = useRef(session)
   sessionRef.current = session
@@ -103,6 +104,10 @@ export default function CodeDiffEditor({
   readOnlyRef.current = readOnly
 
   const [canSplitDiff, setCanSplitDiff] = useState(false)
+  // Phone-width containers get a word-wrapped chat-side editor (see the wrap compartment below).
+  const [isCompact, setIsCompact] = useState(false)
+  const isCompactRef = useRef(isCompact)
+  isCompactRef.current = isCompact
   const [diffLayoutPreference, setDiffLayoutPreference] =
     useState<DiffLayoutPreference>(getInitialDiffLayoutPreference)
   const splitDiff = canSplitDiff && diffLayoutPreference === 'split'
@@ -194,8 +199,10 @@ export default function CodeDiffEditor({
 
   // ---- editors -------------------------------------------------------------------------------
 
-  // Shared base for both sides. No folding, and no line wrapping: the split layout's alignment
-  // (and the deletion zones' row math) relies on one line per 20px.
+  // Shared base for both sides. No folding, and no line wrapping here: the split layout's
+  // alignment relies on one line per 20px. (The chat side alone word-wraps at phone widths via
+  // the wrap compartment -- compact widths are far below the split gate, so alignment never
+  // coexists with wrapping.)
   const baseExtensions = useCallback((forFilename: string): Extension[] => [
     // Split documents only on "\n"; see CodeEditor for why this matters to the OT stream.
     EditorState.lineSeparator.of('\n'),
@@ -231,6 +238,7 @@ export default function CodeDiffEditor({
         EditorState.readOnly.of(readOnlyRef.current || !session),
         EditorView.editable.of(!readOnlyRef.current && !!session),
       ]),
+      wrapCompartment.current.of(isCompactRef.current ? EditorView.lineWrapping : []),
       EditorView.updateListener.of(update => {
         if (update.docChanged) scheduleRecompute()
       }),
@@ -332,6 +340,11 @@ export default function CodeDiffEditor({
       ]),
     })
   }, [readOnly, session === undefined])
+  useEffect(() => {
+    modifiedViewRef.current?.dispatch({
+      effects: wrapCompartment.current.reconfigure(isCompact ? EditorView.lineWrapping : []),
+    })
+  }, [isCompact, viewsToken])
 
   // Reset expansion state on file switch.
   useEffect(() => {
@@ -344,7 +357,10 @@ export default function CodeDiffEditor({
     const container = containerRef.current
     if (!container) return
 
-    const update = (width: number) => setCanSplitDiff(width >= SPLIT_DIFF_MIN_WIDTH)
+    const update = (width: number) => {
+      setCanSplitDiff(width >= SPLIT_DIFF_MIN_WIDTH)
+      setIsCompact(width < 640)
+    }
     update(container.getBoundingClientRect().width)
 
     const observer = new ResizeObserver(entries => {
@@ -409,7 +425,7 @@ export default function CodeDiffEditor({
   return (
     <div ref={containerRef} className="flex min-h-0 overflow-hidden bg-kumo-base" style={{ height }}>
       <div
-        className="gadgets-diff-surface relative m-4 min-h-0 flex-1 overflow-hidden rounded-[10px] border border-kumo-line bg-kumo-base"
+        className="gadgets-diff-surface relative min-h-0 flex-1 overflow-hidden bg-kumo-base md:m-4 md:rounded-[10px] md:border md:border-kumo-line"
         style={{ isolation: 'isolate' }}
       >
         <div className="absolute right-3 top-3 flex items-center gap-2" style={{ zIndex: 1 }}>

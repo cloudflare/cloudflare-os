@@ -58,9 +58,12 @@ function iframeStyleForOverlay(overlay: OverlayState): CSSProperties {
     return {
       ...baseIframeStyle,
       position: 'fixed',
-      inset: 0,
-      width: '100vw',
-      height: '100vh',
+      top: 'calc(var(--app-top) + env(safe-area-inset-top))',
+      right: 'env(safe-area-inset-right)',
+      bottom: 'calc(var(--app-bottom) + env(safe-area-inset-bottom))',
+      left: 'env(safe-area-inset-left)',
+      width: 'calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right))',
+      height: 'calc(100vh - var(--app-top) - var(--app-bottom) - env(safe-area-inset-top) - env(safe-area-inset-bottom))',
       zIndex: overlayZIndex,
     }
   }

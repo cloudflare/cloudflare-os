@@ -9,6 +9,7 @@ import { useAvatar, invalidateAvatarCache } from './useAvatar'
 import { compressAvatar, avatarBlobUrl } from './avatarUtils'
 import UsageSettings from './components/billing/UsageSettings'
 import { useDocumentTitle } from './useDocumentTitle'
+import { isImeComposing } from './keyboardEvent'
 
 // Shared, on-language control classes (match the rest of the app: Workspaces/Blueprints headers,
 // the gatekeepers toolbar, the command palette). Kept here so the profile page reads as part of the
@@ -18,7 +19,7 @@ const PRIMARY_BTN =
 const ICON_BTN =
   'press grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-lg text-kumo-inactive transition-colors hover:bg-kumo-tint hover:text-kumo-default'
 const INPUT =
-  'h-9 w-full rounded-lg border border-kumo-line bg-kumo-base px-3 text-[14px] tracking-[-0.25px] text-kumo-default placeholder:text-kumo-inactive transition-[border-color,box-shadow] focus:border-kumo-ring focus:outline-none focus:ring-[3px] focus:ring-kumo-ring/15'
+  'h-10 w-full rounded-lg border border-kumo-line bg-kumo-base px-3 text-[16px] text-kumo-default placeholder:text-kumo-inactive transition-[border-color,box-shadow] focus:border-kumo-ring focus:outline-none focus:ring-[3px] focus:ring-kumo-ring/15 sm:h-9 sm:text-[14px]'
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -246,8 +247,8 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-2xl flex-col px-6 pb-16 sm:px-10">
-      <header className="px-1 pb-2 pt-10">
+    <div className="mx-auto flex h-full w-full max-w-2xl flex-col px-4 pb-16 sm:px-10">
+      <header className="px-1 pb-2 pt-6 sm:pt-10">
         <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">Profile</h1>
         <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
           Manage your account details, avatar, and security.
@@ -272,7 +273,7 @@ export default function SettingsPage() {
                 ) : (
                   <User size={28} className="text-kumo-subtle" />
                 )}
-                <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+                <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
                   <Camera size={18} className="text-white" />
                 </div>
                 {avatarUploading && (
@@ -311,6 +312,7 @@ export default function SettingsPage() {
                     value={nameInput}
                     onChange={(e) => setNameInput(e.target.value)}
                     onKeyDown={(e) => {
+                      if (isImeComposing(e)) return
                       if (e.key === 'Enter') handleSaveName()
                       if (e.key === 'Escape') handleCancelEdit()
                     }}

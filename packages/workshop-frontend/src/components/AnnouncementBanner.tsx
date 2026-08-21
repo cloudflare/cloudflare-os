@@ -65,7 +65,7 @@ export default function AnnouncementBanner() {
 
   return (
     <div
-      className="px-4 py-2.5 flex items-start gap-3 border-b border-kumo-line"
+      className="flex shrink-0 items-start gap-3 border-b border-kumo-line px-4 py-2.5"
       style={COLOR_STYLES[color] ?? COLOR_STYLES.info}
     >
       <div className="flex-1 text-sm leading-snug text-center [&_a]:font-medium">

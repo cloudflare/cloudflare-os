@@ -158,7 +158,7 @@ export type ContextDocument = {
   /** File name derived from the path. */
   name: string;
 
-  /** What this document covers and when to use it. */
+  /** What this document covers and when to use it. Values over 16,000 characters are truncated. */
   description: string;
 
   /** Determines whether `body` is text or base64. */
@@ -208,8 +208,8 @@ export type EnabledCollectionInfo = {
 
 export const DEFAULT_DOCUMENT_CONTENT_TYPE = "text/markdown";
 
-/** UTF-8 bytes of stored body; base64 overhead caps raw binary around 1 MB. */
-export const MAX_DOCUMENT_BODY_BYTES = 1_400_000;
+/** Raw stored body bytes, leaving headroom below SQLite's 2 MB serialized-value limit. */
+export const MAX_DOCUMENT_BODY_BYTES = 1_800_000;
 
 // Map of file extensions (without the dot, lowercased) to MIME types we recognize.
 //

@@ -33,7 +33,7 @@ export default function AutoApproveConfirmDialog({
       }}
     >
       <Dialog
-        className="!z-[1000] !w-[min(440px,calc(100vw-32px))] overflow-hidden bg-kumo-base p-0 !top-[20%] !-translate-y-0"
+        className="responsive-dialog !z-[1000] !w-[min(440px,calc(100vw-32px))] overflow-hidden bg-kumo-base p-0 !top-[20%] !-translate-y-0"
         size="sm"
       >
         <div className="flex items-start justify-between gap-4 border-b border-kumo-line px-5 py-4">

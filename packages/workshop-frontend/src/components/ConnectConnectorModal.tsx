@@ -204,7 +204,7 @@ export default function ConnectConnectorModal({
       }}
     >
       <Dialog
-        className="!z-[1000] !top-[clamp(28px,8vh,80px)] !flex !max-h-[calc(100vh-clamp(28px,8vh,80px)-28px)] !w-[min(640px,calc(100vw-32px))] !-translate-y-0 flex-col overflow-hidden bg-kumo-base p-0"
+        className="responsive-dialog connect-connector-dialog !z-[1000] !top-[clamp(28px,8vh,80px)] !flex !max-h-[calc(100vh-clamp(28px,8vh,80px)-28px)] !w-[min(640px,calc(100vw-32px))] !-translate-y-0 flex-col overflow-hidden bg-kumo-base p-0"
         size="lg"
       >
         <div className="shrink-0 flex items-start justify-between gap-4 border-b border-kumo-line px-5 py-4">
