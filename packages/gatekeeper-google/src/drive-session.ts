@@ -8,6 +8,10 @@ import type {
 
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 const SHORTCUT_MIME_TYPE = "application/vnd.google-apps.shortcut";
+/** Exact MIME type for native Google Docs files. */
+export const GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document";
+/** Exact MIME type for native Google Sheets files. */
+export const GOOGLE_SHEET_MIME_TYPE = "application/vnd.google-apps.spreadsheet";
 
 /** Immutable authority carried by one Drive gatekeeper binding. */
 export type DriveBindingScope =
@@ -181,6 +185,26 @@ export class DriveSessionCore {
     await this.#authorizeIds([file.id], "Read Google Drive metadata",
       `Read metadata for Drive file ${file.id}.`);
     return entry;
+  }
+
+  /** Validate and authorize one native file before a nested content session is created. */
+  async openNativeFile(
+    fileId: string,
+    expectedMimeType: string,
+    description: string,
+  ): Promise<string> {
+    if (this.#scope.kind === "file" && fileId !== this.#scope.fileId) this.#outsideScope();
+    let file = await this.#api.getFile(fileId);
+    if (!this.#inScope(file)) this.#outsideScope();
+    await this.#authorizeIds(
+      [file.id],
+      `Open ${description} from Google Drive`,
+      `Check current metadata for Drive file ${file.id} and open it as a ${description}.`,
+    );
+    if (file.mimeType !== expectedMimeType) {
+      throw new Error(`The requested Drive file is not a ${description}.`);
+    }
+    return file.id;
   }
 
   #cursor(query: DriveListFilesOptions): Pager<DriveEntry> {

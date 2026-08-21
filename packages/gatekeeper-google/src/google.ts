@@ -6,7 +6,7 @@ import {
   GmailSession, GmailThread, GmailMessage,
   GmailThreadInfo, GmailThreadEntry, GmailMessageInfo, GmailLabel, GmailSystemLabel, EmailContent
 } from "./types";
-import { GoogleDocSession, DocMetadata } from "./docs-types";
+import { GoogleDocSession, DocMetadata, type GoogleDocReadSession } from "./docs-types";
 import { GoogleDocsApi } from "./docs-api";
 import { GoogleSheetsApi } from "./sheets-api";
 import type {
@@ -14,7 +14,9 @@ import type {
 } from "./sheets-types";
 import { docToMarkdown, markdownToDocRequests, computeReplaceOperations, DocSnapshot } from "./markdown-converter";
 import { DriveApi } from "./drive-api";
-import { DriveSessionCore, type DriveBindingScope } from "./drive-session";
+import {
+  DriveSessionCore, GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, type DriveBindingScope,
+} from "./drive-session";
 import type { DriveEntry, DriveListOptions, DriveSearchQuery, GoogleDriveSession } from "./drive-types";
 import { BigQueryApi, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
@@ -31,6 +33,7 @@ import type {
   GoogleCalendarInfo, GoogleCalendarSession, PersonAvailability,
 } from "./calendar-types";
 import TYPES_CODE from "./types.txt";
+import DOCS_READ_TYPES_CODE from "./docs-read-types.txt";
 import DOCS_TYPES_CODE from "./docs-types.txt";
 import BIGQUERY_TYPES_CODE from "./bigquery-types.txt";
 import CALENDAR_TYPES_CODE from "./calendar-types.txt";
@@ -71,6 +74,11 @@ import {
 } from "./resources";
 import { ObserverCheck, ObserverTracker } from "./observers";
 import { CursorPager, Pager } from "./cursor";
+
+const GOOGLE_DOC_TYPES_CODE = [DOCS_READ_TYPES_CODE, DOCS_TYPES_CODE].join("\n");
+const GOOGLE_DRIVE_TYPES_CODE = [
+  DOCS_READ_TYPES_CODE, SHEETS_TYPES_CODE, DRIVE_TYPES_CODE,
+].join("\n");
 
 // Vendor id = GATEKEEPER_<NAME> binding suffix (lowercased).
 const VENDOR_ID = "google";
@@ -297,12 +305,12 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
       url: "https://google.com",
       logo: { url: GOOGLE_LOGO_URL },
       color: "#e8f0fe",
-      tagline: "Draft replies, edit docs, read sheets, manage calendars, and analyze data",
+      tagline: "Draft replies, edit docs, read sheets, search Drive, manage calendars, and analyze data",
       description:
           "Connect your Google account to give Cloudflare OS access to Gmail, Google Docs, Google " +
-          "Sheets, Google Calendar, and BigQuery. Build agents that triage email, draft and edit " +
-          "documents, read spreadsheets, find focus time, schedule meetings, or run analytics " +
-          "queries on your data.",
+          "Sheets, Google Drive, Google Calendar, and BigQuery. Build agents that triage email, " +
+          "draft and edit documents, read spreadsheets, search Drive and read native Docs and " +
+          "Sheets, find focus time, schedule meetings, or run analytics queries on your data.",
       providesAuth: true,
     };
   }
@@ -336,7 +344,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 
   async getTypeScriptTypes(): Promise<string> {
     return [
-      TYPES_CODE, DOCS_TYPES_CODE, SHEETS_TYPES_CODE, CALENDAR_TYPES_CODE, BIGQUERY_TYPES_CODE,
+      TYPES_CODE, GOOGLE_DOC_TYPES_CODE, SHEETS_TYPES_CODE, CALENDAR_TYPES_CODE, BIGQUERY_TYPES_CODE,
     ].join("\n");
   }
 }
@@ -1963,7 +1971,7 @@ export class GoogleDocGatekeeperImpl
   }
 
   async getTypeScriptTypes(): Promise<string> {
-    return DOCS_TYPES_CODE;
+    return GOOGLE_DOC_TYPES_CODE;
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
@@ -2983,7 +2991,7 @@ export class GoogleDriveGatekeeperImpl
       return {
         url: GOOGLE_DRIVE_RESOURCE.urlPattern,
         title: "Google Drive Account",
-        snippet: "Find files and folders in My Drive or Shared with me (metadata only)",
+        snippet: "Find files and folders and read native Google Docs and Sheets in My Drive or Shared with me",
         suggestedBindingName: "GOOGLE_DRIVE",
         tsType: "GoogleDriveSession",
       };
@@ -2993,7 +3001,7 @@ export class GoogleDriveGatekeeperImpl
       return {
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.driveId)}`,
         title: drive.name,
-        snippet: `Find files and folders in organization-owned shared drive "${drive.name}" (metadata only)`,
+        snippet: `Find files and folders and read native Google Docs and Sheets in organization-owned shared drive "${drive.name}"`,
         suggestedBindingName: "GOOGLE_DRIVE",
         tsType: "GoogleDriveSession",
       };
@@ -3002,14 +3010,14 @@ export class GoogleDriveGatekeeperImpl
     return {
       url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
       title: file.name,
-      snippet: `Read metadata for Drive file "${file.name}"`,
+      snippet: `Read metadata and, when native, Google Doc or Sheet content from Drive file "${file.name}"`,
       suggestedBindingName: "GOOGLE_DRIVE",
       tsType: "GoogleDriveSession",
     };
   }
 
   async getTypeScriptTypes(): Promise<string> {
-    return DRIVE_TYPES_CODE;
+    return GOOGLE_DRIVE_TYPES_CODE;
   }
 
   async getAutoApprovableActions() {
@@ -3020,8 +3028,11 @@ export class GoogleDriveGatekeeperImpl
     let prepareObservation = this.ctx.props.scope.kind === "file"
       ? undefined
       : (fileIds: string[]) => this.#observerTracker().prepareObservation(fileIds);
+    let getDriveAccessToken = (opts?: AccessTokenRequest) => this.#getAccessToken(opts);
     return new GoogleDriveSessionImpl(
-      new DriveApi(opts => this.#getAccessToken(opts)),
+      new DriveApi(getDriveAccessToken),
+      new GoogleDocsApi(getDriveAccessToken),
+      new GoogleSheetsApi(getDriveAccessToken),
       this.ctx.props.scope,
       approvalQueue.dup(),
       prepareObservation,
@@ -3075,22 +3086,84 @@ export class GoogleDriveGatekeeperImpl
 }
 
 @validateRpc()
-class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSession {
-  #core: DriveSessionCore;
+class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession {
+  #docsApi: GoogleDocsApi;
+  #driveApi: DriveApi;
+  #documentId: string;
+  #approvalQueue: RpcStub<ApprovalQueue>;
 
   constructor(
-    api: DriveApi,
+    docsApi: GoogleDocsApi,
+    driveApi: DriveApi,
+    documentId: string,
+    approvalQueue: RpcStub<ApprovalQueue>,
+  ) {
+    super();
+    this.#docsApi = docsApi;
+    this.#driveApi = driveApi;
+    this.#documentId = documentId;
+    this.#approvalQueue = approvalQueue;
+  }
+
+  [Symbol.dispose](): void {
+    this.#approvalQueue[Symbol.dispose]();
+  }
+
+  async getMetadata(): Promise<DocMetadata> {
+    let file = await this.#driveApi.getFile(this.#documentId);
+    let lastModified = new Date(file.modifiedTime ?? "");
+    if (Number.isNaN(lastModified.valueOf())) {
+      throw new Error("Google Drive returned an invalid modifiedTime");
+    }
+    await this.#approvalQueue.authorizeObservation({
+      title: "Read Google Doc metadata",
+      description: "Read the current title and modification time of the Drive document.",
+    });
+    return { title: file.name, lastModified };
+  }
+
+  async getContent(): Promise<string> {
+    let snapshot = docToMarkdown(await this.#docsApi.getDocument(this.#documentId));
+    await this.#approvalQueue.authorizeObservation({
+      title: "Read Google Doc content",
+      description: "Read the current document body as Markdown.",
+    });
+    return snapshot.markdown;
+  }
+}
+
+/** Drive RPC session implementation, exported for workerd contract coverage. */
+@validateRpc()
+export class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSession {
+  #core: DriveSessionCore;
+  #driveApi: DriveApi;
+  #docsApi: GoogleDocsApi;
+  #sheetsApi: GoogleSheetsApi;
+  #approvalQueue: RpcStub<ApprovalQueue>;
+
+  constructor(
+    driveApi: DriveApi,
+    docsApi: GoogleDocsApi,
+    sheetsApi: GoogleSheetsApi,
     scope: DriveBindingScope,
     approvalQueue: RpcStub<ApprovalQueue>,
     prepareObservation?: (fileIds: string[]) => Promise<ObserverCheck<string>>,
   ) {
     super();
+    this.#driveApi = driveApi;
+    this.#docsApi = docsApi;
+    this.#sheetsApi = sheetsApi;
+    this.#approvalQueue = approvalQueue;
     this.#core = new DriveSessionCore({
-      api,
+      api: driveApi,
       scope,
       prepareObservation,
-      authorize: description => approvalQueue.authorizeObservation(description),
+      authorize: description => this.#approvalQueue.authorizeObservation(description),
     });
+  }
+
+  [Symbol.dispose](): void {
+    this.#approvalQueue[Symbol.dispose]();
   }
 
   getScope() {
@@ -3107,6 +3180,24 @@ class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSession {
 
   getEntry(fileId: string): Promise<DriveEntry> {
     return this.#core.getEntry(fileId);
+  }
+
+  async openGoogleDoc(fileId: string): Promise<GoogleDocReadSession> {
+    let documentId = await this.#core.openNativeFile(
+      fileId, GOOGLE_DOC_MIME_TYPE, "Google Doc",
+    );
+    return new GoogleDocReadSessionImpl(
+      this.#docsApi, this.#driveApi, documentId, this.#approvalQueue.dup(),
+    );
+  }
+
+  async openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetSession> {
+    let spreadsheetId = await this.#core.openNativeFile(
+      fileId, GOOGLE_SHEET_MIME_TYPE, "Google Sheet",
+    );
+    return new GoogleSpreadsheetSessionImpl(
+      this.#sheetsApi, spreadsheetId, this.#approvalQueue.dup(),
+    );
   }
 }
 

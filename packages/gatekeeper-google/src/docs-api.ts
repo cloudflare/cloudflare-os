@@ -4,6 +4,7 @@
 // It follows the same pattern as google-api.ts (which wraps the Gmail API).
 
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { readGoogleJson } from "./google-response";
 
 // ---------------------------------------------------------------------------
 // Types modeling the Google Docs API response.
@@ -87,24 +88,33 @@ export type TextStyle = {
 // ---------------------------------------------------------------------------
 
 const DOCS_API_BASE = "https://docs.googleapis.com/v1/documents";
+// A native Doc is limited to roughly one million characters; 10 MiB bounds its expanded JSON form.
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+const REQUEST_TIMEOUT_MS = 30_000;
 
 export class GoogleDocsApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
+  async #request<T>(
+    url: string,
+    init: RequestInit,
+    operation: string,
+  ): Promise<T> {
+    let response = await fetchWithAuthRetry(
+      url, init, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+    );
+    return readGoogleJson<T>(response, {
+      provider: "Google Docs", operation, maxBytes: MAX_RESPONSE_BYTES,
+    });
+  }
+
   /** Fetch the full document. */
   async getDocument(documentId: string): Promise<GoogleDocsDocument> {
-    let response = await fetchWithAuthRetry(
+    return this.#request(
       `${DOCS_API_BASE}/${encodeURIComponent(documentId)}`,
       {},
-      this.getAccessToken,
+      "get document",
     );
-
-    if (!response.ok) {
-      let errorText = await response.text();
-      throw new Error(`Failed to get document: ${response.status} ${errorText}`);
-    }
-
-    return await response.json() as GoogleDocsDocument;
   }
 
   /**
@@ -115,18 +125,11 @@ export class GoogleDocsApi {
    * that's fine — we just parse revisionId from whatever comes back.
    */
   async getRevisionId(documentId: string): Promise<string> {
-    let response = await fetchWithAuthRetry(
+    let data = await this.#request<{ revisionId: string }>(
       `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?fields=revisionId`,
       {},
-      this.getAccessToken,
+      "get revision ID",
     );
-
-    if (!response.ok) {
-      let errorText = await response.text();
-      throw new Error(`Failed to get revision ID: ${response.status} ${errorText}`);
-    }
-
-    let data = await response.json() as { revisionId: string };
     return data.revisionId;
   }
 
@@ -146,31 +149,19 @@ export class GoogleDocsApi {
     targetRevisionId?: string,
   ): Promise<string> {
     let body: any = { requests };
-    if (targetRevisionId) {
-      body.writeControl = { targetRevisionId };
-    }
+    if (targetRevisionId) body.writeControl = { targetRevisionId };
 
-    let response = await fetchWithAuthRetry(
+    let result = await this.#request<{
+      writeControl?: { requiredRevisionId?: string };
+    }>(
       `${DOCS_API_BASE}/${encodeURIComponent(documentId)}:batchUpdate`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       },
-      this.getAccessToken,
+      "batch update document",
     );
-
-    if (!response.ok) {
-      let errorText = await response.text();
-      throw new Error(`Failed to batch update document: ${response.status} ${errorText}`);
-    }
-
-    let result = await response.json() as {
-      writeControl?: { requiredRevisionId?: string };
-    };
-
     return result.writeControl?.requiredRevisionId ?? "";
   }
 }

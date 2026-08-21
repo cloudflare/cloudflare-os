@@ -51,7 +51,7 @@ You'll need to enable the Google APIs that you want to use. Currently supported:
 18. Click on **BigQuery API** in the results
 19. Click **Enable**
 
-The Google Drive API powers the Docs and Sheets resource pickers and the read-only Drive metadata bindings described below. Document reads and edits still go through the Google Docs API, and spreadsheet reads go through the Google Sheets API.
+The Google Drive API powers the Docs and Sheets resource pickers, Drive discovery, and Drive scope checks. Native document or spreadsheet content opened from a Drive binding is read through the Google Docs or Google Sheets API. Direct Google Doc reads and edits still go through the Docs API, and direct spreadsheet reads go through the Sheets API.
 
 ### Step 3: Configure the OAuth Consent Screen
 
@@ -74,10 +74,10 @@ included). Across all resource types, the gatekeeper can request:
 
 - `openid`, `userinfo.profile`, and `userinfo.email` to identify the connected account.
 - `gmail.modify` for Gmail thread reads, organization, replies, forwards, and sending. This single scope already includes label access and sending.
-- `documents` for Google Docs reads and edits.
-- `drive.metadata.readonly` for the Docs and Sheets pickers, connected-account Drive metadata, and exact-file metadata.
-- `drive.readonly` for metadata search within one shared drive; the gatekeeper still exposes metadata only.
-- `spreadsheets.readonly` to read metadata and cell values from selected Google spreadsheets.
+- `documents` for direct Google Docs reads and edits; `documents.readonly` for native Docs opened from account-wide or exact-file Drive bindings.
+- `drive.metadata.readonly` for the Docs and Sheets pickers, account-wide Drive discovery, exact-file metadata, and native-file scope checks.
+- `drive.readonly` for discovery and native Docs or Sheets reads within one shared drive. Google accepts this Drive scope for those native APIs, so shared-drive grants do not need redundant Docs or Sheets scopes.
+- `spreadsheets.readonly` to read metadata and bounded cell ranges from directly selected spreadsheets or native Sheets opened from account-wide or exact-file Drive bindings.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
 - `calendar.events` to manage selected calendar and check calendar availability.
 - `bigquery` for BigQuery dry-runs and queries. This is intentionally broader than `bigquery.readonly` because dry-runs use `jobs.insert`; the gatekeeper enforces read-only SQL and resource scope checks before running queries.
@@ -156,9 +156,13 @@ Drive exposes three permanent resource URL forms:
 
 Despite the `/folders/` URL, the second resource is a Google Workspace shared drive, not an individual folder. Google uses a shared drive's ID for its root folder too. The gatekeeper confirms the ID with `drives.get`, so it rejects ordinary folder IDs.
 
-The agent-facing `GoogleDriveSession` returns metadata only. It can report the binding scope, list entries, run structured metadata searches, and fetch one entry by ID. Listing and search return disposable RPC cursors. A parent filter means direct children only, never recursive descendants. The API does not expose raw Drive `q` strings, file contents, writes, shortcut traversal, native Docs or Sheets sessions, or Workers AI extraction.
+The agent-facing `GoogleDriveSession` reports the binding scope, lists entries, runs structured metadata searches, and fetches one entry by ID. Listing and search return disposable RPC cursors. A parent filter means direct children only, never recursive descendants. For a native Google Doc or Sheet, `openGoogleDoc()` or `openGoogleSheet()` returns an independently disposable, read-only nested session. Docs expose metadata and Markdown content; Sheets expose spreadsheet metadata and bounded A1 range reads.
 
-Account and shared-drive bindings remember every file ID whose metadata a workspace has read. Before each collaborator opens the workspace, the gatekeeper requires an explicit Drive grant and rechecks all remembered IDs with fresh batched `files.get` calls. Before a new result page is disclosed, it checks the page's IDs against every existing observer and excludes observers who cannot access them. Exact-file bindings perform the same fresh check for their single file on each share attempt. Google batch requests contain at most 100 `files.get` subrequests; there is deliberately no cached access verdict, so revoked access fails closed on the next open.
+Every native open re-fetches Drive metadata, enforces the immutable account, shared-drive, or exact-file scope, and checks the exact MIME type before authorizing the observation. A folder, shortcut, non-native blob, wrong native type, or out-of-scope file cannot mint a content capability. The Drive API exposes no raw `q` strings, writes, shortcut traversal, arbitrary download or export, or Workers AI extraction. Direct Google Doc bindings retain their existing editing API; Drive-opened Docs do not expose it.
+
+Account-wide and exact-file Drive bindings request `documents.readonly` and `spreadsheets.readonly` in addition to `drive.metadata.readonly`. An older metadata-only connection is therefore prompted to expand consent before it is treated as granting either resource. Shared-drive bindings remain on `drive.readonly`, which Google accepts for native Docs and Sheets reads, so they do not request redundant scopes.
+
+Account and shared-drive bindings remember every file ID whose metadata or native content a workspace has read. Before each collaborator opens the workspace, the gatekeeper requires an explicit Drive grant and rechecks all remembered IDs with fresh batched `files.get` calls. Before a new result page or native child capability is disclosed, it checks the file ID against every existing observer and excludes observers who cannot access it. Exact-file bindings perform the same fresh check for their single file on each share attempt. Google batch requests contain at most 100 `files.get` subrequests; there is deliberately no cached access verdict, so revoked access fails closed on the next open.
 
 ## Troubleshooting
 

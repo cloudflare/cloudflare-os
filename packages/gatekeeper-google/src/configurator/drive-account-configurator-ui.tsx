@@ -8,12 +8,12 @@ export default {
   initialValuesFromResourceUrl: () => ({ scope: "account" }),
   render({ setValues }) {
     return <Section>
-      <Field label="Google Drive account" description="Search My Drive and items shared directly with this Google account.">
+      <Field label="Google Drive account" description="Search My Drive and items shared directly with this Google account, and read native Google Docs and Sheets.">
         <RadioCards
           value="account"
           options={[{
             value: "account", title: "My Drive and Shared with me",
-            description: "Returns file and folder metadata only.",
+            description: "Returns metadata for every item and read-only content sessions for native Docs and Sheets.",
           }]}
           onChange={() => setValues({ scope: "account" })}
         />

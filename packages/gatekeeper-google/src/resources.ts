@@ -70,27 +70,27 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
-/** Metadata for files and folders visible to the connected Google Drive account. */
+/** Files, folders, and read-only native content visible to the connected Google Drive account. */
 export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/drive/my-drive",
   title: "Google Drive Account",
-  description: "Find files and folders in your My Drive or Shared with me.",
+  description: "Find files and folders, and read native Google Docs and Sheets, in My Drive or Shared with me.",
   grantable: true,
 };
 
-/** Metadata across one Google Workspace shared drive, keyed by its immutable drive ID. */
+/** Files, folders, and read-only native content in one Google Workspace shared drive. */
 export const GOOGLE_SHARED_DRIVE_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/drive/folders/:driveId",
   title: "Google Workspace Shared Drive",
-  description: "Find files and folders in one organization-owned shared drive.",
+  description: "Find files and folders, and read native Google Docs and Sheets, in one organization-owned shared drive.",
   grantable: true,
 };
 
-/** Metadata for one immutable Drive file ID. */
+/** Metadata and, when native, read-only content for one immutable Drive file ID. */
 export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/file/d/:fileId/view",
   title: "Google Drive File",
-  description: "Read metadata for one Drive file.",
+  description: "Read metadata and, for a native Google Doc or Sheet, content from one Drive file.",
   grantable: true,
 };
 
@@ -141,15 +141,24 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   },
   {
     resource: GOOGLE_DRIVE_RESOURCE,
-    scopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+    scopes: [
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+    ],
   },
   {
     resource: GOOGLE_SHARED_DRIVE_RESOURCE,
+    // `drive.readonly` already authorizes Docs and Sheets content; do not add redundant API scopes.
     scopes: ["https://www.googleapis.com/auth/drive.readonly"],
   },
   {
     resource: GOOGLE_DRIVE_FILE_RESOURCE,
-    scopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+    scopes: [
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+    ],
   },
   {
     resource: BIGQUERY_RESOURCE,

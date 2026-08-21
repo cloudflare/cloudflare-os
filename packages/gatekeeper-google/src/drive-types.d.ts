@@ -1,3 +1,6 @@
+import type { GoogleDocReadSession } from "./docs-read-types";
+import type { GoogleSpreadsheetSession } from "./sheets-types";
+
 /**
  * A pagination cursor.
  *
@@ -107,10 +110,9 @@ export type DriveSearchQuery = {
 };
 
 /**
- * Read-only metadata access to the selected Drive scope.
+ * Read-only metadata discovery and native Google Docs/Sheets access within the selected Drive scope.
  *
- * Methods do not return file contents, follow shortcut targets, edit Drive, or open native Google
- * Docs or Sheets sessions.
+ * Methods do not follow shortcut targets, edit Drive, or read non-native file contents.
  */
 export interface GoogleDriveSession {
   /** Return the immutable binding scope with current display metadata. */
@@ -132,4 +134,20 @@ export interface GoogleDriveSession {
 
   /** Return metadata for one file ID, or throw when the ID is outside the immutable binding scope. */
   getEntry(fileId: string): Promise<DriveEntry>;
+
+  /**
+   * Open an in-scope native Google Doc with MIME type
+   * `application/vnd.google-apps.document`. Other MIME types, including folders and shortcuts, are
+   * rejected. The returned RPC capability supports promise pipelining and must be disposed when
+   * finished.
+   */
+  openGoogleDoc(fileId: string): Promise<GoogleDocReadSession>;
+
+  /**
+   * Open an in-scope native Google Sheet with MIME type
+   * `application/vnd.google-apps.spreadsheet`. Other MIME types, including folders and shortcuts,
+   * are rejected. The returned RPC capability supports promise pipelining and must be disposed when
+   * finished.
+   */
+  openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetSession>;
 }

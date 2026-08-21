@@ -54,6 +54,18 @@ describe("resource declarations", () => {
     }
     expect(new Set(Object.values(RESOURCE_BY_KIND)).size).toBe(SUPPORTED_RESOURCES.length);
   });
+
+  it("advertises native Docs and Sheets only on Drive resources", () => {
+    expect([
+      GOOGLE_DRIVE_RESOURCE.description,
+      GOOGLE_SHARED_DRIVE_RESOURCE.description,
+      GOOGLE_DRIVE_FILE_RESOURCE.description,
+    ]).toEqual([
+      "Find files and folders, and read native Google Docs and Sheets, in My Drive or Shared with me.",
+      "Find files and folders, and read native Google Docs and Sheets, in one organization-owned shared drive.",
+      "Read metadata and, for a native Google Doc or Sheet, content from one Drive file.",
+    ]);
+  });
 });
 
 describe("resourceUrlPatternsToOAuthScopes", () => {
@@ -76,13 +88,36 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
   });
 
   it.each([
-    [GOOGLE_DRIVE_RESOURCE, "https://www.googleapis.com/auth/drive.metadata.readonly"],
-    [GOOGLE_SHARED_DRIVE_RESOURCE, "https://www.googleapis.com/auth/drive.readonly"],
-    [GOOGLE_DRIVE_FILE_RESOURCE, "https://www.googleapis.com/auth/drive.metadata.readonly"],
-  ] as const)("uses the permanent least-privilege scope for $urlPattern", (resource, scope) => {
+    [GOOGLE_DRIVE_RESOURCE, [
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+    ]],
+    [GOOGLE_SHARED_DRIVE_RESOURCE, ["https://www.googleapis.com/auth/drive.readonly"]],
+    [GOOGLE_DRIVE_FILE_RESOURCE, [
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+    ]],
+  ] as const)("uses the permanent least-privilege scopes for $urlPattern", (resource, scopes) => {
     expect(resourceUrlPatternsToOAuthScopes([resource.urlPattern])).toEqual([
-      ...IDENTITY_SCOPES, scope,
+      ...IDENTITY_SCOPES, ...scopes,
     ]);
+  });
+
+  it("requires account and file grants to expand beyond metadata-only consent", () => {
+    const oldMetadataGrant = [
+      ...IDENTITY_SCOPES,
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+    ];
+    const granted = grantedResourcesFromScopes(oldMetadataGrant);
+
+    expect(granted).not.toContain(GOOGLE_DRIVE_RESOURCE.urlPattern);
+    expect(granted).not.toContain(GOOGLE_DRIVE_FILE_RESOURCE.urlPattern);
+    expect(grantedResourcesFromScopes([
+      ...IDENTITY_SCOPES,
+      "https://www.googleapis.com/auth/drive.readonly",
+    ])).toContain(GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern);
   });
   it("deduplicates scopes shared between resources", () => {
     let scopes = resourceUrlPatternsToOAuthScopes(

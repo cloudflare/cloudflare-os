@@ -7,7 +7,17 @@
 // `encodeURIComponent`, a normalization one side does and the other does not -- shows up here
 // rather than as a resource the backend rejects after the user has filled the form.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@gadgets/configurator-ui", () => ({
+  h: (component: unknown, props: unknown, ...children: unknown[]) => ({
+    component, props, children,
+  }),
+  Autocomplete: "Autocomplete",
+  Field: "Field",
+  RadioCards: "RadioCards",
+  Section: "Section",
+}));
 import driveAccountConfigurator from "../src/configurator/drive-account-configurator-ui";
 import driveFileConfigurator from "../src/configurator/drive-file-configurator-ui";
 import gmailConfigurator from "../src/configurator/gmail-configurator-ui";
@@ -43,6 +53,9 @@ const configurableValues = (
   resourceUrl: string,
   resourceUrlPattern: string,
 ) => configurator.initialValuesFromResourceUrl!({ resourceUrl, resourceUrlPattern, ui: noUi });
+
+const renderedCopy = (configurator: { render?: (context: never) => unknown }) =>
+  JSON.stringify(configurator.render!({ values: {}, setValues() {}, ui: noUi } as never));
 describe("Gmail configurator URLs", () => {
   it.for([
     ["the whole mailbox", { mode: "all" }, { kind: "gmail" }],
@@ -104,6 +117,18 @@ describe("Drive configurator URLs", () => {
     let url = configurableUrl(driveAccountConfigurator, { scope: "account" });
     expect(url).toBe(GOOGLE_DRIVE_RESOURCE.urlPattern);
     expect(parseResourceUrl(url)).toEqual({ kind: "driveAccount" });
+  });
+
+  it("explains native Doc and Sheet reads at every Drive scope", () => {
+    expect(renderedCopy(driveAccountConfigurator)).toContain(
+      "Returns metadata for every item and read-only content sessions for native Docs and Sheets.",
+    );
+    expect(renderedCopy(sharedDriveConfigurator)).toContain(
+      "Search its files and read native Google Docs and Sheets.",
+    );
+    expect(renderedCopy(driveFileConfigurator)).toContain(
+      "A selected native Google Doc or Sheet also provides read-only content.",
+    );
   });
 
   it("round-trips an encoded shared-drive ID", () => {

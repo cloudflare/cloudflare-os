@@ -3,7 +3,13 @@ import { createObservabilityContext } from "@gadgets/backend-utils/observability
 /** Observability fields emitted by the Google gatekeeper. */
 export type GoogleObservabilityFields = {
   actionId: number | string;
+  httpStatus: number;
   messageId: string;
+  operation: string;
+  provider: string;
+  providerCode: number;
+  providerReasons: string[];
+  providerStatus: string;
   vendorId: string;
 };
 
