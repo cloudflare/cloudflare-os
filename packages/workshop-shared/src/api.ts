@@ -1257,7 +1257,7 @@ export type GadgetMetadata = {
    * True when the gadget has observed data marked as share-prohibited. Such gadgets can no longer
    * be shared with additional users or links.
    */
-  sharingProhibited?: boolean;
+  containsRestrictedData?: boolean;
 
   /**
    * Various objects in the API specify a gadgetId, but make the property optional. When omitted,

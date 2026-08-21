@@ -1009,8 +1009,12 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       nextChatId: 0,
       nextHookId: 0,
 
-      // True if any past observation was authorized that had the `prohibitAllSharing` flag set
-      // in its `ObservationDescription`.
+      // True if any past observation was authorized that had the `containsRestrictedData` flag
+      // set in its `ObservationDescription`.
+      //
+      // NOTE: The name predates the flag's rename from `prohibitAllSharing`. It CANNOT be
+      // renamed: the typed-storage key is the property name, so a rename would silently unlatch
+      // every workspace that has already observed restricted data.
       prohibitAllSharing: false,
     },
 
@@ -4356,7 +4360,7 @@ class OverseerImpl implements AgentHooks {
 
   async authorizeObservation(gatekeeperId: number, description: ObservationDescription,
                              caller: GatekeeperCaller): Promise<void> {
-    if (description.prohibitAllSharing) {
+    if (description.containsRestrictedData) {
       if ((await this.getSharingManager()).hasAnyShares()) {
         throw new Error(
             "This observation was blocked because it contains sensitive data that must only be " +
@@ -9029,7 +9033,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
-      sharingProhibited: this.impl.storage.prohibitAllSharing.get(),
+      containsRestrictedData: this.impl.storage.prohibitAllSharing.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -9048,7 +9052,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
-      sharingProhibited: this.impl.storage.prohibitAllSharing.get(),
+      containsRestrictedData: this.impl.storage.prohibitAllSharing.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -9070,9 +9074,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
-    let sharingProhibitedSubscriber = {
+    let restrictedDataSubscriber = {
       update(value: boolean | undefined) {
-        metadata.sharingProhibited = value;
+        metadata.containsRestrictedData = value;
         callback(metadata).catch(unsubscribe);
       }
     };
@@ -9080,13 +9084,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let unsubscribe = () => {
       this.impl.storage.title.unsubscribe(titleSubscriber);
       this.impl.storage.totalCost.unsubscribe(costSubscriber);
-      this.impl.storage.prohibitAllSharing.unsubscribe(sharingProhibitedSubscriber);
+      this.impl.storage.prohibitAllSharing.unsubscribe(restrictedDataSubscriber);
       callback[Symbol.dispose]();
     };
 
     this.impl.storage.title.subscribe(titleSubscriber);
     this.impl.storage.totalCost.subscribe(costSubscriber);
-    this.impl.storage.prohibitAllSharing.subscribe(sharingProhibitedSubscriber);
+    this.impl.storage.prohibitAllSharing.subscribe(restrictedDataSubscriber);
 
     callback(metadata).catch(unsubscribe);
 

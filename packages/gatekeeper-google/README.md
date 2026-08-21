@@ -112,9 +112,9 @@ Such a connection names **two** projects, because a public project can be read b
 That split is the point. The session's scope is the *public* project, so the existing
 `referencedTables` check rejects any query touching the billing project: the connection spends the
 user's money but cannot read a byte of their data. Because it provably reads only data anyone
-signed in to Google can already read, its observations do **not** set `prohibitAllSharing` — so a
-workspace built on one stays shareable and can still perform actions, rather than dropping into the
-lockdown mode that reading a private BigQuery dataset triggers.
+signed in to Google can already read, its observations are **not** marked as restricted data — so a
+workspace built on one stays shareable and can still fetch from the web, unlike one that has read a
+private BigQuery dataset.
 
 Costs still apply: public tables are large and the queries bill the user's project. The default
 100 GB `maximumBytesBilled` cap and the mandatory dry-run gate apply exactly as they do to a

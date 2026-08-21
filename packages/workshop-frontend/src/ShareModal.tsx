@@ -372,7 +372,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }, [])
 
   const isOwner = !metadata.owner
-  const sharingProhibited = metadata.sharingProhibited === true
+  const containsRestrictedData = metadata.containsRestrictedData === true
 
   const loadData = useCallback(async () => {
     try {
@@ -559,7 +559,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
 
   const handleAddCollaborator = async () => {
     const username = addUsername.trim()
-    if (!username || sharingProhibited || addingRef.current) return
+    if (!username || containsRestrictedData || addingRef.current) return
 
     addingRef.current = true
     setAdding(true)
@@ -585,7 +585,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }
 
   const handleCreateShareLink = async () => {
-    if (sharingProhibited || creatingLinkRef.current) return
+    if (containsRestrictedData || creatingLinkRef.current) return
     creatingLinkRef.current = true
     setCreatingLink(true)
     try {
@@ -611,7 +611,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   // Copy a share link again. Secrets are never stored, so the previously-shown URL can't be
   // re-displayed. We mint a new secret for the same logical link and copy that.
   const handleCopyShareLink = async (linkId: string) => {
-    if (sharingProhibited || copyingLinkRef.current) return
+    if (containsRestrictedData || copyingLinkRef.current) return
     copyingLinkRef.current = true
     setCopyingLinkId(linkId)
     try {
@@ -775,7 +775,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
           className="chat-panel min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-6 sm:px-6"
           onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
         >
-          {sharingProhibited ? (
+          {containsRestrictedData ? (
             <div className="flex h-full flex-col items-center justify-center px-6 py-12 text-center">
               <div className="grid h-12 w-12 place-items-center rounded-2xl bg-kumo-warning-tint text-kumo-warning">
                 <ShieldWarning size={22} weight="duotone" />
@@ -821,20 +821,20 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
               data-bwignore="true"
               data-form-type="other"
               className="h-9 min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:hidden"
-              disabled={sharingProhibited}
+              disabled={containsRestrictedData}
             />
             <RoleMenu
               ariaLabel="Access to grant"
               value={addRole}
               onValueChange={setAddRole}
-              disabled={sharingProhibited}
+              disabled={containsRestrictedData}
               container={menuContainer}
             />
             <WorkshopButton
               tone="primary"
               className="col-span-3 w-full !rounded-xl sm:col-span-1 sm:w-auto sm:min-w-[68px]"
               onClick={handleAddCollaborator}
-              disabled={!addUsername.trim() || adding || sharingProhibited}
+              disabled={!addUsername.trim() || adding || containsRestrictedData}
             >
               {adding ? 'Inviting…' : 'Invite'}
             </WorkshopButton>
@@ -911,16 +911,16 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                       placeholder="Name this link (optional)…"
                       aria-label="Share link name (optional)"
                       className="h-9 min-w-0 flex-1 border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive"
-                      disabled={creatingLink || sharingProhibited}
+                      disabled={creatingLink || containsRestrictedData}
                     />
                     <RoleMenu
                       ariaLabel="Access granted by link"
                       value={newLinkRole}
                       onValueChange={setNewLinkRole}
-                      disabled={creatingLink || sharingProhibited}
+                      disabled={creatingLink || containsRestrictedData}
                       container={menuContainer}
                     />
-                    <WorkshopButton tone="primary" className="shrink-0 !rounded-xl" onClick={handleCreateShareLink} disabled={creatingLink || sharingProhibited}>
+                    <WorkshopButton tone="primary" className="shrink-0 !rounded-xl" onClick={handleCreateShareLink} disabled={creatingLink || containsRestrictedData}>
                       {creatingLink ? 'Creating…' : 'Create link'}
                     </WorkshopButton>
                     <WorkshopIconButton aria-label="Cancel creating link" onClick={() => setShowLinkComposer(false)}>
@@ -932,7 +932,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
               <button
                 type="button"
                 onClick={() => setShowLinkComposer(true)}
-                disabled={sharingProhibited}
+                disabled={containsRestrictedData}
                 className="themed-compact-shadow flex h-12 w-full cursor-pointer items-center justify-center gap-1.5 rounded-2xl border border-kumo-line/80 bg-kumo-base px-3 text-[13px] font-medium text-kumo-subtle transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-elevated/60 hover:text-kumo-default active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Link size={14} /> Create a share link
@@ -1078,7 +1078,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                               className="!h-7 !w-7"
                               onClick={() => handleCopyShareLink(sk.linkId)}
                               aria-label={`Copy ${sk.note || 'share link'}`}
-                              disabled={confirmationBusy || copyingLinkId === sk.linkId || sharingProhibited}
+                              disabled={confirmationBusy || copyingLinkId === sk.linkId || containsRestrictedData}
                             >
                               {copiedLinkId === sk.linkId ? <Check size={13} weight="bold" /> : <Copy size={13} />}
                             </WorkshopIconButton>

@@ -93,8 +93,8 @@ describe("public resource URLs", () => {
     }
   });
 
-  // The check the "reads only public data" label -- and so the sharing exemption -- rests on.
-  // Without it a binding could be pointed at a private project the user's token can reach.
+  // The check the "reads only public data" label -- and so the restricted-data exemption -- rests
+  // on. Without it a binding could be pointed at a private project the user's token can reach.
   it("rejects a data project outside the allowlist", () => {
     expect(() => parse(`https://${BIGQUERY_PUBLIC_HOST}/my-project/my-private-project`))
         .toThrow(/not a known public BigQuery project/);

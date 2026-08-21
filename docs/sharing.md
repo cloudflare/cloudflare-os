@@ -156,7 +156,7 @@ Authorization is only checked at `open()`, so a session that is *already* open i
 
 Two precautions surround the abort (`OverseerImpl.scheduleRevocationRestart`): the severed edge is flushed with `ctx.storage.sync()` first (because `ctx.abort()` does not respect the output gate, a restart could otherwise come back with the change lost), and the abort is delayed ~100ms so the triggering RPC's response reaches the caller -- typically the owner, who is also connected -- before their own connection drops. The disconnect reaches the browser through the existing `notifyClosed` plumbing: when the Overseer DO aborts, the per-session `notifyClosed` stub is disposed without being called, which `AuthenticatedApiImpl` treats as a lost connection and reacts to by killing the browser WebSocket, forcing a reconnect.
 
-Note this is only needed for removals/downgrades. Granting or raising access never strands anyone, and `prohibitAllSharing` cannot strand a session either: an observation that would set that flag is *blocked* (rather than applied) if the gadget is already shared, so the flag only ever flips to true on a gadget with no other sessions to evict.
+Note this is only needed for removals/downgrades. Granting or raising access never strands anyone, and `containsRestrictedData` cannot strand a session either: an observation that would set that flag is *blocked* (rather than applied) if the gadget is already shared, so the flag only ever flips to true on a gadget with no other sessions to evict.
 
 ## Future work
 
