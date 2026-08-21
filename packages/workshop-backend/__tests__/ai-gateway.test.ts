@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  AiGatewayConfig,
   AiGatewayLogRetryableError,
   getAiGatewayLogCost,
 } from "../src/ai-gateway.js";
@@ -7,11 +8,38 @@ import {
 function env(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
   return {
     CF_AI_GATEWAY: "platform-gateway",
+    CF_AI_GATEWAY_ACCOUNT_ID: "gateway-account-id",
+    CF_AI_GATEWAY_API_TOKEN: "read-run-token",
     CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,google",
     WORKERS_AI: {} as Ai,
     ...overrides,
   } as Cloudflare.Env;
 }
+
+describe("AiGatewayConfig", () => {
+  it("offers the deployment-funded Kimi and Claude catalog globally", () => {
+    const config = new AiGatewayConfig(env({
+      CF_AI_GATEWAY_PROVIDERS: "cloudflare,anthropic",
+    }));
+
+    expect(config.getModelList()).toEqual(expect.arrayContaining([
+      { type: "agent", id: "moonshotai/kimi-k3", name: "Kimi K3" },
+      { type: "agent", id: "claude-opus-5", name: "Claude Opus 5" },
+      { type: "agent", id: "claude-sonnet-5", name: "Claude Sonnet 5" },
+      { type: "agent", id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
+    ]));
+  });
+
+  it("uses GLM 4.7 Flash for quick tasks", () => {
+    const config = new AiGatewayConfig(env());
+
+    expect(config.getQuickModelConfig()).toEqual({
+      provider: "cloudflare",
+      model: "@cf/zai-org/glm-4.7-flash",
+      apiToken: "",
+    });
+  });
+});
 
 describe("getAiGatewayLogCost", () => {
   afterEach(() => vi.unstubAllGlobals());
