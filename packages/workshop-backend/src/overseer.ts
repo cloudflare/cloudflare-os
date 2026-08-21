@@ -9746,9 +9746,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // agent sees it the next time the user sends a message (see the connectionRequest history case).
   }
 
-  async subscribeToActions(subscriber: RpcStub<ActionsSubscriber>, _startAfter?: Date)
+  async subscribeToActions(subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date)
       : Promise<RpcStub<{}>> {
     let actions = this.impl.storage.actions;
+    // Pre-deploy clients pass startAfter and build their entire history view from replay; honor
+    // that by replaying everything, not just pendings. The value itself is ignored (see api.ts).
+    let replayAll = startAfter !== undefined;
 
     subscriber = subscriber.dup();  // keep stub after return
     let subscribed = false;
@@ -9787,7 +9790,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         if (disposed) break;
         let page = [...actions.list({startAfter: cursor, end, limit: PENDING_SCAN_PAGE_SIZE})];
         for (let record of page) {
-          if (record.state === "pending") {
+          if (replayAll || record.state === "pending") {
             subscriber.entry(actionRecordToLog(record)).catch(unsubscribe);
           }
         }

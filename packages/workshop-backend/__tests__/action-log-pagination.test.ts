@@ -112,6 +112,19 @@ describe("subscribeToActions", () => {
     expect(events).toEqual([0, 3, 5, "ready"]);
   });
 
+  it("replays every record, resolved included, for the deprecated startAfter", async () => {
+    let storage = makeStorage();
+    putAction(storage, 0);
+    putAction(storage, 1, { state: "approved" });
+    putAction(storage, 2, { type: "observation", state: "rejected" });
+    putAction(storage, 3, { type: "bindHook", state: "pending" });
+    let client = await makeClient(storage);
+    let { subscriber, events } = makeSubscriber();
+
+    using _sub = await client.subscribeToActions(subscriber, new Date(0));
+    expect(events).toEqual([0, 1, 2, 3, "ready"]);
+  });
+
   it("sweeps a multi-page log without gaps or duplicates", async () => {
     let storage = makeStorage();
     let expected: Array<number | "ready"> = [];

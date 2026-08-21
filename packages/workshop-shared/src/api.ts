@@ -1849,7 +1849,9 @@ export interface Overseer extends RpcTarget {
    * the log in bounded internal pages; ordering relative to live updates is simply the stream
    * order), then ready() fires. Resolved history is fetched separately via listActions().
    *
-   * `startAfter` is deprecated and ignored — kept only so stale clients' calls still validate.
+   * `startAfter` is deprecated: its presence switches the replay from pending-only to every
+   * record, since pre-deploy clients derive their entire history view from replay. The value
+   * itself is ignored. New clients must omit it and page history via listActions().
    * TODO: Delete it once pre-deploy clients have cycled out.
    */
   subscribeToActions(subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date): Promise<RpcStub<{}>>;
@@ -2469,6 +2471,7 @@ export type AiChatHistoryPage = {
   };
 };
 
+/** Type filter for listActions(): one specific record type, or "all" for every resolved record. */
 export type ActionHistoryFilter = "all" | ActionLogEntry["type"];
 
 /** One page of resolved action history from listActions(). */
