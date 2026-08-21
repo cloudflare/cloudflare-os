@@ -17,6 +17,42 @@ import {
 
 const OBSERVER_CANCELLED = 'OBSERVER_CONFIG_CANCELLED'
 
+// The sessionStorage tier of share-key retention (see retainedShareKeyRef). All operations are
+// best-effort: storage can be unavailable in restricted browser contexts, and a lost key only
+// costs the user a re-visit of their invite link.
+const RETAINED_SHARE_KEY_PREFIX = 'gadgets:retained-share-key:v1'
+
+function retainedShareKeyStorageKey(workspaceId: string): string {
+  return `${RETAINED_SHARE_KEY_PREFIX}:${workspaceId}`
+}
+
+function writeRetainedShareKey(workspaceId: string, key: string): void {
+  try {
+    window.sessionStorage.setItem(retainedShareKeyStorageKey(workspaceId), key)
+  } catch {
+    // Best-effort; see above.
+  }
+}
+
+function readRetainedShareKey(workspaceId: string): string | undefined {
+  try {
+    const value = window.sessionStorage.getItem(retainedShareKeyStorageKey(workspaceId))
+    // Lenient bounds only -- the server is the validator of record for the key itself.
+    if (value && value.length <= 128) return value
+  } catch {
+    // Best-effort; see above.
+  }
+  return undefined
+}
+
+function clearRetainedShareKey(workspaceId: string): void {
+  try {
+    window.sessionStorage.removeItem(retainedShareKeyStorageKey(workspaceId))
+  } catch {
+    // Best-effort; see above.
+  }
+}
+
 export type WorkspaceLoadError =
   | { kind: 'open'; failure: WorkspaceOpenFailureKind }
   | { kind: 'message'; message: string }
@@ -49,6 +85,18 @@ export function useWorkspaceOpen({
   const [observerConfig, setObserverConfig] = useState<ObserverConfigState | null>(null)
   const [reloadNonce, setReloadNonce] = useState(0)
   const openWorkspaceIdRef = useRef<string | undefined>(undefined)
+  // The share key from the URL fragment, retained after the fragment is stripped. A failed or
+  // cancelled first open reverts the redemption server-side, so a retry (the retry button, or a
+  // reconnection) must re-send the key or it dead-ends on access-denied; never cleared on
+  // failure -- that is the point. Retention has two tiers: this in-memory ref, and a
+  // sessionStorage entry that also survives a reload. Both are discarded at the *first
+  // successful open*: from then on the confirmed edge makes every retry resolvable keylessly,
+  // and a kept key would re-redeem the still-active link after an owner removal (see the
+  // success block below). The secret never enters the URL or history -- the fragment is
+  // stripped before openGadget is even issued -- nor error reports (normalizePageLocation
+  // keeps origin+pathname only); sessionStorage is same-origin, per-tab, and dies with the
+  // tab, and gadget UIs run in opaque-origin frames that cannot read it.
+  const retainedShareKeyRef = useRef<{ id: string; key: string } | null>(null)
   const pendingObserverRejectRef = useRef<((error: unknown) => void) | null>(null)
   const callbacksRef = useRef({ onMetadata, onShareKeyConsumed, onInvalidShareKey })
   callbacksRef.current = { onMetadata, onShareKeyConsumed, onInvalidShareKey }
@@ -89,8 +137,19 @@ export function useWorkspaceOpen({
 
       try {
         const hash = window.location.hash
-        const shareKey = hash.startsWith('#share=') ? hash.slice('#share='.length) : undefined
-        if (shareKey) callbacksRef.current.onShareKeyConsumed()
+        let shareKey = hash.startsWith('#share=') ? hash.slice('#share='.length) : undefined
+        if (shareKey) {
+          retainedShareKeyRef.current = { id, key: shareKey }
+          writeRetainedShareKey(id, shareKey)
+          callbacksRef.current.onShareKeyConsumed()
+        } else if (retainedShareKeyRef.current?.id === id) {
+          shareKey = retainedShareKeyRef.current.key
+        } else {
+          // A reload lost the in-memory ref; the sessionStorage tier is what keeps a failed
+          // first open retryable across it.
+          shareKey = readRetainedShareKey(id)
+          if (shareKey) retainedShareKeyRef.current = { id, key: shareKey }
+        }
 
         const configureObserversTarget = new (class extends RpcTarget implements ObserverConfigCallback {
           configure(needs: ObserverBindingNeed[]): Promise<ObserverAccountChoice[]> {
@@ -130,6 +189,14 @@ export function useWorkspaceOpen({
         metadataSubscription = resolvedSubscription
 
         openWorkspaceIdRef.current = id
+        // The open succeeded, so the key's job is done: the redeemed edge is confirmed, and
+        // every later retry or reconnect resolves keylessly from the permission graph. Discard
+        // both retention tiers -- a *kept* key would silently re-redeem the still-active link
+        // after an owner removes this collaborator (the revocation restart reconnects with a
+        // new authenticatedApi, re-running this effect while the component stays mounted),
+        // undoing the removal.
+        retainedShareKeyRef.current = null
+        clearRetainedShareKey(id)
         setError(null)
         if (connectionLost) setConnectionLost(false)
       } catch (caught) {
@@ -149,7 +216,8 @@ export function useWorkspaceOpen({
           })
         } else if (message.includes('permitted to observe') ||
                    message.includes('no longer connected') ||
-                   message.includes('connect an account for every service')) {
+                   message.includes('connect an account for every service') ||
+                   message.includes('while your access was being verified')) {
           showTerminalError({ kind: 'message', message })
         } else {
           const failure = classifyWorkspaceOpenFailure(caught)
