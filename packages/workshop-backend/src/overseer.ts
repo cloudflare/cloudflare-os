@@ -9787,7 +9787,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       let end = this.impl.storage.nextActionId.get();
       let cursor: number | undefined;
       for (;;) {
-        if (disposed) break;
+        if (disposed) throw new Error("Action subscriber failed during replay");
         let page = [...actions.list({startAfter: cursor, end, limit: PENDING_SCAN_PAGE_SIZE})];
         for (let record of page) {
           if (replayAll || record.state === "pending") {

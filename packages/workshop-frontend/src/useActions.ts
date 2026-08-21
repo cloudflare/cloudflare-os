@@ -95,7 +95,13 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
       if (record.state === 'pending') store.stagedPending.set(record.id, record)
       else store.stagedPending.delete(record.id)
       scheduleNotify(store)
-      for (const listener of store.entryListeners) listener(record)
+      for (const listener of store.entryListeners) {
+        try {
+          listener(record)
+        } catch (err) {
+          console.error('Action entry listener failed:', err)
+        }
+      }
     }
 
     // Settledness is signalled by subscribeToActions() resolving: replayed entries are delivered

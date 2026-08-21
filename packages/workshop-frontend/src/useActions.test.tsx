@@ -179,6 +179,32 @@ describe('useActions', () => {
     expect(latest.status).toBe('error')
   })
 
+  it('isolates a throwing entry listener from other consumers', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const server = makeOverseer()
+    const received: number[] = []
+
+    function EntriesProbe({ onEntry }: { onEntry: (record: ActionLogEntry) => void }) {
+      useActionEntries(server.overseer, onEntry)
+      return null
+    }
+
+    await render(
+      <>
+        <Probe overseer={server.overseer} />
+        <EntriesProbe key="throws" onEntry={() => { throw new Error('listener broke') }} />
+        <EntriesProbe key="works" onEntry={record => received.push(record.id)} />
+      </>,
+    )
+    await server.resolveSubscription()
+
+    await server.emit(entry(3))
+    flushFrames()
+    expect(received).toEqual([3])
+    expect([...latest.pendingById.keys()]).toEqual([3])
+    expect(consoleError).toHaveBeenCalledWith('Action entry listener failed:', expect.any(Error))
+  })
+
   it('updates a late listener without replaying and disposes after the last consumer', async () => {
     const server = makeOverseer()
     const firstReceived: number[] = []

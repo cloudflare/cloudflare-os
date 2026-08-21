@@ -76,10 +76,10 @@ async function makeClient(storage: TestStorage, role: "build" | "use" = "build")
 
 // Hand-rolled ActionsSubscriber stub. `events` interleaves entry ids with "ready", so tests can
 // assert both content and ordering of the delivered stream.
-function makeSubscriber() {
+function makeSubscriber(entry?: (record: ActionLogEntry) => Promise<void>) {
   let events: Array<number | "ready"> = [];
   let subscriber = {
-    entry: async (record: ActionLogEntry) => { events.push(record.id); },
+    entry: entry ?? (async (record: ActionLogEntry) => { events.push(record.id); }),
     ready: async () => { events.push("ready"); },
     dup: () => subscriber,
     onRpcBroken: () => {},
@@ -157,6 +157,18 @@ describe("subscribeToActions", () => {
     expect(events.at(-1)).toBe("ready");
     expect(events.filter(e => typeof e === "number").toSorted((a, b) => a - b))
         .toEqual([...Array(lateId + 1).keys()]);
+  });
+
+  it("rejects the subscribe call when the subscriber fails during replay", async () => {
+    let storage = makeStorage();
+    // More than one page, so the sweep crosses a yield after the entry rejections settle.
+    for (let id = 0; id <= PENDING_SCAN_PAGE_SIZE; id++) putAction(storage, id);
+    let client = await makeClient(storage);
+    let { subscriber, events } = makeSubscriber(async () => { throw new Error("entry failed"); });
+
+    await expect(client.subscribeToActions(subscriber))
+        .rejects.toThrow("Action subscriber failed during replay");
+    expect(events).not.toContain("ready");
   });
 
   it("stops delivering after the subscription is disposed", async () => {
