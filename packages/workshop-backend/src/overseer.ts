@@ -426,7 +426,7 @@ function oneLineReason(reason: string): string {
 // and passed all `addObserver` checks -- i.e. is actually set up to observe data the Gadget has
 // read. This is distinct from the sharing table (which records the owner's *intent* that a user
 // have access): opening requires BOTH a reachable role in the sharing graph AND a complete
-// observer record. See observers-implementation-plan.md §3.
+// observer record. See docs/observers.md §3.
 type ObserverRecord = {
   // The sharing-table key for this user (their profile.id). Primary key of the collection.
   profileId: string;
@@ -4371,7 +4371,7 @@ class OverseerImpl implements AgentHooks {
     // v1 has no per-thread hiding, the only way to let such an observation proceed is if the named
     // observer has already lost access in the sharing graph. If any named observer is still
     // authorized, we cannot prevent them from seeing it, so we block the observation. See
-    // observers-implementation-plan.md §5 Step 5.
+    // docs/observers.md §5 Step 5.
     if (description.excludeObservers && description.excludeObservers.length > 0) {
       await this.#enforceExcludeObservers(description.excludeObservers);
     }
@@ -7722,7 +7722,7 @@ class OverseerImpl implements AgentHooks {
   // observer record: best-effort removeObserver on all gatekeeper facets, then delete the record.
   // All calls are best-effort -- an orphaned observer entry only causes superfluous future checks,
   // never a data leak (the leak-relevant gate is authorizeObservation, keyed off the live sharing
-  // graph). See observers-implementation-plan.md §5 Step 6.
+  // graph). See docs/observers.md §5 Step 6.
   async tearDownLostObservers(affected: AffectedCollaborator[]): Promise<void> {
     let gatekeeperIds = [...this.storage.gatekeepers.list()].map(gk => gk.id);
     for (let entry of affected) {
@@ -7768,7 +7768,7 @@ class OverseerImpl implements AgentHooks {
   // already-configured bindings on every open, catching revocation of the user's underlying
   // resource access promptly. Returns when fully verified; throws to deny access.
   //
-  // See observers-implementation-plan.md §5 Step 3.
+  // See docs/observers.md §5 Step 3.
   async ensureObserver(
       profileId: string,
       clientUser: DurableObjectStub<UserDurableObject>,
