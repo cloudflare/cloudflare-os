@@ -136,15 +136,20 @@ describe("portalServer", () => {
 
 describe("portalAuthRequiresReconnect", () => {
   it("requires reconnecting when token authority changes", () => {
+    expect(portalAuthRequiresReconnect("token", "token")).toBe(false);
     expect(portalAuthRequiresReconnect("none", "token")).toBe(true);
     expect(portalAuthRequiresReconnect("oauth", "token")).toBe(true);
     expect(portalAuthRequiresReconnect("token", "none")).toBe(true);
     expect(portalAuthRequiresReconnect("token", "oauth")).toBe(true);
   });
 
-  it("allows none and oauth to differ after probing the endpoint", () => {
+  it("allows an oauth-configured portal to prove public during probing", () => {
     expect(portalAuthRequiresReconnect("none", "oauth")).toBe(false);
-    expect(portalAuthRequiresReconnect("oauth", "none")).toBe(false);
+  });
+
+  it("keeps explicitly unauthenticated mode strict", () => {
+    expect(portalAuthRequiresReconnect("oauth", "none")).toBe(true);
+    expect(portalAuthRequiresReconnect("none", "none")).toBe(false);
   });
 });
 

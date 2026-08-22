@@ -181,13 +181,14 @@ export function portalServer(config: PortalConfig): ConnectedServer {
 }
 
 /**
- * Probing may legitimately move between none and OAuth. A preissued token is deployment authority,
- * so entering or leaving that mode requires the account to reconnect against current configuration.
+ * An OAuth-configured portal may prove public during probing, but explicitly unauthenticated and
+ * preissued-token configurations are strict. Entering or leaving either strict mode requires the
+ * account to reconnect against current configuration.
  */
 export function portalAuthRequiresReconnect(
   connected: ServerAuthKind, configured: ServerAuthKind,
 ): boolean {
-  return (connected === "token") !== (configured === "token");
+  return configured === "oauth" ? connected === "token" : connected !== configured;
 }
 
 /**

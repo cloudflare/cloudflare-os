@@ -34,8 +34,8 @@ class InterleavingAccount extends McpAccountBase<AccountEnv> {
     return await new Promise<never>((_resolve, reject) => { this.#rejectProbe = reject; });
   }
 
-  failProbe(): void {
-    this.#rejectProbe?.(new Error("stop test probe"));
+  rejectProbe(reason = new Error("stop test probe")): void {
+    this.#rejectProbe?.(reason);
   }
 
   isWaiting(nonce: string): boolean {
@@ -104,6 +104,14 @@ class AuthChallengeAccount extends McpAccountBase<AccountEnv> {
   }
 }
 
+class StrictUnauthenticatedAccount extends AuthChallengeAccount {
+  protected override allowsOAuthFallback(): boolean { return false; }
+
+  isWaiting(nonce: string): boolean {
+    return this.awaitingSelection(nonce);
+  }
+}
+
 class OAuthFlowAccount extends McpAccountBase<AccountEnv> {
   protected baseUrl(): string { return "https://gatekeeper.example"; }
   protected log(): never { return testLog as never; }
@@ -138,7 +146,7 @@ describe("connect initiation nonce", () => {
     await expect(account.beginConnect(nonce, server("https://a.example/mcp")))
       .resolves.toEqual({ kind: "invalid" });
 
-    account.failProbe();
+    account.rejectProbe();
     await expect(first).rejects.toThrow("stop test probe");
     // The request still owns the claim, so a transient failure reopens the already-rendered form.
     expect(account.isWaiting(nonce)).toBe(true);
@@ -174,8 +182,121 @@ describe("connect initiation nonce", () => {
     await expect(account.getConnection("https://old.example/mcp"))
       .rejects.toThrow(/account is now connected to new\.example/);
 
-    account.failProbe();
+    account.rejectProbe();
     await expect(repoint).rejects.toThrow("stop test probe");
+  });
+
+  it("keeps an observed-public account usable while an OAuth-configured reconnect probes", async () => {
+    const context = fakeContext();
+    const connected = { ...server("https://portal.example/mcp"), auth: "none" as const };
+    context.storage.kv.put("server", connected);
+    const account = new InterleavingAccount(context as never, {});
+    const credentialsExpired = vi.fn(async () => undefined);
+    const nonce = "1".repeat(64);
+    await account.setCallback({ credentialsExpired } as never, nonce);
+
+    const reconnect = account.beginConnect(nonce, {
+      ...connected,
+      auth: "oauth",
+    });
+
+    await expect(account.getConnection(connected.endpoint))
+      .resolves.toMatchObject({ authorization: null });
+    expect(credentialsExpired).not.toHaveBeenCalled();
+    expect(context.storage.kv.get<ConnectedServer>("server")).toEqual(connected);
+
+    account.rejectProbe();
+    await expect(reconnect).rejects.toThrow("stop test probe");
+    await expect(account.getConnection(connected.endpoint))
+      .resolves.toMatchObject({ authorization: null });
+    expect(context.storage.kv.get<ConnectedServer>("server")).toEqual(connected);
+  });
+
+  it("preserves OAuth state when a same-endpoint token reconnect has no configured token", async () => {
+    const context = fakeContext();
+    const connected = { ...server("https://portal.example/mcp"), auth: "oauth" as const };
+    const tokens = {
+      access_token: "access",
+      token_type: "Bearer",
+      refresh_token: "refresh",
+      issuer: "https://auth.example",
+      expiresAt: Date.now() + 60_000,
+    };
+    const oauthClient = { client_id: "client", issuer: "https://auth.example" };
+    const oauthDiscovery = {
+      authorizationServerUrl: "https://auth.example",
+      authorizationServerMetadata: {
+        issuer: "https://auth.example",
+        authorization_endpoint: "https://auth.example/authorize",
+        token_endpoint: "https://auth.example/token",
+      },
+    };
+    context.storage.kv.put("server", connected);
+    context.storage.kv.put("tokens", tokens);
+    context.storage.kv.put("oauthClient", oauthClient);
+    context.storage.kv.put("oauthDiscovery", oauthDiscovery);
+    const account = new UnconfiguredTokenAccount(context as never, {});
+    const nonce = "2".repeat(64);
+    await account.prepareReconnect(nonce);
+
+    await expect(account.beginConnect(nonce, {
+      ...connected,
+      auth: "token",
+      provenance: "deployment",
+    })).rejects.toThrow(/No preissued token is configured/);
+
+    expect(context.storage.kv.get("server")).toEqual(connected);
+    expect(context.storage.kv.get("tokens")).toEqual(tokens);
+    expect(context.storage.kv.get("oauthClient")).toEqual(oauthClient);
+    expect(context.storage.kv.get("oauthDiscovery")).toEqual(oauthDiscovery);
+    expect(account.isWaiting(nonce)).toBe(true);
+  });
+
+  it("preserves OAuth state when a same-endpoint unauthenticated reconnect is refused", async () => {
+    const context = fakeContext();
+    const connected = { ...server("https://portal.example/mcp"), auth: "oauth" as const };
+    const tokens = { access_token: "access", token_type: "Bearer" };
+    context.storage.kv.put("server", connected);
+    context.storage.kv.put("tokens", tokens);
+    const account = new StrictUnauthenticatedAccount(context as never, {});
+    const nonce = "3".repeat(64);
+    await account.prepareReconnect(nonce);
+
+    await expect(account.beginConnect(nonce, {
+      ...connected,
+      auth: "none",
+      provenance: "deployment",
+    })).rejects.toThrow(/configured for unauthenticated access/);
+
+    expect(context.storage.kv.get("server")).toEqual(connected);
+    expect(context.storage.kv.get("tokens")).toEqual(tokens);
+    expect(account.isWaiting(nonce)).toBe(true);
+  });
+
+  it("does not let a superseded OAuth fallback clear a newer attempt's state", async () => {
+    const context = fakeContext();
+    const connected = {
+      ...server("https://portal.example/mcp"),
+      auth: "token" as const,
+      provenance: "deployment" as const,
+    };
+    context.storage.kv.put("server", connected);
+    const account = new InterleavingAccount(context as never, {});
+    const firstNonce = "4".repeat(64);
+    await account.prepareReconnect(firstNonce);
+    const first = account.beginConnect(firstNonce, { ...connected, auth: "oauth" });
+
+    const secondNonce = "5".repeat(64);
+    await account.prepareReconnect(secondNonce);
+    const pendingAuth = { generation: 3 };
+    context.storage.kv.put("pendingAuth", pendingAuth);
+    context.storage.kv.put("oauthVerifier", "new-verifier");
+    account.rejectProbe(new McpAuthRequiredError("authorization required", null));
+
+    await expect(first).rejects.toThrow(/replaced by a newer/);
+    expect(context.storage.kv.get("server")).toEqual(connected);
+    expect(context.storage.kv.get("pendingAuth")).toEqual(pendingAuth);
+    expect(context.storage.kv.get("oauthVerifier")).toBe("new-verifier");
   });
 
   it("ignores a transport session written by an operation from before repoint", async () => {
@@ -194,7 +315,7 @@ describe("connect initiation nonce", () => {
       old.endpoint, connection.generation, connection.sessionId, "old-session");
     expect(context.storage.kv.get("mcpSessionId")).toBeUndefined();
 
-    account.failProbe();
+    account.rejectProbe();
     await expect(repoint).rejects.toThrow("stop test probe");
   });
 
@@ -257,7 +378,7 @@ describe("connect initiation nonce", () => {
     await expect(refreshing).rejects.toThrow(/previous MCP connection|connection changed/);
     expect(context.storage.kv.get("tokens")).toBeUndefined();
 
-    account.failProbe();
+    account.rejectProbe();
     await expect(repoint).rejects.toThrow("stop test probe");
   });
 
