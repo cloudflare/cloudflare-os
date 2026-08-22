@@ -24,6 +24,19 @@ let disposedApprovalQueues = 0;
 let disposedCallbacks = 0;
 let blockPoint: BlockPoint | null = null;
 let blockedPoint: BlockPoint | null = null;
+let callbackBarrier = 1;
+let callbackBarrierLimit = 0;
+
+// Holds a callback until `callbackBarrier` of them are in flight, so a test observing peak
+// concurrency measures the delivery bound rather than how RPC round-trips happened to interleave.
+// It applies only to the first `callbackBarrierLimit` callbacks, which the caller sizes to a whole
+// number of full rounds -- a partial round could never reach the barrier, and waiting on a count
+// that will arrive keeps this free of any wall-clock assumption.
+async function waitForCallbackBarrier(): Promise<void> {
+  if (callbackScheduleIds.length > callbackBarrierLimit) return;
+  // eslint-disable-next-line no-unmodified-loop-condition -- sibling callbacks mutate this.
+  while (activeCallbacks < callbackBarrier) await new Promise((resolve) => setTimeout(resolve, 1));
+}
 
 async function pauseIfBlocked(point: BlockPoint): Promise<void> {
   if (blockPoint !== point) return;
@@ -54,6 +67,7 @@ class TestCallback extends RpcTarget {
     try {
       await pauseIfBlocked("callback");
       if (mode === "callback-reject") throw new Error("callback rejected");
+      await waitForCallbackBarrier();
       await new Promise((resolve) => setTimeout(resolve, 10));
     } finally {
       activeCallbacks--;
@@ -81,6 +95,11 @@ export class TestHooks extends WorkerEntrypoint {
   blockAt(nextBlockPoint: BlockPoint): void {
     blockPoint = nextBlockPoint;
     blockedPoint = null;
+  }
+
+  setCallbackBarrier(size: number, limit: number): void {
+    callbackBarrier = size;
+    callbackBarrierLimit = limit;
   }
 
   async waitUntilBlocked(): Promise<void> {
@@ -112,6 +131,8 @@ export class TestHooks extends WorkerEntrypoint {
     disposedApprovalQueues = 0;
     disposedCallbacks = 0;
     blockedPoint = null;
+    callbackBarrier = 1;
+    callbackBarrierLimit = 0;
   }
 }
 
