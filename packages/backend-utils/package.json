@@ -19,6 +19,10 @@
     "./error-reporting": {
       "types": "./src/error-reporting.ts",
       "import": "./src/error-reporting.ts"
+    },
+    "./gatekeeper-action": {
+      "types": "./src/gatekeeper-action.ts",
+      "import": "./src/gatekeeper-action.ts"
     }
   },
   "scripts": {

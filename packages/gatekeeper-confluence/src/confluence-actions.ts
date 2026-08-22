@@ -9,7 +9,18 @@
 // without it.
 
 import type { RpcStub } from "cloudflare:workers";
-import type { ActionDescription, ApprovalQueue, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
+import {
+  InvalidationLog,
+  displayReason,
+  validateApplyThroughArgs,
+} from "@gadgets/backend-utils/gatekeeper-action";
+import { createLogger } from "@gadgets/backend-utils/logger";
+import type {
+  ActionDescription,
+  ApplyActionsThroughResult,
+  ApprovalQueue,
+  ObservationDescription,
+} from "@gadgets/workshop-shared/gatekeeper";
 import {
   ConfluenceApi,
   contentBodyMarkdown,
@@ -18,6 +29,15 @@ import {
 } from "./confluence-api";
 import { markdownToStorage, storageToMarkdown } from "./confluence-markdown";
 import type { Comment, ContentSummary, ContentType } from "./types";
+
+/** Observability fields emitted by Confluence action resolution. */
+type ConfluenceActionLogFields = { actionId: number; vendorId: string };
+
+const VENDOR_ID = "confluence";
+
+const logger = createLogger<ConfluenceActionLogFields>({
+  component: "gatekeeper.confluence.actions", vendorId: VENDOR_ID,
+});
 
 // ---------------------------------------------------------------------------------------------
 // Action model
@@ -56,7 +76,11 @@ export type ConfluenceAction =
 export type StoredActionRecord = {
   id: number;
   action: ConfluenceAction;
-  state: "pending" | "applied" | "reverted";
+  /**
+   * "staged" means submitAction() has not completed yet: the record overlays reads like a pending
+   * one, but applyStoredActionsThrough() must not apply it.
+   */
+  state: "staged" | "pending" | "applied" | "reverted";
   submittedAt: number;
   /** For createContent / addComment: the real content ID assigned on apply. */
   createdContentId?: string;
@@ -81,9 +105,13 @@ export class ConfluenceStore {
   #kv: Kv;
   #api: ConfluenceApi;
 
+  /** Durable attribution of veto-cascade invalidations, re-reported on repeated requests. */
+  readonly invalidations: InvalidationLog;
+
   constructor(kv: Kv, api: ConfluenceApi) {
     this.#kv = kv;
     this.#api = api;
+    this.invalidations = new InvalidationLog(kv);
   }
 
   get api(): ConfluenceApi {
@@ -124,8 +152,9 @@ export class ConfluenceStore {
       .toSorted((a, b) => a.id - b.id);
   }
 
+  /** Not-yet-applied actions, including staged ones (read overlays must reflect both). */
   pendingActions(): StoredActionRecord[] {
-    return this.allActions().filter(r => r.state === "pending");
+    return this.allActions().filter(r => r.state === "pending" || r.state === "staged");
   }
 
   /** Pending actions targeting a piece of content (addressed by either provisional or real ID). */
@@ -417,17 +446,24 @@ function truncate(text: string, max = 2000): string {
 // ---------------------------------------------------------------------------------------------
 // Staging
 
-/** Record a pending action and submit it for approval. Rolls back the record if submit fails. */
+/** Record a staged action and submit it for approval. Rolls back the record if submit fails. */
 export async function stageAction(
   store: ConfluenceStore, approvalQueue: RpcStub<ApprovalQueue>, action: ConfluenceAction,
 ): Promise<number> {
   const id = store.nextActionId();
-  store.putAction({ id, action, state: "pending", submittedAt: Date.now() });
+  store.putAction({ id, action, state: "staged", submittedAt: Date.now() });
   try {
     await approvalQueue.submitAction(id, describeAction(action));
   } catch (err) {
     store.deleteAction(id);
     throw err;
+  }
+  // Only now may the action be applied: the overseer has accepted it, so a decision frontier can
+  // legitimately cover it. A concurrent veto cascade may have deleted the record meanwhile.
+  const record = store.getAction(id);
+  if (record?.state === "staged") {
+    record.state = "pending";
+    store.putAction(record);
   }
   return id;
 }
@@ -568,43 +604,100 @@ export async function applyStoredAction(store: ConfluenceStore, id: number): Pro
   await applyAction(store, record);
 }
 
-export function rejectStoredAction(store: ConfluenceStore, id: number): void | { restart?: boolean } {
-  const record = store.getAction(id);
-  if (!record) return;
-  store.deleteAction(id);
+/**
+ * Rejecting a creation invalidates any pending actions on that (now-nonexistent) content,
+ * including child pages created under it, transitively. Cascade-delete them all, recording which
+ * veto invalidated each so a repeated request can re-report the attribution.
+ */
+function cascadeRejectedCreation(store: ConfluenceStore, record: StoredActionRecord): void {
+  if (record.action.type !== "createContent") return;
 
-  // Rejecting a creation invalidates any pending actions on that (now-nonexistent) content,
-  // including child pages created under it, transitively. Cascade-delete and request a restart.
-  if (record.action.type === "createContent") {
-    const pending = store.pendingActions();
-    const purge = new Set<string>([record.action.provisionalId]);
-    for (;;) {
-      let added = false;
-      for (const r of pending) {
-        if (r.action.type === "createContent" && r.action.parent.type === "page" &&
-            purge.has(r.action.parent.parentId) && !purge.has(r.action.provisionalId)) {
-          purge.add(r.action.provisionalId);
-          added = true;
-        }
-      }
-      if (!added) break;
-    }
-    let deleted = false;
-    for (const r of pending) {
-      const t = actionContentId(r.action);
-      if (t !== null && purge.has(t)) {
-        store.deleteAction(r.id);
-        deleted = true;
+  // Snapshot the pending set once — deleting actions below would otherwise change it under us.
+  const pending = store.pendingActions();
+  const purge = new Set<string>([record.action.provisionalId]);
+  for (;;) {
+    let added = false;
+    for (const candidate of pending) {
+      if (candidate.action.type === "createContent" && candidate.action.parent.type === "page" &&
+          purge.has(candidate.action.parent.parentId) && !purge.has(candidate.action.provisionalId)) {
+        purge.add(candidate.action.provisionalId);
+        added = true;
       }
     }
-    return deleted ? { restart: true } : undefined;
+    if (!added) break;
   }
 
-  const target = actionContentId(record.action);
-  if (target && store.pendingForContent(target).length > 0) return { restart: true };
+  for (const candidate of pending) {
+    const target = actionContentId(candidate.action);
+    if (target !== null && purge.has(target)) {
+      store.deleteAction(candidate.id);
+      store.invalidations.record(candidate.id, record.id);
+    }
+  }
 }
 
-type RevertResult = void | { message?: string; canRetry?: boolean; restart?: boolean };
+/** Delete vetoed records and cascade to actions they invalidate. Settled records are left alone. */
+function rejectRecords(store: ConfluenceStore, vetoes: Set<number>): void {
+  const rejected: StoredActionRecord[] = [];
+  for (const id of vetoes) {
+    const record = store.getAction(id);
+    if (!record || record.state === "applied" || record.state === "reverted") continue;
+    store.deleteAction(id);
+    rejected.push(record);
+  }
+  for (const record of rejected) cascadeRejectedCreation(store, record);
+}
+
+/** Resolve all stored actions through a Gatekeeper-local action ID. */
+export async function applyStoredActionsThrough(
+  store: ConfluenceStore, actionId: number, vetoes: number[],
+): Promise<ApplyActionsThroughResult> {
+  const vetoSet = validateApplyThroughArgs(actionId, vetoes);
+  rejectRecords(store, vetoSet);
+  store.invalidations.prune(vetoSet, store.pendingActions()[0]?.id ?? Infinity);
+
+  const invalidatedByVeto = store.invalidations.attributedTo(vetoSet);
+  const invalidations = invalidatedByVeto.length > 0 ? { invalidatedByVeto } : {};
+  for (const record of store.pendingActions()) {
+    if (record.id > actionId) break;
+    if (record.state === "staged") {
+      // submitAction() has not completed, so this action must not be applied yet -- and the
+      // contract forbids silently skipping an in-range action (the caller would infer it was
+      // applied), so report it as the stopping point. The submit completes momentarily and the
+      // next pass proceeds.
+      return {
+        ...invalidations,
+        stopped: {
+          at: record.id,
+          reason: new Error("This action is still being submitted for approval. Retry in a moment."),
+        },
+      };
+    }
+    try {
+      await applyAction(store, record);
+    } catch (error) {
+      logger.warn("failed to apply action", {
+        event: "action.apply.failed",
+        actionId: record.id,
+        error,
+      });
+      return {
+        ...invalidations,
+        stopped: {
+          at: record.id,
+          reason: displayReason(error, "Confluence could not apply this action"),
+        },
+      };
+    }
+  }
+  return invalidations;
+}
+
+export function rejectStoredAction(store: ConfluenceStore, id: number): void {
+  rejectRecords(store, new Set([id]));
+}
+
+type RevertResult = void | { message?: string; canRetry?: boolean };
 
 export async function revertStoredAction(store: ConfluenceStore, id: number): Promise<RevertResult> {
   const record = store.getAction(id);

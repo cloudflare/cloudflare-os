@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   ConfluenceStore,
+  applyStoredActionsThrough,
   applyStoredAction,
   revertStoredAction,
+  stageAction,
   type ConfluenceAction,
 } from "../src/confluence-actions";
 import type { ConfluenceApi } from "../src/confluence-api";
@@ -111,6 +113,208 @@ describe("applyStoredAction", () => {
     await applyStoredAction(store, id);
 
     expect(calls.updateContent[0].status).toBe("current");
+  });
+});
+
+describe("applyStoredActionsThrough", () => {
+  it("skips sparse IDs and stops at the first failed action", async () => {
+    const { api, calls } = makeApi();
+    const store = storeWith(api);
+    const first = stage(store, { type: "addComment", contentId: "first", text: "one" });
+    const hole = stage(store, { type: "addComment", contentId: "hole", text: "two" });
+    const failed = stage(store, { type: "addComment", contentId: "failed", text: "three" });
+    const later = stage(store, { type: "addComment", contentId: "later", text: "four" });
+    store.deleteAction(hole);
+    api.addComment = async (id: string, _storage: string, type: string) => {
+      calls.addComment.push({ id, type });
+      if (id === "failed") throw new Error("safe failure");
+      return { id: `comment-${id}` };
+    };
+
+    const result = await applyStoredActionsThrough(store, later, []);
+
+    expect(calls.addComment.map(call => call.id)).toEqual(["first", "failed"]);
+    expect(store.getAction(first)?.state).toBe("applied");
+    expect(store.getAction(failed)?.state).toBe("pending");
+    expect(store.getAction(later)?.state).toBe("pending");
+    // The specific apply error is passed through so the user can resolve the problem.
+    expect(result.stopped).toMatchObject({ at: failed, reason: expect.any(Error) });
+    expect(result.stopped?.reason.message).toBe("safe failure");
+  });
+
+  it("does not re-apply earlier actions when retried after a stop", async () => {
+    const { api, calls } = makeApi();
+    const store = storeWith(api);
+    const first = stage(store, { type: "addComment", contentId: "first", text: "one" });
+    const flaky = stage(store, { type: "addComment", contentId: "flaky", text: "two" });
+    let failOnce = true;
+    api.addComment = async (id: string, _storage: string, type: string) => {
+      calls.addComment.push({ id, type });
+      if (id === "flaky" && failOnce) {
+        failOnce = false;
+        throw new Error("temporarily unavailable");
+      }
+      return { id: `comment-${id}` };
+    };
+
+    const stopped = await applyStoredActionsThrough(store, flaky, []);
+    const retry = await applyStoredActionsThrough(store, flaky, []);
+
+    expect(stopped.stopped).toMatchObject({ at: flaky });
+    expect(retry).toEqual({});
+    expect(calls.addComment.map(call => call.id)).toEqual(["first", "flaky", "flaky"]);
+    expect(store.getAction(first)?.state).toBe("applied");
+    expect(store.getAction(flaky)?.state).toBe("applied");
+  });
+
+  it("never applies a staged action whose submission has not completed", async () => {
+    const { api, calls } = makeApi();
+    const store = storeWith(api);
+    const staged = store.nextActionId();
+    store.putAction({
+      id: staged, action: { type: "addComment", contentId: "staged", text: "early" },
+      state: "staged", submittedAt: staged,
+    });
+    const pending = stage(store, { type: "addComment", contentId: "later", text: "late" });
+
+    const result = await applyStoredActionsThrough(store, pending, []);
+
+    // The staged action can't be applied but must not be silently skipped either (the caller
+    // would infer everything through `pending` was applied), so the pass stops at it.
+    expect(result.stopped).toMatchObject({ at: staged, reason: expect.any(Error) });
+    expect(calls.addComment).toHaveLength(0);
+    expect(store.getAction(staged)?.state).toBe("staged");
+    expect(store.getAction(pending)?.state).toBe("pending");
+  });
+
+  it("persists transitive invalidations and reports them again on retry", async () => {
+    const { api, calls } = makeApi();
+    const store = storeWith(api);
+    const root = stage(store, {
+      type: "createContent", provisionalId: "~root", kind: "page",
+      parent: { type: "space", spaceKey: "ENG" }, title: "Root", status: "current",
+    });
+    const edit = stage(store, {
+      type: "setTitle", contentId: "~root", title: "Edited", previousTitle: "Root",
+    });
+    const child = stage(store, {
+      type: "createContent", provisionalId: "~child", kind: "page",
+      parent: { type: "page", parentId: "~root", spaceKey: "ENG" }, title: "Child", status: "current",
+    });
+    const childEdit = stage(store, {
+      type: "addComment", contentId: "~child", text: "Comment",
+    });
+
+    const first = await applyStoredActionsThrough(store, root, [root]);
+    const retry = await applyStoredActionsThrough(store, root, [root]);
+
+    expect(first.invalidatedByVeto).toEqual([
+      { action: edit, invalidatedBy: root },
+      { action: child, invalidatedBy: root },
+      { action: childEdit, invalidatedBy: root },
+    ]);
+    expect(retry.invalidatedByVeto).toEqual(first.invalidatedByVeto);
+    // Vetoed and invalidated records are deleted so read overlays recompute without them.
+    expect(store.getAction(root)).toBeUndefined();
+    expect(store.getAction(childEdit)).toBeUndefined();
+    expect(store.knowsProvisional("~root")).toBe(false);
+    expect(calls.addComment).toHaveLength(0);
+  });
+
+  it("makes the legacy single-action path throw for a cascade-invalidated action", async () => {
+    const { api } = makeApi();
+    const store = storeWith(api);
+    const root = stage(store, {
+      type: "createContent", provisionalId: "~root", kind: "page",
+      parent: { type: "space", spaceKey: "ENG" }, title: "Root", status: "current",
+    });
+    const edit = stage(store, {
+      type: "setTitle", contentId: "~root", title: "Edited", previousTitle: "Root",
+    });
+
+    await applyStoredActionsThrough(store, root, [root]);
+
+    // An un-migrated overseer applying the orphan must see a failure, not a silent success.
+    await expect(applyStoredAction(store, edit)).rejects.toThrow(`Unknown action: ${edit}`);
+  });
+
+  it("ignores a veto of an already-applied action", async () => {
+    const { api } = makeApi();
+    const store = storeWith(api);
+    const id = stage(store, { type: "addComment", contentId: "page", text: "Comment" });
+    await applyStoredActionsThrough(store, id, []);
+
+    const result = await applyStoredActionsThrough(store, id, [id]);
+
+    expect(result).toEqual({});
+    expect(store.getAction(id)?.state).toBe("applied");
+  });
+
+  it("rejects an out-of-range veto before changing state", async () => {
+    const { api, calls } = makeApi();
+    const store = storeWith(api);
+    const id = stage(store, { type: "addComment", contentId: "page", text: "Comment" });
+
+    await expect(applyStoredActionsThrough(store, id, [id + 1]))
+      .rejects.toThrow("Invalid veto action ID");
+
+    expect(store.getAction(id)?.state).toBe("pending");
+    expect(calls.addComment).toHaveLength(0);
+  });
+
+  it("persists later vetoes before an earlier action fails", async () => {
+    const { api } = makeApi();
+    const store = storeWith(api);
+    const failed = stage(store, { type: "addComment", contentId: "failed", text: "Comment" });
+    const vetoed = stage(store, {
+      type: "createContent", provisionalId: "~root", kind: "page",
+      parent: { type: "space", spaceKey: "ENG" }, title: "Root", status: "current",
+    });
+    const invalidated = stage(store, {
+      type: "setTitle", contentId: "~root", title: "Edited", previousTitle: "Root",
+    });
+    api.addComment = async () => { throw new Error("safe failure"); };
+
+    const result = await applyStoredActionsThrough(store, invalidated, [vetoed]);
+
+    expect(result.stopped?.at).toBe(failed);
+    expect(result.invalidatedByVeto).toEqual([{ action: invalidated, invalidatedBy: vetoed }]);
+    expect(store.getAction(vetoed)).toBeUndefined();
+    expect(store.getAction(invalidated)).toBeUndefined();
+  });
+});
+
+describe("stageAction", () => {
+  it("keeps the record staged until submitAction completes", async () => {
+    const { api } = makeApi();
+    const store = storeWith(api);
+    let stateDuringSubmit: string | undefined;
+    const approvalQueue = {
+      submitAction: async (id: number) => {
+        stateDuringSubmit = store.getAction(id)?.state;
+      },
+    } as unknown as Parameters<typeof stageAction>[1];
+
+    const id = await stageAction(store, approvalQueue, {
+      type: "addComment", contentId: "page", text: "Comment",
+    });
+
+    expect(stateDuringSubmit).toBe("staged");
+    expect(store.getAction(id)?.state).toBe("pending");
+  });
+
+  it("rolls the record back when submitAction fails", async () => {
+    const { api } = makeApi();
+    const store = storeWith(api);
+    const approvalQueue = {
+      submitAction: async () => { throw new Error("submit failed"); },
+    } as unknown as Parameters<typeof stageAction>[1];
+
+    await expect(stageAction(store, approvalQueue, {
+      type: "addComment", contentId: "page", text: "Comment",
+    })).rejects.toThrow("submit failed");
+
+    expect(store.allActions()).toHaveLength(0);
   });
 });
 
