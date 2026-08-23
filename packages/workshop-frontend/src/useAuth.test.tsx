@@ -69,6 +69,7 @@ describe('useAuth error reporting identity', () => {
     containers.forEach(container => container.remove())
     containers.length = 0
     localStorage.clear()
+    sessionStorage.clear()
     vi.unstubAllEnvs()
     vi.clearAllMocks()
   })
@@ -146,6 +147,24 @@ describe('useAuth error reporting identity', () => {
     act(() => controls.logout())
 
     expect(setReportedUserId).toHaveBeenLastCalledWith(undefined)
+  })
+
+  it('sweeps retained share keys of every format on logout, leaving unrelated storage', async () => {
+    // The retained-key entries are per-user secrets; the next user of this tab must not inherit
+    // them. The sweep covers the whole prefix, so stale v1 (pre-identity-stamp) entries go too.
+    sessionStorage.setItem(
+        'gadgets:retained-share-key:v2:workspace-1',
+        JSON.stringify({ key: 'cafe', userId: 'person@example.com' }))
+    sessionStorage.setItem('gadgets:retained-share-key:v1:workspace-2', 'deadbeef')
+    sessionStorage.setItem('gadgets:unrelated', 'kept')
+    localStorage.setItem('authToken', 'stored-token')
+    const { controls } = await mount(stubPublicApi(person))
+
+    act(() => controls.logout())
+
+    expect(sessionStorage.getItem('gadgets:retained-share-key:v2:workspace-1')).toBeNull()
+    expect(sessionStorage.getItem('gadgets:retained-share-key:v1:workspace-2')).toBeNull()
+    expect(sessionStorage.getItem('gadgets:unrelated')).toBe('kept')
   })
 
   it('ignores a lookup that resolves after logout', async () => {

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { RpcStub } from 'capnweb'
 import { PublicApi, AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import { setReportedUserId } from './errorReporting'
+import { clearAllRetainedShareKeys } from './retainedShareKeys'
 
 const CF_ACCESS_MODE = import.meta.env.VITE_CF_ACCESS_MODE === 'true'
 
@@ -124,6 +125,9 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
 
   const logout = () => {
     setReportedUserId(undefined)
+    // Retained share keys belong to the session that captured them; the next user of this tab
+    // must not inherit them. Swept before the CF Access navigation below, which never returns.
+    clearAllRetainedShareKeys()
 
     if (CF_ACCESS_MODE) {
       window.location.assign('/cdn-cgi/access/logout')
