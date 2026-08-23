@@ -29,25 +29,42 @@ function storageKey(workspaceId: string): string {
 // attempt's success -- or logout -- clears storage, then the older attempt's identity resolves
 // and writes the entry back, resurrecting a key whose link the redeemed edge already covers (or
 // that logout meant to sweep). Generations close that: a pending write captures the counters at
-// capture time and commits only while both still match, so any later clear permanently
-// invalidates it. Kept here rather than in the capturing hook because the storage outlives any
-// single attempt -- a per-attempt flag can only guard its own attempt's writes.
+// capture time and commits only while all still match, so any later clear permanently
+// invalidates it. Three tiers, matching the three clear scopes: a global counter (logout sweeps
+// everything), a per-workspace counter (workspace-wide clears -- a keyless success, an
+// identity-mismatch sweep), and a per-(workspace, key) counter for attempt-owned clears. The
+// key-scoped tier is what lets a confirmed attempt void *its own* in-flight stamp even when a
+// newer attempt's different-key entry occupies the slot -- without it, the confirmed key's late
+// stamp overwrites the newer entry and resurrects a key whose link would silently re-redeem
+// after an owner removal; and conversely it leaves every other key's pending stamp intact, so an
+// attempt-owned clear can never void a concurrent newer capture. Kept here rather than in the
+// capturing hook because the storage outlives any single attempt -- a per-attempt flag can only
+// guard its own attempt's writes.
 let globalGeneration = 0
 const workspaceGenerations = new Map<string, number>()
+const keyGenerations = new Map<string, number>()
 
-/** A capture's license to write: void once the workspace (or everything) is cleared. */
+function keyGenerationKey(workspaceId: string, key: string): string {
+  return JSON.stringify([workspaceId, key])
+}
+
+/** A capture's license to write: void once its key, its workspace, or everything is cleared. */
 export type RetainedShareKeyWrite = {
   workspaceId: string
+  key: string
   globalGeneration: number
   workspaceGeneration: number
+  keyGeneration: number
 }
 
 /** Capture the current generations; pass the token to {@link commitRetainedShareKeyWrite}. */
-export function beginRetainedShareKeyWrite(workspaceId: string): RetainedShareKeyWrite {
+export function beginRetainedShareKeyWrite(workspaceId: string, key: string): RetainedShareKeyWrite {
   return {
     workspaceId,
+    key,
     globalGeneration,
     workspaceGeneration: workspaceGenerations.get(workspaceId) ?? 0,
+    keyGeneration: keyGenerations.get(keyGenerationKey(workspaceId, key)) ?? 0,
   }
 }
 
@@ -55,7 +72,9 @@ export function beginRetainedShareKeyWrite(workspaceId: string): RetainedShareKe
 export function commitRetainedShareKeyWrite(
     token: RetainedShareKeyWrite, entry: RetainedShareKey): void {
   if (token.globalGeneration !== globalGeneration ||
-      token.workspaceGeneration !== (workspaceGenerations.get(token.workspaceId) ?? 0)) {
+      token.workspaceGeneration !== (workspaceGenerations.get(token.workspaceId) ?? 0) ||
+      token.keyGeneration !==
+          (keyGenerations.get(keyGenerationKey(token.workspaceId, token.key)) ?? 0)) {
     return
   }
   try {
@@ -86,21 +105,25 @@ export function readRetainedShareKey(workspaceId: string): RetainedShareKey | un
 
 /**
  * Discard a workspace's retained entry and void any in-flight identity stamp for it. With
- * `onlyKey`, the clear is attempt-owned: when the stored entry carries a *different* key, a newer
- * capture owns the slot, so nothing happens -- no removal, and no generation bump that would void
- * that capture's still-in-flight stamp. An *absent* entry still bumps, fail-toward-security: the
- * absence may be the calling attempt's own stamp still in flight, whose late landing would
- * resurrect a key the server already confirmed. The residual is that this bump can instead void a
- * concurrent newer attempt's in-flight stamp for the same workspace; recovery is re-clicking the
- * invite link, consistent with every other lost-retention path here.
+ * `onlyKey`, the clear is attempt-owned and touches exactly that key's retention: its
+ * per-(workspace, key) generation is *always* bumped -- voiding the calling attempt's own
+ * in-flight stamp even when a different key already occupies the entry, whose late landing would
+ * otherwise resurrect a key the server confirmed -- while the entry is removed only when it is
+ * absent or carries `onlyKey`. A different-key entry, and every other key's pending stamp, are
+ * untouched: a newer capture owns the slot, and the workspace generation is deliberately not
+ * bumped in this branch so an attempt-owned clear can never void a concurrent newer attempt's
+ * stamp.
  */
 export function clearRetainedShareKey(workspaceId: string, onlyKey?: string): void {
+  // Generations are bumped before the removal so no in-flight commit can land between the two.
   if (onlyKey !== undefined) {
+    const generationKey = keyGenerationKey(workspaceId, onlyKey)
+    keyGenerations.set(generationKey, (keyGenerations.get(generationKey) ?? 0) + 1)
     const entry = readRetainedShareKey(workspaceId)
     if (entry && entry.key !== onlyKey) return
+  } else {
+    workspaceGenerations.set(workspaceId, (workspaceGenerations.get(workspaceId) ?? 0) + 1)
   }
-  // Bumped before the removal so no in-flight commit can land between the two.
-  workspaceGenerations.set(workspaceId, (workspaceGenerations.get(workspaceId) ?? 0) + 1)
   try {
     window.sessionStorage.removeItem(storageKey(workspaceId))
   } catch {

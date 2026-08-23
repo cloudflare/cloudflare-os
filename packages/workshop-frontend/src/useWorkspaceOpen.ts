@@ -131,7 +131,7 @@ export function useWorkspaceOpen({
           // write token is what keeps a stamp resolving late from resurrecting an entry that a
           // success -- any attempt's, not just this one's -- or logout has since cleared.
           const capturedKey = shareKey
-          const write = beginRetainedShareKeyWrite(id)
+          const write = beginRetainedShareKeyWrite(id, capturedKey)
           authenticatedApi.whoami().then(info => {
             if (info.type === 'user') {
               commitRetainedShareKeyWrite(write, { key: capturedKey, userId: info.id })

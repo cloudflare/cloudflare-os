@@ -553,6 +553,64 @@ describe('useWorkspaceOpen', () => {
     expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
   })
 
+  it('a superseded confirmed open cannot resurrect its key over a newer capture', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // Attempt A captures its key with both the open and the identity stamp parked. B (a swapped
+    // stub, another user) captures its own key, whose stamp lands and occupies the entry. A's
+    // open then confirms: its key-scoped clear rightly leaves B's different-key entry alone --
+    // but it must still void A's *own* in-flight stamp, or that stamp lands last and overwrites
+    // B's entry with A's server-confirmed key, which a later mount would replay and silently
+    // re-redeem after an owner removal.
+    window.location.hash = '#share=aaaa'
+    const heldOpen = deferred<void>()
+    const parkedOverseer = disposableStub({
+      // oxlint-disable-next-line unicorn/no-thenable
+      then(onFulfilled: () => void) {
+        void heldOpen.promise.then(onFulfilled)
+      },
+    }) as unknown as RpcStub<Overseer>
+    const heldWhoami = deferred<typeof WHOAMI_USER>()
+    const apiA = {
+      openGadget: () => parkedOverseer,
+      whoami: () => heldWhoami.promise,
+    } as unknown as RpcStub<AuthenticatedApi>
+    const OTHER_USER = { type: 'user', id: 'other@example.com', name: 'Other' }
+    const apiB = {
+      openGadget: () => openDeniedOverseer(),
+      whoami: async () => OTHER_USER,
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    function Probe({ authenticatedApi }: { authenticatedApi: RpcStub<AuthenticatedApi> }) {
+      useWorkspaceOpen({
+        id: 'workspace-1',
+        authenticatedApi,
+        onInvalidShareKey: () => {},
+        onMetadata: () => {},
+        onShareKeyConsumed: () => { window.location.hash = '' },
+      })
+      return null
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<Probe authenticatedApi={apiA} />))
+
+    // B captures its own key on the swapped stub; its stamp lands and owns the entry.
+    window.location.hash = '#share=bbbb'
+    await act(async () => root!.render(<Probe authenticatedApi={apiB} />))
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
+
+    // A's open confirms after A was superseded: its clear no-ops on B's entry but voids A's own
+    // pending stamp...
+    await act(async () => { heldOpen.resolve(); await Promise.resolve() })
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
+
+    // ...so A's identity resolving late cannot resurrect the confirmed key over B's capture.
+    await act(async () => { heldWhoami.resolve(WHOAMI_USER); await Promise.resolve() })
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
+  })
+
   it('a keyed open that confirms after cancellation clears its own retention', async () => {
     // The complement of the superseded-attempt test above: the open *resolving* proves the server
     // durably confirmed the redemption (nothing in disposal reverts it), so a cancelled attempt
