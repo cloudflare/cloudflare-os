@@ -401,6 +401,51 @@ describe('useWorkspaceOpen', () => {
     expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull()
   })
 
+  it('a late identity stamp cannot resurrect an entry a later attempt cleared', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // Attempt A captures the fragment key and starts its async identity stamp, which parks. A
+    // fails; the retry replays the in-memory key and succeeds, discarding both retention tiers.
+    // When A's stamp finally resolves, it must not write the entry back: a resurrected key would
+    // silently re-redeem the still-active link after an owner removes this collaborator.
+    window.location.hash = '#share=deadbeef'
+    const heldWhoami = deferred<typeof WHOAMI_USER>()
+    const deniedOverseer = disposableStub({
+      subscribeToMetadata: vi.fn<() => Promise<RpcStub<{}>>>(async () => {
+        throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied)
+      }),
+    }) as unknown as RpcStub<Overseer>
+    const goodOverseer = disposableStub({
+      subscribeToMetadata:
+          vi.fn<(callback: (metadata: GadgetMetadata) => void) => Promise<RpcStub<{}>>>(
+              async callback => {
+                callback(METADATA)
+                return disposableStub({}) as RpcStub<{}>
+              }),
+    }) as unknown as RpcStub<Overseer>
+    let opens = 0
+    const authenticatedApi = {
+      openGadget: () => (++opens === 1 ? deniedOverseer : goodOverseer),
+      whoami: () => heldWhoami.promise,
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={authenticatedApi} />))
+    window.location.hash = ''
+    await act(async () => {
+      const retryButton = [...container!.querySelectorAll('button')]
+          .find(button => button.textContent?.includes('Try again'))
+      retryButton!.click()
+      await Promise.resolve()
+    })
+    expect(container.textContent).toBe(METADATA.title)
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull()
+
+    await act(async () => { heldWhoami.resolve(WHOAMI_USER); await Promise.resolve() })
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull()
+  })
+
   it('clears loaded metadata and title and disposes the failed stub after access is denied', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     document.title = 'outside'

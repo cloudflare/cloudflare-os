@@ -24,9 +24,42 @@ function storageKey(workspaceId: string): string {
   return `${V2_PREFIX}${workspaceId}`
 }
 
-export function writeRetainedShareKey(workspaceId: string, entry: RetainedShareKey): void {
+// Write invalidation. A capture stamps its entry asynchronously (the identity resolves after the
+// open is issued, to keep the open pipelined), so a clear can race a stamp still in flight: an
+// attempt's success -- or logout -- clears storage, then the older attempt's identity resolves
+// and writes the entry back, resurrecting a key whose link the redeemed edge already covers (or
+// that logout meant to sweep). Generations close that: a pending write captures the counters at
+// capture time and commits only while both still match, so any later clear permanently
+// invalidates it. Kept here rather than in the capturing hook because the storage outlives any
+// single attempt -- a per-attempt flag can only guard its own attempt's writes.
+let globalGeneration = 0
+const workspaceGenerations = new Map<string, number>()
+
+/** A capture's license to write: void once the workspace (or everything) is cleared. */
+export type RetainedShareKeyWrite = {
+  workspaceId: string
+  globalGeneration: number
+  workspaceGeneration: number
+}
+
+/** Capture the current generations; pass the token to {@link commitRetainedShareKeyWrite}. */
+export function beginRetainedShareKeyWrite(workspaceId: string): RetainedShareKeyWrite {
+  return {
+    workspaceId,
+    globalGeneration,
+    workspaceGeneration: workspaceGenerations.get(workspaceId) ?? 0,
+  }
+}
+
+/** Write the entry unless a clear has landed since the token was taken. */
+export function commitRetainedShareKeyWrite(
+    token: RetainedShareKeyWrite, entry: RetainedShareKey): void {
+  if (token.globalGeneration !== globalGeneration ||
+      token.workspaceGeneration !== (workspaceGenerations.get(token.workspaceId) ?? 0)) {
+    return
+  }
   try {
-    window.sessionStorage.setItem(storageKey(workspaceId), JSON.stringify(entry))
+    window.sessionStorage.setItem(storageKey(token.workspaceId), JSON.stringify(entry))
   } catch {
     // Best-effort; see above.
   }
@@ -52,6 +85,8 @@ export function readRetainedShareKey(workspaceId: string): RetainedShareKey | un
 }
 
 export function clearRetainedShareKey(workspaceId: string): void {
+  // Bumped before the removal so no in-flight commit can land between the two.
+  workspaceGenerations.set(workspaceId, (workspaceGenerations.get(workspaceId) ?? 0) + 1)
   try {
     window.sessionStorage.removeItem(storageKey(workspaceId))
   } catch {
@@ -61,6 +96,7 @@ export function clearRetainedShareKey(workspaceId: string): void {
 
 /** Sweep every retained share key, of any format version. Called on logout. */
 export function clearAllRetainedShareKeys(): void {
+  globalGeneration++
   try {
     const doomed: string[] = []
     for (let i = 0; i < window.sessionStorage.length; i++) {
