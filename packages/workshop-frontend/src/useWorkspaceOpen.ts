@@ -61,9 +61,10 @@ export function useWorkspaceOpen({
   // reconnection) must re-send the key or it dead-ends on access-denied; never cleared on
   // failure -- that is the point. Retention has two tiers: this in-memory ref, and a
   // sessionStorage entry that also survives a reload (see retainedShareKeys.ts). Both are
-  // discarded at the *first successful open*: from then on the confirmed edge makes every retry
+  // discarded at the *first successful open* -- for a keyed open, the moment openGadget itself
+  // resolves (see the post-open clear below): from then on the confirmed edge makes every retry
   // resolvable keylessly, and a kept key would re-redeem the still-active link after an owner
-  // removal (see the success block below). The sessionStorage tier is identity-stamped with the
+  // removal. The sessionStorage tier is identity-stamped with the
   // capturing session's userId and honored only when the reading session's identity matches, so
   // a key never crosses users in a shared tab (logout additionally sweeps all entries). The
   // in-memory ref carries the `authenticatedApi` stub that captured it and is replayed only on
@@ -201,6 +202,21 @@ export function useWorkspaceOpen({
         linkActionLog(overseerStub, id)
         setOverseer({ stub: overseerStub })
 
+        if (shareKey !== undefined) {
+          // The server confirms the redemption inside open(), so once this resolves the key's
+          // job is done -- and a retained copy could silently re-redeem the still-live link
+          // after an owner removal. Await the open (one extra round trip, keyed opens only) so
+          // retention is discarded as soon as success is knowable, rather than after
+          // subscribeToMetadata below, whose own failure modes (the non-owner whoami round
+          // trip, a WS drop) don't revert the redemption. An open failure rejects here and
+          // reaches the same catch as before with retention kept -- correct, since the server
+          // reverted the redemption. A response lost in transit still leaves the key retained;
+          // that residue is irreducible.
+          await overseerStub
+          retainedShareKeyRef.current = null
+          clearRetainedShareKey(id)
+        }
+
         const resolvedSubscription = await overseerStub.subscribeToMetadata((nextMetadata) => {
           if (cancelled) return
           setMetadata(nextMetadata)
@@ -213,13 +229,15 @@ export function useWorkspaceOpen({
         metadataSubscription = resolvedSubscription
 
         openWorkspaceIdRef.current = id
-        // The open succeeded, so the key's job is done: the redeemed edge is confirmed, and
-        // every later retry or reconnect resolves keylessly from the permission graph. Discard
-        // both retention tiers -- a *kept* key would silently re-redeem the still-active link
-        // after an owner removes this collaborator (the revocation restart reconnects with a
-        // new authenticatedApi, re-running this effect while the component stays mounted),
-        // undoing the removal. (clearRetainedShareKey also invalidates any still-in-flight
-        // identity stamp, so a late-resolving capture cannot re-write the entry after this.)
+        // A keyed open already discarded retention right after the open resolved above. This
+        // repeat clear covers the keyless corner where a retained entry existed but was not
+        // attached (the identity-unknown transport-failure path above): the open succeeding
+        // keylessly proves the key is no longer needed, and a kept one would silently re-redeem
+        // the still-active link after an owner removes this collaborator (the revocation
+        // restart reconnects with a new authenticatedApi, re-running this effect while the
+        // component stays mounted), undoing the removal. (clearRetainedShareKey also
+        // invalidates any still-in-flight identity stamp, so a late-resolving capture cannot
+        // re-write the entry after this.)
         retainedShareKeyRef.current = null
         clearRetainedShareKey(id)
         setError(null)
