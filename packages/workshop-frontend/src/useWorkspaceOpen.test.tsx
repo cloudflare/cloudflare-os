@@ -61,8 +61,17 @@ function api(overseer: RpcStub<Overseer>): RpcStub<AuthenticatedApi> {
 
 const RETAINED_V2_KEY = 'gadgets:retained-share-key:v2:workspace-1'
 
-function retainedEntry(key: string, userId = WHOAMI_USER.id): string {
-  return JSON.stringify({ key, userId })
+// Seeds storage the way a previous attempt's stamp would have left it. Deterministic, so a test
+// that expects the entry untouched can compare the raw string.
+function retainedEntry(key: string, userId = WHOAMI_USER.id, captureId = 'capture-test'): string {
+  return JSON.stringify({ key, userId, captureId })
+}
+
+// Entries the hook itself writes carry a random capture id, so tests assert on the parsed shape
+// (toMatchObject) rather than the raw string.
+function storedRetained(): unknown {
+  const raw = sessionStorage.getItem(RETAINED_V2_KEY)
+  return raw === null ? null : JSON.parse(raw)
 }
 
 const METADATA = {
@@ -170,7 +179,7 @@ describe('useWorkspaceOpen', () => {
     expect(sentKeys).toEqual(['deadbeef'])
     expect(window.location.hash).toBe('')
     // The persisted entry is stamped with the capturing session's identity.
-    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('deadbeef'))
+    expect(storedRetained()).toMatchObject({ key: 'deadbeef', userId: WHOAMI_USER.id })
 
     // A reload drops the hook's in-memory ref: unmount and mount a fresh root. The failed open
     // never cleared the persisted key, so the fresh mount re-sends it instead of dead-ending on
@@ -458,13 +467,13 @@ describe('useWorkspaceOpen', () => {
     // B captures its own key on the swapped stub; the denied open leaves it retained and stamped.
     window.location.hash = '#share=bbbb'
     await act(async () => root!.render(<Probe authenticatedApi={apiB} />))
-    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
+    expect(storedRetained()).toMatchObject({ key: 'bbbb', userId: OTHER_USER.id })
 
     // A resumes with an identity that mismatches the entry it read: it must bail before
     // mutating anything, leaving B's entry (and B's write license) intact.
     await act(async () => { heldWhoami.resolve(WHOAMI_USER); await Promise.resolve() })
     expect(staleOpenGadget).not.toHaveBeenCalled()
-    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
+    expect(storedRetained()).toMatchObject({ key: 'bbbb', userId: OTHER_USER.id })
   })
 
   it('never replays the in-memory key on a different session stub', async () => {
@@ -499,7 +508,7 @@ describe('useWorkspaceOpen', () => {
     await act(async () => root!.render(<WorkspaceProbe authenticatedApi={apiA} />))
     window.location.hash = ''
     // A's async identity stamp has landed by now, so the storage tier holds A's stamped entry.
-    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('deadbeef'))
+    expect(storedRetained()).toMatchObject({ key: 'deadbeef', userId: WHOAMI_USER.id })
 
     await act(async () => root!.render(<WorkspaceProbe authenticatedApi={apiB} />))
 
@@ -594,11 +603,63 @@ describe('useWorkspaceOpen', () => {
     // B captures its own key on the swapped stub; the denied open leaves it retained and stamped.
     window.location.hash = '#share=bbbb'
     await act(async () => root!.render(<Probe authenticatedApi={apiB} />))
-    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
+    expect(storedRetained()).toMatchObject({ key: 'bbbb', userId: OTHER_USER.id })
 
     // A's parked open resolves after A was superseded: B's retention must survive untouched.
     await act(async () => { heldOpen.resolve(); await Promise.resolve() })
-    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
+    expect(storedRetained()).toMatchObject({ key: 'bbbb', userId: OTHER_USER.id })
+  })
+
+  it("a superseded keyed open cannot clear a newer capture of the same key", async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // The same-tab user switch where B clicks the *same* invite link A used. A's keyed open of
+    // key K parks inside the await on the open itself; the stub is swapped and B captures the
+    // very same K, whose open is denied -- so B retains it for a retry. A's late success clears
+    // only A's own capture: were the clear keyed on the raw key, it would remove B's entry and
+    // permanently void B's write license, dead-ending B's retry on the access-denied page.
+    window.location.hash = '#share=aaaa'
+    const heldOpen = deferred<void>()
+    const parkedOverseer = disposableStub({
+      // oxlint-disable-next-line unicorn/no-thenable
+      then(onFulfilled: () => void) {
+        void heldOpen.promise.then(onFulfilled)
+      },
+    }) as unknown as RpcStub<Overseer>
+    const apiA = {
+      openGadget: () => parkedOverseer,
+      whoami: async () => WHOAMI_USER,
+    } as unknown as RpcStub<AuthenticatedApi>
+    const OTHER_USER = { type: 'user', id: 'other@example.com', name: 'Other' }
+    const apiB = {
+      openGadget: () => openDeniedOverseer(),
+      whoami: async () => OTHER_USER,
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    function Probe({ authenticatedApi }: { authenticatedApi: RpcStub<AuthenticatedApi> }) {
+      useWorkspaceOpen({
+        id: 'workspace-1',
+        authenticatedApi,
+        onInvalidShareKey: () => {},
+        onMetadata: () => {},
+        onShareKeyConsumed: () => { window.location.hash = '' },
+      })
+      return null
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<Probe authenticatedApi={apiA} />))
+
+    // B captures the same key on the swapped stub; the denied open leaves it retained and
+    // stamped under B's identity.
+    window.location.hash = '#share=aaaa'
+    await act(async () => root!.render(<Probe authenticatedApi={apiB} />))
+    expect(storedRetained()).toMatchObject({ key: 'aaaa', userId: OTHER_USER.id })
+
+    // A's parked open resolves after A was superseded: B's same-key retention must survive.
+    await act(async () => { heldOpen.resolve(); await Promise.resolve() })
+    expect(storedRetained()).toMatchObject({ key: 'aaaa', userId: OTHER_USER.id })
   })
 
   it('a superseded confirmed open cannot resurrect its key over a newer capture', async () => {
@@ -647,16 +708,16 @@ describe('useWorkspaceOpen', () => {
     // B captures its own key on the swapped stub; its stamp lands and owns the entry.
     window.location.hash = '#share=bbbb'
     await act(async () => root!.render(<Probe authenticatedApi={apiB} />))
-    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
+    expect(storedRetained()).toMatchObject({ key: 'bbbb', userId: OTHER_USER.id })
 
     // A's open confirms after A was superseded: its clear no-ops on B's entry but voids A's own
     // pending stamp...
     await act(async () => { heldOpen.resolve(); await Promise.resolve() })
-    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
+    expect(storedRetained()).toMatchObject({ key: 'bbbb', userId: OTHER_USER.id })
 
     // ...so A's identity resolving late cannot resurrect the confirmed key over B's capture.
     await act(async () => { heldWhoami.resolve(WHOAMI_USER); await Promise.resolve() })
-    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
+    expect(storedRetained()).toMatchObject({ key: 'bbbb', userId: OTHER_USER.id })
   })
 
   it('a keyed open that confirms after cancellation clears its own retention', async () => {

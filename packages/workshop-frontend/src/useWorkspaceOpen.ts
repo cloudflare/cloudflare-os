@@ -78,8 +78,8 @@ export function useWorkspaceOpen({
   // nor error reports (normalizePageLocation keeps origin+pathname only); sessionStorage is
   // same-origin, per-tab, and dies with the tab, and gadget UIs run in opaque-origin frames
   // that cannot read it.
-  const retainedShareKeyRef =
-      useRef<{ id: string; key: string; api: RpcStub<AuthenticatedApi> } | null>(null)
+  const retainedShareKeyRef = useRef<
+      { id: string; key: string; captureId: string; api: RpcStub<AuthenticatedApi> } | null>(null)
   const pendingObserverRejectRef = useRef<((error: unknown) => void) | null>(null)
   const callbacksRef = useRef({ onMetadata, onShareKeyConsumed, onInvalidShareKey })
   callbacksRef.current = { onMetadata, onShareKeyConsumed, onInvalidShareKey }
@@ -121,8 +121,15 @@ export function useWorkspaceOpen({
       try {
         const hash = window.location.hash
         let shareKey = hash.startsWith('#share=') ? hash.slice('#share='.length) : undefined
+        // The id of the capture that owns whatever retention this attempt replays or discards.
+        // Clears are scoped by capture rather than by key so a success clearing its own retention
+        // can never erase a newer capture's -- not even a same-key one (the same invite link
+        // clicked again by the tab's next user).
+        let shareKeyCaptureId: string | undefined
         if (shareKey) {
-          retainedShareKeyRef.current = { id, key: shareKey, api: authenticatedApi }
+          const captureId = crypto.randomUUID()
+          shareKeyCaptureId = captureId
+          retainedShareKeyRef.current = { id, key: shareKey, captureId, api: authenticatedApi }
           // Stamp the sessionStorage tier with the capturing session's identity, resolved from
           // the same stub the open is issued on (useAuth state can be stale across stub swaps).
           // Async so the open itself stays pipelined; not gated on `cancelled`, since the stamp
@@ -131,16 +138,17 @@ export function useWorkspaceOpen({
           // write token is what keeps a stamp resolving late from resurrecting an entry that a
           // success -- any attempt's, not just this one's -- or logout has since cleared.
           const capturedKey = shareKey
-          const write = beginRetainedShareKeyWrite(id, capturedKey)
+          const write = beginRetainedShareKeyWrite(id, captureId)
           authenticatedApi.whoami().then(info => {
             if (info.type === 'user') {
-              commitRetainedShareKeyWrite(write, { key: capturedKey, userId: info.id })
+              commitRetainedShareKeyWrite(write, { key: capturedKey, userId: info.id, captureId })
             }
           }).catch(() => {})
           callbacksRef.current.onShareKeyConsumed()
         } else if (retainedShareKeyRef.current?.id === id &&
                    retainedShareKeyRef.current.api === authenticatedApi) {
           shareKey = retainedShareKeyRef.current.key
+          shareKeyCaptureId = retainedShareKeyRef.current.captureId
         } else {
           // A ref captured on a different stub is not replayed blind -- the stub may belong to a
           // different user. Drop it and let the identity-checked sessionStorage read below decide.
@@ -158,13 +166,17 @@ export function useWorkspaceOpen({
               if (cancelled) return
               if (info.type === 'user' && info.id === retained.userId) {
                 shareKey = retained.key
-                retainedShareKeyRef.current = { id, key: retained.key, api: authenticatedApi }
+                shareKeyCaptureId = retained.captureId
+                // Re-arming adopts the entry's capture id: this attempt continues the capture
+                // the reload interrupted rather than starting a new one.
+                retainedShareKeyRef.current =
+                    { id, key: retained.key, captureId: retained.captureId, api: authenticatedApi }
               } else {
                 // Definitely someone else's key (a same-tab user switch): sweep it rather than
-                // redeem it under the wrong account. Scoped to the key this branch actually read
-                // and judged, so a newer capture's different-key entry (and its in-flight stamp)
+                // redeem it under the wrong account. Scoped to the capture this branch actually
+                // read and judged, so a newer capture's entry (and its in-flight stamp)
                 // survives even if this is ever reached with stale data.
-                clearRetainedShareKey(id, retained.key)
+                clearRetainedShareKey(id, retained.captureId)
               }
             } catch {
               // Transport failure: identity unknown, so neither attach the key nor discard an
@@ -208,7 +220,7 @@ export function useWorkspaceOpen({
         linkActionLog(overseerStub, id)
         setOverseer({ stub: overseerStub })
 
-        if (shareKey !== undefined) {
+        if (shareKey !== undefined && shareKeyCaptureId !== undefined) {
           // The server confirms the redemption inside open(), so once this resolves the key's
           // job is done -- and a retained copy could silently re-redeem the still-live link
           // after an owner removal. Await the open (one extra round trip, keyed opens only) so
@@ -224,16 +236,16 @@ export function useWorkspaceOpen({
           // clear exactly this attempt's retention before bailing: a kept confirmed key would
           // re-redeem the still-live link after an owner removal on every replay path (the
           // in-memory retry, the sessionStorage reload read, the reconnect re-run). A newer
-          // attempt may meanwhile have captured its *own* key -- possibly another user's, on a
-          // swapped stub -- into the very ref and entry this attempt would clear; the key checks
-          // (here and inside clearRetainedShareKey) leave such a different-key capture alone,
-          // stamp and all. (The stub was assigned before the await, so the cleanup already
-          // disposed it.)
+          // attempt may meanwhile have captured its *own* key -- possibly the same key under
+          // another user, on a swapped stub -- into the very ref and entry this attempt would
+          // clear; the capture-id checks (here and inside clearRetainedShareKey) leave such a
+          // newer capture alone, stamp and all. (The stub was assigned before the await, so the
+          // cleanup already disposed it.)
           if (retainedShareKeyRef.current?.id === id &&
-              retainedShareKeyRef.current.key === shareKey) {
+              retainedShareKeyRef.current.captureId === shareKeyCaptureId) {
             retainedShareKeyRef.current = null
           }
-          clearRetainedShareKey(id, shareKey)
+          clearRetainedShareKey(id, shareKeyCaptureId)
           if (cancelled) return
         }
 
