@@ -361,6 +361,46 @@ describe('useWorkspaceOpen', () => {
     expect(container.textContent).toBe(METADATA.title)
   })
 
+  it('never replays the in-memory key on a different session stub', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // User A's keyed open fails, retaining the key in-memory. The editor then re-renders with a
+    // different authenticated stub -- without unmounting -- representing user B. The in-memory
+    // ref must not be replayed on it: the ref is bound to the stub that captured it, and the
+    // fall-through sessionStorage read is identity-checked, so B ends up keyless.
+    window.location.hash = '#share=deadbeef'
+    const deniedOverseer = disposableStub({
+      subscribeToMetadata: vi.fn<() => Promise<RpcStub<{}>>>(async () => {
+        throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied)
+      }),
+    }) as unknown as RpcStub<Overseer>
+    const apiA = {
+      openGadget: () => deniedOverseer,
+      whoami: async () => WHOAMI_USER,
+    } as unknown as RpcStub<AuthenticatedApi>
+    const keysSentToB: (string | undefined)[] = []
+    const apiB = {
+      openGadget: (_id: string, shareKey?: string) => {
+        keysSentToB.push(shareKey)
+        return deniedOverseer
+      },
+      whoami: async () => ({ type: 'user', id: 'other@example.com', name: 'Other' }),
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={apiA} />))
+    window.location.hash = ''
+    // A's async identity stamp has landed by now, so the storage tier holds A's stamped entry.
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('deadbeef'))
+
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={apiB} />))
+
+    expect(keysSentToB).toEqual([undefined])
+    // The stamped entry definitely belongs to someone else, so it was swept, not just skipped.
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull()
+  })
+
   it('clears loaded metadata and title and disposes the failed stub after access is denied', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     document.title = 'outside'

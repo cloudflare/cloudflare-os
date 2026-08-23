@@ -65,14 +65,19 @@ export function useWorkspaceOpen({
   // removal (see the success block below). The sessionStorage tier is identity-stamped with the
   // capturing session's userId and honored only when the reading session's identity matches, so
   // a key never crosses users in a shared tab (logout additionally sweeps all entries). The
-  // in-memory ref needs no stamp: it is bounded by this component's lifetime -- logout unmounts
-  // the editor, and CF Access logout navigates away. Residual: a reload before the async
-  // identity stamp lands loses retention, recovered by re-clicking the invite link. The secret
-  // never enters the URL or history -- the fragment is stripped before openGadget is even
-  // issued -- nor error reports (normalizePageLocation keeps origin+pathname only);
-  // sessionStorage is same-origin, per-tab, and dies with the tab, and gadget UIs run in
-  // opaque-origin frames that cannot read it.
-  const retainedShareKeyRef = useRef<{ id: string; key: string } | null>(null)
+  // in-memory ref carries the `authenticatedApi` stub that captured it and is replayed only on
+  // that same stub: a stub swap that kept the same user (a reconnect) re-reads the
+  // identity-checked sessionStorage tier instead, and a swap to a different user finds a stamp
+  // that doesn't match. Binding to the stub rather than an identity keeps the common same-stub
+  // retry pipelined (no whoami round trip), and doesn't rely on the current rendering invariant
+  // that an identity change unmounts the editor. Residual: a reload before the async identity
+  // stamp lands loses retention, recovered by re-clicking the invite link. The secret never
+  // enters the URL or history -- the fragment is stripped before openGadget is even issued --
+  // nor error reports (normalizePageLocation keeps origin+pathname only); sessionStorage is
+  // same-origin, per-tab, and dies with the tab, and gadget UIs run in opaque-origin frames
+  // that cannot read it.
+  const retainedShareKeyRef =
+      useRef<{ id: string; key: string; api: RpcStub<AuthenticatedApi> } | null>(null)
   const pendingObserverRejectRef = useRef<((error: unknown) => void) | null>(null)
   const callbacksRef = useRef({ onMetadata, onShareKeyConsumed, onInvalidShareKey })
   callbacksRef.current = { onMetadata, onShareKeyConsumed, onInvalidShareKey }
@@ -119,7 +124,7 @@ export function useWorkspaceOpen({
         const hash = window.location.hash
         let shareKey = hash.startsWith('#share=') ? hash.slice('#share='.length) : undefined
         if (shareKey) {
-          retainedShareKeyRef.current = { id, key: shareKey }
+          retainedShareKeyRef.current = { id, key: shareKey, api: authenticatedApi }
           // Stamp the sessionStorage tier with the capturing session's identity, resolved from
           // the same stub the open is issued on (useAuth state can be stale across stub swaps).
           // Async so the open itself stays pipelined; not gated on `cancelled`, since the stamp
@@ -134,9 +139,13 @@ export function useWorkspaceOpen({
             }
           }).catch(() => {})
           callbacksRef.current.onShareKeyConsumed()
-        } else if (retainedShareKeyRef.current?.id === id) {
+        } else if (retainedShareKeyRef.current?.id === id &&
+                   retainedShareKeyRef.current.api === authenticatedApi) {
           shareKey = retainedShareKeyRef.current.key
         } else {
+          // A ref captured on a different stub is not replayed blind -- the stub may belong to a
+          // different user. Drop it and let the identity-checked sessionStorage read below decide.
+          if (retainedShareKeyRef.current?.id === id) retainedShareKeyRef.current = null
           // A reload lost the in-memory ref; the sessionStorage tier is what keeps a failed
           // first open retryable across it. Rare path, so the identity round trip here does not
           // cost the common keyless open its pipelining.
@@ -146,7 +155,7 @@ export function useWorkspaceOpen({
               const info = await authenticatedApi.whoami()
               if (info.type === 'user' && info.id === retained.userId) {
                 shareKey = retained.key
-                retainedShareKeyRef.current = { id, key: retained.key }
+                retainedShareKeyRef.current = { id, key: retained.key, api: authenticatedApi }
               } else {
                 // Definitely someone else's key (a same-tab user switch): sweep it rather than
                 // redeem it under the wrong account.
