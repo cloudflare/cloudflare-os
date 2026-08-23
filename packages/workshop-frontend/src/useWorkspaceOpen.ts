@@ -213,6 +213,15 @@ export function useWorkspaceOpen({
           // reverted the redemption. A response lost in transit still leaves the key retained;
           // that residue is irreducible.
           await overseerStub
+          // The await may have parked across this attempt's cancellation, and a superseded
+          // attempt no longer owns the retention state: a newer attempt may have captured its
+          // own key -- possibly another user's, on a swapped stub -- into the very ref and entry
+          // this would clear, and clearRetainedShareKey would also permanently void that
+          // attempt's still-in-flight identity stamp. Skipping the clear loses nothing:
+          // replaying this attempt's confirmed key is a server-side no-op, and whichever attempt
+          // next succeeds clears retention itself. (The stub was assigned before the await, so
+          // the cleanup already disposed it.)
+          if (cancelled) return
           retainedShareKeyRef.current = null
           clearRetainedShareKey(id)
         }

@@ -501,6 +501,58 @@ describe('useWorkspaceOpen', () => {
     expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull()
   })
 
+  it("a superseded keyed open cannot clear a newer attempt's retained key", async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // Attempt A's keyed open parks inside the await on the open itself. While it is parked, the
+    // session stub is swapped (a reconnect, here as another user) and attempt B captures its own
+    // fragment key, whose open is denied -- so B retains it for a retry, by design. A's late
+    // resolution runs after A's own cleanup and no longer owns the retention state: clearing it
+    // there would wipe B's in-memory ref and sessionStorage entry and (via the write-token bump)
+    // permanently void B's still-in-flight identity stamp, dead-ending B's retry unretryably.
+    window.location.hash = '#share=aaaa'
+    const heldOpen = deferred<void>()
+    const parkedOverseer = disposableStub({
+      // oxlint-disable-next-line unicorn/no-thenable
+      then(onFulfilled: () => void) {
+        void heldOpen.promise.then(onFulfilled)
+      },
+    }) as unknown as RpcStub<Overseer>
+    const apiA = {
+      openGadget: () => parkedOverseer,
+      whoami: async () => WHOAMI_USER,
+    } as unknown as RpcStub<AuthenticatedApi>
+    const OTHER_USER = { type: 'user', id: 'other@example.com', name: 'Other' }
+    const apiB = {
+      openGadget: () => openDeniedOverseer(),
+      whoami: async () => OTHER_USER,
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    function Probe({ authenticatedApi }: { authenticatedApi: RpcStub<AuthenticatedApi> }) {
+      useWorkspaceOpen({
+        id: 'workspace-1',
+        authenticatedApi,
+        onInvalidShareKey: () => {},
+        onMetadata: () => {},
+        onShareKeyConsumed: () => { window.location.hash = '' },
+      })
+      return null
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<Probe authenticatedApi={apiA} />))
+
+    // B captures its own key on the swapped stub; the denied open leaves it retained and stamped.
+    window.location.hash = '#share=bbbb'
+    await act(async () => root!.render(<Probe authenticatedApi={apiB} />))
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
+
+    // A's parked open resolves after A was superseded: B's retention must survive untouched.
+    await act(async () => { heldOpen.resolve(); await Promise.resolve() })
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
+  })
+
   it('clears loaded metadata and title and disposes the failed stub after access is denied', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     document.title = 'outside'
