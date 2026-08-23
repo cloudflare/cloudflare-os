@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   beginRetainedShareKeyWrite, clearAllRetainedShareKeys, clearRetainedShareKey,
-  commitRetainedShareKeyWrite, readRetainedShareKey,
+  commitRetainedShareKeyWrite, readRetainedShareKey, RETAINED_SHARE_KEY_TTL_MS,
 } from './retainedShareKeys'
 
 const ENTRY = { key: 'deadbeef', userId: 'person@example.com', captureId: 'capture-1' }
@@ -136,5 +136,118 @@ describe('attempt-owned clears (onlyCapture)', () => {
     clearRetainedShareKey('ws-1', ENTRY.captureId)
     commitRetainedShareKeyWrite(stamp, ENTRY)
     expect(readRetainedShareKey('ws-1')).toBeUndefined()
+  })
+})
+
+// A duplicated tab copies sessionStorage, so an entry cleared in the original tab can survive in
+// the copy. The TTL bounds how long such a copy stays honored.
+describe('entry expiry', () => {
+  afterEach(() => {
+    sessionStorage.clear()
+    vi.useRealTimers()
+  })
+
+  it('honors a fresh entry and expires (and removes) a stale one', () => {
+    vi.useFakeTimers()
+    commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1', ENTRY.captureId), ENTRY)
+    expect(readRetainedShareKey('ws-1')).toEqual(ENTRY)
+    vi.advanceTimersByTime(RETAINED_SHARE_KEY_TTL_MS + 1)
+    expect(readRetainedShareKey('ws-1')).toBeUndefined()
+    // Removed rather than left to be re-judged on every read.
+    expect(sessionStorage.getItem('gadgets:retained-share-key:v2:ws-1')).toBeNull()
+  })
+
+  it('reads an entry without a stamp time as absent and removes it', () => {
+    sessionStorage.setItem('gadgets:retained-share-key:v2:ws-1', JSON.stringify(ENTRY))
+    expect(readRetainedShareKey('ws-1')).toBeUndefined()
+    expect(sessionStorage.getItem('gadgets:retained-share-key:v2:ws-1')).toBeNull()
+  })
+})
+
+// Clears are broadcast so a duplicated tab's copied entry (which shares the original's
+// captureId) is cleared the moment the original spends its key. Node >= 18 provides
+// BroadcastChannel in the vitest process, so these run against the real channel.
+describe('cross-tab clear propagation', () => {
+  let channel: BroadcastChannel | undefined
+
+  afterEach(() => {
+    channel?.close()
+    channel = undefined
+    sessionStorage.clear()
+  })
+
+  function openSiblingChannel(): BroadcastChannel {
+    const sibling = new BroadcastChannel('gadgets:retained-share-keys');
+    // Match the module's unref so a test failure can't wedge the process either.
+    (sibling as { unref?: () => void }).unref?.()
+    channel = sibling
+    return sibling
+  }
+
+  // BroadcastChannel.postMessage takes no targetOrigin; the unicorn rule is written for
+  // window.postMessage.
+  function post(sibling: BroadcastChannel, message: unknown): void {
+    // oxlint-disable-next-line unicorn/require-post-message-target-origin
+    sibling.postMessage(message)
+  }
+
+  it('a received capture clear removes the matching entry and voids its stamp', async () => {
+    const stamp = beginRetainedShareKeyWrite('ws-1', ENTRY.captureId)
+    commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1', ENTRY.captureId), ENTRY)
+    post(openSiblingChannel(),
+        { type: 'clear-capture', workspaceId: 'ws-1', captureId: ENTRY.captureId })
+    await vi.waitFor(() => expect(readRetainedShareKey('ws-1')).toBeUndefined())
+    // The broadcast also voids the capture's in-flight stamp, like a local clear would.
+    commitRetainedShareKeyWrite(stamp, ENTRY)
+    expect(readRetainedShareKey('ws-1')).toBeUndefined()
+  })
+
+  it('a received capture clear leaves a different capture untouched', async () => {
+    // ws-1 holds an independent sibling capture; ws-2 holds a sentinel entry whose clear-out
+    // proves the earlier (non-matching) message was already processed, since delivery is FIFO.
+    commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1', ENTRY.captureId), ENTRY)
+    const sentinel = { key: 'cafe', userId: ENTRY.userId, captureId: 'capture-sentinel' }
+    commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-2', sentinel.captureId), sentinel)
+    const sibling = openSiblingChannel()
+    post(sibling, { type: 'clear-capture', workspaceId: 'ws-1', captureId: 'capture-other' })
+    post(sibling, { type: 'clear-capture', workspaceId: 'ws-2', captureId: sentinel.captureId })
+    await vi.waitFor(() => expect(readRetainedShareKey('ws-2')).toBeUndefined())
+    expect(readRetainedShareKey('ws-1')).toEqual(ENTRY)
+  })
+
+  it('a received clear-all sweeps the entries and voids every in-flight write', async () => {
+    const stamp = beginRetainedShareKeyWrite('ws-1', ENTRY.captureId)
+    commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1', ENTRY.captureId), ENTRY)
+    post(openSiblingChannel(), { type: 'clear-all' })
+    await vi.waitFor(() => expect(readRetainedShareKey('ws-1')).toBeUndefined())
+    commitRetainedShareKeyWrite(stamp, ENTRY)
+    expect(readRetainedShareKey('ws-1')).toBeUndefined()
+  })
+
+  it('a malformed message is ignored', async () => {
+    commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1', ENTRY.captureId), ENTRY)
+    const sentinel = { key: 'cafe', userId: ENTRY.userId, captureId: 'capture-sentinel' }
+    commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-2', sentinel.captureId), sentinel)
+    const sibling = openSiblingChannel()
+    post(sibling, { type: 'clear-capture', workspaceId: 'ws-1' })
+    post(sibling, 'clear-all')
+    post(sibling, { type: 'clear-capture', workspaceId: 'ws-2', captureId: sentinel.captureId })
+    await vi.waitFor(() => expect(readRetainedShareKey('ws-2')).toBeUndefined())
+    expect(readRetainedShareKey('ws-1')).toEqual(ENTRY)
+  })
+
+  it('broadcasts exactly the capture-scoped clears and the logout sweep', async () => {
+    const received: unknown[] = []
+    openSiblingChannel().addEventListener('message', event => received.push(event.data))
+    // Workspace-scoped clears stay local: they name no capture, and blanket-clearing sibling
+    // tabs could erase an independent capture that is still legitimately retrying.
+    clearRetainedShareKey('ws-1')
+    clearRetainedShareKey('ws-1', 'capture-1')
+    clearAllRetainedShareKeys()
+    await vi.waitFor(() => expect(received).toHaveLength(2))
+    expect(received).toEqual([
+      { type: 'clear-capture', workspaceId: 'ws-1', captureId: 'capture-1' },
+      { type: 'clear-all' },
+    ])
   })
 })

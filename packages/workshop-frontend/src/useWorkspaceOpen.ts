@@ -72,8 +72,12 @@ export function useWorkspaceOpen({
   // identity-checked sessionStorage tier instead, and a swap to a different user finds a stamp
   // that doesn't match. Binding to the stub rather than an identity keeps the common same-stub
   // retry pipelined (no whoami round trip), and doesn't rely on the current rendering invariant
-  // that an identity change unmounts the editor. Residual: a reload before the async identity
-  // stamp lands loses retention, recovered by re-clicking the invite link. The secret never
+  // that an identity change unmounts the editor. Residuals: a reload before the async identity
+  // stamp lands loses retention, recovered by re-clicking the invite link; and in the other
+  // direction, a *duplicated* tab copies the sessionStorage entry, so a clear here cannot reach
+  // the copy directly -- retainedShareKeys.ts bounds that with an entry TTL and a cross-tab
+  // clear broadcast, leaving only a duplicate unloaded at broadcast time that reactivates within
+  // the TTL able to replay a spent key (see that module's header). The secret never
   // enters the URL or history -- the fragment is stripped before openGadget is even issued --
   // nor error reports (normalizePageLocation keeps origin+pathname only); sessionStorage is
   // same-origin, per-tab, and dies with the tab, and gadget UIs run in opaque-origin frames

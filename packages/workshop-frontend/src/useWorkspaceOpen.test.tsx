@@ -61,10 +61,13 @@ function api(overseer: RpcStub<Overseer>): RpcStub<AuthenticatedApi> {
 
 const RETAINED_V2_KEY = 'gadgets:retained-share-key:v2:workspace-1'
 
-// Seeds storage the way a previous attempt's stamp would have left it. Deterministic, so a test
-// that expects the entry untouched can compare the raw string.
+// Seeds storage the way a previous attempt's stamp would have left it. The stamp time is fixed
+// at file load -- fresh (well inside the TTL) yet deterministic, so a test that expects the
+// entry untouched can compare the raw string.
+const SEED_CAPTURED_AT = Date.now()
+
 function retainedEntry(key: string, userId = WHOAMI_USER.id, captureId = 'capture-test'): string {
-  return JSON.stringify({ key, userId, captureId })
+  return JSON.stringify({ key, userId, captureId, capturedAt: SEED_CAPTURED_AT })
 }
 
 // Entries the hook itself writes carry a random capture id, so tests assert on the parsed shape
