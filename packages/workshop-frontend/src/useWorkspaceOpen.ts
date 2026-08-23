@@ -159,6 +159,14 @@ export function useWorkspaceOpen({
           }
         }
 
+        // The identity await above may have parked across this attempt's cancellation, and the
+        // cleanup that set `cancelled` ran while overseerStub was still null -- it disposed
+        // nothing. Bail before creating any capability: past this point a superseded attempt
+        // would mint a live server-side stub its own cleanup can never reach and publish it over
+        // the current attempt's state (a stale capability, or the wrong workspace's when `id`
+        // changed).
+        if (cancelled) return
+
         const configureObserversTarget = new (class extends RpcTarget implements ObserverConfigCallback {
           configure(needs: ObserverBindingNeed[]): Promise<ObserverAccountChoice[]> {
             if (cancelled) return Promise.reject(new Error('Cancelled'))

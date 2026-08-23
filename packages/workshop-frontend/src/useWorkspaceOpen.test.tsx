@@ -319,6 +319,48 @@ describe('useWorkspaceOpen', () => {
     expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('cafe'))
   })
 
+  it('abandons a superseded attempt parked in identity resolution before it opens anything', async () => {
+    // The retained-storage path awaits whoami() before openGadget. An attempt superseded while
+    // parked there already had its cleanup run -- with nothing yet to dispose -- so if it
+    // proceeded, it would mint a capability its cleanup can never reach and publish it over the
+    // replacement attempt's state.
+    sessionStorage.setItem(RETAINED_V2_KEY, retainedEntry('cafe'))
+    const heldWhoami = deferred<typeof WHOAMI_USER>()
+    const staleOpenGadget = vi.fn<() => RpcStub<Overseer>>()
+    const staleApi = {
+      openGadget: staleOpenGadget,
+      whoami: () => heldWhoami.promise,
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    const subscription = disposableStub({}) as RpcStub<{}>
+    const freshOverseerDispose = vi.fn<() => void>()
+    const freshOverseer = disposableStub({
+      subscribeToMetadata:
+          vi.fn<(callback: (metadata: GadgetMetadata) => void) => Promise<RpcStub<{}>>>(
+              async callback => {
+                callback(METADATA)
+                return subscription
+              }),
+    }, freshOverseerDispose) as unknown as RpcStub<Overseer>
+    const freshApi = api(freshOverseer)
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    // The stale attempt parks inside whoami(); replacing the API cancels it and starts a fresh
+    // attempt, which succeeds (and clears the retained entry).
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={staleApi} />))
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={freshApi} />))
+    expect(container.textContent).toBe(METADATA.title)
+
+    await act(async () => { heldWhoami.resolve(WHOAMI_USER); await Promise.resolve() })
+
+    // The stale attempt resumed after its own cleanup and must have gone no further.
+    expect(staleOpenGadget).not.toHaveBeenCalled()
+    expect(freshOverseerDispose).not.toHaveBeenCalled()
+    expect(container.textContent).toBe(METADATA.title)
+  })
+
   it('clears loaded metadata and title and disposes the failed stub after access is denied', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     document.title = 'outside'
