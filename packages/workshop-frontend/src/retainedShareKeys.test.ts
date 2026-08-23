@@ -38,3 +38,41 @@ describe('retained share key write tokens', () => {
     expect(readRetainedShareKey('ws-1')).toBeUndefined()
   })
 })
+
+// An attempt whose keyed open the server confirmed clears exactly its own retention, even after
+// being superseded. `onlyKey` is what scopes the clear: a stored entry carrying a different key
+// belongs to a newer capture and must survive untouched -- including its in-flight stamp -- while
+// a matching or absent entry is this attempt's own to discard.
+describe('attempt-owned clears (onlyKey)', () => {
+  afterEach(() => sessionStorage.clear())
+
+  it('a matching-key clear removes the entry and voids a pending write', () => {
+    const stamp = beginRetainedShareKeyWrite('ws-1')
+    commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1'), ENTRY)
+    clearRetainedShareKey('ws-1', ENTRY.key)
+    expect(readRetainedShareKey('ws-1')).toBeUndefined()
+    // A late-landing stamp for the same attempt must not resurrect the confirmed key.
+    commitRetainedShareKeyWrite(stamp, ENTRY)
+    expect(readRetainedShareKey('ws-1')).toBeUndefined()
+  })
+
+  it("a different-key clear neither removes the entry nor voids the workspace's writes", () => {
+    const newerEntry = { key: 'cafe', userId: 'person@example.com' }
+    const newerStamp = beginRetainedShareKeyWrite('ws-1')
+    commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1'), newerEntry)
+    clearRetainedShareKey('ws-1', 'deadbeef')
+    // The newer capture's entry survives, and so does its license to (re)write: no bump landed.
+    expect(readRetainedShareKey('ws-1')).toEqual(newerEntry)
+    commitRetainedShareKeyWrite(newerStamp, newerEntry)
+    expect(readRetainedShareKey('ws-1')).toEqual(newerEntry)
+  })
+
+  it('an absent-entry clear with onlyKey still voids a pending write', () => {
+    // The absence may be the clearing attempt's own stamp still in flight; letting it land would
+    // resurrect a key the server already confirmed.
+    const stamp = beginRetainedShareKeyWrite('ws-1')
+    clearRetainedShareKey('ws-1', ENTRY.key)
+    commitRetainedShareKeyWrite(stamp, ENTRY)
+    expect(readRetainedShareKey('ws-1')).toBeUndefined()
+  })
+})

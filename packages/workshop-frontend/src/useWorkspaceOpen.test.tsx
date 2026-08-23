@@ -553,6 +553,57 @@ describe('useWorkspaceOpen', () => {
     expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
   })
 
+  it('a keyed open that confirms after cancellation clears its own retention', async () => {
+    // The complement of the superseded-attempt test above: the open *resolving* proves the server
+    // durably confirmed the redemption (nothing in disposal reverts it), so a cancelled attempt
+    // with no newer capture in the slot must still discard its own retention -- including
+    // voiding its identity stamp still in flight -- or every replay path (a later mount's
+    // sessionStorage read, most directly) silently re-redeems the still-live link after an owner
+    // removal.
+    window.location.hash = '#share=aaaa'
+    const heldOpen = deferred<void>()
+    const parkedOverseer = disposableStub({
+      // oxlint-disable-next-line unicorn/no-thenable
+      then(onFulfilled: () => void) {
+        void heldOpen.promise.then(onFulfilled)
+      },
+    }) as unknown as RpcStub<Overseer>
+    const heldWhoami = deferred<typeof WHOAMI_USER>()
+    const authenticatedApi = {
+      openGadget: () => parkedOverseer,
+      whoami: () => heldWhoami.promise,
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    function Probe() {
+      useWorkspaceOpen({
+        id: 'workspace-1',
+        authenticatedApi,
+        onInvalidShareKey: () => {},
+        onMetadata: () => {},
+        onShareKeyConsumed: () => { window.location.hash = '' },
+      })
+      return null
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<Probe />))
+
+    // Unmount cancels the attempt while both its open and its identity stamp are still parked.
+    act(() => root!.unmount())
+    root = undefined
+
+    // The open confirms after the cancellation: retention must be discarded anyway.
+    await act(async () => { heldOpen.resolve(); await Promise.resolve() })
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull()
+
+    // ...and the late-landing stamp must not resurrect it (the clear voided the write token), or
+    // a fresh mount would replay the confirmed key from storage.
+    await act(async () => { heldWhoami.resolve(WHOAMI_USER); await Promise.resolve() })
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull()
+  })
+
   it('clears loaded metadata and title and disposes the failed stub after access is denied', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     document.title = 'outside'

@@ -84,7 +84,21 @@ export function readRetainedShareKey(workspaceId: string): RetainedShareKey | un
   return undefined
 }
 
-export function clearRetainedShareKey(workspaceId: string): void {
+/**
+ * Discard a workspace's retained entry and void any in-flight identity stamp for it. With
+ * `onlyKey`, the clear is attempt-owned: when the stored entry carries a *different* key, a newer
+ * capture owns the slot, so nothing happens -- no removal, and no generation bump that would void
+ * that capture's still-in-flight stamp. An *absent* entry still bumps, fail-toward-security: the
+ * absence may be the calling attempt's own stamp still in flight, whose late landing would
+ * resurrect a key the server already confirmed. The residual is that this bump can instead void a
+ * concurrent newer attempt's in-flight stamp for the same workspace; recovery is re-clicking the
+ * invite link, consistent with every other lost-retention path here.
+ */
+export function clearRetainedShareKey(workspaceId: string, onlyKey?: string): void {
+  if (onlyKey !== undefined) {
+    const entry = readRetainedShareKey(workspaceId)
+    if (entry && entry.key !== onlyKey) return
+  }
   // Bumped before the removal so no in-flight commit can land between the two.
   workspaceGenerations.set(workspaceId, (workspaceGenerations.get(workspaceId) ?? 0) + 1)
   try {

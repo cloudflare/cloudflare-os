@@ -213,17 +213,22 @@ export function useWorkspaceOpen({
           // reverted the redemption. A response lost in transit still leaves the key retained;
           // that residue is irreducible.
           await overseerStub
-          // The await may have parked across this attempt's cancellation, and a superseded
-          // attempt no longer owns the retention state: a newer attempt may have captured its
-          // own key -- possibly another user's, on a swapped stub -- into the very ref and entry
-          // this would clear, and clearRetainedShareKey would also permanently void that
-          // attempt's still-in-flight identity stamp. Skipping the clear loses nothing:
-          // replaying this attempt's confirmed key is a server-side no-op, and whichever attempt
-          // next succeeds clears retention itself. (The stub was assigned before the await, so
-          // the cleanup already disposed it.)
+          // Reaching here proves the server durably confirmed the redemption -- nothing in
+          // disposal reverts it -- even if this attempt was superseded across the await. So
+          // clear exactly this attempt's retention before bailing: a kept confirmed key would
+          // re-redeem the still-live link after an owner removal on every replay path (the
+          // in-memory retry, the sessionStorage reload read, the reconnect re-run). A newer
+          // attempt may meanwhile have captured its *own* key -- possibly another user's, on a
+          // swapped stub -- into the very ref and entry this attempt would clear; the key checks
+          // (here and inside clearRetainedShareKey) leave such a different-key capture alone,
+          // stamp and all. (The stub was assigned before the await, so the cleanup already
+          // disposed it.)
+          if (retainedShareKeyRef.current?.id === id &&
+              retainedShareKeyRef.current.key === shareKey) {
+            retainedShareKeyRef.current = null
+          }
+          clearRetainedShareKey(id, shareKey)
           if (cancelled) return
-          retainedShareKeyRef.current = null
-          clearRetainedShareKey(id)
         }
 
         const resolvedSubscription = await overseerStub.subscribeToMetadata((nextMetadata) => {
