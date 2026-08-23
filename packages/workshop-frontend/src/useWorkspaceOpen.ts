@@ -152,13 +152,19 @@ export function useWorkspaceOpen({
           if (retained) {
             try {
               const info = await authenticatedApi.whoami()
+              // A cancelled attempt resuming here no longer owns retention: it must neither
+              // re-arm the in-memory ref over a newer attempt's capture nor judge an entry that
+              // may have been replaced while it was parked.
+              if (cancelled) return
               if (info.type === 'user' && info.id === retained.userId) {
                 shareKey = retained.key
                 retainedShareKeyRef.current = { id, key: retained.key, api: authenticatedApi }
               } else {
                 // Definitely someone else's key (a same-tab user switch): sweep it rather than
-                // redeem it under the wrong account.
-                clearRetainedShareKey(id)
+                // redeem it under the wrong account. Scoped to the key this branch actually read
+                // and judged, so a newer capture's different-key entry (and its in-flight stamp)
+                // survives even if this is ever reached with stale data.
+                clearRetainedShareKey(id, retained.key)
               }
             } catch {
               // Transport failure: identity unknown, so neither attach the key nor discard an

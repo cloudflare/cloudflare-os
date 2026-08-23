@@ -419,6 +419,54 @@ describe('useWorkspaceOpen', () => {
     expect(container.textContent).toBe(METADATA.title)
   })
 
+  it("a cancelled attempt parked in identity resolution cannot sweep a newer attempt's retention", async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // Attempt A reads a retained entry and parks in whoami(). It is superseded by B (a swapped
+    // stub, another user), whose own capture replaces the entry. A's identity then resolves and
+    // mismatches the entry A read -- but A no longer owns retention: judging the stale read
+    // there would sweep B's entry and (pre-fix, via the unscoped clear's workspace-generation
+    // bump) void B's in-flight stamps.
+    sessionStorage.setItem(RETAINED_V2_KEY, retainedEntry('cafe', 'someone-else@example.com'))
+    const heldWhoami = deferred<typeof WHOAMI_USER>()
+    const staleOpenGadget = vi.fn<() => RpcStub<Overseer>>()
+    const staleApi = {
+      openGadget: staleOpenGadget,
+      whoami: () => heldWhoami.promise,
+    } as unknown as RpcStub<AuthenticatedApi>
+    const OTHER_USER = { type: 'user', id: 'other@example.com', name: 'Other' }
+    const apiB = {
+      openGadget: () => openDeniedOverseer(),
+      whoami: async () => OTHER_USER,
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    function Probe({ authenticatedApi }: { authenticatedApi: RpcStub<AuthenticatedApi> }) {
+      useWorkspaceOpen({
+        id: 'workspace-1',
+        authenticatedApi,
+        onInvalidShareKey: () => {},
+        onMetadata: () => {},
+        onShareKeyConsumed: () => { window.location.hash = '' },
+      })
+      return null
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<Probe authenticatedApi={staleApi} />))
+
+    // B captures its own key on the swapped stub; the denied open leaves it retained and stamped.
+    window.location.hash = '#share=bbbb'
+    await act(async () => root!.render(<Probe authenticatedApi={apiB} />))
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
+
+    // A resumes with an identity that mismatches the entry it read: it must bail before
+    // mutating anything, leaving B's entry (and B's write license) intact.
+    await act(async () => { heldWhoami.resolve(WHOAMI_USER); await Promise.resolve() })
+    expect(staleOpenGadget).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('bbbb', OTHER_USER.id))
+  })
+
   it('never replays the in-memory key on a different session stub', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     // User A's keyed open is denied at open(), retaining the key in-memory. The editor then
