@@ -21,6 +21,7 @@ import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControl
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './components/menuStyles'
 import { useDocumentTitle } from './useDocumentTitle'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
+import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 
 interface Props {
   rpcStub: RpcStub<PublicApi>
@@ -65,7 +66,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   // Per-binding URL collector functions exposed by each gatekeeper configurator iframe. We call
   // these at submit time to capture the chosen resource URL.
   const collectorsRef = useRef<Map<string, () => Promise<string>>>(new Map())
-  const selectPortalRef = useRef<HTMLDivElement>(null)
+  const selectPortalContainer = useDialogSelectPortalContainer()
   const [canManageFeatured, setCanManageFeatured] = useState(false)
   const [isFeatured, setIsFeatured] = useState(false)
   const [updatingFeatured, setUpdatingFeatured] = useState(false)
@@ -1045,7 +1046,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                   onReconnectAccount={handleReconnectAccount}
                   onReadyChange={(ready) => handleGatekeeperReadyChange(activeBindingName, ready)}
                   onCollectorChange={(collect) => handleCollectorChange(activeBindingName, collect)}
-                  selectPortalContainer={selectPortalRef}
+                  selectPortalContainer={selectPortalContainer}
                 />
               </div>
 
@@ -1064,10 +1065,6 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
             </>
           )}
         </Dialog>
-        <div
-          ref={selectPortalRef}
-          className="pointer-events-none fixed inset-0 z-[1100] [&>*]:pointer-events-auto"
-        />
       </Dialog.Root>
 
       {/* Delete blueprint confirmation dialog */}
@@ -1362,7 +1359,7 @@ function BindingField({
   onReconnectAccount: (accountId: number) => void
   onReadyChange: (ready: boolean) => void
   onCollectorChange: (collect: (() => Promise<string>) | null) => void
-  selectPortalContainer?: { current: HTMLElement | null }
+  selectPortalContainer?: HTMLElement | null
 }) {
   const title = binding.title || name
 
