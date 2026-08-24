@@ -1,11 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
-import {
-  DRIVE_OBSERVATION_PREFIX, DriveSessionCore, driveFileToEntry, driveObserverTracker,
-  type DriveAccessVerdicts, type DriveBindingScope,
-} from "../src/drive-session";
+import { DriveSessionCore, driveFileToEntry } from "../src/drive-session";
 import type { DriveFile, DriveListFilesOptions } from "../src/drive-api";
-import { FakeKv } from "./fake-kv";
 
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
@@ -254,8 +250,8 @@ describe("Drive parent folder probe", () => {
     expect(authorizations).toEqual([]);
   });
 
-  it("rejects a non-folder parent after confirming it is in scope", async () => {
-    let { session, listFiles, getFile, prepared, authorizations } = core({
+  it("observes a readable non-folder parent before disclosing its type", async () => {
+    let { session, listFiles, getFile, prepared, authorizations, events } = core({
       scope: { kind: "sharedDrive", driveId: "drive-1" },
       getFile: async id => file({ id, driveId: "drive-1", mimeType: "application/pdf" }),
     });
@@ -264,8 +260,25 @@ describe("Drive parent folder probe", () => {
       .rejects.toThrow(/must identify a folder/);
     expect(getFile).toHaveBeenCalledWith("file-x");
     expect(listFiles).not.toHaveBeenCalled();
-    expect(prepared).toEqual([]);
-    expect(authorizations).toEqual([]);
+    expect(prepared).toEqual([["file-x"]]);
+    expect(authorizations).toEqual([expect.objectContaining({
+      title: "Check Google Drive folder",
+      excludeObservers: ["excluded"],
+    })]);
+    expect(events).toEqual(["authorize", "commit"]);
+  });
+
+  it("does not disclose a readable non-folder parent when observation is denied", async () => {
+    let { session, listFiles, prepared, authorizations, events } = core({
+      getFile: async id => file({ id, mimeType: "application/pdf" }),
+      authorize: async () => { throw new Error("denied"); },
+    });
+
+    await expect(session.list({ directParentId: "file-x" })).rejects.toThrow("denied");
+    expect(listFiles).not.toHaveBeenCalled();
+    expect(prepared).toEqual([["file-x"]]);
+    expect(authorizations).toHaveLength(1);
+    expect(events).toEqual(["authorize"]);
   });
 
   it("rejects a parent probe on a file-scoped binding without calling Google", async () => {
@@ -367,70 +380,5 @@ describe("Drive observation authorization", () => {
     expect(observation.description).toContain("salary-review-");
     expect(observation.description).not.toContain(longText);
     expect(observation.description.length).toBeLessThanOrEqual(240);
-  });
-});
-
-describe("driveObserverTracker", () => {
-  function tracker(scope: DriveBindingScope, verdicts: (ids: readonly string[]) => DriveAccessVerdicts) {
-    let kv = new FakeKv();
-    let asked: string[][] = [];
-    let track = driveObserverTracker<"verifier">(kv, scope, async (_verifier, fileIds) => {
-      asked.push([...fileIds]);
-      return verdicts(fileIds);
-    });
-    return { kv, asked, track };
-  }
-
-  const allow = (ids: readonly string[]): DriveAccessVerdicts =>
-    ({ baselineAllowed: true, allowed: ids.map(() => true) });
-  const deny = (ids: readonly string[]): DriveAccessVerdicts =>
-    ({ baselineAllowed: true, allowed: ids.map(() => false) });
-
-  it("seeds a file binding with its bound file, so a joiner is verified against it", async () => {
-    let { kv, asked, track } = tracker({ kind: "file", fileId: "file-1" }, allow);
-
-    expect([...kv.entries.keys()]).toEqual([`${DRIVE_OBSERVATION_PREFIX}file-1`]);
-    await track.addObserver("obs", "verifier");
-    expect(asked).toEqual([["file-1"]]);
-  });
-
-  it("seeds a shared-drive binding with its root", async () => {
-    let { asked, track } = tracker({ kind: "sharedDrive", driveId: "drive-1" }, allow);
-
-    await track.addObserver("obs", "verifier");
-    expect(asked).toEqual([["drive-1"]]);
-  });
-
-  it("seeds an account binding with nothing", async () => {
-    let { kv, asked, track } = tracker({ kind: "account" }, allow);
-
-    expect([...kv.entries.keys()]).toEqual([]);
-    await track.addObserver("obs", "verifier");
-    expect(asked).toEqual([[]]);
-  });
-
-  it("refuses - and records no observer for - a joiner denied the bound file", async () => {
-    let { kv, track } = tracker({ kind: "file", fileId: "file-1" }, deny);
-
-    await expect(track.addObserver("obs", "verifier"))
-      .rejects.toThrow(/cannot access Drive file file-1/);
-    expect([...track.observers()]).toEqual([]);
-    expect([...kv.entries.keys()]).toEqual([`${DRIVE_OBSERVATION_PREFIX}file-1`]);
-  });
-
-  it("refuses a joiner holding no Drive grant at all", async () => {
-    let { track } = tracker({ kind: "file", fileId: "file-1" },
-      ids => ({ baselineAllowed: false, allowed: ids.map(() => false) }));
-
-    await expect(track.addObserver("obs", "verifier"))
-      .rejects.toThrow(/has not granted Google Drive access/);
-  });
-
-  it("percent-encodes an ID that would otherwise collide with the key grammar", async () => {
-    let { kv, asked, track } = tracker({ kind: "file", fileId: "a:b/c" }, allow);
-
-    expect([...kv.entries.keys()]).toEqual([`${DRIVE_OBSERVATION_PREFIX}a%3Ab%2Fc`]);
-    await track.addObserver("obs", "verifier");
-    expect(asked).toEqual([["a:b/c"]]);
   });
 });

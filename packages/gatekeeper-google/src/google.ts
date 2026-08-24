@@ -14,7 +14,8 @@ import type {
 } from "./sheets-types";
 import { docToMarkdown, markdownToDocRequests, computeReplaceOperations, DocSnapshot } from "./markdown-converter";
 import { DriveApi } from "./drive-api";
-import { DriveSessionCore, driveObserverTracker, type DriveBindingScope } from "./drive-session";
+import { driveObserverTracker } from "./drive-observers";
+import { DriveSessionCore, type DriveBindingScope } from "./drive-session";
 import type { DriveEntry, DriveListOptions, DriveSearchQuery, GoogleDriveSession } from "./drive-types";
 import { BigQueryApi, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
@@ -69,7 +70,7 @@ import {
   hasDriveResourceGrant, parseResourceUrl, resourceUrlPatternsToOAuthScopes,
   resourcesCoveredByScopes,
 } from "./resources";
-import { ObserverCheck, ObserverTracker } from "./observers";
+import { type ObserverBatchResult, type ObserverCheck, ObserverTracker } from "./observers";
 import { CursorPager, Pager } from "./cursor";
 import {
   decodeGoogleOAuthState,
@@ -415,6 +416,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   async getTypeScriptTypes(): Promise<string> {
     return [
       TYPES_CODE, DOCS_TYPES_CODE, SHEETS_TYPES_CODE, CALENDAR_TYPES_CODE, BIGQUERY_TYPES_CODE,
+      DRIVE_TYPES_CODE,
     ].join("\n");
   }
 }
@@ -1021,7 +1023,7 @@ export interface GoogleVerifierApi extends GatekeeperUserVerifier {
   hasCalendarWriterAccess(calendarId: string): Promise<boolean>;
   hasCalendarFreeBusyAccess(calendarId: string): Promise<boolean>;
   hasDatasetAccess(projectId: string, datasetId: string): Promise<boolean>;
-  verifyDriveFiles(fileIds: string[]): Promise<{ baselineAllowed: boolean; allowed: boolean[] }>;
+  verifyDriveFiles(fileIds: string[]): Promise<ObserverBatchResult>;
 }
 
 @validateRpc()
@@ -1087,9 +1089,7 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
     }
   }
 
-  async verifyDriveFiles(
-    fileIds: string[],
-  ): Promise<{ baselineAllowed: boolean; allowed: boolean[] }> {
+  async verifyDriveFiles(fileIds: string[]): Promise<ObserverBatchResult> {
     let account = this.ctx.exports.UserAccount.get(
       this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
     let granted = await account.getGrantedResourceUrlPatterns();
@@ -3102,7 +3102,7 @@ export class GoogleDriveGatekeeperImpl
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.driveId)}`,
         title: drive.name,
         snippet: `Find files and folders in organization-owned shared drive "${drive.name}" (metadata only)`,
-        suggestedBindingName: "GOOGLE_DRIVE",
+        suggestedBindingName: "GOOGLE_SHARED_DRIVE",
         tsType: "GoogleDriveSession",
       };
     }
@@ -3111,7 +3111,7 @@ export class GoogleDriveGatekeeperImpl
       url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
       title: file.name,
       snippet: `Read metadata for Drive file "${file.name}"`,
-      suggestedBindingName: "GOOGLE_DRIVE",
+      suggestedBindingName: "GOOGLE_DRIVE_FILE",
       tsType: "GoogleDriveSession",
     };
   }

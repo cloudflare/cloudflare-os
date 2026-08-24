@@ -44,6 +44,9 @@ export interface ObserverKv {
   list<T>(options: { prefix: string }): Iterable<[string, T]>;
 }
 
+/** Baseline and per-set verdicts returned by one bulk observer verification. */
+export type ObserverBatchResult = { baselineAllowed: boolean; allowed: boolean[] };
+
 export type ObserverTrackerOptions<T, V> = {
   /** Key prefix for tracked sets. Must not be `observer:`, which holds the observers themselves. */
   setPrefix: string;
@@ -53,10 +56,7 @@ export type ObserverTrackerOptions<T, V> = {
   /** Whether the observer's own credentials reach one set. Mutually exclusive with `verifyBatch`. */
   hasAccess?(verifier: V, value: T): Promise<boolean>;
   /** Verifies the observer's baseline grant and every supplied set in one RPC. */
-  verifyBatch?(verifier: V, values: readonly T[]): Promise<{
-    baselineAllowed: boolean;
-    allowed: boolean[];
-  }>;
+  verifyBatch?(verifier: V, values: readonly T[]): Promise<ObserverBatchResult>;
   /** The error thrown when bulk verification finds that the baseline grant is absent. */
   baselineDeniedMessage?: string;
   /** The error thrown when a joining observer cannot reach `value`. */
@@ -240,42 +240,62 @@ export class ObserverTracker<T, V> {
    * full re-check. Per-set verification retains the legacy re-list loop.
    */
   async addObserver(id: string, verifier: V): Promise<void> {
-    let recordObserver = this.#options.recordObservers ?? true;
-    let observerKey = `${OBSERVER_PREFIX}${id}`;
-    if (this.#options.verifyBatch) {
-      // Ownership token, not the verifier itself: Durable Object KV serializes on put and
-      // deserializes on get, so a reference comparison against the in-memory stub is always false.
-      let nonceKey = `${OBSERVER_NONCE_PREFIX}${id}`;
-      let nonce = crypto.randomUUID();
-      this.#kv.put(observerKey, verifier);
-      this.#kv.put(nonceKey, nonce);
-      try {
-        let tracked = this.listTracked();
-        let result = await this.#options.verifyBatch(verifier, tracked);
-        if (result.allowed.length !== tracked.length) {
-          throw new Error("Bulk observer verification must return one result per set");
-        }
-        if (!result.baselineAllowed) throw new Error(this.#options.baselineDeniedMessage);
-        let deniedIndex = result.allowed.indexOf(false);
-        if (deniedIndex >= 0) throw new Error(this.#options.deniedMessage(tracked[deniedIndex]));
-        this.#kv.delete(nonceKey);
-        return;
-      } catch (error) {
-        if (this.#kv.get<string>(nonceKey) === nonce) {
-          this.#kv.delete(observerKey);
-          this.#kv.delete(nonceKey);
-        }
-        throw error;
-      }
-    }
+    let verifyBatch = this.#options.verifyBatch;
+    if (verifyBatch !== undefined) return this.#addBulkObserver(id, verifier, verifyBatch);
 
-    let hasAccess = this.#options.hasAccess!;
+    let hasAccess = this.#options.hasAccess;
+    if (hasAccess === undefined) throw new Error("Configure exactly one observer access verifier");
+    return this.#addPerSetObserver(id, verifier, hasAccess);
+  }
+
+  async #addBulkObserver(
+    id: string,
+    verifier: V,
+    verifyBatch: (verifier: V, values: readonly T[]) => Promise<ObserverBatchResult>,
+  ): Promise<void> {
+    let observerKey = `${OBSERVER_PREFIX}${id}`;
+    let nonceKey = `${OBSERVER_NONCE_PREFIX}${id}`;
+    // Ownership token, not the verifier itself: Durable Object KV serializes on put and
+    // deserializes on get, so a reference comparison against the in-memory stub is always false.
+    let nonce = crypto.randomUUID();
+    this.#kv.put(observerKey, verifier);
+    this.#kv.put(nonceKey, nonce);
+
+    try {
+      let tracked = this.listTracked();
+      let result = await verifyBatch(verifier, tracked);
+      if (result.allowed.length !== tracked.length) {
+        throw new Error("Bulk observer verification must return one result per set");
+      }
+      if (!result.baselineAllowed) throw new Error(this.#options.baselineDeniedMessage);
+      let deniedIndex = result.allowed.indexOf(false);
+      if (deniedIndex >= 0) throw new Error(this.#options.deniedMessage(tracked[deniedIndex]));
+      if (this.#kv.get<string>(nonceKey) !== nonce) {
+        throw new Error("Observer admission was superseded by a newer attempt");
+      }
+      this.#kv.delete(nonceKey);
+    } catch (error) {
+      if (this.#kv.get<string>(nonceKey) === nonce) {
+        this.#kv.delete(observerKey);
+        this.#kv.delete(nonceKey);
+      }
+      throw error;
+    }
+  }
+
+  async #addPerSetObserver(
+    id: string,
+    verifier: V,
+    hasAccess: (verifier: V, value: T) => Promise<boolean>,
+  ): Promise<void> {
+    let recordObservers = this.#options.recordObservers ?? true;
+    let observerKey = `${OBSERVER_PREFIX}${id}`;
     let checked = new Set<string>();
     for (;;) {
       let tracked = this.listTracked();
       let pending = tracked.filter(value => !checked.has(this.#options.encode(value)));
       if (pending.length === 0) {
-        if (recordObserver) this.#kv.put(observerKey, verifier);
+        if (recordObservers) this.#kv.put(observerKey, verifier);
         return;
       }
       let access = await mapWithConcurrency(

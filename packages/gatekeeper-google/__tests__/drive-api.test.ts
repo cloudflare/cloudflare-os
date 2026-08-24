@@ -405,6 +405,16 @@ describe("bulk access verification", () => {
       .rejects.toBeInstanceOf(DriveApiDisabledError);
   });
 
+  it.each(["dailyLimitExceeded", "rateLimitExceeded", "userRateLimitExceeded"])(
+    "fails loud when a batch subrequest returns quota reason %s",
+    async reason => {
+      let body = JSON.stringify({ error: { errors: [{ reason }] } });
+      stubFetch([batchResponse([{ status: 403, body }])]);
+      await expect(api().checkFileAccess(["one"]))
+        .rejects.toThrow("Google Drive batch subrequest failed: 403");
+    },
+  );
+
   it("does not infer API disablement from unstructured error text", async () => {
     let body = JSON.stringify({ error: { message: "accessNotConfigured" } });
     stubFetch([batchResponse([{ status: 403, body }])]);

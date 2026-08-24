@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ObserverTracker } from "../src/observers";
+import { type ObserverBatchResult, ObserverTracker } from "../src/observers";
 import { FakeKv } from "./fake-kv";
 
 /** A verifier that grants access to a fixed allow-list, and records what it was asked. */
@@ -307,7 +307,7 @@ describe("addObserver", () => {
 describe("bulk verification", () => {
   function makeBulkTracker(verifyBatch: (
     verifier: FakeVerifier, values: readonly string[],
-  ) => Promise<{ baselineAllowed: boolean; allowed: boolean[] }>) {
+  ) => Promise<ObserverBatchResult>) {
     return new ObserverTracker<string, FakeVerifier>(kv, {
       setPrefix: "set:",
       encode: value => encodeURIComponent(value),
@@ -353,6 +353,32 @@ describe("bulk verification", () => {
     let tracker = makeBulkTracker(async () => ({ baselineAllowed: true, allowed: [true] }));
     await tracker.addObserver("reader", allow());
     expect([...tracker.observers()].map(([id]) => id)).toEqual(["reader"]);
+    expect(nonceKeys()).toEqual([]);
+  });
+
+  it("keeps a newer same-ID admission authoritative when the older attempt finishes first", async () => {
+    kv.put("set:a", "observed");
+    let releaseA!: (result: ObserverBatchResult) => void;
+    let releaseB!: (result: ObserverBatchResult) => void;
+    let resultA = new Promise<ObserverBatchResult>(resolve => { releaseA = resolve; });
+    let resultB = new Promise<ObserverBatchResult>(resolve => { releaseB = resolve; });
+    let verifierA = allow();
+    let verifierB = allow();
+    let verifyBatch = vi.fn(async (verifier: FakeVerifier) =>
+      verifier === verifierA ? resultA : resultB);
+    let tracker = makeBulkTracker(verifyBatch);
+
+    let admissionA = tracker.addObserver("reader", verifierA);
+    await vi.waitFor(() => expect(verifyBatch).toHaveBeenCalledWith(verifierA, ["a"]));
+    let admissionB = tracker.addObserver("reader", verifierB);
+    await vi.waitFor(() => expect(verifyBatch).toHaveBeenCalledWith(verifierB, ["a"]));
+
+    releaseA({ baselineAllowed: true, allowed: [true] });
+    await expect(admissionA).rejects.toThrow(
+      "Observer admission was superseded by a newer attempt");
+    releaseB({ baselineAllowed: true, allowed: [false] });
+    await expect(admissionB).rejects.toThrow("no access to a");
+    expect([...tracker.observers()]).toEqual([]);
     expect(nonceKeys()).toEqual([]);
   });
 

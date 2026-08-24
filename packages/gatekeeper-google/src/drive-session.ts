@@ -1,7 +1,7 @@
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { CursorPager, type Pager } from "./cursor";
 import type { DriveApi, DriveCorpus, DriveFile, DriveListFilesOptions } from "./drive-api";
-import { ObserverTracker, type ObserverCheck, type ObserverKv } from "./observers";
+import type { ObserverCheck } from "./observers";
 import type {
   DriveEntry, DriveListOptions, DriveOrder, DriveScope, DriveSearchQuery,
 } from "./drive-types";
@@ -103,16 +103,25 @@ function timestamp(value: string | undefined, field: string): string | undefined
 }
 
 function normalizeSearch(query: DriveSearchQuery): DriveSearchQuery {
+  let nameContains = query.nameContains?.trim();
+  let fullTextContains = query.fullTextContains?.trim();
+  let directParentId = query.directParentId?.trim();
   let mimeTypes = query.mimeTypes?.map(value => value.trim()).filter(Boolean);
-  let normalized: DriveSearchQuery = {
-    ...(query.nameContains?.trim() ? { nameContains: query.nameContains.trim() } : {}),
-    ...(query.fullTextContains?.trim() ? { fullTextContains: query.fullTextContains.trim() } : {}),
-    ...(mimeTypes?.length ? { mimeTypes } : {}),
-    ...(query.modifiedAfter ? { modifiedAfter: timestamp(query.modifiedAfter, "modifiedAfter") } : {}),
-    ...(query.modifiedBefore ? { modifiedBefore: timestamp(query.modifiedBefore, "modifiedBefore") } : {}),
-    ...(query.directParentId?.trim() ? { directParentId: query.directParentId.trim() } : {}),
-    ...(query.order ? { order: query.order } : {}),
-  };
+  let modifiedAfter = query.modifiedAfter
+    ? timestamp(query.modifiedAfter, "modifiedAfter")
+    : undefined;
+  let modifiedBefore = query.modifiedBefore
+    ? timestamp(query.modifiedBefore, "modifiedBefore")
+    : undefined;
+  let normalized: DriveSearchQuery = {};
+  if (nameContains) normalized.nameContains = nameContains;
+  if (fullTextContains) normalized.fullTextContains = fullTextContains;
+  if (mimeTypes?.length) normalized.mimeTypes = mimeTypes;
+  if (modifiedAfter) normalized.modifiedAfter = modifiedAfter;
+  if (modifiedBefore) normalized.modifiedBefore = modifiedBefore;
+  if (directParentId) normalized.directParentId = directParentId;
+  if (query.order) normalized.order = query.order;
+
   if (Object.keys(normalized).every(key => key === "order")) {
     throw new Error("Drive search requires at least one filter");
   }
@@ -292,9 +301,9 @@ export class DriveSessionCore {
     if (this.#scope.kind === "file") this.#outsideScope();
     let parent = await this.#api.getFile(parentId);
     if (!this.#inScope(parent)) this.#outsideScope();
-    if (parent.mimeType !== FOLDER_MIME_TYPE) throw new Error("directParentId must identify a folder");
     await this.#authorizeIds([parent.id], "Check Google Drive folder",
       "Check that the requested parent folder belongs to this Drive binding.");
+    if (parent.mimeType !== FOLDER_MIME_TYPE) throw new Error("directParentId must identify a folder");
   }
 
   async #authorizeIds(fileIds: string[], title: string, description: string): Promise<void> {
@@ -308,52 +317,3 @@ export class DriveSessionCore {
   }
 }
 
-/** Key prefix for the Drive file IDs a binding has disclosed metadata about. */
-export const DRIVE_OBSERVATION_PREFIX = "observedDriveFile:";
-
-/** Refusal when a joining collaborator holds no Google Drive grant at all. */
-export const DRIVE_BASELINE_DENIED_MESSAGE =
-  "This collaborator has not granted Google Drive access, so they cannot observe this binding.";
-
-/** Verdicts for one bulk Drive access check: the baseline grant, then one flag per file. */
-export type DriveAccessVerdicts = { baselineAllowed: boolean; allowed: boolean[] };
-
-/**
- * The observer tracker for one Drive binding, seeded with the set its scope already names.
- *
- * A shared-drive or single-file binding can always reach its own root, so that ID is recorded up
- * front rather than waiting for a read to discover it. A file binding therefore never grows past
- * it - {@link DriveSessionCore} admits no other ID - which is what lets all three scopes share one
- * admission path. Without the seed a file binding would need a second, hand-rolled verify, kept in
- * step by hand with this one's staging and rollback.
- *
- * `verifyBatch` is passed in rather than a verifier type, so this module stays independent of the
- * worker entrypoint that owns the RPC interface.
- */
-export function driveObserverTracker<V>(
-  kv: ObserverKv,
-  scope: DriveBindingScope,
-  verifyBatch: (verifier: V, fileIds: readonly string[]) => Promise<DriveAccessVerdicts>,
-): ObserverTracker<string, V> {
-  let rootId = scope.kind === "sharedDrive" ? scope.driveId
-    : scope.kind === "file" ? scope.fileId
-    : undefined;
-  if (rootId !== undefined) {
-    let key = `${DRIVE_OBSERVATION_PREFIX}${encodeURIComponent(rootId)}`;
-    if (kv.get(key) === undefined) kv.put(key, "observed");
-  }
-  return new ObserverTracker<string, V>(kv, {
-    setPrefix: DRIVE_OBSERVATION_PREFIX,
-    encode: encodeURIComponent,
-    decode: decodeURIComponent,
-    verifyBatch,
-    baselineDeniedMessage: DRIVE_BASELINE_DENIED_MESSAGE,
-    deniedMessage: fileId =>
-      `This collaborator cannot access Drive file ${fileId}, whose metadata this workspace has read.`,
-    // checkFileAccess issues ceil(N/100) sequential subrequests. The overseer re-runs addObserver
-    // on every open, per observer, at concurrency 6. 2000 files → 20 subrequests per observer, 120
-    // if six run together — well inside the 1000-subrequest budget. Uncapped, a whole-account
-    // binding would grow until admission exceeds that budget and locks every collaborator out.
-    maxTrackedSets: 2000,
-  });
-}

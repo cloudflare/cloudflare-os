@@ -76,6 +76,11 @@ export class DriveApiDisabledError extends Error {}
 
 const MAX_ERROR_BODY_BYTES = 4096;
 const API_DISABLED_REASON = "accessNotConfigured";
+const QUOTA_403_REASONS = new Set([
+  "dailyLimitExceeded",
+  "rateLimitExceeded",
+  "userRateLimitExceeded",
+]);
 function googleErrorReason(value: unknown): string | undefined {
   if (!isRecord(value) || !isRecord(value.error) || !Array.isArray(value.error.errors)) {
     return undefined;
@@ -248,7 +253,8 @@ async function parseBatchAccessParts(
   response: Response, count: number,
 ): Promise<BatchAccessPart[]> {
   let contentType = response.headers.get("Content-Type") ?? "";
-  let responseBoundary = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType)?.slice(1).find(Boolean);
+  let boundaryMatch = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType);
+  let responseBoundary = boundaryMatch?.[1] ?? boundaryMatch?.[2];
   if (!responseBoundary) throw new Error("Invalid Google Drive batch response boundary");
   let text = await readBoundedText(
     response, MAX_BATCH_RESPONSE_BYTES, "Google Drive batch response was too large");
@@ -269,10 +275,26 @@ async function parseBatchAccessParts(
     let status = Number(/HTTP\/1\.[01] (\d{3})/.exec(part)?.[1]);
     placed[index] = { status, body: part.split(/\r?\n\r?\n/).at(-1) ?? "" };
   }
-  if (placed.some(part => part === undefined)) {
-    throw new Error("Google Drive batch response did not contain one result per file");
+  return placed.map(part => {
+    if (part === undefined) {
+      throw new Error("Google Drive batch response did not contain one result per file");
+    }
+    return part;
+  });
+}
+
+function batchPartAllowed(part: BatchAccessPart): boolean {
+  if (part.status >= 200 && part.status < 300) return true;
+  let reason = googleErrorReasonFromText(part.body);
+  if (part.status === 403 && reason === API_DISABLED_REASON) {
+    throw new DriveApiDisabledError(
+      "the Google Drive API is not enabled for this OAuth project");
   }
-  return placed as BatchAccessPart[];
+  if (part.status === 403 && reason !== undefined && QUOTA_403_REASONS.has(reason)) {
+    throw new Error("Google Drive batch subrequest failed: 403");
+  }
+  if (part.status === 403 || part.status === 404) return false;
+  throw new Error(`Google Drive batch subrequest failed: ${part.status}`);
 }
 
 export class DriveApi {
@@ -392,16 +414,7 @@ export class DriveApi {
         continue;
       }
 
-      return placed.map(part => {
-        if (part.status >= 200 && part.status < 300) return true;
-        let reason = googleErrorReasonFromText(part.body);
-        if (part.status === 403 && reason === API_DISABLED_REASON) {
-          throw new DriveApiDisabledError(
-            "the Google Drive API is not enabled for this OAuth project");
-        }
-        if (part.status === 403 || part.status === 404) return false;
-        throw new Error(`Google Drive batch subrequest failed: ${part.status}`);
-      });
+      return placed.map(batchPartAllowed);
     }
   }
 

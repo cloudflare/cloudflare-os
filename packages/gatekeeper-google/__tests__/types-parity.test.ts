@@ -1,3 +1,7 @@
+/// <reference types="node" />
+
+import { readlinkSync } from "node:fs";
+import { URL } from "node:url";
 import { describe, expect, it } from "vitest";
 import bigqueryDeclared from "../src/bigquery-types.d.ts?raw";
 import bigqueryShipped from "../src/bigquery-types.txt?raw";
@@ -12,11 +16,10 @@ import sheetsShipped from "../src/sheets-types.txt?raw";
 import gmailDeclared from "../src/types.d.ts?raw";
 import gmailShipped from "../src/types.txt?raw";
 
-// Every agent-facing type surface exists twice: a `.d.ts` the server type-checks against, and a
-// byte-identical `.txt` that wrangler bundles as a Text module and getTypeScriptTypes() returns
-// verbatim as the contract the model codes against. Nothing but this test keeps them in step, and
-// a one-sided edit ships the agent a signature the server does not implement — silent at build
-// time, and it surfaces as an agent calling a method that isn't there.
+// Every agent-facing type surface has one authoritative `.d.ts`. Wrangler consumes the symlinked
+// `.txt` path as a Text module and getTypeScriptTypes() returns it verbatim as the contract the model
+// codes against. A broken symlink would keep the server type-checking while dropping or freezing the
+// shipped contract.
 describe("agent-facing TypeScript type modules", () => {
   it.each([
     ["types", gmailShipped, gmailDeclared],
@@ -26,7 +29,14 @@ describe("agent-facing TypeScript type modules", () => {
     ["bigquery-types", bigqueryShipped, bigqueryDeclared],
     ["drive-types", driveShipped, driveDeclared],
   ])("keeps %s.txt identical to its .d.ts", (name, shipped, declared) => {
-    expect(shipped, `${name}.txt drifted from ${name}.d.ts; copy the .d.ts over the .txt`)
+    expect(shipped, `${name}.txt drifted from ${name}.d.ts; restore the .txt symlink to the .d.ts`)
       .toBe(declared);
+  });
+
+  it.each([
+    "types", "docs-types", "sheets-types", "calendar-types", "bigquery-types",
+    "drive-types",
+  ])("ships %s.txt as a symlink to its authoritative declaration", name => {
+    expect(readlinkSync(new URL(`../src/${name}.txt`, import.meta.url))).toBe(`${name}.d.ts`);
   });
 });
