@@ -347,6 +347,13 @@ describe("parseResourceUrl", () => {
         .toThrow(/unterminated grouping/);
     });
 
+    it.each([
+      "https://mail.google.com/#search/",
+      "https://mail.google.com/#search/+++",
+    ])("rejects an empty search scope: %s", url => {
+      expect(() => parseResourceUrl(url)).toThrow(/must not be empty/);
+    });
+
     it("rejects an empty label", () => {
       expect(() => parseResourceUrl("https://mail.google.com/#label/")).toThrow(/label name/);
     });

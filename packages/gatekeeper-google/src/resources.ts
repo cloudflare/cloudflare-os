@@ -28,7 +28,7 @@ export const IDENTITY_SCOPES = [
 export const GMAIL_RESOURCE: SupportedResource = {
   urlPattern: "https://mail.google.com/*",
   title: "Gmail Mailbox",
-  description: "Read emails and apply labels.",
+  description: "Read email and, after approval, send or manage messages, drafts, and labels.",
   grantable: true,
 };
 
@@ -366,8 +366,8 @@ function describeUrl(parsed: URL): string {
 /**
  * Gmail's own UI writes a hash of `#inbox`, `#search/<query>` or `#label/<name>`.
  *
- * The label is kept as an opaque name and resolved to an ID at session start, so label text can
- * never be interpreted as search syntax.
+ * The label is kept as an opaque name and resolved once to a persisted stable ID by the Gmail
+ * gatekeeper, so label text can never be interpreted as search syntax or retarget after a rename.
  */
 function parseGmailUrl(parsed: URL): ResourceTarget {
   let hash = parsed.hash;

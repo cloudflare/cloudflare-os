@@ -8,6 +8,10 @@ export default {
     ...gatekeeperConfiguratorConfig.run,
     tasks: {
       ...gatekeeperConfiguratorConfig.run.tasks,
+      build: {
+        ...gatekeeperConfiguratorConfig.run.tasks.build,
+        command: ["tsc", "tsc -p tsconfig.test.json"],
+      },
       test: {
         ...vitestTask([
           "vitest run",
