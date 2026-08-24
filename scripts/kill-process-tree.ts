@@ -61,6 +61,16 @@ function signalPid(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
+// Whether `pid` still exists. Signal 0 delivers nothing and only checks for the process.
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
 /** Sends `signal` to `pid` and every descendant it has. */
 export async function killProcessTree(
   pid: number,
@@ -84,4 +94,48 @@ export async function killProcessTree(
   // returns nothing and the rest of the subtree can no longer be found. That is also why callers
   // must not kill the process themselves before calling this.
   for (const treePid of await collectTree(pid)) signalPid(treePid, signal);
+}
+
+/**
+ * Sends SIGTERM to `pid` and every descendant, then SIGKILLs whatever is still alive after
+ * `graceMs`. Resolves once the tree is gone or the escalation has been delivered.
+ *
+ * For callers that cannot afford to wait on a descendant which ignores SIGTERM -- one holding an
+ * inherited stdout pipe keeps the parent's `close` event from ever firing.
+ *
+ * An aborted `forceSignal` gives up the rest of the grace period and escalates now. It exists for
+ * the caller who is about to exit and needs the SIGKILL delivered first: this call holds the only
+ * usable list of the tree's pids (see the capture below), so abandoning it mid-grace leaks whatever
+ * it had left to kill.
+ */
+export async function killProcessTreeEscalating(
+  pid: number,
+  { graceMs = 5_000, forceSignal }: { graceMs?: number; forceSignal?: AbortSignal } = {},
+): Promise<void> {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error("pid must be a positive integer");
+
+  // `taskkill /T /F` is already an unconditional tree kill, so there is nothing to escalate to.
+  if (process.platform === "win32") return killProcessTree(pid, "SIGKILL");
+
+  // Collected once, for the reason killProcessTree documents above -- and here the single walk is
+  // what makes escalation possible at all. Re-walking after the SIGTERM would find nothing: the
+  // wrapper dies first and reparents the very survivors we are escalating against, so the SIGKILL
+  // has to go to this captured list rather than to a fresh tree.
+  const tree = await collectTree(pid);
+  for (const treePid of tree) signalPid(treePid, "SIGTERM");
+
+  // Polled rather than a flat sleep so the ordinary case -- everything dies to the SIGTERM -- does
+  // not pay the grace period. A pid could in principle be recycled onto an unrelated process inside
+  // the window and be signalled below; the existing walk has the same exposure, and a window this
+  // short against pids that were this process's own descendants makes it not worth guarding.
+  const deadline = Date.now() + graceMs;
+  let survivors = tree.filter(isAlive);
+  while (survivors.length > 0 && Date.now() < deadline) {
+    // Checked here rather than in the condition above, where it reads as an unmodified loop
+    // variable: what changes is `.aborted`, not the signal.
+    if (forceSignal?.aborted) break;
+    await new Promise(resolve => setTimeout(resolve, 25));
+    survivors = survivors.filter(isAlive);
+  }
+  for (const treePid of survivors) signalPid(treePid, "SIGKILL");
 }
