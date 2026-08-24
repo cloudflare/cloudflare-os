@@ -1,0 +1,14 @@
+{
+  "$comment": "The archive is the reviewed Gadget source. The local adapter is deliberately marked simulated until a narrow AVA_EVIDENCE capability is wired by deployment configuration.",
+  "blueprintId": "ava.troubleshooting-desk",
+  "title": "Troubleshooting Desk",
+  "description": "Open scoped AVA investigations and follow the read-only daily-grid evidence ladder.",
+  "output": {
+    "id": "troubleshooting-case",
+    "noun": "Case",
+    "plural": "Cases",
+    "icon": "listChecks"
+  },
+  "author": { "type": "user", "name": "AVA", "id": "ava@local" },
+  "revision": 1
+}
