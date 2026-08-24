@@ -17,13 +17,18 @@ jobs:
   # - The `bonk` job reads that label live, so re-runs honour it as well.
   # - Removing the label re-triggers a real review via `unlabeled`.
   # - Authorized users may bypass Bonk even for changes to this workflow.
+  #
+  # Authorization is the permission lookup in the step below, not this `if:`. Do not add
+  # `author_association` back to it: GitHub computes that field with no viewer, so it cannot see
+  # private organization membership, and a maintainer whose Cloudflare membership is private and
+  # who reaches this repository through a team rather than a direct collaborator grant arrives as
+  # `CONTRIBUTOR`. The exact-match body check keeps this from starting on ordinary comments.
   break-glass:
     if: >-
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
       github.event.sender.type != 'Bot' &&
-      github.event.comment.body == 'bonk break glass' &&
-      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+      github.event.comment.body == 'bonk break glass'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
