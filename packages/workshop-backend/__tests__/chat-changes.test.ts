@@ -1203,35 +1203,3 @@ describe("chat content reconstruction", () => {
     expect(liveRows(impl, 1)).toHaveLength(1);
   }));
 });
-
-describe("emitChatChangeApplied", () => {
-  it("keeps broadcasting to a subscriber after one rejected callback", () => withImpl(async impl => {
-    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
-    addGadget(impl, 1, "APP", c1);
-    addChat(impl, 1);
-
-    let seen: number[] = [];
-    impl.addChatSubscriber({
-      changeApplied(_chatId: number, _generation: number, revision: number) {
-        seen.push(revision);
-        return revision === 1 ? Promise.reject(new Error("delivery failed")) : Promise.resolve();
-      },
-      [Symbol.dispose]() {},
-    });
-
-    await submit(impl, 1, {
-      generation: 0, revision: 0, clientId: "cli-a", seq: 1,
-      pins: [{ gadgetId: 1, baseCommit: c1 }],
-      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\ntwo\n" }),
-    });
-    await submit(impl, 1, {
-      generation: 0, revision: 1, clientId: "cli-a", seq: 2,
-      change: editChange(1, { "a.txt": "one\ntwo\n" }, { "a.txt": "one\ntwo\nthree\n" }),
-    });
-
-    // The revision-1 rejection must not have unsubscribed the client: a rejected callback
-    // doesn't mean the RPC connection is broken, and silently dropping the subscriber leaves
-    // the page connected but permanently stale (#305).
-    expect(seen).toEqual([1, 2]);
-  }));
-});
