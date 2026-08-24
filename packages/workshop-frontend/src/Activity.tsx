@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Switch, useKumoToastManager } from '@cloudflare/kumo'
-import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/react'
+import { CaretRight, Check, Eye, Lightning, ShieldCheck, ShieldWarning } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import { ActionLogEntry, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
 import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
@@ -227,7 +227,9 @@ export default function Activity({
               const autoApproveTarget =
                 record.type === 'action' && record.gatekeeperId !== undefined &&
                 record.description.actionKind !== undefined &&
-                record.description.autoApprovable === true
+                record.description.autoApprovable === true &&
+                // Nor for a warned action (see autoApprovalRule).
+                (record.description.operatorWarnings?.length ?? 0) === 0
                   ? {
                       actionId: record.id,
                       gatekeeperId: record.gatekeeperId,
@@ -609,6 +611,7 @@ function ReviewRequest({
   onAlwaysApprove?: () => void
 }) {
   const resourceUrl = safeExternalUrl(record.resourceUrl)
+  const operatorWarnings = record.type === 'action' ? record.description.operatorWarnings ?? [] : []
   return (
     <article className="border-b border-kumo-line px-5 py-3 transition-colors hover:bg-kumo-elevated/50">
       <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
@@ -651,6 +654,20 @@ function ReviewRequest({
         </div>
       </div>
 
+      {operatorWarnings.length > 0 && (
+        <div className="mt-1.5 space-y-1">
+          {operatorWarnings.map((warning, i) => (
+            <div
+              key={i}
+              className="flex max-w-2xl items-start gap-2 rounded-lg bg-kumo-warning-tint px-2.5 py-1.5 text-[12px] leading-[17px] text-kumo-default"
+            >
+              <ShieldWarning size={14} weight="duotone" className="mt-0.5 flex-shrink-0 text-kumo-warning" />
+              <span className="min-w-0">{warning}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {record.description.description && (
         <p className={`mt-1.5 max-w-2xl whitespace-pre-wrap text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle ${expanded ? '' : 'line-clamp-2'}`}>
           {record.description.description}
@@ -676,6 +693,7 @@ function HistoryRow({
   const resourceUrl = safeExternalUrl(record.resourceUrl)
   const resolvedBy = record.type === 'action' ? record.resolvedBy : undefined
   const autoApproved = record.type === 'action' && record.autoApproved === true
+  const operatorWarnings = record.type === 'action' ? record.description.operatorWarnings ?? [] : []
   const at = actionChangeTime(record)
   const status = activityStatus(record)
 
@@ -711,6 +729,19 @@ function HistoryRow({
 
       {expanded && (
         <div className="border-b border-kumo-line/70 px-5 pb-3 pl-[86px] pt-1">
+          {operatorWarnings.length > 0 && (
+            <div className="mb-1.5 space-y-1">
+              {operatorWarnings.map((warning, i) => (
+                <div
+                  key={i}
+                  className="flex items-start gap-2 rounded-lg bg-kumo-warning-tint px-2.5 py-1.5 text-[12px] leading-[17px] text-kumo-default"
+                >
+                  <ShieldWarning size={14} weight="duotone" className="mt-0.5 flex-shrink-0 text-kumo-warning" />
+                  <span className="min-w-0">{warning}</span>
+                </div>
+              ))}
+            </div>
+          )}
           {record.description.description && (
             <p className="m-0 whitespace-pre-wrap text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
               {record.description.description}

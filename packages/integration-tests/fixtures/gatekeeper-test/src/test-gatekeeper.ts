@@ -309,7 +309,7 @@ export class TestVerifier
 export interface TestSession {
   /** `restricted` marks the observation `containsRestrictedData`. */
   readValue(restricted?: boolean): Promise<number>;
-  writeValue(value: number, opts?: { autoApprovable?: boolean }): Promise<number>;
+  writeValue(value: number, opts?: { autoApprovable?: boolean; warnings?: string[] }): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
 }
 
@@ -334,7 +334,8 @@ class TestSessionTarget extends RpcTarget implements TestSession {
     return 42;
   }
 
-  async writeValue(value: number, opts?: { autoApprovable?: boolean }): Promise<number> {
+  async writeValue(value: number, opts?: { autoApprovable?: boolean; warnings?: string[] })
+      : Promise<number> {
     const id = await this.state.stageAction(this.label, value);
     try {
       await this.approvalQueue.submitAction(id, {
@@ -344,6 +345,7 @@ class TestSessionTarget extends RpcTarget implements TestSession {
         awaitDecision: true,
         actionKind: SET_VALUE_ACTION_KIND,
         ...(opts?.autoApprovable ? { autoApprovable: true } : {}),
+        ...(opts?.warnings ? { operatorWarnings: opts.warnings } : {}),
       });
       return id;
     } catch (error) {

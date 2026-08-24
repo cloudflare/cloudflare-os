@@ -806,6 +806,22 @@ describe("defineActions", () => {
     });
   });
 
+  it("forwards the approver warnings a description declares", async () => {
+    const { actions } = bind({
+      describe: () => ({ ...presentation, operatorWarnings: ["Reads from another account."] }),
+    });
+    const submitAction = submitSpy();
+
+    const id = await actions.submit(fakeQueue(submitAction), "execute", { sql: "one" });
+
+    expect(submitAction).toHaveBeenCalledWith(id, {
+      ...presentation,
+      operatorWarnings: ["Reads from another account."],
+      actionKind: { tag: "sql", label: "Run SQL" },
+      autoApprovable: true,
+    });
+  });
+
   it("sends the commits described at staging time, not ones added while the lane was busy", async () => {
     // Staging serializes per journal, so a description built now reaches the queue only after the
     // submission ahead of it settles. A describe hook returning an array it still owns must not be
