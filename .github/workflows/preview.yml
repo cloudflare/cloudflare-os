@@ -20,6 +20,14 @@ name: Preview
 # that a future edit which weakens the trigger still does not leak the token. They are not what
 # makes this safe today.
 #
+# Deliberately absent from those conditions: `author_association`. GitHub computes that field for
+# the payload with no viewer, so it cannot see private organization membership — a Cloudflare
+# member whose membership is private, and who reaches this repository through a team rather than a
+# direct collaborator grant, arrives as `CONTRIBUTOR` and had every preview silently skipped. Do
+# not add it back. `head.repo.id == base.repo.id` is the stronger statement in any case, since
+# pushing a branch into this repository already requires write access, and the first step of each
+# job re-checks the author's permission against the API and fails closed.
+#
 # The setup-vp `cache: true` below is deliberate and is not a poisoning path: a fork PR's Actions
 # cache is scoped to `refs/pull/<n>/merge` and cannot be read from another PR or from `main`.
 
@@ -45,7 +53,6 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
       github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id &&
-      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) &&
       github.event.pull_request.user.type != 'Bot' &&
       github.head_ref != 'main' &&
       github.repository_owner == 'cloudflare'
@@ -169,7 +176,6 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.action == 'closed' &&
       github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id &&
-      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) &&
       github.event.pull_request.user.type != 'Bot' &&
       github.head_ref != 'main' &&
       github.repository_owner == 'cloudflare'
