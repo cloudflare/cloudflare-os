@@ -18,6 +18,7 @@
  */
 
 const OBSERVER_PREFIX = "observer:";
+const OBSERVER_NONCE_PREFIX = "observer-nonce:";
 
 /** Persisted state of one tracked set. `true` is the pre-"pending" legacy encoding of observed. */
 export type ObservedSetState = true | "pending" | "observed";
@@ -67,9 +68,18 @@ export type ObserverTrackerOptions<T, V> = {
   recordObservers?: boolean;
   /**
    * Distinct sets this binding may track before {@link ObserverTracker.prepareObservation} starts
-   * refusing reads. `null` is reserved for bulk verifiers whose per-open RPC count stays bounded.
+   * refusing reads.
+   *
+   * Verifying an observer costs one verifier RPC per open for a bulk check (or one per set, for
+   * per-set verifiers), but the work behind that RPC is not bounded: a bulk Drive check issues
+   * `ceil(N/100)` sequential Workers subrequests, and the overseer re-runs `addObserver` on every
+   * open, per observer, at `mapWithConcurrency(observers, 6, ...)`. An unbounded set makes opening
+   * the gadget unboundedly expensive. The cap is enforced when a set is *recorded* rather than when
+   * an observer joins, because the alternative is worse: a binding that has already read past the
+   * cap can never be verified against, which locks out the collaborators already using it as well
+   * as new ones, with no way back.
    */
-  maxTrackedSets?: number | null;
+  maxTrackedSets?: number;
   /** Concurrent verifier round trips. Bounded to stay inside the Workers subrequest limits. */
   concurrency?: number;
 };
@@ -105,8 +115,9 @@ export class ObserverTracker<T, V> {
   #options: ObserverTrackerOptions<T, V>;
 
   constructor(kv: ObserverKv, options: ObserverTrackerOptions<T, V>) {
-    if (options.setPrefix === OBSERVER_PREFIX) {
-      throw new Error(`setPrefix must not collide with the observer prefix ${OBSERVER_PREFIX}`);
+    if (options.setPrefix === OBSERVER_PREFIX || options.setPrefix === OBSERVER_NONCE_PREFIX) {
+      throw new Error(`setPrefix must not collide with a reserved prefix (${OBSERVER_PREFIX}, ` +
+        `${OBSERVER_NONCE_PREFIX})`);
     }
     if ((options.hasAccess === undefined) === (options.verifyBatch === undefined)) {
       throw new Error("Configure exactly one observer access verifier");
@@ -114,14 +125,18 @@ export class ObserverTracker<T, V> {
     if (options.verifyBatch && !options.baselineDeniedMessage) {
       throw new Error("A bulk verifier requires baselineDeniedMessage");
     }
+    // Staging first closes the admission race only while the observer is actually recorded. A bulk
+    // verifier with recordObservers: false would leave a concurrent disclosure unable to see the
+    // joining observer, which is the leak the staging exists to close.
+    if (options.verifyBatch && options.recordObservers === false) {
+      throw new Error("A bulk verifier must record observers");
+    }
     this.#kv = kv;
     this.#options = options;
   }
 
-  get #maxTrackedSets(): number | null {
-    return this.#options.maxTrackedSets === undefined
-      ? DEFAULT_MAX_TRACKED_SETS
-      : this.#options.maxTrackedSets;
+  get #maxTrackedSets(): number {
+    return this.#options.maxTrackedSets ?? DEFAULT_MAX_TRACKED_SETS;
   }
 
   get #concurrency(): number {
@@ -175,8 +190,7 @@ export class ObserverTracker<T, V> {
     let untracked = pendingSets.filter(
       value => this.#kv.get<ObservedSetState>(this.#setKey(value)) === undefined);
     let tracked = this.listTracked().length;
-    let maxTrackedSets = this.#maxTrackedSets;
-    if (maxTrackedSets !== null && tracked + untracked.length > maxTrackedSets) {
+    if (tracked + untracked.length > this.#maxTrackedSets) {
       throw new Error(
         `This binding has read ${tracked} distinct items, the most it can track while remaining ` +
         "shareable. Bind a narrower scope.");
@@ -229,7 +243,12 @@ export class ObserverTracker<T, V> {
     let recordObserver = this.#options.recordObservers ?? true;
     let observerKey = `${OBSERVER_PREFIX}${id}`;
     if (this.#options.verifyBatch) {
-      if (recordObserver) this.#kv.put(observerKey, verifier);
+      // Ownership token, not the verifier itself: Durable Object KV serializes on put and
+      // deserializes on get, so a reference comparison against the in-memory stub is always false.
+      let nonceKey = `${OBSERVER_NONCE_PREFIX}${id}`;
+      let nonce = crypto.randomUUID();
+      this.#kv.put(observerKey, verifier);
+      this.#kv.put(nonceKey, nonce);
       try {
         let tracked = this.listTracked();
         let result = await this.#options.verifyBatch(verifier, tracked);
@@ -239,10 +258,12 @@ export class ObserverTracker<T, V> {
         if (!result.baselineAllowed) throw new Error(this.#options.baselineDeniedMessage);
         let deniedIndex = result.allowed.indexOf(false);
         if (deniedIndex >= 0) throw new Error(this.#options.deniedMessage(tracked[deniedIndex]));
+        this.#kv.delete(nonceKey);
         return;
       } catch (error) {
-        if (recordObserver && this.#kv.get<V>(observerKey) === verifier) {
+        if (this.#kv.get<string>(nonceKey) === nonce) {
           this.#kv.delete(observerKey);
+          this.#kv.delete(nonceKey);
         }
         throw error;
       }
@@ -267,5 +288,6 @@ export class ObserverTracker<T, V> {
 
   removeObserver(id: string): void {
     this.#kv.delete(`${OBSERVER_PREFIX}${id}`);
+    this.#kv.delete(`${OBSERVER_NONCE_PREFIX}${id}`);
   }
 }

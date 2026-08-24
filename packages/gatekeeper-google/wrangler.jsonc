@@ -29,7 +29,7 @@
     },
     {
       "tag": "v4",
-      "new_sqlite_classes": [ "GoogleDriveGatekeeperImpl" ]
+      "new_sqlite_classes": [ "GoogleDriveGatekeeperImpl", "GoogleDocGatekeeperImpl" ]
     }
   ],
   "observability": {

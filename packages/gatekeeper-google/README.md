@@ -76,7 +76,7 @@ included). Across all resource types, the gatekeeper can request:
 - `gmail.modify` for Gmail thread reads, organization, replies, forwards, and sending. This single scope already includes label access and sending.
 - `documents` for Google Docs reads and edits.
 - `drive.metadata.readonly` for the Docs and Sheets pickers, connected-account Drive metadata, and exact-file metadata.
-- `drive.readonly` for metadata search within one shared drive; the gatekeeper still exposes metadata only.
+- `drive.readonly` for the shared-drive resource. This is wider than anything the gatekeeper reads — it is a Google *restricted* scope conveying account-wide file content — but `drives.list` and `drives.get`, which the shared-drive picker and the binding's own scope lookup need, accept nothing narrower. OAuth scopes are held per connected account and only ever expand, so one shared-drive binding upgrades that account's token for good. The gatekeeper itself still exposes metadata only.
 - `spreadsheets.readonly` to read metadata and cell values from selected Google spreadsheets.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
 - `calendar.events` to manage selected calendar and check calendar availability.
@@ -136,12 +136,12 @@ User — see Step 4.)
 2. Create or open a gadget.
 3. Navigate to the **Connections** tab.
 4. Click **+ New Connection**.
-5. Choose a Google resource type: Gmail, Google Doc, Google Spreadsheet, Google Drive, Google Calendar, or BigQuery.
+5. Choose a Google resource type: Gmail, Google Doc, Google Spreadsheet, Google Drive Account, Google Workspace Shared Drive, Google Drive File, Google Calendar, or BigQuery.
 6. If prompted, connect a Google account.
 7. You should be redirected to Google's consent screen in a new tab.
 8. The consent screen acts extra-scary since this is an "unverified" test app.
 9. After granting access, the tab closes, and you're back to Gadgets.
-10. Use the picker to choose the mailbox scope, document, Drive account/shared-drive/file scope, project, dataset, or table to connect.
+10. Use the picker to choose the mailbox scope, document, shared drive, Drive file, project, dataset, or table to connect. (The Google Drive Account resource covers the whole account, so it has no picker.)
 11. Create the connection. Ask the agent what it can do, or ask it to write a gadget using the new binding.
 
 You can also see your connected accounts and add and remove them in the settings (accessed through the account menu in the upper-right).
@@ -170,15 +170,15 @@ stores baseline and Preview secrets separately, so provision the same signing va
 
 Drive exposes three permanent resource URL forms:
 
-- `https://drive.google.com/drive/my-drive` selects the connected account's My Drive and items shared directly with it in Shared with me (`corpora=user`).
+- `https://drive.google.com/drive/my-drive` selects everything the connected account can read in Drive. Despite the `my-drive` URL it is not limited to My Drive: listings set `includeItemsFromAllDrives`, so shared-drive items the account has accessed come back too, and reads by ID are not scope-checked at all, so anything the account's token resolves is inside this grant. Listings stay on `corpora=user` rather than `allDrives`, which Google flags as much less efficient and allows to return `incompleteSearch`, so a shared drive the account belongs to but has never touched may be readable by ID without appearing in a listing. It is the broadest of the three by design; bind a shared drive or a file if that is too much.
 - `https://drive.google.com/drive/folders/<driveId>` selects one Google Workspace shared drive, where the organization rather than an individual owns the files.
 - `https://drive.google.com/file/d/<fileId>/view` selects one file by its immutable ID.
 
 Despite the `/folders/` URL, the second resource is a Google Workspace shared drive, not an individual folder. Google uses a shared drive's ID for its root folder too. The gatekeeper confirms the ID with `drives.get`, so it rejects ordinary folder IDs.
 
-The agent-facing `GoogleDriveSession` returns metadata only. It can report the binding scope, list entries, run structured metadata searches, and fetch one entry by ID. Listing and search return disposable RPC cursors. A parent filter means direct children only, never recursive descendants. The API does not expose raw Drive `q` strings, file contents, writes, shortcut traversal, native Docs or Sheets sessions, or Workers AI extraction.
+The agent-facing `GoogleDriveSession` returns metadata only. It can report the binding scope, list entries, run structured searches, and fetch one entry by ID. Listing and search return disposable RPC cursors. A parent filter means direct children only, never recursive descendants. The API does not expose raw Drive `q` strings, file contents, writes, shortcut traversal, native Docs or Sheets sessions, or Workers AI extraction. One caveat on "metadata only": the `fullTextContains` search filter compiles to Drive's `fullText contains`, which matches a file's indexed body text, description and OCR text. Results still carry metadata alone, but repeated queries are a content oracle over files the agent can never read directly.
 
-Account and shared-drive bindings remember every file ID whose metadata a workspace has read. Before each collaborator opens the workspace, the gatekeeper requires an explicit Drive grant and rechecks all remembered IDs with fresh batched `files.get` calls. Before a new result page is disclosed, it checks the page's IDs against every existing observer and excludes observers who cannot access them. Exact-file bindings perform the same fresh check for their single file on each share attempt. Google batch requests contain at most 100 `files.get` subrequests; there is deliberately no cached access verdict, so revoked access fails closed on the next open.
+Account and shared-drive bindings remember every file ID whose metadata a workspace has read. Before each collaborator opens the workspace, the gatekeeper requires that their own account explicitly consented to a Drive resource — a Drive grant is never inferred from held OAuth scopes, because the Docs and Sheets pickers request the same `drive.metadata.readonly` — and rechecks all remembered IDs with fresh batched `files.get` calls. Before a new result page is disclosed, it checks the page's IDs against every existing observer and excludes observers who cannot access them. Exact-file bindings perform the same fresh check for their single file on each share attempt. Google batch requests contain at most 100 `files.get` subrequests, and a binding is capped at the number of distinct files it can track while remaining verifiable; there is deliberately no cached access verdict, so revoked access fails closed on the next open.
 
 ## Troubleshooting
 

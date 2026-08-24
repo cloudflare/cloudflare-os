@@ -12,10 +12,12 @@ export interface Cursor<T> {
 /**
  * The immutable resource scope of a Google Drive binding.
  *
- * Account scope covers My Drive and items shared directly with the connected account
- * (`corpora=user`). Shared-drive scope means a Google Workspace shared drive, not an ordinary or
- * shared folder; its files belong to the organization rather than an individual. Names are current
- * display metadata; stable IDs are capability identity.
+ * Account scope is everything the connected account can read in Drive, including files in shared
+ * drives. `list()` and `search()` cover My Drive plus shared-drive items the account has accessed;
+ * `getEntry()` resolves any ID the account can read, so a file may be readable by ID without ever
+ * appearing in a listing. Shared-drive scope means a Google Workspace shared drive, not an
+ * ordinary or shared folder; its files belong to the organization rather than an individual. Names
+ * are current display metadata; stable IDs are capability identity.
  */
 export type DriveScope =
   | { kind: "account" }
@@ -38,7 +40,12 @@ export type DriveShortcut = {
   targetMimeType?: string;
 };
 
-/** Read-only metadata for one entry within the immutable binding scope. */
+/**
+ * Read-only metadata for one entry within the immutable binding scope.
+ *
+ * `list()` and `search()` never return trashed items. `getEntry()` can, and this type does not
+ * say whether they are — there is no `trashed` field.
+ */
 export type DriveEntry = {
   /** Stable Drive file ID. */
   id: string;
@@ -92,7 +99,12 @@ export type DriveListOptions = {
 export type DriveSearchQuery = {
   /** Match entries whose name contains this value. */
   nameContains?: string;
-  /** Match entries whose indexed text contains this value. */
+  /**
+   * Match entries whose indexed text contains this value.
+   *
+   * This is the one filter that reaches past metadata: Drive indexes a file's body text,
+   * description and OCR text. Results still carry metadata alone.
+   */
   fullTextContains?: string;
   /** Match entries having any one of these MIME types. */
   mimeTypes?: string[];
@@ -127,9 +139,20 @@ export interface GoogleDriveSession {
    * Search with structured values. At least one filter other than `order` is required. Populated filter
    * fields are AND-ed, while values within `mimeTypes` are OR-ed. `order` cannot be combined with
    * `fullTextContains`; omitting it for full-text search preserves Drive's relevance order.
+   *
+   * Throws on a file-scoped binding; a single file cannot be searched. Use `getEntry()` to read it.
    */
   search(query: DriveSearchQuery): Promise<Cursor<DriveEntry>>;
 
-  /** Return metadata for one file ID, or throw when the ID is outside the immutable binding scope. */
+  /**
+   * Return metadata for one file ID.
+   *
+   * A file binding throws without contacting Drive when the ID is not the bound file. A shared-drive
+   * binding throws when the file is not in that drive. An account binding returns any file the
+   * connected account can read, including files in shared drives it is a member of.
+   *
+   * Unlike `list()` and `search()`, this can return a trashed file: those methods always exclude
+   * trash, while a direct get does not, and {@link DriveEntry} has no `trashed` field.
+   */
   getEntry(fileId: string): Promise<DriveEntry>;
 }

@@ -4,11 +4,11 @@ import type { DriveFileConfiguratorRpc, DriveFileConfiguratorValues } from "./dr
 export default {
   initial: {},
   isReady: ({ values }) => typeof values.fileId === "string" && values.fileId.length > 0,
+  // Must mirror `parseDriveUrl` in resources.ts, which is what actually mints the capability. This
+  // module is transpiled on its own and cannot import that parser, so `__tests__/configurator-url
+  // .test.ts` is what keeps the copies honest.
   resourceUrl: ({ values }) =>
     `https://drive.google.com/file/d/${encodeURIComponent(values.fileId ?? "")}/view`,
-  initialValuesFromResourceUrl: ({ resourceUrl }) => ({
-    fileId: decodeURIComponent(new URL(resourceUrl).pathname.split("/")[3] ?? ""),
-  }),
   render({ values, setValues, ui }) {
     return <Section>
       <Field label="File" description="Search recent non-folder files visible to the connected account.">

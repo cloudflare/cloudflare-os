@@ -36,13 +36,21 @@ const configurableUrl = (
   values: Record<string, unknown>,
 ) => configurator.resourceUrl!({ values, ui: noUi });
 
-const configurableValues = (
-  configurator: { initialValuesFromResourceUrl?: (context: {
-    resourceUrl: string; resourceUrlPattern: string; ui: never;
-  }) => unknown },
-  resourceUrl: string,
-  resourceUrlPattern: string,
-) => configurator.initialValuesFromResourceUrl!({ resourceUrl, resourceUrlPattern, ui: noUi });
+// Drive value keys match the urlPattern named groups, so the sandbox runtime's
+// `defaultValuesFromResourceUrl` (not a per-module hook) is the prefill path. This is that fallback:
+// URLPattern groups plus decodeURIComponent, ignoring numeric/wildcard names.
+function valuesFromUrlPattern(resourceUrl: string, resourceUrlPattern: string) {
+  const match = new URLPattern(resourceUrlPattern).exec(resourceUrl);
+  const groups = match?.pathname.groups ?? {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(groups)) {
+    if (typeof value === "string" && value.length > 0 && !/^[0-9]+$/.test(key)) {
+      out[key] = decodeURIComponent(value);
+    }
+  }
+  return out;
+}
+
 describe("Gmail configurator URLs", () => {
   it.for([
     ["the whole mailbox", { mode: "all" }, { kind: "gmail" }],
@@ -109,18 +117,32 @@ describe("Drive configurator URLs", () => {
   it("round-trips an encoded shared-drive ID", () => {
     let values = { driveId: "shared/id with spaces" };
     let url = configurableUrl(sharedDriveConfigurator, values);
+    expect(url).toBe(
+      GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern.replace(":driveId", encodeURIComponent(values.driveId)),
+    );
     expect(parseResourceUrl(url)).toEqual({ kind: "sharedDrive", driveId: values.driveId });
-    expect(configurableValues(
-      sharedDriveConfigurator, url, GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern,
-    )).toEqual(values);
   });
 
   it("round-trips an encoded file ID", () => {
     let values = { fileId: "file/id with spaces" };
     let url = configurableUrl(driveFileConfigurator, values);
+    expect(url).toBe(
+      GOOGLE_DRIVE_FILE_RESOURCE.urlPattern.replace(":fileId", encodeURIComponent(values.fileId)),
+    );
     expect(parseResourceUrl(url)).toEqual({ kind: "driveFile", fileId: values.fileId });
-    expect(configurableValues(
-      driveFileConfigurator, url, GOOGLE_DRIVE_FILE_RESOURCE.urlPattern,
-    )).toEqual(values);
+  });
+
+  // Prefill after deleting the hand-written hooks: the sandbox fallback extracts named groups and
+  // decodeURIComponent's them. A missing decode would leave `%2F`/`%20` in the form values.
+  it("prefills encoded IDs from urlPattern named groups", () => {
+    let driveValues = { driveId: "shared/id with spaces" };
+    let driveUrl = configurableUrl(sharedDriveConfigurator, driveValues);
+    expect(valuesFromUrlPattern(driveUrl, GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern))
+      .toEqual(driveValues);
+
+    let fileValues = { fileId: "file/id with spaces" };
+    let fileUrl = configurableUrl(driveFileConfigurator, fileValues);
+    expect(valuesFromUrlPattern(fileUrl, GOOGLE_DRIVE_FILE_RESOURCE.urlPattern))
+      .toEqual(fileValues);
   });
 });

@@ -4,8 +4,10 @@ import type { DriveAccountConfiguratorRpc, DriveAccountConfiguratorValues } from
 export default {
   initial: { scope: "account" },
   isReady: () => true,
+  // Must mirror `parseDriveUrl` in resources.ts, which is what actually mints the capability. This
+  // module is transpiled on its own and cannot import that parser, so `__tests__/configurator-url
+  // .test.ts` is what keeps the copies honest.
   resourceUrl: () => "https://drive.google.com/drive/my-drive",
-  initialValuesFromResourceUrl: () => ({ scope: "account" }),
   render({ setValues }) {
     return <Section>
       <Field label="Google Drive account" description="Search My Drive and items shared directly with this Google account.">

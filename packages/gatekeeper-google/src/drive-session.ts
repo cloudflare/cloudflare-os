@@ -1,13 +1,18 @@
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { CursorPager, type Pager } from "./cursor";
-import type { DriveApi, DriveFile, DriveListFilesOptions } from "./drive-api";
-import type { ObserverCheck } from "./observers";
+import type { DriveApi, DriveCorpus, DriveFile, DriveListFilesOptions } from "./drive-api";
+import { ObserverTracker, type ObserverCheck, type ObserverKv } from "./observers";
 import type {
   DriveEntry, DriveListOptions, DriveOrder, DriveScope, DriveSearchQuery,
 } from "./drive-types";
 
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 const SHORTCUT_MIME_TYPE = "application/vnd.google-apps.shortcut";
+
+// Agent-supplied query values go in the approval description, so each value and the whole string
+// are capped. They are not logged and they stay out of the title.
+const MAX_OBSERVATION_VALUE = 32;
+const MAX_OBSERVATION_DESCRIPTION = 240;
 
 /** Immutable authority carried by one Drive gatekeeper binding. */
 export type DriveBindingScope =
@@ -20,7 +25,7 @@ type DriveSessionApi = Pick<DriveApi, "listFiles" | "getFile" | "getDrive">;
 type DriveSessionCoreOptions = {
   api: DriveSessionApi;
   scope: DriveBindingScope;
-  prepareObservation?: (fileIds: string[]) => Promise<ObserverCheck<string>>;
+  prepareObservation(fileIds: string[]): Promise<ObserverCheck<string>>;
   authorize(description: ObservationDescription): Promise<void>;
 };
 
@@ -121,6 +126,49 @@ function normalizeSearch(query: DriveSearchQuery): DriveSearchQuery {
   return normalized;
 }
 
+function clip(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max)}...`;
+}
+
+function scopePhrase(scope: DriveBindingScope): string {
+  switch (scope.kind) {
+    case "account": return "the connected Drive account";
+    case "sharedDrive": return `shared drive ${scope.driveId}`;
+    case "file": return `file ${scope.fileId}`;
+  }
+}
+
+function queryClauses(query: DriveListFilesOptions): string[] {
+  let parts: string[] = [];
+  if (query.nameContains) {
+    parts.push(`name contains "${clip(query.nameContains, MAX_OBSERVATION_VALUE)}"`);
+  }
+  if (query.fullTextContains) {
+    parts.push(`full text contains "${clip(query.fullTextContains, MAX_OBSERVATION_VALUE)}"`);
+  }
+  if (query.mimeTypes?.length) {
+    parts.push(`mime types ${query.mimeTypes.map(value => clip(value, MAX_OBSERVATION_VALUE)).join(", ")}`);
+  }
+  if (query.modifiedAfter) parts.push(`modified after ${query.modifiedAfter}`);
+  if (query.modifiedBefore) parts.push(`modified before ${query.modifiedBefore}`);
+  if (query.directParentId) {
+    parts.push(`parent ${clip(query.directParentId, MAX_OBSERVATION_VALUE)}`);
+  }
+  return parts;
+}
+
+function listingDescription(
+  scope: DriveBindingScope,
+  query: DriveListFilesOptions,
+  count: number,
+): string {
+  let noun = count === 1 ? "entry" : "entries";
+  let clauses = queryClauses(query);
+  let text = `Read metadata for ${count} Drive ${noun} in ${scopePhrase(scope)}`;
+  if (clauses.length) text += `; ${clauses.join("; ")}`;
+  return clip(`${text}.`, MAX_OBSERVATION_DESCRIPTION);
+}
+
 /** Scope enforcement, pagination, mapping, and observation authorization for Drive sessions. */
 export class DriveSessionCore {
   #api: DriveSessionApi;
@@ -131,9 +179,7 @@ export class DriveSessionCore {
   constructor(options: DriveSessionCoreOptions) {
     this.#api = options.api;
     this.#scope = options.scope;
-    this.#prepareObservation = options.prepareObservation ?? (async () => ({
-      pendingSets: [], commit() {},
-    }));
+    this.#prepareObservation = options.prepareObservation;
     this.#authorize = options.authorize;
   }
 
@@ -142,15 +188,19 @@ export class DriveSessionCore {
       case "account": return { kind: "account" };
       case "sharedDrive": {
         let drive = await this.#api.getDrive(this.#scope.driveId);
-        await this.#authorizeIds([drive.id], "Read Google Drive scope",
+        // Capability identity is the binding, never the provider's echo. A mismatch means the name
+        // describes some other drive, so refuse rather than label the binding with it.
+        if (drive.id !== this.#scope.driveId) this.#outsideScope();
+        await this.#authorizeIds([this.#scope.driveId], "Read Google Drive scope",
           "Read the current name of the connected shared drive.");
-        return { kind: "sharedDrive", driveId: drive.id, name: drive.name };
+        return { kind: "sharedDrive", driveId: this.#scope.driveId, name: drive.name };
       }
       case "file": {
         let file = await this.#api.getFile(this.#scope.fileId);
-        await this.#authorizeIds([file.id], "Read Google Drive scope",
+        if (file.id !== this.#scope.fileId) this.#outsideScope();
+        await this.#authorizeIds([this.#scope.fileId], "Read Google Drive scope",
           "Read the current name of the connected Drive file.");
-        return { kind: "file", fileId: file.id, name: file.name };
+        return { kind: "file", fileId: this.#scope.fileId, name: file.name };
       }
     }
   }
@@ -165,6 +215,12 @@ export class DriveSessionCore {
   }
 
   async search(query: DriveSearchQuery): Promise<Pager<DriveEntry>> {
+    // Drive `q` has no `id =` clause, and returning the bound file unconditionally would claim it
+    // matched filters we never evaluated. list() already short-circuits to getFile; search cannot.
+    if (this.#scope.kind === "file") {
+      throw new Error(
+        "A single-file Drive binding cannot be searched; use getEntry() to read the bound file.");
+    }
     let normalized = normalizeSearch(query);
     if (normalized.directParentId) await this.#assertParent(normalized.directParentId);
     return this.#cursor({
@@ -192,8 +248,11 @@ export class DriveSessionCore {
       },
       buildEntries: async files => files.filter(file => this.#inScope(file)).map(driveFileToEntry),
       authorize: async entries => {
-        await this.#authorizeIds(entries.map(entry => entry.id), "Read Google Drive metadata",
-          `Read metadata for ${entries.length} Drive ${entries.length === 1 ? "entry" : "entries"}.`);
+        await this.#authorizeIds(
+          entries.map(entry => entry.id),
+          "Read Google Drive metadata",
+          listingDescription(this.#scope, query, entries.length),
+        );
       },
     });
   }
@@ -214,10 +273,10 @@ export class DriveSessionCore {
     });
   }
 
-  #corpus(): Pick<DriveListFilesOptions, "corpora" | "driveId"> {
+  #corpus(): { corpus: DriveCorpus } {
     return this.#scope.kind === "sharedDrive"
-      ? { corpora: "drive", driveId: this.#scope.driveId }
-      : { corpora: "user" };
+      ? { corpus: { kind: "drive", driveId: this.#scope.driveId } }
+      : { corpus: { kind: "user" } };
   }
 
   #inScope(file: DriveFile): boolean {
@@ -247,4 +306,54 @@ export class DriveSessionCore {
   #outsideScope(): never {
     throw new Error("The requested file is outside this Drive binding.");
   }
+}
+
+/** Key prefix for the Drive file IDs a binding has disclosed metadata about. */
+export const DRIVE_OBSERVATION_PREFIX = "observedDriveFile:";
+
+/** Refusal when a joining collaborator holds no Google Drive grant at all. */
+export const DRIVE_BASELINE_DENIED_MESSAGE =
+  "This collaborator has not granted Google Drive access, so they cannot observe this binding.";
+
+/** Verdicts for one bulk Drive access check: the baseline grant, then one flag per file. */
+export type DriveAccessVerdicts = { baselineAllowed: boolean; allowed: boolean[] };
+
+/**
+ * The observer tracker for one Drive binding, seeded with the set its scope already names.
+ *
+ * A shared-drive or single-file binding can always reach its own root, so that ID is recorded up
+ * front rather than waiting for a read to discover it. A file binding therefore never grows past
+ * it - {@link DriveSessionCore} admits no other ID - which is what lets all three scopes share one
+ * admission path. Without the seed a file binding would need a second, hand-rolled verify, kept in
+ * step by hand with this one's staging and rollback.
+ *
+ * `verifyBatch` is passed in rather than a verifier type, so this module stays independent of the
+ * worker entrypoint that owns the RPC interface.
+ */
+export function driveObserverTracker<V>(
+  kv: ObserverKv,
+  scope: DriveBindingScope,
+  verifyBatch: (verifier: V, fileIds: readonly string[]) => Promise<DriveAccessVerdicts>,
+): ObserverTracker<string, V> {
+  let rootId = scope.kind === "sharedDrive" ? scope.driveId
+    : scope.kind === "file" ? scope.fileId
+    : undefined;
+  if (rootId !== undefined) {
+    let key = `${DRIVE_OBSERVATION_PREFIX}${encodeURIComponent(rootId)}`;
+    if (kv.get(key) === undefined) kv.put(key, "observed");
+  }
+  return new ObserverTracker<string, V>(kv, {
+    setPrefix: DRIVE_OBSERVATION_PREFIX,
+    encode: encodeURIComponent,
+    decode: decodeURIComponent,
+    verifyBatch,
+    baselineDeniedMessage: DRIVE_BASELINE_DENIED_MESSAGE,
+    deniedMessage: fileId =>
+      `This collaborator cannot access Drive file ${fileId}, whose metadata this workspace has read.`,
+    // checkFileAccess issues ceil(N/100) sequential subrequests. The overseer re-runs addObserver
+    // on every open, per observer, at concurrency 6. 2000 files → 20 subrequests per observer, 120
+    // if six run together — well inside the 1000-subrequest budget. Uncapped, a whole-account
+    // binding would grow until admission exceeds that budget and locks every collaborator out.
+    maxTrackedSets: 2000,
+  });
 }

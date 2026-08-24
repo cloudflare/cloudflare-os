@@ -384,7 +384,8 @@
         },
         {
           "new_sqlite_classes": [
-            "GoogleDriveGatekeeperImpl"
+            "GoogleDriveGatekeeperImpl",
+            "GoogleDocGatekeeperImpl"
           ],
           "tag": "v4"
         }

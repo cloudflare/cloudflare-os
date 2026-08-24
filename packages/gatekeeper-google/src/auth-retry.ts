@@ -12,10 +12,11 @@
 //      fresh token cannot fix, so it is never retried.
 //
 //   2. Transient failures (429 / 5xx / network timeout). Retried with exponential backoff plus full
-//      jitter, honoring `Retry-After` when present, on idempotent GETs only: a 429, a 5xx and a
-//      timeout all leave it ambiguous whether the server already applied a write. Retrying writes
-//      needs a per-request idempotency key (`X-Goog-Client-Request-Id` on Gmail send, a
-//      client-supplied event id on `events.insert`); that is a follow-up, not this change.
+//      jitter, honoring `Retry-After` when present, on requests that are safe to replay: GETs, and
+//      non-GETs that opt in via `idempotent`. A 429, a 5xx and a timeout all leave it ambiguous
+//      whether the server already applied a write. Retrying writes needs a per-request idempotency
+//      key (`X-Goog-Client-Request-Id` on Gmail send, a client-supplied event id on
+//      `events.insert`); that is a follow-up, not this change.
 //
 // Both concerns share a single attempt counter, so the worst case is a predictable `retries + 1`
 // requests: `retries` transient attempts plus at most one extra for the one-shot 401 refresh.
@@ -42,19 +43,25 @@ export type FetchWithAuthRetryOptions = {
   retries?: number;
   /** Per-attempt abort timeout in milliseconds. Omitted means no timeout is imposed. */
   timeoutMs?: number;
+  /**
+   * Asserts this request is safe to replay on 429 / 5xx / timeout. Must only be set for a request
+   * that performs no writes. Non-GET methods default to unsafe; this is the opt-in for a POST that
+   * is still just a read (Drive's batch `files.get` envelope).
+   */
+  idempotent?: boolean;
 };
 
 const BASE_DELAY_MS = 500;
 const MAX_DELAY_MS = 10_000;
 
 /**
- * Whether a transient failure status is worth replaying for this method.
+ * Whether a transient failure status is worth replaying.
  *
  * Neither a 429 nor a 5xx tells us whether the request took effect before the response, so both are
- * only replayed for idempotent GETs.
+ * only replayed when the caller has asserted the request is safe to send twice.
  */
-function canRetry(status: number, method: string): boolean {
-  if (status === 429 || (status >= 500 && status <= 599)) return method === "GET";
+function canRetry(status: number, idempotent: boolean): boolean {
+  if (status === 429 || (status >= 500 && status <= 599)) return idempotent;
   return false;
 }
 
@@ -84,7 +91,7 @@ export async function fetchWithAuthRetry(
 ): Promise<Response> {
   let method = (init.method ?? "GET").toUpperCase();
   let retries = opts.retries ?? 3;
-
+  let idempotent = method === "GET" || opts.idempotent === true;
   // A request can only be replayed if its body can be sent again. A string body (what every call
   // site uses today) re-serializes fine; a stream is consumed by the first attempt, so retrying it
   // would send an empty or errored body. Nothing to replay is likewise fine.
@@ -114,8 +121,8 @@ export async function fetchWithAuthRetry(
         ...(signal ? { signal } : {}),
       });
     } catch (error) {
-      // Network error or timeout: ambiguous, so retry idempotent GETs only.
-      if (replayable && method === "GET" && attempt < retries - 1) {
+      // Network error or timeout: ambiguous, so retry only when the request is safe to replay.
+      if (replayable && idempotent && attempt < retries - 1) {
         await new Promise(resolve => setTimeout(resolve, backoffDelayMs(attempt, null)));
         attempt++;
         continue;
@@ -134,7 +141,7 @@ export async function fetchWithAuthRetry(
       continue;
     }
 
-    if (replayable && canRetry(response.status, method) && attempt < retries - 1) {
+    if (replayable && canRetry(response.status, idempotent) && attempt < retries - 1) {
       let delay = backoffDelayMs(attempt, response.headers.get("Retry-After"));
       await response.body?.cancel();
       await new Promise(resolve => setTimeout(resolve, delay));

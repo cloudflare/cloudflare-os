@@ -70,11 +70,18 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
-/** Metadata for files and folders visible to the connected Google Drive account. */
+/**
+ * Metadata for every file and folder the connected Google Drive account can read.
+ *
+ * Whole-account, not just My Drive: listings set `includeItemsFromAllDrives`, so a shared drive the
+ * account belongs to is inside this grant.
+ */
 export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/drive/my-drive",
   title: "Google Drive Account",
-  description: "Find files and folders in your My Drive or Shared with me.",
+  description:
+      "Find files and folders anywhere this Google account can read in Drive, including shared " +
+      "drives it belongs to.",
   grantable: true,
 };
 
@@ -103,6 +110,25 @@ export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
 export const LEGACY_GRANTED_RESOURCE_URL_PATTERNS = [
   GMAIL_RESOURCE.urlPattern,
   GOOGLE_DOC_RESOURCE.urlPattern,
+  BIGQUERY_RESOURCE.urlPattern,
+];
+
+/**
+ * The resources whose grant may still be *inferred* from the OAuth scopes an account holds.
+ *
+ * Frozen, and for a sharper reason than the list above. Inference cannot tell a resource the user
+ * chose from one that merely shares a scope with it: `drive.metadata.readonly` is requested by the
+ * Docs and Sheets *pickers*, so inferring from it reports a whole-account Drive grant that nobody
+ * made — `ensureResources` then skips the consent screen and the account really does hold the
+ * scope to back it. Accounts connected since grants became recorded say what they consented to;
+ * this list is only the fallback for the ones that didn't, so every resource added after it must
+ * stay out.
+ */
+export const SCOPE_DERIVED_RESOURCE_URL_PATTERNS = [
+  GMAIL_RESOURCE.urlPattern,
+  GOOGLE_DOC_RESOURCE.urlPattern,
+  GOOGLE_SHEETS_RESOURCE.urlPattern,
+  GOOGLE_CALENDAR_RESOURCE.urlPattern,
   BIGQUERY_RESOURCE.urlPattern,
 ];
 
@@ -145,6 +171,13 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   },
   {
     resource: GOOGLE_SHARED_DRIVE_RESOURCE,
+    // `drive.readonly` (not `drive.metadata.readonly`, which is all this gatekeeper reads): the
+    // shared-drive picker and the binding's own `getScope` go through `drives.list`/`drives.get`,
+    // and those two methods accept only `drive` and `drive.readonly`. It is a restricted scope
+    // granting account-wide *content* read, so it is the one Drive resource whose consent is
+    // strictly wider than the authority the binding exercises. Narrowing it means dropping both
+    // calls: resolving a shared drive's name through `files.get` on the drive root instead, and
+    // giving up drive enumeration in the configurator.
     scopes: ["https://www.googleapis.com/auth/drive.readonly"],
   },
   {
@@ -170,7 +203,7 @@ const DRIVE_RESOURCE_PATTERNS = new Set([
 /** Every grantable resource, in declaration order. */
 export const SUPPORTED_RESOURCES: SupportedResource[] = RESOURCE_SCOPES.map(entry => entry.resource);
 
-/** Whether a historical grant explicitly included any Google Drive resource. */
+/** Whether an account's recorded grant includes any Google Drive resource. */
 export function hasDriveResourceGrant(resourceUrlPatterns: readonly string[]): boolean {
   return resourceUrlPatterns.some(pattern => DRIVE_RESOURCE_PATTERNS.has(pattern));
 }
@@ -205,14 +238,19 @@ export function resourceUrlPatternsToOAuthScopes(resourceUrlPatterns?: string[])
 }
 
 /**
- * The resources fully covered by a set of granted scopes.
+ * The subset of `resourceUrlPatterns` whose every OAuth scope is present in `grantedOAuthScopes`.
  *
- * Fails closed: a resource whose scopes are only partially present is not reported as granted.
+ * Fails closed, so a scope the user declined at the consent screen, or dropped on a later
+ * reconnect, retracts the grant that needed it.
  */
-export function grantedResourcesFromScopes(grantedOAuthScopes: string[]): string[] {
+export function resourcesCoveredByScopes(
+    resourceUrlPatterns: readonly string[],
+    grantedOAuthScopes: readonly string[]): string[] {
   let granted = new Set(grantedOAuthScopes);
+  let requested = new Set(resourceUrlPatterns);
   return RESOURCE_SCOPES
-      .filter(entry => entry.scopes.every(scope => granted.has(scope)))
+      .filter(entry => requested.has(entry.resource.urlPattern) &&
+                       entry.scopes.every(scope => granted.has(scope)))
       .map(entry => entry.resource.urlPattern);
 }
 

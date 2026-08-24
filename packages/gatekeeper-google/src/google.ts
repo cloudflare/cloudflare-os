@@ -14,7 +14,7 @@ import type {
 } from "./sheets-types";
 import { docToMarkdown, markdownToDocRequests, computeReplaceOperations, DocSnapshot } from "./markdown-converter";
 import { DriveApi } from "./drive-api";
-import { DriveSessionCore, type DriveBindingScope } from "./drive-session";
+import { DriveSessionCore, driveObserverTracker, type DriveBindingScope } from "./drive-session";
 import type { DriveEntry, DriveListOptions, DriveSearchQuery, GoogleDriveSession } from "./drive-types";
 import { BigQueryApi, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
@@ -65,9 +65,9 @@ import {
   AUTH_SCOPES, BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_RESOURCE,
   GOOGLE_SHARED_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, LEGACY_GRANTED_RESOURCE_URL_PATTERNS,
-  RESOURCE_BY_KIND, SUPPORTED_RESOURCES, grantedResourcesFromScopes, hasDriveResourceGrant,
-  parseResourceUrl,
-  resourceUrlPatternsToOAuthScopes,
+  RESOURCE_BY_KIND, SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SUPPORTED_RESOURCES,
+  hasDriveResourceGrant, parseResourceUrl, resourceUrlPatternsToOAuthScopes,
+  resourcesCoveredByScopes,
 } from "./resources";
 import { ObserverCheck, ObserverTracker } from "./observers";
 import { CursorPager, Pager } from "./cursor";
@@ -371,12 +371,12 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
       url: "https://google.com",
       logo: { url: GOOGLE_LOGO_URL },
       color: "#e8f0fe",
-      tagline: "Draft replies, edit docs, read sheets, manage calendars, and analyze data",
+      tagline: "Draft replies, edit docs, read sheets, search Drive, manage calendars, analyze data",
       description:
           "Connect your Google account to give Cloudflare OS access to Gmail, Google Docs, Google " +
-          "Sheets, Google Calendar, and BigQuery. Build agents that triage email, draft and edit " +
-          "documents, read spreadsheets, find focus time, schedule meetings, or run analytics " +
-          "queries on your data.",
+          "Sheets, Google Drive, Google Calendar, and BigQuery. Build agents that triage email, " +
+          "draft and edit documents, read spreadsheets, find files by metadata, find focus time, " +
+          "schedule meetings, or run analytics queries on your data.",
       providesAuth: true,
     };
   }
@@ -387,11 +387,15 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     let initiationNonce = generateNonce();
 
     let authOnly = options?.scopes === "auth";
+    // An omitted `resourceUrlPatterns` means every resource, which is distinct from `[]`.
+    let requestedResources = authOnly
+        ? []
+        : options?.resourceUrlPatterns ?? SUPPORTED_RESOURCES.map(resource => resource.urlPattern);
     let requestedScopes = authOnly
         ? AUTH_SCOPES
         : resourceUrlPatternsToOAuthScopes(options?.resourceUrlPatterns);
     await this.ctx.exports.UserAccount.get(userObjectId)
-        .setCallback(callback, initiationNonce, requestedScopes, authOnly);
+        .setCallback(callback, initiationNonce, requestedScopes, requestedResources, authOnly);
 
     return {
       url: `${getBaseUrl(this.env)}/${userObjectId.toString()}/${initiationNonce}`
@@ -443,7 +447,7 @@ export class UserAccount extends DurableObject<Env> {
 
   async setCallback(
       callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string,
-      requestedScopes: string[], ephemeral?: boolean) {
+      requestedScopes: string[], requestedResources: string[], ephemeral?: boolean) {
     // If we have no API key in 1 hour, delete this object.
     if (!this.ctx.storage.kv.get<string>("refreshToken")) {
       this.ctx.storage.setAlarm(Date.now() + 3600 * 1000);
@@ -451,6 +455,7 @@ export class UserAccount extends DurableObject<Env> {
 
     this.ctx.storage.kv.put("callback", callback);
     this.ctx.storage.kv.put<string[]>("requestedScopes", requestedScopes);
+    this.ctx.storage.kv.put<string[]>("requestedResources", requestedResources);
     // Auth-only sign-in grants are transient: dropped shortly after the email is read.
     this.ctx.storage.kv.put<boolean>("ephemeral", ephemeral ?? false);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
@@ -464,13 +469,15 @@ export class UserAccount extends DurableObject<Env> {
    * Prepare this account for a reconnect flow. The next acceptAuthCode() call will replace the
    * existing refresh token and notify via credentialsRestored() instead of complete().
    *
-   * `requestedScopes` is the full set of OAuth scopes to request on the reauthorization. For a
-   * plain reconnect this is the previously-granted set; for a scope expansion it's the union of
-   * the granted scopes and the newly-needed ones.
+   * `requestedResources` is the full set of grantable resource `urlPattern`s the user is being
+   * asked to consent to, and `requestedScopes` the OAuth scopes they need. For a plain reconnect
+   * both are the previously-granted set; for an expansion, the union with the newly-needed ones.
    */
-  async prepareReconnect(initiationNonce: string, requestedScopes: string[]) {
+  async prepareReconnect(
+      initiationNonce: string, requestedScopes: string[], requestedResources: string[]) {
     this.ctx.storage.kv.put<boolean>("reconnecting", true);
     this.ctx.storage.kv.put<string[]>("requestedScopes", requestedScopes);
+    this.ctx.storage.kv.put<string[]>("requestedResources", requestedResources);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
@@ -482,16 +489,22 @@ export class UserAccount extends DurableObject<Env> {
    * The grantable resource `urlPattern`s currently granted on this account. Used to decide
    * whether ensureResources() needs to expand.
    *
-   * Legacy accounts connected before granular scope tracking have no recorded granted scopes.
-   * Report only the resources included in that historical grant, so newer resources correctly
-   * trigger OAuth scope expansion.
+   * Three generations of account, newest first. An account that consented since grants became
+   * recorded reports exactly what it consented to, re-checked against the scopes Google actually
+   * returned so a declined or later-narrowed scope retracts the grant it backed. An account that
+   * recorded scopes but not resources falls back to inference, confined to the resources that
+   * predate recording — see {@link SCOPE_DERIVED_RESOURCE_URL_PATTERNS} for why it cannot be
+   * extended. An account from before scope tracking reports only its historical grant, so newer
+   * resources correctly trigger an OAuth expansion.
    */
   async getGrantedResourceUrlPatterns(): Promise<string[]> {
-    let granted = this.ctx.storage.kv.get<string[]>("grantedScopes");
-    if (granted === undefined) {
+    let grantedScopes = this.ctx.storage.kv.get<string[]>("grantedScopes");
+    if (grantedScopes === undefined) {
       return [...LEGACY_GRANTED_RESOURCE_URL_PATTERNS];
     }
-    return grantedResourcesFromScopes(granted);
+    let grantedResources = this.ctx.storage.kv.get<string[]>("grantedResources");
+    return resourcesCoveredByScopes(
+        grantedResources ?? SCOPE_DERIVED_RESOURCE_URL_PATTERNS, grantedScopes);
   }
 
   /**
@@ -571,9 +584,18 @@ export class UserAccount extends DurableObject<Env> {
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", response.accessToken);
       // These credentials are new, so any recorded permanent failure no longer applies
       this.#mintFailure = undefined;
-      // Record what Google actually granted (the user may have declined some requested scopes).
+      // Record what Google actually granted (the user may have declined some requested scopes),
+      // and which resources the user was consenting to when they did. Recording the resources is
+      // what keeps a grant from being inferred later from a scope some other resource's picker
+      // also requests. An account mid-migration has no requested set; leave its recorded grant
+      // alone rather than narrowing it to nothing, and let the scope-derived fallback answer.
       this.ctx.storage.kv.put<string[]>("grantedScopes", response.grantedScopes);
+      let requestedResources = this.ctx.storage.kv.get<string[]>("requestedResources");
+      if (requestedResources !== undefined) {
+        this.ctx.storage.kv.put<string[]>("grantedResources", requestedResources);
+      }
       this.ctx.storage.kv.delete("requestedScopes");
+      this.ctx.storage.kv.delete("requestedResources");
 
       let reconnecting = this.ctx.storage.kv.get<boolean>("reconnecting");
       if (reconnecting) this.ctx.storage.kv.delete("reconnecting");
@@ -915,9 +937,11 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
     let obj = this.ctx.exports.UserAccount.get(id);
     let initiationNonce = generateNonce();
-    // Re-request the scopes already granted so a plain reconnect doesn't narrow access.
-    let requestedScopes = resourceUrlPatternsToOAuthScopes(await obj.getGrantedResourceUrlPatterns());
-    await obj.prepareReconnect(initiationNonce, requestedScopes);
+    // Re-request what's already granted so a plain reconnect doesn't narrow access. Re-recording
+    // the same resources also migrates an account that predates recording onto its own answer.
+    let grantedResources = await obj.getGrantedResourceUrlPatterns();
+    let requestedScopes = resourceUrlPatternsToOAuthScopes(grantedResources);
+    await obj.prepareReconnect(initiationNonce, requestedScopes, grantedResources);
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
@@ -931,10 +955,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 
     // Request the union of what's already granted and what's newly needed, so the expansion never
     // drops existing access.
-    let unionPatterns = new Set([...granted, ...resourceUrlPatterns]);
-    let requestedScopes = resourceUrlPatternsToOAuthScopes([...unionPatterns]);
+    let unionPatterns = [...new Set([...granted, ...resourceUrlPatterns])];
+    let requestedScopes = resourceUrlPatternsToOAuthScopes(unionPatterns);
     let initiationNonce = generateNonce();
-    await obj.prepareReconnect(initiationNonce, requestedScopes);
+    await obj.prepareReconnect(initiationNonce, requestedScopes, unionPatterns);
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
@@ -3041,10 +3065,6 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
 // Google Drive Gatekeeper
 // =======================================================================================
 
-const DRIVE_OBSERVATION_PREFIX = "observedDriveFile:";
-const DRIVE_BASELINE_DENIED_MESSAGE =
-  "This collaborator has not granted Google Drive access, so they cannot observe this binding.";
-
 type GoogleDriveGatekeeperImplProps = {
   userObjectId: string;
   scope: DriveBindingScope;
@@ -3105,14 +3125,11 @@ export class GoogleDriveGatekeeperImpl
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleDriveSession> {
-    let prepareObservation = this.ctx.props.scope.kind === "file"
-      ? undefined
-      : (fileIds: string[]) => this.#observerTracker().prepareObservation(fileIds);
     return new GoogleDriveSessionImpl(
       new DriveApi(opts => this.#getAccessToken(opts)),
       this.ctx.props.scope,
       approvalQueue.dup(),
-      prepareObservation,
+      fileIds => this.#observerTracker().prepareObservation(fileIds),
     );
   }
 
@@ -3124,41 +3141,17 @@ export class GoogleDriveGatekeeperImpl
   }
 
   #observerTracker(): ObserverTracker<string, Fetcher<GoogleVerifierApi>> {
-    let { scope } = this.ctx.props;
-    if (scope.kind === "sharedDrive") {
-      let key = `${DRIVE_OBSERVATION_PREFIX}${encodeURIComponent(scope.driveId)}`;
-      if (this.ctx.storage.kv.get(key) === undefined) this.ctx.storage.kv.put(key, "observed");
-    }
-    return new ObserverTracker<string, Fetcher<GoogleVerifierApi>>(this.ctx.storage.kv, {
-      setPrefix: DRIVE_OBSERVATION_PREFIX,
-      encode: encodeURIComponent,
-      decode: decodeURIComponent,
-      verifyBatch: (verifier, fileIds) => verifier.verifyDriveFiles([...fileIds]),
-      baselineDeniedMessage: DRIVE_BASELINE_DENIED_MESSAGE,
-      deniedMessage: fileId =>
-        `This collaborator cannot access Drive file ${fileId}, whose metadata this workspace has read.`,
-      maxTrackedSets: null,
-    });
+    return driveObserverTracker<Fetcher<GoogleVerifierApi>>(
+      this.ctx.storage.kv, this.ctx.props.scope,
+      (verifier, fileIds) => verifier.verifyDriveFiles([...fileIds]));
   }
 
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
-    let verifier = user as unknown as Fetcher<GoogleVerifierApi>;
-    let { scope } = this.ctx.props;
-    if (scope.kind !== "file") {
-      await this.#observerTracker().addObserver(id, verifier);
-      return;
-    }
-    let result = await verifier.verifyDriveFiles([scope.fileId]);
-    if (!result.baselineAllowed) {
-      throw new Error(DRIVE_BASELINE_DENIED_MESSAGE);
-    }
-    if (result.allowed.length !== 1 || !result.allowed[0]) {
-      throw new Error("This collaborator cannot access the Drive file bound to this workspace.");
-    }
+    await this.#observerTracker().addObserver(id, user as unknown as Fetcher<GoogleVerifierApi>);
   }
 
   async removeObserver(id: string): Promise<void> {
-    if (this.ctx.props.scope.kind !== "file") this.#observerTracker().removeObserver(id);
+    this.#observerTracker().removeObserver(id);
   }
 }
 
@@ -3170,7 +3163,7 @@ class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSession {
     api: DriveApi,
     scope: DriveBindingScope,
     approvalQueue: RpcStub<ApprovalQueue>,
-    prepareObservation?: (fileIds: string[]) => Promise<ObserverCheck<string>>,
+    prepareObservation: (fileIds: string[]) => Promise<ObserverCheck<string>>,
   ) {
     super();
     this.#core = new DriveSessionCore({

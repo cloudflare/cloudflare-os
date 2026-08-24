@@ -25,7 +25,8 @@ export type DriveFile = {
 /** Current metadata for one shared drive. */
 export type DriveInfo = { id: string; name: string };
 
-const DRIVE_FILE_ITEM_FIELDS = [
+/** The per-file field mask. `getFile` sends this; {@link DRIVE_FILE_FIELDS} wraps it for lists. */
+export const DRIVE_FILE_ITEM_FIELDS = [
   "id", "name", "mimeType", "modifiedTime", "size", "parents", "driveId",
   "owners(displayName,emailAddress)", "webViewLink",
   "shortcutDetails(targetId,targetMimeType)",
@@ -48,13 +49,22 @@ export type DriveFileQuery = {
   directParentId?: string;
 };
 
+/**
+ * Which corpus `listFiles` searches.
+ *
+ * One value rather than the provider's independent `corpora`/`driveId` pair: a shared-drive
+ * binding's whole boundary is those two travelling together, and `driveId` without
+ * `corpora: "drive"` silently falls back to the user corpus.
+ */
+export type DriveCorpus = { kind: "user" } | { kind: "drive"; driveId: string };
+
 export type DriveListFilesOptions = DriveFileQuery & {
   pageSize?: number;
   pageToken?: string;
   /** `null` preserves Drive's relevance ordering for full-text search. */
   orderBy?: string | null;
-  corpora?: "user" | "drive";
-  driveId?: string;
+  /** Defaults to the connected account's user corpus. */
+  corpus?: DriveCorpus;
 };
 
 export type DriveFileList = { files: DriveFile[]; nextPageToken?: string };
@@ -203,14 +213,14 @@ function literalClause(field: string, operator: string, value: string): string {
 /** Assembles a Drive `q` from structured values. Trashed files are always excluded. */
 export function buildDriveQuery(query: DriveFileQuery): string {
   let clauses = ["trashed = false"];
-  let mimeTypes = query.mimeTypes?.map(value => value.trim()).filter(Boolean);
-  if (!mimeTypes?.length && query.mimeType?.trim()) {
+  if (query.mimeType?.trim()) {
     clauses.push(literalClause("mimeType", "=", query.mimeType.trim()));
   }
   let name = query.nameContains?.trim();
   if (name) clauses.push(literalClause("name", "contains", name));
   let fullText = query.fullTextContains?.trim();
   if (fullText) clauses.push(literalClause("fullText", "contains", fullText));
+  let mimeTypes = query.mimeTypes?.map(value => value.trim()).filter(Boolean);
   if (mimeTypes?.length) {
     clauses.push(`(${mimeTypes.map(value => literalClause("mimeType", "=", value)).join(" or ")})`);
   }
@@ -223,6 +233,46 @@ export function buildDriveQuery(query: DriveFileQuery): string {
     clauses.push(`'${escapeDriveQueryLiteral(query.directParentId.trim())}' in parents`);
   }
   return clauses.join(" and ");
+}
+
+type BatchAccessPart = { status: number; body: string };
+
+/**
+ * Split a Drive batch response and place each part by its echoed Content-ID.
+ *
+ * Google does not promise part order. These booleans gate observer admission, so a swapped pair
+ * would let the wrong collaborator in (or lock the right one out). Refuse a missing or
+ * unrecognised part rather than guessing.
+ */
+async function parseBatchAccessParts(
+  response: Response, count: number,
+): Promise<BatchAccessPart[]> {
+  let contentType = response.headers.get("Content-Type") ?? "";
+  let responseBoundary = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType)?.slice(1).find(Boolean);
+  if (!responseBoundary) throw new Error("Invalid Google Drive batch response boundary");
+  let text = await readBoundedText(
+    response, MAX_BATCH_RESPONSE_BYTES, "Google Drive batch response was too large");
+  let responseParts = text.split(`--${responseBoundary}`).filter(part => /HTTP\/1\.[01] \d{3}/.test(part));
+  if (responseParts.length !== count) {
+    throw new Error("Google Drive batch response did not contain one result per file");
+  }
+  let placed: Array<BatchAccessPart | undefined> = Array.from({ length: count });
+  for (let part of responseParts) {
+    let idMatch = /Content-ID:\s*<response-item-(\d+)>/i.exec(part);
+    if (!idMatch) {
+      throw new Error("Google Drive batch response part was missing a Content-ID");
+    }
+    let index = Number(idMatch[1]);
+    if (index < 0 || index >= count || placed[index] !== undefined) {
+      throw new Error("Google Drive batch response part had an unrecognised Content-ID");
+    }
+    let status = Number(/HTTP\/1\.[01] (\d{3})/.exec(part)?.[1]);
+    placed[index] = { status, body: part.split(/\r?\n\r?\n/).at(-1) ?? "" };
+  }
+  if (placed.some(part => part === undefined)) {
+    throw new Error("Google Drive batch response did not contain one result per file");
+  }
+  return placed as BatchAccessPart[];
 }
 
 export class DriveApi {
@@ -240,8 +290,9 @@ export class DriveApi {
     });
     if (options.orderBy !== null) params.set("orderBy", options.orderBy ?? "modifiedTime desc");
     if (options.pageToken) params.set("pageToken", options.pageToken);
-    if (options.corpora) params.set("corpora", options.corpora);
-    if (options.driveId) params.set("driveId", options.driveId);
+    let corpus = options.corpus ?? { kind: "user" };
+    params.set("corpora", corpus.kind);
+    if (corpus.kind === "drive") params.set("driveId", corpus.driveId);
     let body = await this.#getUnknown("/files", params);
     if (!isRecord(body)) throw new Error("Invalid Google Drive file-list response");
     let files: DriveFile[] = [];
@@ -307,36 +358,51 @@ export class DriveApi {
       "",
     ].join("\r\n"));
     let body = `${parts.join("")}--${boundary}--\r\n`;
-    let response = await fetchWithAuthRetry(DRIVE_BATCH_URL, {
-      method: "POST",
-      headers: {
-        Accept: "multipart/mixed",
-        "Content-Type": `multipart/mixed; boundary=${boundary}`,
-      },
-      body,
-    }, this.getAccessToken);
-    if (!response.ok) throw await driveError(response);
 
-    let contentType = response.headers.get("Content-Type") ?? "";
-    let responseBoundary = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType)?.slice(1).find(Boolean);
-    if (!responseBoundary) throw new Error("Invalid Google Drive batch response boundary");
-    let text = await readBoundedText(
-      response, MAX_BATCH_RESPONSE_BYTES, "Google Drive batch response was too large");
-    let responseParts = text.split(`--${responseBoundary}`).filter(part => /HTTP\/1\.[01] \d{3}/.test(part));
-    if (responseParts.length !== fileIds.length) {
-      throw new Error("Google Drive batch response did not contain one result per file");
-    }
-    return responseParts.map(part => {
-      let status = Number(/HTTP\/1\.[01] (\d{3})/.exec(part)?.[1]);
-      if (status >= 200 && status < 300) return true;
-      let reason = googleErrorReasonFromText(part.split(/\r?\n\r?\n/).at(-1) ?? "");
-      if (status === 403 && reason === API_DISABLED_REASON) {
-        throw new DriveApiDisabledError(
-          "the Google Drive API is not enabled for this OAuth project");
+    // Capture the token this batch actually sent so an inner 401 can invalidate the same cache
+    // entry `fetchWithAuthRetry` would have refreshed, had the outer POST not been 200.
+    let lastToken: string | undefined;
+    let getToken: AccessTokenProvider = async opts => {
+      lastToken = await this.getAccessToken(opts);
+      return lastToken;
+    };
+
+    let replayed = false;
+    for (;;) {
+      let response = await fetchWithAuthRetry(DRIVE_BATCH_URL, {
+        method: "POST",
+        headers: {
+          Accept: "multipart/mixed",
+          "Content-Type": `multipart/mixed; boundary=${boundary}`,
+        },
+        body,
+      }, getToken, { idempotent: true });
+      if (!response.ok) throw await driveError(response);
+
+      let placed = await parseBatchAccessParts(response, fileIds.length);
+      if (placed.some(part => part.status === 401)) {
+        // The batch POST itself returns 200 when a subrequest 401s, so fetchWithAuthRetry's
+        // one-shot refresh never sees it and a stale cached token would deny every file forever.
+        // Force the same cache invalidation the helper uses, then replay the (read-only) batch once.
+        if (replayed) {
+          throw new Error("Google Drive batch subrequest failed: 401");
+        }
+        replayed = true;
+        await this.getAccessToken({ forceRefresh: true, staleToken: lastToken });
+        continue;
       }
-      if (status === 401 || status === 403 || status === 404) return false;
-      throw new Error(`Google Drive batch subrequest failed: ${status}`);
-    });
+
+      return placed.map(part => {
+        if (part.status >= 200 && part.status < 300) return true;
+        let reason = googleErrorReasonFromText(part.body);
+        if (part.status === 403 && reason === API_DISABLED_REASON) {
+          throw new DriveApiDisabledError(
+            "the Google Drive API is not enabled for this OAuth project");
+        }
+        if (part.status === 403 || part.status === 404) return false;
+        throw new Error(`Google Drive batch subrequest failed: ${part.status}`);
+      });
+    }
   }
 
   async #getUnknown(path: string, params: URLSearchParams): Promise<unknown> {

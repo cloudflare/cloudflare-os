@@ -1,26 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ObserverTracker } from "../src/observers";
-import type { ObserverKv } from "../src/observers";
-
-/** An in-memory stand-in for a Durable Object's `ctx.storage.kv`, preserving insertion order. */
-class FakeKv implements ObserverKv {
-  entries = new Map<string, unknown>();
-
-  get<T>(key: string): T | undefined {
-    return this.entries.get(key) as T | undefined;
-  }
-  put<T>(key: string, value: T): void {
-    this.entries.set(key, value);
-  }
-  delete(key: string): void {
-    this.entries.delete(key);
-  }
-  list<T>({ prefix }: { prefix: string }): Iterable<[string, T]> {
-    return [...this.entries]
-      .filter(([key]) => key.startsWith(prefix))
-      .map(([key, value]) => [key, value as T]);
-  }
-}
+import { FakeKv } from "./fake-kv";
 
 /** A verifier that grants access to a fixed allow-list, and records what it was asked. */
 class FakeVerifier {
@@ -35,7 +15,7 @@ class FakeVerifier {
 let kv: FakeKv;
 
 function makeTracker(overrides: Partial<{
-  maxTrackedSets: number | null;
+  maxTrackedSets: number;
   concurrency: number;
   recordObservers: boolean;
   hasAccess: (verifier: FakeVerifier, value: string) => Promise<boolean>;
@@ -44,7 +24,10 @@ function makeTracker(overrides: Partial<{
     setPrefix: "set:",
     encode: value => encodeURIComponent(value),
     decode: encoded => decodeURIComponent(encoded),
-    hasAccess: overrides.hasAccess ?? ((verifier, value) => verifier.check(value)),
+    hasAccess: overrides.hasAccess ?? (async (verifier, value) => {
+      verifier.asked.push(value);
+      return verifier.allowed.has(value);
+    }),
     deniedMessage: value => `no access to ${value}`,
     ...overrides,
   });
@@ -52,6 +35,7 @@ function makeTracker(overrides: Partial<{
 
 const allow = (...values: string[]) => new FakeVerifier(new Set(values));
 const states = () => [...kv.list<string>({ prefix: "set:" })];
+const nonceKeys = () => [...kv.list({ prefix: "observer-nonce:" })];
 
 beforeEach(() => { kv = new FakeKv(); });
 
@@ -64,6 +48,40 @@ describe("construction", () => {
       hasAccess: async () => true,
       deniedMessage: () => "denied",
     })).toThrow(/must not collide/);
+  });
+
+  it("refuses a bulk verifier that does not record observers", () => {
+    expect(() => new ObserverTracker<string, FakeVerifier>(kv, {
+      setPrefix: "set:",
+      encode: v => v,
+      decode: v => v,
+      verifyBatch: async () => ({ baselineAllowed: true, allowed: [] }),
+      baselineDeniedMessage: "no Drive grant",
+      deniedMessage: () => "denied",
+      recordObservers: false,
+    })).toThrow(/must record observers/);
+  });
+
+  it("refuses both a per-set and a bulk verifier", () => {
+    expect(() => new ObserverTracker<string, FakeVerifier>(kv, {
+      setPrefix: "set:",
+      encode: v => v,
+      decode: v => v,
+      hasAccess: async () => true,
+      verifyBatch: async () => ({ baselineAllowed: true, allowed: [] }),
+      baselineDeniedMessage: "no Drive grant",
+      deniedMessage: () => "denied",
+    })).toThrow(/exactly one/);
+  });
+
+  it("refuses a bulk verifier without a baseline denial message", () => {
+    expect(() => new ObserverTracker<string, FakeVerifier>(kv, {
+      setPrefix: "set:",
+      encode: v => v,
+      decode: v => v,
+      verifyBatch: async () => ({ baselineAllowed: true, allowed: [] }),
+      deniedMessage: () => "denied",
+    })).toThrow(/baselineDeniedMessage/);
   });
 });
 
@@ -283,13 +301,6 @@ describe("addObserver", () => {
       let tracker = makeTracker({ maxTrackedSets: 3 });
       await expect(tracker.addObserver("reader", allow("s0", "s1", "s2"))).resolves.toBeUndefined();
     });
-  it("allows explicitly unbounded tracking for batched verifiers", async () => {
-    fill(1_000);
-    let tracker = makeTracker({ maxTrackedSets: null });
-    await expect(tracker.prepareObservation(["extra"])).resolves.toMatchObject({
-      pendingSets: ["extra"],
-    });
-  });
 });
 });
 
@@ -304,7 +315,6 @@ describe("bulk verification", () => {
       verifyBatch,
       deniedMessage: value => `no access to ${value}`,
       baselineDeniedMessage: "no Drive grant",
-      maxTrackedSets: null,
     });
   }
 
@@ -326,6 +336,24 @@ describe("bulk verification", () => {
       .rejects.toThrow("no Drive grant");
     expect(verifyBatch).toHaveBeenCalledOnce();
     expect(verifyBatch).toHaveBeenCalledWith(expect.any(FakeVerifier), []);
+    expect([...makeBulkTracker(verifyBatch).observers()]).toEqual([]);
+    expect(nonceKeys()).toEqual([]);
+  });
+
+  it("leaves no observer or nonce after a per-file denial", async () => {
+    kv.put("set:a", "observed");
+    let tracker = makeBulkTracker(async () => ({ baselineAllowed: true, allowed: [false] }));
+    await expect(tracker.addObserver("reader", allow())).rejects.toThrow("no access to a");
+    expect([...tracker.observers()]).toEqual([]);
+    expect(nonceKeys()).toEqual([]);
+  });
+
+  it("records a successful admission and deletes the nonce", async () => {
+    kv.put("set:a", "observed");
+    let tracker = makeBulkTracker(async () => ({ baselineAllowed: true, allowed: [true] }));
+    await tracker.addObserver("reader", allow());
+    expect([...tracker.observers()].map(([id]) => id)).toEqual(["reader"]);
+    expect(nonceKeys()).toEqual([]);
   });
 
   it("stages the observer so a concurrent new disclosure verifies it", async () => {
@@ -365,6 +393,8 @@ describe("bulk verification", () => {
     kv.put("set:a", "observed");
     let tracker = makeBulkTracker(async () => ({ baselineAllowed: true, allowed: [] }));
     await expect(tracker.addObserver("reader", allow())).rejects.toThrow(/one result per set/);
+    expect([...tracker.observers()]).toEqual([]);
+    expect(nonceKeys()).toEqual([]);
   });
 });
 
