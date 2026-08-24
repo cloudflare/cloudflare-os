@@ -1667,6 +1667,7 @@ export default function GadgetEditor() {
                   key={id}
                   workspaceId={id}
                   overseer={overseer.stub}
+                  restricted={metadata?.containsRestrictedData === true}
                   selectedChatId={effectiveSelectedChatId}
                   onNavigateToChat={navigateToChat}
                   onChatChangesChange={setChatChanges}
@@ -1827,6 +1828,7 @@ export default function GadgetEditor() {
               <div className="min-h-0 flex-1">
                 <Activity
                   overseer={overseer.stub}
+                  restricted={metadata?.containsRestrictedData === true}
                   view={activityView}
                   onViewChange={setActivityView}
                   onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
