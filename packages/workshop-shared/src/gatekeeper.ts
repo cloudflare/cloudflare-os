@@ -1198,11 +1198,11 @@ export type ObservationDescription = {
    * - Every collaborator must pass this gatekeeper's `addObserver()` to open the gadget, so a
    *   gatekeeper whose `addObserver()` always throws makes the gadget effectively unshareable
    *   once it has made one of these observations.
-   * - Once observed, the gadget enters a restricted mode: it may no longer fetch from the
-   *   public web, and it may only perform actions that target a gatekeeper that itself produced
-   *   a sensitive observation (writes-to-self -- sending the data back where it came from
-   *   reveals nothing new), each requiring manual human approval (never auto-approved). This
-   *   prevents the gadget from leaking the data through other gatekeepers.
+   * - Once observed, the gadget enters a restricted mode: no public-web fetches, and actions only
+   *   against a gatekeeper that itself produced a sensitive observation (writes-to-self), each
+   *   manually approved. That is set membership, not provenance: with several restricted
+   *   producers, data from one may be written back through another, and even one connection can
+   *   reach a wider audience than it was read from; the human approval is the mitigation.
    *
    * TODO(someday): The restricted mode is a blunt instrument. It should be possible to perform
    *   actions whose visibility is limited to people verified to have access to the same data,

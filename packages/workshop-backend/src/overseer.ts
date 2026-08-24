@@ -5824,9 +5824,10 @@ class OverseerImpl implements AgentHooks {
     }
 
     // Writes-to-self carve-out: a latched workspace may still act on the connections that
-    // produced its restricted data -- sending the data back where it came from reveals nothing
-    // new to that system -- while any other target could leak it. (Every such action still
-    // requires manual human approval; see autoApprovalRule.) A latched workspace always has a
+    // produced its restricted data, while any other target could leak it. (Every such action
+    // still requires manual human approval; see autoApprovalRule.) The check is set membership,
+    // not provenance -- the human approver is the check for cross-producer or broader-audience
+    // writes; see the containsRestrictedData doc. A latched workspace always has a
     // non-empty producer set (the latch and its action record are written in one synchronous
     // block; see restrictedProducerIds); if the set is ever empty anyway, the `has` check fails
     // for every target and all actions are refused -- the conservative fallback. Refused before
