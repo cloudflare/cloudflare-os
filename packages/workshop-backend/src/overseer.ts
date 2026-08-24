@@ -9876,6 +9876,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let chats = this.impl.storage.chats;
     let chatMeta = this.impl.storage.chatMeta;
     let changedChatMetadata: AiChatMetadata[] = [];
+    let replayCount = 0;
 
     subscriber = subscriber.dup();  // keep stub after return
     this.impl.addChatSubscriber(subscriber);
@@ -9935,6 +9936,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       // Catch up on metadata changes.
       for (let meta of chatMeta.byLastActive.list({startAfter: startAfter.valueOf()})) {
         changedChatMetadata.push(meta);
+        ++replayCount;
       }
     }
 
@@ -9942,6 +9944,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       // Catch up on messages.
       for (let msg of chats.byTimestamp.list({startAfter: startAfter.valueOf()})) {
         deliverMessage(msg);
+        ++replayCount;
       }
       // Messages establish the durable state that the corresponding metadata describes.
       for (let meta of changedChatMetadata) {
@@ -9959,7 +9962,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       if (row.retired) continue;
       subscriber.changeApplied(row.chatId, row.generation, row.revision, row.author, row.change,
                                row.submission).catch(unsubscribe);
+      ++replayCount;
     }
+
+    this.impl.logger.debug("chat subscription replay completed", {
+      event: "chat.subscription.replay.completed",
+      size: replayCount,
+    });
 
     chatMeta.subscribe(metaSubscriber);
     chats.subscribe(msgSubscriber);
