@@ -2524,9 +2524,12 @@ class OverseerImpl implements AgentHooks {
   emitChatChangeApplied(row: ChatChangeRecord): void {
     for (let subscriber of this.#chatSubscribers) {
       subscriber.changeApplied(row.chatId, row.generation, row.revision, row.author, row.change,
-                               row.submission).catch(() => {
-        subscriber[Symbol.dispose]();
-        this.#chatSubscribers.delete(subscriber);
+                               row.submission).catch(err => {
+        // One rejected callback doesn't mean the client is gone; dropping the subscriber here
+        // leaves a live page silently unsubscribed. Dead clients are removed by onRpcBroken.
+        this.logger.warn("chat changeApplied callback rejected", {
+          event: "chat.change.subscriber.rejected", chatId: row.chatId, error: err,
+        });
       });
     }
   }
@@ -9958,7 +9961,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     for (let row of this.impl.storage.chatChanges.list()) {
       if (row.retired) continue;
       subscriber.changeApplied(row.chatId, row.generation, row.revision, row.author, row.change,
-                               row.submission).catch(unsubscribe);
+                               row.submission).catch(err => {
+        // Keep the subscription on a rejected callback (see emitChatChangeApplied); dead clients
+        // are removed by the onRpcBroken handler above.
+        this.impl.logger.warn("chat changeApplied replay callback rejected", {
+          event: "chat.change.subscriber.rejected", chatId: row.chatId, error: err,
+        });
+      });
     }
 
     chatMeta.subscribe(metaSubscriber);
