@@ -72,7 +72,7 @@ describe("escapeDriveQueryLiteral", () => {
 
   it("defuses an injected clause", () => {
     let injected = "x' or name contains 'secret";
-    expect(buildDriveQuery({ nameContains: injected }))
+    expect(buildDriveQuery({ namePrefix: injected }))
       .toBe("trashed = false and name contains 'x\\' or name contains \\'secret'");
   });
 });
@@ -82,23 +82,23 @@ describe("buildDriveQuery", () => {
     expect(buildDriveQuery({})).toBe("trashed = false");
   });
 
-  it("ANDs the mime type and the name fragment", () => {
-    expect(buildDriveQuery({ mimeType: "application/vnd.google-apps.document", nameContains: "q3" }))
+  it("ANDs the MIME type and name prefix", () => {
+    expect(buildDriveQuery({ mimeType: "application/vnd.google-apps.document", namePrefix: "q3" }))
       .toBe(
         "trashed = false and mimeType = 'application/vnd.google-apps.document' " +
         "and name contains 'q3'");
   });
 
-  it("ignores a blank or whitespace-only name fragment", () => {
-    expect(buildDriveQuery({ nameContains: "   " })).toBe("trashed = false");
+  it("ignores a blank or whitespace-only name prefix", () => {
+    expect(buildDriveQuery({ namePrefix: "   " })).toBe("trashed = false");
   });
 
-  it("trims the name fragment", () => {
-    expect(buildDriveQuery({ nameContains: "  q3  " })).toBe("trashed = false and name contains 'q3'");
+  it("trims name prefixes before emitting Drive's prefix-only contains operator", () => {
+    expect(buildDriveQuery({ namePrefix: "  q3  " })).toBe("trashed = false and name contains 'q3'");
   });
   it("ANDs every structured search filter and ORs MIME types", () => {
     expect(buildDriveQuery({
-      nameContains: "Quarter",
+      namePrefix: "Quarter",
       fullTextContains: "budget",
       mimeTypes: ["application/pdf", "text/plain"],
       modifiedAfter: "2026-01-01T00:00:00Z",
@@ -224,7 +224,7 @@ describe("listFiles", () => {
   it("sends the assembled query as the Drive q parameter", async () => {
     let calls = stubFetch([jsonResponse({ files: [] })]);
     await api().listFiles({
-      nameContains: "Quarter",
+      namePrefix: "Quarter",
       fullTextContains: "budget",
       mimeTypes: ["application/pdf"],
       directParentId: "folder-1",
@@ -265,15 +265,15 @@ describe("listDrives", () => {
     await expect(api().listDrives()).rejects.toThrow("Invalid Google shared-drive response");
   });
 
-  it("escapes nameContains when filtering shared drives", async () => {
+  it("escapes the name prefix when filtering shared drives", async () => {
     let calls = stubFetch([jsonResponse({ drives: [] })]);
-    await api().listDrives({ nameContains: "Ada's \\drive" });
+    await api().listDrives({ namePrefix: "Ada's \\drive" });
     expect(calls[0].url.searchParams.get("q")).toBe("name contains 'Ada\\'s \\\\drive'");
   });
 
-  it("omits q when nameContains is whitespace-only", async () => {
+  it("omits q when the name prefix is whitespace-only", async () => {
     let calls = stubFetch([jsonResponse({ drives: [] })]);
-    await api().listDrives({ nameContains: "   " });
+    await api().listDrives({ namePrefix: "   " });
     expect(calls[0].url.searchParams.has("q")).toBe(false);
   });
 

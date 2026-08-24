@@ -94,7 +94,7 @@ async function listDriveFiles(
 
   let files;
   try {
-    ({ files } = await drive.listFiles({ mimeType, nameContains: query }));
+    ({ files } = await drive.listFiles({ mimeType, namePrefix: query }));
   } catch (error) {
     if (error instanceof DriveApiDisabledError) {
       throw new Error(
@@ -248,7 +248,7 @@ export class SharedDriveConfiguratorUI extends RpcTarget implements SharedDriveC
   async listSharedDrives(query: string): Promise<ConfiguratorOption[]> {
     let drive = new DriveApi(googleTokenProvider(this));
     try {
-      let { drives } = await drive.listDrives({ nameContains: query });
+      let { drives } = await drive.listDrives({ namePrefix: query });
       return drives.map(item => ({ value: item.id, title: item.name, subtitle: item.id }));
     } catch (error) {
       if (error instanceof DriveApiDisabledError) {
@@ -272,7 +272,7 @@ export class DriveFileConfiguratorUI extends RpcTarget implements DriveFileConfi
     let drive = new DriveApi(googleTokenProvider(this));
     try {
       let { files } = await drive.listFiles({
-        nameContains: query, excludeMimeTypes: ["application/vnd.google-apps.folder"],
+        namePrefix: query, excludeMimeTypes: ["application/vnd.google-apps.folder"],
       });
       return files.map(file => ({
         value: file.id,

@@ -103,7 +103,7 @@ function timestamp(value: string | undefined, field: string): string | undefined
 }
 
 function normalizeSearch(query: DriveSearchQuery): DriveSearchQuery {
-  let nameContains = query.nameContains?.trim();
+  let namePrefix = query.namePrefix?.trim();
   let fullTextContains = query.fullTextContains?.trim();
   let directParentId = query.directParentId?.trim();
   let mimeTypes = query.mimeTypes?.map(value => value.trim()).filter(Boolean);
@@ -114,7 +114,7 @@ function normalizeSearch(query: DriveSearchQuery): DriveSearchQuery {
     ? timestamp(query.modifiedBefore, "modifiedBefore")
     : undefined;
   let normalized: DriveSearchQuery = {};
-  if (nameContains) normalized.nameContains = nameContains;
+  if (namePrefix) normalized.namePrefix = namePrefix;
   if (fullTextContains) normalized.fullTextContains = fullTextContains;
   if (mimeTypes?.length) normalized.mimeTypes = mimeTypes;
   if (modifiedAfter) normalized.modifiedAfter = modifiedAfter;
@@ -149,8 +149,8 @@ function scopePhrase(scope: DriveBindingScope): string {
 
 function queryClauses(query: DriveListFilesOptions): string[] {
   let parts: string[] = [];
-  if (query.nameContains) {
-    parts.push(`name contains "${clip(query.nameContains, MAX_OBSERVATION_VALUE)}"`);
+  if (query.namePrefix) {
+    parts.push(`name starts with "${clip(query.namePrefix, MAX_OBSERVATION_VALUE)}"`);
   }
   if (query.fullTextContains) {
     parts.push(`full text contains "${clip(query.fullTextContains, MAX_OBSERVATION_VALUE)}"`);

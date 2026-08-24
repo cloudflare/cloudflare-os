@@ -320,7 +320,7 @@ describe("Drive parent folder probe", () => {
 describe("Drive search validation", () => {
   it("requires at least one populated search filter", async () => {
     let { session } = core();
-    await expect(session.search({ nameContains: "   " })).rejects.toThrow(/at least one filter/);
+    await expect(session.search({ namePrefix: "   " })).rejects.toThrow(/at least one filter/);
   });
 
   it("requires strict RFC 3339 timestamps and an increasing range", async () => {
@@ -346,7 +346,7 @@ describe("Drive search validation", () => {
 
   it("rejects search on a file-scoped binding without listing", async () => {
     let { session, listFiles } = core({ scope: { kind: "file", fileId: "file-1" } });
-    await expect(session.search({ nameContains: "plan" })).rejects.toThrow(/getEntry/);
+    await expect(session.search({ namePrefix: "plan" })).rejects.toThrow(/getEntry/);
     expect(listFiles).not.toHaveBeenCalled();
   });
 });
@@ -370,13 +370,13 @@ describe("Drive observation authorization", () => {
       files: [file({ id: "local", driveId: "drive-1" })],
     });
 
-    await (await session.search({ nameContains: "plan", fullTextContains: longText })).next();
+    await (await session.search({ namePrefix: "plan", fullTextContains: longText })).next();
     let observation = authorizations[0];
     expect(observation.title).toBe("Read Google Drive metadata");
     expect(observation.title).not.toContain(longText);
     expect(observation.title).not.toContain("plan");
     expect(observation.description).toContain("shared drive drive-1");
-    expect(observation.description).toContain("plan");
+    expect(observation.description).toContain('name starts with "plan"');
     expect(observation.description).toContain("salary-review-");
     expect(observation.description).not.toContain(longText);
     expect(observation.description.length).toBeLessThanOrEqual(240);

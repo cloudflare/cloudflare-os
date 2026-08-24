@@ -97,8 +97,8 @@ export type DriveListOptions = {
  * values within `mimeTypes` are OR-ed.
  */
 export type DriveSearchQuery = {
-  /** Match entries whose name contains this value. */
-  nameContains?: string;
+  /** Match entries whose name starts with this value. */
+  namePrefix?: string;
   /**
    * Match entries whose indexed text contains this value.
    *

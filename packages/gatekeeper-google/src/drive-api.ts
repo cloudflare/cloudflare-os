@@ -42,7 +42,8 @@ export type DriveFileQuery = {
   mimeTypes?: string[];
   /** Internal configurator filter; not exposed to agents. */
   excludeMimeTypes?: string[];
-  nameContains?: string;
+  /** Name prefix; Drive spells its prefix-only operator `contains`. */
+  namePrefix?: string;
   fullTextContains?: string;
   modifiedAfter?: string;
   modifiedBefore?: string;
@@ -68,7 +69,7 @@ export type DriveListFilesOptions = DriveFileQuery & {
 };
 
 export type DriveFileList = { files: DriveFile[]; nextPageToken?: string };
-export type DriveListDrivesOptions = { pageSize?: number; pageToken?: string; nameContains?: string };
+export type DriveListDrivesOptions = { pageSize?: number; pageToken?: string; namePrefix?: string };
 export type DriveList = { drives: DriveInfo[]; nextPageToken?: string };
 
 /** Drive refused because the API is not enabled on this OAuth project. */
@@ -221,7 +222,7 @@ export function buildDriveQuery(query: DriveFileQuery): string {
   if (query.mimeType?.trim()) {
     clauses.push(literalClause("mimeType", "=", query.mimeType.trim()));
   }
-  let name = query.nameContains?.trim();
+  let name = query.namePrefix?.trim();
   if (name) clauses.push(literalClause("name", "contains", name));
   let fullText = query.fullTextContains?.trim();
   if (fullText) clauses.push(literalClause("fullText", "contains", fullText));
@@ -344,8 +345,8 @@ export class DriveApi {
       pageSize: String(options.pageSize ?? 100), fields: "nextPageToken,drives(id,name)",
     });
     if (options.pageToken) params.set("pageToken", options.pageToken);
-    if (options.nameContains?.trim()) {
-      params.set("q", literalClause("name", "contains", options.nameContains.trim()));
+    if (options.namePrefix?.trim()) {
+      params.set("q", literalClause("name", "contains", options.namePrefix.trim()));
     }
     let body = await this.#getUnknown("/drives", params);
     if (!isRecord(body)) throw new Error("Invalid Google shared-drive list response");
