@@ -5808,6 +5808,21 @@ class OverseerImpl implements AgentHooks {
   async submitAction(gatekeeperId: number, action: number,
                      description: ActionDescription, caller: GatekeeperCaller)
       : Promise<void> {
+    // An in-flight facet RPC can outlive removeGatekeeper (cf. the restricted-observation refusal
+    // in authorizeObservation), so an action can arrive naming a connection this workspace no
+    // longer has. A pending action persisted on a removed connection could never be approved *or*
+    // rejected -- both paths dereference the record through getGatekeeperFacet -- and would
+    // suspend an awaitDecision agent turn forever, so refuse before any write. This also covers
+    // the latched case below: restrictedProducerIds is derived from the never-pruned action log,
+    // so a removed producer stays in the set, and membership alone must not admit a write to a
+    // dead connection.
+    let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
+    if (!gatekeeper) {
+      throw new Error(
+          "This action was blocked because the connection it was submitted through has been " +
+          "removed from this workspace.");
+    }
+
     // Writes-to-self carve-out: a latched workspace may still act on the connections that
     // produced its restricted data -- sending the data back where it came from reveals nothing
     // new to that system -- while any other target could leak it. (Every such action still
@@ -5835,14 +5850,12 @@ class OverseerImpl implements AgentHooks {
     let actionId = this.storage.nextActionId.get();
     this.storage.nextActionId.put(actionId + 1);
 
-    let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
-
     let record: ActionRecord = {
       id: actionId,
       gatekeeperId,
       caller,
-      resourceTitle: gatekeeper?.resourceTitle,
-      resourceUrl: gatekeeper?.resourceUrl,
+      resourceTitle: gatekeeper.resourceTitle,
+      resourceUrl: gatekeeper.resourceUrl,
       action,
       createdAt: new Date(),
       state: "pending",
