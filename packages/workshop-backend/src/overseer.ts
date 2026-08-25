@@ -5241,6 +5241,17 @@ class OverseerImpl implements AgentHooks {
   // was applied automatically. For an auto-approval, `resolvedBy` is the user who enabled the rule.
   async applyPendingAction(record: ActionRecord & {type: "action"},
                            resolvedBy: AiChatAuthorInfo, autoApproved: boolean): Promise<void> {
+    // Re-check the writes-to-self carve-out at apply time: an action queued before the latch may
+    // be approved after it. rejectAction is not gated -- denying is how the user unsticks an
+    // agent turn suspended on awaitDecision.
+    if (this.storage.containsRestrictedData.get() &&
+        !this.restrictedProducerIds().has(record.gatekeeperId)) {
+      throw new Error(
+          "This workspace has observed sensitive data from other connections. To prevent leaks, " +
+          "it may only perform actions on those same connections; this pending action targets " +
+          "another connection, so it can only be denied.");
+    }
+
     let gatekeeper = this.getGatekeeperFacet(record.gatekeeperId);
     // The apply-time cache stub is scoped to the gatekeeper AND to this action (approval can
     // happen long after the session that queued it, so the queue-time stub is gone) -- the
@@ -5659,9 +5670,11 @@ class OverseerImpl implements AgentHooks {
   // observations whose description carries `containsRestrictedData`, since nothing else records
   // which connection a latched read came through; the log is never pruned, so the scan is also
   // the backfill for workspaces latched before the carve-out existed. Built-in tool observations
-  // are skipped: they are not a connection anything can write back to. Scanned only while
-  // latched, and the auto-approval drainer already full-scans the log per drain, so the cost is
-  // fine where it runs.
+  // are skipped: they are not a connection anything can write back to. The callers are
+  // submitAction and applyPendingAction, and both scan only while latched (the unlatched path
+  // short-circuits before the scan); latched manual approvals are human-bounded, and the
+  // auto-approval drainer already full-scans the log per drain, so the cost is fine where it
+  // runs.
   //
   // A latched workspace always yields a non-empty set: the latch and the producing record are
   // written in one synchronous block (see authorizeObservation). Records written before the
