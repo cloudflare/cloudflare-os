@@ -1848,7 +1848,21 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Subscribe to action adds/updates. Dispose the returned stub to unsubscribe.
-   * If `startAfter` is set, replay actions changed after that timestamp.
+   *
+   * The subscription delivers live deltas only — nothing pre-existing is replayed. Query for
+   * state, subscribe for deltas: fetch the current pending set via
+   * listActions({filter: "pending"}) and resolved history via the other filters. As with
+   * subscribeToChat(), initiate the subscribe call before those reads — there is no need to
+   * await its return, only to start it first — so nothing can slip between the snapshot the
+   * pages reflect and the stream.
+   *
+   * The `startAfter` parameter is intended to be used when resubscribing after a disconnect:
+   * specify the time of the last action seen, in order to ensure no actions were missed during
+   * the disconnect. If not specified, the subscription starts from the current time.
+   *
+   * Do NOT use `startAfter` as a way to enumerate historical data. Use `listActions()` instead.
+   * To ensure no holes between a subscription and historical data, call `subscribeToActions()`
+   * immediately before `listActions()`, similar to `subscribeToChat()`.
    */
   subscribeToActions(subscriber: RpcStub<ActionsSubscriber>, startAfter?: Date): Promise<RpcStub<{}>>;
 
@@ -3340,6 +3354,13 @@ export type AiChatStreamEvent = {
 /** Interface implemented by the client to receive action-log upserts. */
 export interface ActionsSubscriber {
   entry(record: ActionLogEntry): void;
+
+  /**
+   * @deprecated Fires after the subscription has caught up to the current time. However, this is
+   * only a useful signal when a subscription is being used to enumerate past actions using a
+   * distant-past `startAfter`. This is not the correct way to use `subscribeToActions()`; use
+   * `listActions()` instead.
+   */
   ready(): void;
 }
 

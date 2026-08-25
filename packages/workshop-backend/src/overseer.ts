@@ -547,6 +547,14 @@ export type ActionRecord = {
   resourceTitle?: string;   // denormalized to avoid gatekeeper query
   resourceUrl?: string;     // denormalized to avoid gatekeeper query
   createdAt: Date;
+
+  /**
+   * When the record last changed state: an action's approval/rejection, a hook's enable/disable
+   * toggle or deletion. Absent while nothing has happened since creation (and on legacy records
+   * from before it was tracked).
+   */
+  appliedAt?: Date;
+
   state: ActionState;
 
   /**
@@ -556,7 +564,6 @@ export type ActionRecord = {
   bindingName?: string;
 } & ({
   type: "action";
-  appliedAt?: Date;
   action: number;  // action key assigned by the gatekeeper, passed back on apply/reject/revert
   description: ActionDescription;
   resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
@@ -865,10 +872,9 @@ async function computeSessionAffinity(gadgetId: string, chatId: number): Promise
 }
 
 function actionRecordToLog(record: ActionRecord): ActionLogEntry {
-  // TODO: ActionRecord and ActionLogEntry are almost identical. The main differences are:
-  // - ActionRecord includes `appliedAt` only when type == "action". ActionLogEntry could match.
-  // - ActionRecord includes `action`, which should NOT be provided to the client.
-  // We could make the two match more -- just `action` needs to be different.
+  // TODO: ActionRecord and ActionLogEntry are almost identical. The main difference is that
+  // ActionRecord includes `action`, which should NOT be provided to the client. We could make
+  // the two match more -- just `action` needs to be different.
 
   // ActionLogEntry omits the gatekeeperId for records that didn't come from a real gatekeeper
   // (built-in agent tools use the BUILTIN_TOOL_GATEKEEPER_ID sentinel).
@@ -907,6 +913,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         resourceTitle: record.resourceTitle || "(title unavailable)",
         resourceUrl: record.resourceUrl,
         createdAt: record.createdAt,
+        appliedAt: record.appliedAt,
         state: record.state,
         type: "bindHook",
         hookId: record.hookId,
@@ -917,6 +924,18 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
       record satisfies never;
       throw new TypeError(`Invalid ActionRecord type: ${(record as ActionRecord).type}`);
   }
+}
+
+// Reflect a hook toggle (or deletion, which also severs the hookId reference) onto the hook's
+// bindHook action record, stamping the state-change time the startAfter resume replay filters on.
+function stampBindHookAction(storage: OverseerStorage, actionId: number, enabled: boolean,
+    opts?: {clearHookId?: boolean}): void {
+  let actionRecord = storage.actions.get(actionId);
+  if (actionRecord?.type !== "bindHook") return;
+  actionRecord.enabled = enabled;
+  if (opts?.clearHookId) delete actionRecord.hookId;
+  actionRecord.appliedAt = new Date();
+  storage.actions.put(actionRecord);
 }
 
 /**
@@ -967,6 +986,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       and every live chat was converted to the commit-pinned change stream (a
       //       `conversionBoundary` changes message plus a `codeBase`). The `code`/`snapshots`
       //       collections are dead stored data from this version on.
+      //   3 = the actions collection's `pendingByGatekeeper` index exists and is backfilled.
+      //   4 = the actions collection's `byHistoryFilter` index exists and is backfilled.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -2339,12 +2360,7 @@ class OverseerImpl implements AgentHooks {
     }
     this.storage.boundHooks.delete(record.id);
 
-    let actionRecord = this.storage.actions.get(record.actionId);
-    if (actionRecord?.type === "bindHook") {
-      actionRecord.enabled = false;
-      delete actionRecord.hookId;
-      this.storage.actions.put(actionRecord);
-    }
+    stampBindHookAction(this.storage, record.actionId, false, {clearHookId: true});
   }
 
   // Subscribe to the workspace's workpiece list. In v1 only gadget-type workpieces are published.
@@ -9528,12 +9544,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
       record.enabled = true;
       this.impl.storage.boundHooks.put(record);
-
-      let actionRecord = this.impl.storage.actions.get(record.actionId);
-      if (actionRecord?.type === "bindHook") {
-        actionRecord.enabled = true;
-        this.impl.storage.actions.put(actionRecord);
-      }
+      stampBindHookAction(this.impl.storage, record.actionId, true);
     }
   }
 
@@ -9546,12 +9557,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
       record.enabled = false;
       this.impl.storage.boundHooks.put(record);
-
-      let actionRecord = this.impl.storage.actions.get(record.actionId);
-      if (actionRecord?.type === "bindHook") {
-        actionRecord.enabled = false;
-        this.impl.storage.actions.put(actionRecord);
-      }
+      stampBindHookAction(this.impl.storage, record.actionId, false);
     }
   }
 
@@ -9836,17 +9842,31 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     actions.subscribe(dbSubscriber);
     subscribed = true;
 
-    // Replay actions changed since `startAfter`; resolved actions use `appliedAt`,
-    // pending actions use `createdAt`.
+    // The subscription delivers live deltas only; clients query current pending state via
+    // listActions({filter: "pending"}) after initiating the subscribe (see api.ts).
     if (startAfter !== undefined) {
-      let startAfterTimestamp = startAfter.valueOf();
-      for (let record of actions.list()) {
-        if (disposed) break;
-        let appliedAt = record.type === "action" ? record.appliedAt : undefined;
-        let recordTimestamp = (appliedAt ?? record.createdAt).valueOf();
-        if (recordTimestamp > startAfterTimestamp) {
-          subscriber.entry(actionRecordToLog(record)).catch(unsubscribe);
+      // startAfter supports resubscribing after a disconnect: replay every record whose last
+      // state change (appliedAt, falling back to createdAt) postdates the client's last-seen
+      // time, so nothing that happened during the gap is missed. The scan walks raw id-ordered
+      // pages, awaiting each page's delivery so a huge log neither starves other RPCs nor queues
+      // unbounded callbacks -- and so any delivery failure, the final page's included, rejects
+      // the subscribe call before ready(). nextActionId bounds the sweep: records created past
+      // it are delivered by the live subscription registered above.
+      try {
+        let end = this.impl.storage.nextActionId.get();
+        let cursor: number | undefined;
+        for (;;) {
+          if (disposed) throw new Error("Action subscriber failed during replay");
+          let page = [...actions.list({startAfter: cursor, end, limit: ACTION_REPLAY_PAGE_SIZE})];
+          await Promise.all(page
+              .filter(record => (record.appliedAt ?? record.createdAt) > startAfter)
+              .map(record => subscriber.entry(actionRecordToLog(record))));
+          if (page.length < ACTION_REPLAY_PAGE_SIZE) break;
+          cursor = page.at(-1)!.id;
         }
+      } catch (err) {
+        unsubscribe();
+        throw err;  // rejecting the subscribe call is the client's error signal
       }
     }
 
@@ -9935,7 +9955,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       end: beforeSequence === undefined ? undefined : compactionKey(chatId, beforeSequence),
     })];
     return {
-      messages: await Promise.all(result.map((msg) => this.#getChatMessageForClient(msg))),
+      messages: result.map((msg) => this.#getChatMessageForClient(msg)),
       compacted: checkpoint && {
         to: checkpoint.compactedTo,
         summary: checkpoint.summary,
@@ -9949,7 +9969,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return msg && this.#getChatMessageForClient(msg);
   }
 
-  async #getChatMessageForClient(msg: AiChatMessage): Promise<AiChatMessage> {
+  #getChatMessageForClient(msg: AiChatMessage): AiChatMessage {
     if (msg.type === "action") {
       let record = this.impl.storage.actions.get(msg.actionId);
       if (record) {
@@ -9988,18 +10008,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     let self = this;
     function deliverMessage(record: AiChatMessage) {
-      subscriber.message(self.impl.hydrateChatMessageForClient(record)).catch(unsubscribe);
+      subscriber.message(self.#getChatMessageForClient(record)).catch(unsubscribe);
     }
 
     let msgSubscriber = {
       add(record: AiChatMessage) {
-        if (record.type == "action") {
-          let actionRecord = self.impl.storage.actions.get(record.actionId);
-          if (actionRecord) {
-            record.actionLog = actionRecordToLog(actionRecord);
-          }
-        }
-
         deliverMessage(record);
       },
       update(oldRecord: AiChatMessage, newRecord: AiChatMessage): void {
