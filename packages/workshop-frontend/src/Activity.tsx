@@ -174,6 +174,11 @@ export default function Activity({
     actionKind: ActionKind
     actionLabel: string
   } | null>(null)
+
+  // The workspace latched: the affordance is gone and confirming could only error.
+  useEffect(() => {
+    if (restricted) setConfirmAutoApprove(null)
+  }, [restricted])
   const toasts = useKumoToastManager()
 
   const history = useActionHistory(overseer, historyFilter, view === 'history')
