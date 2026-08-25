@@ -777,7 +777,8 @@ its resource types.
 
 - **A — Private-only.** Non-owner observers are refused: `addObserver()` unconditionally throws.
   For data that must additionally never leak back out, the `containsRestrictedData` restricted
-  mode (no actions, no web fetches) is available separately; combined with strategy A it makes
+  mode (actions only to the connections that produced the data, each manually approved; no web
+  fetches) is available separately; combined with strategy A it makes
   the workspace effectively private once sensitive data is observed.
   `getVerifier()` must still exist (the overseer mints one on every open) but is never consulted.
 
