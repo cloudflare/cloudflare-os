@@ -141,6 +141,7 @@ export interface GoogleDriveSession {
    * `fullTextContains`; omitting it for full-text search preserves Drive's relevance order.
    *
    * Throws on a file-scoped binding; a single file cannot be searched. Use `getEntry()` to read it.
+   * Also throws when no entries match because an owner-relative negative result cannot be shared safely.
    */
   search(query: DriveSearchQuery): Promise<Cursor<DriveEntry>>;
 

@@ -10,11 +10,11 @@ import type { CalendarConfiguratorRpc } from "./configurator/calendar-configurat
 import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-types";
 import type { GoogleDocConfiguratorRpc } from "./configurator/google-doc-configurator-types";
 import type { GoogleSheetsConfiguratorRpc } from "./configurator/google-sheets-configurator-types";
+import type { ConfiguratorOption } from "./configurator/configurator-option";
 import type { DriveAccountConfiguratorRpc } from "./configurator/drive-account-configurator-types";
 import type { DriveFileConfiguratorRpc } from "./configurator/drive-file-configurator-types";
 import type { SharedDriveConfiguratorRpc } from "./configurator/shared-drive-configurator-types";
 
-type ConfiguratorOption = { value: string; title: string; subtitle?: string; meta?: string };
 /**
  * Mints an access token for a configurator, forwarding `AccessTokenRequest` to the `UserAccount`
  * so a client built on it can heal a 401 by asking for a fresh one.
@@ -41,6 +41,20 @@ function googleToken(target: object, opts?: AccessTokenRequest): Promise<GoogleA
 /** A provider that re-asks on every call, so `fetchWithAuthRetry` can refresh a rejected token. */
 function googleTokenProvider(target: object): AccessTokenProvider {
   return async opts => (await googleToken(target, opts)).token;
+}
+
+async function withDriveApiEnabled<T>(
+  message: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof DriveApiDisabledError) {
+      throw new Error(message, { cause: error });
+    }
+    throw error;
+  }
 }
 
 // TODO: BigQuery and Calendar freeze one token for the configurator's lifetime, so their clients
@@ -92,17 +106,10 @@ async function listDriveFiles(
 ): Promise<ConfiguratorOption[]> {
   let drive = new DriveApi(googleTokenProvider(target));
 
-  let files;
-  try {
-    ({ files } = await drive.listFiles({ mimeType, namePrefix: query }));
-  } catch (error) {
-    if (error instanceof DriveApiDisabledError) {
-      throw new Error(
-        `${resourceName} search requires the Google Drive API to be enabled for this OAuth ` +
-        "project.", { cause: error });
-    }
-    throw error;
-  }
+  let { files } = await withDriveApiEnabled(
+    `${resourceName} search requires the Google Drive API to be enabled for this OAuth project.`,
+    () => drive.listFiles({ mimeType, namePrefix: query }),
+  );
 
   return files.map(file => {
     let owner = file.owners?.[0];
@@ -247,17 +254,11 @@ export class SharedDriveConfiguratorUI extends RpcTarget implements SharedDriveC
 
   async listSharedDrives(query: string): Promise<ConfiguratorOption[]> {
     let drive = new DriveApi(googleTokenProvider(this));
-    try {
-      let { drives } = await drive.listDrives({ namePrefix: query });
-      return drives.map(item => ({ value: item.id, title: item.name, subtitle: item.id }));
-    } catch (error) {
-      if (error instanceof DriveApiDisabledError) {
-        throw new Error(
-          "Shared-drive search requires the Google Drive API to be enabled for this OAuth project.",
-          { cause: error });
-      }
-      throw error;
-    }
+    let { drives } = await withDriveApiEnabled(
+      "Shared-drive search requires the Google Drive API to be enabled for this OAuth project.",
+      () => drive.listDrives({ namePrefix: query }),
+    );
+    return drives.map(item => ({ value: item.id, title: item.name, subtitle: item.id }));
   }
 }
 
@@ -270,25 +271,19 @@ export class DriveFileConfiguratorUI extends RpcTarget implements DriveFileConfi
 
   async listDriveFiles(query: string): Promise<ConfiguratorOption[]> {
     let drive = new DriveApi(googleTokenProvider(this));
-    try {
-      let { files } = await drive.listFiles({
+    let { files } = await withDriveApiEnabled(
+      "Drive file search requires the Google Drive API to be enabled for this OAuth project.",
+      () => drive.listFiles({
         namePrefix: query, excludeMimeTypes: ["application/vnd.google-apps.folder"],
-      });
-      return files.map(file => ({
-        value: file.id,
-        title: file.name,
-        subtitle: [
-          file.mimeType,
-          file.modifiedTime ? `Modified ${new Date(file.modifiedTime).toLocaleDateString()}` : undefined,
-        ].filter(Boolean).join(" · ") || undefined,
-      }));
-    } catch (error) {
-      if (error instanceof DriveApiDisabledError) {
-        throw new Error(
-          "Drive file search requires the Google Drive API to be enabled for this OAuth project.",
-          { cause: error });
-      }
-      throw error;
-    }
+      }),
+    );
+    return files.map(file => ({
+      value: file.id,
+      title: file.name,
+      subtitle: [
+        file.mimeType,
+        file.modifiedTime ? `Modified ${new Date(file.modifiedTime).toLocaleDateString()}` : undefined,
+      ].filter(Boolean).join(" · ") || undefined,
+    }));
   }
 }

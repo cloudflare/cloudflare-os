@@ -14,13 +14,13 @@ function deny(ids: readonly string[]): ObserverBatchResult {
 
 function tracker(
   scope: DriveBindingScope,
-  verdicts: (ids: readonly string[]) => ObserverBatchResult,
+  verdicts: (ids: readonly string[], verifier: string) => ObserverBatchResult | Promise<ObserverBatchResult>,
 ) {
   let kv = new FakeKv();
   let asked: string[][] = [];
-  let track = driveObserverTracker<"verifier">(kv, scope, async (_verifier, fileIds) => {
+  let track = driveObserverTracker<string>(kv, scope, async (verifier, fileIds) => {
     asked.push([...fileIds]);
-    return verdicts(fileIds);
+    return verdicts(fileIds, verifier);
   });
   return { kv, asked, track };
 }
@@ -67,6 +67,38 @@ describe("driveObserverTracker", () => {
       .rejects.toThrow(/has not granted Google Drive access/);
   });
 
+  it("rechecks a file tracked during account observer admission", async () => {
+    let release!: () => void;
+    let started!: () => void;
+    let opening = new Promise<void>(resolve => { release = resolve; });
+    let seen = new Promise<void>(resolve => { started = resolve; });
+    let calls = 0;
+    let { kv, asked, track } = tracker({ kind: "account" }, async ids => {
+      if (calls++ === 0) { started(); await opening; }
+      return ids.length === 0 ? allow(ids) : deny(ids);
+    });
+
+    let admission = track.addObserver("obs", "verifier");
+    await seen;
+    kv.put(`${DRIVE_OBSERVATION_PREFIX}file-1`, "pending");
+    release();
+
+    await expect(admission).rejects.toThrow(/cannot access Drive file file-1/);
+    expect(asked).toEqual([[], ["file-1"]]);
+  });
+
+  it("keeps the old Drive verifier after failed same-ID re-verification", async () => {
+    let { track } = tracker(
+      { kind: "file", fileId: "file-1" },
+      (ids, verifier) => verifier === "old" ? allow(ids) : deny(ids),
+    );
+    await track.addObserver("obs", "old");
+
+    await expect(track.addObserver("obs", "new"))
+      .rejects.toThrow(/cannot access Drive file file-1/);
+
+    expect((await track.prepareObservation(["file-2"])).excludeObservers).toBeUndefined();
+  });
   it("percent-encodes an ID that would otherwise collide with the key grammar", async () => {
     let { kv, asked, track } = tracker({ kind: "file", fileId: "a:b/c" }, allow);
 

@@ -63,13 +63,15 @@ import {
   validateGmailQueryForGrouping, validateGmailRecipientCount, validateOutboundInput,
 } from "./gmail-validate";
 import {
-  AUTH_SCOPES, BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
+  BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_RESOURCE,
   GOOGLE_SHARED_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, LEGACY_GRANTED_RESOURCE_URL_PATTERNS,
   RESOURCE_BY_KIND, SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SUPPORTED_RESOURCES,
-  hasDriveResourceGrant, parseResourceUrl, resourceUrlPatternsToOAuthScopes,
-  resourcesCoveredByScopes,
+  hasDriveResourceGrant, parseResourceUrl, resourcesCoveredByScopes,
 } from "./resources";
+import {
+  beginStoredOAuthFlow, claimStoredOAuthFlow, prepareOAuthFlow, type OAuthFlowMode,
+} from "./oauth-flow";
 import { type ObserverBatchResult, type ObserverCheck, ObserverTracker } from "./observers";
 import { CursorPager, Pager } from "./cursor";
 import {
@@ -80,7 +82,6 @@ import {
   getBasePath,
   getBaseUrl,
   getDynamicGoogleOAuthReturnUrl,
-  getGoogleOAuthCallbackUri,
   getRegisteredGoogleOAuthRedirectUri,
   isCurrentGoogleOAuthCallback,
   isGoogleOAuthPreviewRedirectEnabled,
@@ -97,19 +98,7 @@ const logger = obsContext.createLogger({
   component: "gatekeeper.google", vendorId: VENDOR_ID,
 });
 
-// A nonce stored in UserAccount KV to protect the OAuth flow. Only one nonce is active at a time;
-// the `stage` field tracks where we are in the flow.
-type StoredNonce = {
-  value: string;
-  expiresAt: number;
-  stage: "initiation" | "oauth";
-  // Bound to the OAuth-stage nonce so authorization and code exchange use the exact same URI.
-  oauthRedirectUri?: string;
-};
-
 const NONCE_BYTES = 32;
-const INITIATION_NONCE_LIFETIME_MS = 10 * 60 * 1000;  // 10 minutes
-const OAUTH_NONCE_LIFETIME_MS = 10 * 60 * 1000;    // 10 minutes
 
 // Ceilings on the OAuth round trips that run while holding the credential mutex. Each must be
 // bounded: an unbounded hang keeps the mutex, and every caller waiting for a token then queues
@@ -132,13 +121,6 @@ function generateNonce(): string {
   return hexEncode(crypto.getRandomValues(new Uint8Array(NONCE_BYTES)));
 }
 
-function constantTimeEqual(a: string, b: string): boolean {
-  let encoder = new TextEncoder();
-  let bufA = encoder.encode(a);
-  let bufB = encoder.encode(b);
-  if (bufA.byteLength !== bufB.byteLength) return false;
-  return crypto.subtle.timingSafeEqual(bufA, bufB);
-}
 
 // Declare optional environment variables here since they may be omitted from wrangler.jsonc.
 type Env = Cloudflare.Env & GoogleOAuthEnv & {
@@ -388,15 +370,12 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     let initiationNonce = generateNonce();
 
     let authOnly = options?.scopes === "auth";
-    // An omitted `resourceUrlPatterns` means every resource, which is distinct from `[]`.
     let requestedResources = authOnly
         ? []
         : options?.resourceUrlPatterns ?? SUPPORTED_RESOURCES.map(resource => resource.urlPattern);
-    let requestedScopes = authOnly
-        ? AUTH_SCOPES
-        : resourceUrlPatternsToOAuthScopes(options?.resourceUrlPatterns);
+    let mode: OAuthFlowMode = authOnly ? "auth" : "connect";
     await this.ctx.exports.UserAccount.get(userObjectId)
-        .setCallback(callback, initiationNonce, requestedScopes, requestedResources, authOnly);
+        .setCallback(callback, initiationNonce, requestedResources, mode);
 
     return {
       url: `${getBaseUrl(this.env)}/${userObjectId.toString()}/${initiationNonce}`
@@ -449,42 +428,19 @@ export class UserAccount extends DurableObject<Env> {
 
   async setCallback(
       callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string,
-      requestedScopes: string[], requestedResources: string[], ephemeral?: boolean) {
-    // If we have no API key in 1 hour, delete this object.
+      requestedResources: string[], mode: OAuthFlowMode) {
     if (!this.ctx.storage.kv.get<string>("refreshToken")) {
       this.ctx.storage.setAlarm(Date.now() + 3600 * 1000);
     }
 
     this.ctx.storage.kv.put("callback", callback);
-    this.ctx.storage.kv.put<string[]>("requestedScopes", requestedScopes);
-    this.ctx.storage.kv.put<string[]>("requestedResources", requestedResources);
-    // Auth-only sign-in grants are transient: dropped shortly after the email is read.
-    this.ctx.storage.kv.put<boolean>("ephemeral", ephemeral ?? false);
-    this.ctx.storage.kv.put<StoredNonce>("nonce", {
-      value: initiationNonce,
-      expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
-      stage: "initiation",
-    });
+    prepareOAuthFlow(this.ctx.storage.kv, initiationNonce, requestedResources, mode, Date.now());
   }
 
-  /**
-   * Prepare this account for a reconnect flow. The next acceptAuthCode() call will replace the
-   * existing refresh token and notify via credentialsRestored() instead of complete().
-   *
-   * `requestedResources` is the full set of grantable resource `urlPattern`s the user is being
-   * asked to consent to, and `requestedScopes` the OAuth scopes they need. For a plain reconnect
-   * both are the previously-granted set; for an expansion, the union with the newly-needed ones.
-   */
-  async prepareReconnect(
-      initiationNonce: string, requestedScopes: string[], requestedResources: string[]) {
-    this.ctx.storage.kv.put<boolean>("reconnecting", true);
-    this.ctx.storage.kv.put<string[]>("requestedScopes", requestedScopes);
-    this.ctx.storage.kv.put<string[]>("requestedResources", requestedResources);
-    this.ctx.storage.kv.put<StoredNonce>("nonce", {
-      value: initiationNonce,
-      expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
-      stage: "initiation",
-    });
+  /** Prepare a reconnect or scope-expansion attempt for this account. */
+  async prepareReconnect(initiationNonce: string, requestedResources: string[]) {
+    prepareOAuthFlow(
+      this.ctx.storage.kv, initiationNonce, requestedResources, "reconnect", Date.now());
   }
 
   /**
@@ -509,54 +465,23 @@ export class UserAccount extends DurableObject<Env> {
         grantedResources ?? SCOPE_DERIVED_RESOURCE_URL_PATTERNS, grantedScopes);
   }
 
-  /**
-   * Called by the fetch handler when the user visits the initiation URL. Verifies the initiation
-   * nonce, consumes it, and returns a fresh OAuth nonce plus the scopes to request. Returns null if
-   * the nonce is invalid or expired.
-   */
+  /** Begin the stored consent attempt, or return null when its initiation nonce is invalid. */
   async beginOAuthFlow(initiationNonce: string, oauthRedirectUri: string): Promise<{
     oauthNonce: string,
     scopes: string[],
   } | null> {
-    let stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
-    if (!stored || stored.stage !== "initiation" ||
-        Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, initiationNonce)) {
-      return null;
-    }
-
-    // Replace the consumed initiation nonce with a fresh OAuth nonce.
     let oauthNonce = generateNonce();
-    this.ctx.storage.kv.put<StoredNonce>("nonce", {
-      value: oauthNonce,
-      expiresAt: Date.now() + OAUTH_NONCE_LIFETIME_MS,
-      stage: "oauth",
-      oauthRedirectUri,
-    });
-    // Fall back to all scopes for legacy flows that didn't record a requested set.
-    let scopes = this.ctx.storage.kv.get<string[]>("requestedScopes")
-        ?? resourceUrlPatternsToOAuthScopes();
-    return {oauthNonce, scopes};
-  }
-
-  #consumeOAuthNonce(oauthNonce: string): string | null {
-    let stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
-    if (!stored || stored.stage !== "oauth" ||
-        Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, oauthNonce)) {
-      return null;
-    }
-    this.ctx.storage.kv.delete("nonce");
-    // Existing in-flight flows did not persist this field and used the direct callback URI.
-    return stored.oauthRedirectUri ?? getGoogleOAuthCallbackUri(this.env);
+    return beginStoredOAuthFlow(
+        this.ctx.storage.kv, initiationNonce, oauthNonce, oauthRedirectUri, Date.now());
   }
 
   consumeOAuthNonce(oauthNonce: string): boolean {
-    return this.#consumeOAuthNonce(oauthNonce) !== null;
+    return claimStoredOAuthFlow(this.ctx.storage.kv, oauthNonce, Date.now()) !== null;
   }
-
   /** Returns false if the OAuth nonce is invalid or expired. */
   async acceptAuthCode(code: string, oauthNonce: string): Promise<boolean> {
-    let oauthRedirectUri = this.#consumeOAuthNonce(oauthNonce);
-    if (!oauthRedirectUri) return false;
+    let flow = claimStoredOAuthFlow(this.ctx.storage.kv, oauthNonce, Date.now());
+    if (!flow) return false;
 
     let { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret } = this.env;
     if (!clientId || !clientSecret) {
@@ -575,7 +500,7 @@ export class UserAccount extends DurableObject<Env> {
       }
 
       let response = await exchangeAuthCode(
-          code, clientId, clientSecret, oauthRedirectUri,
+          code, clientId, clientSecret, flow.oauthRedirectUri,
           AbortSignal.timeout(AUTH_CODE_EXCHANGE_TIMEOUT_MS));
 
       if (!response.refreshToken) {
@@ -586,30 +511,15 @@ export class UserAccount extends DurableObject<Env> {
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", response.accessToken);
       // These credentials are new, so any recorded permanent failure no longer applies
       this.#mintFailure = undefined;
-      // Record what Google actually granted (the user may have declined some requested scopes),
-      // and which resources the user was consenting to when they did. Recording the resources is
-      // what keeps a grant from being inferred later from a scope some other resource's picker
-      // also requests. An account mid-migration has no requested set; leave its recorded grant
-      // alone rather than narrowing it to nothing, and let the scope-derived fallback answer.
       this.ctx.storage.kv.put<string[]>("grantedScopes", response.grantedScopes);
-      let requestedResources = this.ctx.storage.kv.get<string[]>("requestedResources");
-      if (requestedResources !== undefined) {
-        this.ctx.storage.kv.put<string[]>("grantedResources", requestedResources);
-      }
-      this.ctx.storage.kv.delete("requestedScopes");
-      this.ctx.storage.kv.delete("requestedResources");
-
-      let reconnecting = this.ctx.storage.kv.get<boolean>("reconnecting");
-      if (reconnecting) this.ctx.storage.kv.delete("reconnecting");
-      return { callback, reconnecting: !!reconnecting };
+      this.ctx.storage.kv.put<string[]>("grantedResources", flow.requestedResources);
+      return { callback, mode: flow.mode };
     });
 
     let callback = completion.callback;
-    if (completion.reconnecting) {
-      // Reconnect flow: credentials replaced above, notify restoration.
+    if (completion.mode === "reconnect") {
       await callback.credentialsRestored();
     } else {
-      // Initial connect flow: create the user entrypoint and notify completion.
       try {
         let props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
         await callback.complete(this.ctx.exports.GatekeeperUserImpl({props}));
@@ -617,11 +527,12 @@ export class UserAccount extends DurableObject<Env> {
         this.ctx.storage.kv.delete("refreshToken");
         throw err;
       }
-      // Auth-only sign-in grants are transient: the caller has read the email via complete(), so
-      // schedule a prompt self-destruct. We do NOT call the provider's revoke endpoint (that could
-      // invalidate the user's other grants for this OAuth client); we just drop our local copy.
-      if (this.ctx.storage.kv.get<boolean>("ephemeral")) {
+
+      if (completion.mode === "auth") {
+        this.ctx.storage.kv.put("deleteCredentialsOnAlarm", true);
         this.ctx.storage.setAlarm(Date.now() + 2 * 60 * 1000);
+      } else {
+        this.ctx.storage.deleteAlarm();
       }
     }
 
@@ -744,12 +655,10 @@ export class UserAccount extends DurableObject<Env> {
     });
   }
 
-  async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {
-    // Drop the account if the flow never completed, or if this was a transient auth-only sign-in
-    // grant (used once to read the email for login). Serialized so the wipe cannot land in the
-    // middle of a mint, leaving a freshly minted token behind on a deleted account.
+  async alarm(_alarmInfo?: AlarmInvocationInfo): Promise<void> {
     await this.#updateCredentials(async () => {
-      if (!this.hasRefreshToken() || this.ctx.storage.kv.get<boolean>("ephemeral")) {
+      if (!this.hasRefreshToken() ||
+          this.ctx.storage.kv.get<boolean>("deleteCredentialsOnAlarm")) {
         this.ctx.storage.deleteAll();
       }
     });
@@ -939,11 +848,8 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
     let obj = this.ctx.exports.UserAccount.get(id);
     let initiationNonce = generateNonce();
-    // Re-request what's already granted so a plain reconnect doesn't narrow access. Re-recording
-    // the same resources also migrates an account that predates recording onto its own answer.
     let grantedResources = await obj.getGrantedResourceUrlPatterns();
-    let requestedScopes = resourceUrlPatternsToOAuthScopes(grantedResources);
-    await obj.prepareReconnect(initiationNonce, requestedScopes, grantedResources);
+    await obj.prepareReconnect(initiationNonce, grantedResources);
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
@@ -955,12 +861,9 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       return {};
     }
 
-    // Request the union of what's already granted and what's newly needed, so the expansion never
-    // drops existing access.
     let unionPatterns = [...new Set([...granted, ...resourceUrlPatterns])];
-    let requestedScopes = resourceUrlPatternsToOAuthScopes(unionPatterns);
     let initiationNonce = generateNonce();
-    await obj.prepareReconnect(initiationNonce, requestedScopes, unionPatterns);
+    await obj.prepareReconnect(initiationNonce, unionPatterns);
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
@@ -3085,17 +2988,17 @@ export class GoogleDriveGatekeeperImpl
   }
 
   async describe(): Promise<ResourceDescription> {
-    let api = new DriveApi(opts => this.#getAccessToken(opts));
     let { scope } = this.ctx.props;
     if (scope.kind === "account") {
       return {
         url: GOOGLE_DRIVE_RESOURCE.urlPattern,
         title: "Google Drive Account",
-        snippet: "Find files and folders in My Drive or Shared with me (metadata only)",
+        snippet: GOOGLE_DRIVE_RESOURCE.description,
         suggestedBindingName: "GOOGLE_DRIVE",
         tsType: "GoogleDriveSession",
       };
     }
+    let api = new DriveApi(opts => this.#getAccessToken(opts));
     if (scope.kind === "sharedDrive") {
       let drive = await api.getDrive(scope.driveId);
       return {

@@ -33,7 +33,7 @@ export type CursorPagerOptions<Item, Entry> = {
    */
   buildEntries(items: Item[]): Promise<Entry[]>;
 
-  /** Authorize disclosure of a non-empty page. Throws to deny. */
+  /** Authorize a page or terminal empty result before returning it. Throws to deny. */
   authorize(entries: Entry[]): Promise<void>;
 
   /** How many result-less pages to walk past before giving up. */
@@ -109,11 +109,7 @@ export class CursorPager<Item, Entry> implements Pager<Entry> {
       entries = await buildEntries(page.items);
       if (entries.length > 0) break;
 
-      if (pageToken === undefined) {
-        this.#pageToken = undefined;
-        this.#exhausted = true;
-        return null;
-      }
+      if (pageToken === undefined) break;
       if (fetched >= this.#maxEmptyPages) {
         throw new Error(
           `${provider} returned ${fetched} pages with no usable results.`);
@@ -126,6 +122,6 @@ export class CursorPager<Item, Entry> implements Pager<Entry> {
     for (let token of followed) this.#seenTokens.add(token);
     this.#pageToken = pageToken;
     this.#exhausted = pageToken === undefined;
-    return entries;
+    return entries.length > 0 ? entries : null;
   }
 }

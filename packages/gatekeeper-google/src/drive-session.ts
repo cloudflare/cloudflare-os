@@ -1,6 +1,6 @@
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { CursorPager, type Pager } from "./cursor";
-import type { DriveApi, DriveCorpus, DriveFile, DriveListFilesOptions } from "./drive-api";
+import { DriveApiRequestError, type DriveApi, type DriveCorpus, type DriveFile, type DriveListFilesOptions } from "./drive-api";
 import type { ObserverCheck } from "./observers";
 import type {
   DriveEntry, DriveListOptions, DriveOrder, DriveScope, DriveSearchQuery,
@@ -178,6 +178,13 @@ function listingDescription(
   return clip(`${text}.`, MAX_OBSERVATION_DESCRIPTION);
 }
 
+function emptySearchDescription(scope: DriveBindingScope, query: DriveListFilesOptions): string {
+  let text = `Search for Drive metadata in ${scopePhrase(scope)}`;
+  let clauses = queryClauses(query);
+  if (clauses.length) text += `; ${clauses.join("; ")}`;
+  return clip(`${text}.`, MAX_OBSERVATION_DESCRIPTION);
+}
+
 /** Scope enforcement, pagination, mapping, and observation authorization for Drive sessions. */
 export class DriveSessionCore {
   #api: DriveSessionApi;
@@ -235,33 +242,41 @@ export class DriveSessionCore {
     return this.#cursor({
       ...normalized,
       orderBy: normalized.fullTextContains ? null : orderBy(normalized.order),
-    });
+    }, true);
   }
 
   async getEntry(fileId: string): Promise<DriveEntry> {
     if (this.#scope.kind === "file" && fileId !== this.#scope.fileId) this.#outsideScope();
-    let file = await this.#api.getFile(fileId);
-    if (!this.#inScope(file)) this.#outsideScope();
+    let file = await this.#getFileInScope(fileId);
     let entry = driveFileToEntry(file);
     await this.#authorizeIds([file.id], "Read Google Drive metadata",
       `Read metadata for Drive file ${file.id}.`);
     return entry;
   }
 
-  #cursor(query: DriveListFilesOptions): Pager<DriveEntry> {
+  #cursor(query: DriveListFilesOptions, denyEmptySearch = false): Pager<DriveEntry> {
+    let hasDisclosedEntries = false;
     return new CursorPager<DriveFile, DriveEntry>({
       provider: "Google Drive",
       fetchPage: async pageToken => {
-        let page = await this.#api.listFiles({ ...query, ...this.#corpus(), pageToken });
+        let page = await this.#api.listFiles({ ...query, corpus: this.#corpus(), pageToken });
         return { items: page.files, ...(page.nextPageToken ? { nextPageToken: page.nextPageToken } : {}) };
       },
       buildEntries: async files => files.filter(file => this.#inScope(file)).map(driveFileToEntry),
       authorize: async entries => {
+        if (denyEmptySearch && entries.length === 0 && !hasDisclosedEntries) {
+          await this.#authorize({
+            title: "Search Google Drive metadata",
+            description: emptySearchDescription(this.#scope, query),
+          });
+          throw new Error("An empty Drive search cannot be shared safely.");
+        }
         await this.#authorizeIds(
           entries.map(entry => entry.id),
           "Read Google Drive metadata",
           listingDescription(this.#scope, query, entries.length),
         );
+        if (entries.length > 0) hasDisclosedEntries = true;
       },
     });
   }
@@ -273,19 +288,19 @@ export class DriveSessionCore {
       fetchPage: async () => ({ items: [await this.#api.getFile(fileId)] }),
       buildEntries: async files => {
         if (files.length !== 1 || files[0].id !== fileId) this.#outsideScope();
-        return [driveFileToEntry(files[0])];
+        return files[0].trashed === false ? [driveFileToEntry(files[0])] : [];
       },
-      authorize: async entries => {
-        await this.#authorizeIds(entries.map(entry => entry.id), "Read Google Drive metadata",
+      authorize: async () => {
+        await this.#authorizeIds([fileId], "Read Google Drive metadata",
           `Read metadata for Drive file ${fileId}.`);
       },
     });
   }
 
-  #corpus(): { corpus: DriveCorpus } {
+  #corpus(): DriveCorpus {
     return this.#scope.kind === "sharedDrive"
-      ? { corpus: { kind: "drive", driveId: this.#scope.driveId } }
-      : { corpus: { kind: "user" } };
+      ? { kind: "drive", driveId: this.#scope.driveId }
+      : { kind: "user" };
   }
 
   #inScope(file: DriveFile): boolean {
@@ -299,11 +314,25 @@ export class DriveSessionCore {
 
   async #assertParent(parentId: string): Promise<void> {
     if (this.#scope.kind === "file") this.#outsideScope();
-    let parent = await this.#api.getFile(parentId);
-    if (!this.#inScope(parent)) this.#outsideScope();
+    let parent = await this.#getFileInScope(parentId);
     await this.#authorizeIds([parent.id], "Check Google Drive folder",
       "Check that the requested parent folder belongs to this Drive binding.");
     if (parent.mimeType !== FOLDER_MIME_TYPE) throw new Error("directParentId must identify a folder");
+  }
+
+  async #getFileInScope(fileId: string): Promise<DriveFile> {
+    let file: DriveFile;
+    try {
+      file = await this.#api.getFile(fileId);
+    } catch (err) {
+      if (this.#scope.kind === "sharedDrive" && err instanceof DriveApiRequestError &&
+          (err.status === 403 || err.status === 404)) {
+        this.#outsideScope();
+      }
+      throw err;
+    }
+    if (!this.#inScope(file)) this.#outsideScope();
+    return file;
   }
 
   async #authorizeIds(fileIds: string[], title: string, description: string): Promise<void> {

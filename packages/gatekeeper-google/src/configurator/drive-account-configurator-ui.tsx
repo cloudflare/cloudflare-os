@@ -10,12 +10,15 @@ export default {
   resourceUrl: () => "https://drive.google.com/drive/my-drive",
   render({ setValues }) {
     return <Section>
-      <Field label="Google Drive account" description="Search My Drive and items shared directly with this Google account.">
+      <Field
+        label="Google Drive account"
+        description="Find files and folders anywhere this Google account can read in Drive, including shared drives. Full-text search examines indexed file content, descriptions, and OCR text; results contain metadata only."
+      >
         <RadioCards
           value="account"
           options={[{
-            value: "account", title: "My Drive and Shared with me",
-            description: "Returns file and folder metadata only.",
+            value: "account", title: "Everything this account can read in Drive",
+            description: "Includes direct lookup by file ID. Full-text search examines indexed file content, descriptions, and OCR text; results contain metadata only.",
           }]}
           onChange={() => setValues({ scope: "account" })}
         />

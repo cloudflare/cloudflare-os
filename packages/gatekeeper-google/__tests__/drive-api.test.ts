@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  DRIVE_FILE_FIELDS, DRIVE_FILE_ITEM_FIELDS, DriveApi, DriveApiDisabledError,
+  DRIVE_FILE_FIELDS, DRIVE_FILE_ITEM_FIELDS, DriveApi, DriveApiDisabledError, DriveApiRequestError,
   buildDriveQuery, escapeDriveQueryLiteral,
 } from "../src/drive-api";
 
@@ -287,13 +287,14 @@ describe("metadata lookup", () => {
   it("gets one file with shared-drive support and the public metadata fields", async () => {
     let file = {
       id: "file/1", name: "Plan", mimeType: "application/pdf",
-      modifiedTime: "2026-01-02T03:04:05Z",
+      modifiedTime: "2026-01-02T03:04:05Z", trashed: false,
     };
     let calls = stubFetch([jsonResponse(file)]);
     expect(await api().getFile("file/1")).toEqual(file);
     expect(calls[0].url.pathname).toBe("/drive/v3/files/file%2F1");
     expect(calls[0].url.searchParams.get("supportsAllDrives")).toBe("true");
     expect(calls[0].url.searchParams.get("fields")).toBe(DRIVE_FILE_ITEM_FIELDS);
+    expect(DRIVE_FILE_ITEM_FIELDS.split(",")).toContain("trashed");
     expect(DRIVE_FILE_ITEM_FIELDS).not.toMatch(/createdTime|photoLink|iconLink|thumbnailLink/);
   });
 
@@ -308,9 +309,16 @@ describe("metadata lookup", () => {
       owners: [{ displayName: "Ada", emailAddress: "ada@example.com" }],
       shortcutDetails: { targetId: "target-1", targetMimeType: "text/plain" },
       webViewLink: "https://drive.google.com/file/d/file-1/view",
+      trashed: true,
     };
     stubFetch([jsonResponse(file)]);
     expect(await api().getFile("file-1")).toEqual(file);
+  });
+
+  it("rejects a non-boolean trashed field", async () => {
+    stubFetch([jsonResponse({ id: "file-1", name: "Plan", trashed: "false" })]);
+    await expect(api().getFile("file-1")).rejects
+      .toThrow("Invalid Google Drive file trashed");
   });
 
   it("drops unrequested provider fields from a file response", async () => {
@@ -547,19 +555,22 @@ describe("error handling", () => {
     await expect(api().listFiles()).rejects.toBeInstanceOf(DriveApiDisabledError);
   });
 
-  it("does not mistake another 403 for the API being disabled", async () => {
+  it("preserves an ordinary 403 as a status-bearing request error", async () => {
     stubFetch([new Response(JSON.stringify({
       error: { errors: [{ reason: "insufficientPermissions" }] },
     }), { status: 403 })]);
     let error = await api().listFiles().catch(e => e);
-    expect(error).not.toBeInstanceOf(DriveApiDisabledError);
+    expect(error).toBeInstanceOf(DriveApiRequestError);
+    expect(error).toMatchObject({ status: 403, reason: "insufficientPermissions" });
     expect(error.message).toBe("Google Drive API request failed: 403 (insufficientPermissions)");
   });
 
-  it("reports the status alone when Google declared no reason", async () => {
+  it("preserves an ordinary 404 without a provider reason", async () => {
     stubFetch([new Response("{}", { status: 404 })]);
-    await expect(api().listFiles())
-      .rejects.toThrow("Google Drive API request failed: 404");
+    let error = await api().listFiles().catch(e => e);
+    expect(error).toBeInstanceOf(DriveApiRequestError);
+    expect(error).toMatchObject({ status: 404, reason: undefined });
+    expect(error.message).toBe("Google Drive API request failed: 404");
   });
 
   // The provider's prose can quote the `q` we sent, and this error reaches a UI that may forward

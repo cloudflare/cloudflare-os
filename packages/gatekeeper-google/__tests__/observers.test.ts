@@ -36,6 +36,7 @@ function makeTracker(overrides: Partial<{
 const allow = (...values: string[]) => new FakeVerifier(new Set(values));
 const states = () => [...kv.list<string>({ prefix: "set:" })];
 const nonceKeys = () => [...kv.list({ prefix: "observer-nonce:" })];
+const attemptKeys = () => [...kv.list({ prefix: "observer-attempt:" })];
 
 beforeEach(() => { kv = new FakeKv(); });
 
@@ -382,23 +383,32 @@ describe("bulk verification", () => {
     expect(nonceKeys()).toEqual([]);
   });
 
-  it("stages the observer so a concurrent new disclosure verifies it", async () => {
+  it("rechecks files tracked while bulk admission is awaiting", async () => {
     kv.put("set:a", "observed");
     let release!: () => void;
+    let started!: () => void;
     let opening = new Promise<void>(resolve => { release = resolve; });
+    let firstCall = new Promise<void>(resolve => { started = resolve; });
     let verifyBatch = vi.fn(async (_verifier: FakeVerifier, values: readonly string[]) => {
-      if (values.includes("a")) await opening;
+      if (values.includes("a")) {
+        started();
+        await opening;
+      }
       return { baselineAllowed: true, allowed: values.map(value => value !== "b") };
     });
     let tracker = makeBulkTracker(verifyBatch);
 
     let admission = tracker.addObserver("reader", allow());
-    await vi.waitFor(() => expect([...tracker.observers()].map(([id]) => id)).toEqual(["reader"]));
-    let check = await tracker.prepareObservation(["b"]);
-    expect(check.excludeObservers).toEqual(["reader"]);
-
+    await firstCall;
+    expect([...tracker.observers()].map(([id]) => id)).toEqual(["reader"]);
+    expect((await tracker.prepareObservation(["b"])).excludeObservers).toEqual(["reader"]);
     release();
-    await expect(admission).resolves.toBeUndefined();
+
+    await expect(admission).rejects.toThrow("no access to b");
+    expect(verifyBatch.mock.calls.filter(call => call[1].includes("b"))).toHaveLength(2);
+    expect([...tracker.observers()]).toEqual([]);
+    expect(attemptKeys()).toEqual([]);
+    expect(nonceKeys()).toEqual([]);
   });
 
   it("checks one pending batch per existing observer", async () => {
@@ -415,6 +425,124 @@ describe("bulk verification", () => {
     expect(verifyBatch.mock.calls.map(call => call[1])).toEqual([["a", "b"], ["a", "b"]]);
   });
 
+  it("preserves the canonical verifier when same-ID re-verification fails", async () => {
+    kv.put("set:a", "observed");
+    let tracker = makeBulkTracker(async (verifier, values) => ({
+      baselineAllowed: true, allowed: values.map(value => verifier.allowed.has(value)),
+    }));
+    await tracker.addObserver("reader", allow("a", "b"));
+
+    await expect(tracker.addObserver("reader", allow()))
+      .rejects.toThrow("no access to a");
+
+    expect([...tracker.observers()].map(([id]) => id)).toEqual(["reader"]);
+    expect((await tracker.prepareObservation(["b"])).excludeObservers).toBeUndefined();
+    expect(attemptKeys()).toEqual([]);
+    expect(nonceKeys()).toEqual([]);
+  });
+
+  it("checks canonical and staged verifiers but excludes one observer ID", async () => {
+    kv.put("set:a", "observed");
+    let release!: () => void;
+    let started!: () => void;
+    let opening = new Promise<void>(resolve => { release = resolve; });
+    let newStarted = new Promise<void>(resolve => { started = resolve; });
+    let calls: {tag: string, values: readonly string[]}[] = [];
+    let blockNew = false;
+    let tracker = makeBulkTracker(async (verifier, values) => {
+      let tag = verifier.allowed.has("new") ? "new" : "old";
+      calls.push({ tag, values: [...values] });
+      if (blockNew && tag === "new" && values.includes("a")) {
+        started();
+        await opening;
+      }
+      return { baselineAllowed: true, allowed: values.map(value => verifier.allowed.has(value)) };
+    });
+    await tracker.addObserver("reader", allow("old", "a"));
+    blockNew = true;
+
+    let admission = tracker.addObserver("reader", allow("new", "a"));
+    await newStarted;
+    expect((await tracker.prepareObservation(["b"])).excludeObservers).toEqual(["reader"]);
+    expect(calls.filter(call => call.values.includes("b")).map(call => call.tag).toSorted())
+      .toEqual(["new", "old"]);
+    release();
+    await expect(admission).rejects.toThrow("no access to b");
+  });
+
+  it("does not let a superseded attempt overwrite the newer verifier", async () => {
+    kv.put("set:a", "observed");
+    let releaseA!: (result: ObserverBatchResult) => void;
+    let releaseB!: (result: ObserverBatchResult) => void;
+    let startedA!: () => void;
+    let startedB!: () => void;
+    let resultA = new Promise<ObserverBatchResult>(resolve => { releaseA = resolve; });
+    let resultB = new Promise<ObserverBatchResult>(resolve => { releaseB = resolve; });
+    let seenA = new Promise<void>(resolve => { startedA = resolve; });
+    let seenB = new Promise<void>(resolve => { startedB = resolve; });
+    let verifierA = allow("a");
+    let verifierB = allow("a", "new");
+    let tracker = makeBulkTracker(async verifier => {
+      if (verifier === verifierA) { startedA(); return resultA; }
+      startedB();
+      return resultB;
+    });
+
+    let admissionA = tracker.addObserver("reader", verifierA);
+    await seenA;
+    let admissionB = tracker.addObserver("reader", verifierB);
+    await seenB;
+    releaseB({ baselineAllowed: true, allowed: [true] });
+    await expect(admissionB).resolves.toBeUndefined();
+    releaseA({ baselineAllowed: true, allowed: [true] });
+    await expect(admissionA).rejects.toThrow(/superseded/);
+
+    let observers = [...tracker.observers()];
+    expect(observers).toHaveLength(1);
+    expect(observers[0][1].allowed).toEqual(new Set(["a", "new"]));
+    expect(attemptKeys()).toEqual([]);
+    expect(nonceKeys()).toEqual([]);
+  });
+
+  it("lets removeObserver win over an in-flight admission", async () => {
+    let release!: (result: ObserverBatchResult) => void;
+    let started!: () => void;
+    let result = new Promise<ObserverBatchResult>(resolve => { release = resolve; });
+    let seen = new Promise<void>(resolve => { started = resolve; });
+    let tracker = makeBulkTracker(async () => { started(); return result; });
+
+    let admission = tracker.addObserver("reader", allow());
+    await seen;
+    tracker.removeObserver("reader");
+    release({ baselineAllowed: true, allowed: [] });
+
+    await expect(admission).rejects.toThrow(/superseded/);
+    expect([...tracker.observers()]).toEqual([]);
+    expect(attemptKeys()).toEqual([]);
+    expect(nonceKeys()).toEqual([]);
+  });
+
+  it("rejects malformed cardinality in a second stable-set batch", async () => {
+    kv.put("set:a", "observed");
+    let release!: () => void;
+    let started!: () => void;
+    let opening = new Promise<void>(resolve => { release = resolve; });
+    let seen = new Promise<void>(resolve => { started = resolve; });
+    let calls = 0;
+    let tracker = makeBulkTracker(async (_verifier, values) => {
+      if (calls++ === 0) { started(); await opening; }
+      return { baselineAllowed: true, allowed: calls === 1 ? values.map(() => true) : [] };
+    });
+
+    let admission = tracker.addObserver("reader", allow());
+    await seen;
+    kv.put("set:b", "pending");
+    release();
+
+    await expect(admission).rejects.toThrow(/one result per set/);
+    expect(attemptKeys()).toEqual([]);
+    expect(nonceKeys()).toEqual([]);
+  });
   it("rejects a malformed verifier result rather than admitting unchecked files", async () => {
     kv.put("set:a", "observed");
     let tracker = makeBulkTracker(async () => ({ baselineAllowed: true, allowed: [] }));

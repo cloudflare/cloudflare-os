@@ -70,10 +70,10 @@ describe("paging", () => {
     expect(requested).toEqual([undefined]);
   });
 
-  it("reports the end immediately when the only page is empty", async () => {
+  it("authorizes the end when the only page is empty", async () => {
     let { pager, authorized } = makePager([[]]);
     expect(await pager.next()).toBeNull();
-    expect(authorized).toEqual([]);
+    expect(authorized).toEqual([[]]);
   });
 });
 
@@ -204,6 +204,25 @@ describe("authorization", () => {
     denied = false;
     expect(await pager.next()).toEqual(["a"]);
     expect(await pager.next()).toBeNull();
+  });
+});
+
+describe("terminal empty authorization", () => {
+  it("leaves an empty result uncommitted when authorization is denied", async () => {
+    let denied = true;
+    let { pager, authorized, requested } = makePager([[], []], {
+      authorize: async entries => {
+        authorized.push(entries);
+        if (denied) throw new Error("denied");
+      },
+    });
+
+    await expect(pager.next()).rejects.toThrow("denied");
+    denied = false;
+    await expect(pager.next()).resolves.toBeNull();
+    await expect(pager.next()).resolves.toBeNull();
+    expect(authorized).toEqual([[], []]);
+    expect(requested).toEqual([undefined, "1", undefined, "1"]);
   });
 });
 

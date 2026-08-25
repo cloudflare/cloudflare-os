@@ -19,6 +19,7 @@ export type DriveFile = {
   driveId?: string;
   owners?: { displayName?: string; emailAddress?: string }[];
   webViewLink?: string;
+  trashed?: boolean;
   shortcutDetails?: { targetId?: string; targetMimeType?: string };
 };
 
@@ -27,7 +28,7 @@ export type DriveInfo = { id: string; name: string };
 
 /** The per-file field mask. `getFile` sends this; {@link DRIVE_FILE_FIELDS} wraps it for lists. */
 export const DRIVE_FILE_ITEM_FIELDS = [
-  "id", "name", "mimeType", "modifiedTime", "size", "parents", "driveId",
+  "id", "name", "mimeType", "modifiedTime", "size", "parents", "driveId", "trashed",
   "owners(displayName,emailAddress)", "webViewLink",
   "shortcutDetails(targetId,targetMimeType)",
 ].join(",");
@@ -74,6 +75,16 @@ export type DriveList = { drives: DriveInfo[]; nextPageToken?: string };
 
 /** Drive refused because the API is not enabled on this OAuth project. */
 export class DriveApiDisabledError extends Error {}
+
+/** Sanitized HTTP failure from the Google Drive API. */
+export class DriveApiRequestError extends Error {
+  constructor(
+    readonly status: number,
+    readonly reason?: string,
+  ) {
+    super(`Google Drive API request failed: ${status}${reason ? ` (${reason})` : ""}`);
+  }
+}
 
 const MAX_ERROR_BODY_BYTES = 4096;
 const API_DISABLED_REASON = "accessNotConfigured";
@@ -140,8 +151,7 @@ async function driveError(response: Response): Promise<Error> {
     return new DriveApiDisabledError(
       "the Google Drive API is not enabled for this OAuth project");
   }
-  return new Error(
-    `Google Drive API request failed: ${response.status}${reason ? ` (${reason})` : ""}`);
+  return new DriveApiRequestError(response.status, reason);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -151,6 +161,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function optionalString(value: unknown, field: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string") throw new Error(`Invalid Google Drive ${field}`);
+  return value;
+}
+
+function optionalBoolean(value: unknown, field: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") throw new Error(`Invalid Google Drive ${field}`);
   return value;
 }
 
@@ -187,6 +203,7 @@ function parseDriveFile(value: unknown): DriveFile {
     }
     parents = value.parents as string[];
   }
+  let trashed = optionalBoolean(value.trashed, "file trashed");
   return {
     id: value.id,
     name: value.name,
@@ -195,6 +212,7 @@ function parseDriveFile(value: unknown): DriveFile {
     ]),
     ...(parents ? { parents } : {}),
     ...(owners ? { owners } : {}),
+    ...(trashed === undefined ? {} : { trashed }),
     ...(shortcutDetails ? { shortcutDetails } : {}),
   };
 }
@@ -208,7 +226,7 @@ function parseDriveInfo(value: unknown): DriveInfo {
 
 /** Escapes a value for interpolation into a Drive `q` string literal. */
 export function escapeDriveQueryLiteral(value: string): string {
-  let backslash = String.fromCharCode(92);
+  let backslash = "\\";
   return value.replaceAll(backslash, backslash + backslash).replaceAll("'", backslash + "'");
 }
 

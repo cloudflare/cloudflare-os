@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { DriveSessionCore, driveFileToEntry } from "../src/drive-session";
-import type { DriveFile, DriveListFilesOptions } from "../src/drive-api";
+import { DriveApiRequestError, type DriveFile, type DriveListFilesOptions } from "../src/drive-api";
 
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
@@ -103,6 +103,38 @@ describe("Drive session scope", () => {
     expect(events).toEqual(["authorize", "commit"]);
   });
 
+  it.each([
+    ["account", { kind: "account" }],
+    ["shared drive", { kind: "sharedDrive", driveId: "drive-1" }],
+  ] as const)("audits and rejects an empty %s search", async (_label, scope) => {
+    let { session, prepared, authorizations, events } = core({ scope, files: [] });
+
+    let cursor = await session.search({ namePrefix: "missing" });
+    await expect(cursor.next()).rejects
+      .toThrow(new Error("An empty Drive search cannot be shared safely."));
+
+    expect(prepared).toEqual([]);
+    expect(authorizations).toEqual([expect.objectContaining({
+      title: "Search Google Drive metadata",
+      description: expect.stringContaining('name starts with "missing"'),
+    })]);
+    expect(authorizations[0].description).not.toContain("0");
+    expect(events).toEqual(["authorize"]);
+  });
+
+  it("ends a search cleanly after an earlier page disclosed results", async () => {
+    let { session, listFiles } = core({
+      listFiles: async options => options.pageToken === "page-2"
+        ? { files: [] }
+        : { files: [file()], nextPageToken: "page-2" },
+    });
+
+    let cursor = await session.search({ namePrefix: "Quarterly" });
+    expect((await cursor.next())?.map(entry => entry.id)).toEqual(["file-1"]);
+    await expect(cursor.next()).resolves.toBeNull();
+    expect(listFiles).toHaveBeenCalledTimes(2);
+  });
+
   it("pins shared-drive reads and drops a foreign result before observation", async () => {
     let local = file({ id: "local", driveId: "drive-1" });
     let foreign = file({ id: "foreign", driveId: "drive-2" });
@@ -150,6 +182,31 @@ describe("Drive session scope", () => {
     expect(authorizations).toEqual([]);
   });
 
+  it.each([403, 404])(
+    "does not reveal whether the account can read a shared-drive probe rejected with %d",
+    async status => {
+      let { session, prepared } = core({
+        scope: { kind: "sharedDrive", driveId: "drive-1" },
+        getFile: async () => { throw new DriveApiRequestError(status); },
+      });
+
+      let outside = new Error("The requested file is outside this Drive binding.");
+      await expect(session.getEntry("foreign")).rejects.toThrow(outside);
+      await expect(session.list({ directParentId: "foreign" })).rejects.toThrow(outside);
+      expect(prepared).toEqual([]);
+    },
+  );
+
+  it("preserves a shared-drive provider outage", async () => {
+    let { session } = core({
+      scope: { kind: "sharedDrive", driveId: "drive-1" },
+      getFile: async () => { throw new DriveApiRequestError(500); },
+    });
+
+    await expect(session.getEntry("file-1")).rejects
+      .toThrow("Google Drive API request failed: 500");
+  });
+
   it("refuses another file ID without calling Google for a file-scoped binding", async () => {
     let { session, getFile } = core({ scope: { kind: "file", fileId: "file-1" } });
     await expect(session.getEntry("file-2")).rejects.toThrow(/outside this Drive binding/);
@@ -159,12 +216,43 @@ describe("Drive session scope", () => {
   it("lists an exact-file binding without scanning the connected account", async () => {
     let { session, listFiles, getFile, prepared } = core({
       scope: { kind: "file", fileId: "file-1" },
+      getFile: async id => file({ id, trashed: false }),
     });
 
     await expect((await session.list()).next())
       .resolves.toEqual([expect.objectContaining({ id: "file-1" })]);
     expect(getFile).toHaveBeenCalledWith("file-1");
     expect(listFiles).not.toHaveBeenCalled();
+    expect(prepared).toEqual([["file-1"]]);
+  });
+
+  it("omits a trashed file from an exact-file listing", async () => {
+    let { session, prepared } = core({
+      scope: { kind: "file", fileId: "file-1" },
+      getFile: async () => file({ trashed: true }),
+    });
+
+    await expect((await session.list()).next()).resolves.toBeNull();
+    expect(prepared).toEqual([["file-1"]]);
+  });
+
+  it("omits an exact file whose trash state is absent", async () => {
+    let { session, prepared } = core({
+      scope: { kind: "file", fileId: "file-1" },
+    });
+
+    await expect((await session.list()).next()).resolves.toBeNull();
+    expect(prepared).toEqual([["file-1"]]);
+  });
+
+  it("still returns a trashed exact file from getEntry", async () => {
+    let { session, prepared } = core({
+      scope: { kind: "file", fileId: "file-1" },
+      getFile: async () => file({ trashed: true }),
+    });
+
+    await expect(session.getEntry("file-1")).resolves
+      .toEqual(expect.objectContaining({ id: "file-1" }));
     expect(prepared).toEqual([["file-1"]]);
   });
 
@@ -230,8 +318,8 @@ describe("Drive session scope", () => {
     });
 
     await expect((await session.list()).next()).resolves.toBeNull();
-    expect(prepared).toEqual([]);
-    expect(authorizations).toEqual([]);
+    expect(prepared).toEqual([[]]);
+    expect(authorizations).toHaveLength(1);
   });
 });
 

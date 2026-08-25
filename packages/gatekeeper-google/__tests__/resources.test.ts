@@ -34,6 +34,14 @@ describe("resource declarations", () => {
     ]);
   });
 
+  it("describes the whole-account Drive authority exactly", () => {
+    expect(GOOGLE_DRIVE_RESOURCE.description).toBe(
+      "Find files and folders anywhere this Google account can read in Drive, including shared " +
+      "drives. Full-text search examines indexed file content, descriptions, and OCR text; " +
+      "results contain metadata only.",
+    );
+  });
+
   it("has a distinct pattern per resource", () => {
     let patterns = SUPPORTED_RESOURCES.map(r => r.urlPattern);
     expect(new Set(patterns).size).toBe(patterns.length);
@@ -75,10 +83,9 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
     expect(resourceUrlPatternsToOAuthScopes([])).toEqual(IDENTITY_SCOPES);
   });
 
-  // undefined means "every resource"; [] means "none". Conflating them would silently grant a
-  // billing-only connection full resource access, or strip a full one.
-  it("distinguishes undefined (all resources) from [] (none)", () => {
-    expect(resourceUrlPatternsToOAuthScopes(undefined).length)
+  it("requires callers to make the full resource set explicit", () => {
+    let allPatterns = SUPPORTED_RESOURCES.map(resource => resource.urlPattern);
+    expect(resourceUrlPatternsToOAuthScopes(allPatterns).length)
       .toBeGreaterThan(resourceUrlPatternsToOAuthScopes([]).length);
   });
 
@@ -125,7 +132,7 @@ describe("resourcesCoveredByScopes", () => {
   });
 
   it("round-trips the full grant", () => {
-    expect(resourcesCoveredByScopes(allPatterns, resourceUrlPatternsToOAuthScopes(undefined)))
+    expect(resourcesCoveredByScopes(allPatterns, resourceUrlPatternsToOAuthScopes(allPatterns)))
       .toEqual(allPatterns);
   });
 
@@ -186,8 +193,8 @@ describe("hasDriveResourceGrant", () => {
 });
 
 describe("validateResourceUrlPatterns", () => {
-  it("accepts undefined and every known pattern", () => {
-    expect(() => validateResourceUrlPatterns(undefined)).not.toThrow();
+  it("accepts an empty or complete explicit set", () => {
+    expect(() => validateResourceUrlPatterns([])).not.toThrow();
     expect(() => validateResourceUrlPatterns(SUPPORTED_RESOURCES.map(r => r.urlPattern)))
       .not.toThrow();
   });
