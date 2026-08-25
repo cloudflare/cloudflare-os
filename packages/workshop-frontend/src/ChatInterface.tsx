@@ -4872,8 +4872,11 @@ function ChatInterface({
     // Gatekeeper-authored warnings for the approver, shown ahead of the description; a warned
     // action is never auto-approved, so the always-approve affordance is hidden too.
     const operatorWarnings = log.description.operatorWarnings ?? [];
+    // For the approve/deny buttons' aria-describedby (the pending row renders warnings below the
+    // controls). Keyed by action id rather than useId: this is a closure, not a component.
+    const warningsId = operatorWarnings.length > 0 ? `action-warnings-${msg.actionId}` : undefined;
     const warningStrip = operatorWarnings.length > 0 ? (
-      <div className="mt-1 space-y-1">
+      <div id={warningsId} className="mt-1 space-y-1">
         {operatorWarnings.map((warning, i) => (
           <div
             key={i}
@@ -4930,12 +4933,14 @@ function ChatInterface({
           tone="deny"
           onClick={() => void resolveAction(msg.actionId, "deny")}
           disabled={isProc}
+          describedBy={warningsId}
         />
         <ResolveButton
           tone="approve"
           variant={isBlocking ? "filled" : "quiet"}
           onClick={() => void resolveAction(msg.actionId, "approve")}
           disabled={isProc}
+          describedBy={warningsId}
         />
       </>
     ) : null;

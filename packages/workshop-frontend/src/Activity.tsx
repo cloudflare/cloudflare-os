@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Switch, useKumoToastManager } from '@cloudflare/kumo'
 import { CaretRight, Check, Eye, Lightning, ShieldCheck, ShieldWarning } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
@@ -636,6 +636,10 @@ function ReviewRequest({
 }) {
   const resourceUrl = safeExternalUrl(record.resourceUrl)
   const operatorWarnings = record.type === 'action' ? record.description.operatorWarnings ?? [] : []
+  // For the approve/deny buttons' aria-describedby: the warnings render below the controls.
+  // useId, so it never collides with the chat surface's action-id-derived ids.
+  const warningsDomId = useId()
+  const warningsId = operatorWarnings.length > 0 ? warningsDomId : undefined
   return (
     <article className="border-b border-kumo-line px-5 py-3 transition-colors hover:bg-kumo-elevated/50">
       <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
@@ -673,13 +677,13 @@ function ReviewRequest({
           {onAlwaysApprove && (
             <AlwaysApproveButton onClick={onAlwaysApprove} disabled={processing} />
           )}
-          <ResolveButton tone="deny" onClick={onReject} disabled={processing} />
-          <ResolveButton tone="approve" onClick={onApprove} disabled={processing} />
+          <ResolveButton tone="deny" onClick={onReject} disabled={processing} describedBy={warningsId} />
+          <ResolveButton tone="approve" onClick={onApprove} disabled={processing} describedBy={warningsId} />
         </div>
       </div>
 
       {operatorWarnings.length > 0 && (
-        <div className="mt-1.5 space-y-1">
+        <div id={warningsId} className="mt-1.5 space-y-1">
           {operatorWarnings.map((warning, i) => (
             <div
               key={i}
