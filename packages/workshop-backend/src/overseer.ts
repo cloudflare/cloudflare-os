@@ -1390,12 +1390,21 @@ class OverseerImpl implements AgentHooks {
   // when the running-agent count drops to zero.
   #allAgentsIdleWaiters: (() => void)[] = [];
 
+  // Per-turn watchdogs are armed when the turn starts, rather than by alarm(), because an
+  // external-message turn is itself held open with ctx.waitUntil(). In that case the already-live
+  // RPC invocation can keep the DO billable while the alarm remains queued and never runs.
+  #agentWatchdogTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
   // How long to set the keep-alive alarm into the future. Whenever the agent count goes from zero
   // to one, we schedule an alarm this far out; whenever it drops back to zero, we clear it. The
   // alarm guarantees the DO is restarted (and the agents resumed) after a server restart, even if
   // no client reconnects. While an agent is actively running and the DO is alive, the agent itself
   // keeps the DO alive, so the alarm typically never fires.
   static #AGENT_KEEPALIVE_ALARM_MS = 60_000;
+
+  // Agent turns normally finish in minutes. Bound every turn so a hung provider request or stream
+  // cannot keep an RPC invocation -- and Durable Object billing -- alive indefinitely.
+  static #AGENT_WATCHDOG_TIMEOUT_MS = 10 * 60_000;
 
   addChatSubscriber(subscriber: RpcStub<AiChatSubscriber>) {
     this.#chatSubscribers.add(subscriber);
@@ -1542,6 +1551,14 @@ class OverseerImpl implements AgentHooks {
   #registerRunningAgent(chatId: number) {
     let wasEmpty = this.#runningAgents.size === 0;
     this.#runningAgents.add(chatId);
+    this.#agentWatchdogTimers.set(chatId, setTimeout(() => {
+      if (!this.#runningAgents.has(chatId)) return;
+      this.logger.error("agent turn watchdog timeout; force-cancelling stuck agent", {
+        event: "agent.watchdog.timeout", chatId,
+        durationMs: OverseerImpl.#AGENT_WATCHDOG_TIMEOUT_MS,
+      });
+      this.cancelAgent(chatId, new Error("Agent stopped after exceeding the 10-minute time limit."));
+    }, OverseerImpl.#AGENT_WATCHDOG_TIMEOUT_MS));
     if (wasEmpty) {
       // Zero -> one running agents: schedule the keep-alive alarm.
       this.ctx.storage.setAlarm(Date.now() + OverseerImpl.#AGENT_KEEPALIVE_ALARM_MS);
@@ -1555,6 +1572,9 @@ class OverseerImpl implements AgentHooks {
   // otherwise interfere if the user immediately starts a new agent).
   #unregisterRunningAgent(chatId: number) {
     this.#runningAgents.delete(chatId);
+    let watchdogTimer = this.#agentWatchdogTimers.get(chatId);
+    if (watchdogTimer !== undefined) clearTimeout(watchdogTimer);
+    this.#agentWatchdogTimers.delete(chatId);
     this.storage.activeAgents.delete(chatId);
     if (this.#runningAgents.size === 0) {
       // One -> zero running agents: replace the keep-alive alarm with any response-target retry/sweep
@@ -5441,10 +5461,10 @@ class OverseerImpl implements AgentHooks {
     this.#updateExternalMessageResponseDeliveryAlarm();
   }
 
-  cancelAgent(chatId: number) {
+  cancelAgent(chatId: number, reason = new Error("User requested to stop agent.")) {
     let ctx = this.#liveChats.get(chatId);
     if (ctx) {
-      ctx.cancelController.abort(new Error("User requested to stop agent."));
+      ctx.cancelController.abort(reason);
     }
   }
 
