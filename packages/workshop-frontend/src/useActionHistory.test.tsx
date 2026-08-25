@@ -165,6 +165,29 @@ describe('useActionHistory', () => {
     expect(latest.hasMore).toBe(false)
   })
 
+  it('resets and refetches when a resumed subscription fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const first = makeOverseer()
+    linkActionLog(first.overseer, 'ws-hist-resume-failure')
+    await render(first.overseer, 'all', true)
+    await first.resolveSubscription()
+    await first.resolvePendingQuery({ entries: [pendingEntry(1)] })
+    await first.resolvePage({ entries: [entry(30)], nextBeforeId: 10 })
+
+    const second = makeOverseer()
+    linkActionLog(second.overseer, 'ws-hist-resume-failure')
+    await render(second.overseer, 'all', true)
+    expect(second.listCalls).toEqual([])
+
+    await second.rejectSubscription(new Error('replay failed'))
+    expect(latest.entries).toEqual([])
+    expect(latest.status).toBe('loading')
+    expect(second.listCalls).toEqual([{ beforeId: undefined, filter: 'all' }])
+
+    await second.resolvePage({ entries: [entry(40)] })
+    expect(latest.entries.map(e => e.id)).toEqual([40])
+  })
+
   it('drops an in-flight old-stub page after a resumed swap', async () => {
     const first = makeOverseer()
     linkActionLog(first.overseer, 'ws-hist-inflight')

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RpcStub } from 'capnweb'
 import { matchesActionHistoryFilter } from '@gadgets/workshop-shared/api'
 import type { ActionHistoryFilter, ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
-import { actionLogResumed, useActionEntries } from './useActions'
+import { actionLogResumed, useActionEntries, useActions } from './useActions'
 
 export type ActionHistoryStatus = 'loading' | 'ready' | 'error'
 
@@ -107,6 +107,10 @@ export function useActionHistory(
     })
   })
 
+  const { status: actionLogStatus } = useActions(overseer)
+  const resumeFallbackRequired =
+    actionLogResumed(overseer) && actionLogStatus === 'error'
+
   // A stub swap resets everything — unless the shared store resumed, in which case the gap was
   // replayed through the subscription above: keep the window and the frontier (a server-stable
   // id cursor). Either way the new session token drops any in-flight old-stub page. Declared
@@ -127,8 +131,14 @@ export function useActionHistory(
   }, [overseer])
 
   useEffect(() => {
+    if (!resumeFallbackRequired) return
+    sessionRef.current = createHistorySession()
+    setState(INITIAL)
+  }, [resumeFallbackRequired])
+
+  useEffect(() => {
     if (active && !sessionRef.current.hasLoadedPage) loadMore()
-  }, [active, loadMore])
+  }, [active, loadMore, resumeFallbackRequired])
 
   const entries = useMemo(
     () => Array.from(state.byId.values()).sort((a, b) => b.id - a.id),

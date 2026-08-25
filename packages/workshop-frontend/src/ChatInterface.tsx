@@ -119,7 +119,7 @@ import DeleteConfirmationDialog from "./components/DeleteConfirmationDialog";
 import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
 import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
-import { actionLogResumed, useActionEntries } from "./useActions";
+import { actionLogResumed, useActionEntries, useActions } from "./useActions";
 import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
 import { useResolveAction } from "./useResolveAction";
 import { safeExternalUrl } from "./utils/safeExternalUrl";
@@ -5765,6 +5765,9 @@ function ChatInterface({
   useActionEntries(overseer, (record) => {
     if (applyActionLogUpdateToCachedMessages(record)) scheduleUpdate();
   });
+  const { status: actionLogStatus } = useActions(overseer);
+  const resumeFallbackRequired =
+    actionLogResumed(overseer) && actionLogStatus === "error";
 
   // On a resumed reconnect the subscription replays the gap, so the entries above cover cached
   // cards. This refetch is the safety net for cold opens (no resume — e.g. the prior session
@@ -5772,7 +5775,7 @@ function ChatInterface({
   // cards (a resolution may have landed while we were away), and bindHook cards, which stay
   // mutable after resolution (`enabled` toggles).
   useEffect(() => {
-    if (actionLogResumed(overseer)) return;
+    if (actionLogResumed(overseer) && !resumeFallbackRequired) return;
     let cancelled = false;
     const targets = [...cacheRef.current.actionMessages.values()].flatMap((locations) => {
       const location = locations.values().next().value;
@@ -5806,7 +5809,7 @@ function ChatInterface({
       })();
     }
     return () => { cancelled = true; };
-  }, [overseer]);
+  }, [overseer, resumeFallbackRequired]);
 
   // Reset per-chat UI state when selectedChatId changes
   useEffect(() => {
