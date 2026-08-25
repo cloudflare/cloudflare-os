@@ -237,7 +237,7 @@ export default {
           { status: 503 },
         );
       }
-      let begun = await stub.beginOAuthFlow(initiationNonce, oauthRedirectUri);
+      const begun = await stub.beginOAuthFlow(initiationNonce, oauthRedirectUri);
       if (begun === null) {
         return new Response(INVALID_LINK_HTML, {
           headers: { "Content-Type": "text/html; charset=utf-8" }
@@ -246,7 +246,7 @@ export default {
 
       let newUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
       newUrl.searchParams.set("client_id", env.CLIENT_ID);
-      newUrl.searchParams.set("redirect_uri", begun.oauthRedirectUri);
+      newUrl.searchParams.set("redirect_uri", oauthRedirectUri);
       newUrl.searchParams.set("response_type", "code");
       newUrl.searchParams.set("scope", begun.scopes.join(" "));
       newUrl.searchParams.set("access_type", "offline");
@@ -489,7 +489,6 @@ export class UserAccount extends DurableObject<Env> {
    */
   async beginOAuthFlow(initiationNonce: string, oauthRedirectUri: string): Promise<{
     oauthNonce: string,
-    oauthRedirectUri: string,
     scopes: string[],
   } | null> {
     let stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
@@ -509,7 +508,7 @@ export class UserAccount extends DurableObject<Env> {
     // Fall back to all scopes for legacy flows that didn't record a requested set.
     let scopes = this.ctx.storage.kv.get<string[]>("requestedScopes")
         ?? resourceUrlPatternsToOAuthScopes();
-    return {oauthNonce, oauthRedirectUri, scopes};
+    return {oauthNonce, scopes};
   }
 
   #consumeOAuthNonce(oauthNonce: string): string | null {
