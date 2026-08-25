@@ -10,6 +10,7 @@ import {
   RpcTarget as NativeRpcTarget, restore,
 } from "cloudflare:workers";
 import { createTypedStorage, collection, keyString } from "@gadgets/typed-storage";
+import type { ListOptions } from "@gadgets/typed-storage";
 import { GitStore, commitIdentityForAuthor, filesEqual, gitObjectsCollection, threeWayMerge }
   from "./git-store";
 import { migrateCodeLogToGit } from "./git-migration";
@@ -927,7 +928,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
 }
 
 // Reflect a hook toggle (or deletion, which also severs the hookId reference) onto the hook's
-// bindHook action record, stamping the state-change time the startAfter resume replay filters on.
+// bindHook action record, stamping the state-change time the byLastChanged index keys on.
 function stampBindHookAction(storage: OverseerStorage, actionId: number, enabled: boolean,
     opts?: {clearHookId?: boolean}): void {
   let actionRecord = storage.actions.get(actionId);
@@ -936,6 +937,13 @@ function stampBindHookAction(storage: OverseerStorage, actionId: number, enabled
   if (opts?.clearHookId) delete actionRecord.hookId;
   actionRecord.appliedAt = new Date();
   storage.actions.put(actionRecord);
+}
+
+// Key of the actions `byLastChanged` index: last state-change time, id-disambiguated because the
+// frozen clock makes same-instant records routine. Every mutation path stamps appliedAt (apply,
+// reject, stampBindHookAction); one that doesn't would be missed by the resume replay.
+function actionLastChangedKey(record: ActionRecord): string {
+  return `${keyString((record.appliedAt ?? record.createdAt).valueOf())}.${keyString(record.id)}`;
 }
 
 /**
@@ -986,8 +994,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       and every live chat was converted to the commit-pinned change stream (a
       //       `conversionBoundary` changes message plus a `codeBase`). The `code`/`snapshots`
       //       collections are dead stored data from this version on.
-      //   3 = the actions collection's `pendingByGatekeeper` index exists and is backfilled.
-      //   4 = the actions collection's `byHistoryFilter` index exists and is backfilled.
+      //   3 = the actions collection's indexes (pendingByGatekeeper, byHistoryFilter,
+      //       byLastChanged) exist and are backfilled.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1099,20 +1107,25 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       actions: collection<ActionRecord>()({
         primaryKey: "id",
 
+        // All three indexes are backfilled by the version-3 migration.
+        uniqueIndexes: {
+          // Resume-replay index (see subscribeToActions): keyed by last state-change time so a
+          // reconnect replays only the records changed during the gap.
+          byLastChanged: actionLastChangedKey,
+        },
+
         nonUniqueIndexes: {
           // Sparse index over just the pending records, keyed by gatekeeper, so the auto-approval
-          // drain is O(pending on that gatekeeper) rather than a full-log scan. Backfilled by the
-          // version-3 migration.
+          // drain is O(pending on that gatekeeper) rather than a full-log scan.
           pendingByGatekeeper(record: ActionRecord) {
             return record.state === "pending" ? record.gatekeeperId : null;
           },
 
-          // Total index keyed by the wire ActionHistoryFilter values, in lockstep with
+          // Keyed by the wire ActionHistoryFilter values, in lockstep with
           // matchesActionHistoryFilter (api.ts), so every listActions() filter is one ranged
-          // read. Backfilled by the version-4 migration.
+          // read. The "all" filter has no key: it reads the collection itself.
           byHistoryFilter(record: ActionRecord) {
-            return record.state === "pending"
-                ? ["pending", "all", record.type] : ["all", record.type];
+            return record.state === "pending" ? ["pending", record.type] : record.type;
           },
         }
       }),
@@ -1744,12 +1757,10 @@ class OverseerImpl implements AgentHooks {
       // consumed so it doesn't also surface as an unhandled rejection.
       this.ctx.blockConcurrencyWhile(async () => {
         await this.#migrateToGitStorage();
-        this.#migrateToPendingActionIndex();
-        this.#migrateToHistoryFilterIndex();
+        this.#migrateToActionIndexes();
       }).then(() => this.#resumeInterruptedAgents(), () => {});
     } else {
-      this.#migrateToPendingActionIndex();
-      this.#migrateToHistoryFilterIndex();
+      this.#migrateToActionIndexes();
       this.#resumeInterruptedAgents();
     }
   }
@@ -1810,38 +1821,23 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  // Version 2 -> 3: backfill the actions `pendingByGatekeeper` index. Indexes are only maintained
-  // at write time, so over records that predate the index's declaration it starts empty -- and
-  // resolving a pre-existing pending action would then throw on the index update. Runs
-  // synchronously in the constructor (chained after the git-storage migration when that one is
-  // still pending), so nothing can observe pre-migration state; transactionSync makes
-  // rebuild-plus-stamp atomic, so a crash mid-rebuild retries whole. The `!== 2` guard keeps
-  // never-initialized DOs write-free (they stamp the current version at first initialization).
-  #migrateToPendingActionIndex(): void {
+  // Version 2 -> 3: backfill the actions indexes. Indexes are only maintained at write time, so
+  // over records that predate their declaration they start empty -- and updating a pre-existing
+  // action would then throw on the index update. Runs synchronously in the constructor (chained
+  // after the git-storage migration when that one is still pending), so nothing can observe
+  // pre-migration state; transactionSync makes rebuilds-plus-stamp atomic, so a crash
+  // mid-rebuild retries whole. The `!== 2` guard keeps never-initialized DOs write-free (they
+  // stamp the current version at first initialization).
+  #migrateToActionIndexes(): void {
     if (this.storage.version.get() !== 2) return;
-    let startedAt = Date.now();
     this.ctx.storage.transactionSync(() => {
       this.storage.actions.pendingByGatekeeper.rebuild();
+      this.storage.actions.byHistoryFilter.rebuild();
+      this.storage.actions.byLastChanged.rebuild();
       this.storage.version.put(3);
     });
-    this.logger.info("backfilled the pending-action index", {
-      event: "storage.migration.pending-index.completed", durationMs: Date.now() - startedAt,
-    });
-  }
-
-  // Version 3 -> 4: backfill the actions `byHistoryFilter` index; same shape and rationale as
-  // #migrateToPendingActionIndex above. The backfill writes ~2 tiny index rows per historical
-  // record in one transaction -- an O(log) one-shot, the same class as the version-3 backfill.
-  #migrateToHistoryFilterIndex(): void {
-    if (this.storage.version.get() !== 3) return;
-    let startedAt = Date.now();
-    this.ctx.storage.transactionSync(() => {
-      this.storage.actions.byHistoryFilter.rebuild();
-      this.storage.version.put(4);
-    });
-    this.logger.info("backfilled the action-history filter index", {
-      event: "storage.migration.history-filter-index.completed",
-      durationMs: Date.now() - startedAt,
+    this.logger.info("backfilled the action-log indexes", {
+      event: "storage.migration.action-indexes.completed",
     });
   }
 
@@ -8228,7 +8224,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
     // A workspace initialized by this version of the code is born at the current schema version;
     // there is nothing to migrate.
-    this.impl.storage.version.put(4);
+    this.impl.storage.version.put(3);
   }
 
   /**
@@ -9453,11 +9449,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       throw new TypeError(`Invalid beforeId: ${beforeId}`);
     }
 
-    // One ranged read off byHistoryFilter, whatever the filter, so the work is O(page) however
-    // sparse the matches. Pages are full until the last; the +1 record probes whether an older
-    // page exists.
-    let page = [...this.impl.storage.actions.byHistoryFilter.get(
-        filter, {end: beforeId, reverse: true, limit: ACTION_HISTORY_PAGE_DEFAULT_LIMIT + 1})];
+    // One ranged read -- off the collection itself for "all" (already id-ordered), off
+    // byHistoryFilter otherwise -- so the work is O(page) however sparse the matches. Pages are
+    // full until the last; the +1 record probes whether an older page exists.
+    let actions = this.impl.storage.actions;
+    let range = {end: beforeId, reverse: true, limit: ACTION_HISTORY_PAGE_DEFAULT_LIMIT + 1};
+    let page = [...(filter === "all"
+        ? actions.list(range) : actions.byHistoryFilter.get(filter, range))];
     let more = page.length > ACTION_HISTORY_PAGE_DEFAULT_LIMIT;
     if (more) page.pop();
     return {
@@ -9845,24 +9843,28 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // The subscription delivers live deltas only; clients query current pending state via
     // listActions({filter: "pending"}) after initiating the subscribe (see api.ts).
     if (startAfter !== undefined) {
-      // startAfter supports resubscribing after a disconnect: replay every record whose last
-      // state change (appliedAt, falling back to createdAt) postdates the client's last-seen
-      // time, so nothing that happened during the gap is missed. The scan walks raw id-ordered
-      // pages, awaiting each page's delivery so a huge log neither starves other RPCs nor queues
-      // unbounded callbacks -- and so any delivery failure, the final page's included, rejects
-      // the subscribe call before ready(). nextActionId bounds the sweep: records created past
-      // it are delivered by the live subscription registered above.
+      // Resubscribe after a disconnect: sweep byLastChanged for everything changed since the
+      // client's last-seen time -- O(changed during the gap), not O(log). The bound is
+      // inclusive: the frozen clock stamps whole batches with one instant, so an exclusive bound
+      // would drop the last-seen record's siblings, while re-delivery is just a harmless upsert.
+      // The end key is fixed up front; a record changing mid-replay re-sorts past it and arrives
+      // via the live subscription instead. Each page's delivery is awaited, so a failure rejects
+      // the subscribe call before ready() and a huge gap can't queue unbounded callbacks.
       try {
-        let end = this.impl.storage.nextActionId.get();
-        let cursor: number | undefined;
-        for (;;) {
-          if (disposed) throw new Error("Action subscriber failed during replay");
-          let page = [...actions.list({startAfter: cursor, end, limit: ACTION_REPLAY_PAGE_SIZE})];
-          await Promise.all(page
-              .filter(record => (record.appliedAt ?? record.createdAt) > startAfter)
-              .map(record => subscriber.entry(actionRecordToLog(record))));
-          if (page.length < ACTION_REPLAY_PAGE_SIZE) break;
-          cursor = page.at(-1)!.id;
+        let newest = [...actions.byLastChanged.list({reverse: true, limit: 1})].at(0);
+        if (newest !== undefined) {
+          let end = actionLastChangedKey({...newest, id: newest.id + 1});
+          // keyString(t) is a prefix of every key with that timestamp, so `start` is inclusive
+          // of the whole cutoff instant.
+          let from: ListOptions<string> = {start: keyString(startAfter.valueOf())};
+          for (;;) {
+            if (disposed) throw new Error("Action subscriber failed during replay");
+            let page = [...actions.byLastChanged.list(
+                {...from, end, limit: ACTION_REPLAY_PAGE_SIZE})];
+            await Promise.all(page.map(record => subscriber.entry(actionRecordToLog(record))));
+            if (page.length < ACTION_REPLAY_PAGE_SIZE) break;
+            from = {startAfter: actionLastChangedKey(page.at(-1)!)};
+          }
         }
       } catch (err) {
         unsubscribe();

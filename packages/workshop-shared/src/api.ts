@@ -1858,7 +1858,9 @@ export interface Overseer extends RpcTarget {
    *
    * The `startAfter` parameter is intended to be used when resubscribing after a disconnect:
    * specify the time of the last action seen, in order to ensure no actions were missed during
-   * the disconnect. If not specified, the subscription starts from the current time.
+   * the disconnect. The bound is inclusive -- records last changed at exactly that time are
+   * re-delivered (entries are upserts) -- and the replay arrives in change-time order, not
+   * creation order. If not specified, the subscription starts from the current time.
    *
    * Do NOT use `startAfter` as a way to enumerate historical data. Use `listActions()` instead.
    * To ensure no holes between a subscription and historical data, call `subscribeToActions()`

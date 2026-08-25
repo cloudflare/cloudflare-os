@@ -118,9 +118,7 @@ export interface Subscriber<T> {
 }
 
 /**
- * A collection of records addressed by primary key. Note: NOT `extends UniqueIndex` -- a
- * collection has the same get/list/delete, but rebuild() (re-deriving an index from the records)
- * is meaningless for the records themselves.
+ * A collection of records addressed by primary key.
  */
 export interface Collection<T extends object, PrimaryKey = string> {
   get(key: PrimaryKey): T | undefined;

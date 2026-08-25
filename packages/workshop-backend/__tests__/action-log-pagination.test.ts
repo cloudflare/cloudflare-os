@@ -66,8 +66,9 @@ describe("subscribeToActions", () => {
     expect(events).toEqual([0, 1, 2, 3, "ready"]);
   });
 
-  it("replays only records whose last state change postdates startAfter", async () => {
-    // putAction stamps createdAt = FIXTURE_EPOCH + id, so the cutoff falls mid-log.
+  it("replays only records whose last state change is at or past startAfter", async () => {
+    // putAction stamps createdAt = FIXTURE_EPOCH + id, so the cutoff falls mid-log. The bound is
+    // inclusive: the record last changed exactly at the cutoff is re-delivered.
     let storage = makeActionStorage();
     putAction(storage, 0);
     putAction(storage, 1, { state: "approved" });
@@ -77,7 +78,64 @@ describe("subscribeToActions", () => {
     let { subscriber, events } = makeSubscriber();
 
     using _sub = await client.subscribeToActions(subscriber, new Date(FIXTURE_EPOCH + 1));
-    expect(events).toEqual([2, 3, "ready"]);
+    expect(events).toEqual([1, 2, 3, "ready"]);
+  });
+
+  it("replays only the changed records, in change-time order, however large the log", async () => {
+    let storage = makeActionStorage();
+    for (let id = 0; id < 550; id++) putAction(storage, id, { state: "approved" });
+    // Two records resolved after the cutoff, in the opposite of id order.
+    putAction(storage, 7, { state: "approved", appliedAt: new Date(FIXTURE_EPOCH + 2000) });
+    putAction(storage, 3, { state: "approved", appliedAt: new Date(FIXTURE_EPOCH + 3000) });
+    let client = await openFakeOverseer(storage);
+    let { subscriber, events } = makeSubscriber();
+
+    using _sub = await client.subscribeToActions(subscriber, new Date(FIXTURE_EPOCH + 1000));
+    expect(events).toEqual([7, 3, "ready"]);
+  });
+
+  it("replays a whole batch tied at the cutoff instant, each record once", async () => {
+    // The frozen clock stamps whole batches with one instant; an exclusive bound would lose the
+    // siblings of the last-seen record.
+    let instant = new Date(FIXTURE_EPOCH + 100);
+    let storage = makeActionStorage();
+    putAction(storage, 0, { state: "approved" });  // predates the instant
+    putAction(storage, 1, { createdAt: instant });
+    putAction(storage, 2, { createdAt: instant });
+    // Changed twice within the instant: one index key, so one delivery of the final state.
+    putAction(storage, 3, { createdAt: instant, appliedAt: instant });
+    putAction(storage, 3, { createdAt: instant, appliedAt: instant, state: "approved" });
+    let client = await openFakeOverseer(storage);
+    let entries: ActionLogEntry[] = [];
+    let { subscriber } = makeSubscriber(async record => { entries.push(record); });
+
+    using _sub = await client.subscribeToActions(subscriber, instant);
+    expect(entries.map(e => e.id)).toEqual([1, 2, 3]);
+    expect(entries[2].state).toBe("approved");
+  });
+
+  it("hands records changing mid-replay to the live stream and still terminates", async () => {
+    let storage = makeActionStorage();
+    // Two pages, so the sweep is parked mid-replay while the gate holds the first page open.
+    for (let id = 0; id <= ACTION_REPLAY_PAGE_SIZE; id++) putAction(storage, id);
+    let client = await openFakeOverseer(storage);
+    let release!: () => void;
+    let gate = new Promise<void>(resolve => { release = resolve; });
+    let { subscriber, events } = makeSubscriber(async record => {
+      events.push(record.id);
+      await gate;
+    });
+
+    let pending = client.subscribeToActions(subscriber, new Date(0));
+    let newId = ACTION_REPLAY_PAGE_SIZE + 100;
+    putAction(storage, newId);  // changes past the sweep's fixed end key
+    release();
+    using _sub = await pending;
+
+    // Delivered once, by the live subscription; the replay ends at its end key.
+    expect(events.filter(id => id === newId)).toEqual([newId]);
+    expect(events.at(-1)).toBe("ready");
+    expect(events.length).toBe(ACTION_REPLAY_PAGE_SIZE + 3);  // replayed pages + live add + ready
   });
 
   it("replays a record created before the cutoff but resolved after it", async () => {
@@ -209,7 +267,7 @@ describe("listActions", () => {
     let storage = makeActionStorage();
     let expected: number[] = [];
     for (let id = 0; id < 130; id++) {
-      // Pending records carry different index keys but the same "all" membership.
+      // Mixed states, so the "all" pages span records with differing byHistoryFilter keys.
       putAction(storage, id, { state: id % 4 === 0 ? "pending" : "approved" });
       expected.unshift(id);
     }
@@ -293,8 +351,8 @@ describe("listActions with the pending filter", () => {
   });
 
   it("sees records written before the indexes existed once a rebuild backfills them", async () => {
-    // Mirrors the version-3/4 migrations: records predate both index declarations, so each
-    // starts empty until its migration's rebuild() runs.
+    // Mirrors the version-3 migration: records predate the index declarations, so each index
+    // starts empty until the migration's rebuild() runs.
     let mock = makeMockStorage();
     let legacy = makePreIndexActionStorage(mock);
     putAction(legacy, 0);
@@ -305,6 +363,7 @@ describe("listActions with the pending filter", () => {
     let storage = makeActionStorage(mock);
     storage.actions.pendingByGatekeeper.rebuild();
     storage.actions.byHistoryFilter.rebuild();
+    storage.actions.byLastChanged.rebuild();
     let client = await openFakeOverseer(storage);
 
     // Every filter serves the legacy records.
@@ -316,12 +375,18 @@ describe("listActions with the pending filter", () => {
     expect((await client.listActions({ filter: "observation" })).entries.map(e => e.id))
         .toEqual([3]);
 
-    // Resolving a backfilled record must not throw on either index's update.
+    // Resolving a backfilled record must not throw on any index's update.
     let record = storage.actions.get(2)!;
     record.state = "approved";
+    record.appliedAt = new Date(FIXTURE_EPOCH + 100);
     storage.actions.put(record);
     expect((await client.listActions({ filter: "pending" })).entries.map(e => e.id)).toEqual([0]);
     expect((await client.listActions()).entries.map(e => e.id)).toEqual([3, 2, 1, 0]);
+
+    // The resume replay serves the backfilled records too.
+    let { subscriber, events } = makeSubscriber();
+    using _sub = await client.subscribeToActions(subscriber, new Date(FIXTURE_EPOCH + 3));
+    expect(events).toEqual([3, 2, "ready"]);
   });
 });
 

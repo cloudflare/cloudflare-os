@@ -12,8 +12,8 @@
 // is deliberately never called: #initializeNewWorkspace would stamp version 3 and shadow the
 // scenario.
 //
-// The version-3 pending-action-index backfill rides the same constructor trigger, so its tests
-// live here too.
+// The version-3 action-index backfill rides the same constructor trigger, so its tests live
+// here too.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
@@ -95,9 +95,8 @@ describe("git-storage migration via the Overseer constructor", () => {
 
     await inOverseer("git-migration-single", async impl => {
       // The constructor's blockConcurrencyWhile completed before this event was delivered,
-      // running the whole migration ladder: git storage (2), the pending-action index (3), then
-      // the history-filter index (4).
-      expect(impl.storage.version.get()).toBe(4);
+      // running the whole migration ladder: git storage (2), then the action indexes (3).
+      expect(impl.storage.version.get()).toBe(3);
       expect([...impl.storage.actions.pendingByGatekeeper.list()].map((r: any) => r.id))
           .toEqual([1]);
 
@@ -150,7 +149,7 @@ describe("git-storage migration via the Overseer constructor", () => {
     await abortAllDurableObjects();
 
     await inOverseer("git-migration-multi", async impl => {
-      expect(impl.storage.version.get()).toBe(4);
+      expect(impl.storage.version.get()).toBe(3);
 
       // Every gadget's head equals its own root's content in an independent replay of the log.
       await expectHeadsMatchDoc(impl.storage, impl.gitStore, ws.docAt("current"), 1);
@@ -178,7 +177,7 @@ describe("git-storage migration via the Overseer constructor", () => {
 });
 
 describe("action-index backfills via the Overseer constructor", () => {
-  it("backfills a version-2 workspace's indexes and stamps version 4", async () => {
+  it("backfills a version-2 workspace's indexes and stamps version 3", async () => {
     await inOverseer("pending-index-v2", async impl => {
       expect(impl.storage.version.get()).toBe(0);
       // Seed through an index-less view of the same real storage, simulating records written
@@ -188,35 +187,38 @@ describe("action-index backfills via the Overseer constructor", () => {
       putAction(legacy, 1);
       putAction(legacy, 2, { state: "approved" });
       putAction(legacy, 3, { gatekeeperId: 2 });
-      // Last write: arm the constructor's version-2 migration chain (2 -> 3 -> 4).
+      // Last write: arm the constructor's version-2 migration.
       impl.storage.version.put(2);
     });
 
     await abortAllDurableObjects();
 
     await inOverseer("pending-index-v2", async impl => {
-      expect(impl.storage.version.get()).toBe(4);
+      expect(impl.storage.version.get()).toBe(3);
       // The pending index sees exactly the pendings (grouped by gatekeeper, so 1 before 3 here).
       expect([...impl.storage.actions.pendingByGatekeeper.list()].map((r: any) => r.id))
           .toEqual([1, 3]);
-      // The history-filter index serves every key over the seeded records ("all" spans pending
-      // and resolved alike).
-      expect([...impl.storage.actions.byHistoryFilter.get("all")].map((r: any) => r.id))
+      // The history-filter index serves every key over the seeded records.
+      expect([...impl.storage.actions.byHistoryFilter.get("action")].map((r: any) => r.id))
           .toEqual([1, 2, 3]);
       expect([...impl.storage.actions.byHistoryFilter.get("pending")].map((r: any) => r.id))
           .toEqual([1, 3]);
+      // The last-changed index covers the whole log, in change-time order.
+      expect([...impl.storage.actions.byLastChanged.list()].map((r: any) => r.id))
+          .toEqual([1, 2, 3]);
 
       // Resolving a backfilled record must not throw on the index updates -- the failure mode
       // that makes these backfills mandatory rather than an optimization.
       let record = impl.storage.actions.get(1)!;
       record.state = "approved";
+      record.appliedAt = new Date();
       impl.storage.actions.put(record);
       expect([...impl.storage.actions.pendingByGatekeeper.list()].map((r: any) => r.id))
           .toEqual([3]);
       expect([...impl.storage.actions.byHistoryFilter.get("pending")].map((r: any) => r.id))
           .toEqual([3]);
-      expect([...impl.storage.actions.byHistoryFilter.get("all")].map((r: any) => r.id))
-          .toEqual([1, 2, 3]);
+      expect([...impl.storage.actions.byLastChanged.list()].map((r: any) => r.id))
+          .toEqual([2, 3, 1]);
     });
   });
 });
