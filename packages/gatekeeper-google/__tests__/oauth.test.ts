@@ -9,6 +9,7 @@ import {
   getDynamicGoogleOAuthReturnUrl,
   getRegisteredGoogleOAuthRedirectUri,
   isCurrentGoogleOAuthCallback,
+  isGoogleOAuthPreviewRedirectEnabled,
   redirectToGoogleOAuthReturnUrl,
   validateGoogleOAuthReturnUrl,
   type GoogleOAuthState,
@@ -27,7 +28,7 @@ const STATE: GoogleOAuthState = {
 };
 const STABLE_ENV = {
   BASE_URL: "https://gatekeeper-google.gadgets-staging.workers.dev",
-  OAUTH_ALLOW_PREVIEW_REDIRECTS: true,
+  OAUTH_ALLOW_PREVIEW_REDIRECTS: "true",
 };
 const PREVIEW_ENV = {
   ...STABLE_ENV,
@@ -65,6 +66,19 @@ describe("Google OAuth callback relay", () => {
   });
 
   it("uses a direct callback unless a preview has a registered stable redirect", () => {
+    expect(isGoogleOAuthPreviewRedirectEnabled(STABLE_ENV)).toBe(true);
+    expect(isGoogleOAuthPreviewRedirectEnabled({
+      ...STABLE_ENV,
+      OAUTH_ALLOW_PREVIEW_REDIRECTS: true,
+    })).toBe(true);
+    expect(isGoogleOAuthPreviewRedirectEnabled({
+      ...STABLE_ENV,
+      OAUTH_ALLOW_PREVIEW_REDIRECTS: "false",
+    })).toBe(false);
+    expect(isGoogleOAuthPreviewRedirectEnabled({
+      ...STABLE_ENV,
+      OAUTH_ALLOW_PREVIEW_REDIRECTS: "TRUE",
+    })).toBe(false);
     expect(getRegisteredGoogleOAuthRedirectUri(STABLE_ENV)).toBe(
       "https://gatekeeper-google.gadgets-staging.workers.dev/oauth",
     );
@@ -75,7 +89,7 @@ describe("Google OAuth callback relay", () => {
     expect(getDynamicGoogleOAuthReturnUrl(PREVIEW_ENV)).toBe(STATE.returnUrl);
     expect(() => getDynamicGoogleOAuthReturnUrl({
       ...PREVIEW_ENV,
-      OAUTH_ALLOW_PREVIEW_REDIRECTS: false,
+      OAUTH_ALLOW_PREVIEW_REDIRECTS: "false",
     })).toThrow(/OAUTH_ALLOW_PREVIEW_REDIRECTS/);
   });
 
@@ -88,6 +102,10 @@ describe("Google OAuth callback relay", () => {
       .toBe("preview-gatekeeper-google.gadgets-staging.workers.dev");
     expect(validateGoogleOAuthReturnUrl(DOT_PREVIEW_RETURN_URL, STABLE_ENV).hostname)
       .toBe("preview.gatekeeper-google.gadgets-staging.workers.dev");
+    expect(() => validateGoogleOAuthReturnUrl(PREVIEW_RETURN_URL, {
+      ...STABLE_ENV,
+      OAUTH_ALLOW_PREVIEW_REDIRECTS: "false",
+    })).toThrow(/host/);
     expect(() => validateGoogleOAuthReturnUrl("https://attacker.example/oauth", STABLE_ENV))
       .toThrow(/host/);
     expect(() => validateGoogleOAuthReturnUrl(

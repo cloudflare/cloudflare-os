@@ -70,6 +70,7 @@ import {
   getGoogleOAuthCallbackUri,
   getRegisteredGoogleOAuthRedirectUri,
   isCurrentGoogleOAuthCallback,
+  isGoogleOAuthPreviewRedirectEnabled,
   isSignedGoogleOAuthState,
   redirectToGoogleOAuthReturnUrl,
   validateGoogleOAuthReturnUrl,
@@ -289,7 +290,7 @@ export default {
       }
 
       if (oauthState.returnUrl) {
-        if (!env.OAUTH_ALLOW_PREVIEW_REDIRECTS) {
+        if (!isGoogleOAuthPreviewRedirectEnabled(env)) {
           return new Response("Google OAuth return URLs are not allowed.", { status: 400 });
         }
         let returnUrl: URL;

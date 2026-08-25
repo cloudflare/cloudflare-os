@@ -7,7 +7,7 @@ const HEX_64 = /^[0-9a-f]{64}$/i;
 
 export type GoogleOAuthEnv = {
   BASE_URL?: string;
-  OAUTH_ALLOW_PREVIEW_REDIRECTS?: boolean;
+  OAUTH_ALLOW_PREVIEW_REDIRECTS?: boolean | string;
   OAUTH_REDIRECT_URI?: string;
   OAUTH_STATE_SIGNING_SECRET?: string;
 };
@@ -35,11 +35,16 @@ export function getRegisteredGoogleOAuthRedirectUri(env: GoogleOAuthEnv): string
   return env.OAUTH_REDIRECT_URI || getGoogleOAuthCallbackUri(env);
 }
 
+export function isGoogleOAuthPreviewRedirectEnabled(env: GoogleOAuthEnv): boolean {
+  const value = env.OAUTH_ALLOW_PREVIEW_REDIRECTS;
+  return value === true || value === "true";
+}
+
 export function getDynamicGoogleOAuthReturnUrl(env: GoogleOAuthEnv): string | undefined {
   if (!env.OAUTH_REDIRECT_URI) return undefined;
   const callback = getGoogleOAuthCallbackUri(env);
   if (new URL(callback).href === new URL(env.OAUTH_REDIRECT_URI).href) return undefined;
-  if (!env.OAUTH_ALLOW_PREVIEW_REDIRECTS) {
+  if (!isGoogleOAuthPreviewRedirectEnabled(env)) {
     throw new Error(
       "OAUTH_ALLOW_PREVIEW_REDIRECTS must be enabled when OAUTH_REDIRECT_URI differs from BASE_URL",
     );
@@ -112,7 +117,7 @@ export function validateGoogleOAuthReturnUrl(returnUrl: string, env: GoogleOAuth
   // Worker Preview hosts use either <preview-slug>-<deployed-host> or
   // <preview-slug>.<deployed-host>.
   const allowed = url.origin === callback.origin || Boolean(
-    env.OAUTH_ALLOW_PREVIEW_REDIRECTS &&
+    isGoogleOAuthPreviewRedirectEnabled(env) &&
     url.protocol === callback.protocol &&
     url.port === callback.port &&
     (url.hostname.endsWith(`-${callback.hostname}`) ||
