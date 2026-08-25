@@ -145,6 +145,26 @@ User — see Step 4.)
 
 You can also see your connected accounts and add and remove them in the settings (accessed through the account menu in the upper-right).
 
+## Worker Preview OAuth callbacks
+
+Deployments using Worker Preview hostnames can register one stable Google callback and relay the
+result to the preview that initiated authorization. Configure the stable Worker and its previews
+with the same `OAUTH_STATE_SIGNING_SECRET` and `OAUTH_ALLOW_PREVIEW_REDIRECTS=true`. Set the fixed
+redirect only on previews:
+
+```text
+OAUTH_REDIRECT_URI=https://gatekeeper-google.example.workers.dev/oauth
+```
+
+Register `OAUTH_REDIRECT_URI` as the authorized redirect URI in Google. The preview sends that fixed
+URI to Google and carries its own callback in signed, short-lived OAuth state. The stable Worker
+accepts return URLs only on its `<preview>-<worker>.<workers.dev>` hosts and forwards only the OAuth
+result and state. Normal deployments should omit these settings and continue using
+`${BASE_URL}/oauth` directly.
+
+Deploy the relay-capable stable Worker before enabling the fixed redirect on previews. Wrangler
+stores baseline and Preview secrets separately, so provision the same signing value in both places.
+
 ## Troubleshooting
 
 ### "redirect_uri_mismatch" error

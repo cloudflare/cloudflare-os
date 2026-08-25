@@ -1,6 +1,6 @@
 import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, stripTrailingSlashes } from '@gadgets/workshop-shared/gatekeeper';
+import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind } from '@gadgets/workshop-shared/gatekeeper';
 import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleVerifiedEmail, GmailApi, GmailMessageRaw, GmailOutboundMessage, GoogleAccessToken, normalizeEmailRecipients, revokeGoogleToken } from "./google-api";
 import {
   GmailSession, GmailThread, GmailMessage,
@@ -59,6 +59,23 @@ import {
 } from "./resources";
 import { ObserverCheck, ObserverTracker } from "./observers";
 import { CursorPager, Pager } from "./cursor";
+import {
+  decodeGoogleOAuthState,
+  decodeLegacyGoogleOAuthState,
+  encodeGoogleOAuthState,
+  encodeLegacyGoogleOAuthState,
+  getBasePath,
+  getBaseUrl,
+  getDynamicGoogleOAuthReturnUrl,
+  getGoogleOAuthCallbackUri,
+  getRegisteredGoogleOAuthRedirectUri,
+  isCurrentGoogleOAuthCallback,
+  isSignedGoogleOAuthState,
+  redirectToGoogleOAuthReturnUrl,
+  validateGoogleOAuthReturnUrl,
+  type GoogleOAuthEnv,
+  type GoogleOAuthState,
+} from "./oauth";
 
 // Vendor id = GATEKEEPER_<NAME> binding suffix (lowercased).
 const VENDOR_ID = "google";
@@ -72,6 +89,8 @@ type StoredNonce = {
   value: string;
   expiresAt: number;
   stage: "initiation" | "oauth";
+  // Bound to the OAuth-stage nonce so authorization and code exchange use the exact same URI.
+  oauthRedirectUri?: string;
 };
 
 const NONCE_BYTES = 32;
@@ -108,10 +127,7 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 // Declare optional environment variables here since they may be omitted from wrangler.jsonc.
-type Env = Cloudflare.Env & {
-  // Base URL (protocol+host+optional path) at which the default fetch handler is served. Should
-  // NOT include a trailing slash. Omit for localhost dev server.
-  BASE_URL?: string;
+type Env = Cloudflare.Env & GoogleOAuthEnv & {
   // OAuth app credentials (wrangler secrets / .dev.vars); not in wrangler.jsonc.
   CLIENT_ID?: string;
   CLIENT_SECRET?: string;
@@ -138,15 +154,6 @@ function toLabelObjects(labelIds: string[], labelMap: Map<string, string>): Gmai
     let name = labelMap.get(id) || id;
     return { id, name, type: "custom" as const };
   });
-}
-
-function getBaseUrl(env: Env) {
-  return stripTrailingSlashes(env.BASE_URL || "http://localhost:8787/gatekeeper/google");
-}
-
-function getBasePath(env: Env) {
-  const path = new URL(getBaseUrl(env)).pathname;
-  return path === "/" ? "" : path;
 }
 
 // =======================================================================================
@@ -215,7 +222,21 @@ export default {
       let doId = path[0];
       let initiationNonce = path[1];
       let stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(doId));
-      let begun = await stub.beginOAuthFlow(initiationNonce);
+      let oauthRedirectUri: string;
+      let returnUrl: string | undefined;
+      try {
+        oauthRedirectUri = getRegisteredGoogleOAuthRedirectUri(env);
+        returnUrl = getDynamicGoogleOAuthReturnUrl(env);
+        if (returnUrl && !env.OAUTH_STATE_SIGNING_SECRET) {
+          throw new Error("Google OAuth state signing secret is not configured.");
+        }
+      } catch (error) {
+        return new Response(
+          error instanceof Error ? error.message : "Google OAuth callback is not configured.",
+          { status: 503 },
+        );
+      }
+      let begun = await stub.beginOAuthFlow(initiationNonce, oauthRedirectUri);
       if (begun === null) {
         return new Response(INVALID_LINK_HTML, {
           headers: { "Content-Type": "text/html; charset=utf-8" }
@@ -224,37 +245,89 @@ export default {
 
       let newUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
       newUrl.searchParams.set("client_id", env.CLIENT_ID);
-      newUrl.searchParams.set("redirect_uri", getBaseUrl(env) + "/oauth");
+      newUrl.searchParams.set("redirect_uri", begun.oauthRedirectUri);
       newUrl.searchParams.set("response_type", "code");
       newUrl.searchParams.set("scope", begun.scopes.join(" "));
       newUrl.searchParams.set("access_type", "offline");
       newUrl.searchParams.set("prompt", "consent");
       // Add newly-requested scopes to any the user already granted, rather than replacing them.
       newUrl.searchParams.set("include_granted_scopes", "true");
-      newUrl.searchParams.set("state", `${doId}:${begun.oauthNonce}`);
+      let oauthState: GoogleOAuthState = {
+        userObjectId: doId,
+        oauthNonce: begun.oauthNonce,
+        ...(returnUrl ? { returnUrl } : {}),
+      };
+      let encodedState = encodeLegacyGoogleOAuthState(oauthState);
+      if (returnUrl) {
+        let signingSecret = env.OAUTH_STATE_SIGNING_SECRET;
+        if (!signingSecret) throw new Error("Google OAuth state signing secret is not configured.");
+        encodedState = await encodeGoogleOAuthState(oauthState, signingSecret);
+      }
+      newUrl.searchParams.set("state", encodedState);
 
       return Response.redirect(newUrl.toString(), 302);
     } else if (relPath === "/oauth") {
       // Completion redirect.
 
-      let error = url.searchParams.get("error");
-      if (error) {
-        return new Response(`${error}: ${url.searchParams.get("error_description")}`);
+      let state = url.searchParams.get("state");
+      if (!state) return new Response("Error: no 'state' provided", { status: 400 });
+
+      let oauthState: GoogleOAuthState;
+      try {
+        if (isSignedGoogleOAuthState(state)) {
+          if (!env.OAUTH_STATE_SIGNING_SECRET) {
+            return new Response("Google OAuth state signing secret is not configured.", { status: 500 });
+          }
+          oauthState = await decodeGoogleOAuthState(state, env.OAUTH_STATE_SIGNING_SECRET);
+        } else {
+          oauthState = decodeLegacyGoogleOAuthState(state);
+        }
+      } catch (error) {
+        return new Response(error instanceof Error ? error.message : "Invalid Google OAuth state", {
+          status: 400,
+        });
       }
 
-      let state = url.searchParams.get("state");
-      if (!state) return new Response("Error: no 'state' provided");
-      let colonIdx = state.indexOf(":");
-      if (colonIdx < 0) return new Response("Error: malformed state");
-      let doId = state.slice(0, colonIdx);
-      let oauthNonce = state.slice(colonIdx + 1);
+      if (oauthState.returnUrl) {
+        if (!env.OAUTH_ALLOW_PREVIEW_REDIRECTS) {
+          return new Response("Google OAuth return URLs are not allowed.", { status: 400 });
+        }
+        let returnUrl: URL;
+        try {
+          returnUrl = validateGoogleOAuthReturnUrl(oauthState.returnUrl, env);
+        } catch (error) {
+          return new Response(
+            error instanceof Error ? error.message : "Invalid Google OAuth return URL",
+            { status: 400 },
+          );
+        }
+        if (!isCurrentGoogleOAuthCallback(returnUrl, env)) {
+          return redirectToGoogleOAuthReturnUrl(returnUrl, url, state);
+        }
+      }
+
+      let userObjectId;
+      try {
+        userObjectId = ctx.exports.UserAccount.idFromString(oauthState.userObjectId);
+      } catch {
+        return new Response("Error: malformed state", { status: 400 });
+      }
+      let stub: DurableObjectStub<UserAccount> = ctx.exports.UserAccount.get(userObjectId);
+
+      let error = url.searchParams.get("error");
+      if (error) {
+        if (!await stub.consumeOAuthNonce(oauthState.oauthNonce)) {
+          return new Response(INVALID_LINK_HTML, {
+            headers: { "Content-Type": "text/html; charset=utf-8" }
+          });
+        }
+        return new Response("Google authorization was not completed.", { status: 400 });
+      }
 
       let code = url.searchParams.get("code");
-      if (!code) return new Response("Error: no 'code' provided");
+      if (!code) return new Response("Error: no 'code' provided", { status: 400 });
 
-      let userObjectId = ctx.exports.UserAccount.idFromString(doId);
-      let stub: DurableObjectStub<UserAccount> = ctx.exports.UserAccount.get(userObjectId);
-      if (!await stub.acceptAuthCode(code, oauthNonce)) {
+      if (!await stub.acceptAuthCode(code, oauthState.oauthNonce)) {
         return new Response(INVALID_LINK_HTML, {
           headers: { "Content-Type": "text/html; charset=utf-8" }
         });
@@ -413,7 +486,11 @@ export class UserAccount extends DurableObject<Env> {
    * nonce, consumes it, and returns a fresh OAuth nonce plus the scopes to request. Returns null if
    * the nonce is invalid or expired.
    */
-  async beginOAuthFlow(initiationNonce: string): Promise<{oauthNonce: string, scopes: string[]} | null> {
+  async beginOAuthFlow(initiationNonce: string, oauthRedirectUri: string): Promise<{
+    oauthNonce: string,
+    oauthRedirectUri: string,
+    scopes: string[],
+  } | null> {
     let stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "initiation" ||
         Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, initiationNonce)) {
@@ -426,22 +503,33 @@ export class UserAccount extends DurableObject<Env> {
       value: oauthNonce,
       expiresAt: Date.now() + OAUTH_NONCE_LIFETIME_MS,
       stage: "oauth",
+      oauthRedirectUri,
     });
     // Fall back to all scopes for legacy flows that didn't record a requested set.
     let scopes = this.ctx.storage.kv.get<string[]>("requestedScopes")
         ?? resourceUrlPatternsToOAuthScopes();
-    return {oauthNonce, scopes};
+    return {oauthNonce, oauthRedirectUri, scopes};
+  }
+
+  #consumeOAuthNonce(oauthNonce: string): string | null {
+    let stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
+    if (!stored || stored.stage !== "oauth" ||
+        Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, oauthNonce)) {
+      return null;
+    }
+    this.ctx.storage.kv.delete("nonce");
+    // Existing in-flight flows did not persist this field and used the direct callback URI.
+    return stored.oauthRedirectUri ?? getGoogleOAuthCallbackUri(this.env);
+  }
+
+  consumeOAuthNonce(oauthNonce: string): boolean {
+    return this.#consumeOAuthNonce(oauthNonce) !== null;
   }
 
   /** Returns false if the OAuth nonce is invalid or expired. */
   async acceptAuthCode(code: string, oauthNonce: string): Promise<boolean> {
-    // Verify and consume the OAuth nonce.
-    let stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
-    if (!stored || stored.stage !== "oauth" ||
-        Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, oauthNonce)) {
-      return false;
-    }
-    this.ctx.storage.kv.delete("nonce");
+    let oauthRedirectUri = this.#consumeOAuthNonce(oauthNonce);
+    if (!oauthRedirectUri) return false;
 
     let { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret } = this.env;
     if (!clientId || !clientSecret) {
@@ -460,7 +548,7 @@ export class UserAccount extends DurableObject<Env> {
       }
 
       let response = await exchangeAuthCode(
-          code, clientId, clientSecret, getBaseUrl(this.env) + "/oauth",
+          code, clientId, clientSecret, oauthRedirectUri,
           AbortSignal.timeout(AUTH_CODE_EXCHANGE_TIMEOUT_MS));
 
       if (!response.refreshToken) {
