@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Switch, useKumoToastManager } from '@cloudflare/kumo'
 import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
-import { ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
+import { ActionLogEntry, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
 import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle } from './components/HookToggle'
@@ -178,7 +178,7 @@ export default function Activity({
   const historyGroups = useMemo(() => {
     const groups: { label: string; records: ActionLogEntry[] }[] = []
     for (const record of history.entries) {
-      const label = dayLabel(record.appliedAt ?? record.createdAt)
+      const label = dayLabel(actionChangeTime(record))
       const last = groups.at(-1)
       if (last?.label === label) last.records.push(record)
       else groups.push({ label, records: [record] })
@@ -676,7 +676,7 @@ function HistoryRow({
   const resourceUrl = safeExternalUrl(record.resourceUrl)
   const resolvedBy = record.type === 'action' ? record.resolvedBy : undefined
   const autoApproved = record.type === 'action' && record.autoApproved === true
-  const at = record.appliedAt ?? record.createdAt
+  const at = actionChangeTime(record)
   const status = activityStatus(record)
 
   return (

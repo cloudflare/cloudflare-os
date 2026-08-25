@@ -119,7 +119,7 @@ import DeleteConfirmationDialog from "./components/DeleteConfirmationDialog";
 import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
 import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
-import { actionLogResumed, useActionEntries, useActions } from "./useActions";
+import { actionLogResumed, useActionEntries, useActionStatus } from "./useActions";
 import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
 import { useResolveAction } from "./useResolveAction";
 import { safeExternalUrl } from "./utils/safeExternalUrl";
@@ -5765,9 +5765,12 @@ function ChatInterface({
   useActionEntries(overseer, (record) => {
     if (applyActionLogUpdateToCachedMessages(record)) scheduleUpdate();
   });
-  const { status: actionLogStatus } = useActions(overseer);
+  const actionLogStatus = useActionStatus(overseer);
   const resumeFallbackRequired =
     actionLogResumed(overseer) && actionLogStatus === "error";
+  // Cards a prior refetch run failed to repair (error, or cancelled mid-loop); retried on the
+  // next reconnect even when the resume replay covers everything else.
+  const unrepairedCardsRef = useRef<Array<{ chatId: number; sequence: number }>>([]);
 
   // On a resumed reconnect the subscription replays the gap, so the entries above cover cached
   // cards. This refetch is the safety net for cold opens (no resume — e.g. the prior session
@@ -5775,19 +5778,28 @@ function ChatInterface({
   // cards (a resolution may have landed while we were away), and bindHook cards, which stay
   // mutable after resolution (`enabled` toggles).
   useEffect(() => {
-    if (actionLogResumed(overseer) && !resumeFallbackRequired) return;
+    const resumed = actionLogResumed(overseer) && !resumeFallbackRequired;
+    if (resumed && unrepairedCardsRef.current.length === 0) return;
     let cancelled = false;
-    const targets = [...cacheRef.current.actionMessages.values()].flatMap((locations) => {
-      const location = locations.values().next().value;
-      const msg = location && getCachedActionMessage(location)?.msg;
-      return msg && (!msg.actionLog || msg.actionLog.state === "pending" ||
-          msg.actionLog.type === "bindHook") ? [location] : [];
-    });
+    const targets = resumed ? unrepairedCardsRef.current : [];
+    if (!resumed) {
+      for (const locations of cacheRef.current.actionMessages.values()) {
+        const location = locations.values().next().value;
+        const msg = location && getCachedActionMessage(location)?.msg;
+        if (msg && (!msg.actionLog || msg.actionLog.state === "pending" ||
+            msg.actionLog.type === "bindHook")) {
+          targets.push(location);
+        }
+      }
+    }
+    const unrepaired = new Set(targets);
 
     const refresh = async (location: { chatId: number; sequence: number }) => {
       try {
         const fetched = await overseer.getChatMessage(location.chatId, location.sequence);
-        if (cancelled || fetched?.type !== "action" || !fetched.actionLog) return;
+        if (cancelled) return;
+        unrepaired.delete(location);
+        if (fetched?.type !== "action" || !fetched.actionLog) return;
         // Resolution is monotonic: never regress a card another channel already resolved.
         const current = getCachedActionMessage(location)?.msg;
         if (fetched.actionLog.state === "pending" &&
@@ -5808,7 +5820,10 @@ function ChatInterface({
         }
       })();
     }
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      unrepairedCardsRef.current = [...unrepaired];
+    };
   }, [overseer, resumeFallbackRequired]);
 
   // Reset per-chat UI state when selectedChatId changes

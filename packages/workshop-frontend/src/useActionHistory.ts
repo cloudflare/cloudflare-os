@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RpcStub } from 'capnweb'
 import { matchesActionHistoryFilter } from '@gadgets/workshop-shared/api'
 import type { ActionHistoryFilter, ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
-import { actionLogResumed, useActionEntries, useActions } from './useActions'
+import { actionLogResumed, useActionEntries, useActionStatus } from './useActions'
 
 export type ActionHistoryStatus = 'loading' | 'ready' | 'error'
 
@@ -56,10 +56,12 @@ export function useActionHistory(
   // every mutation of it is paired with a setState (so a render always follows).
   const sessionRef = useRef(createHistorySession())
 
-  useEffect(() => {
+  const reset = useCallback(() => {
     sessionRef.current = createHistorySession()
     setState(INITIAL)
-  }, [filter])
+  }, [])
+
+  useEffect(() => reset(), [filter, reset])
 
   const loadMore = useCallback(() => {
     const session = sessionRef.current
@@ -107,7 +109,7 @@ export function useActionHistory(
     })
   })
 
-  const { status: actionLogStatus } = useActions(overseer)
+  const actionLogStatus = useActionStatus(overseer)
   const resumeFallbackRequired =
     actionLogResumed(overseer) && actionLogStatus === 'error'
 
@@ -125,20 +127,18 @@ export function useActionHistory(
       sessionRef.current = { frontier, inFlight: false, hasLoadedPage }
       setState(prev => ({ ...prev, error: null }))
     } else {
-      sessionRef.current = createHistorySession()
-      setState(INITIAL)
+      reset()
     }
-  }, [overseer])
+  }, [overseer, reset])
 
+  const resumeFallbackHandledRef = useRef(false)
   useEffect(() => {
-    if (!resumeFallbackRequired) return
-    sessionRef.current = createHistorySession()
-    setState(INITIAL)
-  }, [resumeFallbackRequired])
-
-  useEffect(() => {
+    const resumeFallbackStarted =
+      resumeFallbackRequired && !resumeFallbackHandledRef.current
+    resumeFallbackHandledRef.current = resumeFallbackRequired
+    if (resumeFallbackStarted) reset()
     if (active && !sessionRef.current.hasLoadedPage) loadMore()
-  }, [active, loadMore, resumeFallbackRequired])
+  }, [active, loadMore, resumeFallbackRequired, reset])
 
   const entries = useMemo(
     () => Array.from(state.byId.values()).sort((a, b) => b.id - a.id),

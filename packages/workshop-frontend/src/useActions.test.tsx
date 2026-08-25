@@ -182,6 +182,40 @@ describe('useActions', () => {
     expect(latest.pending).toEqual([])
   })
 
+  it('does not park a watermark while the subscribe call is still in flight', async () => {
+    const first = makeOverseer()
+    linkActionLog(first.overseer, 'ws-inflight')
+    await view.render(<Probe overseer={first.overseer} />)
+    await first.resolvePendingQuery({ entries: [entry(1)] })
+    expect(latest.status).toBe('ready')  // pages drained, but the replay may be undelivered
+
+    const second = makeOverseer()
+    linkActionLog(second.overseer, 'ws-inflight')
+    await view.render(<Probe overseer={second.overseer} />)
+    expect(second.subscribeCalls).toEqual([[expect.anything()]])
+  })
+
+  it('does not park a watermark after an entry listener threw', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    function ThrowingProbe({ overseer }: { overseer: RpcStub<Overseer> }) {
+      latest = useActions(overseer)
+      useActionEntries(overseer, () => { throw new Error('consumer bug') })
+      return null
+    }
+    const first = makeOverseer()
+    linkActionLog(first.overseer, 'ws-listener')
+    await view.render(<ThrowingProbe overseer={first.overseer} />)
+    await first.resolveSubscription()
+    await first.emit(entry(1))
+    await first.resolvePendingQuery({ entries: [] })
+    expect(latest.status).toBe('ready')
+
+    const second = makeOverseer()
+    linkActionLog(second.overseer, 'ws-listener')
+    await view.render(<Probe overseer={second.overseer} />)
+    expect(second.subscribeCalls).toEqual([[expect.anything()]])
+  })
+
   it('does not resume from an errored session', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const first = makeOverseer()

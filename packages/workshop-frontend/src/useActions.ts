@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { RpcStub, RpcTarget } from 'capnweb'
-import { ActionLogEntry, ActionsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
+import { ActionLogEntry, ActionsSubscriber, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
 
 // One ref-counted store per Overseer stub, shared across consumers. On open the store initiates
 // the live subscription first, then pages the currently-pending set via
@@ -39,11 +39,13 @@ type Store = {
   subscription: RpcStub<{}> | null
   generation: number
   notifyScheduled: boolean
-  // Max change time (appliedAt ?? createdAt, the server's index key) received this session,
-  // live or paged. Every change a settled session missed has change time ≥ its disconnect time
-  // ≥ this max, so an inclusive startAfter replay from it covers the gap.
+  // Max change time (actionChangeTime, the server's index key) received this session, live or
+  // paged. Every change a settled session missed has change time ≥ its disconnect time ≥ this
+  // max, so an inclusive startAfter replay from it covers the gap.
   lastChanged: Date | undefined
   resumed: boolean
+  // An entry listener threw this session, so a delivery may not have been absorbed.
+  entryListenerFailed: boolean
 }
 
 const EMPTY_STATE: ActionsState = {
@@ -86,6 +88,7 @@ function getStore(overseer: RpcStub<Overseer>): Store {
       notifyScheduled: false,
       lastChanged: undefined,
       resumed: false,
+      entryListenerFailed: false,
     }
     stores.set(overseer, store)
   }
@@ -120,11 +123,12 @@ function resetSession(store: Store): number {
   store.snapshot = EMPTY_STATE
   store.lastChanged = undefined
   store.resumed = false
+  store.entryListenerFailed = false
   return store.generation
 }
 
 function trackChange(store: Store, record: ActionLogEntry): void {
-  const changed = record.appliedAt ?? record.createdAt
+  const changed = actionChangeTime(record)
   if (!store.lastChanged || changed > store.lastChanged) store.lastChanged = changed
 }
 
@@ -153,6 +157,7 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
         try {
           listener(record)
         } catch (err) {
+          store.entryListenerFailed = true
           console.error('Action entry listener failed:', err)
         }
       }
@@ -214,9 +219,10 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
 
 function closeSubscription(overseer: RpcStub<Overseer>, store: Store) {
   const key = storeKeys.get(overseer)
-  // Only a settled session sets the watermark — an unsettled or errored one may be missing
-  // changes from before it.
-  if (key !== undefined && store.snapshot.status === 'ready' && store.lastChanged) {
+  // Only a cleanly settled session sets the watermark: pages drained, subscribe resolved (its
+  // replay fully delivered), and no listener dropped a delivery.
+  if (key !== undefined && store.snapshot.status === 'ready' && store.subscription !== null &&
+      !store.entryListenerFailed && store.lastChanged) {
     watermarks.set(key, store.lastChanged)
   }
   resetSession(store)
@@ -243,8 +249,12 @@ function release(overseer: RpcStub<Overseer>) {
   }
 }
 
-/** Subscribe to the gadget's action log. Pass `null` to no-op ('checking', empty maps). */
-export function useActions(overseer: RpcStub<Overseer> | null): ActionsState {
+// Must be module-level constants so getSnapshot stays stable across renders.
+const selectState = (state: ActionsState) => state
+const selectStatus = (state: ActionsState) => state.status
+
+function useActionStore<T>(overseer: RpcStub<Overseer> | null,
+    select: (state: ActionsState) => T): T {
   useEffect(() => {
     if (!overseer) return
     acquire(overseer)
@@ -257,12 +267,21 @@ export function useActions(overseer: RpcStub<Overseer> | null): ActionsState {
     store.listeners.add(cb)
     return () => { store.listeners.delete(cb) }
   }, [overseer])
-  const getSnapshot = useCallback(() => {
-    if (!overseer) return EMPTY_STATE
-    return stores.get(overseer)?.snapshot ?? EMPTY_STATE
-  }, [overseer])
+  const getSnapshot = useCallback(
+    () => select((overseer && stores.get(overseer)?.snapshot) || EMPTY_STATE),
+    [overseer, select])
 
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
+/** Subscribe to the gadget's action log. Pass `null` to no-op ('checking', empty maps). */
+export function useActions(overseer: RpcStub<Overseer> | null): ActionsState {
+  return useActionStore(overseer, selectState)
+}
+
+/** Status-only variant: re-renders on status changes, not on every pending-set change. */
+export function useActionStatus(overseer: RpcStub<Overseer> | null): ActionsState['status'] {
+  return useActionStore(overseer, selectStatus)
 }
 
 /**

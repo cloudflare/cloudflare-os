@@ -2503,6 +2503,15 @@ export function matchesActionHistoryFilter(
       : filter === "all" || record.type === filter;
 }
 
+/**
+ * A record's last state-change time: appliedAt once a mutation has stamped it, else createdAt.
+ * The server's byLastChanged resume index keys on this (actionLastChangedKey in overseer.ts) and
+ * the client's resume watermark must reproduce it exactly — derive it only through this helper.
+ */
+export function actionChangeTime(record: Pick<ActionLogEntry, "appliedAt" | "createdAt">): Date {
+  return record.appliedAt ?? record.createdAt;
+}
+
 /** One page of action history from listActions(). */
 export type ActionHistoryPage = {
   /** Matching records, descending id (creation order, newest first). */

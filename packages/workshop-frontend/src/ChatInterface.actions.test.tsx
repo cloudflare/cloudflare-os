@@ -2,7 +2,6 @@
 /* eslint-disable react/react-in-jsx-scope */
 
 import { act } from 'react'
-import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type { AiChatMessage, AiChatSubscriber, Overseer } from '@gadgets/workshop-shared/api'
@@ -41,15 +40,14 @@ vi.mock('./AuthContext', () => {
   }
 })
 
-import { entry, makeOverseer } from './action-test-harness'
+import { entry, makeOverseer, makeTestRoot } from './action-test-harness'
 import ChatInterface from './ChatInterface'
 import { linkActionLog } from './useActions'
 
-const roots: Array<ReturnType<typeof createRoot>> = []
+const testRoot = makeTestRoot()
 
 afterEach(() => {
-  for (const root of roots.splice(0)) act(() => root.unmount())
-  document.body.replaceChildren()
+  testRoot.cleanup()
   vi.restoreAllMocks()
 })
 
@@ -76,8 +74,8 @@ function withChatApi(
   }
 }
 
-function renderChat(root: ReturnType<typeof createRoot>, overseer: RpcStub<Overseer>) {
-  return act(async () => root.render(
+function renderChat(overseer: RpcStub<Overseer>) {
+  return testRoot.render(
     <ChatInterface
       workspaceId="workspace"
       overseer={overseer}
@@ -91,43 +89,67 @@ function renderChat(root: ReturnType<typeof createRoot>, overseer: RpcStub<Overs
       onOpenGadget={() => {}}
       outputOfWorkpiece={() => undefined}
     />,
-  ))
+  )
+}
+
+const actionMessage = {
+  chatId: 1,
+  sequence: 0,
+  timestamp: new Date(),
+  author: { type: 'agent', id: 'model', name: 'Model' },
+  type: 'action',
+  actionId: 1,
+  actionLog: entry(1),
+} as AiChatMessage
+
+const resolvedMessage =
+  { ...actionMessage, actionLog: entry(1, { state: 'approved' }) } as AiChatMessage
+
+// Renders a first session that caches a pending action card, then swaps in a fresh linked stub.
+async function cachePendingCard() {
+  const first = makeOverseer()
+  const firstChat = withChatApi(first)
+  linkActionLog(first.overseer, 'workspace')
+  await renderChat(first.overseer)
+  await first.resolveSubscription()
+  await first.resolvePendingQuery({ entries: [entry(1)] })
+  firstChat.emitMessage(actionMessage)
 }
 
 describe('ChatInterface action refresh', () => {
   it('refreshes cached action cards when a resumed subscription fails', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    const container = document.createElement('div')
-    document.body.append(container)
-    const root = createRoot(container)
-    roots.push(root)
-
-    const first = makeOverseer()
-    const firstChat = withChatApi(first)
-    linkActionLog(first.overseer, 'workspace')
-    await renderChat(root, first.overseer)
-    await first.resolveSubscription()
-    await first.resolvePendingQuery({ entries: [entry(1)] })
-
-    const message = {
-      chatId: 1,
-      sequence: 0,
-      timestamp: new Date(),
-      author: { type: 'agent', id: 'model', name: 'Model' },
-      type: 'action',
-      actionId: 1,
-      actionLog: entry(1),
-    } as AiChatMessage
-    firstChat.emitMessage(message)
+    await cachePendingCard()
 
     const second = makeOverseer()
-    const refreshed = { ...message, actionLog: entry(1, { state: 'approved' }) } as AiChatMessage
-    const secondChat = withChatApi(second, vi.fn(async () => refreshed))
+    const secondChat = withChatApi(second, vi.fn(async () => resolvedMessage))
     linkActionLog(second.overseer, 'workspace')
-    await renderChat(root, second.overseer)
+    await renderChat(second.overseer)
     expect(secondChat.getChatMessage).not.toHaveBeenCalled()
 
     await second.rejectSubscription(new Error('replay failed'))
     await vi.waitFor(() => expect(secondChat.getChatMessage).toHaveBeenCalledWith(1, 0))
+  })
+
+  it('retries cards a failed refetch left behind on the next resumed reconnect', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await cachePendingCard()
+
+    // Resumed swap whose replay fails: the fallback refetch runs but the card fetch errors.
+    const second = makeOverseer()
+    const secondChat = withChatApi(second, vi.fn(async () => {
+      throw new Error('fetch failed')
+    }))
+    linkActionLog(second.overseer, 'workspace')
+    await renderChat(second.overseer)
+    await second.rejectSubscription(new Error('replay failed'))
+    await vi.waitFor(() => expect(secondChat.getChatMessage).toHaveBeenCalled())
+
+    // The next session resumes cleanly, yet the unrepaired card is still retried.
+    const third = makeOverseer()
+    const thirdChat = withChatApi(third, vi.fn(async () => resolvedMessage))
+    linkActionLog(third.overseer, 'workspace')
+    await renderChat(third.overseer)
+    await vi.waitFor(() => expect(thirdChat.getChatMessage).toHaveBeenCalledWith(1, 0))
   })
 })
