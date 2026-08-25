@@ -7,10 +7,13 @@
 //
 // This lives in __tests__/ (the unit workerd config), not __integration__/: the TEST_OVERSEER
 // DO binding exists only in vitest.config.ts, and no public API path can create a legacy
-// workspace anymore (new workspaces are born at version 2), so seeding must reach into
+// workspace anymore (new workspaces are born at version 3), so seeding must reach into
 // impl.storage -- the same pattern as chat-changes.test.ts. The public DO surface (open() etc.)
-// is deliberately never called: #initializeNewWorkspace would stamp version 2 and shadow the
+// is deliberately never called: #initializeNewWorkspace would stamp version 3 and shadow the
 // scenario.
+//
+// The version-3 pending-action-index backfill rides the same constructor trigger, so its tests
+// live here too.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
@@ -20,6 +23,7 @@ import { HISTORY_COMMIT_GAP_MS } from "../src/git-migration";
 import {
   LegacyWorkspace, MINUTE, T0, USER, expectHeadsMatchDoc, readDocFiles, setFile,
 } from "./legacy-workspace";
+import { makePreIndexActionStorage, putAction } from "./fixtures.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -80,13 +84,22 @@ describe("git-storage migration via the Overseer constructor", () => {
         setFile(doc, "", "app.js", "hello\nworld\n");
         setFile(doc, "", "util.js", "util two\n");
       });                                                                                // v6
+
+      // A pending action written through an index-less view of the same storage, simulating a
+      // record that predates the pendingByGatekeeper declaration. The version-3 step (chained
+      // after the git migration in the same blockConcurrencyWhile) must backfill it.
+      putAction(makePreIndexActionStorage(impl.ctx.storage), 1);
     });
 
     await abortAllDurableObjects();
 
     await inOverseer("git-migration-single", async impl => {
-      // The constructor's blockConcurrencyWhile completed before this event was delivered.
-      expect(impl.storage.version.get()).toBe(2);
+      // The constructor's blockConcurrencyWhile completed before this event was delivered,
+      // running the whole migration ladder: git storage (2), the pending-action index (3), then
+      // the history-filter index (4).
+      expect(impl.storage.version.get()).toBe(4);
+      expect([...impl.storage.actions.pendingByGatekeeper.list()].map((r: any) => r.id))
+          .toEqual([1]);
 
       await expectHeadsMatchDoc(impl.storage, impl.gitStore, ws.docAt("current"), 1);
 
@@ -137,7 +150,7 @@ describe("git-storage migration via the Overseer constructor", () => {
     await abortAllDurableObjects();
 
     await inOverseer("git-migration-multi", async impl => {
-      expect(impl.storage.version.get()).toBe(2);
+      expect(impl.storage.version.get()).toBe(4);
 
       // Every gadget's head equals its own root's content in an independent replay of the log.
       await expectHeadsMatchDoc(impl.storage, impl.gitStore, ws.docAt("current"), 1);
@@ -160,6 +173,50 @@ describe("git-storage migration via the Overseer constructor", () => {
       // Gadget 3's intermediate commit is the batch's end state, checked against the replay.
       expect(await impl.gitStore.readCommitFiles(rightLog[1].oid))
           .toEqual(readDocFiles(ws.docAt(6), "3"));
+    });
+  });
+});
+
+describe("action-index backfills via the Overseer constructor", () => {
+  it("backfills a version-2 workspace's indexes and stamps version 4", async () => {
+    await inOverseer("pending-index-v2", async impl => {
+      expect(impl.storage.version.get()).toBe(0);
+      // Seed through an index-less view of the same real storage, simulating records written
+      // before the action indexes were declared (their entries only exist for writes made after
+      // the declarations).
+      let legacy = makePreIndexActionStorage(impl.ctx.storage);
+      putAction(legacy, 1);
+      putAction(legacy, 2, { state: "approved" });
+      putAction(legacy, 3, { gatekeeperId: 2 });
+      // Last write: arm the constructor's version-2 migration chain (2 -> 3 -> 4).
+      impl.storage.version.put(2);
+    });
+
+    await abortAllDurableObjects();
+
+    await inOverseer("pending-index-v2", async impl => {
+      expect(impl.storage.version.get()).toBe(4);
+      // The pending index sees exactly the pendings (grouped by gatekeeper, so 1 before 3 here).
+      expect([...impl.storage.actions.pendingByGatekeeper.list()].map((r: any) => r.id))
+          .toEqual([1, 3]);
+      // The history-filter index serves every key over the seeded records ("all" spans pending
+      // and resolved alike).
+      expect([...impl.storage.actions.byHistoryFilter.get("all")].map((r: any) => r.id))
+          .toEqual([1, 2, 3]);
+      expect([...impl.storage.actions.byHistoryFilter.get("pending")].map((r: any) => r.id))
+          .toEqual([1, 3]);
+
+      // Resolving a backfilled record must not throw on the index updates -- the failure mode
+      // that makes these backfills mandatory rather than an optimization.
+      let record = impl.storage.actions.get(1)!;
+      record.state = "approved";
+      impl.storage.actions.put(record);
+      expect([...impl.storage.actions.pendingByGatekeeper.list()].map((r: any) => r.id))
+          .toEqual([3]);
+      expect([...impl.storage.actions.byHistoryFilter.get("pending")].map((r: any) => r.id))
+          .toEqual([3]);
+      expect([...impl.storage.actions.byHistoryFilter.get("all")].map((r: any) => r.id))
+          .toEqual([1, 2, 3]);
     });
   });
 });

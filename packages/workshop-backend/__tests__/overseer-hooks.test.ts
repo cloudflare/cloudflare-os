@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { DEFAULT_ADMIN_CONFIG, serializeAdminConfig } from "../src/admin-config.js";
 import { OverseerDurableObject } from "../src/overseer.js";
+import { openFakeOverseer } from "./fixtures.js";
 
 vi.mock("capnweb-validate", () => ({ validateRpc: () => () => undefined }));
 
@@ -108,33 +108,10 @@ async function makeTargetOverseer(gadgetId?: number) {
     description: {title: "Incoming email", description: "Receives email"},
     enabled: false,
   };
-  let overseer = {
-    open: OverseerDurableObject.prototype.open,
-    impl: {
-      ownerId: "user-id",
-      ensureAmbientCapsules: async () => {},
-      markOutputsDirty: () => {},
-      joinPresence: () => () => {},
-      joinOutputsFanout: () => () => {},
-      users: {
-        idFromString: (id: string) => id,
-        get: () => ({
-          whoami: async () => ({id: "profile-id", name: "Test User"}),
-        }),
-      },
-      ctx: {
-        id: {toString: () => "workspace-id"},
-        exports: {GatekeeperHookLoopback: ({props}: {props: object}) => props},
-      },
-      storage: {
-        prohibitAllSharing: {get: () => false},
-        boundHooks: {get: () => record, put: vi.fn()},
-        actions: {get: () => undefined, put: vi.fn()},
-      },
-    },
-  } satisfies Pick<OverseerDurableObject, "open"> & {impl: object};
-  let notifyClosed = new NativeRpcStub<() => void>(() => {});
-  let client = await overseer.open("user-id", "profile-id", notifyClosed);
+  let client = await openFakeOverseer({
+    boundHooks: {get: () => record, put: vi.fn()},
+    actions: {get: () => undefined, put: vi.fn()},
+  }, {exports: {GatekeeperHookLoopback: ({props}: {props: object}) => props}});
   return {client, controllerEnable};
 }
 

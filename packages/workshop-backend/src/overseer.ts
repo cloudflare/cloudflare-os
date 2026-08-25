@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitIdentity, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitIdentity, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, changedGadgets, composeCodeChange, diffFiles, transformCodeChange,
   validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -1076,7 +1076,24 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       }),
 
       actions: collection<ActionRecord>()({
-        primaryKey: "id"
+        primaryKey: "id",
+
+        nonUniqueIndexes: {
+          // Sparse index over just the pending records, keyed by gatekeeper, so the auto-approval
+          // drain is O(pending on that gatekeeper) rather than a full-log scan. Backfilled by the
+          // version-3 migration.
+          pendingByGatekeeper(record: ActionRecord) {
+            return record.state === "pending" ? record.gatekeeperId : null;
+          },
+
+          // Total index keyed by the wire ActionHistoryFilter values, in lockstep with
+          // matchesActionHistoryFilter (api.ts), so every listActions() filter is one ranged
+          // read. Backfilled by the version-4 migration.
+          byHistoryFilter(record: ActionRecord) {
+            return record.state === "pending"
+                ? ["pending", "all", record.type] : ["all", record.type];
+          },
+        }
       }),
 
       boundHooks: collection<BoundHookRecord>()({
@@ -1297,6 +1314,15 @@ const LISTING_REFRESH_BATCH = 16;
 
 // Longest noun accepted on a format reference. Denormalized display data.
 const MAX_FORMAT_REF_NOUN = 128;
+
+/**
+ * Raw records examined per page of subscribeToActions()'s startAfter resume replay. Exported
+ * for tests.
+ */
+export const ACTION_REPLAY_PAGE_SIZE = 256;
+
+/** listActions() entries returned per page. Exported for tests. */
+export const ACTION_HISTORY_PAGE_DEFAULT_LIMIT = 50;
 
 /**
  * Keeps `commandPosition` only if it's a real index into `args`. Anything else becomes undefined,
@@ -1695,9 +1721,14 @@ class OverseerImpl implements AgentHooks {
       // blocked event (including the alarm handler) is delivered. On failure there is nothing
       // to do -- blockConcurrencyWhile has already aborted the DO -- but the rejection must be
       // consumed so it doesn't also surface as an unhandled rejection.
-      this.ctx.blockConcurrencyWhile(() => this.#migrateToGitStorage())
-          .then(() => this.#resumeInterruptedAgents(), () => {});
+      this.ctx.blockConcurrencyWhile(async () => {
+        await this.#migrateToGitStorage();
+        this.#migrateToPendingActionIndex();
+        this.#migrateToHistoryFilterIndex();
+      }).then(() => this.#resumeInterruptedAgents(), () => {});
     } else {
+      this.#migrateToPendingActionIndex();
+      this.#migrateToHistoryFilterIndex();
       this.#resumeInterruptedAgents();
     }
   }
@@ -1755,6 +1786,41 @@ class OverseerImpl implements AgentHooks {
     this.logger.info("migrated workspace code to git storage", {
       event: "storage.migration.git.completed",
       durationMs: Date.now() - startedAt, commitCount: commits,
+    });
+  }
+
+  // Version 2 -> 3: backfill the actions `pendingByGatekeeper` index. Indexes are only maintained
+  // at write time, so over records that predate the index's declaration it starts empty -- and
+  // resolving a pre-existing pending action would then throw on the index update. Runs
+  // synchronously in the constructor (chained after the git-storage migration when that one is
+  // still pending), so nothing can observe pre-migration state; transactionSync makes
+  // rebuild-plus-stamp atomic, so a crash mid-rebuild retries whole. The `!== 2` guard keeps
+  // never-initialized DOs write-free (they stamp the current version at first initialization).
+  #migrateToPendingActionIndex(): void {
+    if (this.storage.version.get() !== 2) return;
+    let startedAt = Date.now();
+    this.ctx.storage.transactionSync(() => {
+      this.storage.actions.pendingByGatekeeper.rebuild();
+      this.storage.version.put(3);
+    });
+    this.logger.info("backfilled the pending-action index", {
+      event: "storage.migration.pending-index.completed", durationMs: Date.now() - startedAt,
+    });
+  }
+
+  // Version 3 -> 4: backfill the actions `byHistoryFilter` index; same shape and rationale as
+  // #migrateToPendingActionIndex above. The backfill writes ~2 tiny index rows per historical
+  // record in one transaction -- an O(log) one-shot, the same class as the version-3 backfill.
+  #migrateToHistoryFilterIndex(): void {
+    if (this.storage.version.get() !== 3) return;
+    let startedAt = Date.now();
+    this.ctx.storage.transactionSync(() => {
+      this.storage.actions.byHistoryFilter.rebuild();
+      this.storage.version.put(4);
+    });
+    this.logger.info("backfilled the action-history filter index", {
+      event: "storage.migration.history-filter-index.completed",
+      durationMs: Date.now() - startedAt,
     });
   }
 
@@ -8146,7 +8212,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
     // A workspace initialized by this version of the code is born at the current schema version;
     // there is nothing to migrate.
-    this.impl.storage.version.put(2);
+    this.impl.storage.version.put(4);
   }
 
   /**
@@ -9364,13 +9430,24 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return result;
   }
 
-  async listActions(): Promise<ActionLogEntry[]> {
-    let result: ActionLogEntry[] = [];
-    for (let record of this.impl.storage.actions.list()) {
-      result.push(actionRecordToLog(record));
+  async listActions(options?: {beforeId?: number, filter?: ActionHistoryFilter})
+      : Promise<ActionHistoryPage> {
+    let {beforeId, filter = "all"} = options ?? {};
+    if (beforeId !== undefined && (!Number.isSafeInteger(beforeId) || beforeId < 0)) {
+      throw new TypeError(`Invalid beforeId: ${beforeId}`);
     }
 
-    return result;
+    // One ranged read off byHistoryFilter, whatever the filter, so the work is O(page) however
+    // sparse the matches. Pages are full until the last; the +1 record probes whether an older
+    // page exists.
+    let page = [...this.impl.storage.actions.byHistoryFilter.get(
+        filter, {end: beforeId, reverse: true, limit: ACTION_HISTORY_PAGE_DEFAULT_LIMIT + 1})];
+    let more = page.length > ACTION_HISTORY_PAGE_DEFAULT_LIMIT;
+    if (more) page.pop();
+    return {
+      entries: page.map(actionRecordToLog),
+      nextBeforeId: more ? page.at(-1)!.id : undefined,
+    };
   }
 
   async approveAction(id: number): Promise<void> {
@@ -10437,10 +10514,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 // subscribeToMetadata(), subscribeToPresence(), subscribeToWorkpieces(), and getGadget()
 // (returning a restricted, mainline-only UseGadgetClientInterface). Presence includes active
 // viewers' names, profile IDs, and roles. Every other
-// method throws "Unauthorized", with two exceptions: subscribeToConsoleLogs() and
-// subscribeToActions() return inert subscriptions (they never deliver data) rather than denying.
-// The editor subscribes to both speculatively from its top-level hooks, before it has switched to
-// the use-only view; an inert subscription lets those calls resolve quietly instead of surfacing
+// method throws "Unauthorized", with a few exceptions: subscribeToConsoleLogs() and
+// subscribeToActions() return inert subscriptions (they never deliver data), and
+// listActions() returns an empty terminal page, rather than denying.
+// The editor calls all of these speculatively from its top-level hooks, before it has switched to
+// the use-only view; an inert result lets those calls resolve quietly instead of surfacing
 // as spurious client-side errors, while still revealing nothing to the "use" collaborator.
 //
 // Default-deny is enforced at compile time: because this class `implements Overseer`, adding any
@@ -10587,7 +10665,12 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async newAgentSpawnerGatekeeper(_config: AgentSpawnerConfig): Promise<GatekeeperClient<any>> {
     this.#deny();
   }
-  async listActions(): Promise<ActionLogEntry[]> { this.#deny(); }
+  // Pending actions are queried eagerly for the badge; resolved history is demand-loaded. Return
+  // an empty terminal page so this speculative read does not fail for "use" collaborators.
+  async listActions(_options?: {beforeId?: number, filter?: ActionHistoryFilter})
+      : Promise<ActionHistoryPage> {
+    return {entries: []};
+  }
   async approveAction(_id: number): Promise<void> { this.#deny(); }
   async rejectAction(_id: number): Promise<void> { this.#deny(); }
   async listHooks(): Promise<BoundHookInfo[]> { this.#deny(); }

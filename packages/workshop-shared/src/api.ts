@@ -1763,10 +1763,17 @@ export interface Overseer extends RpcTarget {
   newAgentSpawnerGatekeeper(config: AgentSpawnerConfig): Promise<GatekeeperClient<any>>;
 
   /**
-   * List history of actions.
-   * TODO: This should be paginated.
+   * Fetch one page of action history, newest first by id (creation order). "all" (the default)
+   * pages every record and a record type pages that type — pending records included, each at its
+   * creation position; `filter: "pending"` pages only the currently-pending records — the query
+   * half of the query-for-state/subscribe-for-deltas contract (see subscribeToActions()).
+   *
+   * Page size is a server constant. Pages are full until the last: absence of `nextBeforeId`
+   * means the history is exhausted; otherwise it is the id of the last returned entry, to pass
+   * as `beforeId` for the next-older page.
    */
-  listActions(): Promise<ActionLogEntry[]>;
+  listActions(options?: {beforeId?: number, filter?: ActionHistoryFilter})
+      : Promise<ActionHistoryPage>;
 
   /**
    * Approve an action that is currently in the "pending" state. The action will be performed on
@@ -2458,6 +2465,38 @@ export type AiChatHistoryPage = {
      */
     proposedChange?: CodeChange;
   };
+};
+
+/**
+ * Filter for listActions(): "all" for every record, one specific record type, or "pending" for
+ * only the currently-pending records (of any type). Pending records appear in the type views and
+ * "all" too, so history shows everything the agent has attempted.
+ */
+export type ActionHistoryFilter = "all" | "pending" | ActionLogEntry["type"];
+
+/**
+ * Whether a record passes an ActionHistoryFilter. Used by the client's live-merge; the server's
+ * listActions() answers the same question from its byHistoryFilter index, whose key derivation
+ * must stay in lockstep with this function so the two ends of the wire can't drift.
+ */
+export function matchesActionHistoryFilter(
+    record: {type: ActionLogEntry["type"], state: ActionState},
+    filter: ActionHistoryFilter): boolean {
+  return filter === "pending"
+      ? record.state === "pending"
+      : filter === "all" || record.type === filter;
+}
+
+/** One page of action history from listActions(). */
+export type ActionHistoryPage = {
+  /** Matching records, descending id (creation order, newest first). */
+  entries: ActionLogEntry[];
+
+  /**
+   * Id of the last returned entry; pass as `beforeId` for the next-older page. Absent when the
+   * page reached the start of the history.
+   */
+  nextBeforeId?: number;
 };
 
 export type AiChatAuthorInfo = {
