@@ -141,7 +141,7 @@ describe('useActions', () => {
     expect(latest.pending).toEqual([])
   })
 
-  it('resumes a linked stub swap: seeded pendings, startAfter watermark, no re-page', async () => {
+  it('resubscribes with the settled watermark when a linked stub swaps', async () => {
     const first = makeOverseer()
     linkActionLog(first.overseer, 'ws-resume')
     await view.render(<Probe overseer={first.overseer} />)
@@ -154,15 +154,14 @@ describe('useActions', () => {
     const second = makeOverseer()
     linkActionLog(second.overseer, 'ws-resume')
     await view.render(<Probe overseer={second.overseer} />)
-    expect(second.ops).toEqual(['subscribe'])
+    expect(second.ops).toEqual(['subscribe', 'listPending'])
     expect(second.subscribeCalls).toEqual([[expect.anything(), appliedAt]])
     expect(actionLogResumed(second.overseer)).toBe(true)
-    expect(latest.status).toBe('checking')
-    expect(latest.pending.map(e => e.id)).toEqual([1])  // carried, visible before settling
 
-    // A replayed resolution (the gap) upserts before the subscribe call resolves.
+    // The gap replays as entries ahead of the pages; a replayed resolution beats the page copy.
     await second.emit(entry(1, { state: 'rejected', appliedAt: new Date(1700006000000) }))
     await second.resolveSubscription()
+    await second.resolvePendingQuery({ entries: [entry(1)] })
     expect(latest.status).toBe('ready')
     expect(latest.pending).toEqual([])
   })
@@ -209,13 +208,9 @@ describe('useActions', () => {
 
     view.unmount()
 
+    // The paged (not just emitted) record's createdAt set the watermark.
     await view.render(<Probe overseer={server.overseer} />)
-    expect(server.ops).toEqual(['subscribe', 'listPending', 'subscribe'])
     expect(server.subscribeCalls[1]).toEqual([expect.anything(), entry(1).createdAt])
-    expect(latest.pending.map(e => e.id)).toEqual([1])
-
-    await server.resolveSubscription()
-    expect(latest.status).toBe('ready')
   })
 
   it('reports error but keeps gathered pendings when the subscribe call fails', async () => {

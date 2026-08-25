@@ -2,18 +2,18 @@ import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { RpcStub, RpcTarget } from 'capnweb'
 import { ActionLogEntry, ActionsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
 
-// One ref-counted store per Overseer stub, shared across consumers. On a cold open the store
-// initiates the live subscription first, then pages the currently-pending set via
+// One ref-counted store per Overseer stub, shared across consumers. On open the store initiates
+// the live subscription first, then pages the currently-pending set via
 // listActions({filter: 'pending'}): capnweb e-order registers the subscriber server-side before
 // the first page reads, so every record is covered — pages snapshot call-time state, and
 // everything that changes after arrives on the subscription. Pages fold with live-wins
 // semantics; the last page loading is the "settled" signal. Resolved history is demand-paged
 // separately (see useActionHistory).
 //
-// Stubs registered through linkActionLog() resume instead of re-paging: a settled store parks
-// its pending set and change-time watermark by workspace key on close, and the next store with
-// the same key seeds from them and subscribes with startAfter — the server replays the gap
-// (inclusive, as upserts) before the subscribe call returns, which is the settled signal.
+// Stubs registered through linkActionLog() additionally park a resume watermark: a settled store
+// records its last change time by workspace key on close, and the next store with the same key
+// subscribes with startAfter — the server replays the gap (inclusive, as upserts) through the
+// subscription, so per-record consumers are patched without refetching.
 
 export type ActionsState = {
   /**
@@ -54,19 +54,19 @@ const EMPTY_STATE: ActionsState = {
 const stores = new WeakMap<RpcStub<Overseer>, Store>()
 
 const storeKeys = new WeakMap<RpcStub<Overseer>, string>()
-// Never deleted: a failed later session leaves the last good carryover in place, and resuming
+// Never deleted: a failed later session leaves the last good watermark in place, and resuming
 // from an older watermark just replays more.
-const carryovers = new Map<string, { pending: Map<number, ActionLogEntry>, lastChanged: Date }>()
+const watermarks = new Map<string, Date>()
 
 /**
- * Give the stub a stable workspace identity so its store parks state on close and a later stub
- * with the same key resumes from it. Unlinked stubs keep cold-open behavior.
+ * Give the stub a stable workspace identity so its store parks a resume watermark on close and
+ * a later stub with the same key replays the gap. Unlinked stubs always open blind.
  */
 export function linkActionLog(overseer: RpcStub<Overseer>, key: string): void {
   storeKeys.set(overseer, key)
 }
 
-/** Whether the stub's store opened from a carryover — its gap is replayed by the subscription. */
+/** Whether the stub's store subscribed with startAfter — its gap is replayed as entries. */
 export function actionLogResumed(overseer: RpcStub<Overseer> | null): boolean {
   return (overseer && stores.get(overseer)?.resumed) ?? false
 }
@@ -131,13 +131,8 @@ function trackChange(store: Store, record: ActionLogEntry): void {
 function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
   const generation = resetSession(store)
   const key = storeKeys.get(overseer)
-  const carryover = key === undefined ? undefined : carryovers.get(key)
-  if (carryover) {
-    store.stagedPending = new Map(carryover.pending)
-    store.lastChanged = carryover.lastChanged
-    store.resumed = true
-    commit(store)  // carried pendings visible immediately, still 'checking'
-  }
+  const startAfter = key === undefined ? undefined : watermarks.get(key)
+  store.resumed = startAfter !== undefined
 
   class ActionsSubscriberImpl extends RpcTarget implements ActionsSubscriber {
     entry(record: ActionLogEntry): void {
@@ -163,29 +158,10 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
       }
     }
 
-    // Settledness is signalled by the pending page loop draining (cold open) or the subscribe
-    // call resolving (resume), not by this.
+    // Settledness is signalled by the pending page loop draining, not by the subscription.
     ready(): void {}
   }
   const subscriber = new ActionsSubscriberImpl() as unknown as RpcStub<ActionsSubscriber>
-
-  if (carryover) {
-    // The server replays the gap before the subscribe call returns, so resolution IS the
-    // settled signal — no pending re-page.
-    overseer.subscribeToActions(subscriber, carryover.lastChanged).then(sub => {
-      if (store.generation !== generation) {
-        sub[Symbol.dispose]()
-        return
-      }
-      store.subscription = sub
-      commit(store, 'ready')
-    }, (error: unknown) => {
-      if (store.generation !== generation) return
-      console.error('Failed to resume action subscription:', error)
-      commit(store, 'error')
-    })
-    return
-  }
 
   let failed = false
   const fail = (error: unknown) => {
@@ -199,8 +175,12 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
   }
 
   // Initiated first — the page loop below relies on capnweb e-order having registered the
-  // subscriber server-side before the first page reads.
-  overseer.subscribeToActions(subscriber).then(sub => {
+  // subscriber server-side before the first page reads. With a watermark the server also replays
+  // the gap (everything changed at/after it, as upserts) ahead of the pages.
+  const subscribed = startAfter
+    ? overseer.subscribeToActions(subscriber, startAfter)
+    : overseer.subscribeToActions(subscriber)
+  subscribed.then(sub => {
     if (store.generation !== generation) {
       sub[Symbol.dispose]()
       return
@@ -234,10 +214,10 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
 
 function closeSubscription(overseer: RpcStub<Overseer>, store: Store) {
   const key = storeKeys.get(overseer)
-  // Only a settled session seeds a resume — an unsettled or errored one may be missing records
-  // from before its watermark.
+  // Only a settled session sets the watermark — an unsettled or errored one may be missing
+  // changes from before it.
   if (key !== undefined && store.snapshot.status === 'ready' && store.lastChanged) {
-    carryovers.set(key, { pending: new Map(store.stagedPending), lastChanged: store.lastChanged })
+    watermarks.set(key, store.lastChanged)
   }
   resetSession(store)
   store.subscription?.[Symbol.dispose]()
