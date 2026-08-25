@@ -74,17 +74,34 @@ async function provisionAccount(api: RpcStub<AuthenticatedApi>): Promise<Connect
   });
 }
 
-/** Tell the gatekeeper what to do the next time it's asked to admit `label` as an observer. */
+/**
+ * Tell the gatekeeper what to do the next time it's asked to admit `label` as an observer --
+ * everywhere, or only at the binding `resourceUrl` names (a resource-specific outcome wins).
+ */
 async function setVerifyOutcome(
-    label: string, outcome: { allow: true } | { allow: false; reason: string }): Promise<void> {
+    label: string, outcome: { allow: true } | { allow: false; reason: string },
+    resourceUrl?: string): Promise<void> {
   const res = await harness.fetchWorker(
     TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/verify-outcome",
-    { method: "POST", body: JSON.stringify({ label, ...outcome }) });
+    { method: "POST", body: JSON.stringify({ label, resourceUrl, ...outcome }) });
   if (res.status !== 204) {
     // The control route answers a rejected body with 400 and a reason, so surface it here rather
     // than leaving a bare status to be puzzled over.
     throw new Error(`Setting the verify outcome failed with ${res.status}: ${await res.text()}`);
   }
+}
+
+type ObserverEvent = { resourceUrl: string; type: "add" | "remove"; id: string };
+
+/** The addObserver()/removeObserver() calls one binding's gatekeeper has seen, in order. */
+async function observerEvents(resourceUrl: string): Promise<ObserverEvent[]> {
+  const res = await harness.fetchWorker(
+    TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/observer-events",
+    { method: "POST", body: JSON.stringify({ resourceUrl }) });
+  if (res.status !== 200) {
+    throw new Error(`Reading observer events failed with ${res.status}: ${await res.text()}`);
+  }
+  return (await res.json() as { events: ObserverEvent[] }).events;
 }
 
 async function ambientVerificationCount(label: string): Promise<number> {
@@ -309,6 +326,42 @@ describe("observer re-verification", () => {
       expect(error!.message).toContain("Test Thing multi-a");
       expect(error!.message).toContain("Test Thing multi-b");
       expect(error!.message.split("\n").filter(l => l.includes(shared.bobLabel))).toHaveLength(2);
+    });
+  });
+
+  it.concurrent("keeps a repaired pre-existing registration when another binding fails terminally",
+      async () => {
+    await withSession(async publicApi => {
+      const shared = await shareGadgetWithBob(publicApi, ["keep-a", "keep-b"]);
+      // First open persists Bob's choices and registers him with both gatekeepers.
+      expect((await bobOpensAndCloses(shared)).callCount).toBe(1);
+
+      // Between opens, only binding a lapses; b still verifies.
+      await setVerifyOutcome(
+        shared.bobLabel, { allow: false, reason: EXPIRED_REASON }, thingUrl("keep-a"));
+
+      // Second open. Pass 1: a fails, b passes -> one re-prompt, about a alone. The responder --
+      // which runs exactly between the two passes -- repairs a just as b lapses, so pass 2 has a
+      // passing again and b failing terminally (the re-prompt budget is spent).
+      const second = new ObserverConfigRecorder().respondWith(async needs => {
+        await setVerifyOutcome(shared.bobLabel, { allow: true }, thingUrl("keep-a"));
+        await setVerifyOutcome(
+          shared.bobLabel, { allow: false, reason: EXPIRED_REASON }, thingUrl("keep-b"));
+        return needs.map(n => ({ gatekeeperId: n.gatekeeperId, accountId: shared.bobAccount.id }));
+      });
+      await expect(bobOpens(shared, second)).rejects.toThrow(/could not confirm/i);
+
+      expect(second.callCount).toBe(1);
+      expect(second.calls[0]).toHaveLength(1);
+      expect(second.needAt(0).failure?.reason).toContain(EXPIRED_REASON);
+
+      // The failed open rolls back only observers registered *this* call. a's registration
+      // predates the call and the persisted record still asserts it exists, so repairing it must
+      // not reclassify it as newly added. The buggy rollback emitted exactly one remove here.
+      const events = await observerEvents(thingUrl("keep-a"));
+      expect(events.filter(e => e.type === "remove")).toEqual([]);
+      // Both successful verifications registered it: the first open and the pass-2 repair.
+      expect(events.filter(e => e.type === "add")).toHaveLength(2);
     });
   });
 

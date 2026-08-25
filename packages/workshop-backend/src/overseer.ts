@@ -7862,10 +7862,10 @@ class OverseerImpl implements AgentHooks {
     let record = this.storage.observers.get(profileId);
     let accountChoices: {[gatekeeperId: number]: number} = {...record?.accountChoices};
 
-    // Gatekeeper ids whose account choice came from the persisted record (vs. configured during
-    // this call). On a verification failure we only roll back observers we registered *this* call,
-    // leaving pre-existing registrations intact (rollback restores the pre-call state).
-    let preConfigured = new Set<number>(
+    // Gatekeeper ids registered before this call (their account choice came from the persisted
+    // record). An immutable snapshot: on a verification failure we roll back only observers we
+    // registered *this* call, leaving pre-existing registrations intact.
+    let registeredBeforeCall = new Set<number>(
         inScope.filter(gk => gk.id in accountChoices).map(gk => gk.id));
 
     let observerId = record?.observerId ?? crypto.randomUUID();
@@ -7976,7 +7976,7 @@ class OverseerImpl implements AgentHooks {
 
           try {
             await this.getGatekeeperFacet(gk.id).addObserver(observerId, verifier);
-            if (!preConfigured.has(gk.id)) newlyAdded.add(gk.id);
+            if (!registeredBeforeCall.has(gk.id)) newlyAdded.add(gk.id);
           } catch (err) {
             // Either a settled denial or an operational failure (expired credentials, upstream
             // outage). Treat every failure as repairable and let the user try again.
@@ -7985,13 +7985,13 @@ class OverseerImpl implements AgentHooks {
         }));
 
         if (failures.size > 0) {
-          // Drop the failed choices so the re-prompt asks about exactly these bindings, and forget
-          // that they were pre-configured so the `catch` below rolls back any registration a later
-          // pass makes -- otherwise a gatekeeper could be left admitting an observer on a choice we
-          // never persisted.
+          // Drop the failed choices so the re-prompt asks about exactly these bindings. Failed
+          // bindings stay in `registeredBeforeCall`: a registration repaired on the re-prompt must
+          // survive a later rollback -- removing it would break excludeObservers while the
+          // persisted record still asserts it exists. Its unpersisted account choice self-corrects
+          // on the next open (re-verification fails the stale persisted choice and re-prompts).
           for (let id of failures.keys()) {
             delete accountChoices[id];
-            preConfigured.delete(id);
           }
 
           // Offer the user a chance to repair (typically re-authenticate the expired account),

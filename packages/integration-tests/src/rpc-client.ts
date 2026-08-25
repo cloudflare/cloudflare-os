@@ -138,10 +138,15 @@ export const MAX_OBSERVER_PROMPTS = 2;
  */
 export class ObserverConfigRecorder extends RpcTarget implements ObserverConfigCallback {
   readonly calls: ObserverBindingNeed[][] = [];
-  #responses: ((needs: ObserverBindingNeed[]) => ObserverAccountChoice[])[] = [];
+  #responses: ((needs: ObserverBindingNeed[]) =>
+      ObserverAccountChoice[] | Promise<ObserverAccountChoice[]>)[] = [];
 
-  /** Queue one response. The nth configure() call is answered by the nth queued responder. */
-  respondWith(responder: (needs: ObserverBindingNeed[]) => ObserverAccountChoice[]): this {
+  /**
+   * Queue one response. The nth configure() call is answered by the nth queued responder; a
+   * responder may be async (e.g. to flip gatekeeper control state between verification passes).
+   */
+  respondWith(responder: (needs: ObserverBindingNeed[]) =>
+      ObserverAccountChoice[] | Promise<ObserverAccountChoice[]>): this {
     this.#responses.push(responder);
     return this;
   }
