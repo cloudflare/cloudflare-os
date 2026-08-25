@@ -5377,6 +5377,14 @@ class OverseerImpl implements AgentHooks {
   // no gadget's env retains a dangling entry. (This is distinct from merely unbinding it from one
   // gadget -- GadgetClient.unbind() -- which leaves the gatekeeper alive, possibly orphaned.)
   removeGatekeeper(id: number) {
+    // A pending action is resolved only through the facet this deletes (applyPendingAction and
+    // rejectAction both dereference it), so removal would strand it pending forever.
+    if (this.hasPendingActions(id)) {
+      throw new Error(
+          "This connection cannot be removed while it has pending approval requests. Approve or " +
+          "deny them first.");
+    }
+
     for (let gadget of Array.from(this.storage.gadgets.list())) {
       if (gadget.type !== "gadget") continue;  // worktrees have no binding edges
       let names = Object.entries(gadget.bindings)
@@ -5690,6 +5698,14 @@ class OverseerImpl implements AgentHooks {
       }
     }
     return producers;
+  }
+
+  // True if a pending approval request names connection `id` (the index also holds pending hooks).
+  hasPendingActions(id: WorkpieceId): boolean {
+    for (let record of this.storage.actions.pendingByGatekeeper.get(id)) {
+      if (record.type === "action") return true;
+    }
+    return false;
   }
 
   // Enforce an observation's `excludeObservers`, named by the gatekeeper `gatekeeperId` produced
@@ -7516,6 +7532,15 @@ class OverseerImpl implements AgentHooks {
       if (gk.creationSpec?.type !== "ambient") continue;
       if (currentAccountId.get(gk.creationSpec.vendorId) === gk.creationSpec.accountId) {
         bound.add(gk.creationSpec.vendorId);
+      } else if (this.hasPendingActions(gk.id)) {
+        // removeGatekeeper refuses while approvals are pending; retry at a later reconcile rather
+        // than throw out of open(). Not added to `bound`, so a replacement account still gets a
+        // fresh capsule record.
+        this.logger.warn("skipping removal of stale ambient capsule with pending actions", {
+          event: "singleton.capsules.reconcile.pending.actions",
+          gatekeeperId: gk.id,
+          vendorId: gk.creationSpec.vendorId,
+        });
       } else {
         this.removeGatekeeper(gk.id);
       }
