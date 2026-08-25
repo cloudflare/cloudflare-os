@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RpcStub } from 'capnweb'
 import { matchesActionHistoryFilter } from '@gadgets/workshop-shared/api'
 import type { ActionHistoryFilter, ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
-import { useActionEntries } from './useActions'
+import { actionLogResumed, useActionEntries } from './useActions'
 
 export type ActionHistoryStatus = 'loading' | 'ready' | 'error'
 
@@ -35,8 +35,9 @@ const INITIAL: HistoryState = { byId: new Map(), error: null }
 /**
  * Demand-loads action history (pending records included), one page at a time, newest first by id
  * (creation order). Nothing is fetched until `active` first becomes true; `loadMore()` continues
- * from the server cursor, and `hasMore` is the termination signal. The overseer stub or filter
- * changing resets everything (a reconnect hands out a fresh stub).
+ * from the server cursor, and `hasMore` is the termination signal. The filter changing resets
+ * everything; so does the overseer stub changing (a reconnect hands out a fresh stub), unless
+ * the shared store resumed — then the loaded window and cursor survive the swap.
  *
  * Live updates from the shared action subscription are merged in: a filter-matching record —
  * a fresh pending one or a resolution — patches in place or inserts if it falls inside the
@@ -58,7 +59,7 @@ export function useActionHistory(
   useEffect(() => {
     sessionRef.current = createHistorySession()
     setState(INITIAL)
-  }, [overseer, filter])
+  }, [filter])
 
   const loadMore = useCallback(() => {
     const session = sessionRef.current
@@ -105,6 +106,25 @@ export function useActionHistory(
       return { ...prev, byId }
     })
   })
+
+  // A stub swap resets everything — unless the shared store resumed, in which case the gap was
+  // replayed through the subscription above: keep the window and the frontier (a server-stable
+  // id cursor). Either way the new session token drops any in-flight old-stub page. Declared
+  // after useActionEntries so the store (and its resumed flag) exists before this runs, and
+  // before the initial-load effect so a reset refetches.
+  const prevOverseerRef = useRef(overseer)
+  useEffect(() => {
+    if (prevOverseerRef.current === overseer) return
+    prevOverseerRef.current = overseer
+    if (actionLogResumed(overseer)) {
+      const { frontier, hasLoadedPage } = sessionRef.current
+      sessionRef.current = { frontier, inFlight: false, hasLoadedPage }
+      setState(prev => ({ ...prev, error: null }))
+    } else {
+      sessionRef.current = createHistorySession()
+      setState(INITIAL)
+    }
+  }, [overseer])
 
   useEffect(() => {
     if (active && !sessionRef.current.hasLoadedPage) loadMore()

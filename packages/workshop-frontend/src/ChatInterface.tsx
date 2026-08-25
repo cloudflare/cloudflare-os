@@ -119,7 +119,7 @@ import DeleteConfirmationDialog from "./components/DeleteConfirmationDialog";
 import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
 import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
-import { useActionEntries } from "./useActions";
+import { actionLogResumed, useActionEntries } from "./useActions";
 import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
 import { useResolveAction } from "./useResolveAction";
 import { safeExternalUrl } from "./utils/safeExternalUrl";
@@ -5766,12 +5766,13 @@ function ChatInterface({
     if (applyActionLogUpdateToCachedMessages(record)) scheduleUpdate();
   });
 
-  // On (re)connect, re-fetch cached action cards whose log can still change: blank or pending
+  // On a resumed reconnect the subscription replays the gap, so the entries above cover cached
+  // cards. This refetch is the safety net for cold opens (no resume — e.g. the prior session
+  // never settled): re-fetch cached action cards whose log can still change — blank or pending
   // cards (a resolution may have landed while we were away), and bindHook cards, which stay
-  // mutable after resolution (`enabled` toggles). The action subscription carries live deltas
-  // only, so changes from the gap never reach us through it.
-  // TODO: resubscribing with startAfter would replay the gap through the subscription instead.
+  // mutable after resolution (`enabled` toggles).
   useEffect(() => {
+    if (actionLogResumed(overseer)) return;
     let cancelled = false;
     const targets = [...cacheRef.current.actionMessages.values()].flatMap((locations) => {
       const location = locations.values().next().value;

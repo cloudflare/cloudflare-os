@@ -8,6 +8,7 @@ import type { ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
 import { entry as pendingEntry, makeOverseer, makeTestRoot } from './action-test-harness'
 import { useActionHistory } from './useActionHistory'
 import type { HistoryViewFilter } from './useActionHistory'
+import { linkActionLog } from './useActions'
 
 // Most history fixtures are resolved records; use the harness `pendingEntry` for pending ones.
 function entry(id: number, over: Partial<Record<string, unknown>> = {}): ActionLogEntry {
@@ -115,7 +116,7 @@ describe('useActionHistory', () => {
     expect(latest.status).toBe('ready')
   })
 
-  it('resets and refetches when the stub changes', async () => {
+  it('resets and refetches when an unlinked stub changes', async () => {
     const first = makeOverseer()
     await render(first.overseer, 'all', true)
     await first.resolvePage({ entries: [entry(30)], nextBeforeId: 10 })
@@ -133,6 +134,56 @@ describe('useActionHistory', () => {
 
     await second.resolvePage({ entries: [entry(40)] })
     expect(latest.entries.map(e => e.id)).toEqual([40])
+  })
+
+  it('keeps the loaded window across a resumed linked stub swap', async () => {
+    const first = makeOverseer()
+    linkActionLog(first.overseer, 'ws-hist-resume')
+    await render(first.overseer, 'all', true)
+    // Settle the shared store so the swap resumes; a pending record sets its watermark.
+    await first.resolveSubscription()
+    await first.resolvePendingQuery({ entries: [pendingEntry(1)] })
+    await first.resolvePage({ entries: [entry(30), entry(20)], nextBeforeId: 10 })
+
+    const second = makeOverseer()
+    linkActionLog(second.overseer, 'ws-hist-resume')
+    await render(second.overseer, 'all', true)
+    expect(second.listCalls).toEqual([])  // no automatic refetch
+    expect(latest.entries.map(e => e.id)).toEqual([30, 20])
+    expect(latest.status).toBe('ready')
+
+    // A replayed entry patches an in-window record.
+    await second.emit(entry(30, { state: 'rejected' }))
+    expect(latest.entries.map(e => [e.id, e.state]))
+      .toEqual([[30, 'rejected'], [20, 'approved']])
+
+    // loadMore continues from the preserved frontier on the new stub.
+    act(() => latest.loadMore())
+    expect(second.listCalls).toEqual([{ beforeId: 10, filter: 'all' }])
+    await second.resolvePage({ entries: [entry(5)] })
+    expect(latest.entries.map(e => e.id)).toEqual([30, 20, 5])
+    expect(latest.hasMore).toBe(false)
+  })
+
+  it('drops an in-flight old-stub page after a resumed swap', async () => {
+    const first = makeOverseer()
+    linkActionLog(first.overseer, 'ws-hist-inflight')
+    await render(first.overseer, 'all', true)
+    await first.resolveSubscription()
+    await first.resolvePendingQuery({ entries: [pendingEntry(1)] })
+    await first.resolvePage({ entries: [entry(30)], nextBeforeId: 10 })
+    act(() => latest.loadMore())  // leave a second fetch in flight on the old stub
+
+    const second = makeOverseer()
+    linkActionLog(second.overseer, 'ws-hist-inflight')
+    await render(second.overseer, 'all', true)
+
+    await first.resolvePage({ entries: [entry(9)] })
+    expect(latest.entries.map(e => e.id)).toEqual([30])
+    expect(latest.isLoadingMore).toBe(false)
+
+    act(() => latest.loadMore())
+    expect(second.listCalls).toEqual([{ beforeId: 10, filter: 'all' }])
   })
 
   it('recovers from a failed first load on retry', async () => {

@@ -5,7 +5,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type { ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
 import { entry, flushFrames, makeOverseer, makeTestRoot } from './action-test-harness'
-import { useActionEntries, useActions, type ActionsState } from './useActions'
+import {
+  actionLogResumed,
+  linkActionLog,
+  useActionEntries,
+  useActions,
+  type ActionsState,
+} from './useActions'
 
 describe('useActions', () => {
   const view = makeTestRoot()
@@ -118,7 +124,7 @@ describe('useActions', () => {
     expect(server.pendingQueryCalls).toHaveLength(1)
   })
 
-  it('starts a fresh subscription when the stub changes', async () => {
+  it('starts a fresh subscription when an unlinked stub changes', async () => {
     const first = makeOverseer()
     await view.render(<Probe overseer={first.overseer} />)
     await first.emit(entry(1))
@@ -130,8 +136,86 @@ describe('useActions', () => {
     await view.render(<Probe overseer={second.overseer} />)
     expect(second.subscribeCalls).toHaveLength(1)
     expect(second.pendingQueryCalls).toHaveLength(1)
+    expect(actionLogResumed(second.overseer)).toBe(false)
     expect(latest.status).toBe('checking')
     expect(latest.pending).toEqual([])
+  })
+
+  it('resumes a linked stub swap: seeded pendings, startAfter watermark, no re-page', async () => {
+    const first = makeOverseer()
+    linkActionLog(first.overseer, 'ws-resume')
+    await view.render(<Probe overseer={first.overseer} />)
+    await first.resolveSubscription()
+    await first.resolvePendingQuery({ entries: [entry(1)] })
+    const appliedAt = new Date(1700005000000)
+    await first.emit(entry(2, { state: 'approved', appliedAt }))
+    expect(latest.status).toBe('ready')
+
+    const second = makeOverseer()
+    linkActionLog(second.overseer, 'ws-resume')
+    await view.render(<Probe overseer={second.overseer} />)
+    expect(second.ops).toEqual(['subscribe'])
+    expect(second.subscribeCalls).toEqual([[expect.anything(), appliedAt]])
+    expect(actionLogResumed(second.overseer)).toBe(true)
+    expect(latest.status).toBe('checking')
+    expect(latest.pending.map(e => e.id)).toEqual([1])  // carried, visible before settling
+
+    // A replayed resolution (the gap) upserts before the subscribe call resolves.
+    await second.emit(entry(1, { state: 'rejected', appliedAt: new Date(1700006000000) }))
+    await second.resolveSubscription()
+    expect(latest.status).toBe('ready')
+    expect(latest.pending).toEqual([])
+  })
+
+  it('does not resume from an unsettled session', async () => {
+    const first = makeOverseer()
+    linkActionLog(first.overseer, 'ws-unsettled')
+    await view.render(<Probe overseer={first.overseer} />)
+    await first.resolveSubscription()
+    await first.emit(entry(1))
+    // The pending page never resolves — the session never settles.
+
+    const second = makeOverseer()
+    linkActionLog(second.overseer, 'ws-unsettled')
+    await view.render(<Probe overseer={second.overseer} />)
+    expect(second.ops).toEqual(['subscribe', 'listPending'])
+    expect(second.subscribeCalls).toEqual([[expect.anything()]])
+    expect(latest.pending).toEqual([])
+  })
+
+  it('does not resume from an errored session', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const first = makeOverseer()
+    linkActionLog(first.overseer, 'ws-errored')
+    await view.render(<Probe overseer={first.overseer} />)
+    await first.emit(entry(1))
+    await first.rejectSubscription(new Error('DO overloaded'))
+    expect(latest.status).toBe('error')
+
+    const second = makeOverseer()
+    linkActionLog(second.overseer, 'ws-errored')
+    await view.render(<Probe overseer={second.overseer} />)
+    expect(second.ops).toEqual(['subscribe', 'listPending'])
+    expect(second.subscribeCalls).toEqual([[expect.anything()]])
+  })
+
+  it('resumes when the same linked stub is released and reacquired', async () => {
+    const server = makeOverseer()
+    linkActionLog(server.overseer, 'ws-reacquire')
+    await view.render(<Probe overseer={server.overseer} />)
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [entry(1)] })
+    expect(latest.status).toBe('ready')
+
+    view.unmount()
+
+    await view.render(<Probe overseer={server.overseer} />)
+    expect(server.ops).toEqual(['subscribe', 'listPending', 'subscribe'])
+    expect(server.subscribeCalls[1]).toEqual([expect.anything(), entry(1).createdAt])
+    expect(latest.pending.map(e => e.id)).toEqual([1])
+
+    await server.resolveSubscription()
+    expect(latest.status).toBe('ready')
   })
 
   it('reports error but keeps gathered pendings when the subscribe call fails', async () => {
