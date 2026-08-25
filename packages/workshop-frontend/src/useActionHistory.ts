@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RpcStub } from 'capnweb'
 import { matchesActionHistoryFilter } from '@gadgets/workshop-shared/api'
 import type { ActionHistoryFilter, ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
-import { actionLogResumed, useActionEntries, useActionStatus } from './useActions'
+import { actionLogResumed, useActionEntries } from './useActions'
 
 export type ActionHistoryStatus = 'loading' | 'ready' | 'error'
 
@@ -56,12 +56,10 @@ export function useActionHistory(
   // every mutation of it is paired with a setState (so a render always follows).
   const sessionRef = useRef(createHistorySession())
 
-  const reset = useCallback(() => {
+  useEffect(() => {
     sessionRef.current = createHistorySession()
     setState(INITIAL)
-  }, [])
-
-  useEffect(() => reset(), [filter, reset])
+  }, [filter])
 
   const loadMore = useCallback(() => {
     const session = sessionRef.current
@@ -109,15 +107,11 @@ export function useActionHistory(
     })
   })
 
-  const actionLogStatus = useActionStatus(overseer)
-  const resumeFallbackRequired =
-    actionLogResumed(overseer) && actionLogStatus === 'error'
-
   // A stub swap resets everything — unless the shared store resumed, in which case the gap was
   // replayed through the subscription above: keep the window and the frontier (a server-stable
-  // id cursor). Either way the new session token drops any in-flight old-stub page. Declared
-  // after useActionEntries so the store (and its resumed flag) exists before this runs, and
-  // before the initial-load effect so a reset refetches.
+  // id cursor), rebuilding the session token so any in-flight old-stub page is dropped. Ordering
+  // matters: after useActionEntries (which creates the store, setting its resumed flag), and
+  // before the initial-load effect (so a reset refetches).
   const prevOverseerRef = useRef(overseer)
   useEffect(() => {
     if (prevOverseerRef.current === overseer) return
@@ -127,18 +121,14 @@ export function useActionHistory(
       sessionRef.current = { frontier, inFlight: false, hasLoadedPage }
       setState(prev => ({ ...prev, error: null }))
     } else {
-      reset()
+      sessionRef.current = createHistorySession()
+      setState(INITIAL)
     }
-  }, [overseer, reset])
+  }, [overseer])
 
-  const resumeFallbackHandledRef = useRef(false)
   useEffect(() => {
-    const resumeFallbackStarted =
-      resumeFallbackRequired && !resumeFallbackHandledRef.current
-    resumeFallbackHandledRef.current = resumeFallbackRequired
-    if (resumeFallbackStarted) reset()
     if (active && !sessionRef.current.hasLoadedPage) loadMore()
-  }, [active, loadMore, resumeFallbackRequired, reset])
+  }, [active, loadMore])
 
   const entries = useMemo(
     () => Array.from(state.byId.values()).sort((a, b) => b.id - a.id),

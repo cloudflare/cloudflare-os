@@ -44,8 +44,6 @@ type Store = {
   // max, so an inclusive startAfter replay from it covers the gap.
   lastChanged: Date | undefined
   resumed: boolean
-  // An entry listener threw this session, so a delivery may not have been absorbed.
-  entryListenerFailed: boolean
 }
 
 const EMPTY_STATE: ActionsState = {
@@ -68,7 +66,12 @@ export function linkActionLog(overseer: RpcStub<Overseer>, key: string): void {
   storeKeys.set(overseer, key)
 }
 
-/** Whether the stub's store subscribed with startAfter — its gap is replayed as entries. */
+/**
+ * Whether the stub's store subscribed with startAfter — its gap is replayed as entries.
+ * Consumers may trust this without a failure path: a resumed session that later errors surfaces
+ * as store status 'error' and never parks a watermark, so the next stub swap replays its entire
+ * gap from the last good one.
+ */
 export function actionLogResumed(overseer: RpcStub<Overseer> | null): boolean {
   return (overseer && stores.get(overseer)?.resumed) ?? false
 }
@@ -88,7 +91,6 @@ function getStore(overseer: RpcStub<Overseer>): Store {
       notifyScheduled: false,
       lastChanged: undefined,
       resumed: false,
-      entryListenerFailed: false,
     }
     stores.set(overseer, store)
   }
@@ -123,7 +125,6 @@ function resetSession(store: Store): number {
   store.snapshot = EMPTY_STATE
   store.lastChanged = undefined
   store.resumed = false
-  store.entryListenerFailed = false
   return store.generation
 }
 
@@ -157,7 +158,6 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
         try {
           listener(record)
         } catch (err) {
-          store.entryListenerFailed = true
           console.error('Action entry listener failed:', err)
         }
       }
@@ -219,10 +219,12 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
 
 function closeSubscription(overseer: RpcStub<Overseer>, store: Store) {
   const key = storeKeys.get(overseer)
-  // Only a cleanly settled session sets the watermark: pages drained, subscribe resolved (its
-  // replay fully delivered), and no listener dropped a delivery.
+  // Only a cleanly settled session sets the watermark: pages drained AND subscribe resolved. The
+  // second condition is load-bearing — a page-only watermark is poison, because a pending
+  // record's createdAt can exceed a resolution the dead live stream never delivered, hiding it
+  // from every future replay.
   if (key !== undefined && store.snapshot.status === 'ready' && store.subscription !== null &&
-      !store.entryListenerFailed && store.lastChanged) {
+      store.lastChanged) {
     watermarks.set(key, store.lastChanged)
   }
   resetSession(store)
@@ -249,12 +251,8 @@ function release(overseer: RpcStub<Overseer>) {
   }
 }
 
-// Must be module-level constants so getSnapshot stays stable across renders.
-const selectState = (state: ActionsState) => state
-const selectStatus = (state: ActionsState) => state.status
-
-function useActionStore<T>(overseer: RpcStub<Overseer> | null,
-    select: (state: ActionsState) => T): T {
+/** Subscribe to the gadget's action log. Pass `null` to no-op ('checking', empty maps). */
+export function useActions(overseer: RpcStub<Overseer> | null): ActionsState {
   useEffect(() => {
     if (!overseer) return
     acquire(overseer)
@@ -267,21 +265,12 @@ function useActionStore<T>(overseer: RpcStub<Overseer> | null,
     store.listeners.add(cb)
     return () => { store.listeners.delete(cb) }
   }, [overseer])
-  const getSnapshot = useCallback(
-    () => select((overseer && stores.get(overseer)?.snapshot) || EMPTY_STATE),
-    [overseer, select])
+  const getSnapshot = useCallback(() => {
+    if (!overseer) return EMPTY_STATE
+    return stores.get(overseer)?.snapshot ?? EMPTY_STATE
+  }, [overseer])
 
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-}
-
-/** Subscribe to the gadget's action log. Pass `null` to no-op ('checking', empty maps). */
-export function useActions(overseer: RpcStub<Overseer> | null): ActionsState {
-  return useActionStore(overseer, selectState)
-}
-
-/** Status-only variant: re-renders on status changes, not on every pending-set change. */
-export function useActionStatus(overseer: RpcStub<Overseer> | null): ActionsState['status'] {
-  return useActionStore(overseer, selectStatus)
 }
 
 /**
