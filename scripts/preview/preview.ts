@@ -123,7 +123,7 @@ interface FetchedPullRequest {
 const USAGE = "Usage: preview.ts <config|deploy|delete|sweep> [--dry-run]";
 const OUTPUT_DIR = join(ROOT, "output");
 const PREVIEW_COMMENT = join(OUTPUT_DIR, "preview-comment.md");
-const GATEKEEPER_CONCURRENCY = 8;
+const GATEKEEPER_CONCURRENCY = 4;
 // How many of the sweep's read-only API requests — one preview list per worker, one pull request per
 // number — are in flight at once.
 const API_CONCURRENCY = 8;
