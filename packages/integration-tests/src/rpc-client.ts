@@ -10,6 +10,8 @@ import type {
   AccountDescription, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 
+export { RpcTarget };
+
 /**
  * Poll `attempt` until it returns non-null.
  *
