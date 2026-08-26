@@ -1195,6 +1195,10 @@ export const SUGGESTED_MODELS: Record<
     "@cf/zai-org/glm-5.2": {
       name: "GLM 5.2 (Workers AI)", contextWindow: 262144, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
+    "@cf/deepseek-ai/deepseek-v4-pro-0813": {
+      name: "DeepSeek V4 Pro 0813 (Workers AI)", contextWindow: 1048576,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
   },
   "anthropic": {
     // TODO: Include Fable -- but we need an admin option to disable it, since many orgs don't
