@@ -23,6 +23,12 @@ type SynchronousKv = {
   delete(key: string): void;
 };
 
+/**
+ * Compares fixed-length hex nonces without leaking how far a match got.
+ *
+ * The early length check reveals only the nonce's fixed, public length. Keep this pure JavaScript:
+ * this module also runs in Node tests, where Workers' `SubtleCrypto.timingSafeEqual` is unavailable.
+ */
 function constantTimeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let difference = 0;

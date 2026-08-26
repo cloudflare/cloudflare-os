@@ -1280,12 +1280,15 @@ function gmailThreadCursor(
       return entries;
     },
 
-    authorize: entries => ctx.approvalQueue.authorizeObservation({
-      title: `Read ${entries.length} Gmail threads`,
-      description:
-        "Fetch the next page of Gmail threads.\n\n" +
-        formatApprovalField("Subjects", entries.map(entry => entry.info.subject).join("\n")),
-    }),
+    authorize: async entries => {
+      if (entries.length === 0) return;
+      await ctx.approvalQueue.authorizeObservation({
+        title: `Read ${entries.length} Gmail threads`,
+        description:
+          "Fetch the next page of Gmail threads.\n\n" +
+          formatApprovalField("Subjects", entries.map(entry => entry.info.subject).join("\n")),
+      });
+    },
   }));
 }
 
