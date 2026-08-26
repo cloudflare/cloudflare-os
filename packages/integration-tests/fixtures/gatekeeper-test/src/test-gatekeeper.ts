@@ -20,7 +20,7 @@
 // is one control knob here, `allow`, and the reason string is what carries the distinction to the
 // user. Tests exercise both narratives by choosing reason text.
 
-import { DurableObject, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
+import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import type {
   AccountDescription, ActionKind, ApprovalQueue, Gatekeeper, GatekeeperConnectCallback,
   GatekeeperUser, GatekeeperUserVerifier, ResourceDescription, ResourceConfiguratorFrame,
@@ -38,8 +38,10 @@ const SUPPORTED_RESOURCES: SupportedResource[] = [{
 }];
 
 const TYPES_CODE = `
-/** A stand-in resource. It has no operations; nothing here is ever called. */
-interface TestThing {}
+/** A stand-in resource whose one read is deterministic and audited. */
+interface TestThing {
+  readValue(): Promise<number>;
+}
 `;
 
 // A 1x1 transparent GIF, so nothing here reaches for a network asset.
@@ -243,8 +245,29 @@ export class TestVerifier
 // ---------------------------------------------------------------------------
 // Gatekeeper (one per bound resource, running as a facet under the gadget's Overseer)
 
-/** No operations: these tests never open a gadget's session, only verify observers. */
-export type TestSession = Record<string, never>;
+export interface TestSession {
+  readValue(): Promise<number>;
+}
+
+class TestSessionTarget extends RpcTarget implements TestSession {
+  private readonly approvalQueue: RpcStub<ApprovalQueue>;
+
+  constructor(approvalQueue: RpcStub<ApprovalQueue>) {
+    super();
+    this.approvalQueue = approvalQueue.dup();
+  }
+  async readValue(): Promise<number> {
+    await this.approvalQueue.authorizeObservation({
+      title: "Read the test value",
+      description: "Read the deterministic value exposed by the integration-test gatekeeper.",
+    });
+    return 42;
+  }
+
+  [Symbol.dispose](): void {
+    this.approvalQueue[Symbol.dispose]();
+  }
+}
 
 export class TestGatekeeper
     extends DurableObject<Cloudflare.Env, BindingProps> implements Gatekeeper<TestSession> {
@@ -277,8 +300,8 @@ export class TestGatekeeper
     return [];
   }
 
-  async startSession(_approvalQueue: RpcStub<ApprovalQueue>): Promise<TestSession> {
-    return {};
+  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<TestSession> {
+    return new TestSessionTarget(approvalQueue);
   }
 
   /**
