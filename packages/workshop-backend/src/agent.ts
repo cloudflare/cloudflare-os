@@ -29,23 +29,57 @@ import {
 const logger = createWorkshopLogger("workshop.agent");
 
 /**
- * Byte bound on one "changes" message's composed change, shared by every producer of chat
- * change rows. Materialization writes exactly one message per call (see materializeChatChanges
- * in overseer.ts), so the composition is kept storable by bounding what *accumulates* rather
- * than by splitting the output: each producer materializes the pending live rows before
- * appending a row that would push their summed size past the budget (submitCodeChange for user
- * edits; appendAgentEdit's flush trigger for tool edits). Rows are individually bounded
+ * Byte bound on one "changes" message's composed change for the *user* edit path.
+ * Materialization writes exactly one message per call (see materializeChatChanges in
+ * overseer.ts), so the composition is kept storable by bounding what *accumulates* rather than
+ * by splitting the output: submitCodeChange materializes the pending live rows before appending
+ * a row that would push their summed size past the budget. Rows are individually bounded
  * (MAX_CODE_CHANGE_SIZE) but a composition of several is not, and an unstorable message would
  * wedge materialization permanently (rows only retire on success, so accept and turn start
  * would retry the same oversized compose forever). A single row may legally exceed the budget:
- * the append-time triggers then guarantee it lands in an empty window and travels alone in one
+ * the append-time trigger then guarantees it lands in an empty window and travels alone in one
  * oversized message, which storage already proved it can hold when the row itself was written.
- * Measured with codeChangeSerializedSize (composition never exceeds the sum of its inputs'
- * sizes, so summing rows bounds their composed change) and sized well clear of the 2MB storage
- * record cap the estimate upper-bounds against. (Declared here rather than in overseer.ts
- * because agent.ts must not import overseer.ts -- the dependency runs the other way.)
+ * Agent tool edits don't accumulate as live rows at all: they buffer in the step and land at
+ * the barrier in one message, bounded by STEP_CHANGE_BUDGET at the write call. Measured with
+ * codeChangeSerializedSize (composition never exceeds the sum of its inputs' sizes, so summing
+ * rows bounds their composed change) and sized well clear of the 2MB storage record cap the
+ * estimate upper-bounds against. (Declared here rather than in overseer.ts because agent.ts
+ * must not import overseer.ts -- the dependency runs the other way.)
  */
 export const CHAT_CHANGE_MESSAGE_BUDGET = 1024 * 1024;
+
+/**
+ * Byte bound on one agent step's buffered changes (their summed codeChangeSerializedSize),
+ * enforced at the write call: the file-tool call that would exceed it fails with an
+ * agent-visible error, everything buffered before it persists normally at the barrier, and the
+ * model adapts mid-turn. The bound exists for correctness -- the barrier writes the step's
+ * buffer as *one* "changes" message, which must fit in a 2MB storage record, envelope included
+ * -- with bounded buffer memory falling out as a side effect. Sized to admit any single valid
+ * file write with margin: a maximal whole-file `set` (MAX_FILE_TEXT_LENGTH, 512K UTF-16 units)
+ * measures at most ~1MB under the at-most-two-bytes-per-unit estimate. (Known, accepted gap:
+ * createGadget's blueprint copy is a single multi-file change that may legally measure past
+ * the budget, but no shipped blueprint comes close.)
+ */
+export const STEP_CHANGE_BUDGET = 1536 * 1024;
+
+/**
+ * One buffered agent tool edit: an entry of the step buffer, which the step's persistence
+ * barrier appends as one chat change row (see AgentHooks.commitAgentStep). One row per tool
+ * call, in call order, never pre-composed: the client resolves streaming edit previews by
+ * matching each broadcast row to the oldest pending preview of the same file, so the barrier's
+ * burst must preserve the per-call row correspondence.
+ */
+export interface AgentStepChange {
+  /** The tool call's edit, exactly as it will be recorded (and broadcast) as a row. */
+  change: CodeChange;
+
+  /**
+   * Present on the step's first write to an unpinned gadget with committed code: the head the
+   * edit is anchored to. The barrier validates it against the gadget's *current* head and
+   * mirrors it into the chat's code base in the same transaction that records the row.
+   */
+  pin?: {gadgetId: WorkpieceId, baseCommit: string};
+}
 
 /** Additional per-chat-thread info needed by the AI agent but not by the client. */
 export type AiChatAgentContext = {
@@ -270,9 +304,9 @@ export type StoredAssistantMessage = Omit<AssistantMessage, "content"> & {
 };
 
 /**
- * A chat message body as the agent loop hands it to AgentHooks.addChatMessages: the client-visible
- * body, plus (for agent steps) the model-facing snapshot to persist alongside it. The overseer
- * strips `modelData` into separate storage; it must never reach clients.
+ * A chat message body as the agent loop hands it to AgentHooks.commitAgentStep: the
+ * client-visible body, plus (for agent steps) the model-facing snapshot to persist alongside it.
+ * The overseer strips `modelData` into separate storage; it must never reach clients.
  */
 export type AiChatMessageBodyWithModelData = AiChatMessageBody & {
   modelData?: StoredAssistantMessage;
@@ -312,22 +346,44 @@ export interface AgentHooks {
   getChatCodeBase(chatId: number): ChatCodeBase | undefined;
 
   /**
-   * Append one agent tool edit to the chat's change stream: durable and broadcast immediately (the
-   * row doubles as the streaming preview). `pin`, on the first write to an unpinned gadget,
-   * names the head the edit is anchored to; it is validated against the gadget's *current* head
-   * and mirrored into the chat's code base in the same synchronous step that records the row
-   * (a moved head fails the append, surfacing as a tool error). The pin's durable log
-   * declaration rides the next turn flush (see flushAgentChanges).
+   * The step's persistence barrier: in one storage transaction, persist the step's chat
+   * messages (`msgs`, the tool-call record among them), validate and append each buffered
+   * change as a chat change row -- one row per tool call, in call order, with the same
+   * pin/codeBase bookkeeping the appends always had -- materialize the rows into the step's
+   * single "changes" message carrying the step's gadget creations and binding additions
+   * (which stamps their pending registry records), and retire the rows. The step's effects
+   * are thus durable iff its transcript record is; a crash mid-step loses both, and the
+   * resumed model re-runs the step against unmodified content. Returns whether a "changes"
+   * message was written (change-ID numbering counts messages).
+   *
+   * Rows and messages broadcast from inside the transaction, as every append always has: the
+   * transaction protects server-side storage, not what subscribers saw before a rollback (a
+   * mid-barrier exception is itself a bug; see the design note on materializeChatChanges'
+   * caller in overseer.ts). The rows' `changeApplied` broadcasts supersede the tool calls'
+   * streamed edit previews.
+   *
+   * The accounting parameters match the overseer's addChatMessages: when both `aiGatewayLogId`
+   * and `aiGatewayLogRoute` are present, the authoritative cost is fetched asynchronously from
+   * the AI Gateway log, with `estimatedCost` (pi's catalog-priced estimate from the turn's
+   * token usage, in dollars) as the fallback; otherwise the estimate is applied directly.
    */
-  appendAgentCodeChange(chatId: number, author: AiChatAuthorInfo, change: CodeChange,
-                        pin?: {gadgetId: WorkpieceId, baseCommit: string})
-      : Promise<{generation: number, revision: number}>;
+  commitAgentStep(chatId: number, author: AiChatAuthorInfo,
+      msgs: AiChatMessageBodyWithModelData[],
+      step: {
+        changes: AgentStepChange[],
+        createdGadgets: {gadgetId: WorkpieceId, title: string, bindingName: string}[],
+        addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
+      },
+      totalTokens?: number, aiGatewayLogId?: string, aiGatewayLogRoute?: AiGatewayLogRoute,
+      estimatedCost?: number): Promise<boolean>;
 
   /**
-   * The turn flush: materialize the chat's unmaterialized change rows (this turn's appends, plus
-   * any crashed predecessor's re-adopted tail) into one durable "changes" message, carrying the
-   * still-undeclared pin establishments and the given buffered gadget creations and binding
-   * additions. Returns whether a message was written (change-ID numbering counts messages).
+   * Transitional, called only by the compaction early-return (and deleted with the
+   * replay-discharge machinery): materialize live change rows re-adopted from a crashed
+   * pre-barrier turn into one "changes" message carrying the given re-adopted creations and
+   * binding additions, before compaction removes the log tail replay re-adopts them from.
+   * Barrier-committed turns leave no live agent rows for this to find. Returns whether a
+   * message was written (change-ID numbering counts messages).
    */
   flushAgentChanges(chatId: number, author: AiChatAuthorInfo, extras: {
     createdGadgets?: {gadgetId: WorkpieceId, title: string, bindingName: string}[],
@@ -430,18 +486,6 @@ export interface AgentHooks {
   rejectAllAgentCallbacks(chatId: number, error: string): void;
   consumeCapturedActions(chatId: number)
       : {actions: number[], accessedGadget: boolean, awaitDecision: boolean} | undefined;
-  /**
-   * Appends messages to the chat log and updates cost/token accounting. When both
-   * `aiGatewayLogId` and `aiGatewayLogRoute` are present, the authoritative cost is fetched
-   * asynchronously from the AI Gateway log, with `estimatedCost` (pi's catalog-priced estimate
-   * from the turn's token usage, in dollars) as the fallback if the gateway can't produce a
-   * cost; otherwise the estimate is applied directly, so direct-provider routes still get cost
-   * accounting.
-   */
-  addChatMessages(chatId: number, author: AiChatAuthorInfo,
-      msgs: AiChatMessageBodyWithModelData[],
-      totalTokens?: number, aiGatewayLogId?: string, aiGatewayLogRoute?: AiGatewayLogRoute,
-      estimatedCost?: number): void;
   emitChatStreamEvent(chatId: number, event: AiChatStreamEvent): void;
 
   /**
@@ -1279,7 +1323,8 @@ export async function runAgent(
   //   chat, its content built up from its own changes -- and the head seen now is its later
   //   promotion. Nothing to establish;
   // - nothing at all: the turn crashed before flushing. The pin was still mirrored into the
-  //   chat's code base when the write's row was appended (see AgentHooks.appendAgentCodeChange), so
+  //   chat's code base when the write's row was appended (the pre-barrier per-tool append
+  //   path, whose stranded rows this recovery still tolerates), so
   //   establish from the meta pin; the trailing unmaterialized rows applied after replay carry
   //   the edits themselves, and the next flush declares the pin (see undeclaredChatPins).
   let ensureReplayContentForWrite = async (workpieceId: WorkpieceId, sequence: number) => {
@@ -2000,11 +2045,14 @@ export async function runAgent(
     }
   }
 
-  // The summed size of the turn's pending (unflushed) change rows: appendAgentEdit flushes
-  // before a row would push it past what one "changes" message may compose, since a flush
-  // writes exactly one message (see CHAT_CHANGE_MESSAGE_BUDGET). Seeded below with any
-  // re-adopted crashed-turn rows, which join this turn's next flush.
-  let pendingChangeBytes = 0;
+  // The step buffer: the current step's tool edits, applied to the session content as they
+  // buffer but durable (and broadcast) only at the step's persistence barrier
+  // (AgentHooks.commitAgentStep), so a crash loses the whole step -- transcript and effects
+  // together -- and the resumed model re-runs it cleanly. Turn-owned and passed explicitly
+  // where needed (the barrier now; executeCodeMode once worktree writes join it). `bytes` is
+  // the buffered changes' summed codeChangeSerializedSize, checked against STEP_CHANGE_BUDGET
+  // at each write call.
+  let stepBuffer = {changes: [] as AgentStepChange[], bytes: 0};
 
   // If the previous agent turn was aborted by a server restart, its edits are already durable,
   // broadcast change rows that no "changes" message covers yet: establish their pins' bases (the
@@ -2021,7 +2069,6 @@ export async function runAgent(
   }
   for (let row of hooks.listUnmaterializedChatChanges(chatId)) {
     sessionContent = applyCodeChange(sessionContent, row.change);
-    pendingChangeBytes += codeChangeSerializedSize(row.change);
   }
   pendingReplayEdits = [];
 
@@ -2069,50 +2116,53 @@ export async function runAgent(
   // shouldStopAfterTurn reads it afterwards to end the turn until approval resumes it.
   let awaitingActionDecision = false;
 
-  // Flush the turn's pending structure and durable rows into a "changes" message: the message
-  // is the durable record that stamps pending registry rows/edges (see addChatMessages in
-  // overseer.ts) and declares the pins this turn's writes established; its change re-records the
-  // rows appended since the last flush (see AgentHooks.flushAgentChanges). Change-ID numbering
-  // counts messages, so the counter advances exactly when a message was written.
-  let flushPendingChanges = () => {
+  // Transitional, for the compaction early-return only (see AgentHooks.flushAgentChanges): a
+  // crashed pre-barrier turn's re-adopted rows, creations and binding additions must be covered
+  // by a "changes" message before compaction removes the log tail they were re-adopted from.
+  // Change-ID numbering counts messages, so the counter advances exactly when one was written.
+  let flushReadoptedChanges = () => {
     let createdGadgets = pendingCreatedGadgets;
     pendingCreatedGadgets = [];
     let addedBindings = pendingAddedBindings;
     pendingAddedBindings = [];
-    pendingChangeBytes = 0;  // the flush materializes every pending row
     if (hooks.flushAgentChanges(chatId, author, {createdGadgets, addedBindings})) {
       ++nextChangeId;
     }
   };
 
-  // Append one file edit to the chat's change stream, durable and broadcast immediately, and apply
-  // it to the session content. The first write to an unpinned gadget with committed code pins
-  // it at the given head -- always the current head, never an older observed commit: a read
-  // that observed an older head is (or will be) elided, and a previously-elided read must not
-  // spring back to life as the anchor of a later write. The pin is validated and mirrored into
-  // the chat's code base at append time; its log declaration rides the next flush.
-  let appendAgentEdit = async (
+  // Buffer one file edit into the step and apply it to the session content; it becomes durable
+  // (row + broadcast) only at the step's persistence barrier. The first write to an unpinned
+  // gadget with committed code pins it at the given head -- always the current head, never an
+  // older observed commit: a read that observed an older head is (or will be) elided, and a
+  // previously-elided read must not spring back to life as the anchor of a later write. The
+  // pin is validated and mirrored into the chat's code base when the barrier appends the row;
+  // within the step, later tools read the edit through the session content.
+  let appendAgentEdit = (
       workpieceId: WorkpieceId, change: CodeChange,
       pin?: {baseCommit: string, baseFiles: Map<string, string>}) => {
-    // Keep the pending composition storable: a flush writes exactly one "changes" message, so
-    // materialize the rows appended so far before this one would push their summed size past
-    // the message budget. Flushing through flushPendingChanges (not an overseer-side trigger)
-    // keeps nextChangeId counting messages -- an overseer-written message would sit behind the
-    // agent's counter. A lone change bigger than the whole budget lands in an empty window and
-    // travels alone.
+    // Bound the step's total: the barrier writes the buffer as exactly one "changes" message,
+    // which must fit in one storage record. The failed call buffers nothing -- everything
+    // buffered before it persists normally at the barrier -- and the error tells the model how
+    // to adapt.
     let size = codeChangeSerializedSize(change);
-    if (pendingChangeBytes > 0 && pendingChangeBytes + size > CHAT_CHANGE_MESSAGE_BUDGET) {
-      flushPendingChanges();
+    if (stepBuffer.bytes + size > STEP_CHANGE_BUDGET) {
+      throw new Error("Too many code changes in one step. End this response; the changes made " +
+          "so far are being saved, and you can continue the work in your next step.");
     }
-    await hooks.appendAgentCodeChange(chatId, author, change,
-        pin !== undefined ? {gadgetId: workpieceId, baseCommit: pin.baseCommit} : undefined);
-    pendingChangeBytes += size;
+    // Apply first: an inapplicable change must throw before anything buffers.
+    let newContent = sessionContent;
     if (pin !== undefined) {
-      sessionContent = new Map(sessionContent);
-      sessionContent.set(workpieceId, pin.baseFiles);
-      pinnedGadgets.add(workpieceId);
+      newContent = new Map(newContent);
+      newContent.set(workpieceId, pin.baseFiles);
     }
-    sessionContent = applyCodeChange(sessionContent, change);
+    newContent = applyCodeChange(newContent, change);
+    stepBuffer.changes.push({
+      change,
+      ...(pin !== undefined ? {pin: {gadgetId: workpieceId, baseCommit: pin.baseCommit}} : {}),
+    });
+    stepBuffer.bytes += size;
+    if (pin !== undefined) pinnedGadgets.add(workpieceId);
+    sessionContent = newContent;
   };
 
   let agentContext = hooks.getChatAgentContext(chatId);
@@ -2296,11 +2346,12 @@ export async function runAgent(
 
   let compactionTurn = isCompactionTurn(chatMessages);
   if (compactionTurn || shouldCompactChat(contextTokens, inputBudget)) {
-    // Returning below skips the flush that ends a normal turn, so do it here: replay may have
-    // re-adopted a crashed turn's unmaterialized rows, creations and binding additions, and they
-    // must be covered by a message before this turn stops carrying them. The message lands above
-    // any boundary chosen here, so the checkpoint is unaffected.
-    flushPendingChanges();
+    // Returning below runs no step (and thus no barrier), so cover re-adopted state here:
+    // replay may have re-adopted a crashed pre-barrier turn's unmaterialized rows, creations
+    // and binding additions, and they must be covered by a message before compaction removes
+    // the log tail they were re-adopted from. The message lands above any boundary chosen
+    // here, so the checkpoint is unaffected.
+    flushReadoptedChanges();
 
     let compactedTo = findCompactionBoundary(
         projection, inputBudget, contextTokens,
@@ -2454,7 +2505,7 @@ export async function runAgent(
 
           // A whole-file write is a `set`: valid against any state, so replay and concurrent
           // transforms can never mis-anchor it.
-          await appendAgentEdit(resolved.workpieceId,
+          appendAgentEdit(resolved.workpieceId,
               {[resolved.workpieceId]: [[filename, {set: newContent}]]}, pin);
 
           // The agent knows exactly what's in the file, so add it to the `filesRead` set so
@@ -2531,7 +2582,7 @@ export async function runAgent(
           let pos = findEditPos(before, textToReplace);
           if (replacement !== textToReplace) {
             let edit = replaceSpanChange(before.length, pos, textToReplace, replacement);
-            await appendAgentEdit(
+            appendAgentEdit(
                 resolved.workpieceId, {[resolved.workpieceId]: [[filename, {edit}]]}, pin);
             // Like writeFile: the agent knows the file's exact resulting content, so the entry
             // becomes session knowledge (the gadget is pinned now, so a commit stamp -- which
@@ -2661,11 +2712,10 @@ export async function runAgent(
           }
           let bindingName = name ?? source;
 
-          // Like createGadget, flush edits made so far into their own "changes" message
-          // first, so a revert at the addition never drags along earlier edits; the addition
-          // then rides the *next* flush, whose "changes" message durably records and
-          // sequence-stamps the pending edge (see addChatMessages in overseer.ts).
-          flushPendingChanges();
+          // The addition rides the step's "changes" message (via the barrier's
+          // `addedBindings`), which durably records and sequence-stamps the pending edge (see
+          // addChatMessages in overseer.ts). Same-step edits share that message, so a revert
+          // keeps or discards the step's work as one unit.
           hooks.addGadgetBinding(gadgetEntry.id, bindingName, sourceEntry.id, chatId);
           pendingAddedBindings.push(
               {gadgetId: gadgetEntry.id, name: bindingName, target: sourceEntry.id});
@@ -2721,20 +2771,14 @@ export async function runAgent(
           let blueprint = blueprintId !== undefined
               ? await hooks.fetchBlueprint(blueprintId) : undefined;
 
-          // Flush edits made so far into their own "changes" message before creating the
-          // gadget, so the creation cleanly separates change batches: a revert from this creation
-          // onward must not drag along a batch that also holds earlier edits. (Same barrier
-          // pattern as executeCode, including its known single-step-mixing caveat there.)
-          flushPendingChanges();
-
           // The gadget is created provisional to this chat: it becomes permanent only when the
-          // user accepts the chat's changes. The creation is attached to the next flushed
-          // "changes" message, which is the durable record that sequence-stamps the pending
-          // registry row (see addChatMessages in overseer.ts). Until then it behaves like a
-          // pending write/edit: if the turn dies first, either this tool call was persisted (the
-          // resumed turn re-adopts the creation from the log tail -- see replayedCreations) or
-          // it wasn't (the registry row is reaped as an orphan -- see reconcilePendingGadgets --
-          // and the resumed turn just creates a fresh gadget).
+          // user accepts the chat's changes. The registry record (and its name reservation) is
+          // created immediately -- deferring it to the barrier would surface name conflicts
+          // after the model already saw this call succeed -- but it is *stamped* by the step's
+          // "changes" message, which the barrier records the creation on (see addChatMessages
+          // in overseer.ts). If the step dies before its barrier, the record is reaped as an
+          // unstamped orphan (see reconcilePendingGadgets) and the resumed turn just creates a
+          // fresh gadget.
 
           // Let the transcript name the format while the call runs, as writes do with their target
           // file.
@@ -2761,21 +2805,16 @@ export async function runAgent(
             let fileChanges = Object.entries(blueprint.files)
                 .map(([filename, text]): [string, {set: string}] => [filename, {set: text}]);
             if (fileChanges.length > 0) {
-              await appendAgentEdit(created.id, {[created.id]: fileChanges});
+              appendAgentEdit(created.id, {[created.id]: fileChanges});
             }
             // (The files are deliberately NOT added to filesRead: unlike a writeFile, the agent
             // hasn't seen their contents, so it must read before editing.)
 
-            // Flush the creation + files immediately rather than waiting for the next barrier.
-            // The blueprint's contents aren't reconstructible from this tool call's input the way
-            // writeFile edits are, so they must be durable before the step's message lands: the
-            // "changes" message then precedes the tool call in the log, which replay already
-            // tolerates (see recordedCreations) -- and which makes replay of a later readFile of
-            // a blueprint file work with no special cases. The residual crash window (changes
-            // persisted, step's message lost) leaves a stamped pending gadget the resumed model
-            // doesn't remember; it is visible in the chat's proposed changes and reverts
-            // normally.
-            flushPendingChanges();
+            // The copies ride the step buffer and persist atomically with this call's record at
+            // the barrier: the blueprint's contents aren't reconstructible from the call's
+            // input the way writeFile edits are, so either both survive a crash or neither
+            // does. (Old logs may hold the pre-barrier order -- the "changes" message *before*
+            // its creating call -- which replay still tolerates; see recordedCreations.)
 
             output.blueprintNotes = blueprint.notes;
           }
@@ -2833,12 +2872,16 @@ export async function runAgent(
       }),
       execute: async (toolCallId, {code}) => {
         try {
-          // Flush before running code so the "changes" message covering earlier edits lands
-          // first. (Edits are durable rows the moment they apply, so the gadget preview sees
-          // them either way; the flush keeps the batch boundaries clean. The known caveat that a
-          // same-step edit's message lands before the step's own message is unchanged; replay
-          // tolerates it -- see recordedCreations.)
-          flushPendingChanges();
+          // Step-transactionality guard: buffered edits are durable only at the step's
+          // barrier, so code must not run against content the persisted history doesn't yet
+          // hold -- a crash would lose the edits the execution observed. Editing code and then
+          // executing it in one step never worked; the error is retryable and tells the model
+          // to split them. (Deliberately coarse: no per-gadget touched-set -- worktrees keep
+          // the same rule.)
+          if (stepBuffer.changes.length > 0) {
+            throw new Error("This step already made code changes, which take effect when the " +
+                "step ends. End this response and call executeCode again in your next step.");
+          }
 
           let output = await hooks.executeCodeMode(
               chatId, code, initiator, author.id, Object.fromEntries(chatBindings),
@@ -3055,11 +3098,12 @@ export async function runAgent(
           break;
         }
         // Note: a turn the model completed is persisted even if the user cancelled while its
-        // tools were executing -- their durable side effects (Y.Doc changes, captured actions,
-        // connection requests) have already happened, and dropping the record would leave those
-        // changes without history and the captured actions/requests orphaned for the next turn
-        // to mis-consume. Tool calls the abort kept from running are recorded as errors below,
-        // and shouldStopAfterTurn ends the loop right after this barrier.
+        // tools were executing -- the completed calls' buffered edits and captured
+        // actions/connection requests land with their records here (effects iff record, the
+        // invariant this barrier exists for), rather than evaporating out from under side
+        // effects the next turn would mis-consume. Tool calls the abort kept from running are
+        // recorded as errors below, and shouldStopAfterTurn ends the loop right after this
+        // barrier.
 
         let msgs: AiChatMessageBodyWithModelData[] = [];
 
@@ -3138,9 +3182,24 @@ export async function runAgent(
           msgs.push(cr);
         }
 
-        hooks.addChatMessages(chatId, author, msgs, message.usage.totalTokens,
-            handle.lastResponse?.aiGatewayLogId, handle.aiGatewayLogRoute,
-            message.usage.cost.total);
+        // The barrier itself: one transaction persists the step's messages and its buffered
+        // effects -- rows, the step's single "changes" message, retirement, registry stamps --
+        // so the effects are durable iff the transcript that explains them is. The buffer is
+        // drained before the call: if the barrier throws, the turn dies with it (rethrown out
+        // of the loop), and re-delivering the step's changes anywhere would be wrong.
+        let stepChanges = stepBuffer.changes;
+        stepBuffer.changes = [];
+        stepBuffer.bytes = 0;
+        let createdGadgets = pendingCreatedGadgets;
+        pendingCreatedGadgets = [];
+        let addedBindings = pendingAddedBindings;
+        pendingAddedBindings = [];
+        if (await hooks.commitAgentStep(chatId, author, msgs,
+            {changes: stepChanges, createdGadgets, addedBindings},
+            message.usage.totalTokens, handle.lastResponse?.aiGatewayLogId,
+            handle.aiGatewayLogRoute, message.usage.cost.total)) {
+          ++nextChangeId;
+        }
 
         // Reset per-step streaming state.
         toolCallNotes.clear();
@@ -3150,57 +3209,53 @@ export async function runAgent(
     }
   };
 
-  try {
-    if (modelMessages.length === 0 ||
-        modelMessages[modelMessages.length - 1].role === "assistant") {
-      // The log tail ends with a completed assistant response and nothing new has arrived for
-      // the model to answer (e.g. the previous turn crashed between persisting its final message
-      // and finishing), so there is nothing to run. pi's loop requires the context to end with a
-      // user or toolResult message, which replay otherwise guarantees.
-      logger.warn("agent turn skipped: history ends with a completed assistant message", {
-        event: "agent.turn.skipped", chatId,
-      });
-      return undefined;
-    }
-
-    let context: AgentContext = {
-      systemPrompt,
-      messages: modelMessages,
-      tools: toolList,
-    };
-
-    await runAgentLoopContinue(context, {
-      model: handle.model,
-      // Replay already produces LLM-shaped messages; no custom message types exist.
-      convertToLlm: (messages) => messages as Message[],
-      toolExecution: "sequential",
-      maxTokens: maxOutputTokens,
-      shouldStopAfterTurn: () =>
-          // Cancelled during tool execution: the completed turn was persisted by the turn_end
-          // barrier just above; don't start another (doomed) model request.
-          abortSignal.aborted ||
-          // Hard cap on turns, as before.
-          ++turnCount >= 30 ||
-          // End the turn once the agent has successfully requested a connection: it must wait
-          // for the user to respond, not keep reasoning in the meantime. (Accept resumes it on a
-          // fresh turn; deny just leaves the turn ended.) A rejected requestConnection (e.g.
-          // unresolvable resource) leaves this false so the agent can fix the request and retry
-          // in the same turn.
-          connectionRequested ||
-          // Wait for approval before continuing against state that may not reflect the action.
-          awaitingActionDecision ||
-          // Auto-terminate when callback-initiated and all callbacks have been resolved/rejected.
-          (callbackInitiated && hooks.activeAgentCallbackCount(chatId) === 0),
-    }, emit, abortSignal, handle.stream);
-  } finally {
-    // Flush any remaining rows appended during this turn (including a crashed predecessor's
-    // re-adopted tail) into a "changes" message. Deliberately unconditional: a user cancel
-    // keeps the completed tool calls' edits, exactly as the Y.Doc flush before it did --
-    // cancellation stops the agent, it does not revert the turn. (A turn that must *discard*
-    // its edits would need the revert-shaped path: remove its contiguous tail of
-    // unmaterialized rows and bump the generation. No such path exists today.)
-    flushPendingChanges();
+  if (modelMessages.length === 0 ||
+      modelMessages[modelMessages.length - 1].role === "assistant") {
+    // The log tail ends with a completed assistant response and nothing new has arrived for
+    // the model to answer (e.g. the previous turn crashed between persisting its final message
+    // and finishing), so there is nothing to run. pi's loop requires the context to end with a
+    // user or toolResult message, which replay otherwise guarantees.
+    logger.warn("agent turn skipped: history ends with a completed assistant message", {
+      event: "agent.turn.skipped", chatId,
+    });
+    return undefined;
   }
+
+  let context: AgentContext = {
+    systemPrompt,
+    messages: modelMessages,
+    tools: toolList,
+  };
+
+  await runAgentLoopContinue(context, {
+    model: handle.model,
+    // Replay already produces LLM-shaped messages; no custom message types exist.
+    convertToLlm: (messages) => messages as Message[],
+    toolExecution: "sequential",
+    maxTokens: maxOutputTokens,
+    shouldStopAfterTurn: () =>
+        // Cancelled during tool execution: the completed turn was persisted by the turn_end
+        // barrier just above; don't start another (doomed) model request.
+        abortSignal.aborted ||
+        // Hard cap on turns, as before.
+        ++turnCount >= 30 ||
+        // End the turn once the agent has successfully requested a connection: it must wait
+        // for the user to respond, not keep reasoning in the meantime. (Accept resumes it on a
+        // fresh turn; deny just leaves the turn ended.) A rejected requestConnection (e.g.
+        // unresolvable resource) leaves this false so the agent can fix the request and retry
+        // in the same turn.
+        connectionRequested ||
+        // Wait for approval before continuing against state that may not reflect the action.
+        awaitingActionDecision ||
+        // Auto-terminate when callback-initiated and all callbacks have been resolved/rejected.
+        (callbackInitiated && hooks.activeAgentCallbackCount(chatId) === 0),
+  }, emit, abortSignal, handle.stream);
+
+  // (No end-of-turn flush: every completed step's effects were barrier-committed with its
+  // message, and an abort simply drops the in-flight step's buffer -- nothing durable exists
+  // for it. Cancellation stops the agent, it does not revert the turn; completed steps' work
+  // stays, and the user reverts explicitly if they want it gone. Re-adopted crashed-turn state
+  // that never met a barrier stays live for the next turn to re-adopt.)
 
   // Cancellation surfaces as the abort reason, matching the old thrown-abort behavior. (Checked
   // outside turnFailure because an abort during tool execution stops the loop after a persisted,

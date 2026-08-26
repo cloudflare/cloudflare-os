@@ -31,7 +31,7 @@
 // Both stages take a `CodeChange`, and that parameter type is a precondition rather than a
 // hope: the declared shape is established before they run, by capnweb-validate's generated
 // validator at the RPC edge (Overseer.submitCodeChange) and by the compiler for the one
-// in-process producer (the agent's AgentHooks.appendAgentCodeChange, whose changes this module
+// in-process producer (the agent's AgentHooks.commitAgentStep, whose changes this module
 // itself builds). So neither stage re-checks that a value is an object, an array, a pair, or a
 // string; they check the invariants a TypeScript type cannot express -- canonical gadget keys,
 // path rules, size caps, integer section lengths, and the one variant rule the wire validator's

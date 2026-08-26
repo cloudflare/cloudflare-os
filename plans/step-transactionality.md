@@ -148,8 +148,10 @@ first).
    via a **new dedicated hook, `commitAgentStep`** (not an extended
    `addChatMessages`, which has six non-agent callers that would all be touched
    by a widened signature) which, inside one
-   `transactionSync()` (typed-storage's `TypedStorage.transaction`; established
-   overseer precedent, e.g. overseer.ts:1602): persists the step's tool-call
+   `transactionSync()` block (via typed-storage's `TypedStorage.transaction`,
+   today a bare delegate to `transactionSync` but the natural place to later
+   grow transaction-aware behavior, e.g. delaying subscription callbacks until
+   commit): persists the step's tool-call
    message, validates and appends each buffered change as a `chatChanges` row
    (the same pin/codeBase bookkeeping as `appendAgentCodeChange`'s synchronous
    tail, with the prefetches hoisted before the block), materializes the rows
@@ -238,11 +240,17 @@ first).
    effects: extras and edits share the step's single message. This also
    resolves what an aggregate step-buffer bound is *for*: correctness (the one
    message must fit a record), with bounded memory as a side effect.
-4. **Mid-tool flushes removed** (agent.ts:2630, 2690, 2740, 2803; the compaction
-   call at 2265 becomes redundant too). The blueprint's copies ride the buffer and
-   persist with their `createGadget` call — the 2731-2739 crash window closes. The
-   end-of-turn flush in the `finally` (agent.ts:3164) can no longer find agent
-   rows to materialize; keep it as a cheap invariant assertion or delete it.
+4. **Mid-tool flushes removed** (agent.ts:2630, 2690, 2740, 2803). The blueprint's
+   copies ride the buffer and persist with their `createGadget` call — the
+   2731-2739 crash window closes. The end-of-turn flush in the `finally`
+   (agent.ts:3164) is deleted: every completed step barrier-commits its own
+   effects, and an abort's in-flight buffer is memory only. **Exception, until
+   the machinery deletion lands (commit 3): the compaction early-return keeps a
+   flush** (`flushReadoptedChanges`, backed by the transitional
+   `flushAgentChanges` hook) — a crashed *pre-barrier* turn's re-adopted
+   rows/creations/bindings must be covered by a message before compaction
+   removes the log tail replay re-adopts them from. It dies with the
+   re-adoption machinery itself.
 5. **executeCode guard.** The executeCode tool checks the step buffer before
    running: non-empty ⇒ throw the retryable error. One `if` in the tool, no
    changes to the gadget-loading path (see the locked decision).
