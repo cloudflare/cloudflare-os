@@ -81,3 +81,10 @@ export function claimStoredOAuthFlow(kv: SynchronousKv, oauthNonce: string, now:
     oauthRedirectUri: flow.oauthRedirectUri,
   };
 }
+
+/** Preserve destructive intent across the `ephemeral` to cleanup-marker deployment cutover. */
+export function shouldDeleteCredentialsOnAlarm(kv: SynchronousKv): boolean {
+  return kv.get<string>("refreshToken") === undefined ||
+    kv.get<boolean>("deleteCredentialsOnAlarm") === true ||
+    kv.get<boolean>("ephemeral") === true;
+}

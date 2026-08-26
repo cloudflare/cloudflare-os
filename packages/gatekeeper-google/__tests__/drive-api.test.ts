@@ -260,6 +260,23 @@ describe("listDrives", () => {
     expect(calls[0].url.searchParams.get("pageToken")).toBe("p1");
   });
 
+
+  it("collects every shared-drive page", async () => {
+    let calls = stubFetch([
+      jsonResponse({
+        drives: [{ id: "drive-1", name: "Product" }], nextPageToken: "p2",
+      }),
+      jsonResponse({ drives: [{ id: "drive-2", name: "Production" }] }),
+    ]);
+
+    await expect(api().listAllDrives({ namePrefix: "Pro" })).resolves.toEqual([
+      { id: "drive-1", name: "Product" },
+      { id: "drive-2", name: "Production" },
+    ]);
+    expect(calls.map(call => call.url.searchParams.get("pageToken"))).toEqual([null, "p2"]);
+    expect(calls.map(call => call.url.searchParams.get("q")))
+      .toEqual(["name contains 'Pro'", "name contains 'Pro'"]);
+  });
   it("rejects malformed shared-drive metadata", async () => {
     stubFetch([jsonResponse({ drives: [{ id: "drive-1", name: false }] })]);
     await expect(api().listDrives()).rejects.toThrow("Invalid Google shared-drive response");

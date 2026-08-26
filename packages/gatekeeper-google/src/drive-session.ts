@@ -26,6 +26,7 @@ type DriveSessionCoreOptions = {
   api: DriveSessionApi;
   scope: DriveBindingScope;
   prepareObservation(fileIds: string[]): Promise<ObserverCheck<string>>;
+  observerIds(): string[];
   authorize(description: ObservationDescription): Promise<void>;
 };
 
@@ -190,12 +191,14 @@ export class DriveSessionCore {
   #api: DriveSessionApi;
   #scope: DriveBindingScope;
   #prepareObservation: (fileIds: string[]) => Promise<ObserverCheck<string>>;
+  #observerIds: () => string[];
   #authorize: (description: ObservationDescription) => Promise<void>;
 
   constructor(options: DriveSessionCoreOptions) {
     this.#api = options.api;
     this.#scope = options.scope;
     this.#prepareObservation = options.prepareObservation;
+    this.#observerIds = options.observerIds;
     this.#authorize = options.authorize;
   }
 
@@ -268,6 +271,7 @@ export class DriveSessionCore {
           await this.#authorize({
             title: "Search Google Drive metadata",
             description: emptySearchDescription(this.#scope, query),
+            excludeObservers: this.#observerIds(),
           });
           throw new Error("An empty Drive search cannot be shared safely.");
         }
@@ -326,7 +330,7 @@ export class DriveSessionCore {
       file = await this.#api.getFile(fileId);
     } catch (err) {
       if (this.#scope.kind === "sharedDrive" && err instanceof DriveApiRequestError &&
-          (err.status === 403 || err.status === 404)) {
+          !err.isQuotaExceeded && (err.status === 403 || err.status === 404)) {
         this.#outsideScope();
       }
       throw err;

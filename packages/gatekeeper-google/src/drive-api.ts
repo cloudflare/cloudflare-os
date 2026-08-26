@@ -84,6 +84,11 @@ export class DriveApiRequestError extends Error {
   ) {
     super(`Google Drive API request failed: ${status}${reason ? ` (${reason})` : ""}`);
   }
+
+  /** Whether this failure reports one of Google's documented quota reasons. */
+  get isQuotaExceeded(): boolean {
+    return this.status === 403 && this.reason !== undefined && QUOTA_403_REASONS.has(this.reason);
+  }
 }
 
 const MAX_ERROR_BODY_BYTES = 4096;
@@ -375,6 +380,23 @@ export class DriveApi {
     }
     let nextPageToken = optionalString(body.nextPageToken, "nextPageToken");
     return { drives, ...(nextPageToken ? { nextPageToken } : {}) };
+  }
+
+  /** Every shared drive visible to the connected account. */
+  async listAllDrives(
+    options: Omit<DriveListDrivesOptions, "pageToken"> = {},
+  ): Promise<DriveInfo[]> {
+    let drives: DriveInfo[] = [];
+    let pageToken: string | undefined;
+    do {
+      let page = await this.listDrives({
+        ...options,
+        ...(pageToken ? { pageToken } : {}),
+      });
+      drives.push(...page.drives);
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    return drives;
   }
 
   /** Fresh access checks, issued as multipart `files.get` batches of at most 100 IDs. */

@@ -70,7 +70,8 @@ import {
   hasDriveResourceGrant, parseResourceUrl, resourcesCoveredByScopes,
 } from "./resources";
 import {
-  beginStoredOAuthFlow, claimStoredOAuthFlow, prepareOAuthFlow, type OAuthFlowMode,
+  beginStoredOAuthFlow, claimStoredOAuthFlow, prepareOAuthFlow, shouldDeleteCredentialsOnAlarm,
+  type OAuthFlowMode,
 } from "./oauth-flow";
 import { type ObserverBatchResult, type ObserverCheck, ObserverTracker } from "./observers";
 import { CursorPager, Pager } from "./cursor";
@@ -539,10 +540,6 @@ export class UserAccount extends DurableObject<Env> {
     return true;
   }
 
-  hasRefreshToken() {
-    return this.ctx.storage.kv.get<string>("refreshToken") !== undefined;
-  }
-
   /**
    * Whether the stored token still satisfies this request, i.e. can be served without minting.
    *
@@ -657,8 +654,7 @@ export class UserAccount extends DurableObject<Env> {
 
   async alarm(_alarmInfo?: AlarmInvocationInfo): Promise<void> {
     await this.#updateCredentials(async () => {
-      if (!this.hasRefreshToken() ||
-          this.ctx.storage.kv.get<boolean>("deleteCredentialsOnAlarm")) {
+      if (shouldDeleteCredentialsOnAlarm(this.ctx.storage.kv)) {
         this.ctx.storage.deleteAll();
       }
     });
@@ -3031,11 +3027,13 @@ export class GoogleDriveGatekeeperImpl
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleDriveSession> {
+    let observerTracker = this.#observerTracker();
     return new GoogleDriveSessionImpl(
       new DriveApi(opts => this.#getAccessToken(opts)),
       this.ctx.props.scope,
       approvalQueue.dup(),
-      fileIds => this.#observerTracker().prepareObservation(fileIds),
+      fileIds => observerTracker.prepareObservation(fileIds),
+      () => [...observerTracker.observers()].map(([id]) => id),
     );
   }
 
@@ -3070,12 +3068,14 @@ class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSession {
     scope: DriveBindingScope,
     approvalQueue: RpcStub<ApprovalQueue>,
     prepareObservation: (fileIds: string[]) => Promise<ObserverCheck<string>>,
+    observerIds: () => string[],
   ) {
     super();
     this.#core = new DriveSessionCore({
       api,
       scope,
       prepareObservation,
+      observerIds,
       authorize: description => approvalQueue.authorizeObservation(description),
     });
   }

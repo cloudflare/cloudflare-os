@@ -254,9 +254,9 @@ export class SharedDriveConfiguratorUI extends RpcTarget implements SharedDriveC
 
   async listSharedDrives(query: string): Promise<ConfiguratorOption[]> {
     let drive = new DriveApi(googleTokenProvider(this));
-    let { drives } = await withDriveApiEnabled(
+    let drives = await withDriveApiEnabled(
       "Shared-drive search requires the Google Drive API to be enabled for this OAuth project.",
-      () => drive.listDrives({ namePrefix: query }),
+      () => drive.listAllDrives({ namePrefix: query }),
     );
     return drives.map(item => ({ value: item.id, title: item.name, subtitle: item.id }));
   }

@@ -24,6 +24,7 @@ function core(overrides: {
     nextPageToken?: string;
   }>;
   authorize?: (description: ObservationDescription) => Promise<void>;
+  observerIds?: () => string[];
 } = {}) {
   let listFiles = vi.fn(overrides.listFiles ?? (async () => ({ files: overrides.files ?? [file()] })));
   let getFile = vi.fn(overrides.getFile ?? (async (id: string) => file({ id })));
@@ -43,6 +44,7 @@ function core(overrides: {
         commit: () => events.push("commit"),
       };
     },
+    observerIds: overrides.observerIds ?? (() => ["excluded"]),
     authorize: async (description: ObservationDescription) => {
       authorizations.push(description);
       events.push("authorize");
@@ -117,7 +119,9 @@ describe("Drive session scope", () => {
     expect(authorizations).toEqual([expect.objectContaining({
       title: "Search Google Drive metadata",
       description: expect.stringContaining('name starts with "missing"'),
+      excludeObservers: ["excluded"],
     })]);
+    expect(authorizations[0]).not.toHaveProperty("prohibitAllSharing");
     expect(authorizations[0].description).not.toContain("0");
     expect(events).toEqual(["authorize"]);
   });
@@ -205,6 +209,20 @@ describe("Drive session scope", () => {
 
     await expect(session.getEntry("file-1")).rejects
       .toThrow("Google Drive API request failed: 500");
+  });
+
+  it.each([
+    "dailyLimitExceeded",
+    "rateLimitExceeded",
+    "userRateLimitExceeded",
+  ])("preserves a shared-drive quota failure reported as %s", async reason => {
+    let error = new DriveApiRequestError(403, reason);
+    let { session } = core({
+      scope: { kind: "sharedDrive", driveId: "drive-1" },
+      getFile: async () => { throw error; },
+    });
+
+    await expect(session.getEntry("file-1")).rejects.toThrow(error);
   });
 
   it("refuses another file ID without calling Google for a file-scoped binding", async () => {

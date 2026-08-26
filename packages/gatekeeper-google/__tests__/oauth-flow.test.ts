@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  beginStoredOAuthFlow, claimStoredOAuthFlow, prepareOAuthFlow,
+  beginStoredOAuthFlow, claimStoredOAuthFlow, prepareOAuthFlow, shouldDeleteCredentialsOnAlarm,
   type OAuthFlowMode,
 } from "../src/oauth-flow";
 import {
@@ -116,5 +116,28 @@ describe("stored OAuth flow", () => {
     for (let key of ["nonce", "requestedScopes", "requestedResources", "reconnecting", "ephemeral"]) {
       expect(kv.entries.has(key)).toBe(false);
     }
+  });
+
+  it("deletes a legacy ephemeral sign-in when its alarm survives a deploy", () => {
+    let kv = new FakeKv();
+    kv.put("refreshToken", "token");
+    kv.put("ephemeral", true);
+
+    expect(shouldDeleteCredentialsOnAlarm(kv)).toBe(true);
+  });
+
+  it("keeps a persistent account when no cleanup marker is set", () => {
+    let kv = new FakeKv();
+    kv.put("refreshToken", "token");
+
+    expect(shouldDeleteCredentialsOnAlarm(kv)).toBe(false);
+  });
+
+  it("deletes a current transient sign-in when its cleanup marker is set", () => {
+    let kv = new FakeKv();
+    kv.put("refreshToken", "token");
+    kv.put("deleteCredentialsOnAlarm", true);
+
+    expect(shouldDeleteCredentialsOnAlarm(kv)).toBe(true);
   });
 });
