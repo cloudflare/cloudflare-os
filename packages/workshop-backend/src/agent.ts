@@ -378,34 +378,6 @@ export interface AgentHooks {
       estimatedCost?: number): Promise<boolean>;
 
   /**
-   * Transitional, called only by the compaction early-return (and deleted with the
-   * replay-discharge machinery): materialize live change rows re-adopted from a crashed
-   * pre-barrier turn into one "changes" message carrying the given re-adopted creations and
-   * binding additions, before compaction removes the log tail replay re-adopts them from.
-   * Barrier-committed turns leave no live agent rows for this to find. Returns whether a
-   * message was written (change-ID numbering counts messages).
-   */
-  flushAgentChanges(chatId: number, author: AiChatAuthorInfo, extras: {
-    createdGadgets?: {gadgetId: WorkpieceId, title: string, bindingName: string}[],
-    addedBindings?: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
-  }): boolean;
-
-  /**
-   * The chat's live (unmaterialized) change rows, oldest first. Nonempty at turn start only when a
-   * previous turn crashed after appending rows but before its flush; replay applies them on top
-   * of the messages' changes -- they are already durable chat content.
-   */
-  listUnmaterializedChatChanges(chatId: number): {change: CodeChange, generation: number,
-                                                  revision: number}[];
-
-  /**
-   * Pins present in the chat's code base whose establishment no surviving "changes" message
-   * records yet (see the flush above). At turn start these identify a crashed predecessor's
-   * pins, whose base trees replay must establish before applying the unmaterialized rows.
-   */
-  undeclaredChatPins(chatId: number): ChatGadgetPin[];
-
-  /**
    * The gadget's current head commit (WorkpieceSummary.commitId), or undefined if it has none:
    * still pending in a chat, created outside chats and never accepted, or deleted. An unpinned
    * gadget with a head is read at that head; one without a head lives only in the session doc.
@@ -1081,18 +1053,14 @@ export async function runAgent(
     }
     return cached;
   };
-  // Gadgets created this turn, awaiting attachment to the next flushed "changes" message (see
-  // flushCapturedYdocChanges and the createGadget tool) -- which is what durably records, and
-  // sequence-stamps, each creation. Like captured edits, buffered creations from a turn that
-  // crashed before flushing are recovered during history replay: replayed createGadget calls not
-  // listed in any "changes" message's `createdGadgets` are re-added here (see
-  // replayedCreations/recordedCreations below).
+  // Gadgets created this step (see the createGadget tool), awaiting the step's persistence
+  // barrier: its "changes" message is what durably records, and sequence-stamps, each creation.
+  // A step that dies before its barrier leaves only the unstamped registry record, which
+  // reconciliation reaps (see reconcilePendingGadgets in overseer.ts).
   let pendingCreatedGadgets: {gadgetId: WorkpieceId, title: string, bindingName: string}[] = [];
 
-  // Binding edges added this turn (via the setGadgetBinding tool), likewise awaiting attachment
-  // to the next flushed "changes" message (see `addedBindings`), which sequence-stamps the
-  // pending edge. Crash recovery mirrors creations: replayed additions not listed in any
-  // "changes" message are re-added here (see replayedBindingAdditions/recordedBindingAdditions).
+  // Binding edges added this step (via the setGadgetBinding tool), likewise awaiting the
+  // barrier's "changes" message (see `addedBindings`), which sequence-stamps the pending edge.
   let pendingAddedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[] = [];
 
   // The chat's binding map: what each name in the agent's executeCode `env` resolves to. Starts
@@ -1168,31 +1136,10 @@ export async function runAgent(
   // As we replay the chat history, when we see tool calls that make edits, we add them to this
   // array, and when we see "changes" messages that represent those edits being flushed, we
   // clear this array. Thus, it continuously contains the list of edits for which we haven't seen
-  // a "changes" message yet. This is needed for a few tricky cases.
+  // a "changes" message yet: within a step, reads that follow an edit replay against these (the
+  // step's "changes" message, which advances the session content, comes after the whole
+  // tool-call message).
   let pendingReplayEdits: ReplayPendingEdit[] = [];
-
-  // Same idea for gadget creations, but exact and order-immune: a creation is durably recorded
-  // iff some "changes" message lists it in `createdGadgets` -- possibly even *before* the tool
-  // call's own message (an executeCode barrier flush in the same step) -- so rather than
-  // clearing a pending list incrementally, collect the tool calls and the recorded ids
-  // separately and re-adopt the difference after replay. Whatever isn't recorded is a crashed
-  // turn's tail. (The registry records already exist -- created durably at tool time, awaiting
-  // their stamp -- which is why replay of createGadget itself never re-creates anything.)
-  let replayedCreations: {gadgetId: WorkpieceId, title: string, bindingName: string}[] = [];
-  let recordedCreations = new Set<WorkpieceId>();
-
-  // And the same again for binding additions (setGadgetBinding), recorded by `addedBindings`.
-  // Unlike creations, additions have no unique id: (gadgetId, name) can legitimately recur when
-  // an earlier addition is removed or reverted and the same name is added again. So instead of a
-  // set difference, count per key -- recordings consume the *earliest* replayed additions (an
-  // addition is recorded no later than any subsequent same-name addition, which requires the
-  // earlier edge to be gone first) and the excess tail is re-adopted. Only agent-flushed
-  // recordings count: a user-authored "changes" message records a UI-initiated bind
-  // (GadgetClient.bind), which has no tool call, and counting it would mask an agent addition of
-  // the same name.
-  let replayedBindingAdditions: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[] = [];
-  let recordedBindingAdditions = new Map<string, number>();
-  let bindingAdditionKey = (gadgetId: WorkpieceId, name: string) => `${gadgetId}:${name}`;
 
   // Track which files have been read in this session, per workpiece by filename. Edits
   // aren't allowed before reading. The value is the commit an unpinned read observed
@@ -1310,23 +1257,23 @@ export async function runAgent(
   };
 
   // Ensures the session content holds a base for a replayed write's target gadget. The pin
-  // declaration itself rides the write's *flush* -- a "changes" message recorded after the tool
+  // declaration itself rides the write's step's "changes" message -- recorded after the tool
   // step's own message -- but replayed reads between the two need the pinned base in the
   // content. Establishing early from the upcoming declaration is safe because establishment is
-  // idempotent (above). Four cases by what the log holds after `sequence`:
+  // idempotent (above). Cases by what the log holds after `sequence` (a persisted write implies
+  // its step's "changes" message -- they share the barrier's transaction -- so one of these
+  // always follows):
   // - an upcoming surviving declaration: establish from it now;
   // - a *reverted* declaration: do nothing -- the range's reads are elided and its pending
-  //   edits are discharged by the (reverted) flush message, so the base is never needed;
-  // - a flush (any change- or watermark-carrying "changes" message, which is what discharges
+  //   edits are discharged by the (reverted) "changes" message, so the base is never needed;
+  // - a "changes" message (any change- or watermark-carrying one, which is what discharges
   //   pending edits and what a live write's pin would have ridden) with *no* declaration: the
   //   write was made while the gadget had no committed code -- it was still pending in this
   //   chat, its content built up from its own changes -- and the head seen now is its later
-  //   promotion. Nothing to establish;
-  // - nothing at all: the turn crashed before flushing. The pin was still mirrored into the
-  //   chat's code base when the write's row was appended (the pre-barrier per-tool append
-  //   path, whose stranded rows this recovery still tolerates), so
-  //   establish from the meta pin; the trailing unmaterialized rows applied after replay carry
-  //   the edits themselves, and the next flush declares the pin (see undeclaredChatPins).
+  //   promotion. Nothing to establish.
+  // (Nothing at all would mean a log from before the barrier existed, whose turn crashed
+  // between the write and its flush; that stranded-tail tolerance is gone, so the write's
+  // effects are simply absent and reads of them surface as replayed errors.)
   let ensureReplayContentForWrite = async (workpieceId: WorkpieceId, sequence: number) => {
     if (pinnedGadgets.has(workpieceId)) return;
     if (hooks.getGadgetHead(workpieceId) === undefined) return;  // no committed code
@@ -1347,26 +1294,22 @@ export async function runAgent(
       }
     }
 
-    if (upcoming === "reverted" || upcoming === "flushed-unpinned") return;
-    if (upcoming === undefined) {
-      upcoming = hooks.undeclaredChatPins(chatId).find(p => p.gadgetId === workpieceId);
-      // No meta pin either: the crashed tail's rows were since erased (e.g. a draft discard).
-      // The write's effects are gone; reads of the missing content surface as replayed errors.
-      if (upcoming === undefined) return;
+    if (upcoming === undefined || upcoming === "reverted" || upcoming === "flushed-unpinned") {
+      return;
     }
     await applyReplayedPin(upcoming);
   };
 
   // The base commit-anchored knowledge from before `afterSequence` must match to still be
   // current: the base of the gadget's next surviving pin declaration after that point, else
-  // (never pinned since) the pin of the chat's live code base -- established by unmaterialized
-  // rows, so declared nowhere yet -- else the live head. The next *pin* rather than the final
-  // head because a pin is where the model's belief chain re-roots: from the pin on, the file's
-  // evolution is in the model's own context (its edits, user-change diffs, revert notes), so
-  // knowledge that matches the pin base stays current through it (and across an epoch boundary,
-  // where resetSessionEpoch re-anchors it to the merge's commit). Between the knowledge and that
-  // pin the gadget was unpinned -- tracking head, with nothing chat-local in between -- so a
-  // plain per-file comparison is exactly the freshness question.
+  // (never pinned since) the pin of the chat's live code base -- established by
+  // not-yet-materialized user rows, so declared nowhere yet -- else the live head. The next
+  // *pin* rather than the final head because a pin is where the model's belief chain re-roots:
+  // from the pin on, the file's evolution is in the model's own context (its edits, user-change
+  // diffs, revert notes), so knowledge that matches the pin base stays current through it (and
+  // across an epoch boundary, where resetSessionEpoch re-anchors it to the merge's commit).
+  // Between the knowledge and that pin the gadget was unpinned -- tracking head, with nothing
+  // chat-local in between -- so a plain per-file comparison is exactly the freshness question.
   let stampedReadBase = (workpieceId: WorkpieceId, afterSequence: number): string | undefined => {
     for (let msg of chatMessages) {
       if (msg.sequence <= afterSequence || msg.type !== "changes") continue;
@@ -1636,11 +1579,11 @@ export async function runAgent(
                     let {workpieceId} =
                         hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(toolCall.input.workpiece));
 
-                    // The read was served from the session content. Pending (not-yet-flushed)
-                    // edits from earlier in the same turn are applied to the file's text here:
-                    // the content map advances only when the covering "changes" message's change
-                    // applies, so reads between an edit and its flush replay the edits against
-                    // the string.
+                    // The read was served from the session content. Pending edits from earlier
+                    // in the same step are applied to the file's text here: the content map
+                    // advances only when the step's "changes" message's change applies, so
+                    // reads between an edit and that message replay the edits against the
+                    // string.
                     let value: string | null =
                         sessionContent.get(workpieceId)?.get(toolCall.input.filename) ?? null;
                     for (let edit of pendingReplayEdits) {
@@ -1704,17 +1647,11 @@ export async function runAgent(
                   toolOutput = {text: jsonToolResultText({success: true})};
                   break;
                 case "setGadgetBinding":
-                  // The addition is provisional and the recorded output identifies the edge so a
-                  // crashed turn's unrecorded addition can be re-adopted, exactly like
-                  // createGadget.
+                  // The recorded edge (registry state) already exists, stamped by the step's
+                  // "changes" message, so replay just reproduces the recorded result.
                   if (toolCall.output === undefined) {
                     throw new Error("setGadgetBinding tool call in log is missing its result");
                   }
-                  replayedBindingAdditions.push({
-                    gadgetId: toolCall.output.gadgetId,
-                    name: toolCall.output.name,
-                    target: toolCall.output.target,
-                  });
                   toolOutput = {
                     text: jsonToolResultText({success: true, changeId: toolCall.output.changeId}),
                   };
@@ -1725,16 +1662,11 @@ export async function runAgent(
                   // (The recorded changeId needs no counter bookkeeping here: it names the
                   // "changes" message that recorded the creation, which is numbered by the
                   // normal "changes" replay below. Likewise a blueprint instantiation needs no
-                  // re-fetch: its files ride that same "changes" message, which the live tool
-                  // flushes before its own step's message can land in the log.)
+                  // re-fetch: its files ride that same "changes" message, recorded by the
+                  // call's own step barrier.)
                   if (toolCall.output === undefined) {
                     throw new Error("createGadget tool call in log is missing its result");
                   }
-                  replayedCreations.push({
-                    gadgetId: toolCall.output.gadgetId,
-                    title: toolCall.input.title,
-                    bindingName: toolCall.input.bindingName,
-                  });
                   chatBindings.set(toolCall.input.bindingName,
                       {type: "workpiece", id: toolCall.output.gadgetId});
                   toolOutput = {text: jsonToolResultText(toolCall.output)};
@@ -1888,15 +1820,6 @@ export async function runAgent(
         // discharge any.
         if (msg.change !== undefined || msg.watermark !== undefined) {
           pendingReplayEdits = [];
-        }
-        for (let {gadgetId} of msg.createdGadgets ?? []) {
-          recordedCreations.add(gadgetId);
-        }
-        if (msg.author.type !== "user") {
-          for (let {gadgetId, name} of msg.addedBindings ?? []) {
-            let key = bindingAdditionKey(gadgetId, name);
-            recordedBindingAdditions.set(key, (recordedBindingAdditions.get(key) ?? 0) + 1);
-          }
         }
         changeIdMap.set(msg.sequence, nextChangeId);
         ++nextChangeId;
@@ -2054,43 +1977,11 @@ export async function runAgent(
   // at each write call.
   let stepBuffer = {changes: [] as AgentStepChange[], bytes: 0};
 
-  // If the previous agent turn was aborted by a server restart, its edits are already durable,
-  // broadcast change rows that no "changes" message covers yet: establish their pins' bases (the
-  // pins were mirrored into the chat's code base when the rows were appended, but their log
-  // declarations ride the next flush) and apply the rows to the session content. The pending
-  // replay edits are the same edits in tool-call form, so they are discharged rather than
-  // applied -- the rows are the authoritative record. (If the rows were since erased -- e.g.
-  // the user discarded the draft -- there is simply nothing to apply, and the erased edits stay
-  // erased.)
-  for (let pin of hooks.undeclaredChatPins(chatId)) {
-    if (!pinnedGadgets.has(pin.gadgetId)) {
-      await applyReplayedPin(pin);
-    }
-  }
-  for (let row of hooks.listUnmaterializedChatChanges(chatId)) {
-    sessionContent = applyCodeChange(sessionContent, row.change);
-  }
-  pendingReplayEdits = [];
-
-  // Likewise, re-adopt gadget creations and binding additions from a crashed turn that were
-  // never recorded in a "changes" message, so this turn's next flush records (and thereby
-  // sequence-stamps) them. The registry rows/edges already exist, unstamped; reconciliation
-  // spares them because their tool calls appear in the log (see reconcilePendingGadgets in
-  // overseer.ts).
-  for (let creation of replayedCreations) {
-    if (!recordedCreations.has(creation.gadgetId)) {
-      pendingCreatedGadgets.push(creation);
-    }
-  }
-  let seenAdditionCounts = new Map<string, number>();
-  for (let addition of replayedBindingAdditions) {
-    let key = bindingAdditionKey(addition.gadgetId, addition.name);
-    let occurrence = (seenAdditionCounts.get(key) ?? 0) + 1;
-    seenAdditionCounts.set(key, occurrence);
-    if (occurrence > (recordedBindingAdditions.get(key) ?? 0)) {
-      pendingAddedBindings.push(addition);
-    }
-  }
+  // (A crashed predecessor leaves no stranded state to recover here: each step's rows, pins,
+  // creation/binding stamps and messages are committed in one barrier transaction, so replay of
+  // the surviving log accounts for everything durable, and a mid-step crash durably kept
+  // nothing but unstamped registry records -- reaped by reconcilePendingGadgets before this
+  // turn started.)
 
   // Error-path notes for tool calls, merged into the persisted tool-call log at the turn_end
   // barrier. A tool that fails throws (so the model sees an error result), but pi's conversion
@@ -2115,20 +2006,6 @@ export async function runAgent(
   // Latched by the turn_end barrier when this step submitted an awaitDecision action.
   // shouldStopAfterTurn reads it afterwards to end the turn until approval resumes it.
   let awaitingActionDecision = false;
-
-  // Transitional, for the compaction early-return only (see AgentHooks.flushAgentChanges): a
-  // crashed pre-barrier turn's re-adopted rows, creations and binding additions must be covered
-  // by a "changes" message before compaction removes the log tail they were re-adopted from.
-  // Change-ID numbering counts messages, so the counter advances exactly when one was written.
-  let flushReadoptedChanges = () => {
-    let createdGadgets = pendingCreatedGadgets;
-    pendingCreatedGadgets = [];
-    let addedBindings = pendingAddedBindings;
-    pendingAddedBindings = [];
-    if (hooks.flushAgentChanges(chatId, author, {createdGadgets, addedBindings})) {
-      ++nextChangeId;
-    }
-  };
 
   // Buffer one file edit into the step and apply it to the session content; it becomes durable
   // (row + broadcast) only at the step's persistence barrier. The first write to an unpinned
@@ -2346,13 +2223,6 @@ export async function runAgent(
 
   let compactionTurn = isCompactionTurn(chatMessages);
   if (compactionTurn || shouldCompactChat(contextTokens, inputBudget)) {
-    // Returning below runs no step (and thus no barrier), so cover re-adopted state here:
-    // replay may have re-adopted a crashed pre-barrier turn's unmaterialized rows, creations
-    // and binding additions, and they must be covered by a message before compaction removes
-    // the log tail they were re-adopted from. The message lands above any boundary chosen
-    // here, so the checkpoint is unaffected.
-    flushReadoptedChanges();
-
     let compactedTo = findCompactionBoundary(
         projection, inputBudget, contextTokens,
         checkpoint?.compactedTo, findProtectedFromSequence(chatMessages));
@@ -2720,9 +2590,9 @@ export async function runAgent(
           pendingAddedBindings.push(
               {gadgetId: gadgetEntry.id, name: bindingName, target: sourceEntry.id});
 
-          // Record the resolved edge as the tool's output so a crashed turn's replay can re-adopt
-          // the addition (see replayedBindingAdditions); the model-visible result is just
-          // success + the batch's change ID.
+          // Record the resolved edge as the tool's output -- the durable record of what the
+          // call did, which replay reproduces instead of re-running the tool; the model-visible
+          // result is just success + the batch's change ID.
           let output = {gadgetId: gadgetEntry.id, name: bindingName, target: sourceEntry.id,
                         changeId: nextChangeId};
           return toolResult(
@@ -2814,7 +2684,8 @@ export async function runAgent(
             // the barrier: the blueprint's contents aren't reconstructible from the call's
             // input the way writeFile edits are, so either both survive a crash or neither
             // does. (Old logs may hold the pre-barrier order -- the "changes" message *before*
-            // its creating call -- which replay still tolerates; see recordedCreations.)
+            // its creating call -- which replay handles fine: the message's replay applies the
+            // files, and the call's replay just returns its recorded output.)
 
             output.blueprintNotes = blueprint.notes;
           }
@@ -3254,8 +3125,7 @@ export async function runAgent(
   // (No end-of-turn flush: every completed step's effects were barrier-committed with its
   // message, and an abort simply drops the in-flight step's buffer -- nothing durable exists
   // for it. Cancellation stops the agent, it does not revert the turn; completed steps' work
-  // stays, and the user reverts explicitly if they want it gone. Re-adopted crashed-turn state
-  // that never met a barrier stays live for the next turn to re-adopt.)
+  // stays, and the user reverts explicitly if they want it gone.)
 
   // Cancellation surfaces as the abort reason, matching the old thrown-abort behavior. (Checked
   // outside turnFailure because an abort during tool execution stops the loop after a persisted,

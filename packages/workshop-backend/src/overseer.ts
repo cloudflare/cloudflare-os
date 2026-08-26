@@ -363,14 +363,13 @@ type GadgetRecord = {
   // Present while the gadget is provisional: it was created within the given chat and follows
   // that chat's accept/reject lifecycle exactly like code changes (see mergeChanges() /
   // revertChanges()). `sequence` is the chat-log sequence of the "changes" message whose
-  // `createdGadgets` records the creation; it is stamped in the same synchronous step that
-  // persists the message, so the log and the registry can never disagree. An unstamped record
-  // means the creation's "changes" message hasn't flushed yet: normally the creating turn is
-  // still running, but after a crash the record may linger -- backed by a persisted createGadget
-  // tool call, from which the resumed turn recovers it, or by nothing, in which case it is
-  // reaped (both cases: see reconcilePendingGadgets()). The chat log is the source of truth;
-  // this record materializes it so the gadget is fully functional (bindings, facet, env) before
-  // acceptance.
+  // `createdGadgets` records the creation; it is stamped in the same transaction that persists
+  // the message (the step's barrier), so the log and the registry can never disagree. An
+  // unstamped record means the creating step hasn't reached its barrier yet: normally that step
+  // is still running, but after a mid-step crash the record may linger -- backed by nothing,
+  // since the step's message is by construction lost -- and is reaped (see
+  // reconcilePendingGadgets()). The chat log is the source of truth; this record materializes
+  // it so the gadget is fully functional (bindings, facet, env) before acceptance.
   pending?: {chatId: number, sequence?: number};
 };
 
@@ -646,9 +645,6 @@ export type ChatChangeRecord = {
 
   /** The submission echo for user rows (see AiChatSubscriber.changeApplied); absent otherwise. */
   submission?: {clientId: string, seq: number};
-
-  /** What produced the row. Turn abort keys on "agent"; nothing else dispatches on this yet. */
-  source: "user" | "agent" | "mainlineMerge";
 
   /**
    * Set when the row is no longer live: a "changes" message has materialized it (its change is part
@@ -2088,41 +2084,24 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Reap crash-orphaned provisional gadgets and binding edges for the given chat. A pending
-  // record/edge with no stamped sequence means it hasn't yet been recorded by a flushed
-  // "changes" message; whether it ever will be is decided by the chat log, the source of truth:
-  //   - If a persisted createGadget (resp. setGadgetBinding) tool call references it, it is
-  //     a crashed turn's tail, exactly like an edit whose "changes" message never flushed: the
-  //     resumed turn re-adopts it during history replay (see replayedCreations /
-  //     replayedBindingAdditions in agent.ts) and stamps it with its next flush. Spare it.
-  //   - Otherwise nothing backs it (the worker died before the step persisted), so it must go;
-  //     the resumed turn then simply re-creates it (for a gadget, wasting only an ID, which is
+  // record/edge is sequence-stamped in the same transaction that persists the "changes" message
+  // recording it (the step's barrier; see addChatMessages), so with no turn running:
+  //   - An *unstamped* record/edge is a mid-step crash orphan: its step's message is by
+  //     construction lost, so nothing in the log backs it. Reap it; the resumed turn simply
+  //     re-creates it if the model still wants it (for a gadget, wasting only an ID, which is
   //     fine -- workpiece IDs are never reused anyway).
-  // For edges, "references it" must be counted, not merely tested: (gadgetId, name) can recur
-  // when an earlier addition was removed or reverted and the name added again, so an old,
-  // already-recorded tool call must not vouch for a new unstamped edge that replay will never
-  // re-adopt. An unstamped edge is a re-adoptable tail iff persisted tool calls for its key
-  // outnumber agent-flushed `addedBindings` recordings -- exactly the condition under which the
-  // resumed turn's replay re-adopts (and thereby flushes and stamps) it.
-  // A *stamped* record is reaped when the log marks its creation reverted: reverts record their
-  // message before the awaited record deletions (see #revertChanges), so this is both the tail
-  // of every revert and the recovery from one that crashed partway.
+  //   - A *stamped* record is reaped when the log marks its creation reverted: reverts record
+  //     their message before the awaited record deletions (see #revertChanges), so this is both
+  //     the tail of every revert and the recovery from one that crashed partway.
   // Called at agent turn start (before history replay) and turn end, plus from merge and revert
-  // (which assert the chat has no active turn). The log scans run only when a pending record
-  // actually exists, so the common case costs one registry listing.
+  // (which assert the chat has no active turn) -- never mid-step, when an unstamped record
+  // awaiting its barrier legitimately exists.
   // Best-effort per gadget: a failure (e.g. a hook controller that can't be reached) leaves the
   // record for the next reconciliation attempt.
   async reconcilePendingGadgets(chatId: number): Promise<void> {
     let pending = this.listPendingGadgets(chatId);
     let unstamped = pending.filter(gadget => gadget.pending!.sequence === undefined);
     let stamped = pending.filter(gadget => gadget.pending!.sequence !== undefined);
-    let unstampedEdges: {gadget: GadgetRecord, name: string}[] = [];
-    for (let gadget of this.storage.gadgets.list()) {
-      for (let [name, edge] of Object.entries(gadget.bindings)) {
-        if (edge.pending?.chatId === chatId && edge.pending.sequence === undefined) {
-          unstampedEdges.push({gadget, name});
-        }
-      }
-    }
 
     // A marking message only affects messages recorded before it, so statuses for the stamped
     // creations need only the log tail from the earliest one on.
@@ -2134,60 +2113,26 @@ class OverseerImpl implements AgentHooks {
       }));
       reverted = stamped.filter(g => statuses.get(g.pending!.sequence!) === "reverted");
     }
-    for (let gadget of reverted) {
+    for (let gadget of [...reverted, ...unstamped]) {
       try {
         await this.removeGadget(gadget.id);
       } catch (err) {
-        this.logger.warn("failed to reap reverted pending gadget", {
+        this.logger.warn("failed to reap pending gadget", {
           event: "gadget.pending.reconcile.failed", chatId, error: err,
         });
       }
     }
 
-    if (unstamped.length === 0 && unstampedEdges.length === 0) return;
-
-    let referenced = new Set<WorkpieceId>();
-    // Per (gadgetId, name): persisted setGadgetBinding tool calls minus agent-flushed
-    // `addedBindings` recordings (user-authored "changes" messages record UI-initiated binds,
-    // which have no tool call and are stamped synchronously, so they don't participate).
-    let additionBalance = new Map<string, number>();
-    let bump = (key: string, delta: number) =>
-        additionBalance.set(key, (additionBalance.get(key) ?? 0) + delta);
-    for (let msg of this.storage.chats.list({prefix: `${keyString(chatId)}.`})) {
-      if (msg.type === "message") {
-        for (let call of msg.toolCalls ?? []) {
-          if (call.toolName === "createGadget" && call.output) {
-            referenced.add(call.output.gadgetId);
-          } else if (call.toolName === "setGadgetBinding" && call.output) {
-            bump(`${call.output.gadgetId}:${call.output.name}`, 1);
-          }
-        }
-      } else if (msg.type === "changes" && msg.author.type !== "user") {
-        for (let {gadgetId, name} of msg.addedBindings ?? []) {
-          bump(`${gadgetId}:${name}`, -1);
-        }
-      }
-    }
-
-    for (let gadget of unstamped) {
-      if (referenced.has(gadget.id)) continue;
-      try {
-        await this.removeGadget(gadget.id);
-      } catch (err) {
-        this.logger.warn("failed to reap orphaned pending gadget", {
-          event: "gadget.pending.reconcile.failed", chatId, error: err,
-        });
-      }
-    }
-
-    for (let {gadget, name} of unstampedEdges) {
-      if ((additionBalance.get(`${gadget.id}:${name}`) ?? 0) > 0) continue;
-      // Re-read: the gadget may have been reaped just above (taking its edges with it).
-      let fresh = this.storage.gadgets.get(gadget.id);
-      if (!fresh || !fresh.bindings[name]) continue;
-      delete fresh.bindings[name];
-      this.storage.gadgets.put(fresh);
-      this.bumpVersion([fresh.id]);
+    // (Listed after the reaps above, which may have removed a gadget along with its edges.)
+    for (let gadget of Array.from(this.storage.gadgets.list())) {
+      let orphanNames = Object.entries(gadget.bindings)
+          .filter(([, edge]) => edge.pending?.chatId === chatId &&
+                                edge.pending.sequence === undefined)
+          .map(([name]) => name);
+      if (orphanNames.length === 0) continue;
+      for (let name of orphanNames) delete gadget.bindings[name];
+      this.storage.gadgets.put(gadget);
+      this.bumpVersion([gadget.id]);
     }
   }
 
@@ -2484,7 +2429,7 @@ class OverseerImpl implements AgentHooks {
   //
   // Live (unmaterialized) change rows are deliberately NOT included: callers that need them either
   // materialize first (accept, update-from-mainline, UI bundle loads) or apply them on top
-  // themselves (getCurrentChatContent, agent replay).
+  // themselves (getCurrentChatContent).
   async buildChatContent(chatId: number, through?: number): Promise<CodeContent> {
     let messages = [...this.storage.chats.list({prefix: `${keyString(chatId)}.`})];
     if (through !== undefined) {
@@ -2631,7 +2576,7 @@ class OverseerImpl implements AgentHooks {
   // `newPins` are pins this row establishes (already validated), and `contentAfter` is the
   // chat content with the row applied (the caller computed it while validating).
   #appendChatChangeRow(chatId: number, meta: AiChatMetadata, author: AiChatAuthorInfo,
-                       change: CodeChange, source: ChatChangeRecord["source"],
+                       change: CodeChange,
                        newPins: ChatGadgetPinState[], contentAfter: CodeContent | undefined,
                        submission?: {clientId: string, seq: number}): ChatChangeRecord {
     let codeBase = this.chatCodeBase(meta);
@@ -2648,7 +2593,6 @@ class OverseerImpl implements AgentHooks {
       author,
       change,
       ...(submission !== undefined ? {submission} : {}),
-      source,
     };
     this.storage.chatChanges.put(row);
 
@@ -2739,21 +2683,13 @@ class OverseerImpl implements AgentHooks {
   // Pins in the chat's live state (see ChatGadgetPinState) whose establishment no surviving
   // current-epoch "changes" message records yet, stripped back to what the log stores. A pin
   // lands in `codeBase` atomically with the row that needed it; its durable log declaration
-  // lands when the rows materialize. Also the AgentHooks implementation of the same name (a
-  // resumed turn re-adopts these so its next flush declares them).
+  // lands when the rows materialize.
   undeclaredMetaPins(chatId: number, meta: AiChatMetadata): ChatGadgetPin[] {
     let pins = meta.codeBase?.pins ?? [];
     if (pins.length === 0) return [];
     let declared = this.declaredPinGadgets(chatId);
     return pins.filter(pin => !declared.has(pin.gadgetId))
         .map(pin => ({gadgetId: pin.gadgetId, baseCommit: pin.baseCommit}));
-  }
-
-  // AgentHooks implementation: undeclaredMetaPins against the chat's current metadata.
-  undeclaredChatPins(chatId: number): ChatGadgetPin[] {
-    let meta = this.storage.chatMeta.get(chatId);
-    if (!meta) return [];
-    return this.undeclaredMetaPins(chatId, meta);
   }
 
   makeBindingLoopback(target: BindingLoopbackTarget, caller: GatekeeperCaller) {
@@ -2921,7 +2857,7 @@ class OverseerImpl implements AgentHooks {
     }
 
     // Defensive: while a turn runs, only the agent-run machinery itself may materialize (the
-    // step barrier, turn-start sweep, and the transitional pre-compaction flush).
+    // step barrier and the turn-start sweep).
     if (meta.activeAgent && !options?.allowDuringTurn) {
       throw new Error(AGENT_RUNNING_ERROR_MESSAGE);
     }
@@ -2970,35 +2906,6 @@ class OverseerImpl implements AgentHooks {
     this.#retireChatChanges(rows);
     this.#pruneRetiredChatChanges(chatId);
     return {sequence, meta: this.getChatMetaOrThrow(chatId)};
-  }
-
-  // AgentHooks implementation, transitional (see the interface doc): materialize rows a crashed
-  // pre-barrier turn left live, before compaction removes the log tail they were re-adopted
-  // from. Returns whether a message was written (the agent's change-ID numbering counts
-  // messages).
-  flushAgentChanges(chatId: number, author: AiChatAuthorInfo, extras: {
-    createdGadgets?: {gadgetId: WorkpieceId, title: string, bindingName: string}[],
-    addedBindings?: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
-  }): boolean {
-    let meta = this.storage.chatMeta.get(chatId);
-    if (!meta) return false;  // chat deleted mid-turn
-    return this.materializeChatChanges(chatId, meta, {
-      author,
-      allowDuringTurn: true,
-      createdGadgets: extras.createdGadgets,
-      addedBindings: extras.addedBindings,
-    }) !== undefined;
-  }
-
-  // AgentHooks implementation: the chat's live (unmaterialized) rows, oldest first. Replay
-  // applies these on top of the messages' changes -- a crashed turn's edits are durable rows even
-  // though no "changes" message covers them yet.
-  listUnmaterializedChatChanges(chatId: number): {change: CodeChange, generation: number,
-                                                  revision: number}[] {
-    let meta = this.storage.chatMeta.get(chatId);
-    if (!meta) return [];
-    return this.listLiveChatChanges(chatId, this.chatCodeBase(meta).generation)
-        .map(row => ({change: row.change, generation: row.generation, revision: row.revision}));
   }
 
   // AgentHooks implementation: the agent step's persistence barrier (see the interface doc for
@@ -3083,7 +2990,7 @@ class OverseerImpl implements AgentHooks {
             }
             validateCodeChangeContent(change, content);
             content = applyCodeChange(content, change);
-            this.#appendChatChangeRow(chatId, fresh, author, change, "agent", newPins, content);
+            this.#appendChatChangeRow(chatId, fresh, author, change, newPins, content);
           }
         }
 
@@ -3413,7 +3320,7 @@ class OverseerImpl implements AgentHooks {
     }
 
     let row = this.#appendChatChangeRow(
-        chatId, meta, author, transformed, "user", newPins,
+        chatId, meta, author, transformed, newPins,
         applyCodeChange(validationContent, transformed),
         {clientId: submission.clientId, seq: submission.seq});
     return {generation: row.generation, revision: row.revision};
@@ -3547,7 +3454,7 @@ class OverseerImpl implements AgentHooks {
     // the revert guard (revertChanges) depends on. Without it, reverting the chat's earlier
     // proposals could silently regress content the advanced pins claim as merged.
     if (changedGadgets(change).length > 0) {
-      this.#appendChatChangeRow(chatId, freshMeta, author, change, "mainlineMerge", [], merged);
+      this.#appendChatChangeRow(chatId, freshMeta, author, change, [], merged);
     }
     this.materializeChatChanges(chatId, undefined, {author, mainlineMerge: {conflictPaths}});
 
@@ -3568,9 +3475,9 @@ class OverseerImpl implements AgentHooks {
     let result = this.materializeChatChanges(chatId, meta);
     if (result) meta = result.meta;
 
-    // Reap crash-orphaned provisional records first: an unstamped record that survives
-    // reconciliation -- a crashed turn's not-yet-resumed tail -- has no sequence and is simply
-    // not covered by this merge.
+    // Reap crash-orphaned provisional records first. (Reconciliation is best-effort, so an
+    // unstamped record can still survive a failed reap; it has no sequence and is simply not
+    // covered by this merge.)
     await this.reconcilePendingGadgets(chatId);
 
     // Everything read from here through the commit writes must still describe the chat when the
@@ -3842,10 +3749,10 @@ class OverseerImpl implements AgentHooks {
       : Promise<void> {
     this.assertChatNotActive(chatId);
 
-    // Reap crash orphans first: an unstamped record that survives reconciliation -- a crashed
-    // turn's not-yet-resumed tail -- has no sequence and is not covered by this revert. This is
-    // the only await before the revert lands; reconciliation is an idempotent repair, safe to
-    // run whether or not the revert below proceeds.
+    // Reap crash orphans first. (Reconciliation is best-effort, so an unstamped record can
+    // still survive a failed reap; it has no sequence and is not covered by this revert.) This
+    // is the only await before the revert lands; reconciliation is an idempotent repair, safe
+    // to run whether or not the revert below proceeds.
     await this.reconcilePendingGadgets(chatId);
 
     // Everything from the meta re-read (which rechecks the agent after the await above) through
@@ -5801,10 +5708,10 @@ class OverseerImpl implements AgentHooks {
     });
 
     try {
-      // Reap any provisional gadgets orphaned by a crashed prior turn before snapshotting history:
-      // replay must not see registry records the chat log doesn't back (see
-      // reconcilePendingGadgets; records backed by a persisted createGadget tool call are spared
-      // for replay to re-adopt). The model then simply re-creates a reaped gadget if it still
+      // Reap any provisional gadgets orphaned by a crashed prior turn before snapshotting
+      // history: replay must not see registry records the chat log doesn't back (an unstamped
+      // record's creating step never reached its barrier, so the log holds no trace of it; see
+      // reconcilePendingGadgets). The model then simply re-creates a reaped gadget if it still
       // wants it.
       await this.reconcilePendingGadgets(chatId);
 
@@ -5975,11 +5882,10 @@ class OverseerImpl implements AgentHooks {
         this.ctx.waitUntil(refreshCachedBalance(this.env, byokOwnerStub));
       }
 
-      // Belt-and-suspenders: reap any provisional gadget this turn created whose creation ended
-      // up backed by nothing in the log. (Normally the turn's final flush -- which runs even on
-      // error, in runAgent's own finally -- records every buffered creation, so this only
-      // matters when that flush couldn't write, e.g. the chat was deleted mid-turn.) Never
-      // throws, so it can't mask an error propagating out of the turn.
+      // Reap any provisional gadget this turn created whose creating step never reached its
+      // barrier (the turn erred or was aborted mid-step): the record is unstamped and the
+      // step's message is by construction lost, so nothing in the log backs it. Never throws,
+      // so it can't mask an error propagating out of the turn.
       await this.reconcilePendingGadgets(chatId);
 
       // Note: We no longer emit a stream "clear" event here. The client performs a full clear of

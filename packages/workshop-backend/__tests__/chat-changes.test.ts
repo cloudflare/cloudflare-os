@@ -1081,11 +1081,11 @@ describe("agent step barrier", () => {
     // One row per buffered change, in call order, born retired (live only inside the barrier);
     // the pin was validated and mirrored with its row.
     let rows = [...impl.storage.chatChanges.list({ prefix: `${keyString(1)}.` })];
-    expect(rows.map((row: any) => [row.revision, row.source, row.retired]))
+    expect(rows.map((row: any) => [row.revision, row.author.type, row.retired]))
         .toEqual([[1, "agent", true], [2, "agent", true]]);
     expect(impl.storage.chatMeta.get(1)!.codeBase!.pins).toEqual(
         [{ gadgetId: 1, baseCommit: c1, mergedCommit: c1 }]);
-    expect(impl.undeclaredChatPins(1)).toEqual([]);
+    expect(impl.undeclaredMetaPins(1, impl.storage.chatMeta.get(1)!)).toEqual([]);
     expect(await gadgetContent(impl, 1, 1)).toEqual(
         { "a.txt": "one\nagent\n", "b.txt": "bee\n" });
 
@@ -1202,34 +1202,70 @@ describe("agent step barrier", () => {
         .toEqual({ chatId: 1, sequence: changes.sequence });
   }));
 
-  it("flushAgentChanges (transitional) covers rows a crashed pre-barrier turn left live",
+});
+
+describe("reconcilePendingGadgets", () => {
+  it("reaps unstamped records and edges regardless of what the log holds (no vouching)",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     addGadget(impl, 1, "APP", c1);
     addChat(impl, 1);
 
-    // Hand-craft the stranded state (the per-tool append path that produced it is gone): a
-    // live agent row whose pin was mirrored into the code base but never declared in the log.
-    let meta = impl.storage.chatMeta.get(1)!;
-    meta.codeBase = {
-      pins: [{ gadgetId: 1, baseCommit: c1, mergedCommit: c1 }], generation: 0, revision: 1,
-    };
-    impl.storage.chatMeta.put(meta);
-    impl.storage.chatChanges.put({
-      chatId: 1, generation: 0, revision: 1, timestamp: impl.getChatTimestamp(), author: AGENT,
-      change: { 1: [["a.txt", { set: "one\nagent\n" }]] }, source: "agent",
-    });
-    expect(impl.listUnmaterializedChatChanges(1)).toHaveLength(1);
-    expect(impl.undeclaredChatPins(1)).toEqual([{ gadgetId: 1, baseCommit: c1 }]);
+    // Simulate a mid-step crash: the createGadget/setGadgetBinding tools ran (registry record
+    // created and name reserved, edge added) but the step never reached its barrier, so both
+    // are unstamped.
+    let created = impl.createGadget("Doomed", "DOOMED", 1);
+    let gadget1 = impl.storage.gadgets.get(1)!;
+    gadget1.bindings["FOO"] = { target: 99, pending: { chatId: 1 } };
+    impl.storage.gadgets.put(gadget1);
 
-    expect(impl.flushAgentChanges(1, AGENT, {})).toBe(true);
-    expect(impl.flushAgentChanges(1, AGENT, {})).toBe(false);  // nothing left
-    let changes = chatMessages(impl, 1).filter(msg => msg.type === "changes");
-    expect(changes).toHaveLength(1);
-    expect(changes[0].pins).toEqual([{ gadgetId: 1, baseCommit: c1 }]);
-    expect(changes[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 1 });
-    expect(impl.undeclaredChatPins(1)).toEqual([]);
-    expect(await gadgetContent(impl, 1, 1)).toEqual({ "a.txt": "one\nagent\n" });
+    // The old recovery scanned the log for persisted tool calls that "vouch" for an orphan,
+    // sparing it for replay to re-adopt. Barrier atomicity inverted that: a persisted call
+    // implies a persisted stamp, so an unstamped record is a mid-step crash orphan no matter
+    // what the log holds -- even a message referencing it (which, post-barrier, can only be
+    // corrupt or pre-barrier history) must not resurrect it.
+    impl.addChatMessages(1, AGENT, [{
+      type: "message", message: "creating",
+      toolCalls: [
+        { toolCallId: "t1", toolName: "createGadget",
+          input: { title: "Doomed", bindingName: "DOOMED" },
+          output: { gadgetId: created.id, changeId: 1 } },
+        { toolCallId: "t2", toolName: "setGadgetBinding",
+          input: { gadget: "APP", source: "FOO" },
+          output: { gadgetId: 1, name: "FOO", target: 99, changeId: 1 } },
+      ],
+    }]);
+
+    await impl.reconcilePendingGadgets(1);
+    expect(impl.storage.gadgets.get(created.id)).toBeUndefined();
+    expect(impl.storage.gadgets.get(1)!.bindings).toEqual({});
+  }));
+
+  it("removes a stamped record once the log marks its creation reverted",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    let created = impl.createGadget("My Gadget", "MY_GADGET", 1);
+    await impl.commitAgentStep(1, AGENT, [{ type: "message", message: "created a gadget" }], {
+      changes: [{ change: { [created.id]: [["main.js", { set: "code\n" }]] } }],
+      createdGadgets: [
+        { gadgetId: created.id, title: created.title, bindingName: "MY_GADGET" }],
+      addedBindings: [],
+    });
+    let stamp = impl.storage.gadgets.get(created.id)!.pending!.sequence!;
+
+    // A stamped record is untouched while its creation stands...
+    await impl.reconcilePendingGadgets(1);
+    expect(impl.storage.gadgets.get(created.id)).toBeDefined();
+
+    // ...but once a revert message covers the stamp, reconciliation removes it. (Simulates a
+    // revert that recorded its message and then crashed before the awaited record deletions --
+    // reverts record first, see #revertChanges -- making reconciliation the recovery.)
+    impl.storage.chats.put({
+      chatId: 1, sequence: impl.nextChatSequence(1), timestamp: impl.getChatTimestamp(),
+      author: USER, type: "revert", revertFrom: stamp,
+    });
+    await impl.reconcilePendingGadgets(1);
+    expect(impl.storage.gadgets.get(created.id)).toBeUndefined();
   }));
 });
 
