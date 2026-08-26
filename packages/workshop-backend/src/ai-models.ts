@@ -8,6 +8,7 @@ import { stream as anthropicMessagesStream } from "@earendil-works/pi-ai/api/ant
 import { stream as googleGenerativeAiStream } from "@earendil-works/pi-ai/api/google-generative-ai";
 import { stream as openaiCompletionsStream } from "@earendil-works/pi-ai/api/openai-completions";
 import { stream as openaiResponsesStream } from "@earendil-works/pi-ai/api/openai-responses";
+import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { CLOUDFLARE_WORKERS_AI_MODELS } from "@earendil-works/pi-ai/providers/cloudflare-workers-ai.models";
 import { GOOGLE_MODELS } from "@earendil-works/pi-ai/providers/google.models";
@@ -20,6 +21,8 @@ import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LI
 import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
+import { normalizeAiModelConfig } from "./ai-model-config.js";
+import {findOpenAiCompatibleCompat} from "./generated/openai-compatible-compat.js";
 
  /**
   * Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
@@ -134,6 +137,7 @@ function catalogModel(provider: AiModelConfig["provider"], modelId: string): Mod
     case "google": return (GOOGLE_MODELS as Record<string, Model<Api>>)[modelId];
     case "cloudflare": return (CLOUDFLARE_WORKERS_AI_MODELS as Record<string, Model<Api>>)[modelId];
     case "ollama": return undefined;
+    case "openai-compatible": return undefined;
     default: return undefined;
   }
 }
@@ -323,6 +327,9 @@ function makeHandle(args: HandleArgs): ModelHandle {
             : args.model.api === "anthropic-messages" ? { thinkingEnabled: false } : {}),
         ...(args.fetch !== undefined ? { fetch: args.fetch } : {}),
         ...options,
+        // We use Pi's low-level streams to preserve our API-specific options, so apply the same
+        // context-aware output clamp that its streamSimple() wrappers normally provide.
+        maxTokens: clampMaxTokensToContext(model, context, options.maxTokens ?? model.maxTokens),
         ...(args.apiKey !== undefined ? { apiKey: args.apiKey } : {}),
         ...(Object.keys(headers).length > 0 ? { headers } : {}),
         // Session affinity: pi only sends it when caching isn't "none" (fine for us).
@@ -356,6 +363,13 @@ function makeHandle(args: HandleArgs): ModelHandle {
 export function getModel(env: Cloudflare.Env, config: AiModelConfig,
                          initiator: AiChatAuthorInfo,
                          options: ModelRoutingOptions = {}): ModelHandle {
+  if (config.provider === "openai-compatible") {
+    if (getAiGatewayConfig(env)) {
+      throw new Error("OpenAI-compatible models are not available in AI Gateway mode.");
+    }
+    return getModelDirect(normalizeAiModelConfig(config), options.sessionAffinity);
+  }
+
   // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
   // Workers AI), routed through the user's own AI Gateway with unified billing. Honored regardless
   // of whether a platform AI Gateway is configured, so connected users are always billed correctly.
@@ -509,6 +523,24 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
   const catalog = catalogModel(config.provider, config.model);
   const window = modelTokenWindow(config, catalog);
   switch (config.provider) {
+    case "openai-compatible":
+      return makeHandle({
+        model: {
+          id: config.model,
+          name: config.model,
+          api: "openai-completions",
+          provider: "openai-compatible",
+          baseUrl: config.apiUrl!,
+          reasoning: false,
+          input: ["text"],
+          cost: ZERO_COST,
+          contextWindow: config.contextWindow!,
+          maxTokens: config.outputLimit!,
+          compat: findOpenAiCompatibleCompat(config.apiUrl!, config.model),
+        },
+        apiKey: config.apiToken,
+        sessionAffinity,
+      });
     case "anthropic":
       return makeHandle({
         model: {

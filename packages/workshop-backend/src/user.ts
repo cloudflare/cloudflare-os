@@ -12,6 +12,7 @@ import type { AdminSettings } from "./admin-settings.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./blueprint-archive.js";
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
+import { normalizeAiModelConfig } from "./ai-model-config.js";
 
 const logger = createWorkshopLogger("workshop.user");
 
@@ -540,6 +541,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     // Also include user-configured models, skipping any that duplicate a gateway model.
     for (let model of this.storage.aiModels.list()) {
+      if (gwConfig && model.config.provider === "openai-compatible") continue;
       if (!gwModelIds.has(model.profile.id)) {
         result.push(model.profile);
       }
@@ -548,7 +550,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
+    config = normalizeAiModelConfig(config);
     let gwConfig = getAiGatewayConfig(this.env);
+    if (gwConfig && config.provider === "openai-compatible") {
+      throw new Error("OpenAI-compatible models are not available in AI Gateway mode.");
+    }
     if (gwConfig && !gwConfig.providers.has(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
     }
@@ -700,13 +706,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       profile: this.storage.profile.get()
     };
     if (modelId) {
-      // In AI Gateway mode, resolve gateway models first.
-      if (gwConfig) {
-        result.aiModel = gwConfig.resolveModel(modelId);
+      let storedModel = this.storage.aiModels.get(modelId);
+      if (gwConfig && storedModel?.config.provider === "openai-compatible") {
+        throw new Error("OpenAI-compatible models are not available in AI Gateway mode.");
       }
-      if (!result.aiModel) {
-        result.aiModel = this.storage.aiModels.get(modelId);
-      }
+      result.aiModel = gwConfig?.resolveModel(modelId) ?? storedModel;
       if (!result.aiModel) throw new Error(`No such model: ${modelId}`);
     }
 

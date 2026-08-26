@@ -34,6 +34,10 @@
     "./theme": {
       "types": "./src/theme.ts",
       "import": "./src/theme.ts"
+    },
+    "./openai-compatible-models": {
+      "types": "./src/openai-compatible-models.ts",
+      "import": "./src/openai-compatible-models.ts"
     }
   },
   "scripts": {

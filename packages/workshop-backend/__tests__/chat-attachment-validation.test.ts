@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertChatAttachmentSupportedByProvider,
   isAllowedChatAttachmentImageMimeType,
+  modelSupportsChatAttachment,
   validateChatAttachmentUpload,
 } from "../src/chat-attachment-validation.js";
 
@@ -33,6 +34,24 @@ describe("assertChatAttachmentSupportedByProvider", () => {
       .toThrow("Unsupported file type");
     expect(() => assertChatAttachmentSupportedByProvider("ollama", "application/zip", 1))
       .toThrow("Unsupported file type");
+  });
+
+  it("allows only text for OpenAI-compatible models", () => {
+    expect(() => assertChatAttachmentSupportedByProvider(
+      "openai-compatible", "text/plain", 1)).not.toThrow();
+    expect(() => assertChatAttachmentSupportedByProvider(
+      "openai-compatible", "image/png", 1)).toThrow("Unsupported file type");
+    expect(() => assertChatAttachmentSupportedByProvider(
+      "openai-compatible", "application/pdf", 1)).toThrow("Unsupported file type");
+  });
+
+  it("checks resolved model capabilities during history replay", () => {
+    expect(modelSupportsChatAttachment(
+      { api: "openai-completions", input: ["text"] }, "image/png")).toBe(false);
+    expect(modelSupportsChatAttachment(
+      { api: "openai-completions", input: ["text", "image"] }, "image/png")).toBe(true);
+    expect(modelSupportsChatAttachment(
+      { api: "openai-responses", input: ["text"] }, "application/pdf")).toBe(true);
   });
 
   it("enforces the per-file byte limit", () => {

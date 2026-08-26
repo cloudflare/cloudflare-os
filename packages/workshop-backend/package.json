@@ -6,11 +6,12 @@
   "scripts": {
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
     "deploy": "wrangler deploy",
-    "build:worker": "node build-browser-runtime.mjs && pnpm exec capnweb-validate build --out .wrangler/validate",
+    "build:worker": "node build-browser-runtime.mjs && node scripts/build-openai-compatible-models.mjs && pnpm exec capnweb-validate build --out .wrangler/validate",
     "clean": "rm -rf dist",
-    "test:integration": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest run --config vitest.integration.config.ts",
-    "test:run": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest run && vitest run --config vitest.integration.config.ts",
-    "test:watch": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && vitest",
+    "test:integration": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && node scripts/build-openai-compatible-models.mjs && vitest run --config vitest.integration.config.ts",
+    "test:run": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && node scripts/build-openai-compatible-models.mjs && vitest run && vitest run --config vitest.integration.config.ts",
+    "test:watch": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.mjs && node scripts/build-openai-compatible-models.mjs && vitest",
+    "build:openai-compatible-models": "node scripts/build-openai-compatible-models.mjs",
     "import:format-blueprint": "node --experimental-strip-types --no-warnings scripts/import-format-blueprint.mjs"
   },
   "dependencies": {

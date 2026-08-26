@@ -91,27 +91,22 @@ describe("compaction trigger", () => {
     expect(shouldCompactChat(85_000, 100_000)).toBe(true);
   });
 
-  it("reserves output capacity only where the model counts it against its own window", () => {
-    // Workers AI charges the response to the window, so it has to be withheld.
+  it("leaves request-specific output clamping to Pi", () => {
     expect(getModelTokenLimits({
-      provider: "cloudflare", model: "@cf/moonshotai/kimi-k2.7-code", apiToken: "",
-    })).toEqual({inputBudget: 229_376, maxOutputTokens: 32_768});
-
-    // Anthropic publishes an input-only window, so withholding anything would waste it.
-    expect(getModelTokenLimits({
-      provider: "anthropic", model: "claude-opus-5", apiToken: "",
-    })).toEqual({inputBudget: 1_000_000, maxOutputTokens: undefined});
+      model: {...testModel, contextWindow: 131_072, maxTokens: 40_960},
+    })).toEqual({inputBudget: 131_072});
   });
 
-  // Workers AI rejects a request whose prompt and response cap together exceed the window, so a
-  // Cloudflare model configured by hand needs the reservation the model table can't declare for it.
-  it("reserves Workers AI output capacity for a model the registry doesn't list", () => {
-    expect(getModelTokenLimits({provider: "cloudflare", model: "@cf/custom", apiToken: ""}))
-        .toEqual({inputBudget: 95_232, maxOutputTokens: 32_768});
+  it("leaves equal input and output maxima for Pi to clamp dynamically", () => {
+    expect(getModelTokenLimits({
+      model: {...testModel, contextWindow: 8_192, maxTokens: 8_192},
+    })).toEqual({inputBudget: 8_192});
+  });
 
-    // Other providers fall back to the assumed window with nothing withheld.
-    expect(getModelTokenLimits({provider: "ollama", model: "local", apiToken: ""}))
-        .toEqual({inputBudget: 128_000, maxOutputTokens: undefined});
+  it("bounds oversized model windows internally", () => {
+    expect(getModelTokenLimits({
+      model: {...testModel, contextWindow: Number.MAX_SAFE_INTEGER, maxTokens: 8_192},
+    })).toEqual({inputBudget: 2_000_000});
   });
 
   it("recognizes /compact as the newest message, and only there", () => {

@@ -5785,7 +5785,6 @@ class OverseerImpl implements AgentHooks {
             this, chosenModel, chatId, aiModel.profile, chatMessages, controller.signal,
             initiator, callbackInitiated, {
               checkpoint,
-              modelConfig: aiModel.config,
               measuredTokens: this.getChatMetaOrThrow(chatId).totalTokens ?? 0,
             });
         if (newCheckpoint) this.#commitChatCompaction(chatId, newCheckpoint);

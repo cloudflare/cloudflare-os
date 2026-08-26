@@ -1,4 +1,4 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, ChatGadgetPin, ChatCodeBase, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, ChatGadgetPin, ChatCodeBase, WorkpieceId, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, replaceSpanChange, type CodeContent, type CodeChange }
   from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
@@ -8,6 +8,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type {
   AssistantMessage, ImageContent, Message, TSchema, TextContent, ThinkingContent, ToolCall,
 } from "@earendil-works/pi-ai";
+import { modelSupportsChatAttachment } from "./chat-attachment-validation";
 import {
   runAgentLoopContinue, type AgentContext, type AgentEvent, type AgentTool,
 } from "@earendil-works/pi-agent-core";
@@ -177,9 +178,6 @@ export type CompactionCheckpoint = {
 export type CompactionContext = {
   /** The checkpoint to replay from, if the thread has one. */
   checkpoint?: CompactionCheckpoint;
-
-  /** The chosen model, whose window and reserved response capacity size the prompt budget. */
-  modelConfig: AiModelConfig;
 
   /** The total tokens reported for the last measured model step, or zero if none are available. */
   measuredTokens: number;
@@ -1428,7 +1426,8 @@ export async function runAgent(
                   async (attachment): Promise<(TextContent | ImageContent)[]> => {
                 let filename = attachment.name ? ` (${attachment.name})` : "";
                 let data = await hooks.getChatAttachmentData(chatId, attachment.id);
-                if (attachment.mimeType.startsWith("image/")) {
+                if (attachment.mimeType.startsWith("image/") &&
+                    modelSupportsChatAttachment(handle.model, attachment.mimeType)) {
                   return [{
                     type: "image",
                     data: data.toBase64(),
@@ -2237,9 +2236,7 @@ export async function runAgent(
 
   let systemPrompt = `${systemPromptSlots[0]}\n\n${systemPromptSlots[1]}`;
 
-  // Some models charge their response to the same window as the prompt, so the reservation is both
-  // withheld from the prompt's budget and sent as the response cap -- the two can't disagree.
-  let {inputBudget, maxOutputTokens} = getModelTokenLimits(compaction.modelConfig);
+  let {inputBudget} = getModelTokenLimits(handle);
 
   let projection: CompactionProjectionMessage[] = modelMessages.map((message, index) => ({
     message, ...modelMessageSources[index],
@@ -2277,13 +2274,10 @@ export async function runAgent(
           content: "Create the context handoff now. Do not continue the conversation.",
           timestamp: Date.now(),
         });
-        // Like title generation, this call's usage is deliberately not billed to the chat. It
-        // carries the turn's largest prompt, so it needs the response cap most: without it a model
-        // that charges the response to the same window would reject the request outright.
+        // Like title generation, this call's usage is deliberately not billed to the chat.
         let summary = (await completeText(handle, {
           systemPrompt: COMPACTION_SYSTEM_PROMPT,
           messages: summaryMessages,
-          maxTokens: maxOutputTokens,
           signal: abortSignal,
         })).trim();
         // An empty summary would discard the compacted history, so keep the history instead.
@@ -3136,7 +3130,6 @@ export async function runAgent(
       // Replay already produces LLM-shaped messages; no custom message types exist.
       convertToLlm: (messages) => messages as Message[],
       toolExecution: "sequential",
-      maxTokens: maxOutputTokens,
       shouldStopAfterTurn: () =>
           // Cancelled during tool execution: the completed turn was persisted by the turn_end
           // barrier just above; don't start another (doomed) model request.

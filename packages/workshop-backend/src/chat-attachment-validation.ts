@@ -1,6 +1,7 @@
 import { isTextLikeAttachmentMimeType } from "@gadgets/workshop-shared/api";
 import type { AiModelConfig, AiModelProvider, ChatAttachmentUpload } from "@gadgets/workshop-shared/api";
-import { PDF_MIME_TYPE } from "./chat-attachment-pdf";
+import type { Api } from "@earendil-works/pi-ai";
+import { modelApiSupportsPdfAttachments, PDF_MIME_TYPE } from "./chat-attachment-pdf";
 
 // Bounds attachment storage and the bytes replayed into model requests.
 const MAX_CHAT_ATTACHMENT_BYTES = 1024 * 1024;
@@ -38,7 +39,18 @@ const ATTACHMENT_SUPPORT_BY_PROVIDER = {
   google: isTextImageOrPdfMime,
   cloudflare: isTextOrImageMime,
   ollama: isTextOrImageMime,
+  "openai-compatible": isTextLikeAttachmentMimeType,
 } satisfies Record<AiModelProvider, (mimeType: string) => boolean>;
+
+/** Check an attachment against the capabilities of the resolved model used for replay. */
+export function modelSupportsChatAttachment(
+  model: { api: Api; input: readonly ("text" | "image")[] },
+  mimeType: string,
+): boolean {
+  if (isTextLikeAttachmentMimeType(mimeType)) return true;
+  if (IMAGE_SIGNATURES.has(mimeType)) return model.input.includes("image");
+  return mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(model.api);
+}
 
 function sanitizeChatAttachmentMimeType(mimeType: string | undefined): string {
   if (!mimeType || /[\r\n]/.test(mimeType)) return "application/octet-stream";
