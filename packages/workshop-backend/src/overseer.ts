@@ -2466,29 +2466,50 @@ class OverseerImpl implements AgentHooks {
     this.#chatContentCache.delete(chatId);
   }
 
-  // Cache of the live (unretired) window's summed serialized-size estimate, keyed by the
-  // (generation, revision) it reflects. The byte trigger in submitCodeChange consults it per
-  // keystroke, and recomputing means re-reading every live row from storage -- O(window) per
-  // keystroke, quadratic over an editing session. Row appends update it incrementally (see
+  // Cache summarizing the live (unretired) window -- its summed serialized-size estimate and its
+  // row count -- keyed by the (generation, revision) it reflects. submitCodeChange consults both
+  // per keystroke (the byte trigger before appending, the row-count trigger after), and
+  // recomputing either means re-reading every live row from storage -- O(window) per keystroke,
+  // quadratic over an editing session. Row appends update the entry incrementally (see
   // #appendChatChangeRow) and retirement drops it (see #retireChatChanges); anything else that
   // changes the window (revert, epoch reset, draft discard) bumps the generation or revision,
-  // which invalidates the entry. A miss (also after a DO restart) recomputes from the rows the
-  // caller listed anyway.
-  #liveChangeBytesCache = new Map<number, {generation: number, revision: number,
-                                           bytes: number}>();
+  // which invalidates the entry. A miss (also after a DO restart) recomputes with one full
+  // listing (see #liveWindowSummary).
+  #liveWindowCache = new Map<number, {generation: number, revision: number, bytes: number,
+                                      count: number}>();
 
-  // The summed codeChangeSerializedSize of the given live rows (the caller already listed them),
-  // served from #liveChangeBytesCache when it is current for (generation, revision).
-  #liveChangeBytes(chatId: number, codeBase: ChatCodeBase, liveRows: ChatChangeRecord[]): number {
-    let cached = this.#liveChangeBytesCache.get(chatId);
+  // The live window's summary at the given (generation, revision) -- the caller's current code
+  // base position -- served from #liveWindowCache when it is current for that position and
+  // recomputed from one listing of the live rows otherwise.
+  #liveWindowSummary(chatId: number, codeBase: {generation: number, revision: number})
+      : {bytes: number, count: number} {
+    let cached = this.#liveWindowCache.get(chatId);
     if (cached !== undefined && cached.generation === codeBase.generation &&
         cached.revision === codeBase.revision) {
-      return cached.bytes;
+      return cached;
     }
-    let bytes = liveRows.reduce((sum, row) => sum + codeChangeSerializedSize(row.change), 0);
-    this.#liveChangeBytesCache.set(chatId,
-        {generation: codeBase.generation, revision: codeBase.revision, bytes});
-    return bytes;
+    let liveRows = this.listLiveChatChanges(chatId, codeBase.generation);
+    let entry = {
+      generation: codeBase.generation, revision: codeBase.revision,
+      bytes: liveRows.reduce((sum, row) => sum + codeChangeSerializedSize(row.change), 0),
+      count: liveRows.length,
+    };
+    this.#liveWindowCache.set(chatId, entry);
+    return entry;
+  }
+
+  // The live window's newest row, or undefined if the window is empty. One indexed read: the
+  // generation's rows sort by revision, and retirement always covers the generation's entire
+  // window at once (see #retireChatChanges), so the live rows are a contiguous suffix -- a
+  // retired (or absent) newest row means the window is empty. Read from storage rather than
+  // cached so out-of-band row updates can't serve stale attribution data.
+  #newestLiveChatChange(chatId: number, generation: number): ChatChangeRecord | undefined {
+    for (let row of this.storage.chatChanges.list({
+      prefix: `${keyString(chatId)}.${keyString(generation)}.`, reverse: true, limit: 1,
+    })) {
+      return row.retired ? undefined : row;
+    }
+    return undefined;
   }
 
   // The chat's current content: what the next change row will apply to. Cached; treat the result as
@@ -2603,15 +2624,18 @@ class OverseerImpl implements AgentHooks {
       this.#chatContentCache.delete(chatId);
     }
 
-    // Advance the byte cache incrementally when it was current for the window this row joins;
-    // otherwise drop it and let the next read recompute.
-    let cachedBytes = this.#liveChangeBytesCache.get(chatId);
-    if (cachedBytes !== undefined && cachedBytes.generation === codeBase.generation &&
-        cachedBytes.revision === revision - 1) {
-      this.#liveChangeBytesCache.set(chatId, {generation: codeBase.generation, revision,
-                                              bytes: cachedBytes.bytes + codeChangeSerializedSize(change)});
+    // Advance the window summary incrementally when it was current for the window this row
+    // joins; otherwise drop it and let the next read recompute.
+    let cachedWindow = this.#liveWindowCache.get(chatId);
+    if (cachedWindow !== undefined && cachedWindow.generation === codeBase.generation &&
+        cachedWindow.revision === revision - 1) {
+      this.#liveWindowCache.set(chatId, {
+        generation: codeBase.generation, revision,
+        bytes: cachedWindow.bytes + codeChangeSerializedSize(change),
+        count: cachedWindow.count + 1,
+      });
     } else {
-      this.#liveChangeBytesCache.delete(chatId);
+      this.#liveWindowCache.delete(chatId);
     }
 
     meta.lastActive = row.timestamp;
@@ -2630,10 +2654,10 @@ class OverseerImpl implements AgentHooks {
       this.storage.chatChanges.put(row);
     }
     // Retirement always covers the generation's entire live window (materialization and epoch
-    // close both list-then-retire), so the byte cache no longer describes it; drop the entry
+    // close both list-then-retire), so the window summary no longer describes it; drop the entry
     // and let the next read recompute -- over a window that is empty at that point.
     if (rows.length > 0) {
-      this.#liveChangeBytesCache.delete(rows[0].chatId);
+      this.#liveWindowCache.delete(rows[0].chatId);
     }
   }
 
@@ -2658,7 +2682,7 @@ class OverseerImpl implements AgentHooks {
     }
     this.storage.chatChangeBoundaries.delete(chatId);
     this.#chatContentCache.delete(chatId);
-    this.#liveChangeBytesCache.delete(chatId);
+    this.#liveWindowCache.delete(chatId);
   }
 
   // Gadgets whose pin establishment is recorded by a surviving (non-reverted) "changes" message
@@ -3007,7 +3031,7 @@ class OverseerImpl implements AgentHooks {
       // The transaction rolled the rows back, but the append path already advanced the
       // in-memory caches to reflect them; drop both so later reads rebuild from storage.
       this.#chatContentCache.delete(chatId);
-      this.#liveChangeBytesCache.delete(chatId);
+      this.#liveWindowCache.delete(chatId);
       throw err;
     }
   }
@@ -3166,8 +3190,9 @@ class OverseerImpl implements AgentHooks {
       // different author who has gone idle, their batch was already materialized just before
       // the append (see below); here, cap the live window's size so a long editing session
       // can't grow subscribe-replay without bound. Thanks to the retired-row grace window this
-      // stales nobody.
-      if (this.listLiveChatChanges(chatId, result.generation).length >=
+      // stales nobody. (The append just advanced the window summary to `result`, so this is an
+      // O(1) cache read, not a window scan.)
+      if (this.#liveWindowSummary(chatId, result).count >=
           CHAT_CHANGE_MATERIALIZE_THRESHOLD) {
         this.materializeChatChanges(chatId);
       }
@@ -3306,13 +3331,12 @@ class OverseerImpl implements AgentHooks {
     //    "changes" message may compose (materialization writes exactly one message, so the
     //    bound is enforced here, where rows accumulate). A row bigger than the whole budget
     //    thus always lands in an empty window and later travels alone in one oversized message.
-    let liveRows = this.listLiveChatChanges(chatId, codeBase.generation);
-    let latest = liveRows[liveRows.length - 1];
+    let latest = this.#newestLiveChatChange(chatId, codeBase.generation);
     let authorSplit = latest !== undefined && !this.sameChatAuthor(latest.author, author) &&
         Date.now() - latest.timestamp.getTime() > CHAT_CHANGE_AUTHOR_SPLIT_MS;
-    let byteSplit = liveRows.length > 0 &&
-        this.#liveChangeBytes(chatId, codeBase, liveRows) + codeChangeSerializedSize(transformed) >
-            CHAT_CHANGE_MESSAGE_BUDGET;
+    let window = this.#liveWindowSummary(chatId, codeBase);
+    let byteSplit = window.count > 0 &&
+        window.bytes + codeChangeSerializedSize(transformed) > CHAT_CHANGE_MESSAGE_BUDGET;
     if (authorSplit || byteSplit) {
       this.materializeChatChanges(chatId, meta);
       meta = this.getChatMetaOrThrow(chatId);
