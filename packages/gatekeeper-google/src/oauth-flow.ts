@@ -56,6 +56,13 @@ export function prepareOAuthFlow(kv: SynchronousKv, initiationNonce: string,
   });
 }
 
+/** Merge resources from an OAuth completion with grants committed by an overlapping flow. */
+export function mergeGrantedResources(
+    kv: SynchronousKv, requestedResources: readonly string[]): void {
+  let grantedResources = kv.get<string[]>("grantedResources") ?? [];
+  kv.put("grantedResources", [...new Set([...grantedResources, ...requestedResources])]);
+}
+
 export function beginStoredOAuthFlow(kv: SynchronousKv, initiationNonce: string,
                                      oauthNonce: string, oauthRedirectUri: string, now: number)
     : {oauthNonce: string, scopes: string[]} | null {

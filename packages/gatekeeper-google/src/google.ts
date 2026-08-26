@@ -70,8 +70,8 @@ import {
   hasDriveResourceGrant, parseResourceUrl, resourcesCoveredByScopes,
 } from "./resources";
 import {
-  beginStoredOAuthFlow, claimStoredOAuthFlow, prepareOAuthFlow, shouldDeleteCredentialsOnAlarm,
-  type OAuthFlowMode,
+  beginStoredOAuthFlow, claimStoredOAuthFlow, mergeGrantedResources, prepareOAuthFlow,
+  shouldDeleteCredentialsOnAlarm, type OAuthFlowMode,
 } from "./oauth-flow";
 import { type ObserverBatchResult, type ObserverCheck, ObserverTracker } from "./observers";
 import { CursorPager, Pager } from "./cursor";
@@ -513,7 +513,7 @@ export class UserAccount extends DurableObject<Env> {
       // These credentials are new, so any recorded permanent failure no longer applies
       this.#mintFailure = undefined;
       this.ctx.storage.kv.put<string[]>("grantedScopes", response.grantedScopes);
-      this.ctx.storage.kv.put<string[]>("grantedResources", flow.requestedResources);
+      mergeGrantedResources(this.ctx.storage.kv, flow.requestedResources);
       return { callback, mode: flow.mode };
     });
 

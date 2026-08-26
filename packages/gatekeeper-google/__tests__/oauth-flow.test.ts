@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  beginStoredOAuthFlow, claimStoredOAuthFlow, prepareOAuthFlow, shouldDeleteCredentialsOnAlarm,
-  type OAuthFlowMode,
+  beginStoredOAuthFlow, claimStoredOAuthFlow, mergeGrantedResources, prepareOAuthFlow,
+  shouldDeleteCredentialsOnAlarm, type OAuthFlowMode,
 } from "../src/oauth-flow";
 import {
   BIGQUERY_RESOURCE, GOOGLE_DOC_RESOURCE, IDENTITY_SCOPES,
@@ -39,6 +39,18 @@ describe("stored OAuth flow", () => {
       requestedResources: [BIGQUERY_RESOURCE.urlPattern],
       oauthRedirectUri: OAUTH_REDIRECT_URI,
     });
+  });
+
+  it("merges resources granted by overlapping OAuth completions", () => {
+    let kv = new FakeKv();
+
+    mergeGrantedResources(kv, [GOOGLE_DOC_RESOURCE.urlPattern]);
+    mergeGrantedResources(kv, [BIGQUERY_RESOURCE.urlPattern]);
+
+    expect(kv.get<string[]>("grantedResources")).toEqual([
+      GOOGLE_DOC_RESOURCE.urlPattern,
+      BIGQUERY_RESOURCE.urlPattern,
+    ]);
   });
 
   it("binds the OAuth redirect URI to the claimed attempt", () => {
