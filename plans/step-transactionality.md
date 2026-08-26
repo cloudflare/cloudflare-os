@@ -60,12 +60,17 @@ first).
   broadcast supersedes previews at step end instead of per call. The stale "the row
   doubles as the streaming preview" comment (agent.ts:297) gets fixed —
   overseer.ts:2904-2906 already states the correct supersedes relationship.
-- **Mid-step gadget access with buffered edits throws.** executeCode reaching a
-  gadget whose code has buffered, not-yet-persisted edits gets a retryable,
-  agent-visible error ("changes land next step — retry") instead of running
-  provisional code. This replaces what the mid-tool flushes guaranteed, and closes
-  by construction the historical corruption where a mid-turn flush materialized a
-  `"changes"` message containing a not-yet-persisted step's changes.
+- **executeCode after any buffered edits throws.** Once the step buffer holds
+  any change, executeCode fails with a retryable, agent-visible error ("changes
+  land next step — retry") instead of running provisional code. Deliberately
+  coarse — no per-gadget touched-set, no machinery in the gadget-loading path:
+  editing code and then executing it in one step never worked (and agents don't
+  try it), and worktrees keep the same rule (their writes happen *inside*
+  executeCode, and a second executeCode in one step is never sensible — the
+  agent writes one script that does both things). This replaces what the
+  mid-tool flushes guaranteed, and closes by construction the historical
+  corruption where a mid-turn flush materialized a `"changes"` message
+  containing a not-yet-persisted step's changes.
 - **User submissions stay rejected during agent turns** (reject + client-side
   buffering and retry: overseer.ts:3013-3017, otClient.ts:125-136). Restoring
   durable server-side drafts mid-turn — which the pre-git-storage
@@ -127,9 +132,22 @@ first).
    tool. `appendAgentEdit` becomes: compute the change (same prefetches), push to
    the buffer, update session content. The created-gadget/binding recordings that
    already accumulate turn-side (`pendingCreatedGadgets` etc.) keep working as
-   they do — only the rows move to the barrier.
+   they do — only the rows move to the barrier. The buffer is a small turn-owned
+   object (created in `runAgent` beside the other per-step state, cleared at
+   each barrier), **passed explicitly** wherever it's needed — to the barrier
+   hook now, and into `executeCodeMode` when worktrees land so the worktree
+   binding loopbacks can read/write it by reference (agent↔overseer is a
+   same-isolate direct call; there is no marshalling boundary). No ambient
+   buffer state on the overseer's live chat context.
+   **Row granularity is one row per buffered tool change, in call order —
+   never a pre-composed row.** The client resolves streaming previews by
+   shifting the oldest pending preview per file as each `changeApplied` row
+   arrives (GadgetCodeInterface.tsx:296-305), so the barrier's burst must
+   preserve the per-call row↔preview correspondence.
 2. **Barrier extension.** The `turn_end` handler passes the buffer to the overseer
-   (a new hook, or an extended `addChatMessages`) which, inside one
+   via a **new dedicated hook, `commitAgentStep`** (not an extended
+   `addChatMessages`, which has six non-agent callers that would all be touched
+   by a widened signature) which, inside one
    `transactionSync()` (typed-storage's `TypedStorage.transaction`; established
    overseer precedent, e.g. overseer.ts:1602): persists the step's tool-call
    message, validates and appends each buffered change as a `chatChanges` row
@@ -182,23 +200,39 @@ first).
      large ops (128 rows is only a line or two of typing) — and add a **byte
      trigger** beside it: materialize the pending rows *before* appending a row
      that would push the pending composition estimate past **1MB** (staying
-     well clear of the 2MB record cap; the estimate is the same summed-row-size
-     proxy the chunker uses today). Carve-out unchanged from today's
+     well clear of the 2MB record cap; the estimate is `codeChangeSerializedSize`
+     — an O(entries) upper bound on the rows' V8-serialized storage footprint,
+     2 bytes per UTF-16 code unit plus fixed structure overhead. DO storage
+     V8-serializes records, so a JSON-text measure would overcount escapes and
+     multi-byte text and cost a serialization per row; summing rows bounds
+     their composition). Carve-out unchanged from today's
      lone-oversized-row chunk: a single change may reach `MAX_CODE_CHANGE_SIZE`
      (2MB, code-change.ts:144) and then travels alone in one oversized message
-     — storage already held it as a row.
-   - **Step buffer**: a `STEP_CHANGE_BUDGET` (~1MB) on the buffer's total
+     — storage already held it as a row. Accepted, no migration: a live window
+     whose rows predate this change and already sum past what one message
+     record can hold would fail to materialize — but the deployment is in
+     early testing and users almost never hand-edit code, so a multi-megabyte
+     unmaterialized window does not plausibly exist.
+   - **Step buffer**: a `STEP_CHANGE_BUDGET` (**~1.5MB**) on the buffer's total
      change size, enforced **at the write call** — the file-tool call or
      worktree `writeFile` RPC that would exceed it fails with an actionable,
      agent-visible error ("too many changes in one step; split the work across
      steps"), everything buffered before it persists normally, and the model
-     can adapt mid-turn. Sizing constraint: the budget must admit at least one
-     maximal single change (a whole-file `set` of a max-size file — worktrees'
-     `MAX_WORKTREE_FILE_SIZE` is ~1MB — must not be unwritable), and stay under
-     what one message can hold with envelope headroom below the 2MB record cap;
-     tune the two constants together. File tools can't realistically hit it (their content
-     is model output); script-driven worktree writes can. A barrier-time
-     transaction failure remains the backstop if anything slips through.
+     can adapt mid-turn. Sizing rationale: the budget must admit one maximal
+     single change, and the proxy is `codeChangeSerializedSize` (≤ 2 bytes per
+     UTF-16 code unit plus fixed overhead), so a maximal whole-file `set`
+     (`MAX_FILE_TEXT_LENGTH` is 512K units; worktrees'
+     `MAX_WORKTREE_FILE_SIZE` respects the same cap) measures ≤ ~1MB — 1.5MB
+     admits any valid single file write with margin, while keeping the step's
+     single message, envelope included, below the 2MB record cap the estimate
+     upper-bounds against. File tools can't realistically hit the budget
+     (their content is model output); script-driven worktree writes can. A
+     barrier-time transaction failure remains the backstop if anything slips
+     through. Known, accepted gap: `createGadget`'s blueprint copy is a single
+     multi-file change that may legally reach `MAX_CODE_CHANGE_SIZE` (2MB) —
+     past the budget. **No carve-out**: no existing blueprint exceeds 1MB, and
+     the planned Yjs→git blueprint format rework resolves this class of problem
+     outright.
    The changeId drift dies by deletion (one message per flush — live and
    replay counting trivially agree), and a revert can never split a step's
    effects: extras and edits share the step's single message. This also
@@ -209,9 +243,9 @@ first).
    persist with their `createGadget` call — the 2731-2739 crash window closes. The
    end-of-turn flush in the `finally` (agent.ts:3164) can no longer find agent
    rows to materialize; keep it as a cheap invariant assertion or delete it.
-5. **Gadget-access guard.** The gadget-loading path executeCode uses consults the
-   step buffer's touched-workpiece set and throws the retryable error. One
-   chokepoint check.
+5. **executeCode guard.** The executeCode tool checks the step buffer before
+   running: non-empty ⇒ throw the retryable error. One `if` in the tool, no
+   changes to the gadget-loading path (see the locked decision).
 6. **Machinery deletion.** With no live agent rows possible outside the barrier:
    delete the replay-discharge path and `listUnmaterializedChatChanges`; delete
    the vouched re-adoption scan (agent.ts:2002-2020); shrink
@@ -284,7 +318,7 @@ first).
   creation, and call atomically.
 - **Abort mid-step**: buffer dropped, prior steps' messages intact, nothing
   reverted.
-- **Gadget-access guard**: executeCode touching a buffer-edited gadget throws the
+- **executeCode guard**: executeCode after any buffered edit throws the
   retryable error; the next step succeeds.
 - **User submission mid-turn** still rejected; post-turn resubmission transforms
   against the turn's retired rows (window intact across multiple per-step
@@ -314,7 +348,7 @@ first).
 2. **Buffer + barrier**: step buffer, barrier extension (transactional, tool
    message first), `STEP_CHANGE_BUDGET` enforced at the write call — which
    supersedes commit 1's transitional agent-side flush trigger (removed along
-   with the per-tool append path) — mid-tool flush removal, gadget-access
+   with the per-tool append path) — mid-tool flush removal, executeCode
    guard, materialize hardening, and the remaining behavior tests. One
    reviewable commit — these pieces are not independently shippable.
 3. **Deletions + comment fixes**: replay-discharge path,

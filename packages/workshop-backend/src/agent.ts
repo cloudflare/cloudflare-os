@@ -1,6 +1,6 @@
 import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, ChatGadgetPin, ChatCodeBase, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
-import { applyCodeChange, replaceSpanChange, type CodeContent, type CodeChange }
-  from '@gadgets/workshop-shared/code-change';
+import { applyCodeChange, codeChangeSerializedSize, replaceSpanChange, type CodeContent,
+  type CodeChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger } from "./observability";
@@ -27,6 +27,25 @@ import {
 } from "./agent-compaction";
 
 const logger = createWorkshopLogger("workshop.agent");
+
+/**
+ * Byte bound on one "changes" message's composed change, shared by every producer of chat
+ * change rows. Materialization writes exactly one message per call (see materializeChatChanges
+ * in overseer.ts), so the composition is kept storable by bounding what *accumulates* rather
+ * than by splitting the output: each producer materializes the pending live rows before
+ * appending a row that would push their summed size past the budget (submitCodeChange for user
+ * edits; appendAgentEdit's flush trigger for tool edits). Rows are individually bounded
+ * (MAX_CODE_CHANGE_SIZE) but a composition of several is not, and an unstorable message would
+ * wedge materialization permanently (rows only retire on success, so accept and turn start
+ * would retry the same oversized compose forever). A single row may legally exceed the budget:
+ * the append-time triggers then guarantee it lands in an empty window and travels alone in one
+ * oversized message, which storage already proved it can hold when the row itself was written.
+ * Measured with codeChangeSerializedSize (composition never exceeds the sum of its inputs'
+ * sizes, so summing rows bounds their composed change) and sized well clear of the 2MB storage
+ * record cap the estimate upper-bounds against. (Declared here rather than in overseer.ts
+ * because agent.ts must not import overseer.ts -- the dependency runs the other way.)
+ */
+export const CHAT_CHANGE_MESSAGE_BUDGET = 1024 * 1024;
 
 /** Additional per-chat-thread info needed by the AI agent but not by the client. */
 export type AiChatAgentContext = {
@@ -1981,6 +2000,12 @@ export async function runAgent(
     }
   }
 
+  // The summed size of the turn's pending (unflushed) change rows: appendAgentEdit flushes
+  // before a row would push it past what one "changes" message may compose, since a flush
+  // writes exactly one message (see CHAT_CHANGE_MESSAGE_BUDGET). Seeded below with any
+  // re-adopted crashed-turn rows, which join this turn's next flush.
+  let pendingChangeBytes = 0;
+
   // If the previous agent turn was aborted by a server restart, its edits are already durable,
   // broadcast change rows that no "changes" message covers yet: establish their pins' bases (the
   // pins were mirrored into the chat's code base when the rows were appended, but their log
@@ -1996,6 +2021,7 @@ export async function runAgent(
   }
   for (let row of hooks.listUnmaterializedChatChanges(chatId)) {
     sessionContent = applyCodeChange(sessionContent, row.change);
+    pendingChangeBytes += codeChangeSerializedSize(row.change);
   }
   pendingReplayEdits = [];
 
@@ -2053,6 +2079,7 @@ export async function runAgent(
     pendingCreatedGadgets = [];
     let addedBindings = pendingAddedBindings;
     pendingAddedBindings = [];
+    pendingChangeBytes = 0;  // the flush materializes every pending row
     if (hooks.flushAgentChanges(chatId, author, {createdGadgets, addedBindings})) {
       ++nextChangeId;
     }
@@ -2067,8 +2094,19 @@ export async function runAgent(
   let appendAgentEdit = async (
       workpieceId: WorkpieceId, change: CodeChange,
       pin?: {baseCommit: string, baseFiles: Map<string, string>}) => {
+    // Keep the pending composition storable: a flush writes exactly one "changes" message, so
+    // materialize the rows appended so far before this one would push their summed size past
+    // the message budget. Flushing through flushPendingChanges (not an overseer-side trigger)
+    // keeps nextChangeId counting messages -- an overseer-written message would sit behind the
+    // agent's counter. A lone change bigger than the whole budget lands in an empty window and
+    // travels alone.
+    let size = codeChangeSerializedSize(change);
+    if (pendingChangeBytes > 0 && pendingChangeBytes + size > CHAT_CHANGE_MESSAGE_BUDGET) {
+      flushPendingChanges();
+    }
     await hooks.appendAgentCodeChange(chatId, author, change,
         pin !== undefined ? {gadgetId: workpieceId, baseCommit: pin.baseCommit} : undefined);
+    pendingChangeBytes += size;
     if (pin !== undefined) {
       sessionContent = new Map(sessionContent);
       sessionContent.set(workpieceId, pin.baseFiles);

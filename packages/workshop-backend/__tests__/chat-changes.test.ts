@@ -1081,6 +1081,34 @@ describe("agent change appends", () => {
         { 2: [["a.txt", { set: "x" }]] }, { gadgetId: 2, baseCommit: c2 }))
         .rejects.toThrow(/no longer the gadget's head/);
   }));
+
+  it("the turn flush writes exactly one message even past the byte budget",
+      () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+
+    // Two rows whose composition (~1.2MB by the serialized-size estimate) exceeds the 1MB
+    // budget. The old chunker would have split them across two "changes" messages,
+    // desynchronizing the agent's message-counting change-ID numbering (one flush, one counter
+    // bump -- see flushPendingChanges in agent.ts); a flush now writes exactly one message,
+    // always. (In production the agent's own append-time trigger flushes before a window grows
+    // this big; this exercises the materialize side alone.)
+    let text = "文".repeat(300_000);
+    await impl.appendAgentCodeChange(1, AGENT,
+        { 1: [["a.txt", { set: text }]] }, { gadgetId: 1, baseCommit: c1 });
+    await impl.appendAgentCodeChange(1, AGENT, { 1: [["b.txt", { set: text }]] });
+
+    expect(impl.flushAgentChanges(1, AGENT, {})).toBe(true);
+    let changes = chatMessages(impl, 1).filter(msg => msg.type === "changes");
+    expect(changes).toHaveLength(1);
+    expect(changes[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 2 });
+    expect(changes[0].pins).toEqual([{ gadgetId: 1, baseCommit: c1 }]);
+    expect(liveRows(impl, 1)).toHaveLength(0);
+
+    let folded = await impl.buildChatContent(1);
+    expect(["a.txt", "b.txt"].map(file => folded.get(1)!.get(file))).toEqual([text, text]);
+  }));
 });
 
 describe("chat content reconstruction", () => {
@@ -1115,7 +1143,7 @@ describe("chat content reconstruction", () => {
     addChat(impl, 1);
 
     let text = "0\n";
-    for (let i = 1; i <= 129; i++) {
+    for (let i = 1; i <= 1001; i++) {
       let next = `${i}\n${text}`;
       await submit(impl, 1, {
         generation: 0, revision: i - 1, clientId: "cli", seq: i,
@@ -1125,53 +1153,85 @@ describe("chat content reconstruction", () => {
       text = next;
     }
 
-    // The 128-row window was materialized into a "changes" message; the stream keeps counting.
+    // The 1000-row window was materialized into a single "changes" message; the stream keeps
+    // counting.
     let changes = chatMessages(impl, 1).filter(msg => msg.type === "changes");
     expect(changes).toHaveLength(1);
-    expect(changes[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 128 });
+    expect(changes[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 1000 });
     expect(liveRows(impl, 1)).toHaveLength(1);
-    expect(impl.storage.chatMeta.get(1)!.codeBase!.revision).toBe(129);
+    expect(impl.storage.chatMeta.get(1)!.codeBase!.revision).toBe(1001);
     expect((await gadgetContent(impl, 1, 1))["a.txt"]).toBe(text);
   }));
 
-  it("splits an oversized batch across consecutive watermarked messages",
+  it("materializes the pending window before a submission would breach the byte budget",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     addGadget(impl, 1, "APP", c1);
     addChat(impl, 1);
 
-    // Three rows setting *distinct* files (so their composition genuinely accumulates payload
-    // rather than collapsing), each ~200K CJK characters = ~600KB of UTF-8 (hand-built `set`
-    // changes: diffing dissimilar strings this large is quadratic). Any two rows compose past the
-    // 1MB byte budget -- though a code-unit measure would put all three at ~600K "characters"
-    // and pack them into one oversized message -- so materialization must cut per row.
-    let files = ["a.txt", "b.txt", "c.txt"];
-    let text = "文".repeat(200_000);
-    for (let [i, file] of files.entries()) {
-      await submit(impl, 1, {
-        generation: 0, revision: i, clientId: "cli", seq: i + 1,
-        ...(i === 0 ? { pins: [{ gadgetId: 1, baseCommit: c1 }] } : {}),
-        change: { 1: [[file, { set: text }]] },
-      });
-    }
+    // Two rows setting *distinct* files (so their composition genuinely accumulates payload
+    // rather than collapsing), each 300K two-byte characters = ~600KB by the serialized-size
+    // estimate (hand-built `set` changes: diffing dissimilar strings this large is quadratic).
+    // Together they compose past the 1MB byte budget, so the second submission must materialize
+    // the first row into its own message before appending.
+    let text = "文".repeat(300_000);
+    await submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "cli", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: c1 }],
+      change: { 1: [["a.txt", { set: text }]] },
+    });
+    expect(chatMessages(impl, 1).filter(msg => msg.type === "changes")).toHaveLength(0);
 
-    impl.materializeChatChanges(1);
+    await submit(impl, 1, {
+      generation: 0, revision: 1, clientId: "cli", seq: 2,
+      change: { 1: [["b.txt", { set: text }]] },
+    });
     let changes = chatMessages(impl, 1).filter(msg => msg.type === "changes");
-    expect(changes).toHaveLength(3);
-    // The pin declaration rides the first message only; each message's watermark names the
-    // rows it absorbed.
+    expect(changes).toHaveLength(1);
     expect(changes[0].pins).toEqual([{ gadgetId: 1, baseCommit: c1 }]);
-    expect(changes.map(msg => msg.watermark)).toEqual([
-      { changesGeneration: 0, throughRevision: 1 },
-      { changesGeneration: 0, throughRevision: 2 },
-      { changesGeneration: 0, throughRevision: 3 },
-    ]);
+    expect(changes[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 1 });
+    expect(liveRows(impl, 1)).toHaveLength(1);
+
+    // A materialize call writes exactly one message covering the remaining row.
+    impl.materializeChatChanges(1);
+    changes = chatMessages(impl, 1).filter(msg => msg.type === "changes");
+    expect(changes).toHaveLength(2);
+    expect(changes[1].watermark).toEqual({ changesGeneration: 0, throughRevision: 2 });
     expect(changes[1].pins).toBeUndefined();
     expect(liveRows(impl, 1)).toHaveLength(0);
 
-    // The chunked log folds to the same content a single message would have.
+    // The split log folds to the same content a single message would have.
     let folded = await impl.buildChatContent(1);
-    expect(files.map(file => folded.get(1)!.get(file))).toEqual([text, text, text]);
+    expect(["a.txt", "b.txt"].map(file => folded.get(1)!.get(file))).toEqual([text, text]);
+  }));
+
+  it("a change bigger than the whole budget travels alone in one oversized message",
+      () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+
+    // One row -- a single multi-file change of two 300K-two-byte-character files, ~1.2MB by the
+    // serialized-size estimate -- exceeds the 1MB budget on its own while staying inside the
+    // per-file and per-change caps. It appends into an empty window; the next submission's byte
+    // trigger then materializes it alone, in one message.
+    let big = "文".repeat(300_000);
+    await submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "cli", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: c1 }],
+      change: { 1: [["a.txt", { set: big }], ["b.txt", { set: big }]] },
+    });
+    await submit(impl, 1, {
+      generation: 0, revision: 1, clientId: "cli", seq: 2,
+      change: { 1: [["c.txt", { set: "small\n" }]] },
+    });
+
+    let changes = chatMessages(impl, 1).filter(msg => msg.type === "changes");
+    expect(changes).toHaveLength(1);
+    expect(changes[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 1 });
+    expect(liveRows(impl, 1)).toHaveLength(1);
+    expect((await gadgetContent(impl, 1, 1))["a.txt"]).toBe(big);
+    expect((await gadgetContent(impl, 1, 1))["b.txt"]).toBe(big);
   }));
 
   it("splits batches by author when a different author resumes after idle",

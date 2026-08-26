@@ -1,8 +1,8 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitIdentity, CommitInfo, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, actionChangeTime } from '@gadgets/workshop-shared/api';
-import { applyCodeChange, changedGadgets, composeCodeChange, diffFiles, transformCodeChange,
-  validateCodeChangeContent, validateCodeChangeSchema,
+import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange, diffFiles,
+  transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import { Gatekeeper, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
@@ -27,7 +27,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, AiChatAgentContext, ChatBindingEntry, SeedBindingInfo, runAgent, makeStorableArgs, summarizeArgs, type AiChatMessageBodyWithModelData, type CompactionCheckpoint, type StoredAssistantMessage } from "./agent";
+import { AgentGadgetInfo, AgentHooks, AiChatAgentContext, CHAT_CHANGE_MESSAGE_BUDGET, ChatBindingEntry, SeedBindingInfo, runAgent, makeStorableArgs, summarizeArgs, type AiChatMessageBodyWithModelData, type CompactionCheckpoint, type StoredAssistantMessage } from "./agent";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import { chatChangeStatuses, foldProposedChanges, isCompactionTurn,
   type ChangeBatch } from "./agent-compaction";
@@ -822,21 +822,12 @@ const CHAT_CHANGE_AUTHOR_SPLIT_MS = 60_000;
 
 // Materialize the live row window into a "changes" message once it grows past this many rows,
 // so a long editing session can't grow the window (and its subscribe-replay cost) without bound.
-// Thanks to the retired-row grace window this stales nobody: a submission based inside the
-// materialized range still transforms over the retired rows.
-const CHAT_CHANGE_MATERIALIZE_THRESHOLD = 128;
-
-// Materialization splits a batch of rows across consecutive "changes" messages so that no one
-// message's composed change exceeds this size: rows are individually bounded
-// (MAX_CODE_CHANGE_SIZE) but a composition of several is not, and an unstorable message would
-// wedge materialization permanently (rows only retire on success, so accept and turn start would
-// retry the same oversized compose forever). Composition never exceeds the sum of its inputs'
-// sizes, so cutting chunks by that sum keeps every multi-row message under the budget; a single
-// row larger than the budget travels alone, which storage already proved it can hold when the row
-// itself was written. Sizes are the UTF-8 byte length of the change's JSON -- never less than
-// the storage serialization's string payload (which stores at most two bytes per UTF-16 unit), so
-// the budget can't be undershot by multi-byte-heavy content.
-const CHAT_CHANGE_MESSAGE_BUDGET = 1024 * 1024;
+// The job is compacting keystroke-granularity ops into few large composed ops -- rows arrive
+// per edit burst, so this is sized in "a screenful of typing", not lines. Byte growth is
+// bounded separately (CHAT_CHANGE_MESSAGE_BUDGET, enforced at row-append time). Thanks to the
+// retired-row grace window this stales nobody: a submission based inside the materialized range
+// still transforms over the retired rows.
+const CHAT_CHANGE_MATERIALIZE_THRESHOLD = 1000;
 
 // How long retired rows are kept as a transform window before lazy expiry. Late submissions are
 // in-flight-RTT scale, so a minute is generous; a submission whose base has aged out is rejected
@@ -2530,6 +2521,31 @@ class OverseerImpl implements AgentHooks {
     this.#chatContentCache.delete(chatId);
   }
 
+  // Cache of the live (unretired) window's summed serialized-size estimate, keyed by the
+  // (generation, revision) it reflects. The byte trigger in submitCodeChange consults it per
+  // keystroke, and recomputing means re-reading every live row from storage -- O(window) per
+  // keystroke, quadratic over an editing session. Row appends update it incrementally (see
+  // #appendChatChangeRow) and retirement drops it (see #retireChatChanges); anything else that
+  // changes the window (revert, epoch reset, draft discard) bumps the generation or revision,
+  // which invalidates the entry. A miss (also after a DO restart) recomputes from the rows the
+  // caller listed anyway.
+  #liveChangeBytesCache = new Map<number, {generation: number, revision: number,
+                                           bytes: number}>();
+
+  // The summed codeChangeSerializedSize of the given live rows (the caller already listed them),
+  // served from #liveChangeBytesCache when it is current for (generation, revision).
+  #liveChangeBytes(chatId: number, codeBase: ChatCodeBase, liveRows: ChatChangeRecord[]): number {
+    let cached = this.#liveChangeBytesCache.get(chatId);
+    if (cached !== undefined && cached.generation === codeBase.generation &&
+        cached.revision === codeBase.revision) {
+      return cached.bytes;
+    }
+    let bytes = liveRows.reduce((sum, row) => sum + codeChangeSerializedSize(row.change), 0);
+    this.#liveChangeBytesCache.set(chatId,
+        {generation: codeBase.generation, revision: codeBase.revision, bytes});
+    return bytes;
+  }
+
   // The chat's current content: what the next change row will apply to. Cached; treat the result as
   // immutable (it is shared with the cache and with code-change's structure sharing).
   async getCurrentChatContent(chatId: number, meta: AiChatMetadata): Promise<CodeContent> {
@@ -2643,6 +2659,17 @@ class OverseerImpl implements AgentHooks {
       this.#chatContentCache.delete(chatId);
     }
 
+    // Advance the byte cache incrementally when it was current for the window this row joins;
+    // otherwise drop it and let the next read recompute.
+    let cachedBytes = this.#liveChangeBytesCache.get(chatId);
+    if (cachedBytes !== undefined && cachedBytes.generation === codeBase.generation &&
+        cachedBytes.revision === revision - 1) {
+      this.#liveChangeBytesCache.set(chatId, {generation: codeBase.generation, revision,
+                                              bytes: cachedBytes.bytes + codeChangeSerializedSize(change)});
+    } else {
+      this.#liveChangeBytesCache.delete(chatId);
+    }
+
     meta.lastActive = row.timestamp;
     meta.hasProposedChanges = true;
     this.storage.chatMeta.put(meta);
@@ -2657,6 +2684,12 @@ class OverseerImpl implements AgentHooks {
     for (let row of rows) {
       row.retired = true;
       this.storage.chatChanges.put(row);
+    }
+    // Retirement always covers the generation's entire live window (materialization and epoch
+    // close both list-then-retire), so the byte cache no longer describes it; drop the entry
+    // and let the next read recompute -- over a window that is empty at that point.
+    if (rows.length > 0) {
+      this.#liveChangeBytesCache.delete(rows[0].chatId);
     }
   }
 
@@ -2681,6 +2714,7 @@ class OverseerImpl implements AgentHooks {
     }
     this.storage.chatChangeBoundaries.delete(chatId);
     this.#chatContentCache.delete(chatId);
+    this.#liveChangeBytesCache.delete(chatId);
   }
 
   // Gadgets whose pin establishment is recorded by a surviving (non-reverted) "changes" message
@@ -2852,15 +2886,19 @@ class OverseerImpl implements AgentHooks {
     return meta;
   }
 
-  // Materialize the chat's live change rows into durable "changes" messages -- one, unless the
-  // batch's composed change would exceed CHAT_CHANGE_MESSAGE_BUDGET, in which case consecutive
-  // messages each take a slice of the rows. Each message's `change` is its rows' composition and
-  // its `watermark` names the rows it absorbed; the first message additionally stamps `pins`
-  // for any meta pins not yet declared in the log (closing the meta/log loop: submitCodeChange and
-  // the agent's appends establish pins in codeBase atomically with the row that needed them,
-  // and this is where the establishment becomes durable log history). The rows are then
-  // retired -- kept briefly as a transform window, not deleted -- so late submissions based
-  // inside the materialized range still rebase cleanly.
+  // Materialize the chat's live change rows into exactly one durable "changes" message. The
+  // message's `change` is the rows' composition and its `watermark` names the rows it absorbed;
+  // it additionally stamps `pins` for any meta pins not yet declared in the log (closing the
+  // meta/log loop: submitCodeChange and the agent's appends establish pins in codeBase
+  // atomically with the row that needed them, and this is where the establishment becomes
+  // durable log history). The rows are then retired -- kept briefly as a transform window, not
+  // deleted -- so late submissions based inside the materialized range still rebase cleanly.
+  //
+  // One message, always: the composition is kept storable by bounding what accumulates (each
+  // row producer materializes the pending window before a row would push its summed size past
+  // CHAT_CHANGE_MESSAGE_BUDGET, declared in agent.ts), never by splitting the output --
+  // splitting would scatter one batch's extras and edits across messages a suffix revert could
+  // divide, and would break the agent's message-counting change-ID numbering.
   //
   // `options.extras` lets the agent's turn flush attach its buffered creations/binding
   // additions, and updateChatFromMainline attaches its `mainlineMerge` record; a message is
@@ -2901,51 +2939,31 @@ class OverseerImpl implements AgentHooks {
       return;
     }
 
-    // Chunk the batch so no message's composed change exceeds the byte budget (see
-    // CHAT_CHANGE_MESSAGE_BUDGET). No rows means one message with no change of its own, carrying
-    // the pins/extras.
-    let chunks: ChatChangeRecord[][] = rows.length > 0 ? [] : [[]];
-    let chunkSize = 0;
+    // No rows means one message with no change of its own, carrying the pins/extras. Pins-first
+    // is correct for the same reason getCurrentChatContent establishes them up front: within a
+    // message pins apply before changes (see buildChatContent), and every batch row touching a
+    // pinned gadget was appended after that pin established.
+    let change: CodeChange | undefined;
     for (let row of rows) {
-      let size = new TextEncoder().encode(JSON.stringify(row.change)).byteLength;
-      let current = chunks[chunks.length - 1];
-      if (current === undefined || (chunkSize > 0 && chunkSize + size >
-          CHAT_CHANGE_MESSAGE_BUDGET)) {
-        chunks.push([row]);
-        chunkSize = size;
-      } else {
-        current.push(row);
-        chunkSize += size;
-      }
+      change = change === undefined ? row.change : composeCodeChange(change, row.change);
     }
 
     let sequence = this.nextChatSequencePeek(chatId);
-    for (let [index, chunk] of chunks.entries()) {
-      let change: CodeChange | undefined;
-      for (let row of chunk) {
-        change = change === undefined ? row.change : composeCodeChange(change, row.change);
-      }
-      // The pins and extras all ride the first message. Pins-first is correct for the same
-      // reason getCurrentChatContent establishes them up front: within a message pins apply
-      // before changes (see buildChatContent), and every batch row touching a pinned gadget was
-      // appended after that pin established, so no earlier chunk's change needs a later pin.
-      let first = index === 0;
-      this.addChatMessages(chatId, author!, [{
-        type: "changes",
-        ...(change !== undefined ? {change} : {}),
-        ...(chunk.length > 0
-            ? {watermark: {changesGeneration: codeBase.generation,
-                           throughRevision: chunk[chunk.length - 1].revision}}
-            : {}),
-        ...(first && pins.length > 0 ? {pins} : {}),
-        ...(first && options?.createdGadgets?.length
-            ? {createdGadgets: options.createdGadgets} : {}),
-        ...(first && options?.addedBindings?.length
-            ? {addedBindings: options.addedBindings} : {}),
-        ...(first && options?.mainlineMerge !== undefined
-            ? {mainlineMerge: options.mainlineMerge} : {}),
-      }]);
-    }
+    this.addChatMessages(chatId, author!, [{
+      type: "changes",
+      ...(change !== undefined ? {change} : {}),
+      ...(rows.length > 0
+          ? {watermark: {changesGeneration: codeBase.generation,
+                         throughRevision: rows[rows.length - 1].revision}}
+          : {}),
+      ...(pins.length > 0 ? {pins} : {}),
+      ...(options?.createdGadgets?.length
+          ? {createdGadgets: options.createdGadgets} : {}),
+      ...(options?.addedBindings?.length
+          ? {addedBindings: options.addedBindings} : {}),
+      ...(options?.mainlineMerge !== undefined
+          ? {mainlineMerge: options.mainlineMerge} : {}),
+    }]);
 
     this.#retireChatChanges(rows);
     this.#pruneRetiredChatChanges(chatId);
@@ -3320,14 +3338,22 @@ class OverseerImpl implements AgentHooks {
     // Content validation, against exactly what the change will apply to.
     validateCodeChangeContent(transformed, validationContent);
 
-    // Attribution: if the newest live rows belong to a different author who has gone idle,
-    // materialize their batch into its own message first, so one message never blends two
-    // authors' sessions. (Two authors typing *concurrently* still share a batch, attributed to
-    // "Multiple Authors".)
+    // Materialize the pending window first when this row must not join it:
+    //  - Attribution: the newest live rows belong to a different author who has gone idle, and
+    //    one message must never blend two authors' sessions. (Two authors typing *concurrently*
+    //    still share a batch, attributed to "Multiple Authors".)
+    //  - Byte budget: this row would push the window's summed change size past what one
+    //    "changes" message may compose (materialization writes exactly one message, so the
+    //    bound is enforced here, where rows accumulate). A row bigger than the whole budget
+    //    thus always lands in an empty window and later travels alone in one oversized message.
     let liveRows = this.listLiveChatChanges(chatId, codeBase.generation);
     let latest = liveRows[liveRows.length - 1];
-    if (latest !== undefined && !this.sameChatAuthor(latest.author, author) &&
-        Date.now() - latest.timestamp.getTime() > CHAT_CHANGE_AUTHOR_SPLIT_MS) {
+    let authorSplit = latest !== undefined && !this.sameChatAuthor(latest.author, author) &&
+        Date.now() - latest.timestamp.getTime() > CHAT_CHANGE_AUTHOR_SPLIT_MS;
+    let byteSplit = liveRows.length > 0 &&
+        this.#liveChangeBytes(chatId, codeBase, liveRows) + codeChangeSerializedSize(transformed) >
+            CHAT_CHANGE_MESSAGE_BUDGET;
+    if (authorSplit || byteSplit) {
       this.materializeChatChanges(chatId, meta);
       meta = this.getChatMetaOrThrow(chatId);
       codeBase = this.chatCodeBase(meta);

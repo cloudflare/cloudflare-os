@@ -150,6 +150,45 @@ export const MAX_CODE_CHANGE_SIZE = 2 * 1024 * 1024;
 const FILE_ENTRY_SIZE_OVERHEAD = 16;
 const EDIT_SECTION_SIZE_WEIGHT = 4;
 
+// Structure overhead granted per file entry and per edit section by codeChangeSerializedSize:
+// V8 writes a handful of header/varint bytes per object, array, and string, so a generous
+// fixed share per node keeps the estimate an upper bound without measuring anything.
+const SERIALIZED_ENTRY_OVERHEAD = 32;
+const SERIALIZED_SECTION_OVERHEAD = 16;
+
+/**
+ * Upper bound on the bytes a `CodeChange` contributes to a V8-serialized storage record --
+ * the form Durable Object storage actually holds change rows and "changes" messages in,
+ * subject to its 2MB value cap. V8 writes each string raw (Latin-1 at one byte per UTF-16
+ * code unit, or UTF-16 at two) plus small structure headers, so two bytes per code unit plus
+ * a fixed per-entry/per-section overhead never undercounts; the estimate reads only string
+ * lengths, costing O(entries), and is immune to the escape-sequence and multi-byte inflation
+ * a JSON-text measure would suffer. Callers use it to keep *compositions* of changes inside
+ * one storable record; `MAX_CODE_CHANGE_SIZE` separately bounds a single change with its own
+ * unit-weighted measure at validation time.
+ */
+export function codeChangeSerializedSize(change: CodeChange): number {
+  let bytes = 0;
+  for (let entries of Object.values(change)) {
+    for (let [path, fileChange] of entries) {
+      bytes += SERIALIZED_ENTRY_OVERHEAD + 2 * path.length;
+      if ("set" in fileChange) {
+        bytes += 2 * fileChange.set.length;
+      } else if ("edit" in fileChange) {
+        for (let section of fileChange.edit) {
+          bytes += SERIALIZED_SECTION_OVERHEAD;
+          if (typeof section !== "number") {
+            for (let part of section) {
+              if (typeof part === "string") bytes += 2 * part.length;
+            }
+          }
+        }
+      }
+    }
+  }
+  return bytes;
+}
+
 // =======================================================================================
 // Internal helpers
 
