@@ -79,6 +79,14 @@ export async function signUp(
   return (await api.authenticate(token)) as unknown as RpcStub<AuthenticatedApi>;
 }
 
+/** Authenticate an existing integration-test account. */
+export async function logIn(
+    api: RpcStub<PublicApi>, username: string): Promise<RpcStub<AuthenticatedApi>> {
+  const token = await api.login(username, passwordHashFor(username));
+  if (token === null) throw new Error(`Login failed for "${username}"`);
+  return (await api.authenticate(token)) as unknown as RpcStub<AuthenticatedApi>;
+}
+
 export type ConnectedAccount = {
   id: number;
   vendorId: string;

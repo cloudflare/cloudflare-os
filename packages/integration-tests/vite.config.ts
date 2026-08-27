@@ -1,5 +1,17 @@
-// Vite+ per-package settings. The `test` task definition is shared by every package whose tests run
-// under vitest and lives beside the other shared task configs.
 import vitestTaskViteConfig from '../../scripts/vitest-task-vite-config.js'
 
-export default vitestTaskViteConfig('vitest run')
+const config = vitestTaskViteConfig('vitest run')
+
+export default {
+  run: {
+    tasks: {
+      test: {
+        command: config.run.tasks.test.command,
+        // Backend source reaches this task through the gitignored validated entrypoint.
+        // Running the fast suite is safer than maintaining a second source fingerprint.
+        cache: false,
+        dependsOn: ['@gadgets/workshop-backend#build:integration-worker'],
+      },
+    },
+  },
+}

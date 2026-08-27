@@ -1,12 +1,8 @@
-// Unit spec for NetworkInterceptor -- the mechanism every suite in two repos leans on for its
-// "nothing reaches the real internet" guarantee. Runs in plain Node against a stubbed real fetch;
-// no Workers are booted. The end-to-end half of the guarantee (Worker subrequests actually route
-// through the patch) is covered by the fetch-probe case in observer-reverification.test.ts.
+// Unit tests for NetworkInterceptor. They run in Node and never start workerd. The fetch-probe case
+// in observer-reverification.test.ts proves that Worker subrequests reach this interceptor.
 //
-// These tests swap globalThis.fetch, so they stay serial (no it.concurrent) within this file. The
-// observer suite is unaffected because `fileParallelism: false` runs the files one at a time rather
-// than side by side, and each swap is undone in afterEach -- not because the files get a process
-// each, which Vitest does not promise.
+// These cases stay serial because they replace globalThis.fetch inside one file process. Vitest's
+// default fork pool gives each parallel test file its own process and global state.
 
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { NetworkInterceptor, type Handler } from "../src/network-interceptor.js";
