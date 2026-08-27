@@ -125,6 +125,16 @@ const API_STREAMS: Record<string, StreamFunction<Api, SimpleStreamOptions>> = {
 
 const ZERO_COST: ModelCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
+// Remove when pi's bundled Workers AI catalog includes this model.
+const GLM_5_3_FLASH_FALLBACK: Model<"openai-completions"> = {
+  id: "@cf/zai-org/glm-5.3-flash", name: "GLM 5.3 Flash",
+  api: "openai-completions", provider: "cloudflare-workers-ai",
+  baseUrl: "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1",
+  reasoning: true, input: ["text", "image"],
+  cost: {input: 0.15, output: 0.5, cacheRead: 0.03, cacheWrite: 0},
+  contextWindow: 1048576, maxTokens: WORKERS_AI_OUTPUT_LIMIT,
+};
+
 // Consult pi's builtin catalog for cost/compat metadata of a known model id. Unknown models are
 // fine (synthesized with zero cost). Import per-provider, not providers/all.
 function catalogModel(provider: AiModelConfig["provider"], modelId: string): Model<Api> | undefined {
@@ -132,7 +142,8 @@ function catalogModel(provider: AiModelConfig["provider"], modelId: string): Mod
     case "anthropic": return (ANTHROPIC_MODELS as Record<string, Model<Api>>)[modelId];
     case "openai": return (OPENAI_MODELS as Record<string, Model<Api>>)[modelId];
     case "google": return (GOOGLE_MODELS as Record<string, Model<Api>>)[modelId];
-    case "cloudflare": return (CLOUDFLARE_WORKERS_AI_MODELS as Record<string, Model<Api>>)[modelId];
+    case "cloudflare": return (CLOUDFLARE_WORKERS_AI_MODELS as Record<string, Model<Api>>)[modelId] ??
+        (modelId === GLM_5_3_FLASH_FALLBACK.id ? GLM_5_3_FLASH_FALLBACK : undefined);
     case "ollama": return undefined;
     default: return undefined;
   }

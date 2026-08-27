@@ -1192,8 +1192,9 @@ export const SUGGESTED_MODELS: Record<
       name: "Kimi K2.7 Code (Workers AI)", contextWindow: 262144,
       outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
-    "@cf/zai-org/glm-5.2": {
-      name: "GLM 5.2 (Workers AI)", contextWindow: 262144, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    "@cf/zai-org/glm-5.3-flash": {
+      name: "GLM 5.3 Flash (Workers AI)", contextWindow: 1048576,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
     "@cf/deepseek-ai/deepseek-v4-pro-0813": {
       name: "DeepSeek V4 Pro 0813 (Workers AI)", contextWindow: 1048576,
