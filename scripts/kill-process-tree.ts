@@ -39,7 +39,9 @@ function childListerFor(pid: number): [string, string[]] {
     : ["ps", ["-o", "pid=", "--ppid", String(pid)]];
 }
 
-// Every pid in `pid`'s tree, `pid` included, collected breadth-first.
+/**
+ * Every pid in `pid`'s tree, `pid` included, collected breadth-first.
+ */
 export async function collectTree(pid: number): Promise<number[]> {
   const collected = new Set<number>([pid]);
   let frontier = [pid];
