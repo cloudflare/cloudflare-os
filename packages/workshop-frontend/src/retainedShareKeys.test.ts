@@ -58,9 +58,9 @@ describe('retained share key write tokens', () => {
   })
 })
 
-// An attempt whose keyed open the server confirmed clears exactly its own retention, even after
+// An attempt whose keyed open succeeded clears exactly its own retention, even after
 // being superseded. `onlyCapture` is what scopes the clear: the named capture's in-flight stamp
-// is always voided (it stamps the confirmed key, and its late landing would resurrect it), while
+// is always voided (it stamps the spent key, and its late landing would resurrect it), while
 // a stored entry carrying a different capture id belongs to a newer capture and must survive
 // untouched -- entry and in-flight stamp both -- even when that newer capture holds the same key.
 describe('attempt-owned clears (onlyCapture)', () => {
@@ -71,7 +71,7 @@ describe('attempt-owned clears (onlyCapture)', () => {
     commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1', ENTRY.captureId), ENTRY)
     clearRetainedShareKey('ws-1', ENTRY.captureId)
     expect(readRetainedShareKey('ws-1')).toBeUndefined()
-    // A late-landing stamp for the same attempt must not resurrect the confirmed key.
+    // A late-landing stamp for the same attempt must not resurrect the spent key.
     commitRetainedShareKeyWrite(stamp, ENTRY)
     expect(readRetainedShareKey('ws-1')).toBeUndefined()
   })
@@ -105,10 +105,10 @@ describe('attempt-owned clears (onlyCapture)', () => {
   })
 
   it("a different-capture clear still voids the cleared capture's own in-flight stamp", () => {
-    // Attempt A (capture-a) was confirmed by the server but its identity stamp is still in
+    // Attempt A's (capture-a) keyed open succeeded but its identity stamp is still in
     // flight; a newer attempt B (capture-b) already occupies the entry. A's clear must no-op on
     // B's entry yet void A's own stamp -- otherwise the stamp lands late, overwrites B's entry
-    // with A's *confirmed* key, and a replay re-redeems it after an owner removal.
+    // with A's *spent* key, and a replay re-redeems it after an owner removal.
     const stampA = beginRetainedShareKeyWrite('ws-1', 'capture-a')
     const entryB = { key: 'bbbb', userId: 'other@example.com', captureId: 'capture-b' }
     commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1', 'capture-b'), entryB)
@@ -131,7 +131,7 @@ describe('attempt-owned clears (onlyCapture)', () => {
 
   it('an absent-entry clear with onlyCapture still voids a pending write', () => {
     // The absence may be the clearing attempt's own stamp still in flight; letting it land would
-    // resurrect a key the server already confirmed.
+    // resurrect a key the server already redeemed.
     const stamp = beginRetainedShareKeyWrite('ws-1', ENTRY.captureId)
     clearRetainedShareKey('ws-1', ENTRY.captureId)
     commitRetainedShareKeyWrite(stamp, ENTRY)

@@ -61,8 +61,8 @@ function storageKey(workspaceId: string): string {
 // invalidates it. Three tiers, matching the three clear scopes: a global counter (logout sweeps
 // everything), a per-workspace counter (workspace-wide clears -- a keyless success, an
 // identity-mismatch sweep), and a per-capture counter for attempt-owned clears. The
-// capture-scoped tier is what lets a confirmed attempt void *its own* in-flight stamp even when a
-// newer capture's entry occupies the slot -- without it, the confirmed key's late
+// capture-scoped tier is what lets a successful attempt void *its own* in-flight stamp even when a
+// newer capture's entry occupies the slot -- without it, the spent key's late
 // stamp overwrites the newer entry and resurrects a key whose link would silently re-redeem
 // after an owner removal; and conversely it leaves every other capture's pending stamp intact, so
 // an attempt-owned clear can never void a concurrent newer capture -- not even one that captured
@@ -205,7 +205,7 @@ function applyClearAll(): void {
  * `onlyCapture`, the clear is attempt-owned and touches exactly that capture's retention: its
  * per-capture generation is *always* bumped -- voiding the calling capture's own
  * in-flight stamp even when a different capture already occupies the entry, whose late landing
- * would otherwise resurrect a key the server confirmed -- while the entry is removed only when it
+ * would otherwise resurrect a key the server already redeemed -- while the entry is removed only when it
  * is absent or carries `onlyCapture`. A different-capture entry (even one holding the *same* key
  * -- a later user's capture of the same invite link), and every other capture's pending stamp,
  * are untouched: a newer capture owns the slot, and the workspace generation is deliberately not

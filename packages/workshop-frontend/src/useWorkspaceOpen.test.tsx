@@ -234,7 +234,7 @@ describe('useWorkspaceOpen', () => {
     // that writes it resolves asynchronously alongside the open...
     expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull()
 
-    // ...and so is the in-memory ref: a retry resolves keylessly from the confirmed edge.
+    // ...and so is the in-memory ref: a retry resolves keylessly from the redeemed edge.
     await act(async () => retry())
     expect(sentKeys).toEqual(['cafe', undefined])
   })
@@ -243,7 +243,7 @@ describe('useWorkspaceOpen', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     window.location.hash = '#share=cafe'
     const sentKeys: (string | undefined)[] = []
-    // The open itself succeeds -- the server confirmed the redemption before the client held the
+    // The open itself succeeds -- the server redeemed the key before the client held the
     // capability -- but the follow-up subscribe fails, as it really can for exactly the keyed
     // audience (the non-owner whoami round trip, a WS drop).
     const overseer = disposableStub({
@@ -277,7 +277,7 @@ describe('useWorkspaceOpen', () => {
     root = createRoot(container)
     await act(async () => root!.render(<Probe />))
     expect(sentKeys).toEqual(['cafe'])
-    // The redemption is confirmed, so both retention tiers are already gone -- a key kept until
+    // The redemption landed, so both retention tiers are already gone -- a key kept until
     // subscribeToMetadata succeeded would arm every retry path with a silent re-redemption of
     // the still-active link after an owner removal.
     expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull()
@@ -665,13 +665,13 @@ describe('useWorkspaceOpen', () => {
     expect(storedRetained()).toMatchObject({ key: 'aaaa', userId: OTHER_USER.id })
   })
 
-  it('a superseded confirmed open cannot resurrect its key over a newer capture', async () => {
+  it('a superseded successful open cannot resurrect its key over a newer capture', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     // Attempt A captures its key with both the open and the identity stamp parked. B (a swapped
     // stub, another user) captures its own key, whose stamp lands and occupies the entry. A's
-    // open then confirms: its key-scoped clear rightly leaves B's different-key entry alone --
+    // open then succeeds: its key-scoped clear rightly leaves B's different-key entry alone --
     // but it must still void A's *own* in-flight stamp, or that stamp lands last and overwrites
-    // B's entry with A's server-confirmed key, which a later mount would replay and silently
+    // B's entry with A's spent key, which a later mount would replay and silently
     // re-redeem after an owner removal.
     window.location.hash = '#share=aaaa'
     const heldOpen = deferred<void>()

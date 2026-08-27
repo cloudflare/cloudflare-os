@@ -56,13 +56,17 @@ export function useWorkspaceOpen({
   const [observerConfig, setObserverConfig] = useState<ObserverConfigState | null>(null)
   const [reloadNonce, setReloadNonce] = useState(0)
   const openWorkspaceIdRef = useRef<string | undefined>(undefined)
-  // The share key from the URL fragment, retained after the fragment is stripped. A failed or
-  // cancelled first open reverts the redemption server-side, so a retry (the retry button, or a
-  // reconnection) must re-send the key or it dead-ends on access-denied; never cleared on
-  // failure -- that is the point. Retention has two tiers: this in-memory ref, and a
+  // The share key from the URL fragment, retained after the fragment is stripped. A first open
+  // can fail *before* the server redeems the key (a transport failure, a server throw ahead of
+  // the redemption, an attempt superseded before issuing); nothing persisted, so a retry (the
+  // retry button, or a reconnection) must re-send the key or it dead-ends on access-denied. A
+  // failure *after* redemption leaves a real edge (redemption is one-step server-side), so that
+  // retry would resolve keylessly -- but the client cannot tell the two apart, so retention is
+  // never cleared on failure; replaying a key whose edge already exists is a server-side no-op.
+  // Retention has two tiers: this in-memory ref, and a
   // sessionStorage entry that also survives a reload (see retainedShareKeys.ts). Both are
   // discarded at the *first successful open* -- for a keyed open, the moment openGadget itself
-  // resolves (see the post-open clear below): from then on the confirmed edge makes every retry
+  // resolves (see the post-open clear below): from then on the redeemed edge makes every retry
   // resolvable keylessly, and a kept key would re-redeem the still-active link after an owner
   // removal. The sessionStorage tier is identity-stamped with the
   // capturing session's userId and honored only when the reading session's identity matches, so
@@ -225,19 +229,21 @@ export function useWorkspaceOpen({
         setOverseer({ stub: overseerStub })
 
         if (shareKey !== undefined && shareKeyCaptureId !== undefined) {
-          // The server confirms the redemption inside open(), so once this resolves the key's
+          // The server redeems the key inside open(), so once this resolves the key's
           // job is done -- and a retained copy could silently re-redeem the still-live link
           // after an owner removal. Await the open (one extra round trip, keyed opens only) so
           // retention is discarded as soon as success is knowable, rather than after
           // subscribeToMetadata below, whose own failure modes (the non-owner whoami round
-          // trip, a WS drop) don't revert the redemption. An open failure rejects here and
-          // reaches the same catch as before with retention kept -- correct, since the server
-          // reverted the redemption. A response lost in transit still leaves the key retained;
-          // that residue is irreducible.
+          // trip, a WS drop) say nothing about the redemption. An open failure rejects here and
+          // reaches the same catch as before with retention kept -- correct: the failure may
+          // have preceded the redemption (nothing persisted, the key is the only way back), and
+          // when it didn't, replaying the key against its existing edge is a no-op. A response
+          // lost in transit still leaves the key retained; that residue is irreducible.
           await overseerStub
-          // Reaching here proves the server durably confirmed the redemption -- nothing in
-          // disposal reverts it -- even if this attempt was superseded across the await. So
-          // clear exactly this attempt's retention before bailing: a kept confirmed key would
+          // Reaching here proves the server durably redeemed the key -- the edge is written
+          // before open() returns, and nothing in disposal unwinds it -- even if this attempt
+          // was superseded across the await. So
+          // clear exactly this attempt's retention before bailing: a kept spent key would
           // re-redeem the still-live link after an owner removal on every replay path (the
           // in-memory retry, the sessionStorage reload read, the reconnect re-run). A newer
           // attempt may meanwhile have captured its *own* key -- possibly the same key under
