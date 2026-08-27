@@ -40,7 +40,7 @@ function childListerFor(pid: number): [string, string[]] {
 }
 
 // Every pid in `pid`'s tree, `pid` included, collected breadth-first.
-async function collectTree(pid: number): Promise<number[]> {
+export async function collectTree(pid: number): Promise<number[]> {
   const collected = new Set<number>([pid]);
   let frontier = [pid];
   while (frontier.length > 0) {

@@ -73,12 +73,44 @@ const VITEST_SCRATCH_EXCLUSIONS: GlobWithBase[] = [
 ]
 
 /**
+ * Seconds of silence after which a command is considered wedged. A healthy `vitest run` prints a
+ * line per completed test file, so silence -- not wall clock -- is what distinguishes a hang from a
+ * slow suite.
+ */
+const IDLE_TIMEOUT_SECONDS = 60
+
+/** Wall-clock backstop, for a command that stays chatty while looping forever. */
+const TOTAL_TIMEOUT_SECONDS = 600
+
+/**
+ * Nothing under vitest bounds a wedged run -- its own timeouts are enforced inside the test worker
+ * that died, and Vite+ has no task timeout -- so a hung suite stalls the whole `vp run` until
+ * something outside kills it
+ *
+ * The path must stay *relative*: the command string is part of the cache fingerprint, so an
+ * absolute path derived from `import.meta.url` would differ per checkout and per CI runner and
+ * destroy cache portability. Relative works because every consumer lives at `packages/<name>/`.
+ *
+ * The thresholds are baked into the string rather than read from the environment for the same
+ * reason: a cached `vp` run strips undeclared env vars, so an override would silently not apply
+ * (and would owe `scripts/env-passthrough.test.ts` an entry). Here a policy change is a visible,
+ * fingerprinted change.
+ */
+const withTimeout = (command: string): string =>
+  `node ../../scripts/with-timeout.ts` +
+  ` --idle ${IDLE_TIMEOUT_SECONDS} --max ${TOTAL_TIMEOUT_SECONDS} -- ${command}`
+
+/**
  * The `test` task for a package, given the vitest invocation its `test` script used to hold.
  * An array of commands is run in order and cached as one entry per command, so a package with
  * codegen ahead of its tests can still replay the codegen and re-run only the tests.
  *
  * `extraExclusions` adds package-specific patterns to the shared ones. Only `workshop-frontend`
  * needs any: nothing else here writes a build artifact into a directory its own tests track.
+ *
+ * Every command is wrapped in the watchdog above, including the codegen steps some packages bundle
+ * into this task (`workshop-backend`'s `node build-browser-runtime.mjs`) -- those are equally
+ * unbounded.
  */
 export function vitestTask(
   command: string | string[],
@@ -86,7 +118,7 @@ export function vitestTask(
 ): VitestTask {
   const exclusions = [...VITEST_SCRATCH_EXCLUSIONS, ...extraExclusions]
   return {
-    command,
+    command: Array.isArray(command) ? command.map(withTimeout) : withTimeout(command),
     input: [{ auto: true }, ...exclusions],
     output: [{ auto: true }, ...exclusions],
   }
