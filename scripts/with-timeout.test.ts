@@ -79,7 +79,10 @@ const SPAWN_GRANDCHILD = `const { spawn } = require("node:child_process");
     console.log(child.pid);
     setTimeout(() => {}, 60_000);`;
 
-describe("with-timeout", () => {
+// Concurrent because every case here is a timer running out, not work being done: run in sequence
+// the file costs the sum of its thresholds, and in parallel it costs the longest one. Each case
+// owns its own process tree and asserts only on its own output, so they do not interact.
+describe("with-timeout", { concurrency: true }, () => {
   it("propagates the child's exit code", async () => {
     const zero = await runWrapper(["--idle", "10", "--max", "20", "--", "node", "-e", ""]);
     assert.equal(zero.code, 0);
