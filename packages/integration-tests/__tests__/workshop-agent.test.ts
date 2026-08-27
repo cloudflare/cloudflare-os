@@ -1,21 +1,15 @@
 import { z } from "zod";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import type { AiChatAuthorInfo, AiModelConfig } from "@gadgets/workshop-shared/api";
+import { openAgentSession } from "../src/agent-session.js";
 import {
   startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness,
 } from "../src/harness.js";
-import { scriptedChatCompletions } from "../src/mock-model.js";
+import {
+  scriptedChatCompletions, SCRIPTED_MODEL_CONFIG, SCRIPTED_MODEL_ID,
+  SCRIPTED_MODEL_PROFILE,
+} from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
-import { connect, listConnectedAccounts, nextUsernames, signUp, waitFor } from "../src/rpc-client.js";
-
-const MODEL_ID = "@cf/zai-org/glm-5.2";
-const MODEL_PROFILE: AiChatAuthorInfo = { type: "agent", id: MODEL_ID, name: "Scripted model" };
-const MODEL_CONFIG: AiModelConfig = {
-  provider: "cloudflare",
-  model: MODEL_ID,
-  accountId: "test-account",
-  apiToken: "test-token",
-};
+import { waitFor } from "../src/rpc-client.js";
 
 const CHAT_REQUEST = z.object({
   messages: z.array(z.object({
@@ -46,17 +40,29 @@ const CHAT_REQUEST = z.object({
 });
 
 let harness: Harness;
+const READ_TEST_VALUE =
+    "export default async function(self, env) { console.log(await env.TEST_AMBIENT.readValue()); }";
 const model = scriptedChatCompletions([
   {
     toolCall: {
       id: "read-test-value",
       name: "executeCode",
       arguments: {
-        code: "export default async function(self, env) { console.log(await env.TEST_AMBIENT.readValue()); }",
+        code: READ_TEST_VALUE,
       },
     },
   },
   { text: "The test value is 42." },
+  {
+    toolCall: {
+      id: "read-test-value-again",
+      name: "executeCode",
+      arguments: { code: READ_TEST_VALUE },
+    },
+  },
+  { text: "The test value is still 42." },
+  { error: { status: 503, message: "scripted provider outage" } },
+  { pending: true },
 ]);
 const network = new NetworkInterceptor([model.handler]);
 
@@ -74,31 +80,27 @@ afterAll(async () => {
   }
 });
 
-it("runs a scripted agent tool call through an ambient gatekeeper", async () => {
-  using publicApi = connect(harness.url);
-  const [username] = nextUsernames("agent");
-  if (username === undefined) throw new Error("Failed to allocate an agent-test username");
-  using authenticated = await signUp(publicApi, username);
-
-  await authenticated.addModel(MODEL_PROFILE, MODEL_CONFIG);
-  await authenticated.setQuickModel(null);
-  await authenticated.setPreferredModel(MODEL_ID);
-  await authenticated.completeOnboarding();
-  await authenticated.provisionAmbientAccount(TEST_VENDOR_ID);
-  await waitFor("the ambient test account to be provisioned", async () =>
-    (await listConnectedAccounts(authenticated)).some(account => account.vendorId === TEST_VENDOR_ID)
-      ? true : null);
-
-  using workspace = await authenticated.newGadget();
-  const chatId = await workspace.newChat("Read the test value and tell me what it is.", MODEL_ID);
-  const history = await waitFor("the scripted agent to return its final answer", async () => {
-    const current = await workspace.getChatHistory(chatId);
-    const error = current.messages.find(message => message.type === "error");
-    if (error !== undefined) throw new Error(`The scripted agent failed: ${error.message}`);
-    return current.messages.some(message =>
-      message.type === "message" && message.author.type === "agent" &&
-      message.message === "The test value is 42.") ? current : null;
+it("keeps multi-turn history and returns provider errors", async () => {
+  await using session = await openAgentSession(harness.url, {
+    modelId: SCRIPTED_MODEL_ID,
+    userModel: { profile: SCRIPTED_MODEL_PROFILE, config: SCRIPTED_MODEL_CONFIG },
+    ambientVendorIds: [TEST_VENDOR_ID],
   });
+  const requestsBefore = model.requests.length;
+  const preCancelled = new AbortController();
+  preCancelled.abort();
+  const cancelledBeforeDispatch = await session.runTurn("Do not send this prompt.", {
+    signal: preCancelled.signal,
+  });
+  expect(cancelledBeforeDispatch.outcome).toEqual({
+    status: "cancelled",
+    message: "Agent activation was cancelled",
+  });
+  expect(model.requests).toHaveLength(requestsBefore);
+
+  const result = await session.runTurn("Read the test value and tell me what it is.");
+
+  expect(result.outcome).toEqual({ status: "completed" });
   expect(model.requests).toHaveLength(2);
   const firstRequest = CHAT_REQUEST.parse(model.requests[0]);
   expect(firstRequest.messages).toContainEqual(expect.objectContaining({
@@ -141,7 +143,7 @@ it("runs a scripted agent tool call through an ambient gatekeeper", async () => 
     tool_call_id: "read-test-value",
     content: expect.stringContaining("42"),
   }));
-  expect(history.messages).toEqual(expect.arrayContaining([
+  expect(result.history).toEqual(expect.arrayContaining([
     expect.objectContaining({
       type: "message",
       author: expect.objectContaining({ type: "agent" }),
@@ -155,14 +157,58 @@ it("runs a scripted agent tool call through an ambient gatekeeper", async () => 
       message: "The test value is 42.",
     }),
   ]));
-  await waitFor("the scripted agent to become idle", async () => {
-    const chat = (await workspace.listChats()).find(entry => entry.id === chatId);
-    return chat !== undefined && chat.activeAgent === undefined ? true : null;
-  });
-  expect((await workspace.listActions({ filter: "observation" })).entries).toContainEqual(
+  expect((await session.listActions({ filter: "observation" })).entries).toContainEqual(
       expect.objectContaining({
         type: "observation",
         description: expect.objectContaining({ title: "Read the test value" }),
       }));
+  const cancelledAfterTurn = new AbortController();
+  cancelledAfterTurn.abort();
+  const retained = await session.runTurn("Do not send this repeated prompt.", {
+    signal: cancelledAfterTurn.signal,
+  });
+  expect(retained.outcome.status).toBe("cancelled");
+  expect(retained.history).toEqual(result.history);
+  expect(retained.workpieces).toEqual(result.workpieces);
+  expect(retained.usage).toEqual(result.usage);
+  expect(model.requests).toHaveLength(2);
+  const second = await session.runTurn("Check the test value again.");
+  expect(second.outcome).toEqual({ status: "completed" });
+  expect(model.requests).toHaveLength(4);
+  expect(second.history).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      type: "message",
+      author: expect.objectContaining({ type: "user" }),
+      message: "Check the test value again.",
+    }),
+    expect.objectContaining({
+      type: "message",
+      author: expect.objectContaining({ type: "agent" }),
+      message: "The test value is still 42.",
+    }),
+  ]));
+  const failed = await session.runTurn("Trigger the scripted provider failure.");
+  expect(failed.outcome).toMatchObject({
+    status: "error",
+    message: expect.stringContaining("scripted provider outage"),
+  });
+  expect(failed.history).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      type: "error",
+      message: expect.stringContaining("scripted provider outage"),
+    }),
+  ]));
+  expect(model.requests).toHaveLength(5);
+  const controller = new AbortController();
+  const cancelling = session.runTurn("Trigger a model request that never resolves.", {
+    timeoutMs: 40_000,
+    signal: controller.signal,
+  });
+  await waitFor("the pending model request", () =>
+    Promise.resolve(model.requests.length === 6 ? true : null));
+  controller.abort();
+  const cancelled = await cancelling;
+  expect(cancelled.outcome).toMatchObject({ status: "cancelled" });
+  expect(() => session.runTurn("Do not run this turn.")).toThrow("cannot continue");
   expect(model.remainingSteps()).toBe(0);
 });

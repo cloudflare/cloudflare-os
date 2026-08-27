@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./harness": "./src/harness.ts",
+    "./agent-session": "./src/agent-session.ts",
     "./network-interceptor": "./src/network-interceptor.ts",
     "./rpc-client": "./src/rpc-client.ts"
   },

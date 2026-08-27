@@ -43,6 +43,7 @@ const TYPES_CODE = `
 interface TestThing {
   readValue(): Promise<number>;
   writeValue(value: number): Promise<number>;
+  writeValues(values: number[]): Promise<number[]>;
 }
 `;
 
@@ -296,6 +297,7 @@ export class TestVerifier
 export interface TestSession {
   readValue(): Promise<number>;
   writeValue(value: number): Promise<number>;
+  writeValues(values: number[]): Promise<number[]>;
 }
 
 @validateRpc()
@@ -333,6 +335,10 @@ class TestSessionTarget extends RpcTarget implements TestSession {
       await this.state.discardAction(this.label, id);
       throw error;
     }
+  }
+
+  async writeValues(values: number[]): Promise<number[]> {
+    return Promise.all(values.map(value => this.writeValue(value)));
   }
 
   [Symbol.dispose](): void {
