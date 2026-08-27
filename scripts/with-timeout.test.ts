@@ -59,14 +59,25 @@ async function waitUntilGone(pid: number, timeoutMs = 10_000): Promise<boolean> 
   return true;
 }
 
-/** A `node -e` body that prints `text` every 50ms for `forMs`, then exits 0. */
-function chatty(text: string, forMs: number | "forever"): string {
-  const stop = forMs === "forever" ? "" :
-    `setTimeout(() => { clearInterval(t); process.exit(0); }, ${forMs});`;
-  return `const t = setInterval(() => console.log(${JSON.stringify(text)}), 50); ${stop}`;
-}
+// The `node -e` bodies below are fixed source: everything that varies per case is passed as argv
+// (`node -e <src> a b` puts `a`, `b` at `process.argv[1]` and `[2]`) rather than interpolated in.
+// Building code by substitution is what CodeQL's `js/bad-code-sanitization` flags, and
+// `JSON.stringify` is not the escape for it -- U+2028 and U+2029 survive it and terminate a line in
+// JavaScript source. Passing values out-of-band means there is no escaping to get right.
 
+/** Prints `argv[1]` every 50ms, exiting 0 after `argv[2]` ms if given, otherwise forever. */
+const CHATTY = `const [text, stopAfterMs] = process.argv.slice(1);
+    const ticker = setInterval(() => console.log(text), 50);
+    if (stopAfterMs) setTimeout(() => { clearInterval(ticker); process.exit(0); }, +stopAfterMs);`;
+
+/** Never exits, prints nothing. */
 const IDLE = "setTimeout(() => {}, 60_000)";
+
+/** Spawns `argv[1]` as a detached-stdio grandchild, prints its pid, then idles. */
+const SPAWN_GRANDCHILD = `const { spawn } = require("node:child_process");
+    const child = spawn(process.execPath, ["-e", process.argv[1]], { stdio: "ignore" });
+    console.log(child.pid);
+    setTimeout(() => {}, 60_000);`;
 
 describe("with-timeout", () => {
   it("propagates the child's exit code", async () => {
@@ -97,7 +108,7 @@ describe("with-timeout", () => {
   it("lets output reset the idle timer", async () => {
     // Chatty for well over the idle window: each chunk re-arms it, so this must run to completion.
     const run = await runWrapper(
-        ["--idle", "0.4", "--max", "30", "--", "node", "-e", chatty("tick", 1_200)]);
+        ["--idle", "0.4", "--max", "30", "--", "node", "-e", CHATTY, "tick", "1200"]);
     assert.equal(run.code, 0, run.stderr);
     assert.doesNotMatch(run.stderr, /with-timeout:/);
   });
@@ -112,8 +123,9 @@ describe("with-timeout", () => {
   });
 
   it("kills a chatty but endless child at the total threshold", async () => {
+    // No stop argument, so it never exits on its own.
     const run = await runWrapper(
-        ["--idle", "30", "--max", "1", "--", "node", "-e", chatty("tick", "forever")]);
+        ["--idle", "30", "--max", "1", "--", "node", "-e", CHATTY, "tick"]);
     assert.equal(run.code, 124);
     assert.match(run.stderr, /still running for 1s/);
   });
@@ -122,12 +134,8 @@ describe("with-timeout", () => {
     // The workerd case: the command itself is a wrapper, and the process that is actually stuck is
     // its child. Same shape as `kill-process-tree.test.ts`'s `spawnWrapper` -- the grandchild's pid
     // comes back over stdout, since that is the only handle a caller would have on it.
-    const pending = runWrapper(["--idle", "0.5", "--max", "30", "--", "node", "-e",
-      `const { spawn } = require("node:child_process");
-       const child = spawn(process.execPath, ["-e", ${JSON.stringify(IDLE)}], { stdio: "ignore" });
-       console.log(child.pid);
-       ${IDLE}`,
-    ]);
+    const pending = runWrapper(
+        ["--idle", "0.5", "--max", "30", "--", "node", "-e", SPAWN_GRANDCHILD, IDLE]);
 
     const grandchildPid = Number((await pending.awaitStdout(/\d+/))[0]);
     assert.ok(grandchildPid, "the command never reported a grandchild pid");
