@@ -1,0 +1,26 @@
+{
+  "name": "@gadgets/workshop-evals",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test:run": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts",
+    "evals": "pnpm exec vp run -F @gadgets/integration-tests build:test-gatekeeper && vitest run --config vitest.eval.config.ts --reporter=vitest-evals/reporter --reporter=json --outputFile.json=.wrangler/evals/results.json",
+    "evals:ui": "vitest-evals serve .wrangler/evals/results.json"
+  },
+  "dependencies": {
+    "@gadgets/integration-tests": "workspace:*",
+    "@gadgets/workshop-shared": "workspace:*",
+    "capnweb": "catalog:",
+    "vitest-evals": "0.16.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260808.1",
+    "@types/node": "^26.1.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

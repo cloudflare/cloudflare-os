@@ -22,13 +22,28 @@ export type Handler = (
   request: Request,
 ) => Response | null | Promise<Response | null>;
 
+/** Decides whether one request may use the real network. */
+export type AllowRequest = (url: URL, method: string, headers: Headers) => boolean;
+
+type NetworkInterceptorOptions = {
+  handlers?: Handler[];
+  allow?: AllowRequest;
+  allowLoopback?: boolean;
+};
+
 export class NetworkInterceptor {
   readonly #handlers: readonly Handler[];
+  readonly #allow: AllowRequest | undefined;
+  readonly #allowLoopback: boolean;
   #realFetch: typeof globalThis.fetch | null = null;
   #unmockedCalls: string[] = [];
 
-  constructor(handlers: Handler[] = []) {
+  constructor({
+    handlers = [], allow, allowLoopback = true,
+  }: NetworkInterceptorOptions = {}) {
     this.#handlers = [...handlers];
+    this.#allow = allow;
+    this.#allowLoopback = allowLoopback;
   }
 
   install(): void {
@@ -44,8 +59,11 @@ export class NetworkInterceptor {
         : input.url;
       const url = new URL(raw);
 
-      // The harness dispatches its own traffic over loopback; let that through untouched.
-      if (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]") {
+      // Test clients use loopback by default. Security-sensitive callers can route it through
+      // their handlers instead so model-authored requests cannot reach host services.
+      if (this.#allowLoopback &&
+          (url.hostname === "localhost" || url.hostname === "127.0.0.1" ||
+           url.hostname === "[::1]")) {
         return realFetch(input, init);
       }
 
@@ -54,6 +72,8 @@ export class NetworkInterceptor {
       // this point `input` is never forwarded anywhere, so disturbing it costs nothing.
       const request = new Request(input, init);
       const method = request.method.toUpperCase();
+
+      if (this.#allow?.(url, method, request.headers)) return realFetch(request);
 
       for (const handler of this.#handlers) {
         const response = await handler(url, method, request.headers, request);

@@ -12,10 +12,10 @@ let fetchedByReal: string[];
 
 beforeEach(() => {
   fetchedByReal = [];
-  globalThis.fetch = (async (input: unknown) => {
-    fetchedByReal.push(String(input));
+  globalThis.fetch = async (input: Parameters<typeof fetch>[0]) => {
+    fetchedByReal.push(input instanceof Request ? input.url : String(input));
     return new Response("from the real fetch");
-  }) as typeof globalThis.fetch;
+  };
 });
 
 afterEach(() => {
@@ -40,7 +40,7 @@ it("asks handlers in order and takes the first non-null answer", async () => {
   const asked: string[] = [];
   const declines: Handler = url => { asked.push(`declines ${url.host}`); return null; };
   const answers: Handler = url => { asked.push(`answers ${url.host}`); return new Response("two"); };
-  new NetworkInterceptor([declines, answers, neverAsked]).install();
+  new NetworkInterceptor({ handlers: [declines, answers, neverAsked] }).install();
 
   const res = await fetch("https://vendor.test/api");
   expect(await res.text()).toBe("two");
@@ -48,12 +48,22 @@ it("asks handlers in order and takes the first non-null answer", async () => {
   expect(fetchedByReal).toEqual([]);
 });
 
+it("passes an explicitly allowed external request to the real fetch", async () => {
+  const interceptor = new NetworkInterceptor({ handlers: [], allow: url => url.hostname === "model.test" });
+  interceptor.install();
+
+  const response = await fetch("https://model.test/chat");
+  expect(await response.text()).toBe("from the real fetch");
+  expect(fetchedByReal).toEqual(["https://model.test/chat"]);
+  expect(interceptor.getUnmockedCalls()).toEqual([]);
+});
+
 it("supports a handler that parks until the test provides an answer", async () => {
   // Load-bearing for the CF Access transfer mock: the Worker starts polling before the test knows
   // what to serve, so a handler must be able to wait (see the Handler type's doc comment).
   let serve!: (body: string) => void;
   const parked = new Promise<string>(resolve => { serve = resolve; });
-  new NetworkInterceptor([async () => new Response(await parked)]).install();
+  new NetworkInterceptor({ handlers: [async () => new Response(await parked)] }).install();
 
   const pending = fetch("https://vendor.test/poll");
   serve("finally");
@@ -66,7 +76,7 @@ it("hands handlers the method and headers from any fetch input form", async () =
     seen.push(`${method} ${url.href} auth=${headers.get("authorization")}`);
     return new Response(null, { status: 204 });
   };
-  new NetworkInterceptor([record]).install();
+  new NetworkInterceptor({ handlers: [record] }).install();
 
   await fetch("https://a.test/", { method: "post", headers: { authorization: "one" } });
   await fetch(new URL("https://b.test/"));
@@ -79,7 +89,7 @@ it("hands handlers the method and headers from any fetch input form", async () =
 });
 
 it("throws on an unmatched request and records it", async () => {
-  const interceptor = new NetworkInterceptor([() => null]);
+  const interceptor = new NetworkInterceptor({ handlers: [() => null] });
   interceptor.install();
 
   await expect(fetch("https://escaped.test/x")).rejects.toThrow(

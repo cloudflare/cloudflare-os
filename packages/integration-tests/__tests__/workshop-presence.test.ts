@@ -22,7 +22,7 @@ class PresenceRecorder extends RpcTarget implements PresenceSubscriber {
 }
 
 let harness: Harness | undefined;
-const network = new NetworkInterceptor([mockChatCompletion("Test chat")]);
+const network = new NetworkInterceptor({ handlers: [mockChatCompletion("Test chat")] });
 
 beforeAll(async () => {
   network.install();

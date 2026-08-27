@@ -36,6 +36,11 @@ export const ADMIN_USERNAME = "admin";
 const WORKER_CONFIG = z.looseObject({
   name: z.string(),
   main: z.string(),
+  account_id: z.string().optional(),
+  ai: z.looseObject({
+    binding: z.string(),
+    remote: z.boolean().optional(),
+  }).optional(),
   build: z.looseObject({ command: z.string().optional(), cwd: z.string().optional() }).optional(),
   services: z.array(z.looseObject({
     binding: z.string(),

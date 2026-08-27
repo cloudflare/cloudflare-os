@@ -1,8 +1,8 @@
 import type { RpcPromise, RpcStub } from "capnweb";
 import type {
   ActionHistoryFilter, ActionHistoryPage, AiChatAuthorInfo, AiChatHistoryPage, AiChatMessage,
-  AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AiModelConfig, AuthenticatedApi, Overseer,
-  PublicApi, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber,
+  AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AiModelConfig, AuthenticatedApi, GadgetClient,
+  Overseer, PublicApi, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber,
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import {
@@ -54,6 +54,9 @@ export type AgentTurnResult = {
 /** Filters accepted by the public action-history API. */
 export type ActionListOptions = { beforeId?: number; filter?: ActionHistoryFilter };
 
+/** Gadget client and chat branch needed to connect to provisional agent code. */
+export type ProvisionalGadget = { client: RpcStub<GadgetClient>; chatId: number };
+
 /**
  * Drives a fresh local Workshop account and workspace through the public Cap'n Web API.
  * `runTurn()` observes one active-to-idle agent activation. It does not claim that late callbacks
@@ -66,6 +69,7 @@ export interface WorkshopAgentSession extends AsyncDisposable {
       ids: readonly [number, ...number[]], options?: AgentTurnOptions): Promise<AgentTurnResult>;
   listActions(options?: ActionListOptions): Promise<ActionHistoryPage>;
   connectedAccount(vendorId: string): ConnectedAccount;
+  openGadget(id: WorkpieceId): Promise<ProvisionalGadget>;
   close(): Promise<void>;
 }
 
@@ -444,6 +448,13 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     return account;
   }
 
+  async openGadget(id: WorkpieceId): Promise<ProvisionalGadget> {
+    this.#assertNotClosed();
+    const chatId = this.#chatId;
+    if (chatId === undefined) throw new Error("The session has no chat branch");
+    return { client: await this.#workspace.getGadget(id), chatId };
+  }
+
   close(): Promise<void> {
     this.#closePromise ??= this.#close();
     return this.#closePromise;
@@ -695,8 +706,12 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   }
 
   #assertOpen(): void {
-    if (this.#closed) throw new Error("WorkshopAgentSession is closed");
+    this.#assertNotClosed();
     if (this.#terminal) throw new Error("WorkshopAgentSession cannot continue after interruption");
+  }
+
+  #assertNotClosed(): void {
+    if (this.#closed) throw new Error("WorkshopAgentSession is closed");
   }
 }
 

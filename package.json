@@ -8,6 +8,8 @@
     "build": "vp run -r --cache build",
     "run-local": "node scripts/run-local.ts",
     "test": "vp run --filter '!cloudflare-os' --cache test",
+    "evals": "pnpm --filter @gadgets/workshop-evals evals",
+    "evals:ui": "pnpm --filter @gadgets/workshop-evals evals:ui",
     "preview:config": "node scripts/preview/preview.ts config",
     "preview:deploy": "node scripts/preview/preview.ts deploy",
     "preview:delete": "node scripts/preview/preview.ts delete",

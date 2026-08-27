@@ -24,7 +24,7 @@ const model = scriptedChatCompletions([
   },
   { text: "The test value was updated." },
 ]);
-const network = new NetworkInterceptor([model.handler]);
+const network = new NetworkInterceptor({ handlers: [model.handler] });
 
 beforeAll(async () => {
   network.install();

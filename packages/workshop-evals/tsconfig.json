@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node", "@cloudflare/workers-types"],
+    "noEmit": true,
+    "paths": {
+      "@gadgets/integration-tests/*": ["../integration-tests/src/*"],
+      "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"]
+    }
+  },
+  "include": ["src", "evals", "*.ts"],
+  "exclude": ["node_modules"]
+}

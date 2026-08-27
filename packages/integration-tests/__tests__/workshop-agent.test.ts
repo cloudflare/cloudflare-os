@@ -64,7 +64,7 @@ const model = scriptedChatCompletions([
   { error: { status: 503, message: "scripted provider outage" } },
   { pending: true },
 ]);
-const network = new NetworkInterceptor([model.handler]);
+const network = new NetworkInterceptor({ handlers: [model.handler] });
 
 beforeAll(async () => {
   network.install();
