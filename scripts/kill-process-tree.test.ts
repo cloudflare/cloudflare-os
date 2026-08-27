@@ -22,7 +22,10 @@ async function waitUntilGone(pid: number, timeoutMs = 10_000): Promise<boolean> 
   return true;
 }
 
-describe("killProcessTree", () => {
+// Concurrent for the reason `with-timeout.test.ts` is: these cases spend their time waiting on
+// signalled processes to go away, not doing work, so in sequence the file costs the sum of those
+// waits. Each spawns its own tree and addresses it by pid, so they cannot reach each other.
+describe("killProcessTree", { concurrency: true }, () => {
   it("rejects a non-numeric pid rather than signalling a process group", async () => {
     await assert.rejects(
         killProcessTree("not-a-pid" as unknown as number), /pid must be a positive integer/);
@@ -111,7 +114,7 @@ async function spawnWrapper(grandchildBody: string): Promise<{
   return { wrapperPid, grandchildPid, cleanUp };
 }
 
-describe("killProcessTreeEscalating", () => {
+describe("killProcessTreeEscalating", { concurrency: true }, () => {
   it("SIGKILLs a descendant that ignored the SIGTERM", async () => {
     const { wrapperPid, grandchildPid, cleanUp } = await spawnWrapper(IGNORES_SIGTERM);
     try {
