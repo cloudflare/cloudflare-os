@@ -80,7 +80,9 @@ async function spawnWrapper(grandchildBody: string): Promise<{
     `const { spawn } = require("node:child_process");
      const child = spawn(process.execPath, ["-e", ${JSON.stringify(grandchildBody)}],
          { stdio: "ignore" });
-     console.log(child.pid);
+     // The test runner sets FORCE_COLOR for a TTY; writing a number through console.log would add
+     // an ANSI color code whose leading "33" could be mistaken for the pid below.
+     process.stdout.write(String(child.pid) + "\\n");
      ${IDLE}`,
   ], { stdio: ["ignore", "pipe", "ignore"] });
 
@@ -100,7 +102,7 @@ async function spawnWrapper(grandchildBody: string): Promise<{
     let output = "";
     for await (const chunk of wrapper.stdout) {
       output += String(chunk);
-      const printed = /\d+/.exec(output);
+      const printed = /^\d+$/.exec(output.trimEnd());
       if (printed) {
         grandchildPid = Number(printed[0]);
         break;
