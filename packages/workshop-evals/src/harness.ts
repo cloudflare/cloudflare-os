@@ -28,6 +28,25 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message:
   }
 }
 
+async function beforeDeadline<T>(
+    start: () => Promise<T>, deadline: number, message: string,
+    signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) throw new EvalDeadlineError("Eval run was cancelled");
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new EvalDeadlineError(message);
+  const operation = withTimeout(start(), remaining, message);
+  if (signal === undefined) return operation;
+  const aborted = Promise.withResolvers<never>();
+  const onAbort = () => aborted.reject(new EvalDeadlineError("Eval run was cancelled"));
+  signal.addEventListener("abort", onAbort, { once: true });
+  aborted.promise.catch(() => {});
+  try {
+    return await Promise.race([operation, aborted.promise]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 /** Run one real Workshop task and retain its functional result and trajectory. */
 export function createWorkshopHarness(
     task: EvalTask, access: LocalModelAccess, identity: EvalIdentity) {
@@ -76,12 +95,26 @@ export function createWorkshopHarness(
             usage.observedCumulativeChatCostUsd = cumulativeCost;
           }
           const verificationStartedAt = Date.now();
+          const verificationDeadline = verificationStartedAt + verificationBudget;
+          if (result.outcome.status !== "completed" || signal?.aborted) {
+            runError = new EvalDeadlineError(
+                result.outcome.status === "completed"
+                  ? "Eval run was cancelled"
+                  : result.outcome.message);
+            turns.push({
+              outcome: result.outcome,
+              checks: [],
+              turnWallMs,
+              verificationWallMs: 0,
+            });
+            break;
+          }
           const verifier = new EvalVerifier(opened.session, result.workpieces);
           let checks: EvalCheck[];
           try {
-            checks = await withTimeout(
-                verifier.collect(turn.verify), verificationBudget,
-                "Eval verification exceeded its time budget");
+            checks = await beforeDeadline(
+                () => verifier.collect(turn.verify), verificationDeadline,
+                "Eval verification exceeded its time budget", signal);
           } catch (error) {
             checks = [...verifier.results(), {
               id: "verifier.timeout",
@@ -96,6 +129,76 @@ export function createWorkshopHarness(
             });
             throw error;
           }
+
+          if (checks.some(check => !check.pass)) {
+            turns.push({
+              outcome: result.outcome,
+              checks,
+              turnWallMs,
+              verificationWallMs: Date.now() - verificationStartedAt,
+            });
+            break;
+          }
+
+          const verifyAfterAccept = turn.verifyAfterAccept;
+          if (result.outcome.status === "completed" && verifyAfterAccept !== undefined) {
+            const hasChangesToReload = result.history.some(message =>
+              message.sequence > previousSequence && message.type === "changes");
+            if (!hasChangesToReload) {
+              checks.push({
+                id: "accept.no-changes",
+                pass: false,
+                evidence: "Post-accept verification requires a new code change to reload.",
+              });
+              turns.push({
+                outcome: result.outcome,
+                checks,
+                turnWallMs,
+                verificationWallMs: Date.now() - verificationStartedAt,
+              });
+              break;
+            }
+            const session = opened.session;
+            try {
+              await beforeDeadline(
+                  () => session.acceptChanges(), verificationDeadline,
+                  "Accepting verified agent changes exceeded its time budget", signal);
+            } catch (error) {
+              checks.push({
+                id: "accept.failed",
+                pass: false,
+                evidence: error instanceof Error ? error.message : String(error),
+              });
+              turns.push({
+                outcome: result.outcome,
+                checks,
+                turnWallMs,
+                verificationWallMs: Date.now() - verificationStartedAt,
+              });
+              throw error;
+            }
+
+            const afterAccept = new EvalVerifier(session, result.workpieces);
+            try {
+              checks.push(...await beforeDeadline(
+                  () => afterAccept.collect(verifyAfterAccept), verificationDeadline,
+                  "Post-accept verification exceeded its time budget", signal));
+            } catch (error) {
+              checks.push(...afterAccept.results(), {
+                id: "post-accept-verifier.timeout",
+                pass: false,
+                evidence: error instanceof Error ? error.message : String(error),
+              });
+              turns.push({
+                outcome: result.outcome,
+                checks,
+                turnWallMs,
+                verificationWallMs: Date.now() - verificationStartedAt,
+              });
+              throw error;
+            }
+          }
+
           turns.push({
             outcome: result.outcome,
             checks,

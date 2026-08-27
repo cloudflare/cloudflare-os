@@ -1,0 +1,74 @@
+name: Workshop evals
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: Comma-separated model IDs; blank uses DeepSeek V4 Pro
+      trials:
+        description: Repetitions per task and model
+        default: "1"
+        required: true
+      reportOnly:
+        description: Report failed trials without failing the workflow
+        type: boolean
+        default: false
+        required: true
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
+        with:
+          node-version: "24.19.0"
+          cache: true
+          run-install: true
+
+      - name: Run local workerd evals
+        continue-on-error: true
+        env:
+          CF_AI_GATEWAY: ${{ secrets.CF_AI_GATEWAY_NAME }}
+          CF_AI_GATEWAY_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
+          CF_AI_GATEWAY_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+          WORKSHOP_EVAL_MODELS: ${{ inputs.models }}
+          WORKSHOP_EVAL_TRIALS: ${{ inputs.trials }}
+          WORKSHOP_EVAL_COMMIT: ${{ github.sha }}
+        run: pnpm evals
+
+      - name: Require eval results
+        run: test -f packages/workshop-evals/.wrangler/evals/results.json
+
+      - name: Upload eval results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: workshop-evals
+          path: packages/workshop-evals/.wrangler/evals/results.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+      # The zero floor keeps report validation active without rejecting task misses in report-only mode.
+      - name: Publish eval report
+        uses: getsentry/vitest-evals@d37153f06d7d086393927c57a2faaeff464a55e2 # v0
+        with:
+          results: packages/workshop-evals/.wrangler/evals/results.json
+          publish-check: true
+          check-name: Workshop evals
+          fail-on-failures: ${{ !inputs.reportOnly }}
+          min-pass-rate: 0
+          soft-fail: false

@@ -70,6 +70,7 @@ export interface WorkshopAgentSession extends AsyncDisposable {
   listActions(options?: ActionListOptions): Promise<ActionHistoryPage>;
   connectedAccount(vendorId: string): ConnectedAccount;
   openGadget(id: WorkpieceId): Promise<ProvisionalGadget>;
+  acceptChanges(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -453,6 +454,14 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     const chatId = this.#chatId;
     if (chatId === undefined) throw new Error("The session has no chat branch");
     return { client: await this.#workspace.getGadget(id), chatId };
+  }
+
+  async acceptChanges(): Promise<void> {
+    this.#assertOpen();
+    const chatId = this.#chatId;
+    if (chatId === undefined) throw new Error("The session has no chat changes to accept");
+    const result = await this.#workspace.mergeChanges(chatId);
+    if (result.outcome !== "merged") throw new Error("The agent changes are stale");
   }
 
   close(): Promise<void> {

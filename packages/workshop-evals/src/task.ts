@@ -17,6 +17,8 @@ export type EvalCheck = {
 export type EvalTurn = {
   prompt: string;
   verify(verifier: EvalVerifier): Promise<void>;
+  /** Commit this turn, reload its Gadgets, then run these checks. */
+  verifyAfterAccept?(verifier: EvalVerifier): Promise<void>;
 };
 
 export type EvalTask = {
