@@ -10,8 +10,9 @@
   },
   "scripts": {
     "build": "tsc --noEmit",
-    "test:run": "vitest run",
-    "test:watch": "vitest"
+    "test:prebuild": "vp run -F @gadgets/workshop-backend build:integration-worker",
+    "test:run": "pnpm run test:prebuild && vitest run",
+    "test:watch": "pnpm run test:prebuild && vitest"
   },
   "dependencies": {
     "@gadgets/workshop-shared": "workspace:*",

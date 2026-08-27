@@ -83,6 +83,9 @@ function workshopConfig(
     gatekeepers: { binding: string; name: string }[],
     patch?: (config: WorkerConfig) => void): WorkerConfig {
   const config = readWorkerConfig(WORKSHOP_DIR);
+  // globalSetup completed the destructive shared `.wrangler/validate` build before file workers
+  // started. Rebuilding it in each fork would race on that directory.
+  if (process.env.WORKSHOP_INTEGRATION_PREBUILT === "1") delete config.build;
 
   // The checked-in config declares no services; run-dev-server.ts adds one per gatekeeper. We add
   // only the ones the suite asked for, so buildGatekeeperVendorMap() discovers exactly those vendors

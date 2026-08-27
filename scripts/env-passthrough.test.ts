@@ -49,6 +49,10 @@ const EXPECTED: Record<string, ExpectedArea> = {
     forwarded: ["VITE_FRONTEND_ERROR_REPORTING"],
     injected: ["GATEKEEPER_APP_UNMINIFIED"],
   },
+  "packages/integration-tests": {
+    injected: ["WORKSHOP_INTEGRATION_PREBUILT"],
+    uncached: ["FORMAT_BLUEPRINTS_DIR"],
+  },
   // `env: ['VITE_*']` — vite's `define` inlines any VITE_-prefixed variable, so the set this
   // package can depend on is open-ended and the wildcard is the only honest declaration.
   "packages/workshop-frontend": {

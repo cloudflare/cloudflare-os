@@ -96,7 +96,7 @@ const TOTAL_TIMEOUT_SECONDS = 600
  * (and would owe `scripts/env-passthrough.test.ts` an entry). Here a policy change is a visible,
  * fingerprinted change.
  */
-const withTimeout = (command: string): string =>
+export const withTestTimeout = (command: string): string =>
   `node ../../scripts/with-timeout.ts` +
   ` --idle ${IDLE_TIMEOUT_SECONDS} --max ${TOTAL_TIMEOUT_SECONDS} -- ${command}`
 
@@ -118,7 +118,7 @@ export function vitestTask(
 ): VitestTask {
   const exclusions = [...VITEST_SCRATCH_EXCLUSIONS, ...extraExclusions]
   return {
-    command: Array.isArray(command) ? command.map(withTimeout) : withTimeout(command),
+    command: Array.isArray(command) ? command.map(withTestTimeout) : withTestTimeout(command),
     input: [{ auto: true }, ...exclusions],
     output: [{ auto: true }, ...exclusions],
   }
