@@ -259,6 +259,8 @@ export class ChatOtClient {
   setDurableState(durable: ChatDurableCode): void {
     this.#enqueue(async () => {
       const codeBase = durable.codeBase ?? { pins: [], generation: 0, revision: 0 }
+      // Messages can arrive before the metadata that covers their materialization watermark.
+      if (durable.rowsThrough > codeBase.revision) return
       this.#latestDurable = durable
 
       if (!this.#ready) {

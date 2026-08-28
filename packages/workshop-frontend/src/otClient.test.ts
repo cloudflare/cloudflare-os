@@ -569,4 +569,33 @@ describe('ChatOtClient', () => {
     await flush()
     expect(filesOf(h.client.getContent(), 1)).toEqual({ 'a.txt': 'abc!' })
   })
+  it('waits for metadata that covers a materialized change before rebuilding', async () => {
+    const h = new TestHarness()
+    h.commits.set('c1', new Map([['a.txt', 'abc']]))
+    h.client.setDurableState({ rowsThrough: 0 })
+    await flush()
+
+    // Subscription replay delivers the durable message before its metadata. Without the pin from
+    // that metadata, applying the message's edit would rebuild the gadget from an empty tree.
+    h.client.setDurableState({
+      codeBase: { pins: [], generation: 0, revision: 0 },
+      epochChange: { 1: [['a.txt', { edit: [3, [0, '!']] }]] },
+      rowsThrough: 1,
+    })
+    await flush()
+    expect(h.fatal).toBe(null)
+    expect(h.client.hasGadget(1)).toBe(false)
+
+    h.client.setDurableState({
+      codeBase: {
+        pins: [{ gadgetId: 1, baseCommit: 'c1', mergedCommit: 'c1' }],
+        generation: 0, revision: 1,
+      },
+      epochChange: { 1: [['a.txt', { edit: [3, [0, '!']] }]] },
+      rowsThrough: 1,
+    })
+    await flush()
+    expect(h.fatal).toBe(null)
+    expect(filesOf(h.client.getContent(), 1)).toEqual({ 'a.txt': 'abc!' })
+  })
 })
