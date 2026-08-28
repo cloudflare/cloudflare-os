@@ -1,4 +1,4 @@
-export const preferJsdoc = {
+const preferJsdoc = {
   meta: {
     type: "layout",
     docs: {

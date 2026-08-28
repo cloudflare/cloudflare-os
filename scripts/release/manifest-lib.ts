@@ -133,6 +133,16 @@ export interface WranglerConfig {
   $schema?: string;
 }
 
+/** A deployable workspace package and its parsed Wrangler configuration. */
+export interface DeployablePackage {
+  /** Package directory name, which is also the worker name. */
+  name: string;
+  /** Absolute path to the package directory. */
+  dir: string;
+  /** The package's parsed wrangler.jsonc. */
+  config: WranglerConfig;
+}
+
 /** One user-supplied value the deploy wizard collects before installing a gatekeeper. */
 export interface DeployInput {
   /** Env var / secret name the worker reads. Screaming snake case. */
@@ -287,8 +297,10 @@ export const DEFAULT_CRED_INPUTS: DeployInput[] = [
   },
 ];
 
-/** Discover the deployable set: every public package with a wrangler.jsonc. */
-export function findDeployablePackages(packagesDir: string): { name: string; dir: string }[] {
+const GATEKEEPER_PREFIX = "gatekeeper-";
+
+/** Read every deployable package and its Wrangler configuration, sorted by package name. */
+export function readDeployablePackages(packagesDir: string): DeployablePackage[] {
   return readdirSync(packagesDir)
       .filter((name) => {
     try {
@@ -298,12 +310,21 @@ export function findDeployablePackages(packagesDir: string): { name: string; dir
     }
   })
       .toSorted()
-      .map((name) => ({ name, dir: join(packagesDir, name) }));
+      .map((name) => {
+    const dir = join(packagesDir, name);
+    const config = parse(readFileSync(join(dir, "wrangler.jsonc"), "utf8")) as WranglerConfig;
+    return { name, dir, config };
+  });
 }
 
-/** Parse one package's wrangler.jsonc. */
-export function readWranglerConfig(pkgDir: string): WranglerConfig {
-  return parse(readFileSync(join(pkgDir, "wrangler.jsonc"), "utf8")) as WranglerConfig;
+/** True when a deployable package is a gatekeeper worker. */
+export function isGatekeeperPackage(pkgName: string): boolean {
+  return pkgName.startsWith(GATEKEEPER_PREFIX);
+}
+
+/** Return a gatekeeper package's vendor id used in its routed URL. */
+export function gatekeeperShortName(pkgName: string): string {
+  return pkgName.slice(GATEKEEPER_PREFIX.length);
 }
 
 /** Read a package's `deploy-inputs.json`, or undefined if it declares none. */
@@ -316,12 +337,8 @@ export function readDeployInputs(pkgDir: string): DeployInput[] | undefined {
 function workerKind(pkgName: string): WorkerEntry["kind"] {
   if (pkgName === "workshop-backend") return "backend";
   if (pkgName === "router") return "router";
-  if (pkgName.startsWith("gatekeeper-")) return "gatekeeper";
+  if (isGatekeeperPackage(pkgName)) return "gatekeeper";
   throw new Error(`cannot classify deployable package: ${pkgName}`);
-}
-
-function shortName(pkgName: string): string {
-  return pkgName.slice("gatekeeper-".length);
 }
 
 /**
@@ -422,7 +439,7 @@ export function buildWorkerEntry(
     // (default entrypoint — it forwards whole HTTP requests, not vendor RPC).
     gatekeeperBindingExpansion = { propsByPackage: {} };
   } else {
-    vars.BASE_URL = `$PUBLIC_BASE_URL/gatekeeper/${shortName(pkgName)}`;
+    vars.BASE_URL = `$PUBLIC_BASE_URL/gatekeeper/${gatekeeperShortName(pkgName)}`;
     installable = !NOT_INSTALLABLE.has(pkgName);
     if (installable) {
       inputs = deployInputs ??
@@ -444,7 +461,7 @@ export function buildWorkerEntry(
 
   return {
     kind,
-    ...(kind === "gatekeeper" ? { shortName: shortName(pkgName) } : {}),
+    ...(kind === "gatekeeper" ? { shortName: gatekeeperShortName(pkgName) } : {}),
     installable,
     ...(PREINSTALL.has(pkgName) ? { preinstall: true } : {}),
     ...(SINGLETON.has(pkgName) ? { singleton: true } : {}),

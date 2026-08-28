@@ -10,26 +10,15 @@
 //   3. Launches the local server (run-dev-server.ts --serve-frontend-assets), which serves the
 //      built frontend as static assets on the backend.
 //
-// To keep repeat runs fast, install + build are skipped entirely when nothing has changed. We hash
-// all source files (everything git tracks, plus untracked-but-not-ignored files) and compare
-// against a stored stamp. If the hash matches and the build outputs still exist, we skip straight
-// to serving. Any source change (including dependency changes via pnpm-lock.yaml) flips the hash and
-// triggers a rebuild.
+// Vite+ owns the build cache and restores missing outputs on warm runs.
 
-import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getDevServerConfig } from "./dev-server-config.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const STAMP_PATH = join(ROOT, ".run-local-stamp");
-
-const FRONTEND_DIST = join(ROOT, "packages", "workshop-frontend", "dist");
-const TYPED_STORAGE_DIST = join(ROOT, "packages", "typed-storage", "dist");
-const NODE_MODULES = join(ROOT, "node_modules");
 
 // Forward any extra flags (e.g. --use-workers-ai-binding) on to run-dev-server.ts.
 const passthroughArgs = process.argv.slice(2);
@@ -41,86 +30,6 @@ try {
   process.exit(1);
 }
 
-// ---------------------------------------------------------------------------
-// Enumerate source files and compute a content hash.
-// ---------------------------------------------------------------------------
-
-// Directories that never contribute to a build and should be skipped by the filesystem-walk
-// fallback. (The git-based path already excludes these via .gitignore.)
-const WALK_IGNORE = new Set([".git", "node_modules", "dist", ".wrangler"]);
-
-function listFilesViaGit(): string[] | null {
-  try {
-    const tracked = execFileSync(
-        "git", ["ls-files", "-z"], { cwd: ROOT, maxBuffer: 1024 * 1024 * 64 });
-    const untracked = execFileSync(
-        "git", ["ls-files", "-z", "--others", "--exclude-standard"],
-        { cwd: ROOT, maxBuffer: 1024 * 1024 * 64 });
-    const split = (buf: Buffer) => buf.toString("utf8").split("\0").filter(Boolean);
-    return [...split(tracked), ...split(untracked)];
-  } catch {
-    return null;
-  }
-}
-
-function listFilesViaWalk(dir: string, acc: string[]): string[] {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.isDirectory()) {
-      if (WALK_IGNORE.has(entry.name)) continue;
-      listFilesViaWalk(join(dir, entry.name), acc);
-    } else if (entry.isFile()) {
-      acc.push(relative(ROOT, join(dir, entry.name)));
-    }
-  }
-  return acc;
-}
-
-function computeSourceHash(): string {
-  let files: string[] | null = listFilesViaGit();
-  if (files === null) {
-    // Not a git checkout (e.g. extracted tarball): walk the filesystem instead.
-    files = listFilesViaWalk(ROOT, []);
-  }
-  // Normalize path separators so the hash is stable across platforms, then sort for determinism.
-  files = files.map(f => f.split(sep).join("/")).toSorted();
-
-  const hash = createHash("sha256");
-  for (const rel of files) {
-    const abs = join(ROOT, rel);
-    let contents: Buffer;
-    try {
-      contents = readFileSync(abs);
-    } catch {
-      // File listed but unreadable/removed between listing and hashing; record its absence.
-      hash.update(`${rel}\0<missing>\0`);
-      continue;
-    }
-    hash.update(rel);
-    hash.update("\0");
-    hash.update(contents);
-    hash.update("\0");
-  }
-  return hash.digest("hex");
-}
-
-function readStamp(): string | null {
-  try {
-    return readFileSync(STAMP_PATH, "utf8").trim();
-  } catch {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Decide what work is needed.
-// ---------------------------------------------------------------------------
-
-const sourceHash = computeSourceHash();
-const stamp = readStamp();
-
-const outputsPresent = existsSync(FRONTEND_DIST) && existsSync(TYPED_STORAGE_DIST);
-const needsBuild = stamp !== sourceHash || !outputsPresent;
-const needsInstall = needsBuild || !existsSync(NODE_MODULES);
 
 function runPnpm(args: string[]): void {
   console.log(`\n> pnpm ${args.join(" ")}`);
@@ -128,22 +37,9 @@ function runPnpm(args: string[]): void {
   execFileSync(command, argv, { stdio: "inherit", cwd: ROOT });
 }
 
-if (needsInstall) {
-  runPnpm(["install"]);
-} else {
-  console.log("Dependencies up to date; skipping install.");
-}
-
-if (needsBuild) {
-  // Build only what's required to run locally (no full-repo type-check / no frontend tsc).
-  runPnpm(["--filter", "@gadgets/typed-storage", "build"]);
-  runPnpm(["--filter", "@gadgets/workshop-frontend", "exec", "vite", "build"]);
-
-  // Record the stamp only after a successful build so an interrupted build retries next time.
-  writeFileSync(STAMP_PATH, sourceHash + "\n");
-} else {
-  console.log("No source changes since last build; skipping build.");
-}
+runPnpm(["install"]);
+runPnpm(["exec", "vp", "run", "--cache", "@gadgets/typed-storage#build"]);
+runPnpm(["exec", "vp", "run", "--cache", "@gadgets/workshop-frontend#build:assets"]);
 
 // ---------------------------------------------------------------------------
 // Launch the local server (serves the built frontend as static assets).

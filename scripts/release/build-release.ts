@@ -31,8 +31,8 @@ import {
   collectAssets, collectModules, stableStringify, type CollectedAssets,
 } from "./hash-lib.ts";
 import {
-  findDeployablePackages, generateManifest, readDeployInputs, readWranglerConfig,
-  type WorkerBuild, type WranglerConfig,
+  generateManifest, readDeployablePackages, readDeployInputs,
+  type DeployablePackage, type WorkerBuild,
 } from "./manifest-lib.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -82,15 +82,6 @@ class CancelledBySignal extends Error {
   }
 }
 
-/** A deployable package, with its `wrangler.jsonc` read once and carried alongside. */
-interface DeployablePackage {
-  /** Package directory name, which is also the worker name. */
-  name: string;
-  /** Absolute path to the package directory. */
-  dir: string;
-  /** The package's parsed wrangler config. */
-  config: WranglerConfig;
-}
 
 function parseArgs(argv: string[]): {
   out: string;
@@ -365,8 +356,7 @@ async function main() {
   mkdirSync(join(args.out, "modules"), { recursive: true });
   mkdirSync(join(args.out, "assets"), { recursive: true });
 
-  const packages: DeployablePackage[] = findDeployablePackages(PACKAGES_DIR)
-      .map((pkg) => ({ ...pkg, config: readWranglerConfig(pkg.dir) }));
+  const packages = readDeployablePackages(PACKAGES_DIR);
 
   // 1. Every bundle, overlapping.
   const { bundles, assets } = await buildAll(packages, args.concurrency);

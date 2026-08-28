@@ -7,17 +7,17 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { BindingDecl } from "../release/manifest-lib.ts";
+import {
+  gatekeeperShortName, isGatekeeperPackage, readDeployablePackages, type BindingDecl,
+} from "../release/manifest-lib.ts";
 import {
   MAX_PREVIEW_NAME_LENGTH,
+  PACKAGES_DIR,
   R2_MAX_BUCKET_NAME_LENGTH,
   backendSecrets,
   buildPreviewConfigs,
   gatekeeperBindingName,
-  gatekeeperShortName,
-  isGatekeeper,
   previewPullRequestNumber,
-  readPackages,
   resolveAccess,
   resolveAiGateway,
   resolvePreviewName,
@@ -96,7 +96,7 @@ function previewsOf(configs: Map<string, StagingConfig>, name: string): PreviewO
 }
 
 function buildAll() {
-  const packages = readPackages();
+  const packages = readDeployablePackages(PACKAGES_DIR);
   const configs = buildPreviewConfigs({
     previewName: PREVIEW_NAME,
     packages,
@@ -369,7 +369,7 @@ test("no generated config carries a secret's value anywhere", () => {
 
 test("every gatekeeper is bound to the backend by RPC and to the router by HTTP", () => {
   const { packages, configs } = buildAll();
-  const gatekeepers = packages.map((pkg) => pkg.name).filter(isGatekeeper).toSorted();
+  const gatekeepers = packages.map((pkg) => pkg.name).filter(isGatekeeperPackage).toSorted();
   assert.ok(gatekeepers.length >= 16, `only found ${gatekeepers.length} gatekeepers`);
 
   // A service binding names a worker, which is the package name; the binding name — what the
@@ -398,7 +398,7 @@ test("every gatekeeper is bound to the backend by RPC and to the router by HTTP"
 test("every gatekeeper is mounted under the router's origin", () => {
   const { packages, configs } = buildAll();
 
-  for (const { name } of packages.filter((pkg) => isGatekeeper(pkg.name))) {
+  for (const { name } of packages.filter((pkg) => isGatekeeperPackage(pkg.name))) {
     assert.equal(previewsOf(configs, name).vars?.BASE_URL,
         `${BASE_URL}/gatekeeper/${gatekeeperShortName(name)}`);
   }

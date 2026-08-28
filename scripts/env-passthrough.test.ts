@@ -23,9 +23,9 @@ import { describe, it } from "node:test";
  *   uncached  — the task that reads it is `cache: false`, so it runs with the full ambient
  *               environment. Used where `env` would be unsound: `FORMAT_BLUEPRINTS_DIR` names a
  *               directory outside the workspace, and `env` fingerprints the value, not the contents.
- *   injected  — set explicitly by the process that spawns the build, never inherited. Stripping is
- *               correct here: `build-app.mjs` always passes `GATEKEEPER_APP_UNMINIFIED` itself
- *               precisely so an inherited value cannot turn a production build unminified.
+ *   injected  — set explicitly by the build setup, never inherited. Stripping is correct here:
+ *               `build-app.mjs` always passes `GATEKEEPER_APP_UNMINIFIED`, and the frontend build
+ *               task sets `NODE_ENV` before importing Vite.
  *   external  — read outside any vp task (release/dev tooling invoked directly), so vp never
  *               filters it.
  */
@@ -60,6 +60,7 @@ const EXPECTED: Record<string, ExpectedArea> = {
       "VITE_DEV_USERNAME",
       "VITE_FRONTEND_ERROR_REPORTING",
     ],
+    injected: ["NODE_ENV"],
   },
   "packages/workshop-backend": {
     uncached: ["FORMAT_BLUEPRINTS_DIR"],

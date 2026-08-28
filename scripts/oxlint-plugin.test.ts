@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { preferJsdoc } from "./oxlint-plugin.mjs";
+import plugin from "./oxlint-plugin.mjs";
 
 const require = createRequire(import.meta.url);
 const vitePlusRequire = createRequire(require.resolve("vite-plus/package.json"));
@@ -20,7 +20,7 @@ const ruleTester = new RuleTester({
   },
 });
 
-ruleTester.run("prefer-jsdoc", preferJsdoc, {
+ruleTester.run("prefer-jsdoc", plugin.rules["prefer-jsdoc"], {
   valid: [
     "// Explains an implementation detail.\nconst value = 1;",
     "/** Documents the public value. */\nexport const value = 1;",
