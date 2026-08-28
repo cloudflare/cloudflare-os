@@ -91,6 +91,8 @@ This feature replaces that all-or-nothing posture with a per-user, gatekeeper-me
 |---|---|
 | Gatekeeper RPC API (the committed surface) | `packages/workshop-shared/src/gatekeeper.ts` |
 | Overseer DO, `open()` auth entry point | `packages/workshop-backend/src/overseer.ts:2714` |
+| Authorization gate shared by `open()` and `receiveExternalMessage()` | `overseer.ts` `authorizeCollaborator()` |
+| Session restart when verification scope widens | `overseer.ts` (`#restartIfShared`, `scheduleAccessRestart`) |
 | Server `openGadget` path | `packages/workshop-backend/src/server.ts:206` |
 | Role resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveRole`, `computeEffectiveRoles`, `hasAnyShares`) |
 | `prohibitAllSharing` enforcement | `overseer.ts:1171` (`authorizeObservation`), `:1207` (web fetch), `:1258` (`submitAction`) |
@@ -254,7 +256,10 @@ Logic:
    - A `creationSpec` with a `vendorId` requires an account; other specs need no verifier or account
      choice.
 
-2. **Load the observer record** for `profileId` (may be absent).
+2. **Load the observer record** for `profileId` (may be absent) and build a working copy of its
+   `accountChoices`. An out-of-scope entry is simply not consulted: nothing is verified against a
+   gatekeeper outside the role's scope, so the choice sits there unread until the connection is
+   back in scope and the entry saves the collaborator from being asked again.
 
 3. **Determine uncovered bindings**: in-scope account-requiring gatekeepers with no
    `accountChoices` entry in the record. Before prompting, automatically fill ambient bindings from
@@ -276,9 +281,20 @@ Logic:
      a verifier minted by its own vendor; filtering account choices in the client is only a
      user-interface convenience.
    - If any `addObserver` **throws** (or `getVerifier` throws on vendor mismatch), the user is not
-     (or no longer) allowed: best-effort `removeObserver(record.observerId)` on the gatekeepers
-     added in *this* pass, do **not** persist the working record, and deny the open with a clear
-     message.
+     (or no longer) allowed. Every such failure goes through one `fail()` path, and the user is
+     offered a bounded number of re-prompts to repair (e.g. re-authenticate an expired account). On
+     terminal failure the open is denied with a message naming each refused binding, and the
+     registrations this call added are best-effort-removed while no record is persisted. The
+     persisted `accountChoices` are left as they are: an entry records the choice the user made so
+     they are not asked again, and asserts nothing about whether the gatekeeper still admits them.
+   - Roll back only what *this call* added. A returning observer's registrations are kept: their
+     `observerId` is already persisted, a registration can only ever add exclusion names (so
+     keeping it is fail-closed), and the next successful open's `addObserver` overwrites its
+     verifier. Only a *first-ever* verification rolls back fully, since that collaborator was never
+     admitted and the minted id would otherwise linger unresolvable.
+   - A denial ends only this open. Sessions the collaborator already holds are untouched, and keep
+     the access their own opens verified until they next re-open — the lazy-revocation residual
+     described under "Known gaps" below.
 
 6. **Persist the observer record** (with merged `accountChoices` and `observerId`) only after all
    `addObserver` calls succeed. Storing/creating the record is the canonical moment the user
@@ -300,6 +316,53 @@ Notes:
   stored account choices. The modal is only for genuinely uncovered bindings (first open, a binding
   the owner added after this user last configured, or an ambient binding without a matching provided
   account).
+- **Role resolution and verification belong together.** Both live behind one
+  `authorizeCollaborator(profileId, clientUser, {configureCb?, requireRole?})`, so every non-owner
+  entry point applies the same gate. `receiveExternalMessage()` — the chat-integration path, whose
+  agent reply can surface anything the workspace has already read — passes `requireRole: "build"`
+  and no `configureCb`: it has no channel to prompt on, so an unverified caller is told to open the
+  workspace in a browser, and an insufficient role is denied *before* verification runs rather than
+  being sent to fix a failure that could never grant them access anyway.
+
+#### Restarting when verification scope widens
+
+Verification runs at `open()` and nowhere else, so a live session is only ever as verified as the
+scope that existed when it opened. When that scope **widens**, the overseer restarts the workspace
+rather than trying to re-verify sessions in place: `#restartIfShared(reason)` delegates to
+`scheduleAccessRestart(reason)` — the same DO abort used to revoke a collaborator (see
+`docs/sharing.md`) — so every client's browser reconnects and re-runs
+`authorizeCollaborator`/`ensureObserver` against the new scope. It is a no-op when the workspace
+has no collaborators: the owner is never an observer, so there is nobody to re-verify.
+
+Three events trigger it:
+
+| Event | What grows |
+|---|---|
+| `addGatekeeper()` with a vendor-backed `creationSpec` | **build** scope — a live `build` session can `getGatekeeperById()`/`openSession()` on it with no observer check |
+| `bindWorkpiece()` for a permanent (non-`chatId`) edge onto a vendor-backed connection | **use** scope — the gadget UI a `use` session drives can now invoke it |
+| A merge that promotes a pending gadget or a pending binding edge into `use` scope | **use** scope, same reason |
+
+The merge trigger compares the effective `use` scope before and after promotion rather than firing
+on any promotion: most merges promote something, and a promoted gadget with no bindings — or an edge
+onto a vendorless connection nobody is verified against — widens nothing and must not sever a
+shared workspace for nothing.
+
+Shrinking scope needs no restart (`unbindWorkpiece`, `removeGatekeeper`): a narrower scope can
+never under-verify a session admitted at the wider one. Role *rises*
+(`addCollaborator`, share-key redemption) are deliberately not triggers either — a live session's
+capability set is fixed at open, so raising someone's graph role does not widen the session they
+already hold.
+
+The restart is what makes `addGatekeeper()`'s publication order load-bearing. The DO's input gate
+is open across the gatekeeper's `describe()` and ids are allocated sequentially, so publishing the
+record before that await would let a live `build` session guess the id and `openSession()` on the
+owner's brand-new connection — which gates on nothing but record existence — for as long as
+`describe()` took, all of it before the restart severed it. The record is therefore published
+exactly once, after `describe()` resolves; `getGatekeeperFacet(id, cls?)` takes the class directly
+so nothing needs the early put.
+
+Enforcement is therefore at admission, within the ~100 ms abort delay of the moment the widening
+itself happens.
 
 ### Step 4 — Frontend: the configuration modal
 
@@ -365,8 +428,10 @@ downgrades — see the matching methods on `OverseerClientInterface` and `Sharin
   Safe to defer — an over-broad observer set only ever errs toward stricter future checks — but
   it keeps gatekeeper state tidy.
 - All these calls are best-effort: log and continue on error. An orphaned observer entry only
-  causes superfluous future checks, never a data leak (the leak-relevant gate is
-  `authorizeObservation`, which keys off the live sharing graph).
+  causes superfluous future checks, never a data leak: a registration is what *admits* an open, and
+  every open re-runs `addObserver`, so a stale one grants nothing on its own — while
+  `authorizeObservation`'s exclusion gate re-checks the live sharing graph for any id a gatekeeper
+  still names.
 
 > Multi-gatekeeper sequencing/atomicity is an overseer implementation detail, not part of the
 > shared interface. Because `addObserver` is re-run every open and `removeObserver` is idempotent,
@@ -401,12 +466,26 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    throws and denies the open.
 3. **Underlying resource access revoked** — caught at the next open because `addObserver`
    re-runs the live check and throws; the open is denied. Consistent with the lazy-revocation
-   model in `sharing.ts`.
+   model in `sharing.ts`, and the residual under that model is the same one: only the open being
+   attempted is denied, so a collaborator who never opens again is never asked, nothing detects
+   their revocation, and the sessions they already hold keep the access their own opens verified.
+   The persisted `accountChoices` are left alone — an entry records the account the user picked so
+   they are not asked again, and never asserted that the gatekeeper still admits them. An
+   operational failure (vendor outage, expired credential) is treated the same way — the overseer
+   cannot tell it from a settled denial — and the collaborator gets back in as soon as a repaired
+   open re-verifies them.
 4. **`prohibitAllSharing` interaction** — unchanged and still authoritative: if set, no non-owner
    can open at all (`overseer.ts:2770`). Observer checks only matter when sharing is allowed.
 5. **Owner adds a new binding after sharing** — existing observers see an incremental modal for
    just the new binding on their next open, and may be denied if they lack access to the new
-   resource (inherent to the security model).
+   resource (inherent to the security model). Because that next open is what verifies them, the
+   addition restarts a shared workspace (see "Restarting when verification scope widens"): every
+   client reconnects within ~100 ms and re-opens at the new scope, so no session keeps watching a
+   connection its holder was never verified against. A connection added *while a collaborator's
+   verification is parked* on an await (the modal, verifier RPCs) is covered by the same restart:
+   their committed record lacks an entry for the new connection, and the restart forces the open
+   that adds one. The residual is the ~100 ms window itself, which is inside the revocation window
+   the sharing model already accepts.
 6. **Performance** — `ensureObserver` does one `getVerifier` + one `addObserver` per in-scope
    gatekeeper per open. Parallelize with `Promise.all` and pipe the verifier promise straight into
    `addObserver`. Expensive gatekeepers cache on their side.

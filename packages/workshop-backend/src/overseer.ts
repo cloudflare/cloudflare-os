@@ -534,9 +534,10 @@ type ObserverRecord = {
   // removal/re-add: a user who loses and regains access gets a fresh record and a fresh id.
   observerId: string;
 
-  // The account the user chose to satisfy each in-scope gatekeeper binding. Keyed by gatekeeper id
-  // (GatekeeperRecord.id). The accountId refers to a ConnectedAccountRecord in THIS user's own
-  // User DO.
+  // The account the user chose to satisfy each in-scope gatekeeper binding, remembered so they are
+  // not asked again. Keyed by gatekeeper id (GatekeeperRecord.id). The accountId refers to a
+  // ConnectedAccountRecord in THIS user's own User DO. An entry records only that choice -- it
+  // asserts nothing about whether the gatekeeper still admits them, which every open re-checks.
   accountChoices: { [gatekeeperId: number]: number };
 };
 
