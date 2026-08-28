@@ -9,7 +9,7 @@ import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
 } from "cloudflare:workers";
-import { createTypedStorage, collection, keyString } from "@gadgets/typed-storage";
+import { createTypedStorage, collection, singleton, keyString } from "@gadgets/typed-storage";
 import type { ListOptions } from "@gadgets/typed-storage";
 import { GitStore, commitIdentityForAuthor, filesEqual, gitObjectsCollection, threeWayMerge }
   from "./git-store";
@@ -1151,9 +1151,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // single number, so the list stays cheap.
       deadWorktreeIds: <WorkpieceId[]>[],
 
-      // True if any past observation was authorized that had the `prohibitAllSharing` flag set
-      // in its `ObservationDescription`.
-      prohibitAllSharing: false,
+      // True if any past observation was authorized that had the `containsRestrictedData` flag
+      // set in its `ObservationDescription`. The key on disk predates the flag's rename.
+      containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
     },
 
     collections: {
@@ -5509,7 +5509,7 @@ class OverseerImpl implements AgentHooks {
 
   async authorizeObservation(gatekeeperId: number, description: ObservationDescription,
                              caller: GatekeeperCaller): Promise<void> {
-    if (description.prohibitAllSharing) {
+    if (description.containsRestrictedData) {
       if ((await this.getSharingManager()).hasAnyShares()) {
         throw new Error(
             "This observation was blocked because it contains sensitive data that must only be " +
@@ -5517,7 +5517,7 @@ class OverseerImpl implements AgentHooks {
             "from a workspace that is not shared.");
       }
 
-      this.storage.prohibitAllSharing.put(true);
+      this.storage.containsRestrictedData.put(true);
     }
 
     // Forward exclusion: the gatekeeper may name observers who must not see this observation. Since
@@ -5733,7 +5733,7 @@ class OverseerImpl implements AgentHooks {
   // Provides web-fetch with the Workers AI binding and AI Gateway config it needs to call
   // `env.WORKERS_AI.toMarkdown()`. The initiator is needed for AI Gateway metadata.
   getWebFetchEnv(): WebFetchEnv {
-    if (this.storage.prohibitAllSharing.get()) {
+    if (this.storage.containsRestrictedData.get()) {
       // TODO: Disallwing fetches is a bit draconian. Ideally, we would have some way to detect
       //   if a URL is well-known, and therefore not a leak problem. E.g. if the URL is already in
       //   a search index, then it's not leaking anything. If we had a search provider we could
@@ -5782,7 +5782,7 @@ class OverseerImpl implements AgentHooks {
   async submitAction(gatekeeperId: number, action: number,
                      description: ActionDescription, caller: GatekeeperCaller)
       : Promise<void> {
-    if (this.storage.prohibitAllSharing.get()) {
+    if (this.storage.containsRestrictedData.get()) {
       throw new Error(
           "This workspace has observed sensitive data. To prevent leaks, the workspace is prohibited " +
           "from performing actions.");
@@ -9803,8 +9803,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let role: CollaboratorRole = "build";
 
     if (!isOwner) {
-      if (this.impl.storage.prohibitAllSharing.get()) {
-        // `prohibitAllSharing` can only have been set when the gadget had no shares (see
+      if (this.impl.storage.containsRestrictedData.get()) {
+        // `containsRestrictedData` can only have been set when the gadget had no shares (see
         // `authorizeObservation`), and no new shares can be created while it's set, so any
         // non-owner reaching here is necessarily unauthorized.
         throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
@@ -9830,7 +9830,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // verify they may observe everything this Gadget has read through its in-scope gatekeepers,
       // configuring their connected accounts if needed. Observer verification runs only after a
       // valid role is confirmed, so it never reveals gatekeeper or resource metadata to an
-      // unauthorized user; the prohibitAllSharing short-circuit above still wins over both.
+      // unauthorized user; the containsRestrictedData short-circuit above still wins over both.
       //
       // An unauthorized caller (no effective role -- never had access, or was removed) gets a
       // distinct denial without workspace metadata. A removed collaborator who reconnects after
@@ -9948,7 +9948,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // denial below rather than being verified (or told to fix a verification failure) for access
     // this path can never grant them.
     if (ownerId !== callerId) {
-      if (this.impl.storage.prohibitAllSharing.get()) {
+      if (this.impl.storage.containsRestrictedData.get()) {
         return {
           accepted: false,
           message: "This workspace has sharing disabled, so only its owner can access it.",
@@ -10693,7 +10693,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
-      sharingProhibited: this.impl.storage.prohibitAllSharing.get(),
+      containsRestrictedData: this.impl.storage.containsRestrictedData.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -10712,7 +10712,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
-      sharingProhibited: this.impl.storage.prohibitAllSharing.get(),
+      containsRestrictedData: this.impl.storage.containsRestrictedData.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -10734,9 +10734,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
-    let sharingProhibitedSubscriber = {
+    let restrictedDataSubscriber = {
       update(value: boolean | undefined) {
-        metadata.sharingProhibited = value;
+        metadata.containsRestrictedData = value;
         callback(metadata).catch(unsubscribe);
       }
     };
@@ -10744,13 +10744,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let unsubscribe = () => {
       this.impl.storage.title.unsubscribe(titleSubscriber);
       this.impl.storage.totalCost.unsubscribe(costSubscriber);
-      this.impl.storage.prohibitAllSharing.unsubscribe(sharingProhibitedSubscriber);
+      this.impl.storage.containsRestrictedData.unsubscribe(restrictedDataSubscriber);
       callback[Symbol.dispose]();
     };
 
     this.impl.storage.title.subscribe(titleSubscriber);
     this.impl.storage.totalCost.subscribe(costSubscriber);
-    this.impl.storage.prohibitAllSharing.subscribe(sharingProhibitedSubscriber);
+    this.impl.storage.containsRestrictedData.subscribe(restrictedDataSubscriber);
 
     callback(metadata).catch(unsubscribe);
 
@@ -11976,7 +11976,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // --- Collaborator management ---
   //
   // The sharing/permission logic lives in SharingManager (./sharing). These methods handle only
-  // the RPC-bound pieces (resolving profiles via User DOs, the `prohibitAllSharing` policy) and
+  // the RPC-bound pieces (resolving profiles via User DOs, the `containsRestrictedData` policy) and
   // delegate the rest.
 
   async listObserverRequirements(
@@ -11998,7 +11998,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       return null;
     }
 
-    if (this.impl.storage.prohibitAllSharing.get()) {
+    if (this.impl.storage.containsRestrictedData.get()) {
       throw new Error(
           "This workspace has observed sensitive data. To prevent leaks, the workspace cannot be " +
           "shared.");
@@ -12061,7 +12061,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async createShareLink(role: CollaboratorRole, note?: string)
       : Promise<{ key: string; linkId: string }> {
-    if (this.impl.storage.prohibitAllSharing.get()) {
+    if (this.impl.storage.containsRestrictedData.get()) {
       throw new Error(
           "This workspace has observed sensitive data. To prevent leaks, the workspace cannot be " +
           "shared.");
@@ -12072,7 +12072,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async newShareLinkKey(linkId: string): Promise<{ key: string }> {
-    if (this.impl.storage.prohibitAllSharing.get()) {
+    if (this.impl.storage.containsRestrictedData.get()) {
       throw new Error(
           "This workspace has observed sensitive data. To prevent leaks, the workspace cannot be " +
           "shared.");
@@ -12935,7 +12935,7 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   // the gatekeeper across awaits (even other DOs), so like the firing's callback it revalidates
   // the hook per call -- otherwise a firing raced by a disable/delete could keep authorizing
   // observations against a scope the shrink already excluded someone from (or latch
-  // prohibitAllSharing). Session queues (openSession) pass no hookId: they are bounded by the
+  // containsRestrictedData). Session queues (openSession) pass no hookId: they are bounded by the
   // facet's in-DO lifetime, which the session chokepoints already gate.
   constructor(private impl: OverseerImpl, private gatekeeperId: number,
               private caller: GatekeeperCaller, private hookId?: number) {

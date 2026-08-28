@@ -15,7 +15,7 @@
 // re-adding a removed collaborator restores them and, transitively, everyone they had shared with.
 // (Records and revoked keys accumulate in storage; a future GC could reclaim long-dead entries.)
 //
-// NOTE: The `prohibitAllSharing` policy flag intentionally does NOT live here. It is a broader
+// NOTE: The `containsRestrictedData` policy flag intentionally does NOT live here. It is a broader
 // "is this gadget allowed to communicate with anyone other than the owner?" policy (it also
 // gates gatekeeper writes and web fetches) and is expected to grow into a separate policy engine.
 // The Overseer enforces that flag; this module only exposes `hasAnyShares()` so the policy can
@@ -165,7 +165,7 @@ export class SharingManager {
 
   /**
    * True if anyone other than the owner can currently access the gadget. Used by the Overseer's
-   * `prohibitAllSharing` policy to decide whether a sensitive observation must be blocked.
+   * `containsRestrictedData` policy to decide whether a sensitive observation must be blocked.
    *
    * Because removed collaborators and revoked links linger in storage (the lazy revocation model;
    * see the module header and removeCollaborator/revokeShareLink), this must reflect *current*
@@ -293,7 +293,7 @@ export class SharingManager {
   /**
    * Add a collaborator with a `user` edge from the caller, granting `role`. The caller is
    * responsible for resolving `profile` (via RPC) and for any policy checks (e.g.
-   * `prohibitAllSharing`). The caller may not grant a role higher than their own effective role.
+   * `containsRestrictedData`). The caller may not grant a role higher than their own effective role.
    */
   addCollaborator(opts: {
     caller: SharingCaller;

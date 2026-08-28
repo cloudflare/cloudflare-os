@@ -59,7 +59,7 @@ Namespace mechanics:
 - `bumpVersion()` aborts only the affected gadget's facet (naming a binding on gadget A shouldn't restart gadget B); code commits that touch multiple gadgets' roots abort each affected one (derivable from the Yjs update, or conservatively abort all).
 - `BoundHookRecord` gains `gadgetId` for **bookkeeping only** — its `callback` already encapsulates `OverseerRestoreParams` pointing at the correct gadget, so operation doesn't need it; but we want it to display which gadget a hook belongs to and to delete a gadget's hooks when the gadget is deleted. (Someday the callback could be unwrapped to get this info, but no API for that exists today.)
 - `ActionRecord` does **not** gain a `gadgetId`. Instead, `GatekeeperCaller`'s `type: "gadget"` variant is extended with an optional `gadgetId` (optional for back-compat); `ActionRecord` already embeds `GatekeeperCaller`.
-- Storage singletons: `title` becomes workspace title; per-gadget titles live in the registry. New `defaultGadgetId` singleton (decision #6). `prohibitAllSharing` stays workspace-wide (consistent with workspace-wide sharing in v1). `nextGatekeeperId` keeps its name but now allocates all workpiece IDs — document the wart in a comment.
+- Storage singletons: `title` becomes workspace title; per-gadget titles live in the registry. New `defaultGadgetId` singleton (decision #6). `containsRestrictedData` stays workspace-wide (consistent with workspace-wide sharing in v1). `nextGatekeeperId` keeps its name but now allocates all workpiece IDs — document the wart in a comment.
 
 ### Agent (agent.ts)
 - File tools: `readFile`/`writeFile`/`editFile` gain a **separate `workpieceId` parameter** — named for workpieces, not gadgets, since these tools operate on any workpiece that owns a files root (today only gadgets; later e.g. mounted gatekeeper sub-objects). Not a path prefix, which would be ambiguous if we later support directory hierarchies within a workpiece (or access to other filesystems through these tools). The parameter is optional in the schema for replay back-compat: when absent it resolves to `defaultGadgetId` (histories from single-gadget days exist only in workspaces that have one); in workspaces without a `defaultGadgetId`, omitting it is an error that tells the agent to specify (or create) a gadget. Read-before-edit tracking becomes keyed by (workpieceId, filename). The system prompt's file list becomes grouped by workpiece.
@@ -127,7 +127,7 @@ Triggered by the `schemaVersion` singleton (decision #7) — **not** by "no gadg
 **Q9: Action/hook attribution.**
 → **Resolved** (as detailed in the Overseer runtime section): hooks gain `gadgetId` on `BoundHookRecord` for bookkeeping (operationally the callback's `OverseerRestoreParams` already points at the right gadget). Actions are attributed by extending `GatekeeperCaller`'s `type: "gadget"` variant with an optional `gadgetId` — `ActionRecord` itself is unchanged since it embeds the caller.
 
-**Q10: What happens to `deleteSelf`, cost tracking, `prohibitAllSharing`?**
+**Q10: What happens to `deleteSelf`, cost tracking, `containsRestrictedData`?**
 → **Resolved: all stay workspace-level in v1.** Flag: the sharing-taint being workspace-wide means one tainted gadget locks down sharing of all gadgets in the workspace — acceptable given v1 shares the whole workspace (and the right starting point; more sophistication later), but worth documenting as a consequence users will feel.
 
 **Q11: One "artifacts"/"workpieces" table, or separate gadget/gatekeeper tables in a shared ID namespace?**

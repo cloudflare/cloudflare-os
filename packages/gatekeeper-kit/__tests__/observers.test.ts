@@ -1056,7 +1056,7 @@ describe("ObservationGate", () => {
     expect(authorizeObservation).not.toHaveBeenCalled();
   });
 
-  it("leaves the caller's prohibitAllSharing alone, being a gadget-wide escalation", async () => {
+  it("leaves the caller's containsRestrictedData alone, being a gadget-wide escalation", async () => {
     const authorizeObservation = vi.fn(async () => {});
     const strategy: ObserverStrategy = {
       aclChecks: "per-read",
@@ -1067,11 +1067,11 @@ describe("ObservationGate", () => {
     };
 
     await new ObservationGate(fakeAuthorizer(authorizeObservation), strategy)
-      .authorize({ ...read, prohibitAllSharing: true }, { kind: "collections", ids: ["p1"] });
+      .authorize({ ...read, containsRestrictedData: true }, { kind: "collections", ids: ["p1"] });
 
     expect(authorizeObservation).toHaveBeenCalledWith({
       ...read,
-      prohibitAllSharing: true,
+      containsRestrictedData: true,
       excludeObservers: ["limited"],
     });
   });

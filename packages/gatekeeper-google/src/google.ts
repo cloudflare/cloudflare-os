@@ -3361,7 +3361,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
         `Referenced tables: ${estimate.referencedTables.join(", ")}\n` +
         `Estimated bytes processed: ${estimate.bytesProcessed.toLocaleString()}\n` +
         `Maximum bytes billed: ${maxBytes.toLocaleString()}.`,
-      prohibitAllSharing: true,
+      containsRestrictedData: true,
     });
 
     let result = await this.#api.query(billingProject, sql, {
@@ -3393,7 +3393,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
       description:
         `Estimated bytes processed: ${estimate.bytesProcessed.toLocaleString()}\n` +
         `Referenced tables: ${estimate.referencedTables.join(", ") || "(none)"}`,
-      prohibitAllSharing: true,
+      containsRestrictedData: true,
     });
 
     return estimate;
@@ -3405,7 +3405,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     await this.#authorizeDatasets([], {
       title: "Get BigQuery project",
       description: `Returned the scoped project: \`${this.#scopedProjectId}\`.`,
-      prohibitAllSharing: true,
+      containsRestrictedData: true,
     });
     return result;
   }
@@ -3426,7 +3426,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
       await this.#authorizeDatasets([{ projectId: p, datasetId: this.#scopedDatasetId }], {
         title: `List datasets in ${p}`,
         description: `Returned scoped dataset \`${p}.${this.#scopedDatasetId}\` (1 dataset).`,
-        prohibitAllSharing: true,
+        containsRestrictedData: true,
       });
       return [dataset];
     }
@@ -3436,7 +3436,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     await this.#authorizeDatasets(result.map(ds => ({ projectId: p, datasetId: ds.datasetId })), {
       title: `List datasets in ${p}`,
       description: `Listed ${result.length} dataset(s) in \`${p}\`.`,
-      prohibitAllSharing: true,
+      containsRestrictedData: true,
     });
     return result;
   }
@@ -3462,7 +3462,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
       await this.#authorizeDatasets([{ projectId: p, datasetId: d }], {
         title: `List tables in ${p}.${d}`,
         description: `Returned scoped table \`${p}.${d}.${this.#scopedTableId}\` (1 table).`,
-        prohibitAllSharing: true,
+        containsRestrictedData: true,
       });
       return [table];
     }
@@ -3471,7 +3471,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     await this.#authorizeDatasets([{ projectId: p, datasetId: d }], {
       title: `List tables in ${p}.${d}`,
       description: `Listed ${result.length} table(s) in \`${p}.${d}\`.`,
-      prohibitAllSharing: true,
+      containsRestrictedData: true,
     });
     return result;
   }
@@ -3508,7 +3508,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
       title: `Describe ${p}.${d}.${t}`,
       description:
         `Described table \`${p}.${d}.${t}\` (${result.schema.length} columns).`,
-      prohibitAllSharing: true,
+      containsRestrictedData: true,
     });
     return result;
   }

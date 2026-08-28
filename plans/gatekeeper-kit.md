@@ -781,12 +781,12 @@ admission landing inside that round trip is absent from `excludeObservers` for a
 to be owner-only. A removal or a later attempt rotates `observer-nonce:<id>`, which the admission
 rechecks after every await, so the fence holds across separately constructed trackers.
 
-**No arm maps to `prohibitAllSharing`.** That field is a permanent gadget-wide escalation, not a
+**No arm maps to `containsRestrictedData`.** That field is a permanent gadget-wide escalation, not a
 per-read withholding: `authorizeObservation()` throws if the gadget is already shared, all future
 sharing is prohibited, and the gadget enters lockdown where it "can no longer perform any actions,
 only make observations" (`workshop-shared/src/gatekeeper.ts:1072-1087`). Firing that on a routine
 empty search would disable the gadget's actions for good. `excludeObservers` is the per-observation
-mechanism the overseer promises to enforce (`:1089-1106`). So `prohibitAllSharing` stays
+mechanism the overseer promises to enforce (`:1089-1106`). So `containsRestrictedData` stays
 **caller-set** and passes through untouched — four corpus packages set it on every read (gtmdata,
 lighthouse, salesforce, town-lake) while ironclad is equally private-by-binding and deliberately
 does not, because it has actions to run, so the gate cannot infer it.
