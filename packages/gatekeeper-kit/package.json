@@ -5,9 +5,11 @@
   "description": "Building blocks for gatekeepers: connect-flow, credential, action, observation, and simulation primitives. Not a deployable Worker.",
   "type": "module",
   "exports": {
+    "./auth-retry": "./src/auth-retry.ts",
     "./connect-nonce": "./src/connect-nonce.ts",
     "./connect-handshake": "./src/connect-handshake.ts",
     "./connect-pages": "./src/connect-pages.ts",
+    "./credentials": "./src/credentials.ts",
     "./credential-expiry": "./src/credential-expiry.ts",
     "./endpoint": "./src/endpoint.ts",
     "./http-errors": "./src/http-errors.ts",
