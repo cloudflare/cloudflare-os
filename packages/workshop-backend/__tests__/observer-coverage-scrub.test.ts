@@ -130,7 +130,7 @@ describe("observer coverage scrub on a failed live check", () => {
 
       // Alice was already an admitted observer, so the failure de-registers her from nothing: the
       // registrations are what make gatekeepers name her in `excludeObservers`, and the scrub does
-      // not cover the same observations (it gates `prohibitAllSharing` only).
+      // not cover the same observations (it gates `containsRestrictedData` only).
       expect(removed).toEqual([]);
     });
   });

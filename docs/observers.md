@@ -30,8 +30,8 @@ Gadgets enforce a core security invariant (see `overview.md` §"Security Model")
 > able to read that information will also be prohibited from interacting with the Gadget,
 > to prevent data leaks.
 
-Today the only mechanism enforcing this is the blunt **`prohibitAllSharing`** flag
-(`packages/workshop-shared/src/gatekeeper.ts`, `ObservationDescription.prohibitAllSharing`).
+Today the only mechanism enforcing this is the blunt **`containsRestrictedData`** flag
+(`packages/workshop-shared/src/gatekeeper.ts`, `ObservationDescription.containsRestrictedData`).
 When a gatekeeper marks an observation as maximally sensitive, the Gadget can no longer be
 shared with *anyone*, and it drops into "lockdown" (no further actions, no web fetches). This
 is a deliberate stopgap — it cannot express "this data may be shared, but only with people who
@@ -95,7 +95,7 @@ This feature replaces that all-or-nothing posture with a per-user, gatekeeper-me
 | Session restart when verification scope widens | `overseer.ts` (`#restartIfShared`, `scheduleAccessRestart`) |
 | Server `openGadget` path | `packages/workshop-backend/src/server.ts:206` |
 | Role resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveRole`, `computeEffectiveRoles`, `hasAnyShares`) |
-| `prohibitAllSharing` enforcement | `overseer.ts:1171` (`authorizeObservation`), `:1207` (web fetch), `:1258` (`submitAction`) |
+| `containsRestrictedData` enforcement | `overseer.ts:1171` (`authorizeObservation`), `:1207` (web fetch), `:1258` (`submitAction`) |
 | Observation recording | `overseer.ts:1169` `authorizeObservation()`; `ApprovalQueueImpl` `overseer.ts:4856` |
 | Gatekeeper storage record | `overseer.ts:110` `GatekeeperRecord` (has `creationSpec.vendorId`) |
 | `GatekeeperCreationSpec` | `packages/workshop-shared/src/api.ts:1345` |
@@ -229,7 +229,7 @@ type ObserverAccountChoice = {
 ### Step 3 — Overseer: observer configuration & re-verification at `open()`
 
 Hook into `open()` in the non-owner branch, after `effectiveRole` is confirmed and before
-constructing the client interface. Keep the existing `prohibitAllSharing` short-circuit ahead of
+constructing the client interface. Keep the existing `containsRestrictedData` short-circuit ahead of
 this -- lockdown still wins. The `NeedsConnections` signal is produced only *after* a valid role is
 confirmed, so it never reveals a workspace's gatekeeper or resource metadata to an unauthorized
 user.
@@ -482,7 +482,7 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    operational failure (vendor outage, expired credential) is treated the same way — the overseer
    cannot tell it from a settled denial — and the collaborator gets back in as soon as a repaired
    open re-verifies them.
-4. **`prohibitAllSharing` interaction** — unchanged and still authoritative: if set, no non-owner
+4. **`containsRestrictedData` interaction** — unchanged and still authoritative: if set, no non-owner
    can open at all (`overseer.ts:2770`). Observer checks only matter when sharing is allowed.
 5. **Owner adds a new binding after sharing** — existing observers see an incremental modal for
    just the new binding on their next open, and may be denied if they lack access to the new
@@ -561,8 +561,8 @@ gatekeeper package — a single package (e.g. `gatekeeper-google`) may use sever
 its resource types.
 
 - **A — Private-only.** Non-owner observers are refused: `addObserver()` unconditionally throws.
-  This is the replacement for today's reliance on `prohibitAllSharing` for these resources (the
-  `prohibitAllSharing` lockdown mechanism itself is unchanged and remains available separately).
+  This is the replacement for today's reliance on `containsRestrictedData` for these resources (the
+  `containsRestrictedData` lockdown mechanism itself is unchanged and remains available separately).
   `getVerifier()` must still exist (the overseer mints one on every open) but is never consulted.
 
 - **B — ACL check (single unit).** The resource is treated as one atomic unit.

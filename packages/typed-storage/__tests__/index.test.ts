@@ -1,5 +1,6 @@
 import { expect, it, describe } from "vitest"
-import { createTypedStorage, collection, UniqueIndex, NonUniqueIndex } from "../src/index.js";
+import { createTypedStorage, collection, singleton, UniqueIndex, NonUniqueIndex }
+    from "../src/index.js";
 import { DurableObjectListOptions, DurableObjectStorage } from "@cloudflare/workers-types/experimental";
 
 // We mock out DurableObjectStorage becaues otherwise we'd have to run the tests inside a
@@ -136,6 +137,112 @@ describe("singletons", () => {
 
     storage.counter.put(555);
     expect(subscriber.lastValue).toStrictEqual(321);
+  });
+
+  it("uses the property name as the storage key by default", () => {
+    let mockStorage = makeMockStorage();
+    let storage = createTypedStorage(mockStorage, {
+      singletons: {
+        counter: singleton(0),
+      }
+    });
+
+    storage.counter.put(123);
+
+    // Declaring a singleton with no options must be byte-identical on disk to a bare default.
+    expect(mockStorage.kv.get("counter")).toStrictEqual(123);
+  });
+
+  it("reads and writes a legacy storage key", () => {
+    let mockStorage = makeMockStorage();
+
+    // Data written by an earlier version of the schema, when the property was called `oldName`.
+    mockStorage.kv.put("oldName", 42);
+
+    let storage = createTypedStorage(mockStorage, {
+      singletons: {
+        newName: singleton(0, {storageKey: "oldName"}),
+      }
+    });
+
+    expect(storage.newName.get()).toStrictEqual(42);
+
+    storage.newName.put(43);
+
+    expect(storage.newName.get()).toStrictEqual(43);
+    expect(mockStorage.kv.get("oldName")).toStrictEqual(43);
+    expect(mockStorage.kv.get("newName")).toBeUndefined();
+  });
+
+  it("falls back to the default when the legacy key was never written", () => {
+    let mockStorage = makeMockStorage();
+    let storage = createTypedStorage(mockStorage, {
+      singletons: {
+        newName: singleton(false, {storageKey: "oldName"}),
+      }
+    });
+
+    expect(storage.newName.get()).toStrictEqual(false);
+
+    storage.newName.put(true);
+
+    expect(mockStorage.kv.get("oldName")).toStrictEqual(true);
+  });
+
+  it("notifies subscribers for a legacy storage key", () => {
+    let mockStorage = makeMockStorage();
+    let storage = createTypedStorage(mockStorage, {
+      singletons: {
+        newName: singleton(0, {storageKey: "oldName"}),
+      }
+    });
+
+    let subscriber = {
+      lastValue: -1,
+      update(value: number) {
+        this.lastValue = value;
+      }
+    };
+    storage.newName.subscribe(subscriber);
+
+    storage.newName.put(7);
+
+    expect(subscriber.lastValue).toStrictEqual(7);
+    expect(mockStorage.kv.get("oldName")).toStrictEqual(7);
+  });
+});
+
+describe("collections with a legacy storage name", () => {
+  it("stores records and indexes under the legacy prefix", () => {
+    let mockStorage = makeMockStorage();
+    let storage = createTypedStorage(mockStorage, {
+      collections: {
+        people: collection<User>()({
+          storageName: "users",
+          primaryKey: "name",
+          uniqueIndexes: {
+            byUid: (user: User) => user.uid
+          },
+          nonUniqueIndexes: {
+            byLevel: (user: User) => user.level
+          }
+        })
+      }
+    });
+
+    storage.people.put(ALICE);
+
+    expect(storage.people.get("alice")).toStrictEqual(ALICE);
+    expect(storage.people.byUid.get(45)).toStrictEqual(ALICE);
+    expect([...storage.people.byLevel.list(8)]).toStrictEqual([ALICE]);
+
+    // Every key -- the record and both indexes -- lives under the legacy name, so a collection
+    // renamed in code reads data written before the rename.
+    let keys = [...mockStorage.kv.list({})].map(([key]) => key);
+    expect(keys.some(key => key.startsWith("users:"))).toStrictEqual(true);
+    expect(keys.some(key => key.startsWith("users.byUid:"))).toStrictEqual(true);
+    expect(keys.some(key => key.startsWith("users.byLevel:"))).toStrictEqual(true);
+    expect(keys.some(key => key.startsWith("people"))).toStrictEqual(false);
   });
 });
 

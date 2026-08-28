@@ -121,7 +121,7 @@ describe("Drive session scope", () => {
       description: expect.stringContaining('name starts with "missing"'),
       excludeObservers: ["excluded"],
     })]);
-    expect(authorizations[0]).not.toHaveProperty("prohibitAllSharing");
+    expect(authorizations[0]).not.toHaveProperty("containsRestrictedData");
     expect(authorizations[0].description).not.toContain("0");
     expect(events).toEqual(["authorize"]);
   });

@@ -1084,7 +1084,7 @@ export type ObservationDescription = {
    *   sensitive data as long as the recipients also have access to that same data, but this
    *   requires a more complex policy framework to compute.
    */
-  prohibitAllSharing?: boolean;
+  containsRestrictedData?: boolean;
 
   /**
    * If present, then this observation includes data that must not be revealed to the given

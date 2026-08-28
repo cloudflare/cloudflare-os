@@ -172,6 +172,7 @@ interface CollectionSchema<
   primaryKey: PrimaryKey;
   uniqueIndexes?: UniqueIndexes;
   nonUniqueIndexes?: NonUniqueIndexes;
+  storageName?: string;
 }
 
 export function collection<T extends object>() {
@@ -182,10 +183,44 @@ export function collection<T extends object>() {
         primaryKey: PrimaryKey,
         uniqueIndexes?: UniqueIndexes,
         nonUniqueIndexes?: NonUniqueIndexes,
+        /**
+         * The name this collection's keys (records and indexes alike) are prefixed with,
+         * overriding the schema property name. Like `SingletonOptions.storageKey`, this lets the
+         * code be renamed without migrating what is already on disk.
+         */
+        storageName?: string,
       })
       : CollectionSchema<T, PrimaryKey, UniqueIndexes, NonUniqueIndexes> {
     return options as (CollectionSchemaBrand & typeof options);
   }
+}
+
+/** Options for a singleton slot declared with `singleton()` rather than a bare default value. */
+export interface SingletonOptions {
+  /**
+   * The KV key this slot lives under, overriding the schema property name. Renaming a schema
+   * property is otherwise a storage migration, since the property name *is* the key; declaring the
+   * old key here renames the code without touching what is already on disk.
+   */
+  storageKey?: string;
+}
+
+/**
+ * A singleton slot declared with options. Returned by `singleton()`; a class rather than a plain
+ * branded object so `createTypedStorage` can tell it apart at runtime from a default value that
+ * happens to be an object.
+ */
+export class SingletonSchema<T extends StorageValue> {
+  constructor(readonly defaultValue: T, readonly options: SingletonOptions) {}
+}
+
+/**
+ * Declares a singleton slot that needs options. A bare default value stays the shorthand for the
+ * common case (`{singletons: {count: 0}}`) and behaves identically.
+ */
+export function singleton<T extends StorageValue>(
+    defaultValue: T, options: SingletonOptions = {}): SingletonSchema<T> {
+  return new SingletonSchema(defaultValue, options);
 }
 
 // =======================================================================================
@@ -205,7 +240,8 @@ type TypedStorageImpl<Collections, Singletons> = TypedStorage
             ? CollectionImpl<T, P, U, N> : never
   }
   & {
-    [K in keyof Singletons]: Singleton<Singletons[K]>;
+    [K in keyof Singletons]: Singletons[K] extends SingletonSchema<infer T>
+        ? Singleton<T> : Singleton<Singletons[K]>;
   };
 
 export function keyString(key: Key): string {
@@ -681,15 +717,19 @@ export function createTypedStorage<Collections extends Record<string, Collection
   let result: any = typedStorage;
 
   for (let [colName, colSchema] of Object.entries(schema.collections || {})) {
-    result[colName] = createCollection(storage, colName, <any>colSchema);
+    let storageName = (<CollectionSchema<any, any, any, any>>colSchema).storageName;
+    result[colName] = createCollection(storage, storageName ?? colName, <any>colSchema);
   }
 
-  for (let [key, defaultValue] of Object.entries(schema.singletons || {})) {
+  for (let [key, slotSchema] of Object.entries(schema.singletons || {})) {
+    let defaultValue = slotSchema instanceof SingletonSchema ? slotSchema.defaultValue : slotSchema;
+    let storageKey = slotSchema instanceof SingletonSchema
+        ? slotSchema.options.storageKey ?? key : key;
     let subscribers = new Set<SingletonSubscriber<any>>();
 
-    let singleton: Singleton<any> = {
+    let slot: Singleton<any> = {
       get(): any {
-        let result = storage.kv.get(key);
+        let result = storage.kv.get(storageKey);
         if (result === undefined) {
           result = defaultValue;
         }
@@ -698,13 +738,13 @@ export function createTypedStorage<Collections extends Record<string, Collection
 
       put(value: any): void {
         if (subscribers.size === 0) {
-          storage.kv.put(key, value);
+          storage.kv.put(storageKey, value);
         } else {
           storage.transactionSync(() => {
             for (let subscriber of subscribers) {
               subscriber.update(value);
             }
-            storage.kv.put(key, value);
+            storage.kv.put(storageKey, value);
           });
         }
       },
@@ -718,7 +758,7 @@ export function createTypedStorage<Collections extends Record<string, Collection
       },
     };
 
-    result[key] = singleton;
+    result[key] = slot;
   }
 
   return result;

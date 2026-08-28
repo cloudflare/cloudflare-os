@@ -100,7 +100,7 @@ export async function openFakeOverseer(
         }),
       },
       storage: Object.assign(storage, {
-        prohibitAllSharing: { get: () => false },
+        containsRestrictedData: { get: () => false },
         title: { get: () => "Test Workspace" },
       }),
     },
