@@ -14,6 +14,7 @@
 //     writes immediately. List simulation has documented limitations (see types.d.ts).
 
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import { SerialTaskQueue } from "@gadgets/backend-utils/gatekeeper-action";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   stripTrailingSlashes,
@@ -48,6 +49,7 @@ import {
 } from "./notion-api";
 import {
   NotionStore,
+  applyStoredActionsThrough,
   applyStoredAction,
   defaultPropertiesFromSchema,
   observation,
@@ -694,6 +696,7 @@ type NotionItemGatekeeperImplProps = {
 @validateRpc()
 export class NotionItemGatekeeperImpl extends DurableObject<Env, NotionItemGatekeeperImplProps>
     implements Gatekeeper<NotionPageSession | NotionDatabaseSession> {
+  #actionResolution = new SerialTaskQueue();
   #api(): NotionApi {
     const userObjectId = this.ctx.props.userObjectId;
     const account = () =>
@@ -778,16 +781,20 @@ export class NotionItemGatekeeperImpl extends DurableObject<Env, NotionItemGatek
 
   async removeObserver(_id: string): Promise<void> {}
 
-  async applyAction(action: number): Promise<void> {
-    await applyStoredAction(this.#store(), action);
+  applyActionsThrough(actionId: number, vetoes: number[]) {
+    return this.#actionResolution.run(() => applyStoredActionsThrough(this.#store(), actionId, vetoes));
   }
 
-  async rejectAction(action: number): Promise<void | { restart?: boolean }> {
-    return rejectStoredAction(this.#store(), action);
+  applyAction(action: number): Promise<void> {
+    return this.#actionResolution.run(() => applyStoredAction(this.#store(), action));
   }
 
-  async revertAction(action: number) {
-    return await revertStoredAction(this.#store(), action);
+  rejectAction(action: number): Promise<void> {
+    return this.#actionResolution.run(() => rejectStoredAction(this.#store(), action));
+  }
+
+  revertAction(action: number) {
+    return this.#actionResolution.run(() => revertStoredAction(this.#store(), action));
   }
 }
 
@@ -799,6 +806,7 @@ type NotionWorkspaceGatekeeperImplProps = {
 export class NotionWorkspaceGatekeeperImpl
     extends DurableObject<Env, NotionWorkspaceGatekeeperImplProps>
     implements Gatekeeper<NotionWorkspaceSession> {
+  #actionResolution = new SerialTaskQueue();
   #api(): NotionApi {
     const userObjectId = this.ctx.props.userObjectId;
     const account = () =>
@@ -940,16 +948,20 @@ export class NotionWorkspaceGatekeeperImpl
     this.ctx.storage.kv.delete(this.#observerKey(id));
   }
 
-  async applyAction(action: number): Promise<void> {
-    await applyStoredAction(this.#store(), action);
+  applyActionsThrough(actionId: number, vetoes: number[]) {
+    return this.#actionResolution.run(() => applyStoredActionsThrough(this.#store(), actionId, vetoes));
   }
 
-  async rejectAction(action: number): Promise<void | { restart?: boolean }> {
-    return rejectStoredAction(this.#store(), action);
+  applyAction(action: number): Promise<void> {
+    return this.#actionResolution.run(() => applyStoredAction(this.#store(), action));
   }
 
-  async revertAction(action: number) {
-    return await revertStoredAction(this.#store(), action);
+  rejectAction(action: number): Promise<void> {
+    return this.#actionResolution.run(() => rejectStoredAction(this.#store(), action));
+  }
+
+  revertAction(action: number) {
+    return this.#actionResolution.run(() => revertStoredAction(this.#store(), action));
   }
 }
 

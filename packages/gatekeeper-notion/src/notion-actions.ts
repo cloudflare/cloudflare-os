@@ -27,7 +27,18 @@ import {
   type NotionPageResponse,
 } from "./notion-api";
 import type { RpcStub } from "cloudflare:workers";
-import type { ActionDescription, ApprovalQueue, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
+import {
+  InvalidationLog,
+  displayReason,
+  validateApplyThroughArgs,
+} from "@gadgets/backend-utils/gatekeeper-action";
+import { createLogger } from "@gadgets/backend-utils/logger";
+import type {
+  ActionDescription,
+  ApplyActionsThroughResult,
+  ApprovalQueue,
+  ObservationDescription,
+} from "@gadgets/workshop-shared/gatekeeper";
 import type {
   NotionComment,
   NotionDatabaseSchema,
@@ -39,6 +50,15 @@ import type {
   NotionPropertyValue,
   NotionUser,
 } from "./types";
+
+/** Observability fields emitted by Notion action resolution. */
+type NotionActionLogFields = { actionId: number; vendorId: string };
+
+const VENDOR_ID = "notion";
+
+const logger = createLogger<NotionActionLogFields>({
+  component: "gatekeeper.notion.actions", vendorId: VENDOR_ID,
+});
 
 // ---------------------------------------------------------------------------------------------
 // Action model
@@ -77,7 +97,11 @@ export type NotionAction =
 export type StoredActionRecord = {
   id: number;
   action: NotionAction;
-  state: "pending" | "applied" | "reverted";
+  /**
+   * "staged" means submitAction() has not completed yet: the record overlays reads like a pending
+   * one, but applyStoredActionsThrough() must not apply it.
+   */
+  state: "staged" | "pending" | "applied" | "reverted";
   submittedAt: number;
   /** For appendContent revert: the IDs of the blocks created on apply. */
   appendedBlockIds?: string[];
@@ -110,9 +134,13 @@ export class NotionStore {
   #kv: Kv;
   #api: NotionApi;
 
+  /** Durable attribution of veto-cascade invalidations, re-reported on repeated requests. */
+  readonly invalidations: InvalidationLog;
+
   constructor(kv: Kv, api: NotionApi) {
     this.#kv = kv;
     this.#api = api;
+    this.invalidations = new InvalidationLog(kv);
   }
 
   get api(): NotionApi {
@@ -153,8 +181,9 @@ export class NotionStore {
       .toSorted((a, b) => a.id - b.id);
   }
 
+  /** Not-yet-applied actions, including staged ones (read overlays must reflect both). */
   pendingActions(): StoredActionRecord[] {
-    return this.allActions().filter(r => r.state === "pending");
+    return this.allActions().filter(r => r.state === "pending" || r.state === "staged");
   }
 
   /**
@@ -820,7 +849,7 @@ export async function applyNotionAction(store: NotionStore, record: StoredAction
 export async function revertNotionAction(
   store: NotionStore,
   record: StoredActionRecord,
-): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
+): Promise<void | { message?: string; canRetry?: boolean }> {
   const api = store.api;
   const action = record.action;
 
@@ -1004,7 +1033,7 @@ export function buildCreateBody(
 }
 
 /**
- * Record a pending action and submit it to the approval queue for later approval. If the submit
+ * Record a staged action and submit it to the approval queue for later approval. If the submit
  * fails, the stored record is rolled back so it doesn't pollute simulation. Returns the action ID.
  */
 export async function stageAction(
@@ -1013,12 +1042,19 @@ export async function stageAction(
   action: NotionAction,
 ): Promise<number> {
   const id = store.nextActionId();
-  store.putAction({ id, action, state: "pending", submittedAt: Date.now() });
+  store.putAction({ id, action, state: "staged", submittedAt: Date.now() });
   try {
     await approvalQueue.submitAction(id, describeAction(action));
   } catch (err) {
     store.deleteAction(id);
     throw err;
+  }
+  // Only now may the action be applied: the overseer has accepted it, so a decision frontier can
+  // legitimately cover it. A concurrent veto cascade may have deleted the record meanwhile.
+  const record = store.getAction(id);
+  if (record?.state === "staged") {
+    record.state = "pending";
+    store.putAction(record);
   }
   return id;
 }
@@ -1032,57 +1068,107 @@ export async function applyStoredAction(store: NotionStore, id: number): Promise
   await applyNotionAction(store, record);
 }
 
-export function rejectStoredAction(store: NotionStore, id: number): void | { restart?: boolean } {
-  const record = store.getAction(id);
-  if (!record) return;
-  store.deleteAction(id);
+/**
+ * Rejecting a page creation invalidates every pending action that targeted that provisional page
+ * (they could never be applied — the page won't exist), including sub-pages created under it and
+ * their edits, transitively. Cascade-delete them all, recording which veto invalidated each so a
+ * repeated request can re-report the attribution.
+ */
+function cascadeRejectedCreation(store: NotionStore, record: StoredActionRecord): void {
+  if (record.action.type !== "createPage") return;
 
-  // Rejecting a page creation invalidates every pending action that targeted that provisional page
-  // (they could never be applied — the page won't exist), including sub-pages created under it and
-  // their edits, transitively. Cascade-delete them all so the overseer never tries to apply an
-  // orphan, and request a restart since the Gadget already observed simulated state built on them.
-  if (record.action.type === "createPage") {
-    // Snapshot the pending set once — deleting actions below would otherwise change it under us.
-    const pending = store.pendingActions();
-    const purge = new Set<string>([record.action.provisionalId]);
-    // Expand to transitively-nested sub-page creations. Only `createSubPage` nests a creation under
-    // a provisional page (parent.kind === "page"); database/workspace creates never have a
-    // provisional parent, so they don't need handling here.
-    for (;;) {
-      let added = false;
-      for (const r of pending) {
-        if (r.action.type === "createPage" && r.action.parent.kind === "page" &&
-            purge.has(r.action.parent.pageId) && !purge.has(r.action.provisionalId)) {
-          purge.add(r.action.provisionalId);
-          added = true;
-        }
-      }
-      if (!added) break;
-    }
-    let deleted = false;
-    for (const r of pending) {
-      const t = actionPageId(r.action);
-      if (t !== null && purge.has(t)) {
-        store.deleteAction(r.id);
-        deleted = true;
+  // Snapshot the pending set once — deleting actions below would otherwise change it under us.
+  const pending = store.pendingActions();
+  const purge = new Set<string>([record.action.provisionalId]);
+  // Expand to transitively-nested sub-page creations. Only `createSubPage` nests a creation under
+  // a provisional page (parent.kind === "page"); database/workspace creates never have a
+  // provisional parent, so they don't need handling here.
+  for (;;) {
+    let added = false;
+    for (const candidate of pending) {
+      if (candidate.action.type === "createPage" && candidate.action.parent.kind === "page" &&
+          purge.has(candidate.action.parent.pageId) && !purge.has(candidate.action.provisionalId)) {
+        purge.add(candidate.action.provisionalId);
+        added = true;
       }
     }
-    if (deleted) return { restart: true };
-    return;
+    if (!added) break;
   }
 
-  // Rejecting a mid-stack edit leaves the simulated overlay the Gadget already observed
-  // inconsistent; ask for a restart if other pending actions still target the same page.
-  const target = actionPageId(record.action);
-  if (target && store.pendingForPage(target).length > 0) {
-    return { restart: true };
+  for (const candidate of pending) {
+    const target = actionPageId(candidate.action);
+    if (target !== null && purge.has(target)) {
+      store.deleteAction(candidate.id);
+      store.invalidations.record(candidate.id, record.id);
+    }
   }
+}
+
+/** Delete vetoed records and cascade to actions they invalidate. Settled records are left alone. */
+function rejectRecords(store: NotionStore, vetoes: Set<number>): void {
+  const rejected: StoredActionRecord[] = [];
+  for (const id of vetoes) {
+    const record = store.getAction(id);
+    if (!record || record.state === "applied" || record.state === "reverted") continue;
+    store.deleteAction(id);
+    rejected.push(record);
+  }
+  for (const record of rejected) cascadeRejectedCreation(store, record);
+}
+
+/** Resolve all stored actions through a Gatekeeper-local action ID. */
+export async function applyStoredActionsThrough(
+  store: NotionStore, actionId: number, vetoes: number[],
+): Promise<ApplyActionsThroughResult> {
+  const vetoSet = validateApplyThroughArgs(actionId, vetoes);
+  rejectRecords(store, vetoSet);
+  store.invalidations.prune(vetoSet, store.pendingActions()[0]?.id ?? Infinity);
+
+  const invalidatedByVeto = store.invalidations.attributedTo(vetoSet);
+  const invalidations = invalidatedByVeto.length > 0 ? { invalidatedByVeto } : {};
+  for (const record of store.pendingActions()) {
+    if (record.id > actionId) break;
+    if (record.state === "staged") {
+      // submitAction() has not completed, so this action must not be applied yet -- and the
+      // contract forbids silently skipping an in-range action (the caller would infer it was
+      // applied), so report it as the stopping point. The submit completes momentarily and the
+      // next pass proceeds.
+      return {
+        ...invalidations,
+        stopped: {
+          at: record.id,
+          reason: new Error("This action is still being submitted for approval. Retry in a moment."),
+        },
+      };
+    }
+    try {
+      await applyNotionAction(store, record);
+    } catch (error) {
+      logger.warn("failed to apply action", {
+        event: "action.apply.failed",
+        actionId: record.id,
+        error,
+      });
+      return {
+        ...invalidations,
+        stopped: {
+          at: record.id,
+          reason: displayReason(error, "Notion could not apply this action"),
+        },
+      };
+    }
+  }
+  return invalidations;
+}
+
+export function rejectStoredAction(store: NotionStore, id: number): void {
+  rejectRecords(store, new Set([id]));
 }
 
 export async function revertStoredAction(
   store: NotionStore,
   id: number,
-): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
+): Promise<void | { message?: string; canRetry?: boolean }> {
   const record = store.getAction(id);
   if (!record) throw new Error(`Unknown action: ${id}`);
   return await revertNotionAction(store, record);
