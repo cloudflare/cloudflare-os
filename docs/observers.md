@@ -30,14 +30,18 @@ Gadgets enforce a core security invariant (see `overview.md` §"Security Model")
 > able to read that information will also be prohibited from interacting with the Gadget,
 > to prevent data leaks.
 
-Today the only mechanism enforcing this is the blunt **`containsRestrictedData`** flag
-(`packages/workshop-shared/src/gatekeeper.ts`, `ObservationDescription.containsRestrictedData`).
-When a gatekeeper marks an observation as maximally sensitive, the Gadget can no longer be
-shared with *anyone*, and it drops into "lockdown" (no further actions, no web fetches). This
-is a deliberate stopgap — it cannot express "this data may be shared, but only with people who
-*also* have access to it."
+The mechanism is a per-user, gatekeeper-mediated check — "this data may be shared, but only with
+people who *also* have access to it". (Maximally sensitive data gets an extra layer: an
+observation marked **`containsRestrictedData`**
+(`ObservationDescription.containsRestrictedData` in `packages/workshop-shared/src/gatekeeper.ts`)
+latches the workspace into a restricted mode — no actions, no web fetches. Its coverage rests on
+admission: nobody can open the workspace without being verified against the producing gatekeeper,
+and anything that widens what they must be verified against restarts every live session. The one
+producer admission cannot see — one with no vendor account behind it — is refused outright while
+the workspace is shared; see `#assertUnverifiableProducerUnshared` in `overseer.ts` and edge case
+4 below.)
 
-This feature replaces that all-or-nothing posture with a per-user, gatekeeper-mediated check:
+The check works as follows:
 
 - **Observers.** Every non-owner who can see data the Gadget read is an *observer*. When a user
   becomes an observer, each relevant gatekeeper is asked — via `Gatekeeper.addObserver()` — to
@@ -56,7 +60,7 @@ This feature replaces that all-or-nothing posture with a per-user, gatekeeper-me
   `ObservationDescription.excludeObservers`. The overseer must then guarantee those observers
   never see it, or block the observation.
 
-**The API is already committed** (commit `e2f1707`). The relevant interfaces are
+**The API is already committed.** The relevant interfaces are
 `GatekeeperUser.getVerifier()`, `GatekeeperUserVerifier`, `Gatekeeper.addObserver()` /
 `removeObserver()`, and `ObservationDescription.excludeObservers`, all in
 `packages/workshop-shared/src/gatekeeper.ts`.
@@ -68,8 +72,8 @@ This feature replaces that all-or-nothing posture with a per-user, gatekeeper-me
 - **Role-based breadth of verification:**
   - **`build`** collaborators (full access — chat + code + all bindings) must be verified
     against **every** gatekeeper the Gadget has.
-  - **`use`** collaborators (UI only, no chat access — see `UseOverseerInterface`,
-    `overseer.ts:2816`) must be verified only against gatekeepers their sessions can actually
+  - **`use`** collaborators (UI only, no chat access — see `UseOverseerInterface` in
+    `overseer.ts`) must be verified only against gatekeepers their sessions can actually
     reach: those **bound by some gadget** (the UI can invoke them), those with an **enabled
     hook** (a hook is a live write channel into a gadget they can open, delivering the
     connection's data regardless of binding edges), plus — transitively — every **env target of a
@@ -94,20 +98,20 @@ This feature replaces that all-or-nothing posture with a per-user, gatekeeper-me
 | Concern | Location |
 |---|---|
 | Gatekeeper RPC API (the committed surface) | `packages/workshop-shared/src/gatekeeper.ts` |
-| Overseer DO, `open()` auth entry point | `packages/workshop-backend/src/overseer.ts:2714` |
+| Overseer DO, `open()` auth entry point | `packages/workshop-backend/src/overseer.ts` |
 | Authorization gate shared by `open()` and `receiveExternalMessage()` | `overseer.ts` `authorizeCollaborator()` |
 | Session restart when verification scope widens | `overseer.ts` (`#restartIfSessionsAffected`, `joinSession`, `scheduleAccessRestart`) |
-| Server `openGadget` path | `packages/workshop-backend/src/server.ts:206` |
-| Role resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveRole`, `computeEffectiveRoles`, `hasAnyShares`) |
-| `containsRestrictedData` enforcement | `overseer.ts:1171` (`authorizeObservation`), `:1207` (web fetch), `:1258` (`submitAction`) |
-| Observation recording | `overseer.ts:1169` `authorizeObservation()`; `ApprovalQueueImpl` `overseer.ts:4856` |
-| Gatekeeper storage record | `overseer.ts:110` `GatekeeperRecord` (has `creationSpec.vendorId`) |
-| `GatekeeperCreationSpec` | `packages/workshop-shared/src/api.ts:1345` |
-| Gatekeeper facet access | `overseer.ts:1079` `getGatekeeperFacet()` |
-| Overseer storage collections | `overseer.ts:316` (`gatekeepers`, with `byBindingName` index — template for a new collection) |
-| Connected accounts (User DO) | `packages/workshop-backend/src/user.ts:12` `ConnectedAccountRecord` (`account: Fetcher<GatekeeperUser>`, `vendorId`) |
-| List connected accounts | `user.ts:890` `subscribeConnectedAccounts()`; subscriber type `api.ts:116` |
-| Account → gatekeeper class | `user.ts:1136` `getGatekeeperClassFor()` |
+| Server `openGadget` path | `packages/workshop-backend/src/server.ts` |
+| Role resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveRole`, `computeEffectiveRoles`) |
+| `containsRestrictedData` enforcement | `overseer.ts` (`authorizeObservation`'s `#assertUnverifiableProducerUnshared`, `getWebFetchEnv`, `submitAction`) |
+| Observation recording | `overseer.ts` `authorizeObservation()`; `ApprovalQueueImpl` |
+| Gatekeeper storage record | `overseer.ts` `GatekeeperRecord` (has `creationSpec.vendorId`) |
+| `GatekeeperCreationSpec` | `packages/workshop-shared/src/api.ts` |
+| Gatekeeper facet access | `overseer.ts` `getGatekeeperFacet()` |
+| Overseer storage collections | `overseer.ts` (`gatekeepers`, with `byBindingName` index — template for a new collection) |
+| Connected accounts (User DO) | `packages/workshop-backend/src/user.ts` `ConnectedAccountRecord` (`account: Fetcher<GatekeeperUser>`, `vendorId`) |
+| List connected accounts | `user.ts` `subscribeConnectedAccounts()`; subscriber type in `api.ts` |
+| Account → gatekeeper class | `user.ts` `getGatekeeperClassFor()` |
 
 ---
 
@@ -140,8 +144,8 @@ This feature replaces that all-or-nothing posture with a per-user, gatekeeper-me
 
 ### New overseer storage collection: `observers`
 
-Add an `observers` collection to `OverseerStorage` (mirror the `gatekeepers` collection at
-`overseer.ts:316`, including a secondary index for reverse lookup):
+Add an `observers` collection to `OverseerStorage` (mirror the `gatekeepers` collection in
+`overseer.ts`, including a secondary index for reverse lookup):
 
 ```ts
 type ObserverRecord = {
@@ -173,7 +177,7 @@ log) lives inside each gatekeeper's own DO and is out of scope here.
 ### Step 1 — User DO: mint a verifier for a chosen account
 
 Add a method to the User DO (`packages/workshop-backend/src/user.ts`), near
-`getGatekeeperClassFor` (`user.ts:1136`):
+`getGatekeeperClassFor`:
 
 ```ts
 // Mint a verifier from one of THIS user's connected accounts, identified by accountId.
@@ -203,7 +207,7 @@ invoked **only** when the opening user needs to configure gatekeeper accounts. I
 without an extra round trip.
 
 Add to the RPC API (`packages/workshop-shared/src/api.ts`) and thread through
-`server.ts:206` → `overseer.open()` (`overseer.ts:2714`):
+`server.ts` `openGadget` → `overseer.open()`:
 
 ```ts
 // Provided by the client when opening a gadget. Invoked by the overseer only if the opening
@@ -233,10 +237,18 @@ type ObserverAccountChoice = {
 ### Step 3 — Overseer: observer configuration & re-verification at `open()`
 
 Hook into `open()` in the non-owner branch, after `effectiveRole` is confirmed and before
-constructing the client interface. Keep the existing `containsRestrictedData` short-circuit ahead of
-this -- lockdown still wins. The `NeedsConnections` signal is produced only *after* a valid role is
+constructing the client interface. (Observer verification *is* the open()-time enforcement for
+sensitive data; no `containsRestrictedData` check precedes it.)
+The `NeedsConnections` signal is produced only *after* a valid role is
 confirmed, so it never reveals a workspace's gatekeeper or resource metadata to an unauthorized
 user.
+
+Role resolution plus verification is one shared gate, `OverseerImpl.authorizeCollaborator`, and
+every non-owner entry point that can surface workspace data runs it — `open()` interactively, and
+`receiveExternalMessage()` non-interactively (no configuration channel, so an unverified caller is
+told to open the workspace, which is where verification happens). An agent reply on the external
+path can surface anything the workspace already read, so it must not admit a collaborator with
+less verification than `open()` would demand.
 
 Add a private helper on `OverseerImpl`, roughly:
 
@@ -286,13 +298,14 @@ Logic:
      **throws** on a mismatch. This server-side check is what guarantees a gatekeeper only receives
      a verifier minted by its own vendor; filtering account choices in the client is only a
      user-interface convenience.
-   - If any `addObserver` **throws** (or `getVerifier` throws on vendor mismatch), the user is not
-     (or no longer) allowed. Every such failure goes through one `fail()` path, and the user is
-     offered a bounded number of re-prompts to repair (e.g. re-authenticate an expired account). On
-     terminal failure the open is denied with a message naming each refused binding, and the
-     registrations this call added are best-effort-removed while no record is persisted. The
-     persisted `accountChoices` are left as they are: an entry records the choice the user made so
-     they are not asked again, and asserts nothing about whether the gatekeeper still admits them.
+   - If any `addObserver` **throws** (or `getVerifier` throws on vendor mismatch, or returns null
+     for a disconnected account), the user is not (or no longer) allowed. Every such failure goes
+     through one `fail()` path, and the user is offered a bounded number of re-prompts to repair
+     (e.g. re-authenticate an expired account). On terminal failure the open is denied with a
+     message naming each refused binding, and the registrations this call added are
+     best-effort-removed while no record is persisted. The persisted `accountChoices` are left as
+     they are: an entry records the choice the user made so they are not asked again, and asserts
+     nothing about whether the gatekeeper still admits them.
    - Only a *first-ever* verification rolls anything back (fully — nothing referenced its
      registrations before the call, and the minted id would otherwise linger unresolvable). A
      returning observer's registrations are **all** kept, including ones this call added: their
@@ -325,13 +338,6 @@ Notes:
   stored account choices. The modal is only for genuinely uncovered bindings (first open, a binding
   the owner added after this user last configured, or an ambient binding without a matching provided
   account).
-- **Role resolution and verification belong together.** Both live behind one
-  `authorizeCollaborator(profileId, clientUser, {configureCb?, requireRole?})`, so every non-owner
-  entry point applies the same gate. `receiveExternalMessage()` — the chat-integration path, whose
-  agent reply can surface anything the workspace has already read — passes `requireRole: "build"`
-  and no `configureCb`: it has no channel to prompt on, so an unverified caller is told to open the
-  workspace in a browser, and an insufficient role is denied *before* verification runs rather than
-  being sent to fix a failure that could never grant them access anyway.
 
 #### Restarting when verification scope widens
 
@@ -497,12 +503,16 @@ restart-check, and mark share one synchronous block, so no request can interleav
 change appearing and the block taking effect; marks are only ever set when a restart is
 scheduled, since nothing else would clear them.
 
+Enforcement is therefore at admission, within the ~100 ms abort delay of the moment the change is
+determined — the change itself, for every trigger — and held to the collaborator's role scope
+(edge case 4 below).
+
 ### Step 4 — Frontend: the configuration modal
 
 Implement the `ObserverConfigCallback` on the client. When the overseer calls `configure(needs)`:
 
 1. For each `ObserverBindingNeed`, find the user's candidate accounts by filtering the existing
-   `subscribeConnectedAccounts()` results (`user.ts:890`) by `need.vendorId`.
+   `subscribeConnectedAccounts()` results by `need.vendorId`.
 2. If one or more accounts match, pre-select one arbitrarily as the default; let the user change
    it via a dropdown. (Most users have one account per vendor and will just click "OK".)
 3. Include forced auto-provisioned accounts in the subscription. If **no** account matches, use
@@ -518,7 +528,7 @@ you're allowed to see the data it uses."
 
 ### Step 5 — Overseer: forward exclusion in `authorizeObservation()`
 
-Extend `authorizeObservation()` (`overseer.ts:1169`) to honor `description.excludeObservers`.
+Extend `authorizeObservation()` (in `overseer.ts`) to honor `description.excludeObservers`.
 Because v1 has no per-thread hiding, an excluded-but-named observation can only proceed when the
 named observer cannot reach it at all: either they have *already lost access* in the sharing graph,
 or the connection that produced it has left their role's verification scope.
@@ -527,6 +537,12 @@ For each id in `description.excludeObservers`:
 
 1. Map the opaque `observerId` → `profileId` via the `observers.byObserverId` index. If there is
    no record, the id is not an active observer → ignore it.
+   **Known gap: "no record" does not yet imply "not an active observer".** A first-time
+   `ensureObserver` registers a freshly minted id with the gatekeepers *before* the record (and
+   so `byObserverId`) is persisted, so an id named during that window — the fan-out, which can
+   park on the config modal — reads as unknown here and the observation is admitted to the very
+   collaborator it names. The required fix is an in-memory map of pending ids consulted here,
+   failing closed; it lands with `observer-verification-fixes`.
 2. Check sharing-graph reachability for that `profileId`
    (`SharingManager.getEffectiveRole` / `computeEffectiveRoles`).
    - **Still authorized, and the producing gatekeeper is still in that role's scope → throw**,
@@ -574,11 +590,14 @@ This is the runtime counterpart of `addObserver`: `addObserver` covers observers
 *after* data was read; `excludeObservers` covers data read *after* observers were configured.
 Persisting the observation record itself is unchanged; we only gate it.
 
-> Why not also worry about authorized-but-not-yet-configured users here? They cannot be named in
-> `excludeObservers` because no gatekeeper knows their id yet. The invariant still holds from the
-> other direction: when such a user later opens and configures, `addObserver` re-checks them
-> against *all* past observations (including any restricted one) and throws, denying them. So
-> forward exclusion only needs to handle already-configured observers.
+> Why not also worry about authorized-but-not-yet-configured users here? A user with no
+> registration in flight cannot be named in `excludeObservers` because no gatekeeper knows their
+> id yet. The invariant still holds from the other direction: when such a user later opens and
+> configures, `addObserver` re-checks them against *all* past observations (including any
+> restricted one) and throws, denying them. So forward exclusion only needs to handle
+> already-configured observers — plus the one case in between: a user *mid*-registration is
+> already known to every gatekeeper whose `addObserver` has returned, and can be named before
+> their record exists. That is the Step 5 item 1 known gap above.
 
 ### Step 6 — Overseer: remove observers on sharing changes
 
@@ -594,18 +613,17 @@ downgrades — see the matching methods on `OverseerClientInterface` and `Sharin
   stale cached workspace listing just yields a denied open).
 
 - After a mutation, use the returned `AffectedCollaborator[]` to find users who **lost access**.
-  For each who is now unreachable, if they have an observer record: best-effort
-  `removeObserver(record.observerId)` on **all** gatekeeper facets, then delete the observer
-  record.
+  For each who is now unreachable, if they have an observer record: delete the observer record,
+  then best-effort `removeObserver(record.observerId)` on **all** gatekeeper facets.
 - For a **`build` → `use` downgrade**, optionally `removeObserver` (and drop the corresponding
   `accountChoices` entries) for the now-out-of-scope bindings (those without a `bindingName`).
   Safe to defer — an over-broad observer set only ever errs toward stricter future checks — but
   it keeps gatekeeper state tidy.
 - All these calls are best-effort: log and continue on error. An orphaned observer entry only
-  causes superfluous future checks, never a data leak: a registration is what *admits* an open, and
-  every open re-runs `addObserver`, so a stale one grants nothing on its own — while
+  causes superfluous future checks, never a data leak: a registration is what *admits* an open,
+  and every open re-runs `addObserver`, so a stale one grants nothing on its own — while
   `authorizeObservation`'s exclusion gate re-checks the live sharing graph for any id a gatekeeper
-  still names.
+  still names. A record is only ever persisted for a party who passed full verification.
 
 > Multi-gatekeeper sequencing/atomicity is an overseer implementation detail, not part of the
 > shared interface. Because `addObserver` is re-run every open and `removeObserver` is idempotent,
@@ -648,8 +666,50 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    operational failure (vendor outage, expired credential) is treated the same way — the overseer
    cannot tell it from a settled denial — and the collaborator gets back in as soon as a repaired
    open re-verifies them.
-4. **`containsRestrictedData` interaction** — unchanged and still authoritative: if set, no non-owner
-   can open at all (`overseer.ts:2770`). Observer checks only matter when sharing is allowed.
+4. **`containsRestrictedData` interaction** — coverage is enforced at *admission*, not per
+   observation: `ensureObserver` re-verifies each collaborator against every in-scope gatekeeper
+   at every `open()`, so nobody can be in the workspace without having passed the producing
+   gatekeeper's `addObserver()`, and anything that widens what they must pass restarts every live
+   session (see "Restarting when verification scope widens"). The flag also latches the workspace
+   into a restricted mode that blocks actions and web fetches.
+   One producer admission structurally cannot cover: one with no vendor account behind it — an
+   `aiModel`/`agentSpawner` binding, or a legacy record with no `creationSpec`.
+   `#inScopeGatekeepers` skips those, so no collaborator is ever asked about them, and
+   `#assertUnverifiableProducerUnshared` in `authorizeObservation` therefore refuses their
+   restricted observations outright while the workspace is shared (any collaborator or
+   outstanding share link — the same test `removalBlockedByRestrictedData` applies; a link's key
+   never expires, so admitting the read would strand a link the owner has already handed out).
+   (This matches `assertNewSharingAllowed()`, which already treats the same case as unshareable,
+   and the message names no collaborator: it reaches sandboxed gadget code and agent output.)
+   Verification is also held to each collaborator's own role scope, because `ensureObserver` can
+   never verify beyond it: a `use` collaborator can't be covered for a gatekeeper outside their
+   scope (one no gadget binds and no enabled hook feeds — see `#useScopeGatekeeperIds`).
+   `use` scope is *live* binding state, with a transition case in each direction. Adding a
+   binding grows it, which restarts every live session (edge case 5). Unbinding shrinks it
+   silently: a formerly-bound producer drops out of `use` verification scope, so its sensitive
+   reads stop requiring `use` collaborators' coverage — the same skip as a never-bound producer,
+   though the liveness argument above doesn't apply to it. Accepted because (i) `use` sessions
+   cannot read chat history or the action log, so the exposure is limited to state the gadget
+   persisted, served through the gadget's own UI or export; (ii) that data entered gadget
+   storage while the producer *was* bound, when every `use` collaborator was verified against
+   it or could not open the workspace; (iii) the residual is `use` grants created after the
+   unbind, who view that persisted state unverified — and re-binding the connection restores their
+   verifiability at their next open. Coverage does not go stale across the unbind/rebind either:
+   a `use` collaborator who opened only during the unbound window verified nothing against the
+   producer and so holds no entry for it, and the rebind restarts the workspace, so their forced
+   re-open asks them about it; one who had verified before the unbind keeps their entry — it
+   records the account they chose, not an admission — and their re-open re-runs `addObserver`
+   against it.
+   The *never*-bound flavor of the same skip is broader: a producer reachable only through
+   chat bindings (an ambient singleton the agent reads in chat) was never in any `use`
+   collaborator's scope, so premise (ii) does not hold for it — the agent can persist its
+   restricted data into gadget code or storage without any `use` collaborator ever having
+   been verified against it, and there is no prior binding for "re-bind" to restore.
+   Accepted on the same grounds: coverage there is unverifiable by construction (the
+   liveness argument above), `use` sessions still cannot read chat history or the action
+   log, so the exposure is limited to what the agent chose to persist, and the forward
+   remedy is binding the producer to a gadget — that puts it in `use` scope, so every
+   collaborator is verified against it at their next open.
 5. **Owner adds a new binding after sharing** — existing observers see an incremental modal for
    just the new binding on their next open, and may be denied if they lack access to the new
    resource (inherent to the security model). Because that next open is what verifies them, the
@@ -672,6 +732,30 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    (unbound, with no enabled hook keeping it reachable) is the different case Step 5's scope test
    handles: the gatekeeper still knows the id, but the observer can no longer reach what it
    produces, so they are de-registered from it instead of blocking.
+8. **Removing a connection that read restricted data** — while the workspace is latched
+   (`containsRestrictedData`) *and* shared, `GatekeeperClient.remove()` refuses for the
+   *producer* connections — those through which restricted data was actually read, derived from
+   the permanent action log (`restrictedProducerIds`); non-producers stay removable. The record
+   is what observer verification runs against, and the restricted data outlives it in chat
+   history and storage, so deleting it would let a never-verified collaborator open unchecked.
+   Outstanding share links block removal the same way: their keys never expire, and redemption
+   is gated at open() only while the record exists. The remedy is to remove collaborators and
+   revoke share links first.
+   Unverifiable producers (a legacy record with no creation spec, or an aiModel/agentSpawner
+   backed by no vendor account) are guarded the same way: a legacy record denies every open whose
+   scope includes it (every `build` open — `observerVendorId` throws on it) while it exists, so
+   removing it while shared would readmit every existing collaborator with the restricted history
+   still in chat. It cannot be migrated (it never persisted the vendor identity), so the recovery
+   for an owner who wants to share such a workspace is to start a new one. Internal removals need
+   no guard: the creation-failure rollback removes a record too new to be a producer, and ambient
+   reconciliation skips — and logs — a stale record the guard protects.
+   The complementary rule (`assertNewSharingAllowed`): once latched, if any producer is gone or
+   can never verify a collaborator, everything that would admit a new party refuses — the
+   grant-creating mutators (`addCollaborator`, `createShareLink`, `newShareLinkKey`) and
+   `redeemShareKey` at open() — leaving the workspace permanently owner-only. Each check runs
+   synchronously with its storage write, so a producer removed in any await window still refuses
+   the grant; a redemption whose edge already exists skips the check, so an existing
+   collaborator's re-open is untouched.
 
 ---
 
@@ -733,15 +817,17 @@ gatekeeper package — a single package (e.g. `gatekeeper-google`) may use sever
 its resource types.
 
 - **A — Private-only.** Non-owner observers are refused: `addObserver()` unconditionally throws.
-  This is the replacement for today's reliance on `containsRestrictedData` for these resources (the
-  `containsRestrictedData` lockdown mechanism itself is unchanged and remains available separately).
+  For data that must additionally never leak back out, the `containsRestrictedData` restricted
+  mode (no actions, no web fetches) is available separately; combined with strategy A it makes
+  the workspace effectively private once sensitive data is observed.
   `getVerifier()` must still exist (the overseer mints one on every open) but is never consulted.
 
 - **B — ACL check (single unit).** The resource is treated as one atomic unit.
   `getVerifier()` mints a verifier exposing the observer's vendor identity (via the
-  "non-standard method on the verifier" pattern, `gatekeeper.ts:456-461`). `addObserver()` resolves
-  that identity and checks it against the bound resource's ACL, throwing on failure. Gatekeepers
-  should cache per-open to bound cost (`gatekeeper.ts:511-516`). No `excludeObservers` is needed:
+  "non-standard method on the verifier" pattern; see `GatekeeperUserVerifier` in `gatekeeper.ts`).
+  `addObserver()` resolves that identity and checks it against the bound resource's ACL, throwing
+  on failure. Gatekeepers should cache per-open to bound cost (see the note on `addObserver()`).
+  No `excludeObservers` is needed:
   the whole unit is covered up front, so nothing read later could be invisible to a verified
   observer.
 
@@ -750,8 +836,9 @@ its resource types.
   plus the set of current observers. `addObserver()` verifies the observer against **every** logged
   set so far. When a later observation first touches a **new** set, the gatekeeper re-verifies all
   current observers and sets `excludeObservers` for any who fail (the overseer then blocks the
-  observation per `gatekeeper.ts:751-774`). `removeObserver()` drops the observer from the tracked
-  set. Each per-set check reuses the same ACL primitive the corresponding narrow (B) binding uses.
+  observation per the `excludeObservers` contract). `removeObserver()` drops the observer from
+  the tracked set. Each per-set check reuses the same ACL primitive the corresponding narrow (B)
+  binding uses.
 
 - **D — Low-stakes.** No information-flow tracking. `addObserver()` / `removeObserver()` are
   no-ops; any collaborator may observe. `getVerifier()` returns a trivial verifier (the overseer
@@ -779,8 +866,8 @@ its resource types.
 | **linear** | Workspace | **C** | Track accessed teams; verify the observer against each (reusing the Team B check). |
 | **notion** | Page / Database | **B** | Check the observer's Notion access to the bound page/database. |
 | **notion** | Workspace | **C** | Track accessed pages/databases; verify the observer's access to each. |
-| **supabase** | Project | **B** | Verify the observer's own `listProjects()` (`supabase-api.ts:306`) includes the bound project ref. Within a project, arbitrary read-only SQL spans the whole DB, so the project is the atomic unit (no per-table tracking). |
-| **supabase** | Organization | **C** | Track accessed project refs (the org session reaches them via `openProject` / `listProjects`, `supabase.ts:1015`/`:1037`); verify the observer's `listProjects()` includes each, reusing the Project B check. |
+| **supabase** | Project | **B** | Verify the observer's own `listProjects()` (`supabase-api.ts`) includes the bound project ref. Within a project, arbitrary read-only SQL spans the whole DB, so the project is the atomic unit (no per-table tracking). |
+| **supabase** | Organization | **C** | Track accessed project refs (the org session reaches them via `openProject` / `listProjects` in `supabase.ts`); verify the observer's `listProjects()` includes each, reusing the Project B check. |
 | **confluence** | Site | **C** | Verify site access; track observed spaces and content because both can have narrower permissions. |
 | **confluence** | Space | **C** | Verify space access; track observed pages and blog posts because content restrictions may be narrower. |
 | **confluence** | Page / Blog Post | **C** | Verify bound-content access; track observed child pages because they may have stricter restrictions than their parent. |
@@ -812,3 +899,20 @@ This is why the broad bindings split the way they do:
 - **Decomposition deliberately deferred → A:** Gmail Mailbox — could in principle decompose into
   mailing lists the observer belongs to, but that is the out-of-scope "advanced" case, so it stays
   fully private for now.
+
+---
+
+## Known limitations
+
+Revocations and role changes take effect within seconds -- the revocation restart lands in
+~100ms -- and read-side races inside that envelope are accepted by design: a guard earns its
+place here only if its failure mode is *persistent* wrong state that outlives the window.
+
+The observer-side deferrals are ledgered in `plans/restricted-data-sharing.md`, each marked at
+its site in the code by a matching `TODO` comment:
+
+- Observer verification is not serialized per profile, so concurrent opens by one collaborator
+  can overwrite each other's records.
+- A mid-registration observer named in `excludeObservers` is read as unknown and the observation
+  admitted; persistent, since it lands in chat history (Step 5, item 1). Fix: a pending-id map,
+  `observer-verification-fixes`.
