@@ -674,10 +674,16 @@ function validateAttachmentHeaderValue(value: string, label: string): string {
 }
 
 function validateAttachmentContentType(value: string): string {
-  if (!/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(value)) {
+  const match = /^([A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+)(?:; method=[A-Za-z0-9-]+)?$/i
+    .exec(value);
+  if (!match || (value.includes(";") && match[1].toLowerCase() !== "text/calendar")) {
     throw new Error("Invalid attachment content type.");
   }
   return value;
+}
+
+function baseMimeType(value: string): string {
+  return value.split(";", 1)[0].toLowerCase();
 }
 
 function encodeMimeParameter(value: string): string {
@@ -874,6 +880,10 @@ export function extractRfc822Attachments(raw: string): ExtractedRfc822Attachment
     if (partContentType?.startsWith("message/rfc822")) {
       const transferEncoding = mimeHeaderValue(partHeaders, "Content-Transfer-Encoding")
         ?.toLowerCase() ?? "7bit";
+      if (transferEncoding === "base64" || transferEncoding === "quoted-printable") {
+        cursor = partEnd + 2;
+        continue;
+      }
       if (transferEncoding !== "7bit" && transferEncoding !== "8bit" &&
           transferEncoding !== "binary") {
         throw new Error("A message/rfc822 draft attachment uses an unsupported transfer encoding.");
@@ -944,7 +954,7 @@ export function buildEncodedEmail(options: GmailOutboundSpec): string {
 
   const nestedMessageBytes = new Map<number, {bytes: Uint8Array; encoding: "7bit" | "8bit"}>();
   for (let index = 0; index < options.attachments.length; index++) {
-    if (options.attachments[index].contentType.toLowerCase() === "message/rfc822") {
+    if (baseMimeType(options.attachments[index].contentType) === "message/rfc822") {
       const bytes = base64ToBytes(options.attachments[index].data);
       nestedMessageBytes.set(index, {bytes, encoding: nestedMessageEncoding(bytes)});
     }
@@ -1053,7 +1063,8 @@ function validateGmailId(id: string, label: string): void {
   }
 }
 
-function parseGmailLabelResponse(value: unknown, operation: "create" | "update"): GmailLabelRaw {
+function parseGmailLabelResponse(
+    value: unknown, operation: "create" | "get" | "update"): GmailLabelRaw {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`Gmail labels.${operation} returned a non-object response.`);
   }
@@ -1096,8 +1107,42 @@ async function readGmailDraftWriteResult(
 }
 
 function shouldIncludeSpamTrash(query?: string, labelIds?: string[]): boolean {
-  return labelIds?.some(id => id === "SPAM" || id === "TRASH") === true ||
-    /\b(?:in|label):(?:anywhere|spam|trash)\b/i.test(query ?? "");
+  if (labelIds?.some(id => id === "SPAM" || id === "TRASH")) return true;
+  const operators = new Set(["in:anywhere", "in:spam", "in:trash", "label:spam", "label:trash"]);
+  let token = "";
+  let tokenContainsQuote = false;
+  let quoted = false;
+  let escaped = false;
+  const disabledGroups = [false];
+  const flushToken = () => {
+    const matched = !disabledGroups.at(-1) && !tokenContainsQuote &&
+      operators.has(token.toLowerCase());
+    token = "";
+    tokenContainsQuote = false;
+    return matched;
+  };
+  for (const char of query ?? "") {
+    if (char === '"' && !escaped) {
+      quoted = !quoted;
+      tokenContainsQuote = true;
+    } else if (!quoted && /\s/.test(char)) {
+      if (flushToken()) return true;
+    } else if (!quoted && (char === "(" || char === "{")) {
+      const prefix = token;
+      token = "";
+      const quotedPrefix = tokenContainsQuote;
+      tokenContainsQuote = false;
+      disabledGroups.push(
+        disabledGroups.at(-1)! || quotedPrefix || prefix.startsWith("-") || prefix.endsWith(":"));
+    } else if (!quoted && (char === ")" || char === "}")) {
+      if (flushToken()) return true;
+      if (disabledGroups.length > 1) disabledGroups.pop();
+    } else if (!quoted) {
+      token += char;
+    }
+    escaped = char === "\\" && !escaped;
+  }
+  return flushToken();
 }
 
 // Read a bounded prefix of an error response body for inclusion in thrown errors.
@@ -1134,7 +1179,11 @@ export class GmailApiError extends Error {
 
 async function gmailApiFailure(operation: string, response: Response): Promise<never> {
   // Gmail error prose can reflect query and header values. Keep thrown errors safe to log.
-  await response.body?.cancel();
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Cancellation is best-effort; the HTTP status remains authoritative.
+  }
   throw new GmailApiError(response.status, operation);
 }
 
@@ -1298,7 +1347,7 @@ function attachmentFromPostal(
     attachment: import("postal-mime").Attachment, index: number): GmailOutboundAttachment {
   const bytes = postalAttachmentBytes(attachment.content);
   const filename = attachment.filename ?? "";
-  const contentType = attachment.mimeType || "application/octet-stream";
+  const contentType = postalAttachmentContentType(attachment);
   return {
     filename,
     contentType,
@@ -1307,6 +1356,14 @@ function attachmentFromPostal(
     ...(attachment.contentId ? {contentId: attachment.contentId} : {}),
     description: `${filename || "(unnamed)"} (${contentType}, ${bytes.byteLength} bytes)`,
   };
+}
+
+function postalAttachmentContentType(attachment: import("postal-mime").Attachment): string {
+  const contentType = attachment.mimeType || "application/octet-stream";
+  if (baseMimeType(contentType) !== "text/calendar" || attachment.method === undefined) {
+    return contentType;
+  }
+  return validateAttachmentContentType(`${contentType}; method=${attachment.method}`);
 }
 
 export type GmailParsedDraft = GmailNormalizedRecipients & {
@@ -1402,14 +1459,15 @@ export async function parseGmailDraft(message: GmailMessageRaw): Promise<GmailPa
     ...(parsed.references ? {references: parsed.references} : {}),
     attachments: parsed.attachments.map(attachment => {
       const bytes = postalAttachmentBytes(attachment.content);
+      const contentType = postalAttachmentContentType(attachment);
       return {
         // MIMEText requires a string; an empty filename round-trips as unnamed.
         filename: attachment.filename ?? "",
-        contentType: attachment.mimeType || "application/octet-stream",
+        contentType,
         data: foldBase64(bytesToBase64(bytes)),
         ...(attachment.disposition ? {disposition: attachment.disposition} : {}),
         ...(attachment.contentId ? {contentId: attachment.contentId} : {}),
-        description: `${attachment.filename ?? "(unnamed)"} (${attachment.mimeType}, ${bytes.byteLength} bytes)`,
+        description: `${attachment.filename ?? "(unnamed)"} (${contentType}, ${bytes.byteLength} bytes)`,
       };
     }),
   };
@@ -1638,7 +1696,7 @@ export class GmailApi {
     const locationQuery = location === "drafts"
       ? "in:drafts"
       : location === "delivered"
-        ? "-in:drafts"
+        ? "in:anywhere -in:drafts"
         : undefined;
     const page = await this.listMessages(
       10, [locationQuery, `rfc822msgid:${id}`].filter(Boolean).join(" "));
@@ -2281,6 +2339,16 @@ export class GmailApi {
     return (data.labels ?? []).filter(label =>
       typeof label.id === "string" && typeof label.name === "string" &&
       (label.type === "system" || label.type === "user"));
+  }
+
+  async getLabel(labelId: string): Promise<GmailLabelRaw> {
+    validateGmailId(labelId, "label ID");
+    const response = await this.authedFetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/labels/${labelId}`);
+    if (!response.ok) await gmailApiFailure("labels.get", response);
+    const label = parseGmailLabelResponse(await response.json(), "get");
+    if (label.id !== labelId) throw new Error("Gmail labels.get returned a different label ID.");
+    return label;
   }
 
   async createLabel(name: string): Promise<GmailLabelRaw> {

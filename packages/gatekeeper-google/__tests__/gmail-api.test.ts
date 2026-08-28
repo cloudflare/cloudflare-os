@@ -2,6 +2,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {
   base64UrlDecodedByteLength, buildEncodedEmail, decodeBase64UrlToBytes,
   enumerateGmailAttachments, extractRfc822Attachments, gmailMessageIdQueryValue, GmailApi,
+  GmailApiError,
   MAX_GMAIL_ATTACHMENT_BYTES,
   normalizeAggregateRecipients, parseGmailDraft, parseGmailPayloadContent, parseMimeMessage,
 } from "../src/google-api";
@@ -9,6 +10,13 @@ import {containsBytes} from "./gmail-test-utils";
 
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), {status, headers: {"Content-Type": "application/json"}});
+
+function encodeRawEmail(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
 
 function stubFetch(responses: Response[]) {
   const calls: Array<{url: URL; init: RequestInit}> = [];
@@ -271,6 +279,90 @@ describe("Gmail recipient and MIME construction", () => {
     expect(attachment.contentId).toBe("<asset-1>");
   });
 
+  it("preserves calendar methods through draft parsing and rebuilding", async () => {
+    const original = api().buildOutbound({
+      from: "me@example.com",
+      to: ["to@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Invitation",
+      text: "Calendar invitation attached.",
+      messageId: "<calendar@example.com>",
+      attachments: [{
+        filename: "invite.ics",
+        contentType: "text/calendar; method=REQUEST",
+        data: btoa("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n"),
+        disposition: "attachment",
+        description: "Calendar invitation",
+      }],
+    });
+    const parsed = await parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw: original.raw,
+    });
+    expect(parsed.attachments[0].contentType).toBe("text/calendar; method=REQUEST");
+
+    const rebuilt = api().buildOutbound({
+      ...parsed,
+      from: parsed.from!,
+      messageId: parsed.messageId!,
+    });
+    const reparsed = await parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw: rebuilt.raw,
+    });
+    expect(reparsed.attachments[0].contentType).toBe("text/calendar; method=REQUEST");
+  });
+
+  it("preserves calendar methods while forwarding", async () => {
+    const source = api().buildOutbound({
+      from: "source@example.com",
+      to: ["me@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Invitation",
+      text: "Please attend.",
+      messageId: "<calendar-source@example.com>",
+      attachments: [{
+        filename: "invite.ics",
+        contentType: "text/calendar; method=REQUEST",
+        data: btoa("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n"),
+        disposition: "attachment",
+        description: "Calendar invitation",
+      }],
+    });
+    const forwarded = await api().buildForwardRaw({
+      id: "source", threadId: "thread", internalDate: "1", raw: source.raw,
+    }, ["recipient@example.com"]);
+
+    expect(forwarded.attachments[0].contentType).toBe("text/calendar; method=REQUEST");
+    const parsed = await parseGmailDraft({
+      id: "forward", threadId: "thread", internalDate: "1", raw: forwarded.raw,
+    });
+    expect(parsed.attachments[0].contentType).toBe("text/calendar; method=REQUEST");
+  });
+
+  it.each([
+    'text/calendar; method="REQUEST"',
+    "text/calendar; method=REQUEST; charset=utf-8",
+    "text/calendar; method=REQUE/ST",
+    "text/calendar; method=REQUEST\r\nBcc: hidden@example.com",
+  ])("rejects an unsafe calendar content type: %j", contentType => {
+    expect(() => buildEncodedEmail({
+      from: "me@example.com",
+      to: ["to@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Invitation",
+      text: "Calendar invitation attached.",
+      messageId: "<calendar@example.com>",
+      attachments: [{
+        filename: "invite.ics",
+        contentType,
+        data: btoa("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"),
+        description: "Calendar invitation",
+      }],
+    })).toThrow(/Invalid attachment content type/);
+  });
+
   it("attaches an RFC 5322 message as unencoded message/rfc822 bytes", async () => {
     const sourceRaw = [
       "From: source@example.com",
@@ -352,7 +444,53 @@ describe("Gmail recipient and MIME construction", () => {
     expect(new TextDecoder().decode(Uint8Array.from(
       atob(parsed.attachments[0].data.replace(/\s/g, "")), char => char.charCodeAt(0))))
       .toBe(nested);
+    expect(extractRfc822Attachments(encoded)).toEqual([]);
   });
+
+  it.each(["7bit", "8bit", "binary"])(
+    "extracts exact unencoded %s message/rfc822 bytes", transferEncoding => {
+      const nested = `From: nested@example.com\r\n\r\nExact ${
+        transferEncoding === "8bit" ? "caf\u00e9" : "body"}`;
+      const boundary = "exact-boundary";
+      const raw = [
+        `Content-Type: multipart/mixed; boundary="${boundary}"`,
+        "",
+        `--${boundary}`,
+        "Content-Type: message/rfc822",
+        "Content-Disposition: attachment; filename=forwarded.eml",
+        `Content-Transfer-Encoding: ${transferEncoding}`,
+        "",
+        nested,
+        `--${boundary}--`,
+        "",
+      ].join("\r\n");
+
+      expect(extractRfc822Attachments(encodeRawEmail(raw))).toEqual([{
+        bytes: new TextEncoder().encode(nested),
+        filename: "forwarded.eml",
+        disposition: "attachment",
+      }]);
+    });
+
+  it.each(["base64", "quoted-printable"])(
+    "skips %s-encoded message/rfc822 parts", transferEncoding => {
+      const boundary = "encoded-boundary";
+      const raw = [
+        `Content-Type: multipart/mixed; boundary="${boundary}"`,
+        "",
+        `--${boundary}`,
+        "Content-Type: message/rfc822",
+        `Content-Transfer-Encoding: ${transferEncoding}`,
+        "",
+        transferEncoding === "base64"
+          ? btoa("From: nested@example.com\r\n\r\nNested body")
+          : "From: nested@example.com=0D=0A=0D=0ANested body",
+        `--${boundary}--`,
+        "",
+      ].join("\r\n");
+
+      expect(extractRfc822Attachments(encodeRawEmail(raw))).toEqual([]);
+    });
 
   it("rejects a nested message that is not valid 7bit or 8bit MIME data", () => {
     expect(() => api().buildOutbound({
@@ -583,12 +721,46 @@ describe("Gmail API request shapes", () => {
     expect(calls[0].url.searchParams.get("pageToken")).toBe("page");
   });
 
-  it("includes spam and trash when the scope explicitly requests them", async () => {
+  it.each([
+    ["in:anywhere", "true"],
+    ["from:a@example.com in:spam", "true"],
+    ["label:trash is:unread", "true"],
+    ["(in:spam) AND (is:unread)", "true"],
+    ["{in:trash is:unread}", "true"],
+    ['"in:spam"', null],
+    ['subject:"in:spam"', null],
+    ['"quoted in:trash text"', null],
+    ['i"ignored"n:trash', null],
+    ["-in:spam", null],
+    ["-(in:spam)", null],
+    ["-{in:trash is:unread}", null],
+    ["subject:(in:trash)", null],
+    ["subject:in:trash", null],
+    ["label:anywhere", null],
+  ])("sets includeSpamTrash only for positive standalone operators in %j", async (
+      query, expected) => {
     const calls = stubFetch([json({messages: []}), json({threads: []})]);
-    await api().listMessages(20, "in:anywhere");
+    await api().listMessages(20, query);
+    await api().listThreads(20, query);
+    expect(calls.map(call => call.url.searchParams.get("includeSpamTrash")))
+      .toEqual([expected, expected]);
+  });
+
+  it("includes spam and trash when label scope explicitly requests them", async () => {
+    const calls = stubFetch([json({messages: []}), json({threads: []})]);
+    await api().listMessages(20, undefined, undefined, ["SPAM"]);
     await api().listThreads(20, undefined, undefined, ["TRASH"]);
     expect(calls.map(call => call.url.searchParams.get("includeSpamTrash")))
       .toEqual(["true", "true"]);
+  });
+
+  it("searches everywhere except drafts when reconciling a delivered Message-ID", async () => {
+    const calls = stubFetch([json({messages: []})]);
+    await expect(api().findMessageByRfcMessageId("<sent@example.com>", "delivered"))
+      .resolves.toBeUndefined();
+    expect(calls[0].url.searchParams.get("q"))
+      .toBe("in:anywhere -in:drafts rfc822msgid:sent@example.com");
+    expect(calls[0].url.searchParams.get("includeSpamTrash")).toBe("true");
   });
 
   it("uses the per-message modify endpoint", async () => {
@@ -634,6 +806,12 @@ describe("Gmail API request shapes", () => {
       .rejects.toThrow(/different label ID/);
   });
 
+  it("validates labels read for rename reconciliation", async () => {
+    const calls = stubFetch([json({id: "Label_2", name: "New label", type: "user"})]);
+    await expect(api().getLabel("Label_1")).rejects.toThrow(/different label ID/);
+    expect(calls[0].url.pathname).toBe("/gmail/v1/users/me/labels/Label_1");
+  });
+
   it("sends the exact approved draft MIME snapshot", async () => {
     const calls = stubFetch([json({id: "m1", threadId: "t1"})]);
     await api().sendDraft("d1", "approved-raw", "t1");
@@ -648,5 +826,14 @@ describe("Gmail API request shapes", () => {
     const error = await api().listMessages(20, "confidential acquisition").catch(value => value);
     expect(error.message).toBe("Gmail API messages.list failed [http=400]");
     expect(error.message).not.toContain("confidential");
+  });
+
+  it("preserves Gmail API errors when response cancellation fails", async () => {
+    const cancel = vi.fn(() => Promise.reject(new Error("cancel failed")));
+    stubFetch([new Response(new ReadableStream({cancel}), {status: 400})]);
+    const error = await api().listMessages(20).catch(value => value);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(error).toBeInstanceOf(GmailApiError);
+    expect(error.status).toBe(400);
   });
 });

@@ -36,6 +36,9 @@ export type CursorPagerOptions<Item, Entry> = {
   /** Authorize a page or terminal empty result before returning it. Throws to deny. */
   authorize(entries: Entry[]): Promise<void>;
 
+  /** Best-effort cleanup for built entries that authorization prevents from being returned. */
+  disposeEntries?(entries: Entry[]): void | Promise<void>;
+
   /** How many result-less pages to walk past before giving up. */
   maxEmptyPages?: number;
 };
@@ -85,7 +88,7 @@ export class CursorPager<Item, Entry> implements Pager<Entry> {
   async #nextPage(): Promise<Entry[] | null> {
     if (this.#exhausted) return null;
 
-    let { provider, fetchPage, buildEntries, authorize } = this.#options;
+    let { provider, fetchPage, buildEntries, authorize, disposeEntries } = this.#options;
     let pageToken = this.#pageToken;
     // Tokens followed during this call. Merged into the committed set only once the page is
     // approved: a denied read rewinds the cursor, and the retry re-derives these same tokens.
@@ -118,7 +121,16 @@ export class CursorPager<Item, Entry> implements Pager<Entry> {
 
     // Advance only once the page has been approved. A denied read leaves the cursor where it was,
     // so retrying re-offers the same page instead of silently skipping over it.
-    await authorize(entries);
+    try {
+      await authorize(entries);
+    } catch (error) {
+      try {
+        await disposeEntries?.(entries);
+      } catch {
+        // Cleanup is best effort; authorization failures must reach the caller unchanged.
+      }
+      throw error;
+    }
     for (let token of followed) this.#seenTokens.add(token);
     this.#pageToken = pageToken;
     this.#exhausted = pageToken === undefined;

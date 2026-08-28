@@ -206,6 +206,16 @@ class TestMessage {
     return this.call("message.getMetadata", [this.id]) as Promise<GmailMessageInfo>;
   }
 
+  markReadAndRefresh(actionId: number): Promise<{
+    before: GmailMessageInfo;
+    after: GmailMessageInfo;
+  }> {
+    return this.call("message.markReadAndRefresh", [this.id, actionId]) as Promise<{
+      before: GmailMessageInfo;
+      after: GmailMessageInfo;
+    }>;
+  }
+
   async thread(): Promise<TestThread> {
     const info = await this.call("message.thread", [this.id]) as GmailThreadInfo;
     return new TestThread(this.call, info.id);
@@ -245,6 +255,11 @@ class TestThread {
 
   async messages(): Promise<TestMessage[]> {
     const infos = await this.call("thread.messages", [this.id]) as GmailMessageInfo[];
+    return infos.map(info => new TestMessage(this.call, info.id, info));
+  }
+
+  async messagesVisibleTo(address: string): Promise<TestMessage[]> {
+    const infos = await this.call("thread.messagesVisibleTo", [this.id, address]) as GmailMessageInfo[];
     return infos.map(info => new TestMessage(this.call, info.id, info));
   }
 }
@@ -307,13 +322,20 @@ type FetchCall = {url: URL; init: RequestInit};
 
 function actionHarness(
     gmailFetch: (url: URL, init: RequestInit) => Response | Promise<Response>,
-    props: {searchQuery?: string; labelName?: string} = {}) {
+    options: {
+      searchQuery?: string;
+      labelName?: string;
+      userInfo?: () => {sub: string; email: string};
+    } = {}) {
+  const {searchQuery, labelName, userInfo = () => ({
+    sub: "account-subject", email: "me@example.com",
+  })} = options;
   const calls: FetchCall[] = [];
   vi.stubGlobal("fetch", async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
     calls.push({url, init});
     if (url.hostname === "www.googleapis.com" && url.pathname === "/oauth2/v3/userinfo") {
-      return json({sub: "account-subject", email: "me@example.com"});
+      return json(userInfo());
     }
     return gmailFetch(url, init);
   });
@@ -321,8 +343,10 @@ function actionHarness(
   const hook = testEnv.TestHooks.get(testEnv.TestHooks.idFromName(name));
   const id = testEnv.GmailGatekeeperImpl.idFromName(name).toString();
   const facetName = `gmail-${name}`;
-  const gmailProps = {
-    userObjectId: testEnv.UserAccount.idFromName(name).toString(), ...props,
+  const gmailProps: GmailGatekeeperImplProps = {
+    userObjectId: testEnv.UserAccount.idFromName(name).toString(),
+    ...(searchQuery !== undefined ? {searchQuery} : {}),
+    ...(labelName !== undefined ? {labelName} : {}),
   };
   const storage = testStorage(hook, {name: facetName, id, props: gmailProps});
   const userObject = testEnv.UserAccount.get(testEnv.UserAccount.idFromName(name));
@@ -346,8 +370,8 @@ function actionHarness(
         .then(() => runHook(hook, instance =>
           instance.startSession(facetName, id, gmailProps, approval.id, approval.rejection)))
         .then(() => new TestSession(
-          (operation, args = []) => invoke(approval.id, operation, args),
-          props.searchQuery !== undefined || props.labelName !== undefined,
+           (operation, args = []) => invoke(approval.id, operation, args),
+          searchQuery !== undefined || labelName !== undefined,
         ));
     },
     applyAction(actionId: number): Promise<void> {
@@ -603,6 +627,52 @@ describe("Gmail forward action snapshots", () => {
     expect(parsed.text).toContain("Source body");
     expect(parsed.html).toContain("Source <strong>HTML</strong>");
     expect(parsed.attachments.map(attachment => attachment.filename)).toEqual(["source.txt"]);
+  });
+
+  it("describes reconstructed inline-forward content when approving a draft send", async () => {
+    const sourceId = "abc123";
+    const sourceRaw = buildEncodedEmail({
+      from: "source@example.com",
+      to: ["me@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Source subject",
+      text: "Source body",
+      html: "<p>Source <strong>HTML</strong></p>",
+      messageId: "<source-approval@gadgets.invalid>",
+      attachments: [{
+        filename: "source.txt",
+        contentType: "text/plain",
+        data: btoa("source attachment"),
+        disposition: "attachment",
+        description: "source attachment",
+      }],
+    });
+    const queue = approvalQueue();
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === `/gmail/v1/users/me/messages/${sourceId}` && !init.method) {
+        if (url.searchParams.get("format") === "raw") {
+          return json({id: sourceId, threadId: "abc124", internalDate: "1", raw: sourceRaw});
+        }
+        return json({
+          ...messageMetadata(sourceId, "abc124", "<source-approval@gadgets.invalid>"),
+          sizeEstimate: base64UrlDecodedByteLength(sourceRaw),
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const session = await gatekeeper.startSession(queue);
+    const source = await session.getMessage(sourceId);
+    const draft = await source.createForwardDraft(
+      ["recipient@example.com"], "Intro", {html: "<p>Intro</p>"});
+
+    await draft.send();
+
+    const description = (await queue.read!()).submissions[1]?.description as {description: string};
+    expect(description.description).toContain("Intro");
+    expect(description.description).toContain("Source body");
+    expect(description.description).toContain("Source <strong>HTML</strong>");
+    expect(description.description).toContain("source.txt (text/plain)");
   });
 
   it("creates an inline forward draft from the captured source snapshot", async () => {
@@ -1122,6 +1192,201 @@ describe("Gmail draft lookup", () => {
     expect(action.approved.rfcMessageId).toBe(action.messageId);
   });
 
+  it("replaces an imported Message-ID with the send action identity used for reconciliation", async () => {
+    const providerId = "provider-draft";
+    const providerMessageId = "provider-message";
+    const threadId = "provider-thread";
+    const importedMessageId = "<already-delivered@example.com>";
+    const state: GmailDraftState = {
+      logicalId: providerId,
+      providerId,
+      messageId: providerMessageId,
+      threadId,
+      from: "me@example.com",
+      replyTo: [],
+      to: ["to@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Imported",
+      text: "Body",
+      rfcMessageId: importedMessageId,
+      timestamp: 1,
+      attachments: [],
+      version: 0,
+    };
+    const raw = buildEncodedEmail({
+      from: state.from,
+      to: state.to,
+      cc: [],
+      bcc: [],
+      subject: state.subject,
+      text: state.text,
+      messageId: importedMessageId,
+      attachments: [],
+    });
+    let sentRaw: string | undefined;
+    let reconciliationMessageId = "";
+    let delivered = false;
+    let sends = 0;
+    const searches: string[] = [];
+    const {gatekeeper, values, storage} = actionHarness((url, init) => {
+      if (url.pathname === `/gmail/v1/users/me/drafts/${providerId}` && !init.method) {
+        return url.searchParams.get("format") === "full"
+          ? json(draftFull(providerId, providerMessageId, threadId, state))
+          : json({
+              id: providerId,
+              message: {id: providerMessageId, threadId, internalDate: "1", raw},
+            });
+      }
+      if (url.pathname === "/gmail/v1/users/me/drafts/send" && init.method === "POST") {
+        sends++;
+        delivered = true;
+        sentRaw = (JSON.parse(String(init.body)) as {message: {raw: string}}).message.raw;
+        throw new Error("connection lost after draft send");
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        searches.push(url.searchParams.get("q") ?? "");
+        return json({
+          messages: delivered ? [{id: "sent-message", threadId}] : [],
+        });
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/sent-message" && !init.method) {
+        if (url.searchParams.get("format") === "raw") {
+          return json({id: "sent-message", threadId, internalDate: "1", raw: sentRaw});
+        }
+        return json(messageMetadata("sent-message", threadId, reconciliationMessageId));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    storage.kv.put(`gmail:draft:${providerId}`, {
+      logicalId: providerId, providerId, createdAt: 1, status: "active", version: 0,
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = await session.getDraft(providerId);
+
+    await draft.send();
+
+    const action = await values.get<{messageId: string; approved: GmailDraftState}>("pending:action:1");
+    if (!action) throw new Error("Missing staged draft-send action.");
+    expect(action.messageId).not.toBe(importedMessageId);
+    expect(action.approved.rfcMessageId).toBe(action.messageId);
+    reconciliationMessageId = action.messageId;
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost/);
+    await gatekeeper.applyAction(1);
+
+    expect((await parseMimeMessage(sentRaw!)).messageId).toBe(action.messageId);
+    expect(searches).toEqual([
+      `in:anywhere -in:drafts rfc822msgid:${action.messageId.slice(1, -1)}`,
+    ]);
+    expect(sends).toBe(1);
+  });
+
+  it("preserves an encoded nested message and calendar method through draft update", async () => {
+    const providerId = "provider-draft";
+    const threadId = "provider-thread";
+    const nested = [
+      "From: nested@example.com",
+      "To: me@example.com",
+      "Subject: Nested",
+      "Message-ID: <nested@example.com>",
+      "",
+      "Nested body",
+    ].join("\r\n");
+    const calendar = [
+      "BEGIN:VCALENDAR",
+      "METHOD:REQUEST",
+      "BEGIN:VEVENT",
+      "UID:invite@example.com",
+      "SUMMARY:Review",
+      "END:VEVENT",
+      "END:VCALENDAR",
+    ].join("\r\n");
+    const initialMime = [
+      "From: me@example.com",
+      "To: to@example.com",
+      "Subject: Imported MIME",
+      "Message-ID: <imported-mime@example.com>",
+      "MIME-Version: 1.0",
+      'Content-Type: multipart/mixed; boundary="outer"',
+      "",
+      "--outer",
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: 7bit",
+      "",
+      "Body",
+      "--outer",
+      'Content-Type: message/rfc822; name="nested.eml"',
+      "Content-Transfer-Encoding: base64",
+      'Content-Disposition: attachment; filename="nested.eml"',
+      "",
+      btoa(nested),
+      "--outer",
+      'Content-Type: text/calendar; method=REQUEST; name="invite.ics"',
+      "Content-Transfer-Encoding: base64",
+      'Content-Disposition: attachment; filename="invite.ics"',
+      "",
+      btoa(calendar),
+      "--outer--",
+      "",
+    ].join("\r\n");
+    const state: GmailDraftState = {
+      logicalId: providerId,
+      providerId,
+      messageId: "provider-message-1",
+      threadId,
+      from: "me@example.com",
+      replyTo: [],
+      to: ["to@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Imported MIME",
+      text: "Body",
+      rfcMessageId: "<imported-mime@example.com>",
+      timestamp: 1,
+      attachments: [],
+      version: 0,
+    };
+    let providerMessageId = "provider-message-1";
+    let providerRaw = base64Url(initialMime);
+    let updatedRaw: string | undefined;
+    const {gatekeeper, storage} = actionHarness((url, init) => {
+      if (url.pathname === `/gmail/v1/users/me/drafts/${providerId}` && !init.method) {
+        if (url.searchParams.get("format") === "full") {
+          const full = draftFull(providerId, providerMessageId, threadId, state);
+          full.message.sizeEstimate = base64UrlDecodedByteLength(providerRaw);
+          return json(full);
+        }
+        return json({
+          id: providerId,
+          message: {id: providerMessageId, threadId, internalDate: "1", raw: providerRaw},
+        });
+      }
+      if (url.pathname === `/gmail/v1/users/me/drafts/${providerId}` && init.method === "PUT") {
+        updatedRaw = (JSON.parse(String(init.body)) as {message: {raw: string}}).message.raw;
+        providerRaw = updatedRaw;
+        providerMessageId = "provider-message-2";
+        return json({id: providerId, message: {id: providerMessageId}});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    storage.kv.put(`gmail:draft:${providerId}`, {
+      logicalId: providerId, providerId, createdAt: 1, status: "active", version: 0,
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = await session.getDraft(providerId);
+
+    await draft.update({subject: "Updated MIME"});
+    await gatekeeper.applyAction(1);
+
+    const nestedAttachments = extractRfc822Attachments(updatedRaw!);
+    expect(nestedAttachments).toHaveLength(1);
+    expect(new TextDecoder().decode(nestedAttachments[0].bytes)).toBe(`${nested}\r\n`);
+    const parsed = await parseMimeMessage(updatedRaw!);
+    expect(parsed.attachments.find(attachment => attachment.filename === "invite.ics"))
+      .toMatchObject({mimeType: "text/calendar", method: "REQUEST"});
+  });
+
   it("reopens a stable logical ID with pending updates overlaid", async () => {
     const {gatekeeper} = actionHarness(url => {
       throw new Error(`Unexpected request: ${url}`);
@@ -1155,6 +1420,66 @@ describe("Gmail draft lookup", () => {
     const session = await gatekeeper.startSession(approvalQueue());
 
     await expect(session.getDraft("provider-draft")).rejects.toThrow(/restricted binding/);
+  });
+
+  it("tombstones a missing restricted draft and returns a later valid draft", async () => {
+    const validState: GmailDraftState = {
+      logicalId: "bbb",
+      providerId: "bbb",
+      messageId: "eee",
+      threadId: "fff",
+      from: "me@example.com",
+      replyTo: [],
+      to: ["to@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Later draft",
+      text: "Body",
+      rfcMessageId: "<later-draft@example.com>",
+      timestamp: 1,
+      source: {kind: "reply", messageId: "ddd"},
+      attachments: [],
+      version: 0,
+    };
+    const {gatekeeper, storage, values} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: [{id: "Label_1", name: "Review", type: "user"}]});
+      }
+      if ((url.pathname === "/gmail/v1/users/me/messages/ccc" ||
+           url.pathname === "/gmail/v1/users/me/messages/ddd") && !init.method) {
+        const id = url.pathname.endsWith("ccc") ? "ccc" : "ddd";
+        return json(messageMetadata(id, "fff", `<${id}@example.com>`, ["Label_1"]));
+      }
+      if (url.pathname === "/gmail/v1/users/me/drafts/aaa" && !init.method) {
+        return json({error: "missing"}, 404);
+      }
+      if (url.pathname === "/gmail/v1/users/me/drafts/bbb" && !init.method) {
+        return json(draftFull("bbb", "eee", "fff", validState));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }, {labelName: "Review"});
+    storage.kv.put("gmail:draft:aaa", {
+      logicalId: "aaa",
+      providerId: "aaa",
+      source: {kind: "reply", messageId: "ccc"},
+      createdAt: 1,
+      status: "active",
+      version: 0,
+    });
+    storage.kv.put("gmail:draft:bbb", {
+      logicalId: "bbb",
+      providerId: "bbb",
+      source: validState.source,
+      createdAt: 1,
+      status: "active",
+      version: 0,
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    const entries = await (await session.listDrafts()).next();
+
+    expect(entries?.map(entry => entry.info.id)).toEqual(["bbb"]);
+    expect(await values.get("gmail:draft:aaa")).toMatchObject({status: "deleted"});
   });
 
   it("rejects malformed and unknown logical IDs", async () => {
@@ -1194,7 +1519,36 @@ describe("Gmail message lookup", () => {
     expect(calls.filter(call =>
       call.url.pathname === "/gmail/v1/users/me/messages")).toHaveLength(0);
     expect(calls.filter(call =>
-      call.url.pathname === `/gmail/v1/users/me/messages/${messageId}`)).toHaveLength(1);
+      call.url.pathname === `/gmail/v1/users/me/messages/${messageId}`)).toHaveLength(2);
+  });
+
+  it("refreshes metadata on one message capability after an approved mark-read", async () => {
+    let unread = true;
+    let metadataReads = 0;
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === `/gmail/v1/users/me/messages/${messageId}` && !init.method) {
+        metadataReads++;
+        return json(messageMetadata(
+          messageId, threadId, "<refresh@example.com>", unread ? ["UNREAD"] : []));
+      }
+      if (url.pathname === `/gmail/v1/users/me/messages/${messageId}/modify` &&
+          init.method === "POST") {
+        unread = false;
+        return new Response(null, {status: 204});
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: []});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const message = await session.getMessage(messageId);
+
+    const {before, after} = await message.markReadAndRefresh(1);
+
+    expect(before.labels).toContainEqual({id: "UNREAD", name: "UNREAD", type: "system"});
+    expect(after.labels).not.toContainEqual({id: "UNREAD", name: "UNREAD", type: "system"});
+    expect(metadataReads).toBe(4);
   });
 
   it("allows an empty direct reply", async () => {
@@ -1323,6 +1677,41 @@ describe("Gmail message lookup", () => {
       call.url.pathname === `/gmail/v1/users/me/threads/${threadId}`)).toHaveLength(1);
   });
 
+  it("matches a display-name participant against a bare message address", async () => {
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === `/gmail/v1/users/me/threads/${threadId}` && !init.method) {
+        if (url.searchParams.get("format") === "minimal") {
+          return json(threadMinimal(threadId, [messageId]));
+        }
+        return json({
+          id: threadId,
+          messages: [{payload: {headers: [{name: "Subject", value: "Participant thread"}]}}],
+        });
+      }
+      if (url.pathname === `/gmail/v1/users/me/messages/${messageId}` && !init.method) {
+        const metadata = messageMetadata(messageId, threadId, "<participant@example.com>");
+        metadata.payload.headers = [
+          {name: "From", value: "sender@example.com"},
+          {name: "To", value: "person@example.com"},
+          {name: "Subject", value: "Participant message"},
+          {name: "Message-ID", value: "<participant@example.com>"},
+        ];
+        return json(metadata);
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: []});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const thread = await session.getThread(threadId);
+
+    const visible = await thread.messagesVisibleTo("Person <PERSON@example.com>");
+
+    expect(visible).toHaveLength(1);
+    await expect(visible[0].getMetadata()).resolves.toMatchObject({id: messageId});
+  });
+
   it("limits a search-scoped thread to its admitted messages", async () => {
     const excludedMessageId = "excluded-message";
     const admittedRfcMessageId = "<admitted-thread@example.com>";
@@ -1448,6 +1837,45 @@ describe("Gmail message lookup", () => {
   });
 });
 
+describe("Gmail account identity", () => {
+  it("adopts and persists a changed Workspace email for the same Google subject", async () => {
+    let email = "old@example.com";
+    const {gatekeeper, values} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        return json({messages: []});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }, {userInfo: () => ({sub: "stable-subject", email})});
+    const firstSession = await gatekeeper.startSession(approvalQueue());
+    await (await firstSession.listMessages()).next();
+
+    email = "new@example.com";
+    const secondSession = await gatekeeper.startSession(approvalQueue());
+    await secondSession.send(["to@example.com"], "Subject", "Body");
+
+    expect(await values.get("gmail:accountSubject")).toBe("stable-subject");
+    expect(await values.get("selfEmail")).toBe("new@example.com");
+    expect(await values.get("pending:action:1")).toMatchObject({
+      type: "send", spec: {from: "new@example.com"},
+    });
+  });
+
+  it("rejects a mismatching email on a legacy binding without a pinned subject", async () => {
+    const {gatekeeper, storage, values} = actionHarness(url => {
+      throw new Error(`Unexpected request: ${url}`);
+    }, {userInfo: () => ({sub: "current-subject", email: "new@example.com"})});
+    storage.kv.put("selfEmail", "old@example.com");
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    await expect(session.send(["to@example.com"], "Subject", "Body"))
+      .rejects.toThrow(/different Google account/);
+
+    expect(await values.get("selfEmail")).toBe("old@example.com");
+    expect(await values.has("gmail:accountSubject")).toBe(false);
+    expect(await values.has("pending:action:1")).toBe(false);
+  });
+});
+
 describe("Gmail message mutations", () => {
   it.each([
     ["archive", "/modify", {addLabelIds: [], removeLabelIds: ["INBOX"]}],
@@ -1497,6 +1925,127 @@ describe("Gmail message mutations", () => {
 
     expect(calls.some(item => item.url.pathname === `/gmail/v1/users/me/threads/thread${suffix}`))
       .toBe(true);
+  });
+
+  it("keeps a partially applied multi-message mutation unrejectable until retry succeeds", async () => {
+    let rejectSecond = true;
+    const writes: string[] = [];
+    const {gatekeeper, storage, values} = actionHarness((url, init) => {
+      const match = url.pathname.match(/^\/gmail\/v1\/users\/me\/messages\/(aaa|bbb)\/modify$/);
+      if (match && init.method === "POST") {
+        writes.push(match[1]);
+        if (match[1] === "bbb" && rejectSecond) {
+          rejectSecond = false;
+          return json({error: "invalid mutation"}, 400);
+        }
+        return new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    storage.kv.put("pending:action:1", {
+      type: "messageMutation",
+      operation: "markRead",
+      target: {kind: "messages", messageIds: ["aaa", "bbb"]},
+    });
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.modify failed/);
+
+    expect(await values.has("gmail:applying:1")).toBe(true);
+    await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/uncertain provider outcome/);
+
+    await gatekeeper.applyAction(1);
+
+    expect(writes).toEqual(["aaa", "bbb", "aaa", "bbb"]);
+    expect(await values.has("pending:action:1")).toBe(false);
+    expect(await values.has("gmail:applying:1")).toBe(false);
+  });
+
+  it("allows rejection when the first mutation target gets a definitive 400", async () => {
+    const {gatekeeper, storage, values} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages/aaa/modify" && init.method === "POST") {
+        return json({error: "invalid mutation"}, 400);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    storage.kv.put("pending:action:1", {
+      type: "messageMutation",
+      operation: "markRead",
+      target: {kind: "messages", messageIds: ["aaa", "bbb"]},
+    });
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.modify failed/);
+
+    expect(await values.has("gmail:applying:1")).toBe(false);
+    await expect(gatekeeper.rejectAction(1)).resolves.toBeUndefined();
+    expect(await values.has("pending:action:1")).toBe(false);
+  });
+});
+
+describe("Gmail label action reconciliation", () => {
+  it("reconciles an accepted label create with a malformed response by exact name", async () => {
+    let created = false;
+    let creates = 0;
+    const {gatekeeper, storage, values} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/labels" && init.method === "POST") {
+        creates++;
+        created = true;
+        return json({});
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({
+          labels: created ? [{id: "Label_1", name: "Review", type: "user"}] : [],
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const resource = {logicalId: "provisional-label", name: "Review", status: "active"};
+    storage.kv.put("gmail:label:provisional-label", resource);
+    storage.kv.put("pending:action:1", {type: "labelCreate", label: resource});
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/valid label ID/);
+    await gatekeeper.applyAction(1);
+
+    expect(creates).toBe(1);
+    expect(await values.get("gmail:label:provisional-label")).toMatchObject({
+      providerId: "Label_1", name: "Review", status: "active",
+    });
+    expect(await values.has("pending:action:1")).toBe(false);
+  });
+
+  it("reconciles an accepted label rename by stable ID without another PATCH", async () => {
+    let currentName = "Before";
+    let renames = 0;
+    const {gatekeeper, storage, values} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/labels/Label_1" && !init.method) {
+        return json({id: "Label_1", name: currentName, type: "user"});
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels/Label_1" && init.method === "PATCH") {
+        renames++;
+        currentName = "After";
+        return new Response("not-json", {headers: {"Content-Type": "application/json"}});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    storage.kv.put("gmail:label:stable-label", {
+      logicalId: "stable-label",
+      providerId: "Label_1",
+      name: "Before",
+      status: "active",
+    });
+    storage.kv.put("pending:action:1", {
+      type: "labelRename",
+      labelId: "stable-label",
+      name: "After",
+      expectedName: "Before",
+      dependsOn: [],
+    });
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/invalid JSON/);
+    await gatekeeper.applyAction(1);
+
+    expect(renames).toBe(1);
+    expect(await values.get("gmail:label:stable-label")).toMatchObject({name: "After"});
+    expect(await values.has("pending:action:1")).toBe(false);
   });
 });
 
@@ -1978,6 +2527,7 @@ describe("Gmail draft dependency reconciliation", () => {
       ...outboundSpec(before.rfcMessageId), subject: before.subject, text: before.text,
     }).raw;
     let wrote = false;
+    let updates = 0;
     const {gatekeeper, storage, values} = actionHarness((url, init) => {
       if (url.pathname === `/gmail/v1/users/me/drafts/${providerId}` && !init.method) {
         return wrote
@@ -1990,6 +2540,7 @@ describe("Gmail draft dependency reconciliation", () => {
             });
       }
       if (url.pathname === `/gmail/v1/users/me/drafts/${providerId}` && init.method === "PUT") {
+        updates++;
         wrote = true;
         return json({id: providerId, message: {id: "provider-message-2"}});
       }
@@ -2010,8 +2561,12 @@ describe("Gmail draft dependency reconciliation", () => {
     await expect(gatekeeper.applyAction(1)).rejects.toThrow(/drafts\.get failed/);
     expect(await values.has("gmail:draftWriteReceipt:1")).toBe(true);
 
-    await gatekeeper.rejectAction(1);
+    await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/uncertain provider outcome/);
+    const session = await gatekeeper.startSession(approvalQueue());
+    await expect(session.getDraft(providerId)).rejects.toThrow(/has been deleted/);
+    await gatekeeper.applyAction(1);
 
+    expect(updates).toBe(1);
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.has("gmail:draftWriteReceipt:1")).toBe(false);
     expect(await values.get(`gmail:draft:${providerId}`)).toMatchObject({status: "deleted"});
@@ -2432,6 +2987,7 @@ describe("Gmail draft dependency reconciliation", () => {
 
     await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/uncertain provider outcome/);
     gone = true;
+    await expect(session.getDraft(providerId)).rejects.toThrow(/has been deleted/);
     await gatekeeper.applyAction(1);
     expect(await (await session.listDrafts()).next()).toBeNull();
   });

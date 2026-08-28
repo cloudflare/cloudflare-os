@@ -249,6 +249,13 @@ testGmailPrototype.runTestOperation = async function(
   }
   case "message.getMetadata":
     return await withMessage(session, id as string, message => message.getMetadata());
+  case "message.markReadAndRefresh":
+    return await withMessage(session, id as string, async message => {
+      const before = await message.getMetadata();
+      await message.markRead();
+      await this.applyAction(value as number);
+      return {before, after: await message.getMetadata()};
+    });
   case "message.thread":
     return await withMessage(session, id as string, async message => {
       const thread = await message.thread();
@@ -312,6 +319,19 @@ testGmailPrototype.runTestOperation = async function(
     const thread = await session.getThread(id as string);
     try {
       const messages = await thread.messages();
+      try {
+        return await Promise.all(messages.map(message => message.getMetadata()));
+      } finally {
+        for (const message of messages) disposeRpc(message);
+      }
+    } finally {
+      disposeRpc(thread);
+    }
+  }
+  case "thread.messagesVisibleTo": {
+    const thread = await session.getThread(id as string);
+    try {
+      const messages = await thread.messagesVisibleTo(value as string);
       try {
         return await Promise.all(messages.map(message => message.getMetadata()));
       } finally {
