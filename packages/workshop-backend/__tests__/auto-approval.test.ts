@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn }
+import { AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn, autoApprovalRule }
     from "../src/auto-approval.js";
 import type { ActionRecord } from "../src/overseer.js";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
+import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { makeMockStorage } from "./mock-storage.js";
 import { makeActionStorage, makePreIndexActionStorage, putAction } from "./fixtures.js";
 
@@ -279,5 +280,100 @@ describe("AutoApprovalDrainer.drain", () => {
 
     expect(apply.calls).toEqual([1]);
     expect(getAction(storage, 2).state).toBe("pending");
+  });
+
+  it("stops at a warned action without skipping ahead", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    putAction(storage, 1, { operatorWarnings: ["cross-account data risk"] });
+    putAction(storage, 2);
+
+    let apply = makeImmediateApply(storage);
+    await new AutoApprovalDrainer(storage, apply.applyFn).drain(GK);
+
+    expect(apply.calls).toEqual([]);
+    expect(getAction(storage, 1).state).toBe("pending");
+    expect(getAction(storage, 2).state).toBe("pending");
+  });
+
+  it("applies nothing while the workspace is latched, even with a matching rule", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    putAction(storage, 1);
+    storage.prohibitAllSharing.put(true);
+
+    let apply = makeImmediateApply(storage);
+    await new AutoApprovalDrainer(storage, apply.applyFn).drain(GK);
+
+    expect(apply.calls).toEqual([]);
+    expect(getAction(storage, 1).state).toBe("pending");
+  });
+});
+
+// A description that passes every gate, for the predicate tests to knock single gates out of.
+function eligibleDescription(overrides: Partial<ActionDescription> = {}): ActionDescription {
+  return {
+    title: "Edit the thing",
+    description: "Edits the thing.",
+    implementsRevert: true,
+    actionKind: { tag: "edit", label: "Edits" },
+    autoApprovable: true,
+    ...overrides,
+  };
+}
+
+describe("autoApprovalRule", () => {
+  it("returns the enabling rule when every gate passes", () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    let rule = autoApprovalRule(storage, GK, eligibleDescription());
+    expect(rule?.enabledBy).toEqual(ENABLER);
+  });
+
+  it("requires the author's autoApprovable verdict", () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    expect(autoApprovalRule(storage, GK, eligibleDescription({ autoApprovable: undefined })))
+        .toBeUndefined();
+    expect(autoApprovalRule(storage, GK, eligibleDescription({ autoApprovable: false })))
+        .toBeUndefined();
+  });
+
+  it("requires an actionKind", () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    expect(autoApprovalRule(storage, GK, eligibleDescription({ actionKind: undefined })))
+        .toBeUndefined();
+  });
+
+  it("requires a user-enabled rule for the kind on this gatekeeper", () => {
+    let storage = makeStorage();
+    expect(autoApprovalRule(storage, GK, eligibleDescription())).toBeUndefined();
+    enableRule(storage, "edit", GK + 1);  // right tag, wrong gatekeeper
+    expect(autoApprovalRule(storage, GK, eligibleDescription())).toBeUndefined();
+    enableRule(storage, "delete", GK);    // right gatekeeper, wrong tag
+    expect(autoApprovalRule(storage, GK, eligibleDescription())).toBeUndefined();
+  });
+
+  it("refuses any action carrying operator warnings", () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    expect(autoApprovalRule(
+        storage, GK, eligibleDescription({ operatorWarnings: ["watch out"] })))
+        .toBeUndefined();
+    // An empty array carries no warning to read, so it does not disqualify.
+    expect(autoApprovalRule(storage, GK, eligibleDescription({ operatorWarnings: [] })))
+        .toBeDefined();
+  });
+
+  it("refuses every action while the restricted-data latch is set", () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    enableRule(storage, "edit", GK + 1);
+    storage.prohibitAllSharing.put(true);
+    // The latch is workspace-wide: even a write-to-self (which submitAction lets pend) must be
+    // read by a human, on every gatekeeper.
+    expect(autoApprovalRule(storage, GK, eligibleDescription())).toBeUndefined();
+    expect(autoApprovalRule(storage, GK + 1, eligibleDescription())).toBeUndefined();
   });
 });

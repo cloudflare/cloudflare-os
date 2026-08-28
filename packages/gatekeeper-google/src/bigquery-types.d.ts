@@ -136,6 +136,10 @@ export interface BigQuerySession {
    * dry-run first to verify it stays within the session's scope and to enforce
    * `maximumBytesBilled` (default 100 GB).
    *
+   * Every query must reference at least one table: a query that reads no table data (e.g.
+   * `SELECT 1` or a bare scalar function call) is rejected, because its access cannot be
+   * attributed to a dataset. Run such computations in gadget code instead.
+   *
    * For parameterized queries, use `@name` placeholders with `opts.params` — BigQuery binds
    * them server-side, preventing SQL injection.
    *
@@ -153,7 +157,8 @@ export interface BigQuerySession {
   /** Validate a query and estimate its cost without executing it.
    *
    * Useful for showing users the bytes-processed estimate before running an expensive query,
-   * or for programmatically inspecting which tables a query would touch.
+   * or for programmatically inspecting which tables a query would touch. Like `query()`, the
+   * query must reference at least one table.
    *
    * @param sql - Standard SQL query.
    * @param opts - Optional query options (params and defaultDataset; other options ignored).

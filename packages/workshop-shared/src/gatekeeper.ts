@@ -1078,8 +1078,15 @@ export type ObservationDescription = {
    *   these observations. Anything that widens what a collaborator must be verified against --
    *   adding a connection, binding one into a gadget -- restarts the workspace, so every live
    *   session re-opens and re-verifies against the new scope.
-   * - Once observed, the gadget enters a restricted mode: no more actions or public-web fetches,
-   *   only observations, so the gadget cannot leak the data through other gatekeepers.
+   * - Once observed, the gadget enters a restricted mode: it may no longer fetch from the
+   *   public web, and it may only perform actions that target a gatekeeper that itself produced
+   *   a sensitive observation (writes-to-self), each requiring manual human approval (never
+   *   auto-approved). This prevents the gadget from leaking the data through other gatekeepers.
+   *   Note the carve-out is per-connection set membership, not data provenance: with multiple
+   *   restricted producers, data observed through one may be written back through another, and
+   *   even a single connection can reach audiences beyond where the data was read (e.g. a broad
+   *   account writing to a more public destination). The mandatory human approval of every such
+   *   action is the interim mitigation for those cases.
    *
    * Two limits are worth stating plainly. Verification is held to the collaborator's role scope,
    * so a gatekeeper the agent reads only through a chat binding is in no "use" collaborator's
@@ -1187,6 +1194,17 @@ export type ActionDescription = {
    * that judgement here.
    */
   autoApprovable?: boolean;
+
+  /**
+   * Gatekeeper-authored warnings addressed to the human approver, rendered prominently on the
+   * approval card ahead of the description. Use these when the gatekeeper knows something about
+   * the *context* of the action that the action's own content can't show -- e.g. "this
+   * conversation has read data from other accounts, which could leak into this write."
+   *
+   * A warning exists precisely to be read by a human, so any action carrying one is never
+   * auto-approved, even if `autoApprovable` is set and a matching rule exists.
+   */
+  operatorWarnings?: string[];
 
   // ----------------------------------------------------------------------------
   // Policy hints

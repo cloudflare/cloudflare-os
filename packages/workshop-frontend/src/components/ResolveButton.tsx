@@ -5,11 +5,18 @@ export function ResolveButton({
   variant = 'quiet',
   disabled,
   onClick,
+  describedBy,
 }: {
   tone: 'approve' | 'deny'
   variant?: 'quiet' | 'filled'
   disabled: boolean
   onClick: MouseEventHandler<HTMLButtonElement>
+  /**
+   * Id of the action's operator-warnings block, when it has one, so screen readers announce the
+   * warning as the button's description on focus. The warnings render below the controls in some
+   * presentations, so DOM order alone doesn't reach them before a decision.
+   */
+  describedBy?: string
 }) {
   const toneClassName = variant === 'filled'
     ? 'h-7 bg-kumo-brand px-3 text-white enabled:hover:opacity-90'
@@ -22,6 +29,7 @@ export function ResolveButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
+      aria-describedby={describedBy}
       className={`flex cursor-pointer items-center rounded-md text-[12px] font-medium tracking-[-0.15px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${toneClassName}`}
     >
       {tone === 'approve' ? 'Approve' : 'Deny'}

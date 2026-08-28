@@ -43,7 +43,7 @@ import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker"
 import { completeAgentCatalogSnapshot, normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
 import { SharingManager, SharingCaller, CollaboratorRecord, ShareKeyRecord, roleRank } from "./sharing";
-import { AutoApprovalDrainer } from "./auto-approval";
+import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext, traced } from "./observability";
 import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
@@ -1031,8 +1031,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       nextHookId: 0,
 
       // True if any past observation was authorized that had the `containsRestrictedData` flag
-      // set in its `ObservationDescription`. While set, the workspace may not perform actions or
-      // fetch from the public web.
+      // set in its `ObservationDescription`. While set, the workspace may not fetch from the
+      // public web, and actions are limited to the connections that produced the restricted data
+      // (the writes-to-self carve-out; see restrictedProducerIds and submitAction), each
+      // requiring manual approval (never auto-approved; see autoApprovalRule).
       //
       // NOTE: The property CANNOT be renamed to match the flag: the typed-storage key is the
       // property name, so a rename would silently unlatch every workspace that has already
@@ -4325,6 +4327,23 @@ class OverseerImpl implements AgentHooks {
   // was applied automatically. For an auto-approval, `resolvedBy` is the user who enabled the rule.
   async applyPendingAction(record: ActionRecord & {type: "action"},
                            resolvedBy: AiChatAuthorInfo, autoApproved: boolean): Promise<void> {
+    // Writes-to-self carve-out, re-checked at apply time: an action can outlive the policy it was
+    // submitted under (queued before a restricted observation latched the workspace, approved
+    // after), and the approval surfaces tell the user a latched workspace acts only on its
+    // restricted producers -- so the invariant must hold here, at the one place an action
+    // transitions to "approved", not just in submitAction. Checked synchronously before the facet
+    // call so a refused action is left untouched. The auto-approval drain already refuses via
+    // autoApprovalRule (nothing auto-applies while latched); this covers manual approval.
+    // rejectAction is deliberately NOT gated -- denying is how the user unsticks an agent turn
+    // suspended on awaitDecision.
+    if (this.storage.prohibitAllSharing.get() &&
+        !this.restrictedProducerIds().has(record.gatekeeperId)) {
+      throw new Error(
+          "This workspace has observed sensitive data from other connections. To prevent leaks, " +
+          "it may only perform actions on those same connections; this pending action targets " +
+          "another connection, so it can only be denied.");
+    }
+
     let gatekeeper = this.getGatekeeperFacet(record.gatekeeperId);
     await gatekeeper.applyAction(record.action);
     record.state = "approved";
@@ -4414,6 +4433,19 @@ class OverseerImpl implements AgentHooks {
   // no gadget's env retains a dangling entry. (This is distinct from merely unbinding it from one
   // gadget -- GadgetClient.unbind() -- which leaves the gatekeeper alive, possibly orphaned.)
   removeGatekeeper(id: number) {
+    // A pending action is resolvable only through the facet this method deletes -- both
+    // applyPendingAction and rejectAction dereference it -- so removal would strand the record
+    // "pending" forever and suspend an awaitDecision agent turn with it. Refuse before any
+    // mutation (binding edges are severed below); submitAction's existence check covers the
+    // submit side. Synchronous with the delete, like submitAction's check-and-put block, so one
+    // always sees the other. The addGatekeeper failure cleanup passes vacuously: no session has
+    // ever been handed out there, so no action can name the id.
+    if (this.hasPendingActions(id)) {
+      throw new Error(
+          "This connection cannot be removed while it has pending approval requests. Approve or " +
+          "deny them first.");
+    }
+
     for (let gadget of Array.from(this.storage.gadgets.list())) {
       let names = Object.entries(gadget.bindings)
           .filter(([, edge]) => edge.target === id)
@@ -4673,7 +4705,11 @@ class OverseerImpl implements AgentHooks {
 
   // The connection ids through which this workspace has read restricted data the producers the
   // `prohibitAllSharing` latch guards. Derived by scanning the action log for observations whose
-  // description carries `containsRestrictedData`
+  // description carries `containsRestrictedData`. The callers are cold paths (connection
+  // removal, sharing mutators) plus submitAction and applyPendingAction -- but both scan only
+  // while latched (the unlatched path short-circuits before the scan), latched manual approvals
+  // are human-bounded, and the auto-approval drainer already full-scans the log per drain, so
+  // the scan is fine where it runs.
   restrictedProducerIds(): Set<WorkpieceId> {
     let producers = new Set<WorkpieceId>();
     for (let record of this.storage.actions.list()) {
@@ -4684,6 +4720,19 @@ class OverseerImpl implements AgentHooks {
       }
     }
     return producers;
+  }
+
+  // True if any pending approval request names connection `id`. Scans the action log like
+  // restrictedProducerIds above, and for the same reason it's acceptable: the callers are cold
+  // paths (connection removal and the ambient reconcile). Used to refuse removing a connection
+  // whose pending actions could then never be resolved -- see removeGatekeeper.
+  hasPendingActions(id: WorkpieceId): boolean {
+    for (let record of this.storage.actions.list()) {
+      if (record.type === "action" && record.state === "pending" && record.gatekeeperId === id) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // True if removing gatekeeper `id` is blocked because it anchors restricted-data verification:
@@ -4826,23 +4875,46 @@ class OverseerImpl implements AgentHooks {
   async submitAction(gatekeeperId: number, action: number,
                      description: ActionDescription, caller: GatekeeperCaller)
       : Promise<void> {
-    if (this.storage.prohibitAllSharing.get()) {
+    // An in-flight facet RPC can outlive removeGatekeeper (cf. the restricted-observation refusal
+    // in authorizeObservation), so an action can arrive naming a connection this workspace no
+    // longer has. A pending action persisted on a removed connection could never be approved *or*
+    // rejected -- both paths dereference the record through getGatekeeperFacet -- and would
+    // suspend an awaitDecision agent turn forever, so refuse before any write. This also covers
+    // the latched case below: restrictedProducerIds deliberately survives removal (that is its
+    // point for removalBlockedByRestrictedData / assertNewSharingAllowed), so membership alone
+    // must not admit a write to a dead connection.
+    let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
+    if (!gatekeeper) {
       throw new Error(
-          "This workspace has observed sensitive data. To prevent leaks, the workspace is prohibited " +
-          "from performing actions.");
+          "This action was blocked because the connection it was submitted through has been " +
+          "removed from this workspace.");
+    }
+
+    // Writes-to-self carve-out: a latched workspace may still act on the connections that
+    // produced its restricted data, while any other target could leak it. (Every such action
+    // still requires manual human approval; see autoApprovalRule.) The check is set membership,
+    // not provenance -- the human approver is the check for cross-producer or broader-audience
+    // writes; see the containsRestrictedData doc. A latched workspace always has a
+    // non-empty producer set (the latch and its action record are written in one synchronous
+    // block; see restrictedProducerIds); if the set is ever empty anyway, the `has` check fails
+    // for every target and all actions are refused -- the conservative fallback. Refused before
+    // the id allocation below, so a blocked action leaves no record behind.
+    if (this.storage.prohibitAllSharing.get() &&
+        !this.restrictedProducerIds().has(gatekeeperId)) {
+      throw new Error(
+          "This workspace has observed sensitive data from other connections. To prevent leaks, " +
+          "it may only perform actions on those same connections.");
     }
 
     let actionId = this.storage.nextActionId.get();
     this.storage.nextActionId.put(actionId + 1);
 
-    let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
-
     let record: ActionRecord = {
       id: actionId,
       gatekeeperId,
       caller,
-      resourceTitle: gatekeeper?.resourceTitle,
-      resourceUrl: gatekeeper?.resourceUrl,
+      resourceTitle: gatekeeper.resourceTitle,
+      resourceUrl: gatekeeper.resourceUrl,
       action,
       createdAt: new Date(),
       state: "pending",
@@ -4853,10 +4925,9 @@ class OverseerImpl implements AgentHooks {
     this.storage.actions.put(record);
     this.#associateAction(caller, actionId);
 
-    // Same auto-approval gate as before, named because awaitDecision uses it too. The drain is
-    // deferred because applying calls back into the gatekeeper facet still awaiting submitAction.
-    let willAutoApprove = !!(description.autoApprovable && description.actionKind &&
-        this.storage.autoApproveTags.get(`${gatekeeperId}:${description.actionKind.tag}`) !== undefined);
+    // Same auto-approval gate the drainer uses, named because awaitDecision uses it too. The drain
+    // is deferred because applying calls back into the gatekeeper facet still awaiting submitAction.
+    let willAutoApprove = autoApprovalRule(this.storage, gatekeeperId, description) !== undefined;
 
     // Only agent turns suspend on awaitDecision, and only when a manual decision is pending.
     // Auto-approved actions keep the seamless behavior the user opted into.
@@ -6404,6 +6475,15 @@ class OverseerImpl implements AgentHooks {
         // binding name, and the dead record's session just fails).
         this.logger.warn("skipping removal of stale ambient restricted producer", {
           event: "singleton.capsules.reconcile.blocked",
+          gatekeeperId: gk.id,
+          vendorId: gk.creationSpec.vendorId,
+        });
+      } else if (this.hasPendingActions(gk.id)) {
+        // removeGatekeeper refuses while approval requests are pending (resolving them needs the
+        // facet it deletes), so defer this stale capsule to a later reconcile rather than throw
+        // out of open(). Not added to `bound`, same as the restricted-producer skip above.
+        this.logger.warn("skipping removal of stale ambient capsule with pending actions", {
+          event: "singleton.capsules.reconcile.pending.actions",
           gatekeeperId: gk.id,
           vendorId: gk.creationSpec.vendorId,
         });
@@ -9954,12 +10034,24 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // actions that this newly unblocks. Auto-approval rules are workspace-wide per gatekeeper.
   async setAutoApprovedActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind)
       : Promise<void> {
+    // Fetch the approver's profile before the gates below: awaiting between them and the put
+    // would let a concurrent restricted observation latch the workspace and still persist an
+    // inert rule (or a concurrent removeGatekeeper slip past the existence check).
+    let profile = await this.#getClientProfile();
+
     let gatekeeper = this.impl.storage.gatekeepers.get(gatekeeperId);
     if (!gatekeeper) {
       throw new Error(`No such gatekeeper: ${gatekeeperId}`);
     }
 
-    let profile = await this.#getClientProfile();
+    // A rule stored while the workspace is latched would never fire (see autoApprovalRule), so
+    // refuse to store one rather than let the UI suggest auto-approval is in effect.
+    if (this.impl.storage.prohibitAllSharing.get()) {
+      throw new Error(
+          "This workspace has observed sensitive data, so its actions always require manual " +
+          "approval and cannot be auto-approved.");
+    }
+
     this.impl.storage.autoApproveTags.put({
       gatekeeperId,
       actionKind,
@@ -9985,6 +10077,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async listPreApprovableActions(): Promise<PreApprovableAction[]> {
+    // A latched workspace can't have auto-approval rules (see setAutoApprovedActionKind), so
+    // offer nothing.
+    if (this.impl.storage.prohibitAllSharing.get()) return [];
+
     // Surface actions from every gatekeeper bound by some gadget (the connections the UI shows).
     let boundIds = new Set<WorkpieceId>();
     for (let gadget of this.impl.storage.gadgets.list()) {

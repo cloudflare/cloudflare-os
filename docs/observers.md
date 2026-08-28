@@ -34,7 +34,8 @@ The mechanism is a per-user, gatekeeper-mediated check — "this data may be sha
 people who *also* have access to it". (Maximally sensitive data gets an extra layer: an
 observation marked **`containsRestrictedData`**
 (`ObservationDescription.containsRestrictedData` in `packages/workshop-shared/src/gatekeeper.ts`)
-latches the workspace into a restricted mode — no actions, no web fetches. Its coverage rests on
+latches the workspace into a restricted mode — no web fetches, and actions only back to the
+connections that produced the restricted data, each manually approved. Its coverage rests on
 admission: nobody can open the workspace without being verified against the producing gatekeeper,
 and anything that widens what they must be verified against restarts every live session. The one
 producer admission cannot see — one with no vendor account behind it — is refused outright while
@@ -471,7 +472,8 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    at every `open()`, so nobody can be in the workspace without having passed the producing
    gatekeeper's `addObserver()`, and anything that widens what they must pass restarts every live
    session (see "Restarting when verification scope changes"). The flag also latches the workspace
-   into a restricted mode that blocks actions and web fetches.
+   into a restricted mode that blocks web fetches and limits actions to the connections that
+   produced the restricted data, each requiring manual approval.
    One producer admission structurally cannot cover: one with no vendor account behind it — an
    `aiModel`/`agentSpawner` binding, or a legacy record with no `creationSpec`.
    `#inScopeGatekeepers` skips those, so no collaborator is ever asked about them, and
@@ -612,7 +614,8 @@ its resource types.
 
 - **A — Private-only.** Non-owner observers are refused: `addObserver()` unconditionally throws.
   For data that must additionally never leak back out, the `containsRestrictedData` restricted
-  mode (no actions, no web fetches) is available separately; combined with strategy A it makes
+  mode (actions only to the connections that produced the data, each manually approved; no web
+  fetches) is available separately; combined with strategy A it makes
   the workspace effectively private once sensitive data is observed.
   `getVerifier()` must still exist (the overseer mints one on every open) but is never consulted.
 
@@ -655,7 +658,7 @@ its resource types.
 | **google** | Google Calendar (selected calendar) | **B** | Require `writer` or `owner` access to the bound calendar, since `reader` access hides private-event details. Future: let the binding owner exclude private events so readers can collaborate. |
 | **google** | Google Calendar (`allVisible` availability) | **C** | In addition to the selected-calendar check, track foreign calendars whose free/busy data was successfully read and verify each observer can independently query their availability. |
 | **google** | Gmail Mailbox | **A** | Always throw. (Future: allow observers who independently have access, e.g. mailing-list members — explicitly out of scope now.) |
-| **google** | BigQuery | **C** | Track accessed datasets; verify the observer's IAM access to each. Dataset granularity for now (tables/columns later). |
+| **google** | BigQuery | **C** | Track accessed datasets; verify the observer's IAM access to each. Dataset granularity for now (tables/columns later). The probe (`datasets.get`) is also metadata-level: it proves `bigquery.datasets.get` only — not `bigquery.tables.getData` on the tables queries actually read, nor row-level security, nor column policy tags — so an admitted observer may see query rows they could not query themselves. Known, accepted limitation; tightening direction is per-table tracking (the dry-run's `referencedTables`) plus a table-data probe, with row/column policies unprovable via any API regardless. Queries whose dry run references no tables at all are refused outright — their access can't be attributed to any dataset, and they can return owner/session context (`SESSION_USER()`) no probe covers. |
 | **linear** | Team / Issue | **B** | Check the observer's workspace/team membership, honoring team privacy. |
 | **linear** | Workspace | **C** | Track accessed teams; verify the observer against each (reusing the Team B check). |
 | **notion** | Page / Database | **B** | Check the observer's Notion access to the bound page/database. |

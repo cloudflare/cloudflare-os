@@ -252,7 +252,8 @@ export class TestVerifier
  * The two methods exist so tests can drive the overseer's observation/action policy through the
  * same `ApprovalQueue` funnel a shipping gatekeeper uses: `readThing()` records an observation
  * (optionally marked `containsRestrictedData`, to trip the restricted-mode latch and the
- * unverifiable-producer guard), and `doThing()` submits an action (which restricted mode blocks).
+ * unverifiable-producer guard), and `doThing()` submits an action (which restricted mode allows
+ * only back to the producing connections, never auto-approved).
  */
 export class TestSession extends RpcTarget {
   #queue: RpcStub<ApprovalQueue>;
@@ -273,11 +274,17 @@ export class TestSession extends RpcTarget {
     return `the contents of ${this.#title}`;
   }
 
-  async doThing(): Promise<void> {
+  async doThing(opts?: { autoApprovable?: boolean; warnings?: string[] }): Promise<void> {
     await this.#queue.submitAction(0, {
       title: `Poke ${this.#title}`,
       description: `The test poked ${this.#title}.`,
       implementsRevert: false,
+      // Always tagged, so a test can enable an auto-approval rule for it; whether this specific
+      // poke is eligible is the per-action verdict below, exactly as a shipping gatekeeper would
+      // set it.
+      actionKind: POKE_ACTION_KIND,
+      ...(opts?.autoApprovable ? { autoApprovable: true } : {}),
+      ...(opts?.warnings ? { operatorWarnings: opts.warnings } : {}),
     });
   }
 
@@ -286,6 +293,8 @@ export class TestSession extends RpcTarget {
     this.#queue[Symbol.dispose]();
   }
 }
+
+const POKE_ACTION_KIND: ActionKind = { tag: "poke", label: "Pokes" };
 
 export class TestGatekeeper
     extends DurableObject<Cloudflare.Env, BindingProps> implements Gatekeeper<TestSession> {
@@ -315,7 +324,7 @@ export class TestGatekeeper
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [];
+    return [POKE_ACTION_KIND];
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<TestSession> {
@@ -355,14 +364,18 @@ export class TestGatekeeper
         { resourceUrl: this.ctx.props.resourceUrl, type: "remove", id });
   }
 
-  async applyAction(_action: number): Promise<void> {
-    throw new Error("The test gatekeeper submits no actions.");
+  /**
+   * Applying succeeds and leaves a record, so approval-path tests (manual and auto) can drive a
+   * submit -> approve -> apply round trip against real machinery.
+   */
+  async applyAction(action: number): Promise<void> {
+    this.ctx.storage.kv.put(`applied:${action}`, true);
   }
 
   async rejectAction(_action: number): Promise<void> {}
 
   async revertAction(_action: number): Promise<void> {
-    throw new Error("The test gatekeeper submits no actions.");
+    throw new Error("The test gatekeeper does not implement revert.");
   }
 }
 

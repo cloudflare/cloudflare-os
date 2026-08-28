@@ -40,8 +40,8 @@ export function putAction(
     storage: { actions: Collection<ActionRecord, number>, nextActionId: Singleton<number> },
     id: number,
     opts: { state?: ActionRecord["state"], type?: ActionRecord["type"], gatekeeperId?: number,
-            actionTag?: string, autoApprovable?: boolean, createdAt?: Date,
-            appliedAt?: Date } = {}) {
+            actionTag?: string, autoApprovable?: boolean, operatorWarnings?: string[],
+            createdAt?: Date, appliedAt?: Date } = {}) {
   let base = {
     id,
     gatekeeperId: opts.gatekeeperId ?? 1,
@@ -59,6 +59,7 @@ export function putAction(
         implementsRevert: true,
         actionKind: { tag: opts.actionTag ?? "edit", label: "Edits" },
         autoApprovable: opts.autoApprovable ?? true,
+        ...(opts.operatorWarnings !== undefined ? { operatorWarnings: opts.operatorWarnings } : {}),
       } }
     : type === "observation" ? { ...base, type, description }
     : { ...base, type, description, enabled: true });

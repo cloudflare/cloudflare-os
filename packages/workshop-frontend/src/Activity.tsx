@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Switch, useKumoToastManager } from '@cloudflare/kumo'
-import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/react'
+import { CaretRight, Check, Eye, Lightning, ShieldCheck, ShieldWarning } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import { ActionLogEntry, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
 import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
@@ -26,6 +26,12 @@ const PANE_BAR = 'flex h-9 flex-shrink-0 items-center border-b border-kumo-line'
 
 interface ActivityProps {
   overseer: RpcStub<Overseer>
+  // True once the workspace has read restricted data (GadgetMetadata.containsRestrictedData, live
+  // via the metadata subscription). Latched actions are never auto-approved (the backend's
+  // setAutoApprovedActionKind also throws), so the review tab suppresses the always-approve
+  // affordance and the auto-approval panel annotates existing rules as suspended. Rules stay
+  // listed and disable-able: a standing grant must remain revocable.
+  restricted?: boolean
   view: ActivityView
   onViewChange: (view: ActivityView) => void
   onAutoApproveChange?: () => void
@@ -152,6 +158,7 @@ function ActivityNotice({ icon, title, description, children }: {
 
 export default function Activity({
   overseer,
+  restricted,
   view,
   onViewChange,
   onAutoApproveChange,
@@ -169,6 +176,13 @@ export default function Activity({
     actionKind: ActionKind
     actionLabel: string
   } | null>(null)
+
+  // Dismiss an open confirmation when the workspace latches restricted mode: the affordance that
+  // opened it is already suppressed, and confirming could only error (setAutoApprovedActionKind
+  // refuses while restricted).
+  useEffect(() => {
+    if (restricted) setConfirmAutoApprove(null)
+  }, [restricted])
   const toasts = useKumoToastManager()
 
   const history = useActionHistory(overseer, historyFilter, view === 'history')
@@ -225,9 +239,15 @@ export default function Activity({
           <div className="min-h-0 flex-1 overflow-auto">
             {pendingActions.map(record => {
               const autoApproveTarget =
+                // A restricted workspace never auto-approves, so don't offer a rule that could
+                // only error.
+                !restricted &&
                 record.type === 'action' && record.gatekeeperId !== undefined &&
                 record.description.actionKind !== undefined &&
-                record.description.autoApprovable === true
+                record.description.autoApprovable === true &&
+                // A warned action is never auto-approved (see autoApprovalRule in the backend),
+                // so don't offer the rule from it.
+                (record.description.operatorWarnings?.length ?? 0) === 0
                   ? {
                       actionId: record.id,
                       gatekeeperId: record.gatekeeperId,
@@ -423,7 +443,13 @@ export default function Activity({
           </>
         )
       case 'auto':
-        return <AutoApprovalPanel overseer={overseer} reloadTrigger={autoApproveReloadTrigger} />
+        return (
+          <AutoApprovalPanel
+            overseer={overseer}
+            restricted={restricted}
+            reloadTrigger={autoApproveReloadTrigger}
+          />
+        )
     }
   }
 
@@ -452,9 +478,11 @@ export default function Activity({
 
 function AutoApprovalPanel({
   overseer,
+  restricted,
   reloadTrigger,
 }: {
   overseer: RpcStub<Overseer>
+  restricted?: boolean
   reloadTrigger?: number
 }) {
   const { entries, isLoading, loadError, pending, refresh, setEnabled } = useAutoApproval(overseer)
@@ -567,17 +595,23 @@ function AutoApprovalPanel({
                       {entry.actionKind.label}
                     </span>
                     <span className="mt-0.5 block text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
-                      {entry.orphaned
-                        ? 'This connection no longer offers this action; the rule still applies.'
-                        : entry.enabled
-                          ? 'Applied without asking'
-                          : 'Waits for your approval'}
+                      {restricted
+                        // Rules never apply while the workspace is restricted (autoApprovalRule
+                        // refuses), so don't claim they do -- but keep them listed and revocable.
+                        ? "Won't apply: this workspace has read sensitive data, so actions always require manual approval."
+                        : entry.orphaned
+                          ? 'This connection no longer offers this action; the rule still applies.'
+                          : entry.enabled
+                            ? 'Applied without asking'
+                            : 'Waits for your approval'}
                     </span>
                   </span>
                   <Switch
                     size="sm"
                     checked={entry.enabled}
-                    disabled={busy}
+                    // While restricted, enabling would only error (setAutoApprovedActionKind
+                    // throws), but disabling must stay possible: a standing grant is revocable.
+                    disabled={busy || (restricted === true && !entry.enabled)}
                     aria-label={`${entry.enabled ? 'Disable' : 'Enable'} auto-approval for ${entry.actionKind.label}`}
                     onCheckedChange={enabled => void setEnabled(entry, enabled)}
                   />
@@ -609,6 +643,13 @@ function ReviewRequest({
   onAlwaysApprove?: () => void
 }) {
   const resourceUrl = safeExternalUrl(record.resourceUrl)
+  const operatorWarnings = record.type === 'action' ? record.description.operatorWarnings ?? [] : []
+  // Referenced by the approve/deny buttons' aria-describedby: the warnings render below the
+  // controls, so screen readers wouldn't otherwise reach them before a decision. (useId, unlike
+  // the chat surface's action-id-derived ids, so the two never collide when both show the same
+  // action.)
+  const warningsDomId = useId()
+  const warningsId = operatorWarnings.length > 0 ? warningsDomId : undefined
   return (
     <article className="border-b border-kumo-line px-5 py-3 transition-colors hover:bg-kumo-elevated/50">
       <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
@@ -646,10 +687,24 @@ function ReviewRequest({
           {onAlwaysApprove && (
             <AlwaysApproveButton onClick={onAlwaysApprove} disabled={processing} />
           )}
-          <ResolveButton tone="deny" onClick={onReject} disabled={processing} />
-          <ResolveButton tone="approve" onClick={onApprove} disabled={processing} />
+          <ResolveButton tone="deny" onClick={onReject} disabled={processing} describedBy={warningsId} />
+          <ResolveButton tone="approve" onClick={onApprove} disabled={processing} describedBy={warningsId} />
         </div>
       </div>
+
+      {operatorWarnings.length > 0 && (
+        <div id={warningsId} className="mt-1.5 space-y-1">
+          {operatorWarnings.map((warning, i) => (
+            <div
+              key={i}
+              className="flex max-w-2xl items-start gap-2 rounded-lg bg-kumo-warning-tint px-2.5 py-1.5 text-[12px] leading-[17px] text-kumo-default"
+            >
+              <ShieldWarning size={14} weight="duotone" className="mt-0.5 flex-shrink-0 text-kumo-warning" />
+              <span className="min-w-0">{warning}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {record.description.description && (
         <p className={`mt-1.5 max-w-2xl whitespace-pre-wrap text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle ${expanded ? '' : 'line-clamp-2'}`}>
@@ -676,6 +731,7 @@ function HistoryRow({
   const resourceUrl = safeExternalUrl(record.resourceUrl)
   const resolvedBy = record.type === 'action' ? record.resolvedBy : undefined
   const autoApproved = record.type === 'action' && record.autoApproved === true
+  const operatorWarnings = record.type === 'action' ? record.description.operatorWarnings ?? [] : []
   const at = actionChangeTime(record)
   const status = activityStatus(record)
 
@@ -711,6 +767,19 @@ function HistoryRow({
 
       {expanded && (
         <div className="border-b border-kumo-line/70 px-5 pb-3 pl-[86px] pt-1">
+          {operatorWarnings.length > 0 && (
+            <div className="mb-1.5 space-y-1">
+              {operatorWarnings.map((warning, i) => (
+                <div
+                  key={i}
+                  className="flex items-start gap-2 rounded-lg bg-kumo-warning-tint px-2.5 py-1.5 text-[12px] leading-[17px] text-kumo-default"
+                >
+                  <ShieldWarning size={14} weight="duotone" className="mt-0.5 flex-shrink-0 text-kumo-warning" />
+                  <span className="min-w-0">{warning}</span>
+                </div>
+              ))}
+            </div>
+          )}
           {record.description.description && (
             <p className="m-0 whitespace-pre-wrap text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
               {record.description.description}

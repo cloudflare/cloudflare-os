@@ -3,8 +3,9 @@
 // concurrent drains (the DO's input gate is open across the apply await) can't double-apply the
 // same action. The apply is injected, keeping this constructible over a mock storage in tests.
 
-import type { Collection, NonUniqueIndex } from "@gadgets/typed-storage";
+import type { Collection, NonUniqueIndex, Singleton } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
+import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { createWorkshopLogger } from "./observability";
 import type { ActionRecord, AutoApproveTagRecord } from "./overseer.js";
 
@@ -14,6 +15,37 @@ export interface AutoApprovalStorage {
   actions: Collection<ActionRecord, number>
       & { pendingByGatekeeper: NonUniqueIndex<ActionRecord, number> };
   autoApproveTags: Collection<AutoApproveTagRecord>;
+
+  /**
+   * The restricted-data latch (see makeOverseerStorage; the key predates the flag's rename to
+   * `containsRestrictedData`). While set, no action is ever auto-approved: a latched workspace's
+   * only permissible actions are writes back to a restricted producer (submitAction's
+   * writes-to-self carve-out), and each of those must pend for a human.
+   */
+  prohibitAllSharing: Singleton<boolean>;
+}
+
+/**
+ * The single authority on whether an action may be applied without a human. Returns the enabling
+ * rule iff ALL of:
+ *  - the gatekeeper author marked this specific action `autoApprovable`,
+ *  - the action carries an `actionKind` for which the user enabled a rule on this gatekeeper,
+ *  - the action carries no `operatorWarnings` (a warning exists precisely to be read by the
+ *    human approver, so it forces manual approval),
+ *  - the workspace has not latched restricted mode (`prohibitAllSharing` above).
+ * Returns undefined otherwise: manual approval required.
+ */
+export function autoApprovalRule(
+    storage: AutoApprovalStorage, gatekeeperId: number, description: ActionDescription)
+    : AutoApproveTagRecord | undefined {
+  if (description.autoApprovable !== true) return undefined;
+  let tag = description.actionKind?.tag;
+  if (tag === undefined) return undefined;
+  if (description.operatorWarnings !== undefined && description.operatorWarnings.length > 0) {
+    return undefined;
+  }
+  if (storage.prohibitAllSharing.get()) return undefined;
+  return storage.autoApproveTags.get(`${gatekeeperId}:${tag}`);
 }
 
 /**
@@ -56,8 +88,8 @@ export class AutoApprovalDrainer {
   // applying -- it is never skipped ahead of. This preserves in-order application and the
   // invariant that nothing is silently applied past a human gate.
   //
-  // Eligibility requires BOTH signals: the author's `autoApprovable` verdict on the action AND a
-  // user-enabled rule for the action's type on this gatekeeper.
+  // Eligibility is `autoApprovalRule()`: the author's `autoApprovable` verdict, a user-enabled
+  // rule for the action's kind, no operator warnings, and no restricted-data latch.
   async #drainOnce(gatekeeperId: number): Promise<void> {
     // Materialize before applying: the index yields lazily in ascending id order, and applying
     // mutates it mid-iteration. Actions created after this snapshot trigger their own drain(),
@@ -67,11 +99,8 @@ export class AutoApprovalDrainer {
     for (let record of pending) {
       if (record.type !== "action") continue;
 
-      let tag = record.description.actionKind?.tag;
-      let rule = tag !== undefined
-          ? this.storage.autoApproveTags.get(`${gatekeeperId}:${tag}`)
-          : undefined;
-      if (record.description.autoApprovable !== true || rule === undefined) {
+      let rule = autoApprovalRule(this.storage, gatekeeperId, record.description);
+      if (rule === undefined) {
         // A manual gate. Stop rather than skipping ahead to any later auto-eligible action.
         return;
       }

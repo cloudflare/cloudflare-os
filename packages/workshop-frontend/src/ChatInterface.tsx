@@ -49,6 +49,7 @@ import {
   PencilSimple,
   Brain,
   ShieldCheck,
+  ShieldWarning,
   Terminal,
   Globe,
   MagnifyingGlass,
@@ -4408,6 +4409,10 @@ function fallbackToStoredModelSelection(
 interface ChatInterfaceProps {
   workspaceId: string | undefined;
   overseer: RpcStub<Overseer>;
+  // True once the workspace has read restricted data (GadgetMetadata.containsRestrictedData, live
+  // via the metadata subscription). Latched actions are never auto-approved (the backend's
+  // setAutoApprovedActionKind also throws), so the always-approve affordance is suppressed.
+  restricted?: boolean;
   selectedChatId: number | null;
   onNavigateToChat: (
     chatId: number | null,
@@ -4602,6 +4607,7 @@ function getOrCreateProvisionalToolCall(
 function ChatInterface({
   workspaceId,
   overseer,
+  restricted,
   selectedChatId,
   onNavigateToChat,
   onChatChangesChange,
@@ -6290,6 +6296,13 @@ function ChatInterface({
       actionKind: ActionKind; actionLabel: string } | null
   >(null);
 
+  // Dismiss an open confirmation when the workspace latches restricted mode: the affordance that
+  // opened it is already suppressed, and confirming could only error (setAutoApprovedActionKind
+  // refuses while restricted).
+  useEffect(() => {
+    if (restricted) setAutoApproveConfirm(null);
+  }, [restricted]);
+
   // Enable auto-approval of an action tag on its connection (gated by the confirm dialog). The
   // server applies the now-eligible pending action(s) via its drain, and the action state flips to
   // "approved" through the actions subscription -- so we don't optimistically mutate it here.
@@ -6869,6 +6882,28 @@ function ChatInterface({
     // decision. Resolved actions are history, and collapse so a long thread stays scannable.
     const showDescription = isPending || open;
     const metadata = log.resourceTitle;
+    // Gatekeeper-authored warnings for the human approver: rendered prominently ahead of the
+    // description in both presentations. Their presence also suppresses the always-approve
+    // affordance below (the backend never auto-approves a warned action regardless).
+    const operatorWarnings = log.description.operatorWarnings ?? [];
+    // Referenced by the approve/deny buttons' aria-describedby: the inline pending row renders
+    // the warnings below the controls, so screen readers wouldn't otherwise reach them before a
+    // decision. Deterministic (not useId -- this is a closure, not a component), keyed by the
+    // action id, which is unique within the page.
+    const warningsId = operatorWarnings.length > 0 ? `action-warnings-${msg.actionId}` : undefined;
+    const warningStrip = operatorWarnings.length > 0 ? (
+      <div id={warningsId} className="mt-1 space-y-1">
+        {operatorWarnings.map((warning, i) => (
+          <div
+            key={i}
+            className="flex items-start gap-2 rounded-lg bg-kumo-warning-tint px-2.5 py-1.5 text-[12px] leading-[17px] text-kumo-default"
+          >
+            <ShieldWarning size={14} weight="duotone" className="mt-0.5 flex-shrink-0 text-kumo-warning" />
+            <span className="min-w-0">{warning}</span>
+          </div>
+        ))}
+      </div>
+    ) : null;
     const stateLabel = isApproved
       ? "Approved"
       : isRejected
@@ -6880,10 +6915,15 @@ function ChatInterface({
     // Auto-approval target: offer "Always approve this type" only when enabling a rule would
     // actually apply this action -- a tagged action on a connection that the gatekeeper marked
     // auto-approvable. (A non-auto-approvable action stays a manual gate even with a rule; an
-    // auto-approvable action with an existing rule wouldn't still be pending.)
+    // auto-approvable action with an existing rule wouldn't still be pending.) A restricted
+    // workspace never auto-approves, so don't offer a rule that could only error.
     const autoApproveTarget =
+      !restricted &&
       log.gatekeeperId !== undefined && log.description.actionKind !== undefined &&
-      log.description.autoApprovable === true
+      log.description.autoApprovable === true &&
+      // A warned action is never auto-approved (see autoApprovalRule in the backend), so don't
+      // offer the rule from it.
+      operatorWarnings.length === 0
         ? {
             actionId: msg.actionId,
             gatekeeperId: log.gatekeeperId,
@@ -6910,12 +6950,14 @@ function ChatInterface({
           tone="deny"
           onClick={() => void resolveAction(msg.actionId, "deny")}
           disabled={isProc}
+          describedBy={warningsId}
         />
         <ResolveButton
           tone="approve"
           variant={isBlocking ? "filled" : "quiet"}
           onClick={() => void resolveAction(msg.actionId, "approve")}
           disabled={isProc}
+          describedBy={warningsId}
         />
       </>
     ) : null;
@@ -6962,6 +7004,7 @@ function ChatInterface({
                   </span>
                   {resourceMeta}
                 </div>
+                {warningStrip}
                 <div className={`chat-panel mt-1 max-h-[200px] overflow-y-auto pr-1 text-[13px] leading-[18px] text-kumo-subtle ${styles.markdownContent}`}>
                   <MarkdownMessage message={log.description.description} />
                 </div>
@@ -7022,6 +7065,7 @@ function ChatInterface({
         )}
         {showDescription && (
           <div className="themed-surface-inset ml-8 mt-1 space-y-1.5 rounded-2xl border border-kumo-line/70 bg-kumo-elevated/45 p-3 text-[13px] leading-[19px] tracking-[-0.25px] text-kumo-subtle">
+            {warningStrip}
             <div className={`chat-panel max-h-[200px] overflow-y-auto pr-1 ${styles.markdownContent}`}>
               <MarkdownMessage message={log.description.description} />
             </div>

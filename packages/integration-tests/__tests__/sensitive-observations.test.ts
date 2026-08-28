@@ -5,7 +5,8 @@
 // anything that widens what they must pass restarts the workspace so every live session re-opens
 // against the new scope. So sensitive observations are not blocked by an unverified collaborator,
 // and sharing stays available. The observation also latches the workspace into a restricted mode:
-// once latched, the workspace may not perform actions (nor fetch from the web, which has no
+// once latched, the workspace may only perform actions targeting the connections that produced the
+// sensitive data -- the writes-to-self carve-out -- and may not fetch from the web (which has no
 // client-reachable surface to assert here).
 //
 // The fixture gatekeeper's session drives all of this through the real ApprovalQueue funnel:
@@ -191,7 +192,8 @@ async function bobReopens(
 }
 
 describe("sensitive observations", () => {
-  it.concurrent("latch restricted mode: actions are blocked and metadata reports it", async () => {
+  it.concurrent("latch restricted mode: only writes-to-self are allowed and metadata reports it",
+      async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "latch");
 
@@ -202,10 +204,58 @@ describe("sensitive observations", () => {
       await expect(ws.session.readThing(true)).resolves.toContain("latch");
 
       expect((await ws.overseer.getMetadata()).containsRestrictedData).toBe(true);
-      await expect(ws.session.doThing()).rejects.toThrow(/prohibited from performing actions/i);
+
+      // Actions targeting the gatekeeper that produced the sensitive data still pend (the
+      // writes-to-self carve-out: the data came from there, so sending it back reveals nothing
+      // new). Actions on any other connection are blocked.
+      await expect(ws.session.doThing()).resolves.toBeUndefined();
+      const accounts = await listConnectedAccounts(ws.aliceApi);
+      const account = accounts.find(a => a.vendorId === TEST_VENDOR_ID)!;
+      const other = await ws.overseer.newGatekeeper(account.id, thingUrl("latch-other"));
+      if (!other) throw new Error("Failed to create the second test connection");
+      const otherSession: any = await other.openSession();
+      await expect(otherSession.doThing())
+          .rejects.toThrow(/only perform actions on those same connections/i);
+
       // Reads -- sensitive or not -- keep working.
       await expect(ws.session.readThing()).resolves.toContain("latch");
       await expect(ws.session.readThing(true)).resolves.toContain("latch");
+    });
+  });
+
+  it.concurrent("a pre-latch pending action on another connection cannot be approved after " +
+      "the latch", async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "approve-after-latch");
+
+      // A second connection queues an action while the workspace is still unlatched, so
+      // submitAction's carve-out check admits it and it pends for manual approval.
+      const accounts = await listConnectedAccounts(ws.aliceApi);
+      const account = accounts.find(a => a.vendorId === TEST_VENDOR_ID)!;
+      const other = await ws.overseer.newGatekeeper(
+          account.id, thingUrl("approve-after-latch-other"));
+      if (!other) throw new Error("Failed to create the second test connection");
+      const otherGatekeeperId = await other.getId();
+      const otherSession: any = await other.openSession();
+      await expect(otherSession.doThing()).resolves.toBeUndefined();
+
+      // The first connection latches the workspace. The second connection is not a producer, so
+      // its still-pending action now violates the writes-to-self carve-out.
+      await expect(ws.session.readThing(true)).resolves.toContain("approve-after-latch");
+
+      const { entries } = await ws.overseer.listActions();
+      const pending = entries.find(
+          a => a.type === "action" && a.state === "pending" &&
+               a.gatekeeperId === otherGatekeeperId);
+      if (!pending) throw new Error("The pre-latch action is not pending");
+
+      // Approval is refused at the apply chokepoint; the action stays pending, and denying it --
+      // the way to unstick a suspended agent turn -- still works.
+      await expect(ws.overseer.approveAction(pending.id))
+          .rejects.toThrow(/only perform actions on those same connections/i);
+      await expect(ws.overseer.rejectAction(pending.id)).resolves.toBeUndefined();
+      const after = await ws.overseer.listActions();
+      expect(after.entries.find(a => a.id === pending.id)?.state).toBe("rejected");
     });
   });
 
@@ -448,6 +498,27 @@ describe("sensitive observations", () => {
       const collaborators = await ws.overseer.listCollaborators();
       expect(collaborators).toHaveLength(1);
       expect(collaborators[0].addedBy).toHaveLength(1);
+    });
+  });
+
+  it.concurrent("a connection with pending approval requests cannot be removed", async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "remove-pending");
+
+      // Queue an action; it pends for manual approval. Removing the connection now would delete
+      // the facet both approval and rejection resolve through, stranding the record forever.
+      await expect(ws.session.doThing()).resolves.toBeUndefined();
+      const gatekeeper = await ws.overseer.getGatekeeperById(ws.gatekeeperId);
+      await expect(gatekeeper.remove()).rejects.toThrow(/pending approval requests/i);
+      // The refused removal left the connection intact.
+      await expect(ws.session.readThing()).resolves.toContain("remove-pending");
+
+      // Denying the action resolves it, which unblocks the removal.
+      const { entries } = await ws.overseer.listActions();
+      const pending = entries.find(a => a.type === "action" && a.state === "pending");
+      if (!pending) throw new Error("The submitted action is not pending");
+      await ws.overseer.rejectAction(pending.id);
+      await expect(gatekeeper.remove()).resolves.toBeUndefined();
     });
   });
 
