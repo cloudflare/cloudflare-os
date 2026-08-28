@@ -461,6 +461,56 @@ describe("getModel direct routing (no gateway)", () => {
     expect(handle.model.baseUrl).toBe("http://my-ollama:11434/v1");
   });
 
+  it("falls back to default token limits for an uncatalogued Ollama model", () => {
+    // The ollama provider has no pi catalog and no SUGGESTED_MODELS row, so an unconfigured
+    // self-hosted model lands on the generic defaults -- which is exactly why the overrides
+    // below exist.
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "ollama",
+      model: "some-self-hosted-model",
+      apiToken: "",
+      apiUrl: "http://my-ollama:11434",
+    }, INITIATOR);
+
+    expect(handle.model.contextWindow).toBe(128_000);
+    expect(handle.model.maxTokens).toBe(4096);
+  });
+
+  it("honors explicit contextWindow and maxTokens overrides", () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "ollama",
+      model: "some-self-hosted-model",
+      apiToken: "",
+      apiUrl: "http://my-ollama:11434",
+      contextWindow: 262144,
+      maxTokens: 32768,
+    }, INITIATOR);
+
+    expect(handle.model.contextWindow).toBe(262144);
+    expect(handle.model.maxTokens).toBe(32768);
+  });
+
+  it("lets an override win over a catalogued model's own limits", () => {
+    // The override is not ollama-specific: a proxy in front of a known provider may impose
+    // limits that differ from the catalog, and the user's value must take precedence.
+    const catalogued = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      apiToken: "token",
+    }, INITIATOR);
+    const overridden = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      apiToken: "token",
+      contextWindow: 12345,
+      maxTokens: 678,
+    }, INITIATOR);
+
+    expect(overridden.model.contextWindow).toBe(12345);
+    expect(overridden.model.maxTokens).toBe(678);
+    expect(catalogued.model.contextWindow).not.toBe(12345);
+  });
+
   it("sends no Authorization header for an Ollama config without an API key", async () => {
     // An empty token means local auth: a strict local proxy may reject an unexpected bearer
     // token, so no Authorization header is sent at all (matching the pre-pi provider).

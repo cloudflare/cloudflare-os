@@ -1170,6 +1170,22 @@ export type AiModelConfig = {
    * alternative provider that provides a compatible API.
    */
   apiUrl?: string;
+
+  /**
+   * Context window, in tokens. Optional override for self-hosted models, which have no catalog
+   * entry: without it such models fall back to a conservative default that rarely matches what
+   * the server actually serves. Compaction budgets are computed from this, so a value larger
+   * than the server's real window causes requests to be rejected once history grows, while a
+   * smaller one silently wastes the window.
+   */
+  contextWindow?: number;
+
+  /**
+   * Maximum output tokens per response. Optional override, for the same reason as
+   * `contextWindow`. Reasoning models in particular need far more than the default, since
+   * thinking tokens count against this limit.
+   */
+  maxTokens?: number;
 };
 
 /**

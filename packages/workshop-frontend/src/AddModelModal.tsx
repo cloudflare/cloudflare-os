@@ -102,6 +102,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const [apiToken, setApiToken] = useState('')
   const [accountId, setAccountId] = useState('')
   const [apiUrl, setApiUrl] = useState('')
+  const [contextWindow, setContextWindow] = useState('')
+  const [maxTokens, setMaxTokens] = useState('')
 
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -124,6 +126,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       setApiToken('')
       setAccountId('')
       setApiUrl('')
+      setContextWindow('')
+      setMaxTokens('')
       setErrors({})
       setAdvancedOpen(false)
     }
@@ -175,6 +179,16 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       newErrors.apiUrl = 'Please enter the Ollama API URL'
     }
 
+    // Both overrides are optional, but a supplied value must be a positive integer -- a bad
+    // value here would otherwise surface much later as a confusing provider-side rejection.
+    for (const [field, raw] of [['contextWindow', contextWindow], ['maxTokens', maxTokens]] as const) {
+      if (!raw.trim()) continue
+      const parsed = Number(raw)
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        newErrors[field] = 'Please enter a positive whole number of tokens'
+      }
+    }
+
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
   }
@@ -200,6 +214,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
         apiToken: gatewayMode ? '' : apiToken.trim(),
         ...(!gatewayMode && accountId.trim() && { accountId: accountId.trim() }),
         ...(!gatewayMode && apiUrl.trim() && { apiUrl: apiUrl.trim() }),
+        ...(contextWindow.trim() && { contextWindow: Number(contextWindow) }),
+        ...(maxTokens.trim() && { maxTokens: Number(maxTokens) }),
       }
 
       await authenticatedApi.addModel(profile, config)
@@ -340,19 +356,46 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
           )}
 
           {/* Advanced Settings for non-Ollama, non-Cloudflare providers */}
-          {showCredentials && selection && !isOllama && !isCloudflare && (
+          {showCredentials && selection && (
             <Collapsible.Root
               open={advancedOpen}
               onOpenChange={setAdvancedOpen}
             >
               <Collapsible.DefaultTrigger>Advanced Settings</Collapsible.DefaultTrigger>
               <Collapsible.DefaultPanel>
+                {!isOllama && !isCloudflare && (
+                  <Input
+                    label="API URL"
+                    placeholder="https://..."
+                    description="Override the default API endpoint (useful for proxies like Cloudflare AI Gateway)"
+                    value={apiUrl}
+                    onChange={(e) => setApiUrl(e.target.value)}
+                  />
+                )}
                 <Input
-                  label="API URL"
-                  placeholder="https://..."
-                  description="Override the default API endpoint (useful for proxies like Cloudflare AI Gateway)"
-                  value={apiUrl}
-                  onChange={(e) => setApiUrl(e.target.value)}
+                  label="Context Window"
+                  placeholder="e.g., 262144"
+                  description={
+                    'Tokens of context the model supports. Leave blank to infer it. Self-hosted ' +
+                    'models have no catalog entry, so inference falls back to a conservative ' +
+                    'default that rarely matches the server -- set it to what your server serves.'
+                  }
+                  value={contextWindow}
+                  onChange={(e) => { setContextWindow(e.target.value); setErrors(prev => ({ ...prev, contextWindow: '' })) }}
+                  error={errors.contextWindow}
+                  variant={errors.contextWindow ? 'error' : 'default'}
+                />
+                <Input
+                  label="Max Output Tokens"
+                  placeholder="e.g., 32768"
+                  description={
+                    'Most tokens the model may emit per response. Leave blank to infer it. ' +
+                    'Reasoning models need a high limit, because thinking tokens count towards it.'
+                  }
+                  value={maxTokens}
+                  onChange={(e) => { setMaxTokens(e.target.value); setErrors(prev => ({ ...prev, maxTokens: '' })) }}
+                  error={errors.maxTokens}
+                  variant={errors.maxTokens ? 'error' : 'default'}
                 />
               </Collapsible.DefaultPanel>
             </Collapsible.Root>

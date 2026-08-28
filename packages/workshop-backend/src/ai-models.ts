@@ -144,9 +144,14 @@ function catalogModel(provider: AiModelConfig["provider"], modelId: string): Mod
 function modelTokenWindow(config: AiModelConfig, catalog: Model<Api> | undefined)
     : { contextWindow: number, maxTokens: number } {
   const suggested = SUGGESTED_MODELS[config.provider]?.[config.model];
+  // An explicit per-model override wins over every inferred source. Self-hosted models reached
+  // through the ollama provider have no catalog entry and no SUGGESTED_MODELS row, so without
+  // this they always land on the defaults below regardless of what the server really serves.
   return {
-    contextWindow: suggested?.contextWindow ?? catalog?.contextWindow ?? 128_000,
-    maxTokens: suggested?.outputLimit ??
+    contextWindow: config.contextWindow ??
+        suggested?.contextWindow ?? catalog?.contextWindow ?? 128_000,
+    maxTokens: config.maxTokens ??
+        suggested?.outputLimit ??
         (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined) ??
         catalog?.maxTokens ?? 4096,
   };
