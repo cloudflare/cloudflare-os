@@ -495,8 +495,8 @@ describe("restarting sessions when verification scope widens", () => {
     expect(restarts).toEqual([]);
   }));
 
-  // A pre-creationSpec record, which observerVendorId() refuses to classify: sharing anything
-  // that reaches it requires the owner to reconnect it first.
+  // A pre-creationSpec record, which observerVendorId() refuses to classify: nobody can be
+  // verified against it, so sharing anything that reaches it requires the owner to remove it first.
   function seedLegacyGatekeeper(impl: any, id: number): void {
     impl.storage.gatekeepers.put({ id, resourceTitle: `Legacy ${id}`, class: {} as any });
   }
@@ -518,8 +518,8 @@ describe("restarting sessions when verification scope widens", () => {
     seedLegacyGatekeeper(impl, 1);
 
     // "Build" scope is everything, so the record is in scope and the intended fail-closed error
-    // still fires: the owner must reconnect it before the workspace can be shared at that level.
-    expect(() => impl.listObserverRequirements("build")).toThrow(/reconnected/);
+    // still fires: the owner must remove it before the workspace can be shared at that level.
+    expect(() => impl.listObserverRequirements("build")).toThrow(/cannot verify collaborators/);
   }));
 
   it("...and still blocks a use collaborator once a gadget binds it",
@@ -530,7 +530,7 @@ describe("restarting sessions when verification scope widens", () => {
     // Bound, the record is genuinely in "use" scope, and verification can't proceed without
     // knowing what to verify against -- same fail-closed refusal as "build".
     impl.bindWorkpiece(100, "DB", 1);
-    expect(() => impl.listObserverRequirements("use")).toThrow(/reconnected/);
+    expect(() => impl.listObserverRequirements("use")).toThrow(/cannot verify collaborators/);
   }));
 
   it("binding a legacy connection restarts a connected use collaborator and quarantines it",
@@ -542,7 +542,8 @@ describe("restarting sessions when verification scope widens", () => {
     // A legacy record has no vendor, so nobody CAN be verified against it -- but that must make
     // it count on the widening diff, not vanish from both sides of it: binding it is still the
     // moment live use sessions gain a route to it. The restart severs them and the quarantine
-    // holds until the reset; fresh use opens then fail closed (/reconnected/, above).
+    // holds until the reset; fresh use opens then fail closed (/cannot verify collaborators/,
+    // above).
     impl.bindWorkpiece(100, "DB", 1);
 
     expect(restarts).toHaveLength(1);
