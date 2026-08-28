@@ -11,6 +11,7 @@
     "./credential-expiry": "./src/credential-expiry.ts",
     "./endpoint": "./src/endpoint.ts",
     "./http-errors": "./src/http-errors.ts",
+    "./observers": "./src/observers.ts",
     "./response-body": "./src/response-body.ts",
     "./simulation": "./src/simulation.ts"
   },
