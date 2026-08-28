@@ -12,6 +12,7 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
+import { openFakeOverseer } from "./fixtures.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -103,6 +104,40 @@ describe("restarting sessions when verification scope widens", () => {
     await impl.addGatekeeper({} as any, CONNECTION_SPEC);
     await settle();
 
+    expect(restarts).toHaveLength(1);
+  }));
+
+  it("a connection under construction is unreachable until the restart is scheduled",
+      () => withImpl(async (impl, restarts) => {
+    addCollaborator(impl);
+    let releaseDescribe!: () => void;
+    let describing = new Promise<void>(resolve => { releaseDescribe = resolve; });
+    impl.getGatekeeperFacet = () => ({
+      describe: async () => {
+        await describing;
+        return { title: "Test", url: "https://example.com/new" };
+      },
+    });
+    // A "build" client interface over this DO's real gatekeeper table, which is all
+    // getGatekeeperById consults.
+    let client = await openFakeOverseer({ gatekeepers: impl.storage.gatekeepers });
+
+    // Ids are allocated sequentially, so a client can simply guess the next one.
+    let id = impl.storage.nextGatekeeperId.get();
+    let added = impl.addGatekeeper({} as any, CONNECTION_SPEC);
+    await settle();
+
+    // The DO's input gate is open across describe(), so a live build session gets a turn here --
+    // before #restartIfShared has severed it. Nothing is published for it to find.
+    expect(impl.storage.gatekeepers.get(id)).toBeUndefined();
+    await expect(client.getGatekeeperById(id)).rejects.toThrow(/No such gatekeeper id/);
+    expect(restarts).toEqual([]);
+
+    releaseDescribe();
+    await added;
+    await settle();
+
+    expect(impl.storage.gatekeepers.get(id).resourceTitle).toBe("Test");
     expect(restarts).toHaveLength(1);
   }));
 

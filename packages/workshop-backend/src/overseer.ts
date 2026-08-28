@@ -5100,13 +5100,15 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  getGatekeeperFacet(id: number): Fetcher<Gatekeeper<any>> {
+  // `cls` is for the one caller that has the class in hand but has deliberately not published the
+  // record yet (`addGatekeeper`); everyone else resolves it from the record.
+  getGatekeeperFacet(id: number, cls?: GatekeeperClass): Fetcher<Gatekeeper<any>> {
     return this.ctx.facets.get(`gatekeeper${id}`, async () => {
-      let cls = this.storage.gatekeepers.get(id)?.class;
-      if (!cls) {
+      let resolved = cls ?? this.storage.gatekeepers.get(id)?.class;
+      if (!resolved) {
         throw new Error("no such gatekeeper?");
       }
-      return {class: cls};
+      return {class: resolved};
     });
   }
 
@@ -5211,9 +5213,14 @@ class OverseerImpl implements AgentHooks {
       class: cls,
       creationSpec,
     };
-    this.storage.gatekeepers.put(gatekeeperRecord);
 
-    let facet = this.getGatekeeperFacet(id);
+    // The record is published only once, below, after describe() resolves -- the facet takes the
+    // class directly so it needs no record to exist yet. Publishing it before the await instead
+    // would expose the connection for as long as describe() takes, which is entirely before
+    // #restartIfShared severs the sessions that were never verified against it: the DO's input gate
+    // is open across the await, ids are allocated sequentially, so a live build session can guess
+    // this one, and getGatekeeperById (OverseerClientInterface) gates on nothing but existence.
+    let facet = this.getGatekeeperFacet(id, cls);
     try {
       let description = await facet.describe();
       gatekeeperRecord.resourceTitle = description.title;
@@ -5221,6 +5228,8 @@ class OverseerImpl implements AgentHooks {
       gatekeeperRecord.hasSlashCommands = description.hasSlashCommands;
       this.storage.gatekeepers.put(gatekeeperRecord);
     } catch (error) {
+      // Still the right teardown with nothing published: it deletes the facet we just created, and
+      // deleting an unwritten record is a no-op.
       this.removeGatekeeper(id);
       throw error;
     }
