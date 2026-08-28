@@ -38,9 +38,10 @@ const SUPPORTED_RESOURCES: SupportedResource[] = [{
 }];
 
 const TYPES_CODE = `
-/** A stand-in resource whose one read is deterministic and audited. */
+/** A stand-in resource whose reads and writes are deterministic and audited. */
 interface TestThing {
   readValue(): Promise<number>;
+  writeValue(value: number): Promise<number>;
 }
 `;
 
@@ -64,6 +65,14 @@ type VerifyOutcome = { allow: true } | { allow: false; reason: string };
  * also pins the add/remove ordering.
  */
 type ObserverEvent = { resourceUrl: string; type: "add" | "remove"; id: string };
+
+type PendingTestAction = { id: number; value: number };
+type TestActionState = {
+  nextId: number;
+  pending: PendingTestAction[];
+  value?: number;
+  applyCount: number;
+};
 
 function outcomeKey(label: string, resourceUrl?: string): string {
   return resourceUrl ? `outcome:${label}:${resourceUrl}` : `outcome:${label}`;
@@ -101,6 +110,38 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
 
   getAmbientVerificationCount(label: string): number {
     return this.ctx.storage.kv.get<number>(`ambient-verifications:${label}`) ?? 0;
+  }
+
+  getActionState(label: string): TestActionState {
+    return this.ctx.storage.kv.get<TestActionState>(`actions:${label}`) ?? {
+      nextId: 1,
+      pending: [],
+      applyCount: 0,
+    };
+  }
+
+  stageAction(label: string, value: number): number {
+    const state = this.getActionState(label);
+    const id = state.nextId++;
+    state.pending.push({ id, value });
+    this.ctx.storage.kv.put(`actions:${label}`, state);
+    return id;
+  }
+
+  discardAction(label: string, id: number): void {
+    const state = this.getActionState(label);
+    state.pending = state.pending.filter(action => action.id !== id);
+    this.ctx.storage.kv.put(`actions:${label}`, state);
+  }
+
+  applyAction(label: string, id: number): void {
+    const state = this.getActionState(label);
+    const action = state.pending.find(candidate => candidate.id === id);
+    if (action === undefined) throw new Error(`Unknown pending test action ${id}`);
+    state.pending = state.pending.filter(candidate => candidate.id !== id);
+    state.value = action.value;
+    state.applyCount++;
+    this.ctx.storage.kv.put(`actions:${label}`, state);
   }
 }
 
@@ -247,21 +288,43 @@ export class TestVerifier
 
 export interface TestSession {
   readValue(): Promise<number>;
+  writeValue(value: number): Promise<number>;
 }
 
 class TestSessionTarget extends RpcTarget implements TestSession {
   private readonly approvalQueue: RpcStub<ApprovalQueue>;
 
-  constructor(approvalQueue: RpcStub<ApprovalQueue>) {
+  constructor(
+      approvalQueue: RpcStub<ApprovalQueue>,
+      private readonly state: DurableObjectStub<TestControl>,
+      private readonly label: string) {
     super();
     this.approvalQueue = approvalQueue.dup();
   }
+
   async readValue(): Promise<number> {
     await this.approvalQueue.authorizeObservation({
       title: "Read the test value",
       description: "Read the deterministic value exposed by the integration-test gatekeeper.",
     });
     return 42;
+  }
+
+  async writeValue(value: number): Promise<number> {
+    const id = await this.state.stageAction(this.label, value);
+    try {
+      await this.approvalQueue.submitAction(id, {
+        title: `Set the test value to ${value}`,
+        description: `Set the deterministic integration-test value to **${value}**.`,
+        implementsRevert: false,
+        awaitDecision: true,
+        actionKind: { tag: "set-value", label: "Set value" },
+      });
+      return id;
+    } catch (error) {
+      await this.state.discardAction(this.label, id);
+      throw error;
+    }
   }
 
   [Symbol.dispose](): void {
@@ -301,7 +364,8 @@ export class TestGatekeeper
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<TestSession> {
-    return new TestSessionTarget(approvalQueue);
+    return new TestSessionTarget(
+        approvalQueue, control(this.ctx.exports), this.ctx.props.label);
   }
 
   /**
@@ -330,14 +394,16 @@ export class TestGatekeeper
         { resourceUrl: this.ctx.props.resourceUrl, type: "remove", id });
   }
 
-  async applyAction(_action: number): Promise<void> {
-    throw new Error("The test gatekeeper submits no actions.");
+  async applyAction(action: number): Promise<void> {
+    await control(this.ctx.exports).applyAction(this.ctx.props.label, action);
   }
 
-  async rejectAction(_action: number): Promise<void> {}
+  async rejectAction(action: number): Promise<void> {
+    await control(this.ctx.exports).discardAction(this.ctx.props.label, action);
+  }
 
   async revertAction(_action: number): Promise<void> {
-    throw new Error("The test gatekeeper submits no actions.");
+    throw new Error("Test actions do not support revert.");
   }
 }
 
@@ -413,6 +479,17 @@ export default {
       const { label } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
       return Response.json({ count: await control(ctx.exports).getAmbientVerificationCount(label) });
+    }
+
+    if (url.pathname === "/control/action-state" && req.method === "POST") {
+      const { label } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      const state = await control(ctx.exports).getActionState(label);
+      return Response.json({
+        pending: state.pending,
+        value: state.value,
+        applyCount: state.applyCount,
+      });
     }
 
     // Make this Worker issue a subrequest, so a test can prove that Worker-originated fetches really
