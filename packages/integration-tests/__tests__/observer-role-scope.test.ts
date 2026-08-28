@@ -5,10 +5,10 @@
 // that widening restarts the workspace: each client's next open re-verifies against the new scope.
 // The external-message gate's role scoping is covered by external-message-verification.test.ts.
 //
-// This lives in its own file -- with its own harness, like every suite here -- and stays small on
-// purpose: a DO abort makes the shared local harness briefly drop unrelated in-flight requests, so
-// the concurrent tests of any suite that restarts a workspace pass on their current timing, and
-// growing the file re-rolls those dice.
+// This lives in its own file -- with its own harness, like every suite here -- rather than in
+// sensitive-observations.test.ts, because both suites restart the workspace, and a DO abort makes
+// the shared local harness briefly drop unrelated in-flight requests; their concurrent tests pass
+// with their current timing, but growing either file re-rolls those dice.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
@@ -151,8 +151,9 @@ describe("role-scoped observer enforcement", () => {
       }
 
       // Carol holds no coverage for the connection and never will while it stays unbound, but that
-      // is enforced against her open, not against the owner's own use of the connection.
-      await expect(ws.session.readThing()).resolves.toContain("use-scope");
+      // is enforced against her open, not against the owner's reads: this restricted read goes
+      // through.
+      await expect(ws.session.readThing(true)).resolves.toContain("use-scope");
 
       // Binding the connection to a gadget (pure storage writes; no gadget code runs) brings it
       // into "use" scope. That widens what Carol's live session must be verified against, and a
@@ -162,9 +163,9 @@ describe("role-scoped observer enforcement", () => {
 
       const reopened = await reopenAfterRestart(ws);
       try {
-        // The owner is back on the workspace with a working session: the restart is a re-open for
-        // everyone, not a lockout.
-        await expect(reopened.session.readThing()).resolves.toContain("use-scope");
+        // The owner's restricted read is undisturbed by the widening: nothing about Carol's
+        // coverage gates it.
+        await expect(reopened.session.readThing(true)).resolves.toContain("use-scope");
 
         // Carol's forced re-open is where the newly in-scope connection gets verified, and she is
         // asked about exactly it -- the one connection her role's scope just gained.

@@ -96,27 +96,6 @@ describe("authorization", () => {
     expect(mgr.getEffectiveRole("a")).toBe("use");
     expect(mgr.getEffectiveRole("b")).toBe("build");
   });
-
-  it("hasAnyShares reflects current reachability, not table membership", () => {
-    let { storage, mgr } = makeManager();
-    expect(mgr.hasAnyShares()).toBe(false);
-
-    // An active share link counts as a share.
-    seedLink(storage, "k1", OWNER);
-    expect(mgr.hasAnyShares()).toBe(true);
-
-    // A revoked link does not.
-    storage.shareKeys.put({ id: "k1", created: new Date(), createdBy: OWNER, revoked: true });
-    expect(mgr.hasAnyShares()).toBe(false);
-
-    // A reachable collaborator counts.
-    seedCollaborator(storage, "a", [userEdge(OWNER)]);
-    expect(mgr.hasAnyShares()).toBe(true);
-
-    // A collaborator whose record lingers but is unreachable does not.
-    storage.collaborators.put({ profile: profile("a"), addedBy: [] });
-    expect(mgr.hasAnyShares()).toBe(false);
-  });
 });
 
 describe("redeemShareKey", () => {
@@ -189,6 +168,52 @@ describe("redeemShareKey", () => {
       fetchProfile: async () => profile("a"),
     });
     expect(storage.collaborators.get("a")).toBeUndefined();
+  });
+
+  it("a throwing assertGrantAllowed rejects a new recipient with nothing persisted", async () => {
+    let { storage, mgr } = makeManager();
+    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
+
+    await expect(mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+      assertGrantAllowed: () => { throw new Error("sharing is closed"); },
+    })).rejects.toThrow(/sharing is closed/);
+
+    // No collaborator record and no edge were written.
+    expect(storage.collaborators.get("a")).toBeUndefined();
+  });
+
+  it("does not invoke assertGrantAllowed for an already-existing edge", async () => {
+    let { mgr } = makeManager();
+    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+    });
+
+    // An existing edge is an existing grant, not a new one: the redemption stays a no-op even
+    // when policy forbids new sharing (a collaborator re-opening with a retained key).
+    await expect(mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+      assertGrantAllowed: () => { throw new Error("sharing is closed"); },
+    })).resolves.toBeUndefined();
+    expect(mgr.getEffectiveRole("a")).toBe("build");
+  });
+
+  it("invokes a passing assertGrantAllowed once and writes the edge", async () => {
+    let { storage, mgr } = makeManager();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+
+    let calls = 0;
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
+      assertGrantAllowed: () => { calls++; },
+    });
+
+    expect(calls).toBe(1);
+    expect(storage.collaborators.get("a")!.addedBy).toEqual([
+      expect.objectContaining({ type: "shareKey", keyId: linkId }),
+    ]);
+    expect(mgr.getEffectiveRole("a")).toBe("build");
   });
 });
 
@@ -501,6 +526,26 @@ describe("createShareLink", () => {
     expect(() => mgr.createShareLink({ caller: collab("a"), role: "build" }))
         .rejects.toThrow(/higher than your own/);
   });
+
+  it("a throwing assertGrantAllowed aborts with nothing persisted", async () => {
+    let { storage, mgr } = makeManager();
+    await expect(mgr.createShareLink({
+      caller: owner, role: "build",
+      assertGrantAllowed: () => { throw new Error("sharing is closed"); },
+    })).rejects.toThrow(/sharing is closed/);
+    // The minted key was discarded, never stored.
+    expect([...storage.shareKeys.list()]).toEqual([]);
+  });
+
+  it("invokes assertGrantAllowed once and persists the grant when it passes", async () => {
+    let { mgr } = makeManager();
+    let calls = 0;
+    let { linkId } = await mgr.createShareLink({
+      caller: owner, role: "use", assertGrantAllowed: () => { calls++; },
+    });
+    expect(calls).toBe(1);
+    expect(mgr.listShareLinkRecords().map(r => r.id)).toEqual([linkId]);
+  });
 });
 
 describe("newShareLinkKey", () => {
@@ -560,6 +605,23 @@ describe("newShareLinkKey", () => {
     seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
     expect(mgr.newShareLinkKey({ caller: collab("a"), linkId: "k1" }))
         .rejects.toThrow(/higher than your own/);
+  });
+
+  it("a throwing assertGrantAllowed aborts the copy with nothing persisted", async () => {
+    let { storage, mgr } = makeManager();
+    let { linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+
+    await expect(mgr.newShareLinkKey({
+      caller: owner, linkId,
+      assertGrantAllowed: () => { throw new Error("sharing is closed"); },
+    })).rejects.toThrow(/sharing is closed/);
+    // Only the original link record remains; the aborted copy's key was never stored.
+    expect([...storage.shareKeys.list()].map(r => r.id)).toEqual([linkId]);
+
+    let calls = 0;
+    await mgr.newShareLinkKey({ caller: owner, linkId, assertGrantAllowed: () => { calls++; } });
+    expect(calls).toBe(1);
+    expect([...storage.shareKeys.list()]).toHaveLength(2);
   });
 
   it("cannot manage a link through the id of one of its copies", async () => {

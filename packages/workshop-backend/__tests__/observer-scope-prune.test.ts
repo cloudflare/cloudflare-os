@@ -145,7 +145,6 @@ describe("ensureObserver out-of-scope coverage pruning", () => {
       // Alice opens during the unbound window: gatekeeper 2 is out of her scope, so this open
       // verifies nothing against it -- and prunes her stale entry.
       await impl.ensureObserver("alice", fakeClientUser, "use");
-
       expect(verified).toEqual([1]);
       expect(impl.storage.observers.get("alice").accountChoices).toEqual({ 1: 10 });
 
