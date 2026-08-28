@@ -86,7 +86,11 @@ export async function openFakeOverseer(
       joinOutputsFanout: () => () => {},
       ensureObserver: async () => {},
       syncOutputsTo: async () => {},
-      getSharingManager: async () => ({ getEffectiveRole: () => role }),
+      // What open() consults for a non-owner's role: the permission-graph lookup and observer
+      // verification in one. The sharing manager is still reached, but only to redeem a share key,
+      // which these tests never pass.
+      authorizeCollaborator: async () => role,
+      getSharingManager: async () => ({}),
       ctx: { id: { toString: () => "workspace-id" }, exports: opts.exports ?? {} },
       users: {
         idFromString: (id: string) => id,

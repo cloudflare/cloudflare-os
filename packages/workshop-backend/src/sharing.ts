@@ -15,18 +15,20 @@
 // re-adding a removed collaborator restores them and, transitively, everyone they had shared with.
 // (Records and revoked keys accumulate in storage; a future GC could reclaim long-dead entries.)
 //
-// NOTE: The `prohibitAllSharing` policy flag intentionally does NOT live here. It is a broader
-// "is this gadget allowed to communicate with anyone other than the owner?" policy (it also
-// gates gatekeeper writes and web fetches) and is expected to grow into a separate policy engine.
-// The Overseer enforces that flag; this module only exposes `hasAnyShares()` so the policy can
-// ask about the current sharing state.
+// NOTE: The sensitive-data (`containsRestrictedData`) policy intentionally does NOT live here.
+// It is a broader "what may this gadget do after reading restricted data?" policy (it gates
+// gatekeeper writes and web fetches, and requires per-gatekeeper observer verification of
+// collaborators) and is expected to grow into a separate policy engine. The Overseer enforces
+// it; this module only answers questions about the sharing graph.
 
 import { AiChatAuthorInfo, CollaboratorInfo, PermissionEdge, CollaboratorRole, AffectedCollaborator }
     from "@gadgets/workshop-shared/api";
 import { Collection, NonUniqueIndex } from "@gadgets/typed-storage";
 
-// Roles are totally ordered: build > use. Higher rank means strictly more access.
-function roleRank(role: CollaboratorRole): number {
+/**
+ * Roles are totally ordered: build > use. Higher rank means strictly more access.
+ */
+export function roleRank(role: CollaboratorRole): number {
   return role === "build" ? 2 : 1;
 }
 
@@ -156,26 +158,6 @@ export class SharingManager {
    */
   constructor(private storage: SharingStorage, private ownerProfileId: string) {}
 
-  // ---------------------------------------------------------------------------------------
-  // Sharing-state queries
-
-  /**
-   * True if anyone other than the owner can currently access the gadget. Used by the Overseer's
-   * `prohibitAllSharing` policy to decide whether a sensitive observation must be blocked.
-   *
-   * Because removed collaborators and revoked links linger in storage (the lazy revocation model;
-   * see the module header and removeCollaborator/revokeShareLink), this must reflect *current*
-   * reachability, not mere table membership: a collaborator with a live path from the owner, or
-   * an un-revoked share link whose keys anyone could still redeem.
-   */
-  hasAnyShares(): boolean {
-    if (this.computeEffectiveRoles().size > 0) return true;
-    for (let link of this.#listLinks()) {
-      if (!link.revoked) return true;
-    }
-    return false;
-  }
-
   // Every share link, revoked or not. Aliases are skipped.
   *#listLinks(): Generator<ShareLinkRecord> {
     for (let record of this.storage.shareKeys.list()) {
@@ -215,11 +197,21 @@ export class SharingManager {
    * collaborators are redeemed without any RPC.
    *
    * A key whose link is revoked behaves like an unknown key (it cannot be redeemed).
+   *
+   * TODO: Redemption is one-step: the edge written here is real before the redeeming open()'s
+   * observer verification runs. Two accepted consequences, both fail-closed (availability, not
+   * confidentiality): an unverified redeemer is a current collaborator, so restricted reads
+   * block from redemption until they verify (or are removed, or the link is revoked); and a
+   * recipient whose verification is refused keeps the edge -- visible in listCollaborators,
+   * blocking restricted reads until removed. Two-phase redemption (a pending edge that grants
+   * nothing until verification confirms it) is the planned fix for both.
    */
   async redeemShareKey(opts: {
     rawKey: string;
     profileId: string;
     fetchProfile: () => Promise<AiChatAuthorInfo>;
+    /** See createShareLink: run synchronously with the put, a throw persists nothing. */
+    assertGrantAllowed?: () => void;
   }): Promise<void> {
     let hash = await hashShareKey(opts.rawKey);
     let keyRecord = this.storage.shareKeys.get(hash);
@@ -236,10 +228,12 @@ export class SharingManager {
     let existing = this.storage.collaborators.get(opts.profileId);
     if (existing) {
       // User is already a collaborator. Only add an edge if they don't already have one for this
-      // link (redeeming a second key of the same link is a no-op).
+      // link (redeeming a second key of the same link is a no-op, so no new grant and no policy
+      // check).
       let alreadyHasEdge = existing.addedBy.some(
           e => e.type === "shareKey" && e.keyId === linkId);
       if (!alreadyHasEdge) {
+        opts.assertGrantAllowed?.();
         existing.addedBy.push({
           type: "shareKey",
           keyId: linkId,
@@ -251,6 +245,7 @@ export class SharingManager {
     } else {
       // New collaborator -- need full profile from their user DO.
       let profile = await opts.fetchProfile();
+      opts.assertGrantAllowed?.();
       this.storage.collaborators.put({
         profile,
         addedBy: [{
@@ -288,8 +283,8 @@ export class SharingManager {
 
   /**
    * Add a collaborator with a `user` edge from the caller, granting `role`. The caller is
-   * responsible for resolving `profile` (via RPC) and for any policy checks (e.g.
-   * `prohibitAllSharing`). The caller may not grant a role higher than their own effective role.
+   * responsible for resolving `profile` (via RPC) and for any policy checks. The caller may not
+   * grant a role higher than their own effective role.
    */
   addCollaborator(opts: {
     caller: SharingCaller;
@@ -432,7 +427,16 @@ export class SharingManager {
   }
 
   async createShareLink(
-      opts: { caller: SharingCaller; role: CollaboratorRole; note?: string })
+      opts: {
+        caller: SharingCaller;
+        role: CollaboratorRole;
+        note?: string;
+        /**
+         * Optional policy check invoked synchronously with the grant's storage write, after
+         * every await, so a policy change cannot slip between check and grant.
+         */
+        assertGrantAllowed?: () => void;
+      })
       : Promise<{ key: string; linkId: string }> {
     let callerRole = this.#requireCallerRole(opts.caller);
     if (roleRank(opts.role) > roleRank(callerRole)) {
@@ -441,6 +445,7 @@ export class SharingManager {
 
     // The link is stored as its first key: the record is keyed by that key's hash.
     let { key, hash } = await this.#mintKey();
+    opts.assertGrantAllowed?.();
     this.storage.shareKeys.put({
       id: hash,
       note: opts.note,
@@ -452,7 +457,12 @@ export class SharingManager {
   }
 
   /** Mints another key for an existing link. */
-  async newShareLinkKey(opts: { caller: SharingCaller; linkId: string }): Promise<{ key: string }> {
+  async newShareLinkKey(opts: {
+    caller: SharingCaller;
+    linkId: string;
+    /** See createShareLink: run synchronously with the put, a throw persists nothing. */
+    assertGrantAllowed?: () => void;
+  }): Promise<{ key: string }> {
     let link = this.#requireLink(opts.linkId);
     if (link.revoked) {
       throw new Error("Share link not found.");
@@ -467,6 +477,7 @@ export class SharingManager {
     }
 
     let { key, hash } = await this.#mintKey();
+    opts.assertGrantAllowed?.();
     this.storage.shareKeys.put({ id: hash, alias: link.id });
     return { key };
   }

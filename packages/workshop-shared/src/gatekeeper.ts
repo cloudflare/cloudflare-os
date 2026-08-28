@@ -1070,21 +1070,28 @@ export type ObservationDescription = {
   //   can help detect situations where the gadget could leak information.
 
   /**
-   * If true, then this observation contains sensitive information that MUST NOT be shared with
-   * ANYONE except the account owner. This means:
-   * - If the gadget is shared already, authorizeObservation() must throw an exception to block
-   *   the observation.
-   * - All future sharing of the gadget is prohibited.
-   * - Once observed, the gadget goes into "lockdown mode" where it can no longer perform any
-   *   actions, only make observations. This prevents the gadget from leaking data through other
-   *   gatekeepers.
+   * If true, then this observation contains sensitive information that must only be shown to
+   * people who are verified to have access to the same data. This means:
+   * - Access to the gadget is conditioned on verification: every collaborator passed this
+   *   gatekeeper's `addObserver()` at their most recent open and cannot open without passing it,
+   *   so a gatekeeper whose `addObserver()` always throws is unshareable once it has made one of
+   *   these observations. Anything that widens what a collaborator must be verified against --
+   *   adding a connection, binding one into a gadget -- restarts the workspace, so every live
+   *   session re-opens and re-verifies against the new scope.
+   * - Once observed, the gadget enters a restricted mode: no more actions or public-web fetches,
+   *   only observations, so the gadget cannot leak the data through other gatekeepers.
    *
-   * TODO(someday): This was added as a stopgap in order to be able to make certain sensitive data
-   *   sources available to internal users. In the longer-term, it should be possible to share
-   *   sensitive data as long as the recipients also have access to that same data, but this
-   *   requires a more complex policy framework to compute.
+   * Two limits are worth stating plainly. Verification is held to the collaborator's role scope,
+   * so a gatekeeper the agent reads only through a chat binding is in no "use" collaborator's
+   * scope and they are never verified against it. And enforcement is at admission rather than at
+   * each read, so a session whose holder should no longer be admitted is severed within ~100ms of
+   * the change rather than instantaneously.
+   *
+   * TODO(someday): The restricted mode is a blunt instrument. It should be possible to perform
+   *   actions whose visibility is limited to people verified to have access to the same data,
+   *   but this requires a more complex policy framework to compute.
    */
-  prohibitAllSharing?: boolean;
+  containsRestrictedData?: boolean;
 
   /**
    * If present, then this observation includes data that must not be revealed to the given

@@ -172,6 +172,15 @@ async function bobOpens(
   }
 }
 
+// A denied re-verification scrubs the account choice it just failed against, so the overseer
+// severs every session on the workspace -- Bob may hold others that opened while that choice still
+// verified him. The sever is a ctx.abort() ~100ms after the open rejects, i.e. after the test body
+// has returned. Wait it out before withSession() drops the connection: an abort that lands with no
+// client left on the workspace crashes the local workerd, and these tests share one harness, so the
+// crash fails whichever siblings are mid-flight rather than this test.
+const RESTART_SETTLE_MS = 400;
+const settleRestart = () => new Promise(resolve => setTimeout(resolve, RESTART_SETTLE_MS));
+
 /** Open once and answer the prompt, which is what persists Bob's account choice. */
 async function bobOpensAndCloses(shared: SharedGadget): Promise<ObserverConfigRecorder> {
   const recorder =
@@ -272,6 +281,7 @@ describe("observer re-verification", () => {
       expect(need.failure).toBeDefined();
       expect(need.failure!.accountId).toBe(shared.bobAccount.id);
       expect(need.failure!.reason).toContain(EXPIRED_REASON);
+      await settleRestart();
     });
   });
 
@@ -295,6 +305,7 @@ describe("observer re-verification", () => {
       expect(error!.message).toContain(EXPIRED_REASON);
       // One line per failed binding, so a single failure must not introduce stray newlines.
       expect(error!.message.split("\n").filter(l => l.includes(shared.bobLabel))).toHaveLength(1);
+      await settleRestart();
     });
   });
 
@@ -326,6 +337,7 @@ describe("observer re-verification", () => {
       expect(error!.message).toContain("Test Thing multi-a");
       expect(error!.message).toContain("Test Thing multi-b");
       expect(error!.message.split("\n").filter(l => l.includes(shared.bobLabel))).toHaveLength(2);
+      await settleRestart();
     });
   });
 
@@ -362,6 +374,7 @@ describe("observer re-verification", () => {
       expect(events.filter(e => e.type === "remove")).toEqual([]);
       // Both successful verifications registered it: the first open and the pass-2 repair.
       expect(events.filter(e => e.type === "add")).toHaveLength(2);
+      await settleRestart();
     });
   });
 
@@ -382,6 +395,7 @@ describe("observer re-verification", () => {
       expect(error).not.toBeNull();
       expect(error!.message).toMatch(/could not confirm/i);
       expect(error!.message).toContain(DENIED_REASON);
+      await settleRestart();
     });
   });
 });

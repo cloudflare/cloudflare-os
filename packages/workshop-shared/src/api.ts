@@ -1258,10 +1258,12 @@ export type GadgetMetadata = {
   role?: CollaboratorRole;
 
   /**
-   * True when the gadget has observed data marked as share-prohibited. Such gadgets can no longer
-   * be shared with additional users or links.
+   * True when the gadget has observed data marked as containing restricted data (see
+   * `ObservationDescription.containsRestrictedData`). Such gadgets can still be shared, but
+   * collaborators must be verified (per gatekeeper) to have access to the same data, and the
+   * workspace can no longer perform actions or fetch from the public web.
    */
-  sharingProhibited?: boolean;
+  containsRestrictedData?: boolean;
 
   /**
    * Various objects in the API specify a gadgetId, but make the property optional. When omitted,
