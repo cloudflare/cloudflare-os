@@ -22,8 +22,9 @@ import type { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudf
  * A pagination cursor.
  *
  * This is an RPC object. Call `next()` repeatedly on the same cursor to fetch
- * subsequent batches of results. `next()` returns `null` once exhausted. Dispose the
- * cursor when finished.
+ * subsequent batches of results. `next()` returns `null` once exhausted. An empty
+ * batch does NOT mean exhaustion — a filtered page can be empty mid-walk — so drain
+ * on `null`, never on `length`. Dispose the cursor when finished.
  */
 export interface Cursor<T> {
   next(): Promise<T[] | null>;
