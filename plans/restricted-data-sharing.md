@@ -156,10 +156,14 @@ repaired pass re-persists full coverage.
 - **Share modal**: no longer replaces itself with a "can't be shared" view. Controls stay
   live behind a notice.
 - **Retained share keys** (`retainedShareKeys.ts`, new): the `#share=` fragment is
-  stripped from the URL on open, so a failed open had nothing to retry with. The key is
-  held in `sessionStorage` under a versioned, per-workspace key, and replayed on the next
-  attempt. (Note: under one-step redemption a failed open leaves a real edge, so the
-  retry is keyless — revisit this rationale when the follow-up branch rebases.)
+  stripped from the URL on open, so an open that fails *before the server redeems the
+  key* (a transport failure, a server throw ahead of the redemption, an attempt
+  superseded before issuing) would otherwise leave nothing to retry with. The key is
+  held in `sessionStorage` under a versioned, per-workspace key, and replayed on the
+  next attempt. A failure *after* redemption needs no key -- one-step redemption leaves
+  a real edge, so that retry resolves keylessly -- but the client cannot tell the two
+  apart, so it retains on every failure; replaying a key whose edge already exists is a
+  server-side no-op.
 - **Identity stamping**: because `sessionStorage` outlives the session that wrote it, each
   entry records the capturing user's id. A read by a different identity ignores *and*
   sweeps it, and `logout()` sweeps the whole prefix including malformed and older

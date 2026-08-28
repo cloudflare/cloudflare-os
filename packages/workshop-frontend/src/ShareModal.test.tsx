@@ -8,12 +8,15 @@ import type { RpcStub } from 'capnweb'
 import type {
   AiChatAuthorInfo,
   AuthenticatedApi,
+  CollaboratorInfo,
   CollaboratorRole,
   GadgetMetadata,
   ObserverBindingNeed,
   Overseer,
   ShareLinkInfo,
 } from '@gadgets/workshop-shared/api'
+
+const toastAdd = vi.hoisted(() => vi.fn<(toast: unknown) => void>())
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const previousActEnvironment = testGlobal.IS_REACT_ACT_ENVIRONMENT
@@ -48,7 +51,7 @@ vi.mock('@cloudflare/kumo', () => {
     Checkbox: ({ label }: { label: ReactNode }) => <label>{label}</label>,
     Dialog,
     DropdownMenu,
-    useKumoToastManager: () => ({ add: vi.fn<(toast: unknown) => void>() }),
+    useKumoToastManager: () => ({ add: toastAdd }),
   }
 })
 
@@ -99,23 +102,25 @@ const SHARE_LINK: ShareLinkInfo = {
 type OverseerOverrides = {
   requirements?: Partial<Record<CollaboratorRole, ObserverBindingNeed[]>>
   listObserverRequirements?: (role: CollaboratorRole) => Promise<ObserverBindingNeed[]>
+  collaborators?: CollaboratorInfo[]
   shareLinks?: ShareLinkInfo[]
+  addCollaborator?: () => Promise<CollaboratorInfo>
   updateShareLink?: (linkId: string, note?: string) => Promise<void>
 }
 
 function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
   const requirements = overrides.requirements ?? { use: [], build: [] }
   return {
-    listCollaborators: async () => [],
+    listCollaborators: async () => overrides.collaborators ?? [],
     listShareLinks: async () => overrides.shareLinks ?? [],
     listObserverRequirements:
       overrides.listObserverRequirements ??
       (async (role: CollaboratorRole) => requirements[role] ?? []),
-    addCollaborator: async () => ({
+    addCollaborator: overrides.addCollaborator ?? (async () => ({
       profile: { type: 'user', id: 'ada@cloudflare.com', name: 'Ada' },
       role: 'use',
       addedBy: [],
-    }),
+    })),
     createShareLink: async () => ({ key: 'secret', linkId: 'link-1' }),
     updateShareLink: overrides.updateShareLink ?? (async () => {}),
   } as unknown as RpcStub<Overseer>
@@ -149,13 +154,17 @@ function verificationSection(rendered: HTMLElement, headingId: string): HTMLElem
   return section
 }
 
-async function invite(rendered: HTMLElement, username: string) {
+async function typeUsername(rendered: HTMLElement, username: string) {
   const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Username or email"]')!
   const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
   await act(async () => {
     setValue.call(input, username)
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })
+}
+
+async function invite(rendered: HTMLElement, username: string) {
+  await typeUsername(rendered, username)
   await click(button(rendered, 'Invite'))
 }
 
@@ -165,6 +174,7 @@ describe('ShareModal', () => {
 
   beforeEach(() => {
     copyToClipboard.mockClear()
+    toastAdd.mockClear()
   })
 
   afterEach(() => {
@@ -174,7 +184,7 @@ describe('ShareModal', () => {
     container = undefined
   })
 
-  async function render(overseer: RpcStub<Overseer>) {
+  async function render(overseer: RpcStub<Overseer>, metadata: GadgetMetadata = METADATA) {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
@@ -184,7 +194,7 @@ describe('ShareModal', () => {
           open
           onClose={() => {}}
           overseer={overseer}
-          metadata={METADATA}
+          metadata={metadata}
           currentUser={CURRENT_USER}
           authenticatedApi={fakeAuthenticatedApi}
         />,
@@ -284,6 +294,56 @@ describe('ShareModal', () => {
     })
 
     expect(listObserverRequirements).toHaveBeenCalledTimes(4)
+  })
+
+  it('keeps sharing controls live when the workspace has read restricted data', async () => {
+    const restrictedMetadata = {
+      ...METADATA, containsRestrictedData: true,
+    } as GadgetMetadata
+    const rendered = await render(fakeOverseer({
+      collaborators: [{
+        profile: { type: 'user', id: 'ada@cloudflare.com', name: 'Ada' },
+        role: 'use',
+        addedBy: [],
+      }],
+      shareLinks: [SHARE_LINK],
+    }), restrictedMetadata)
+
+    // The inline warning replaces the old full-panel "can't be shared" wall: the server allows
+    // sharing after the restricted latch (refusing only unverifiable producers), so the modal
+    // must warn rather than block.
+    expect(rendered.textContent).toContain('This workspace has read sensitive data')
+    expect(rendered.textContent).not.toContain('This workspace can’t be shared')
+
+    // Every management affordance stays reachable: the people list with removal, the share
+    // links with copying and revocation, and the invite composer.
+    expect(rendered.textContent).toContain('People with access')
+    expect(button(rendered, 'Remove Ada').disabled).toBe(false)
+    expect(button(rendered, 'Copy Team link').disabled).toBe(false)
+    expect(button(rendered, 'Revoke Team link').disabled).toBe(false)
+    const usernameInput =
+      rendered.querySelector<HTMLInputElement>('input[aria-label="Username or email"]')!
+    expect(usernameInput.disabled).toBe(false)
+    await typeUsername(rendered, 'ada')
+    expect(button(rendered, 'Invite').disabled).toBe(false)
+  })
+
+  it('surfaces the server’s refusal when sharing is no longer allowed', async () => {
+    const restrictedMetadata = {
+      ...METADATA, containsRestrictedData: true,
+    } as GadgetMetadata
+    const refusal =
+      'This workspace can no longer be shared: it read sensitive data through a connection ' +
+      'that has since been removed, so new collaborators can no longer be verified for ' +
+      'access to that data.'
+    const rendered = await render(fakeOverseer({
+      addCollaborator: async () => { throw new Error(refusal) },
+    }), restrictedMetadata)
+
+    await invite(rendered, 'ada')
+
+    // The attempt reaches the server and its refusal is shown verbatim.
+    expect(toastAdd).toHaveBeenCalledWith({ title: refusal, variant: 'error' })
   })
 
   it('does not rename a share link when its name did not change', async () => {
