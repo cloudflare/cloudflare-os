@@ -80,6 +80,14 @@ describe("a binding that fails verification", () => {
       // nothing for the rollback to remove. Her registrations are what make gatekeepers name her
       // in `excludeObservers`, so dropping one would be fail-open.
       expect(removed).toEqual([]);
+
+      // Neither producer's restricted reads are blocked, though -- both are verifiable, so
+      // admission is the whole enforcement and nobody unverified can be watching.
+      let restricted = { title: "t", description: "d", containsRestrictedData: true };
+      await expect(impl.authorizeObservation(1, restricted, { from: "user" }))
+          .resolves.toBeUndefined();
+      await expect(impl.authorizeObservation(2, restricted, { from: "user" }))
+          .resolves.toBeUndefined();
     });
   });
 
