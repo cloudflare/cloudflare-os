@@ -11,6 +11,7 @@ const formatBlueprintsPath = resolve(
     process.env.FORMAT_BLUEPRINTS_DIR ?? "format-blueprints",
 ).replaceAll("\\", "/");
 const backendSourceRoot = workspacePath("packages/workshop-backend/src");
+const fixtureRoot = workspacePath("packages/integration-tests/fixtures");
 
 // Vite registers literal watch paths. The force-rerun globs below filter events from these roots.
 const WATCH_PATHS = [
@@ -28,7 +29,7 @@ const WATCH_PATHS = [
   workspacePath("packages/backend-utils/src"),
   workspacePath("packages/error-reporting/src"),
   workspacePath("packages/typed-storage/src"),
-  workspacePath("packages/integration-tests/fixtures"),
+  fixtureRoot,
   workspacePath("pnpm-lock.yaml"),
 ];
 
@@ -56,7 +57,9 @@ export default defineConfig({
       workspacePath("packages/backend-utils/src/**"),
       workspacePath("packages/error-reporting/src/**"),
       workspacePath("packages/typed-storage/src/**"),
-      workspacePath("packages/integration-tests/fixtures/**"),
+      `${fixtureRoot}/*`,
+      `${fixtureRoot}/*/*`,
+      `${fixtureRoot}/*/!(.wrangler)/**`,
       workspacePath("pnpm-lock.yaml"),
     ],
     testTimeout: 120_000,

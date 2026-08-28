@@ -2,12 +2,8 @@
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "gatekeeper-test",
 
-  // Unlike the shipping gatekeepers, `main` points straight at source with no capnweb-validate build
-  // step. @validateRpc() would need this fixture to carry its own `wrangler types` output -- half a
-  // megabyte of generated .d.ts checked in to serve a test double. The harness's handling of a
-  // generated `main` is already covered: workshop-backend, the primary worker in every one of these
-  // tests, builds exactly that way.
-  "main": "src/test-gatekeeper.ts",
+  // `build:test-gatekeeper` applies the same RPC validation used by production gatekeepers.
+  "main": ".wrangler/validate/src/test-gatekeeper.ts",
 
   "compatibility_date": "2026-02-02",
   "compatibility_flags": ["experimental", "allow_irrevocable_stub_storage"],

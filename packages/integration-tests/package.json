@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "tsc --noEmit",
-    "test:prebuild": "vp run -F @gadgets/workshop-backend build:integration-worker",
+    "test:prebuild": "vp run -F @gadgets/integration-tests build:test-gatekeeper",
     "test:run": "pnpm run test:prebuild && vitest run",
     "test:watch": "pnpm run test:prebuild && vitest"
   },
@@ -23,6 +23,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260808.1",
     "@types/node": "^26.1.0",
+    "capnweb-validate": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

@@ -6,17 +6,21 @@ import type { TestProject } from "vitest/node";
 import { pnpmCommand } from "../../../scripts/pnpm-command.js";
 
 const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const VALIDATED_ENTRY = join(PACKAGE_DIR, "../workshop-backend/.wrangler/validate/src/server.ts");
+const VALIDATED_ENTRIES = [
+  join(PACKAGE_DIR, "../workshop-backend/.wrangler/validate/src/server.ts"),
+  join(PACKAGE_DIR, "fixtures/gatekeeper-test/.wrangler/validate/src/test-gatekeeper.ts"),
+];
 
 function rebuildWorkshopForWatch(): void {
   const [command, args] = pnpmCommand(["run", "test:prebuild"]);
   execFileSync(command, args, { cwd: PACKAGE_DIR, stdio: "inherit" });
 }
 
-/** Share one validated Worker build across isolated test-file processes. */
+/** Share validated Worker builds across isolated test-file processes. */
 export default function setup(project: TestProject): () => void {
-  if (!existsSync(VALIDATED_ENTRY)) {
-    throw new Error("The integration-test Workshop build did not produce its validated entrypoint");
+  const missingEntries = VALIDATED_ENTRIES.filter(entry => !existsSync(entry));
+  if (missingEntries.length > 0) {
+    throw new Error(`Integration-test builds did not produce: ${missingEntries.join(", ")}`);
   }
   process.env.WORKSHOP_INTEGRATION_PREBUILT = "1";
   // Vite+ owns the initial build. A watch process stays alive, so later reruns invoke that task here.
