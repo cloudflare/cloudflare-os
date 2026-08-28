@@ -1,5 +1,7 @@
-import { expect, it, describe } from "vitest"
-import { createTypedStorage, collection, UniqueIndex, NonUniqueIndex } from "../src/index.js";
+import { expect, expectTypeOf, it, describe } from "vitest"
+import { createTypedStorage, collection, singleton, Singleton, SingletonSchema, UniqueIndex,
+         NonUniqueIndex }
+    from "../src/index.js";
 import { DurableObjectListOptions, DurableObjectStorage } from "@cloudflare/workers-types/experimental";
 
 // We mock out DurableObjectStorage becaues otherwise we'd have to run the tests inside a
@@ -136,6 +138,243 @@ describe("singletons", () => {
 
     storage.counter.put(555);
     expect(subscriber.lastValue).toStrictEqual(321);
+  });
+
+  it("uses the property name as the storage key by default", () => {
+    let mockStorage = makeMockStorage();
+    let storage = createTypedStorage(mockStorage, {
+      singletons: {
+        counter: singleton(0),
+      }
+    });
+
+    storage.counter.put(123);
+
+    // Declaring a singleton with no options must be byte-identical on disk to a bare default.
+    expect(mockStorage.kv.get("counter")).toStrictEqual(123);
+  });
+
+  it("reads and writes a legacy storage key", () => {
+    let mockStorage = makeMockStorage();
+
+    // Data written by an earlier version of the schema, when the property was called `oldName`.
+    mockStorage.kv.put("oldName", 42);
+
+    let storage = createTypedStorage(mockStorage, {
+      singletons: {
+        newName: singleton(0, {storageKey: "oldName"}),
+      }
+    });
+
+    expect(storage.newName.get()).toStrictEqual(42);
+
+    storage.newName.put(43);
+
+    expect(storage.newName.get()).toStrictEqual(43);
+    expect(mockStorage.kv.get("oldName")).toStrictEqual(43);
+    expect(mockStorage.kv.get("newName")).toBeUndefined();
+  });
+
+  it("falls back to the default when the legacy key was never written", () => {
+    let mockStorage = makeMockStorage();
+    let storage = createTypedStorage(mockStorage, {
+      singletons: {
+        newName: singleton(false, {storageKey: "oldName"}),
+      }
+    });
+
+    expect(storage.newName.get()).toStrictEqual(false);
+
+    storage.newName.put(true);
+
+    expect(mockStorage.kv.get("oldName")).toStrictEqual(true);
+  });
+
+  it("notifies subscribers for a legacy storage key", () => {
+    let mockStorage = makeMockStorage();
+    let storage = createTypedStorage(mockStorage, {
+      singletons: {
+        newName: singleton(0, {storageKey: "oldName"}),
+      }
+    });
+
+    let subscriber = {
+      lastValue: -1,
+      update(value: number) {
+        this.lastValue = value;
+      }
+    };
+    storage.newName.subscribe(subscriber);
+
+    storage.newName.put(7);
+
+    expect(subscriber.lastValue).toStrictEqual(7);
+    expect(mockStorage.kv.get("oldName")).toStrictEqual(7);
+  });
+
+  it("accepts null and undefined defaults with options, like bare defaults do", () => {
+    let storage = createTypedStorage(makeMockStorage(), {
+      singletons: {
+        bareNull: <string | null>null,
+        bareUndefined: <string | undefined>undefined,
+        optNull: singleton(<string | null>null, {storageKey: "legacyNull"}),
+        optUndefined: singleton(<string | undefined>undefined, {storageKey: "legacyUndefined"}),
+      }
+    });
+
+    expectTypeOf(storage.optNull).toEqualTypeOf<Singleton<string | null>>();
+    expectTypeOf(storage.optUndefined).toEqualTypeOf<Singleton<string | undefined>>();
+
+    expect(storage.bareNull.get()).toStrictEqual(null);
+    expect(storage.bareUndefined.get()).toStrictEqual(undefined);
+    expect(storage.optNull.get()).toStrictEqual(null);
+    expect(storage.optUndefined.get()).toStrictEqual(undefined);
+
+    storage.optNull.put("x");
+    expect(storage.optNull.get()).toStrictEqual("x");
+  });
+
+  it("rejects two singletons resolving to the same storage key", () => {
+    // Two explicit keys.
+    expect(() => createTypedStorage(makeMockStorage(), {
+      singletons: {
+        a: singleton(0, {storageKey: "shared"}),
+        b: singleton(0, {storageKey: "shared"}),
+      }
+    })).toThrow('Two singletons resolve to the same storage key "shared".');
+
+    // An explicit key colliding with another slot's default (property-name) key, in either order.
+    expect(() => createTypedStorage(makeMockStorage(), {
+      singletons: {
+        a: singleton(0, {storageKey: "b"}),
+        b: 0,
+      }
+    })).toThrow('Two singletons resolve to the same storage key "b".');
+    expect(() => createTypedStorage(makeMockStorage(), {
+      singletons: {
+        b: 0,
+        a: singleton(0, {storageKey: "b"}),
+      }
+    })).toThrow('Two singletons resolve to the same storage key "b".');
+  });
+
+  it("rejects a storage key containing a namespace delimiter", () => {
+    // `users:alice` is exactly where collection `users` stores record `alice`; an exact-name
+    // check would never notice, so the delimiters themselves are refused.
+    expect(() => createTypedStorage(makeMockStorage(), {
+      collections: {users: collection<User>()({primaryKey: "name"})},
+      singletons: {alias: singleton(0, {storageKey: "users:alice"})},
+    })).toThrow('Singleton storage key "users:alice" must not contain "." or ":"');
+    expect(() => createTypedStorage(makeMockStorage(), {
+      singletons: {alias: singleton(0, {storageKey: "users.byUid"})},
+    })).toThrow('Singleton storage key "users.byUid" must not contain "." or ":"');
+  });
+
+  it("types a bare default shaped like a schema as the object, not its defaultValue", () => {
+    // `SingletonSchema` is nominal: an object literal with the same public fields is a bare
+    // default at runtime, and must be one at the type level too, or `get()` would be typed as
+    // returning `number` while actually returning the object.
+    let lookalike = {defaultValue: 1, options: {}};
+    let storage = createTypedStorage(makeMockStorage(), {
+      singletons: {
+        slot: lookalike,
+      }
+    });
+
+    expectTypeOf(storage.slot).toEqualTypeOf<Singleton<typeof lookalike>>();
+    expectTypeOf(storage.slot).not.toEqualTypeOf<Singleton<number>>();
+    expect(storage.slot.get()).toStrictEqual(lookalike);
+  });
+
+  it("types a union of schema and bare default distributively", () => {
+    // A schema entry typed as a union unwraps each member separately, rather than falling
+    // through to `Singleton<SingletonSchema<number> | string>`.
+    let either: SingletonSchema<number> | string = Math.random() < 2 ? singleton(0) : "s";
+    let storage = createTypedStorage(makeMockStorage(), {
+      singletons: {
+        slot: either,
+      }
+    });
+
+    expectTypeOf(storage.slot).toEqualTypeOf<Singleton<number | string>>();
+    expect(storage.slot.get()).toStrictEqual(0);
+  });
+});
+
+describe("collections with a legacy storage name", () => {
+  it("stores records and indexes under the legacy prefix", () => {
+    let mockStorage = makeMockStorage();
+    let storage = createTypedStorage(mockStorage, {
+      collections: {
+        people: collection<User>()({
+          storageName: "users",
+          primaryKey: "name",
+          uniqueIndexes: {
+            byUid: (user: User) => user.uid
+          },
+          nonUniqueIndexes: {
+            byLevel: (user: User) => user.level
+          }
+        })
+      }
+    });
+
+    storage.people.put(ALICE);
+
+    expect(storage.people.get("alice")).toStrictEqual(ALICE);
+    expect(storage.people.byUid.get(45)).toStrictEqual(ALICE);
+    expect([...storage.people.byLevel.get(8)]).toStrictEqual([ALICE]);
+
+    // Every key -- the record and both indexes -- lives under the legacy name, so a collection
+    // renamed in code reads data written before the rename.
+    let keys = [...mockStorage.kv.list({})].map(([key]) => key);
+    expect(keys.some(key => key.startsWith("users:"))).toStrictEqual(true);
+    expect(keys.some(key => key.startsWith("users.byUid:"))).toStrictEqual(true);
+    expect(keys.some(key => key.startsWith("users.byLevel:"))).toStrictEqual(true);
+    expect(keys.some(key => key.startsWith("people"))).toStrictEqual(false);
+  });
+
+  it("rejects two collections resolving to the same storage name", () => {
+    // Two explicit names.
+    expect(() => createTypedStorage(makeMockStorage(), {
+      collections: {
+        a: collection<User>()({storageName: "shared", primaryKey: "name"}),
+        b: collection<User>()({storageName: "shared", primaryKey: "name"}),
+      }
+    })).toThrow('Two collections resolve to the same storage name "shared".');
+
+    // An explicit name colliding with another collection's default (property) name, either order.
+    expect(() => createTypedStorage(makeMockStorage(), {
+      collections: {
+        a: collection<User>()({storageName: "b", primaryKey: "name"}),
+        b: collection<User>()({primaryKey: "name"}),
+      }
+    })).toThrow('Two collections resolve to the same storage name "b".');
+    expect(() => createTypedStorage(makeMockStorage(), {
+      collections: {
+        b: collection<User>()({primaryKey: "name"}),
+        a: collection<User>()({storageName: "b", primaryKey: "name"}),
+      }
+    })).toThrow('Two collections resolve to the same storage name "b".');
+  });
+
+  it("rejects a storage name containing a namespace delimiter", () => {
+    // `users.byUid` is exactly the prefix of collection `users`'s `byUid` index; an exact-name
+    // check would never notice, so the delimiters themselves are refused.
+    expect(() => createTypedStorage(makeMockStorage(), {
+      collections: {
+        users: collection<User>()({
+          primaryKey: "name",
+          uniqueIndexes: {byUid: (user: User) => user.uid},
+        }),
+        alias: collection<User>()({storageName: "users.byUid", primaryKey: "name"}),
+      }
+    })).toThrow('Collection storage name "users.byUid" must not contain "." or ":"');
+    expect(() => createTypedStorage(makeMockStorage(), {
+      collections: {
+        alias: collection<User>()({storageName: "users:alice", primaryKey: "name"}),
+      }
+    })).toThrow('Collection storage name "users:alice" must not contain "." or ":"');
   });
 });
 
