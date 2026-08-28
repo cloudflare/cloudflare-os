@@ -25,8 +25,12 @@ import { AiChatAuthorInfo, CollaboratorInfo, PermissionEdge, CollaboratorRole, A
     from "@gadgets/workshop-shared/api";
 import { Collection, NonUniqueIndex } from "@gadgets/typed-storage";
 
-// Roles are totally ordered: build > use. Higher rank means strictly more access.
-function roleRank(role: CollaboratorRole): number {
+/**
+ * Roles are totally ordered: build > use. Higher rank means strictly more access. Exported so
+ * role comparisons elsewhere (e.g. the Overseer's `requireRole` floor) rank rather than
+ * string-compare, which stays correct if a role is ever added between the two.
+ */
+export function roleRank(role: CollaboratorRole): number {
   return role === "build" ? 2 : 1;
 }
 

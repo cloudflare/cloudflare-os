@@ -47,7 +47,8 @@ import type { ProductAnalyticsConnectionType, ProductAnalyticsGadgetInput } from
 import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker";
 import { completeAgentCatalogSnapshot, normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
-import { SharingManager, SharingCaller, CollaboratorRecord, ShareKeyRecord } from "./sharing";
+import { SharingManager, SharingCaller, CollaboratorRecord, ShareKeyRecord, roleRank }
+    from "./sharing";
 import { AutoApprovalDrainer } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext, traced } from "./observability";
@@ -8950,6 +8951,30 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // The authorization gate every non-owner entry point (open(), receiveExternalMessage()) must
+  // pass through: resolve the caller's effective role, then verify them as an observer of
+  // everything this workspace has read. Returns null for no access; verification failures throw.
+  // A caller that requires at least `requireRole` (e.g. receiveExternalMessage needs "build")
+  // passes it so an insufficient role is denied *before* verification runs -- otherwise the caller
+  // would be verified (real addObserver calls, a persisted observer record) only to be turned
+  // away, or worse, told to fix a verification failure that can never grant them access.
+  // `configureCb` is forwarded to ensureObserver to prompt for unconfigured account choices;
+  // without it, verification is non-interactive and an unconfigured binding denies access.
+  async authorizeCollaborator(
+      profileId: string,
+      clientUser: DurableObjectStub<UserDurableObject>,
+      opts: {
+        configureCb?: RpcStub<ObserverConfigCallback>;
+        requireRole?: CollaboratorRole;
+      } = {}): Promise<CollaboratorRole | null> {
+    let sharing = await this.getSharingManager();
+    let role = sharing.getEffectiveRole(profileId);
+    if (!role || (opts.requireRole && roleRank(role) < roleRank(opts.requireRole))) return null;
+
+    await this.ensureObserver(profileId, clientUser, role, opts.configureCb);
+    return role;
+  }
+
   // Bring a non-owner `profileId` into compliance as an observer for their `role`, so that they may
   // open the Gadget. May invoke `configureCb` to ask the user to choose connected accounts for
   // gatekeeper bindings they haven't configured yet. Re-runs `addObserver` (re-verification) for
@@ -9459,27 +9484,25 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         });
       }
 
-      // Check authorization. Compute the caller's effective role from the permission graph; this
-      // both authorizes the session and determines which capability we hand back.
-      //
-      // An unauthorized caller (no effective role -- never had access, or was removed) gets a
-      // distinct denial without workspace metadata. A removed collaborator who reconnects after
-      // their session is force-restarted lands here and sees the terminal access-denied page.
-      let effectiveRole = sharing.getEffectiveRole(profileId);
-      if (!effectiveRole) {
-        throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
-      }
-      role = effectiveRole;
-
       // Ambient reconciliation may attach Gatekeepers after open() starts. Finish it before taking
       // the observer snapshot so every capability exposed to this collaborator has an observer.
       await ensureCapsules;
 
-      // Verify the caller may observe everything this Gadget has read through its in-scope
-      // gatekeepers, configuring their connected accounts if needed. This runs only after a valid
-      // role is confirmed, so it never reveals gatekeeper or resource metadata to an unauthorized
-      // user. The prohibitAllSharing short-circuit above still wins -- lockdown takes precedence.
-      await this.impl.ensureObserver(profileId, clientUser, role, configureObservers);
+      // Check authorization: compute the caller's effective role from the permission graph, then
+      // verify they may observe everything this Gadget has read through its in-scope gatekeepers,
+      // configuring their connected accounts if needed. Observer verification runs only after a
+      // valid role is confirmed, so it never reveals gatekeeper or resource metadata to an
+      // unauthorized user; the prohibitAllSharing short-circuit above still wins over both.
+      //
+      // An unauthorized caller (no effective role -- never had access, or was removed) gets a
+      // distinct denial without workspace metadata. A removed collaborator who reconnects after
+      // their session is force-restarted lands here and sees the terminal access-denied page.
+      let effectiveRole = await this.impl.authorizeCollaborator(
+          profileId, clientUser, {configureCb: configureObservers});
+      if (!effectiveRole) {
+        throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+      }
+      role = effectiveRole;
 
       // Fire-and-forget a call to the collaborator's user DO so the gadget appears on
       // (or is refreshed on) their home page.
@@ -9552,7 +9575,13 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       ownerId = callerId;
     }
 
-    // Caller must be the owner or a build collaborator.
+    // Caller must be the owner or a build collaborator. The agent's reply can surface anything
+    // the workspace has already read (chat history, gadget storage), so a collaborator passes the
+    // same authorization gate as open() -- but non-interactively: with no way to configure
+    // accounts here, an unverified caller is sent to open the workspace, which is where
+    // verification happens. Requiring "build" up front means a "use" collaborator gets the plain
+    // denial below rather than being verified (or told to fix a verification failure) for access
+    // this path can never grant them.
     if (ownerId !== callerId) {
       if (this.impl.storage.prohibitAllSharing.get()) {
         return {
@@ -9560,7 +9589,18 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
           message: "This workspace has sharing disabled, so only its owner can access it.",
         };
       }
-      let role = (await this.impl.getSharingManager()).getEffectiveRole(callerProfile.id);
+      let role: CollaboratorRole | null;
+      try {
+        role = await this.impl.authorizeCollaborator(
+            callerProfile.id, caller, {requireRole: "build"});
+      } catch (err) {
+        return {
+          accepted: false,
+          message: "Your access to the data this workspace has read could not be verified. Open " +
+              "the workspace in your browser to verify your access, then try again. " +
+              `(${stringifyError(err)})`,
+        };
+      }
       if (role !== "build") {
         return {
           accepted: false,
