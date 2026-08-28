@@ -302,7 +302,12 @@ export class TestVerifier
 // Gatekeeper (one per bound resource, running as a facet under the gadget's Overseer)
 
 export interface TestSession {
-  readValue(): Promise<number>;
+  /**
+   * Records an observation through the same `ApprovalQueue` funnel a shipping gatekeeper uses.
+   * `restricted` marks it `containsRestrictedData`, to trip the restricted-mode latch and the
+   * unverifiable-producer guard.
+   */
+  readValue(restricted?: boolean): Promise<number>;
   writeValue(value: number): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
 }
@@ -319,10 +324,11 @@ class TestSessionTarget extends RpcTarget implements TestSession {
     this.approvalQueue = approvalQueue.dup();
   }
 
-  async readValue(): Promise<number> {
+  async readValue(restricted?: boolean): Promise<number> {
     await this.approvalQueue.authorizeObservation({
       title: "Read the test value",
       description: "Read the deterministic value exposed by the integration-test gatekeeper.",
+      ...(restricted ? { containsRestrictedData: true } : {}),
     });
     return 42;
   }
