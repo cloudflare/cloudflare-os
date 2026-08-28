@@ -1,0 +1,21 @@
+packages/workshop-backend/src/output-review/model.ts
+  s_681304a415717f::t_36e0b75c8f5803 35-38
+  s_681304a415717f::t_83ae86958a5bfc 33-34
+  s_681304a415717f::t_d34ec0d8fbad6f 39-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5d057056b195821f1028be462395fa669719d1f3",
+  "prompts": {},
+  "sessions": {
+    "s_681304a415717f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_013a651f0ffe3DN1c69w9vF145",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "gmendes <gmendes@cloudflare.com>"
+    }
+  }
+}

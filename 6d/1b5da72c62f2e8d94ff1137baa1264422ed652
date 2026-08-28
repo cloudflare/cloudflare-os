@@ -1,0 +1,21 @@
+packages/gatekeeper-context/__tests__/agent-skill.test.ts
+  s_793c5badb534a2::t_35248d5d1d8f34 290
+packages/gatekeeper-context/src/agent-skill.ts
+  s_793c5badb534a2::t_35248d5d1d8f34 59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6d1b5da72c62f2e8d94ff1137baa1264422ed652",
+  "prompts": {},
+  "sessions": {
+    "s_793c5badb534a2": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_00b9dda04ffe3C254mUZBuw4LF",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

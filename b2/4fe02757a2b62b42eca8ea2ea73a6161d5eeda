@@ -1,0 +1,43 @@
+packages/gatekeeper-mcp-portal/README.md
+  s_e25e29d8ebebad::t_1542fc35ce4586 31-45,58-61,108,147,149-151,156-182,184-185
+packages/gatekeeper-mcp-portal/__tests__/config.test.ts
+  s_e25e29d8ebebad::t_6dbf6a80948d1a 10,143,145-149,231-300
+packages/gatekeeper-mcp-portal/__tests__/configurator-ui.test.ts
+  s_e25e29d8ebebad::t_0f789a696f66fa 91,102,105-107
+packages/gatekeeper-mcp-portal/src/config.ts
+  s_e25e29d8ebebad::t_51e11cbff5db75 9,11,15-16,88-92,99-135,165
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-types.d.ts
+  s_e25e29d8ebebad::t_0ef6cefbae7c50 24-26,28-30
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-ui.tsx
+  s_e25e29d8ebebad::t_6104ca7be0d255 50,72,86-99,142-143
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_e25e29d8ebebad::t_12ec26507e9f01 27-32,38-44,52-54,84-85,95-103,123,127-138,140,147,251-254,273-349,419-447,459,498-501,510-514,517-523,525,528-556,558,561-588,591-592,594-608,677-678
+packages/mcp-shared/__tests__/client-pagination.test.ts
+  s_e25e29d8ebebad::t_b6f83fb7452057 215,217,225,228-236,281-299,366
+packages/mcp-shared/__tests__/portal.test.ts
+  s_e25e29d8ebebad::t_852740047924f9 136-137,140-142,153,157,160,163-186
+packages/mcp-shared/src/account.ts
+  s_e25e29d8ebebad::t_19d4dafa517654 169-178,202-208,308-309,317-322,375-381,585-590
+packages/mcp-shared/src/client.ts
+  s_e25e29d8ebebad::t_b28adef7a53733 46,53,56,348,350,567-573
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_82a3e3ad8080d2 17,194-206
+packages/mcp-shared/src/portal.ts
+  s_e25e29d8ebebad::t_fa501c1ced5c2a 116-118,163-167,170-171,173-174,176-181,185,190-192,194,196-199,202-205,212,215-220,225,227,229-237,239
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b24fe02757a2b62b42eca8ea2ea73a6161d5eeda",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

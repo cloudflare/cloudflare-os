@@ -1,0 +1,20 @@
+packages/workshop-backend/src/user.ts
+  s_26c0be70719a03::t_ed372b71e028b0 1206-1212,1222-1226,1233-1247
+  s_26c0be70719a03::t_c5d755bfafa5e3 1274,1286-1288
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "452c537ccbca592d1646e4c311836085308d9ad7",
+  "prompts": {},
+  "sessions": {
+    "s_26c0be70719a03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "efb0fb21-f21d-4d25-99e3-8bef537b83e0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

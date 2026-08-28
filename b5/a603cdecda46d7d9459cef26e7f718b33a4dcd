@@ -1,0 +1,42 @@
+packages/workshop-frontend/src/ObserverConfigModal.test.tsx
+  s_a676e8860d1ca3::t_b7ce1992eace5c 1-16,37-125
+  s_a676e8860d1ca3::t_2b079a11abffe3 34
+  s_a676e8860d1ca3::t_f42a5895dbe8e8 17-33,35-36
+packages/workshop-frontend/src/ObserverConfigModal.tsx
+  s_a676e8860d1ca3::t_73b1992d7ce2a8 3,234-235,239,241-242,258,304-339,394
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_a676e8860d1ca3::t_0d11c1dac204b5 9,42,72-73,75,104-105,181,186,193,195,208
+  s_a676e8860d1ca3::t_07c67b1e4e7b5a 1-8,10-41,43-49,51-66,68-71,74,76-103,106-112,143-180,182-185,187-192,194,196-207,209-228
+  s_a676e8860d1ca3::t_4133f284ad0d65 67
+  s_a676e8860d1ca3::t_76486e81d080fe 113-142
+  s_a676e8860d1ca3::t_fc1a1cbec8ca15 50
+packages/workshop-frontend/src/ShareModal.tsx
+  s_a676e8860d1ca3::t_a153bb340238e0 385-390
+  s_a676e8860d1ca3::t_9939ffaae09e4c 293-297
+  s_a676e8860d1ca3::t_260eb02708975a 762-789
+  s_a676e8860d1ca3::t_5c0bdcb428dc1f 496-499
+  s_a676e8860d1ca3::t_509cde447ac9fb 460-468
+  s_a676e8860d1ca3::t_b1045e7a8b5f68 377-384,391-398,407-408
+  s_a676e8860d1ca3::t_13d672173be168 435-437
+  s_a676e8860d1ca3::t_c4b94c4db72151 223-280
+  s_a676e8860d1ca3::t_d7d8a61dbf73f6 863-869
+  s_a676e8860d1ca3::t_541b53e02d8645 4,15
+  s_a676e8860d1ca3::t_5d64a04d727788 469-471
+  s_a676e8860d1ca3::t_c0037d65f522e5 790
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b5a603cdecda46d7d9459cef26e7f718b33a4dcd",
+  "prompts": {},
+  "sessions": {
+    "s_a676e8860d1ca3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0369a8e51ffenkdNC7esrlYmyW",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

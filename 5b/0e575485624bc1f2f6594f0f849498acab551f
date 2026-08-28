@@ -1,0 +1,41 @@
+packages/gatekeeper-spotify/src/types.d.ts
+  s_fcb81335a24bc2::t_1907c9b5a40c59 1,10
+packages/gatekeeper-email/src/types.d.ts
+  s_fcb81335a24bc2::t_1907c9b5a40c59 54
+packages/gatekeeper-homeassistant/src/types.d.ts
+  s_fcb81335a24bc2::t_1907c9b5a40c59 1
+packages/gatekeeper-linear/src/types.d.ts
+  s_fcb81335a24bc2::t_1907c9b5a40c59 1
+packages/mcp-shared/src/types.d.ts
+  s_fcb81335a24bc2::t_1907c9b5a40c59 3
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-types.d.ts
+  s_fcb81335a24bc2::t_1907c9b5a40c59 19
+packages/gatekeeper-mcp/src/configurator/server-configurator-types.d.ts
+  s_fcb81335a24bc2::t_1907c9b5a40c59 16
+packages/gatekeeper-zoominfo/src/types.d.ts
+  s_fcb81335a24bc2::t_1907c9b5a40c59 5,307
+packages/gatekeeper-cloudflare/src/types.d.ts
+  s_fcb81335a24bc2::t_1907c9b5a40c59 2
+packages/workshop-backend/src/agent-spawner-binding.d.ts
+  s_fcb81335a24bc2::t_1907c9b5a40c59 5
+packages/gatekeeper-supabase/src/types.d.ts
+  s_fcb81335a24bc2::t_1907c9b5a40c59 2,210
+packages/gatekeeper-scheduler/src/types.d.ts
+  s_fcb81335a24bc2::t_1907c9b5a40c59 269,271,278,280
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5b0e575485624bc1f2f6594f0f849498acab551f",
+  "prompts": {},
+  "sessions": {
+    "s_fcb81335a24bc2": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03601b558fferm7fC0nANC1UUW",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

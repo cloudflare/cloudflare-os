@@ -1,0 +1,21 @@
+packages/mcp-shared/src/client.ts
+  s_df72ba6c9639e3::t_3f7f13e48a8d19 338-339
+packages/gatekeeper-mcp/README.md
+  s_df72ba6c9639e3::t_3f7f13e48a8d19 63-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f1ebbb6a0955c88addc97c13370d5efa36d3fe37",
+  "prompts": {},
+  "sessions": {
+    "s_df72ba6c9639e3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03713f2c2ffeh8iqwxXPN44Im5",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

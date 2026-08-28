@@ -1,0 +1,21 @@
+packages/mcp-shared/README.md
+  s_e25e29d8ebebad::t_c7f7d6d025aae3 116-117
+packages/mcp-shared/src/catalog.ts
+  s_e25e29d8ebebad::t_c7f7d6d025aae3 203,226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d3d997364abf4577f613545ab4756db9c4c4f5c7",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

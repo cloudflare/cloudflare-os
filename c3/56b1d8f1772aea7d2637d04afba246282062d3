@@ -1,0 +1,31 @@
+AGENTS.md
+  s_bad780062ecbda::t_458b6df6ff045d 69
+pnpm-lock.yaml
+  s_fa07440e282490::t_7050e04fb724e0 111,113,137,139,175,177,297,299,329,331,361,363,393,395,422,424,454,456,489,491,518,520,550,552,633,635,659,661,688,690,714,716,841,843,3177-3178,7023
+pnpm-workspace.yaml
+  s_fa07440e282490::t_fb74267a7b008e 14-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c356b1d8f1772aea7d2637d04afba246282062d3",
+  "prompts": {},
+  "sessions": {
+    "s_bad780062ecbda": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8e7bc46-3331-45f4-875d-bd740694c143",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_fa07440e282490": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b817187a-8d20-4ca6-92ef-7458e947c46b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

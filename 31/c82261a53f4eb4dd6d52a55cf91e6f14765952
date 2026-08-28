@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_319b83d30e2181::t_43e2582a644e6e 34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "31c82261a53f4eb4dd6d52a55cf91e6f14765952",
+  "prompts": {},
+  "sessions": {
+    "s_319b83d30e2181": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a0cd7b3-0eaf-447c-8854-87de45081319",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,44 @@
+packages/workshop-backend/__tests__/browser-export.test.ts
+  s_017f2cc25a2960::t_8f1aba97ab43c0 7,13,15,18-20,33-41,45,47-48,51-53,56-59,62,64,69,91-98,113,115,118-120,126-127,131,133,186,188-189,194-195,202,214,234,238,260,264,268-278,281-283,285-286,288-301,303-305,307-321,323
+  s_017f2cc25a2960::t_baad3112977f72 191,204,215,279-280,284,302
+  s_017f2cc25a2960::t_5d8cb3d149255d 198,287,306,322
+  s_017f2cc25a2960::t_a454e326fe7df6 2,23-32,108
+packages/workshop-backend/src/agent.ts
+  s_017f2cc25a2960::t_675508703d2964 621,623-628,1682-1684,2068,2834-2850,2858-2869,2875-2887
+  s_017f2cc25a2960::t_9257e9274e3ce1 281-284
+  s_017f2cc25a2960::t_4a3974f7114935 2069,2377,2427,2851-2857,3086
+  s_017f2cc25a2960::t_baad3112977f72 622,2870-2874
+  s_017f2cc25a2960::t_6c4671865f4927 2888
+packages/workshop-backend/__tests__/agent-screenshot.test.ts
+  s_017f2cc25a2960::t_983589e13bdf96 1-200
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_017f2cc25a2960::t_878276eaac0d70 53,676-677,756-757,797-798,840-841,869,890
+packages/workshop-backend/src/browser-export.ts
+  s_017f2cc25a2960::t_ec8ba0d930a9b8 254,260,266,309,334,336,341
+  s_017f2cc25a2960::t_baad3112977f72 255,261,267,360,367,371
+  s_017f2cc25a2960::t_90e87fb574a26e 209-210,213,221,240
+  s_017f2cc25a2960::t_eaa35dcd69e6fe 15-22,244,247-248,250,256-259,262-265,310-311,335,337-340,342-359,361-363,365-366,368-370
+packages/workshop-shared/src/api.ts
+  s_017f2cc25a2960::t_675508703d2964 2117-2123
+  s_017f2cc25a2960::t_849356a0b16f92 2116
+packages/workshop-backend/src/overseer.ts
+  s_017f2cc25a2960::t_9257e9274e3ce1 47,1499-1518,2847-2860,2862,9055,9076,9297,9322
+  s_017f2cc25a2960::t_baad3112977f72 2861,9075,9321
+  s_017f2cc25a2960::t_c20fb129ae00d2 2863
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "124bb1a5952dfcee25299b2317749b27043e13c7",
+  "prompts": {},
+  "sessions": {
+    "s_017f2cc25a2960": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0146c6b70ffefJEVz2tYFR3V1O",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

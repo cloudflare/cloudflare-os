@@ -1,0 +1,19 @@
+.github/workflows/ci.yml
+  s_6b06793b4e8acf::t_3c397e543b6fb5 16-20,44-67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0b56e0901e61381645f1329894136cf501a5a96d",
+  "prompts": {},
+  "sessions": {
+    "s_6b06793b4e8acf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6f167f9-9137-46f3-884c-130e77ad244b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

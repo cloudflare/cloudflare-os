@@ -1,0 +1,59 @@
+packages/mcp-shared/__tests__/schema-to-ts.test.ts
+  s_e25e29d8ebebad::t_62902bef1588c9 45-61,117-134,139
+  s_e25e29d8ebebad::t_fb0324aedf126d 442
+  s_e25e29d8ebebad::t_c70074f5d22979 135-138
+  s_e25e29d8ebebad::t_7375b3c7686e4d 140-141
+packages/mcp-shared/src/account.ts
+  s_e25e29d8ebebad::t_27e16307ba7b91 830,833,835,838
+packages/mcp-shared/src/fetch.ts
+  s_e25e29d8ebebad::t_692bb4a7e797da 193
+packages/mcp-shared/src/client.ts
+  s_e25e29d8ebebad::t_692bb4a7e797da 444,450,455-458,473
+  s_e25e29d8ebebad::t_27e16307ba7b91 548-558
+  s_e25e29d8ebebad::t_646903bd821424 615,619-624
+packages/mcp-shared/src/types.d.ts
+  s_e25e29d8ebebad::t_c70074f5d22979 79-81
+packages/mcp-shared/src/base-types.ts
+  s_e25e29d8ebebad::t_c70074f5d22979 89-91
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_27e16307ba7b91 60,99-116,120,127,140,147-149
+packages/mcp-shared/__tests__/connection.test.ts
+  s_e25e29d8ebebad::t_8d6d707ac31367 119-148
+  s_e25e29d8ebebad::t_27e16307ba7b91 20,39,54,72,107
+packages/mcp-shared/__tests__/client-pagination.test.ts
+  s_e25e29d8ebebad::t_646903bd821424 338-355
+packages/mcp-shared/src/catalog.ts
+  s_e25e29d8ebebad::t_44a3f56c4f8e26 151,153,158-159,166,173-180,182-185,187-189
+packages/mcp-shared/__tests__/hydrated-tools.test.ts
+  s_e25e29d8ebebad::t_44a3f56c4f8e26 85-98
+packages/mcp-shared/src/schema-to-ts.ts
+  s_e25e29d8ebebad::t_62902bef1588c9 401-407
+  s_e25e29d8ebebad::t_c70074f5d22979 358
+packages/mcp-shared/__tests__/session.test.ts
+  s_e25e29d8ebebad::t_92273d2c00dea4 221
+  s_e25e29d8ebebad::t_c70074f5d22979 220,222-228
+packages/mcp-shared/src/action-store.ts
+  s_e25e29d8ebebad::t_7d1deb52377098 199,202,219
+  s_e25e29d8ebebad::t_9b80cb414ec848 23,39,76,93-95,100,103-107,119-120,127,193,201,203-206
+packages/mcp-shared/__tests__/action-store.test.ts
+  s_e25e29d8ebebad::t_958696d7c7e2c1 64-79
+packages/mcp-shared/src/session.ts
+  s_e25e29d8ebebad::t_9b80cb414ec848 45-46
+  s_e25e29d8ebebad::t_c70074f5d22979 136-141
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2bdb8052be12454c28b1ae3886acc97cc9825e16",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

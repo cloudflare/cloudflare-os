@@ -1,0 +1,20 @@
+packages/workshop-ios/src/screens/GatekeeperScreen.tsx
+  s_05e5fdfde14468::t_388d1ef5de36c0 100-101
+  s_05e5fdfde14468::t_efba4f6349d0d6 58-77,82,88-99,102-110,113,210
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f3d05dbf7a7fbf383fe440bd42faddac0fd42aaa",
+  "prompts": {},
+  "sessions": {
+    "s_05e5fdfde14468": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01ec30fddffeTfuiapuKb6uixw",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

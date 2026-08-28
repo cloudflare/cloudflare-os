@@ -1,0 +1,21 @@
+pnpm-workspace.yaml
+  s_fa07440e282490::t_448e4b3d4064b1 17-19
+pnpm-lock.yaml
+  s_fa07440e282490::t_3e0b7ecec99bb6 26,97-98,101,119-120,123,153-154,157,271-272,275,299-300,303,327-328,331,355-356,359,380-381,384,408-409,412,439-440,443,464-465,468,492-493,496,571-572,575,593-594,597,618-619,622,640-641,644,659-660,760-761,764,815-816,882-883,6757,6762
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b1a2bf51f5fb1353e255dbab7d21072e44d8f2c8",
+  "prompts": {},
+  "sessions": {
+    "s_fa07440e282490": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b817187a-8d20-4ca6-92ef-7458e947c46b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

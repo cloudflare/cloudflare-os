@@ -1,0 +1,25 @@
+packages/mcp-shared/package.json
+  s_fa07440e282490::t_cc7c0291e345d0 34
+packages/typed-storage/package.json
+  s_fa07440e282490::t_b6dacf46a58866 15
+packages/workshop-frontend/package.json
+  s_fa07440e282490::t_89bceab1a46271 7
+packages/workshop-shared/package.json
+  s_fa07440e282490::t_f252adfe420ec9 37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "efba4e493cc79a53adf831b5349dc1fb69635ec3",
+  "prompts": {},
+  "sessions": {
+    "s_fa07440e282490": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b817187a-8d20-4ca6-92ef-7458e947c46b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

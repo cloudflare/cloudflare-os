@@ -1,0 +1,40 @@
+packages/workshop-ios/src/transcript.ts
+  s_4932c18ec77eef::t_cc64c349c18393 779,783-785,787-789,794-797
+  s_4932c18ec77eef::t_0b71d72f5b76f1 790-793
+packages/workshop-ios/src/outbox.test.ts
+  s_4932c18ec77eef::t_464a7cb50be92b 282-284
+packages/workshop-ios/src/screens/ChatScreen.tsx
+  s_4932c18ec77eef::t_82d2e8b99acbe7 10,125-140,627
+packages/workshop-ios/src/ui/Drawer.tsx
+  s_4932c18ec77eef::t_464a7cb50be92b 14-15,86,109,184,187
+  s_4932c18ec77eef::t_ff40565120737e 87
+packages/workshop-ios/TODO.md
+  s_4932c18ec77eef::t_82d2e8b99acbe7 93-94
+  s_4932c18ec77eef::t_464a7cb50be92b 77-78,239-240
+  s_4932c18ec77eef::t_cc64c349c18393 79-80
+packages/workshop-ios/src/ui/AppDrawer.tsx
+  s_4932c18ec77eef::t_464a7cb50be92b 193-199
+packages/workshop-ios/src/transcript.test.ts
+  s_4932c18ec77eef::t_cc64c349c18393 279,281-288,305-306
+  s_4932c18ec77eef::t_355fcbb5f38d75 280
+  s_4932c18ec77eef::t_a83f8164699066 289-304
+packages/workshop-ios/src/outbox.ts
+  s_4932c18ec77eef::t_4d7f1e7f8e796b 61,63-68
+  s_4932c18ec77eef::t_464a7cb50be92b 5,73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9bcf6a2559eb99e5954b88c0ac8c35a42ddd85a8",
+  "prompts": {},
+  "sessions": {
+    "s_4932c18ec77eef": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_009f29c3dffeqlbbYWfd3zF5Km",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

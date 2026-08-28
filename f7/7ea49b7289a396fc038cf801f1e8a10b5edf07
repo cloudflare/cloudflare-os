@@ -1,0 +1,36 @@
+packages/gatekeeper-mcp/README.md
+  s_e25e29d8ebebad::t_88ee6847afe092 55-56,63-65
+packages/mcp-shared/src/tools.ts
+  s_e25e29d8ebebad::t_a87a1d866643ad 6,105-108
+  s_e25e29d8ebebad::t_fa1d49330797d7 109-110
+packages/mcp-shared/src/session-methods.ts
+  s_e25e29d8ebebad::t_a87a1d866643ad 19
+packages/mcp-shared/src/schema-to-ts.ts
+  s_e25e29d8ebebad::t_a87a1d866643ad 351,354-359
+packages/mcp-shared/src/types.d.ts
+  s_e25e29d8ebebad::t_a87a1d866643ad 71,74-76
+packages/mcp-shared/src/session.ts
+  s_e25e29d8ebebad::t_a87a1d866643ad 21,24,109,130
+packages/mcp-shared/src/base-types.ts
+  s_e25e29d8ebebad::t_a87a1d866643ad 81,84-86
+packages/mcp-shared/__tests__/session-methods.test.ts
+  s_e25e29d8ebebad::t_725b395e674ac2 66-67
+packages/mcp-shared/__tests__/schema-to-ts.test.ts
+  s_e25e29d8ebebad::t_725b395e674ac2 396,405,407-409
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f77ea49b7289a396fc038cf801f1e8a10b5edf07",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

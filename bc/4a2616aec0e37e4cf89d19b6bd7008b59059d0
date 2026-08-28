@@ -1,0 +1,31 @@
+packages/workshop-backend/wrangler.jsonc
+  s_541af6f33f7bfd::t_ad875865f85f30 92
+packages/workshop-backend/src/site-logo.ts
+  s_541af6f33f7bfd::t_a279e8e7871302 4-5,7
+packages/workshop-backend/__tests__/site-logo.test.ts
+  s_541af6f33f7bfd::t_a2713a9eec6e92 38,45,61,65
+packages/workshop-frontend/src/components/SiteLogo.test.tsx
+  s_541af6f33f7bfd::t_522c88bdd082a6 45,47,62,67,72-73
+packages/workshop-frontend/src/siteLogoUtils.test.ts
+  s_541af6f33f7bfd::t_2782bc3d1d300b 183,199-201
+packages/workshop-frontend/vite.config.test.ts
+  s_541af6f33f7bfd::t_f6bd4ff29d1797 28
+packages/workshop-frontend/vite.config.ts
+  s_541af6f33f7bfd::t_b0252f59b9d7a1 24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bc4a2616aec0e37e4cf89d19b6bd7008b59059d0",
+  "prompts": {},
+  "sessions": {
+    "s_541af6f33f7bfd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b4ae9f3ffe6mj1XYPkOYJ0WK",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

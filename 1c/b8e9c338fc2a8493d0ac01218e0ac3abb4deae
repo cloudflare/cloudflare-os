@@ -1,0 +1,34 @@
+packages/mcp-shared/__tests__/account-endpoint.test.ts
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 193-194,201-212
+  s_e25e29d8ebebad::t_80fce7550e0835 213-214
+packages/mcp-shared/src/account.ts
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 290-291,557,659-667,790-791,793-797,800-802,805
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 10-16,30-31,54-60,69-76,82,87-93,95-99,104,106-116,118-130,135-144,150,157-159,162,165-174
+  s_e25e29d8ebebad::t_f863f11f0f55d1 18,100-103
+packages/mcp-shared/src/fetch.ts
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 15-16,21-27,35-42,97-101,103,135,143-148,151-153,193
+packages/mcp-shared/__tests__/fetch.test.ts
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 31-34,42-55,175-191
+packages/mcp-shared/__tests__/connection.test.ts
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 1-171
+packages/mcp-shared/src/client.ts
+  s_e25e29d8ebebad::t_e51b1320eb1b5a 17,129-136,166,298,327,333,341-363,369,375,380-383,392,459-468
+  s_e25e29d8ebebad::t_8c0056c99a7b26 469
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1cb8e9c338fc2a8493d0ac01218e0ac3abb4deae",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

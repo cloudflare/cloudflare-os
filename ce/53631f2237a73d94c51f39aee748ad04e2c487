@@ -1,0 +1,34 @@
+packages/workshop-backend/__tests__/agent-catalog.test.ts
+  s_793c5badb534a2::t_80a7c84d23a9d1 12,23,84-101
+  s_793c5badb534a2::t_a78c9f5a61357c 3-4
+  s_793c5badb534a2::t_dcbf9332430b1b 107,118
+  s_793c5badb534a2::t_9357b29d7ef013 102
+packages/workshop-backend/src/agent-catalog.ts
+  s_793c5badb534a2::t_80a7c84d23a9d1 10-13,24,28,36,77,79-95,107-112
+packages/workshop-shared/src/gatekeeper.ts
+  s_e1d616d8ae229f::t_b1e9fe72806762 115-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ce53631f2237a73d94c51f39aee748ad04e2c487",
+  "prompts": {},
+  "sessions": {
+    "s_793c5badb534a2": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_00b9dda04ffe3C254mUZBuw4LF",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_e1d616d8ae229f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_00d0e72c1ffebqFy7TEpQYQ3sm",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

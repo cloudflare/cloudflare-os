@@ -1,0 +1,19 @@
+packages/mcp-shared/src/schema-to-ts.ts
+  s_df72ba6c9639e3::t_e0e0ab0fe20260 11-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cc2f8eff99a689b675028db223229d46f54c9c3b",
+  "prompts": {},
+  "sessions": {
+    "s_df72ba6c9639e3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03713f2c2ffeh8iqwxXPN44Im5",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

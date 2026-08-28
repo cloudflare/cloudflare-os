@@ -1,0 +1,224 @@
+packages/mcp-shared/src/client.ts
+  s_e25e29d8ebebad::t_e51b1320eb1b5a 166-173,209,372,409,415,423-445,451,457,462-465,480,555-564
+  s_e25e29d8ebebad::t_8c0056c99a7b26 565
+  s_e25e29d8ebebad::t_cc1dfd8e1fc620 371
+  s_e25e29d8ebebad::t_b642f552f4700b 400-402
+  s_e25e29d8ebebad::t_970c92241c15d4 616,646-649,651
+  s_e25e29d8ebebad::t_5f63516b1a3812 48,50,54,56,58
+  s_e25e29d8ebebad::t_2178eaa15bb1dc 356,358
+  s_e25e29d8ebebad::t_d85055b439a98d 18,49,51-53,55,57,59-69,85-87,90-94,109-111,235,250-253,288,302,320-339,352-355,357,359-367,382,384-386,469-476,490,492-494,506,515-519,572-602,605-611,614-615,617-624,626-627,632,635,639-645
+  s_e25e29d8ebebad::t_890b904e8efc70 567-570
+packages/mcp-shared/__tests__/account-endpoint.test.ts
+  s_e25e29d8ebebad::t_80fce7550e0835 217-218
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 193-194,201-208,215-216
+  s_e25e29d8ebebad::t_d864ef809682ac 209-214
+packages/mcp-shared/__tests__/fetch.test.ts
+  s_e25e29d8ebebad::t_49de64696f44b0 37-47
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 31-34,53-66,186-202
+packages/mcp-shared/src/fetch.ts
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 15-16,21,23,25,27-28,36-43,104-108,110,146,165-167,207
+  s_e25e29d8ebebad::t_49de64696f44b0 154-162
+  s_e25e29d8ebebad::t_bb79a679b8df38 20,22,24,26
+packages/mcp-shared/__tests__/schema-to-ts.test.ts
+  s_e25e29d8ebebad::t_a3f4b793f955fe 355
+  s_e25e29d8ebebad::t_07aee455c4e90c 356-357
+  s_e25e29d8ebebad::t_d85055b439a98d 51-67,123-147,444,447-451,454-459
+  s_e25e29d8ebebad::t_e9bf13bbeecf86 460
+packages/mcp-shared/src/account.ts
+  s_e25e29d8ebebad::t_09bca857550bc7 814-817
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 312,579,683-691,820-824,827-828,832
+  s_e25e29d8ebebad::t_4b0ed0dc703e55 829
+  s_e25e29d8ebebad::t_24cc37753e394c 313
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 10-14,16-17,32,63-69,78-85,96-102,104-108,113,116,119-120,124-128,130-131,149-158,177-179
+  s_e25e29d8ebebad::t_03c69314cd73d9 115,117-118,121-122,129,132-145,159,161-162,165-170,180,182,184
+  s_e25e29d8ebebad::t_bfd393328004af 109-112,160,171
+  s_e25e29d8ebebad::t_a1b393a2b17ed1 31
+  s_e25e29d8ebebad::t_970c92241c15d4 199,202
+  s_e25e29d8ebebad::t_d85055b439a98d 15,91,195-198
+packages/mcp-shared/src/session.ts
+  s_e25e29d8ebebad::t_24cc37753e394c 260-262
+  s_e25e29d8ebebad::t_d85055b439a98d 16,18-33,51,53,55,84,88-92,95-98,103-107,112-120,140-182,184,186-190,192-200,204,211-213,237
+  s_e25e29d8ebebad::t_10a335af6ad641 11-15,225-231
+  s_e25e29d8ebebad::t_da8a0343b298f3 50,52,54,67,81,83,85,87,94
+  s_e25e29d8ebebad::t_036792a8ebf161 86
+packages/mcp-shared/src/schema-to-ts.ts
+  s_e25e29d8ebebad::t_24cc37753e394c 348
+  s_e25e29d8ebebad::t_03c69314cd73d9 349-350
+  s_e25e29d8ebebad::t_d85055b439a98d 11-12,16,343-345,361,363-367,392-393,409-416
+packages/mcp-shared/__tests__/connection.test.ts
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 1-149,151-155,157-164,184,187
+  s_e25e29d8ebebad::t_8c25ed9521d74a 156
+  s_e25e29d8ebebad::t_a3f4b793f955fe 165,173-174,176-177,180-181
+  s_e25e29d8ebebad::t_aec8732427cbef 150,166-172,175,178-179,182-183,185-186
+packages/mcp-shared/__tests__/session.test.ts
+  s_e25e29d8ebebad::t_ab47560f84c54d 63
+  s_e25e29d8ebebad::t_10a335af6ad641 5,36
+  s_e25e29d8ebebad::t_a3f4b793f955fe 37-49,51-62
+  s_e25e29d8ebebad::t_faba2b73c0d81d 50,64
+  s_e25e29d8ebebad::t_3ebfcf16031608 12
+  s_e25e29d8ebebad::t_d85055b439a98d 4,7-11,65-104,106,108-128,130,132-139,161-292
+  s_e25e29d8ebebad::t_b187980dcde16b 105,107,129,131,140-160
+packages/workshop-frontend/src/Activity.tsx
+  s_e25e29d8ebebad::t_82b80102c032a0 102-103
+  s_e25e29d8ebebad::t_68f1dceaf02c44 618-622
+  s_e25e29d8ebebad::t_4e240bd59d49e4 104
+packages/mcp-shared/src/facet.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 13-24,29,34-40,44-50,62-64,71,75-82,130,133,149,153-161,164-167,180-184,186-195,212-214,216-219,232-257,259,261,263-270,273-276,308-313,328-329,331,352-353,367-370
+  s_e25e29d8ebebad::t_22fac969972f72 330
+  s_e25e29d8ebebad::t_970c92241c15d4 131,137,145-146,196-211,220-231,258,260,262,271-272,332-351
+  s_e25e29d8ebebad::t_0751f2c5c47203 147-148
+  s_e25e29d8ebebad::t_10a335af6ad641 33,162-163,168-179,185
+  s_e25e29d8ebebad::t_036792a8ebf161 215
+packages/mcp-shared/__tests__/action-store.test.ts
+  s_e25e29d8ebebad::t_ae25449aa12584 61,67
+  s_e25e29d8ebebad::t_77da3842f714ff 57,59-60,65-66,68
+  s_e25e29d8ebebad::t_d85055b439a98d 4-5,10-12,22,40-56,58,69-75,91-106
+  s_e25e29d8ebebad::t_2d54cd3999155c 6-9,87-88
+  s_e25e29d8ebebad::t_a97cd5d95b3772 62-64
+  s_e25e29d8ebebad::t_cd709bd267c9c2 77-86,89-90
+  s_957b1e84b891f0::t_3322a0a810cefe 76
+packages/gatekeeper-mcp/src/mcp.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 286,288-290,292-294,299-300
+  s_e25e29d8ebebad::t_2deee0cbf73927 38,291,295-298
+  s_e25e29d8ebebad::t_d85055b439a98d 5,29,371-374,457-458
+packages/mcp-shared/__tests__/tool-search.test.ts
+  s_e25e29d8ebebad::t_77da3842f714ff 48-51
+  s_e25e29d8ebebad::t_d85055b439a98d 1-47,52
+packages/mcp-shared/__tests__/facet.test.ts
+  s_e25e29d8ebebad::t_77da3842f714ff 2,6,20-36,53-54,65-70,74,85,95-97,215-265
+  s_e25e29d8ebebad::t_d85055b439a98d 1,7-10,41,43-52,71-73,75-84,86-91,94,112,122-181,184-193,195-214,266
+  s_e25e29d8ebebad::t_036792a8ebf161 182-183,194
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 521-522
+  s_e25e29d8ebebad::t_c069a0fe8e54fa 520
+packages/mcp-shared/src/base-types.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 14-15,87,89-90,92-94
+  s_e25e29d8ebebad::t_419fdc8a259fc3 84,88,91
+packages/mcp-shared/package.json
+  s_e25e29d8ebebad::t_d85055b439a98d 28
+packages/workshop-backend/src/auto-approval.ts
+  s_e25e29d8ebebad::t_dce1a83891a2c9 25,93
+  s_e25e29d8ebebad::t_9bca6fb047b558 85
+  s_e25e29d8ebebad::t_b51810b361b4e0 46,60,94,103
+  s_e25e29d8ebebad::t_454670f8160091 54-56,63,65-71
+packages/mcp-shared/README.md
+  s_e25e29d8ebebad::t_dce1a83891a2c9 122
+  s_e25e29d8ebebad::t_d85055b439a98d 24,26,33,113,115
+  s_e25e29d8ebebad::t_c7f7d6d025aae3 116-117
+packages/mcp-shared/__tests__/tools.test.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 5,22-41
+  s_e25e29d8ebebad::t_640b4bbd7f286d 42-44
+packages/workshop-backend/__tests__/auto-approval.test.ts
+  s_e25e29d8ebebad::t_9bca6fb047b558 227-229,232
+  s_e25e29d8ebebad::t_b51810b361b4e0 180-181,184-210
+  s_e25e29d8ebebad::t_c0cbc1b2b700c0 182-183
+  s_e25e29d8ebebad::t_dce1a83891a2c9 69,82,92,161-171
+  s_e25e29d8ebebad::t_77da3842f714ff 160,172-176,178
+  s_e25e29d8ebebad::t_cd709bd267c9c2 211,213-226,230-231,233-235
+  s_e25e29d8ebebad::t_1df102d7016e0d 177
+  s_e25e29d8ebebad::t_30017cb16d7c5c 179
+  s_e25e29d8ebebad::t_e1d034e59507de 212
+packages/mcp-shared/__tests__/session-methods-e2e.test.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 27-30
+packages/workshop-frontend/src/useResolveAction.ts
+  s_e25e29d8ebebad::t_dce1a83891a2c9 1,4
+packages/workshop-shared/src/gatekeeper.ts
+  s_e25e29d8ebebad::t_9bca6fb047b558 24-31,33-49,839-842
+  s_e25e29d8ebebad::t_5564c23c7c59ac 843
+  s_e25e29d8ebebad::t_454670f8160091 21-23
+  s_e25e29d8ebebad::t_9095d7d62ae718 32
+packages/mcp-shared/__tests__/client-pagination.test.ts
+  s_e25e29d8ebebad::t_77da3842f714ff 59-79
+  s_e25e29d8ebebad::t_2178eaa15bb1dc 236,248
+  s_e25e29d8ebebad::t_d2ebc4c6705448 270-271
+  s_e25e29d8ebebad::t_036792a8ebf161 245,269,359-360
+  s_e25e29d8ebebad::t_d85055b439a98d 3-7,15,18,20,26-29,32-47,80-98,130-235,237-244,246-247,249-268,273-292,302-358,361-394,401-409,459-461,467,471-472,537-542
+  s_e25e29d8ebebad::t_490b5457e4323f 272
+  s_e25e29d8ebebad::t_7e21183abc8013 99-119
+packages/gatekeeper-mcp/README.md
+  s_e25e29d8ebebad::t_d85055b439a98d 55-66
+packages/mcp-shared/src/scope.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 18,94-97,103,114-116,173-175
+packages/mcp-shared/__tests__/hydrated-tools.test.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 1-82
+packages/workshop-frontend/src/Activity.test.tsx
+  s_e25e29d8ebebad::t_30bfc12a91d5cd 1,3-19,21-24,28,33-36,40-97
+  s_e25e29d8ebebad::t_cd709bd267c9c2 2,20,25-27,29-32,37-39
+packages/mcp-shared/src/tools.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 5-12,44,57,59-61,64-65,79-84,88-89,101-104,117-128,146,152-156,216-221,234
+  s_e25e29d8ebebad::t_b0b8b85c20c7ec 43,56,58,99,105,130-131
+  s_e25e29d8ebebad::t_a1b393a2b17ed1 230-233
+packages/workshop-backend/src/overseer.ts
+  s_e25e29d8ebebad::t_454670f8160091 2589,2596
+  s_e25e29d8ebebad::t_10a335af6ad641 2603,2605,2607
+  s_e25e29d8ebebad::t_a1b393a2b17ed1 523,525-527
+  s_e25e29d8ebebad::t_9bca6fb047b558 4,2588,2590-2595,2597-2600,2604
+  s_e25e29d8ebebad::t_dce1a83891a2c9 2585-2586,2606,2613,7778-7779
+  s_e25e29d8ebebad::t_d969e2ca36a3f8 528,737,2601-2602,7895
+  s_e25e29d8ebebad::t_0fb95e2f92da5f 524
+packages/gatekeeper-mcp-portal/README.md
+  s_e25e29d8ebebad::t_10a335af6ad641 31
+packages/mcp-shared/__tests__/portal.test.ts
+  s_e25e29d8ebebad::t_10a335af6ad641 18-22
+  s_e25e29d8ebebad::t_d85055b439a98d 14-16,24-25,31-33,42-43,52-53,64-65
+packages/mcp-shared/src/catalog.ts
+  s_e25e29d8ebebad::t_bcb45c5bb08e12 65,67,69
+  s_e25e29d8ebebad::t_a1b393a2b17ed1 144-149,156
+  s_e25e29d8ebebad::t_c7f7d6d025aae3 203,226
+  s_e25e29d8ebebad::t_d85055b439a98d 1-3,9,11,14-20,63-64,66,68,70,74,80,87-92,94,128-143,150-155,157-202,204-225,227
+  s_e25e29d8ebebad::t_970c92241c15d4 59-60,93
+  s_957b1e84b891f0::t_698cec4fdeb773 61-62
+packages/mcp-shared/src/tool-search.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 1-9,11-12,14-34,36,38-39,41-51
+  s_e25e29d8ebebad::t_a1b393a2b17ed1 10,13,35,40
+  s_e25e29d8ebebad::t_970c92241c15d4 37
+packages/mcp-shared/src/types.d.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 4-5,77,79-80,82-84
+  s_e25e29d8ebebad::t_419fdc8a259fc3 74,78,81
+packages/mcp-shared/__tests__/session-methods.test.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 70-79
+packages/mcp-shared/src/portal.ts
+  s_e25e29d8ebebad::t_866655f9fcee2a 49,52-56
+  s_e25e29d8ebebad::t_780b09ad0f734b 61-64,68-70,73-76
+  s_e25e29d8ebebad::t_d85055b439a98d 66-67
+  s_e25e29d8ebebad::t_10a335af6ad641 59-60,65,71
+packages/workshop-shared/src/api.ts
+  s_e25e29d8ebebad::t_d969e2ca36a3f8 1473,1508,1510
+  s_e25e29d8ebebad::t_a1b393a2b17ed1 1509
+  s_e25e29d8ebebad::t_5564c23c7c59ac 1471
+packages/mcp-shared/src/action-store.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 25-27,41-43,58-59,67,69-71,84-86,92-105,110,113-117,129-130,137,142-146,171-173,175-176,178,207,213,215-220,222-224,226-230,232-233
+  s_e25e29d8ebebad::t_9bca6fb047b558 4-7,62-66,68,225
+  s_e25e29d8ebebad::t_454670f8160091 60-61,196-197,231
+  s_e25e29d8ebebad::t_a97cd5d95b3772 195,198
+packages/mcp-shared/__tests__/scope.test.ts
+  s_e25e29d8ebebad::t_d85055b439a98d 13,74-82,186,189-194
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_e25e29d8ebebad::t_b0c42ccfd3b227 5884
+  s_e25e29d8ebebad::t_82b80102c032a0 6438,6451-6454,6605-6607
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e3d3e5f68e7f430af2bb673c8eda4fee2393b8ff",
+  "prompts": {},
+  "sessions": {
+    "s_957b1e84b891f0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0044ffadfffeKs31F1Kn3C0pP0",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}

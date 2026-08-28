@@ -1,0 +1,21 @@
+packages/workshop-ios/README.md
+  s_05e5fdfde14468::t_f84f47360d79d4 4-5,21-25,82-108,113-117
+packages/workshop-ios/TODO.md
+  s_05e5fdfde14468::t_9502fdcd681ac5 25-26,28-29,31,33-35,38,40-41,45-46,48,50-51,53-54,56,58,60-63,69,74-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "142012b4316e51323604b712e80858b05b5c4709",
+  "prompts": {},
+  "sessions": {
+    "s_05e5fdfde14468": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01ec30fddffeTfuiapuKb6uixw",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

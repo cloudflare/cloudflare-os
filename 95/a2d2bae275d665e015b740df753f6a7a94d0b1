@@ -1,0 +1,20 @@
+packages/router/src/index.ts
+  s_8020c00abab0eb::t_f6cd3a39643b81 11-14,20
+  s_8020c00abab0eb::t_22cd65518a6938 71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "95a2d2bae275d665e015b740df753f6a7a94d0b1",
+  "prompts": {},
+  "sessions": {
+    "s_8020c00abab0eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b9e9ee91-0307-41bc-9530-0bb117fda2d8",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

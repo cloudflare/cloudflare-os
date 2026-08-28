@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_1959243d5864ff::t_b92f3ceafcda29 492-495,512,533
+packages/workshop-frontend/src/routes/-gatekeepers.test.tsx
+  s_1959243d5864ff::t_41584da6be3c53 25-27,101-115
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e6f587dd49dd9bae383db20290bd7b23d25b1075",
+  "prompts": {},
+  "sessions": {
+    "s_1959243d5864ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "de178bcc-5d2e-4b59-bb86-90cad37e04cd",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

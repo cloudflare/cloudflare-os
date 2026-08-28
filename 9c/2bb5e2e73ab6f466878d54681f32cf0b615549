@@ -1,0 +1,85 @@
+package.json
+  s_46a6ef7969e9ae::t_9010f0ed0f0b10 18
+pnpm-lock.yaml
+  s_46a6ef7969e9ae::t_d62ee8b0053d71 11-13,5395
+scripts/testdata/fixture-assets/access/assets/app.js
+  s_46a6ef7969e9ae::t_a33fa6698ca618 1
+scripts/testdata/fixture-assets/access/assets/shared.css
+  s_46a6ef7969e9ae::t_5341704ec9a68a 1
+scripts/testdata/fixture-assets/access/index.html
+  s_46a6ef7969e9ae::t_72841caac101c5 1
+scripts/testdata/fixture-assets/password/assets/app.js
+  s_46a6ef7969e9ae::t_2bbdefa3a9c993 1
+scripts/testdata/fixture-assets/password/assets/shared.css
+  s_46a6ef7969e9ae::t_e54e853776f2ae 1
+scripts/testdata/fixture-assets/password/index.html
+  s_46a6ef7969e9ae::t_d5b6dc7ad09a4c 1
+scripts/testdata/fixture-bundles/gatekeeper-cloudflare/cloudflare.js
+  s_46a6ef7969e9ae::t_89877af544112d 1
+scripts/testdata/fixture-bundles/gatekeeper-confluence/confluence.js
+  s_46a6ef7969e9ae::t_5ba425c7389a88 1
+scripts/testdata/fixture-bundles/gatekeeper-context/context.js
+  s_46a6ef7969e9ae::t_b4a5dc7661ec99 1
+scripts/testdata/fixture-bundles/gatekeeper-email/email.js
+  s_46a6ef7969e9ae::t_cd915912cdb818 1
+scripts/testdata/fixture-bundles/gatekeeper-github/github.js
+  s_46a6ef7969e9ae::t_c57a4ba15729fc 1
+scripts/testdata/fixture-bundles/gatekeeper-google/README.md
+  s_46a6ef7969e9ae::t_1a53c674f9c0e0 1
+scripts/testdata/fixture-bundles/gatekeeper-google/abc123-types.txt
+  s_46a6ef7969e9ae::t_5dbd46a03cf460 1
+scripts/testdata/fixture-bundles/gatekeeper-google/google.js
+  s_46a6ef7969e9ae::t_706987693babb7 1
+scripts/testdata/fixture-bundles/gatekeeper-google/google.js.map
+  s_46a6ef7969e9ae::t_6f3b6e2c1d86b5 1
+scripts/testdata/fixture-bundles/gatekeeper-homeassistant/homeassistant.js
+  s_46a6ef7969e9ae::t_fbbfa666ef0857 1
+scripts/testdata/fixture-bundles/gatekeeper-linear/linear.js
+  s_46a6ef7969e9ae::t_f04abb5f5d4db5 1
+scripts/testdata/fixture-bundles/gatekeeper-notion/notion.js
+  s_46a6ef7969e9ae::t_d580b53876cc34 1
+scripts/testdata/fixture-bundles/gatekeeper-slack/slack.js
+  s_46a6ef7969e9ae::t_4ad23d4b60c072 1
+scripts/testdata/fixture-bundles/gatekeeper-spotify/spotify.js
+  s_46a6ef7969e9ae::t_99bc87d5449613 1
+scripts/testdata/fixture-bundles/gatekeeper-supabase/supabase.js
+  s_46a6ef7969e9ae::t_b2e3f19eac2eed 1
+scripts/testdata/fixture-bundles/gatekeeper-zoominfo/zoominfo.js
+  s_46a6ef7969e9ae::t_aaade2eb3457f9 1
+scripts/testdata/fixture-bundles/router/index.js
+  s_46a6ef7969e9ae::t_b6292b64170410 1
+scripts/testdata/fixture-bundles/workshop-backend/server.js
+  s_46a6ef7969e9ae::t_a86f63797fc299 1
+scripts/testdata/golden-manifest.json
+  s_46a6ef7969e9ae::t_59fa34d0a45859 1-989
+.github/workflows/publish-release.yml
+  s_46a6ef7969e9ae::t_367ce0f3a53234 1-53
+scripts/release-hash.test.js
+  s_46a6ef7969e9ae::t_dabdb6e566ea12 1-91
+scripts/release-manifest.test.js
+  s_46a6ef7969e9ae::t_690c1c6e2f3e85 1-189
+scripts/release/build-release.mjs
+  s_46a6ef7969e9ae::t_3cc5222251da11 1-140
+scripts/release/hash-lib.mjs
+  s_46a6ef7969e9ae::t_f1c5264b622cec 1-114
+scripts/release/manifest-lib.mjs
+  s_46a6ef7969e9ae::t_796a0cb2750d5a 1-256
+scripts/release/upload-release.mjs
+  s_46a6ef7969e9ae::t_a8f5c43f9bdc4e 1-102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9c2bb5e2e73ab6f466878d54681f32cf0b615549",
+  "prompts": {},
+  "sessions": {
+    "s_46a6ef7969e9ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce2212d8-15d0-4bbf-9af8-e2236b2c9c81",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

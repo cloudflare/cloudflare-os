@@ -1,0 +1,19 @@
+packages/workshop-ios/src/ui/ChatRows.tsx
+  s_05e5fdfde14468::t_598dcfc8694a46 16,68-69,71-76,692-719,734,738
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "48ad99db0a6a9231e982e20f3dabb9d0616a0dd2",
+  "prompts": {},
+  "sessions": {
+    "s_05e5fdfde14468": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01ec30fddffeTfuiapuKb6uixw",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

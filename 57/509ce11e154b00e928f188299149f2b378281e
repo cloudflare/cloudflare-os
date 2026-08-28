@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_1959243d5864ff::t_f5ca808b0f4b9e 662-668
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_1959243d5864ff::t_312c2e79d1aaa7 967-973
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "57509ce11e154b00e928f188299149f2b378281e",
+  "prompts": {},
+  "sessions": {
+    "s_1959243d5864ff": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "de178bcc-5d2e-4b59-bb86-90cad37e04cd",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

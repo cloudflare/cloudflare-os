@@ -1,0 +1,33 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_017f2cc25a2960::t_bf2f751925f5f7 678-681
+packages/workshop-backend/__tests__/agent-screenshot.test.ts
+  s_017f2cc25a2960::t_bf2f751925f5f7 5-7,35-36,143,147-148,155-171
+  s_017f2cc25a2960::t_af469c0bf9951f 172-173
+packages/workshop-shared/src/api.ts
+  s_017f2cc25a2960::t_bf2f751925f5f7 2033-2035,2152-2153
+packages/workshop-backend/src/agent.ts
+  s_017f2cc25a2960::t_bf2f751925f5f7 1,284-285,623,2846-2851,2853,2855,2875-2876,2881-2883
+packages/workshop-backend/src/browser-export.ts
+  s_017f2cc25a2960::t_bf2f751925f5f7 1,4,20-30,171,279,285-286,329,331-332,373,387-388
+packages/workshop-backend/__tests__/browser-export.test.ts
+  s_017f2cc25a2960::t_bf2f751925f5f7 20-26,60-66,327-344
+  s_017f2cc25a2960::t_07aa6c789fc6fa 345-346
+packages/workshop-backend/src/overseer.ts
+  s_017f2cc25a2960::t_bf2f751925f5f7 3,2862-2863,2873
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "908ca13921a6715c758ca47c680f4a55af23be43",
+  "prompts": {},
+  "sessions": {
+    "s_017f2cc25a2960": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0146c6b70ffefJEVz2tYFR3V1O",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

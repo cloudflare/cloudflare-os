@@ -1,0 +1,23 @@
+packages/workshop-backend/src/ai-gateway-binding-fetch.ts
+  s_1dac6d56438157::t_e2f5c9e7dbfd8f 133-145
+  s_1dac6d56438157::t_bd6625a0e6150a 16-22,26-31
+  s_1dac6d56438157::t_c644c934d89f6b 32
+packages/workshop-backend/__tests__/ai-gateway-binding-fetch.test.ts
+  s_1dac6d56438157::t_08fd5326e39129 248-280
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cca1ee338ef5f22e0b665888ff3939c508ad7429",
+  "prompts": {},
+  "sessions": {
+    "s_1dac6d56438157": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "21fbf310-06f3-4616-af34-aee2cfc35de6",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

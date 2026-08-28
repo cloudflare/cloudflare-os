@@ -1,0 +1,19 @@
+packages/workshop-backend/src/admin-settings.ts
+  s_541af6f33f7bfd::t_b786b0e4a7e57d 48-50,165-184,186-188,217-223,234,249,266-270,275-279
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "32aeca59f2a7ed483c035fa918dc345836a85b04",
+  "prompts": {},
+  "sessions": {
+    "s_541af6f33f7bfd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b4ae9f3ffe6mj1XYPkOYJ0WK",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

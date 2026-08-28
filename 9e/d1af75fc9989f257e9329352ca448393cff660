@@ -1,0 +1,58 @@
+packages/workshop-ios/src/transcript.test.ts
+  s_05e5fdfde14468::t_00f3bbf952c4ac 11,387-388
+  s_05e5fdfde14468::t_e711cc767343e2 576-611
+packages/workshop-ios/src/screens/ChatScreen.tsx
+  s_05e5fdfde14468::t_6ad0e3c9c6961e 242-262
+  s_05e5fdfde14468::t_b11622a5b7deb6 372-398,400-428,430
+  s_05e5fdfde14468::t_e55515536d4e13 590-594,596-612,614-615,617,620
+  s_05e5fdfde14468::t_d1f0aad98930fb 270-275
+packages/workshop-ios/src/hooks.ts
+  s_05e5fdfde14468::t_2d556d32813752 53,96-103,105-119,124
+  s_05e5fdfde14468::t_6bdcc7c4f08812 54,104
+  s_05e5fdfde14468::t_55f56902154674 1
+packages/workshop-ios/src/screens/ThreadsScreen.tsx
+  s_05e5fdfde14468::t_68d9b6d60785bf 18,112-125,149,154,219-220,223-231
+  s_05e5fdfde14468::t_8ce716d91571c9 196-197
+packages/workshop-ios/src/ui/ChatRows.tsx
+  s_05e5fdfde14468::t_cf1fee22d1ac25 6,8,15,51-84,86-122,689-708,710-721
+  s_05e5fdfde14468::t_cb3b585976a4e5 85,709
+  s_05e5fdfde14468::t_79fba3d661be4d 130,151-153,165-166,170-171
+packages/workshop-ios/src/ui/SwipeToDelete.tsx
+  s_05e5fdfde14468::t_7291585a32d6fe 3,23-24,30-32,84-89,118-119
+  s_05e5fdfde14468::t_d67295c93c6973 1-2,4-22,25-29,33-83,90-101,110-117,120-122
+  s_05e5fdfde14468::t_8987f5028ac05d 102-109
+packages/workshop-ios/src/session.ts
+  s_05e5fdfde14468::t_effe157d94dba9 43-49,64-70
+  s_05e5fdfde14468::t_692ffe2f8844f2 139,143-152,156-175
+  s_05e5fdfde14468::t_add98b08f8f0eb 244,248-258
+  s_05e5fdfde14468::t_da43cde3234155 42,176-177,259-260
+packages/workshop-ios/src/transcript.ts
+  s_05e5fdfde14468::t_edcf826301cf50 515,705,708-711,718-720,794-796
+  s_05e5fdfde14468::t_00f3bbf952c4ac 430,434-435
+  s_05e5fdfde14468::t_5cecfb6738b156 19-30,60-61,492-495,513-514,516,590
+  s_05e5fdfde14468::t_9466092cc0745f 437-439,441-446,448-451,454,457-460
+packages/workshop-ios/App.tsx
+  s_05e5fdfde14468::t_42d0db592be94c 175-186
+  s_05e5fdfde14468::t_407deee21efe9c 2-10,16
+  s_05e5fdfde14468::t_add98b08f8f0eb 51-58,61-72,84-92,111-112,130-132
+packages/workshop-ios/src/screens/WorkspacesScreen.tsx
+  s_05e5fdfde14468::t_7291585a32d6fe 200-201,204
+  s_05e5fdfde14468::t_191bba6ca510c8 68-86,205-211
+  s_05e5fdfde14468::t_baa8879f90397c 5,18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9ed1af75fc9989f257e9329352ca448393cff660",
+  "prompts": {},
+  "sessions": {
+    "s_05e5fdfde14468": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01ec30fddffeTfuiapuKb6uixw",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

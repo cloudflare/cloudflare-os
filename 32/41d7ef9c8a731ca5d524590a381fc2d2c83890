@@ -1,0 +1,19 @@
+scripts/testdata/golden-manifest.json
+  s_26c0be70719a03::t_b2259e70f7f2e4 1146-1148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3241d7ef9c8a731ca5d524590a381fc2d2c83890",
+  "prompts": {},
+  "sessions": {
+    "s_26c0be70719a03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "efb0fb21-f21d-4d25-99e3-8bef537b83e0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

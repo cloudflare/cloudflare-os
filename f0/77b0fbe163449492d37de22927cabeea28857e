@@ -1,0 +1,48 @@
+packages/workshop-ios/src/screens/GadgetScreen.tsx
+  s_05e5fdfde14468::t_be1ebbf3bcec37 1-5,7-10,13-34,52-53,55-171,173-199
+  s_05e5fdfde14468::t_51b13064295b5b 11-12,35-51,54,172
+  s_05e5fdfde14468::t_f0a9e631852659 6
+packages/workshop-ios/src/navigation.ts
+  s_05e5fdfde14468::t_f0a9e631852659 24-25
+packages/workshop-ios/package.json
+  s_05e5fdfde14468::t_a7b4826b564715 8,10-11
+  s_05e5fdfde14468::t_0b44e980621dce 24
+packages/workshop-ios/src/gadget-bridge.ts
+  s_05e5fdfde14468::t_04c6c2fc66bdfd 1-70
+packages/workshop-ios/scripts/build-capnweb-source.mjs
+  s_05e5fdfde14468::t_8487a5a35bd88f 1-15,23-36
+  s_05e5fdfde14468::t_91868a0e56d04a 16-19
+  s_05e5fdfde14468::t_3fceefbd0331ef 20-22
+packages/workshop-ios/src/screens/OutputsScreen.tsx
+  s_05e5fdfde14468::t_f0a9e631852659 122,124-125
+packages/workshop-ios/src/gadget-frame.ts
+  s_05e5fdfde14468::t_18a078f24327c2 1-86,92-102,104-154
+  s_05e5fdfde14468::t_70a3e1ba55e818 87-91,103
+packages/workshop-ios/src/workspace-session.ts
+  s_05e5fdfde14468::t_709c9bd8efc223 2-7
+  s_05e5fdfde14468::t_347bda5dc1f0d1 81-90
+packages/workshop-ios/.gitignore
+  s_05e5fdfde14468::t_a7b4826b564715 76-78
+packages/workshop-ios/App.tsx
+  s_05e5fdfde14468::t_f0a9e631852659 21,161-165
+packages/workshop-ios/ios/Podfile.lock
+  s_05e5fdfde14468::t_cbdb6b631d9b93 1507-1528,2040,2168-2169,2290
+pnpm-lock.yaml
+  s_05e5fdfde14468::t_9bbb38539e1a0c 890-892,5365-5370,11465-11471
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f077b0fbe163449492d37de22927cabeea28857e",
+  "prompts": {},
+  "sessions": {
+    "s_05e5fdfde14468": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01ec30fddffeTfuiapuKb6uixw",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

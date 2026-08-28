@@ -1,0 +1,37 @@
+packages/mcp-shared/src/facet.ts
+  s_df72ba6c9639e3::t_72e6b7e32f47bd 20,218-219
+packages/gatekeeper-mcp-portal/README.md
+  s_df72ba6c9639e3::t_0c8e2eb0da92c7 31,57-58,180-181
+packages/mcp-shared/__tests__/action-store.test.ts
+  s_df72ba6c9639e3::t_366361af258a3a 18
+packages/mcp-shared/src/action-store.ts
+  s_df72ba6c9639e3::t_0ace0115d1f10e 4,7,63,94,119-120,123,154,158
+packages/mcp-shared/src/connection.ts
+  s_df72ba6c9639e3::t_0ace0115d1f10e 89,101,105-106
+packages/mcp-shared/__tests__/session.test.ts
+  s_df72ba6c9639e3::t_2588bedcfae217 71-73
+packages/mcp-shared/src/session.ts
+  s_df72ba6c9639e3::t_72e6b7e32f47bd 11,59-60,65,173,179
+packages/mcp-shared/src/client.ts
+  s_df72ba6c9639e3::t_0ace0115d1f10e 159
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_df72ba6c9639e3::t_ff014d39305ba5 335,337-346
+  s_df72ba6c9639e3::t_e604b86ad8c392 30
+  s_df72ba6c9639e3::t_eb13ab242b3f59 448-450,594
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "10213902571a5ba623347bcfa1ceae9cd2958df7",
+  "prompts": {},
+  "sessions": {
+    "s_df72ba6c9639e3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03713f2c2ffeh8iqwxXPN44Im5",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

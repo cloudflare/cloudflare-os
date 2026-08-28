@@ -1,0 +1,160 @@
+packages/gatekeeper-mcp-portal/src/config.ts
+  s_df72ba6c9639e3::t_9404db0974f6ef 88-92
+  s_df72ba6c9639e3::t_1dfda795abd449 11,15-16
+  s_df72ba6c9639e3::t_422f9574ac155a 9
+  s_df72ba6c9639e3::t_925b762e430ff1 99-134
+packages/mcp-shared/__tests__/hydrated-tools.test.ts
+  s_df72ba6c9639e3::t_b948d3db535a39 1-61
+packages/mcp-shared/__tests__/schema-to-ts.test.ts
+  s_df72ba6c9639e3::t_ed20aea0cf5271 391,394-397
+packages/gatekeeper-mcp-portal/README.md
+  s_df72ba6c9639e3::t_b560c178fb105a 32
+  s_df72ba6c9639e3::t_f43cc56bba8f14 140,142-144,149-169
+  s_df72ba6c9639e3::t_7c9e55ed5e05fc 31,33,35-42
+  s_a676e8860d1ca3::t_b4c71ea20b8d95 170
+packages/mcp-shared/src/base-types.ts
+  s_df72ba6c9639e3::t_dfbbe740da7fb5 68
+packages/mcp-shared/src/facet.ts
+  s_df72ba6c9639e3::t_bf535c1e545180 24
+  s_df72ba6c9639e3::t_6f7f38f356c5ac 120-121,126-132
+  s_df72ba6c9639e3::t_df9f3e2274ca56 122-125
+packages/mcp-shared/src/catalog.ts
+  s_df72ba6c9639e3::t_bca838b904cb3a 13-19
+  s_df72ba6c9639e3::t_be6884d47d5942 10,68-74
+  s_df72ba6c9639e3::t_70744ac5cc9c6a 108-114,119-180
+  s_541af6f33f7bfd::t_b87d88cece71b4 181
+packages/mcp-shared/__tests__/session.test.ts
+  s_df72ba6c9639e3::t_00fa57a70a3bef 79-147
+  s_df72ba6c9639e3::t_5b54a247256ffb 4,29-77
+  s_df72ba6c9639e3::t_3ea8ea832b4a26 78
+packages/mcp-shared/src/session.ts
+  s_df72ba6c9639e3::t_f1ba3a36f7d5b9 147
+  s_df72ba6c9639e3::t_e36ad714ff88d8 14-15
+  s_df72ba6c9639e3::t_7744311f8d3618 93-94,97-100,105-108,118,126-133
+  s_df72ba6c9639e3::t_4f094737cc0687 122
+  s_df72ba6c9639e3::t_ab2faa3bf8bac4 50-51,92,95-96,101-104,109-117,119-121,123-125,134-135,146
+packages/mcp-shared/__tests__/portal.test.ts
+  s_df72ba6c9639e3::t_de6d082dd9c305 14-16,19-20,26-28,37-38,47-48,59-60
+packages/mcp-shared/README.md
+  s_df72ba6c9639e3::t_30a96f954e9e66 26,33
+  s_df72ba6c9639e3::t_1d2bd709440bcc 24
+packages/mcp-shared/src/client.ts
+  s_df72ba6c9639e3::t_1dc31be6092f75 460-462,493-494
+  s_df72ba6c9639e3::t_be6884d47d5942 92,94
+  s_df72ba6c9639e3::t_7427817413528f 285-298,312,316-320
+  s_df72ba6c9639e3::t_baee0d77b62725 93
+  s_df72ba6c9639e3::t_f943f2a4035694 469-470,476-477,481-482
+  s_df72ba6c9639e3::t_056733fee9c5b6 45-62
+  s_df72ba6c9639e3::t_bcba581e2ac7dd 463-468,471-475,478-480,483-485,499
+  s_541af6f33f7bfd::t_aa139f3b5513d0 321
+packages/mcp-shared/src/session-methods.ts
+  s_df72ba6c9639e3::t_298551184c2f15 19
+packages/mcp-shared/src/tools.ts
+  s_df72ba6c9639e3::t_dc01c640d1b71c 198,201-204
+  s_df72ba6c9639e3::t_4fc5b97cbe55cf 120
+  s_df72ba6c9639e3::t_19a7a472a2893b 53-54
+  s_df72ba6c9639e3::t_034a0047296f71 5
+  s_df72ba6c9639e3::t_c6fe887f17a37f 66-71,75-76,85-89
+  s_df72ba6c9639e3::t_66b9047bc167de 35-36,46-48
+  s_df72ba6c9639e3::t_2e9fb0bd94afc0 49-50
+  s_df72ba6c9639e3::t_04372f0cf25722 90-91
+packages/gatekeeper-mcp/README.md
+  s_df72ba6c9639e3::t_30a96f954e9e66 55-58
+  s_df72ba6c9639e3::t_8ef31396e696d4 60-63
+  s_df72ba6c9639e3::t_ba4ac8602fab33 59
+packages/mcp-shared/__tests__/tool-search.test.ts
+  s_df72ba6c9639e3::t_b55dfc42a7f30e 1-49
+packages/mcp-shared/__tests__/session-methods-e2e.test.ts
+  s_df72ba6c9639e3::t_df96dbf6c81f39 27-29
+packages/gatekeeper-mcp-portal/__tests__/config.test.ts
+  s_df72ba6c9639e3::t_a308a0f4ab03c6 10,227-282
+  s_df72ba6c9639e3::t_7268974b40f21b 283
+packages/mcp-shared/__tests__/session-methods.test.ts
+  s_df72ba6c9639e3::t_debea25ff40245 65-67
+packages/mcp-shared/package.json
+  s_df72ba6c9639e3::t_f91f7c2924168a 28
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_df72ba6c9639e3::t_dc34b176f9b1da 42,44-47,56,105-106,413,416,418,443-446,449-452,456-458
+  s_df72ba6c9639e3::t_d82368753839e8 89
+  s_df72ba6c9639e3::t_6b63ed9d3c425b 447-448
+  s_df72ba6c9639e3::t_23aae1a16cffcc 335,341-342
+  s_df72ba6c9639e3::t_a24a4de08ee6a4 25,31-35,43,50
+  s_df72ba6c9639e3::t_be6884d47d5942 57,337-340,344,398,421-425,427-441,477
+  s_df72ba6c9639e3::t_a68595d19731e2 397
+  s_df72ba6c9639e3::t_ebe84654a13a04 474-475,482-486
+  s_df72ba6c9639e3::t_9bcfba9ed56129 332-334,343
+  s_df72ba6c9639e3::t_303243e671b109 478-481,487
+  s_df72ba6c9639e3::t_60d5c1702a1e96 547-552,555-556,558-561,563-564,567-570,572-578
+  s_df72ba6c9639e3::t_0ad18ab61a2385 99-104
+  s_df72ba6c9639e3::t_7ee8055a35ad8f 515
+  s_df72ba6c9639e3::t_01b104b178783a 571,580-581
+  s_df72ba6c9639e3::t_d8d58d7774719a 579
+  s_df72ba6c9639e3::t_d5772666e39a00 512-514
+  s_df72ba6c9639e3::t_0b98df6885fe78 553-554,557,562,565-566
+  s_df72ba6c9639e3::t_6a1bdeb3e68121 594-596
+  s_df72ba6c9639e3::t_b560c178fb105a 468
+  s_df72ba6c9639e3::t_e50c061759ba5c 410-412,415
+  s_df72ba6c9639e3::t_e6a42a7eb0326f 426
+  s_df72ba6c9639e3::t_fbdf46a034412f 28
+packages/mcp-shared/src/schema-to-ts.ts
+  s_df72ba6c9639e3::t_dfbbe740da7fb5 350
+  s_df72ba6c9639e3::t_331545e3f0dead 354-355,357-358,406
+  s_df72ba6c9639e3::t_c5fa7e184b6180 399-405
+  s_df72ba6c9639e3::t_db7f9d95fe172a 353,356
+packages/mcp-shared/src/types.d.ts
+  s_df72ba6c9639e3::t_dfbbe740da7fb5 58
+packages/mcp-shared/src/tool-search.ts
+  s_df72ba6c9639e3::t_7773a8ed88a8e7 1-50
+packages/mcp-shared/__tests__/tools.test.ts
+  s_df72ba6c9639e3::t_dbbc5baf8b2e90 5,22-41
+  s_df72ba6c9639e3::t_7a57df411985e6 42-44
+packages/mcp-shared/src/connection.ts
+  s_df72ba6c9639e3::t_84cbff5bb15580 16
+  s_df72ba6c9639e3::t_dc34b176f9b1da 121,127-130,133
+  s_df72ba6c9639e3::t_442b84f28e7266 131
+  s_df72ba6c9639e3::t_be6884d47d5942 10-15,17,113-116,119-120
+  s_df72ba6c9639e3::t_92f4880f1fb091 122-126,132,134
+packages/mcp-shared/__tests__/client-pagination.test.ts
+  s_df72ba6c9639e3::t_c570679148c6d6 111-112
+  s_df72ba6c9639e3::t_44f0b2f5a56211 109-110,114-115,117-118,143-144
+  s_df72ba6c9639e3::t_816c5175767238 45-74,89-104
+  s_df72ba6c9639e3::t_baee0d77b62725 75-88
+  s_df72ba6c9639e3::t_b2073b664cdece 105-108,113,116,119-142
+packages/mcp-shared/src/portal.ts
+  s_df72ba6c9639e3::t_4c5bc376e50752 43,46-53,55-56,58
+packages/gatekeeper-mcp/src/mcp.ts
+  s_df72ba6c9639e3::t_a72a23f4f52802 353-356
+  s_df72ba6c9639e3::t_a39ad05ce647c5 28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d46846f4dbf072b4ae9d11c36f6342f7ef8d081a",
+  "prompts": {},
+  "sessions": {
+    "s_541af6f33f7bfd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04b4ae9f3ffe6mj1XYPkOYJ0WK",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_a676e8860d1ca3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0369a8e51ffenkdNC7esrlYmyW",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_df72ba6c9639e3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03713f2c2ffeh8iqwxXPN44Im5",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

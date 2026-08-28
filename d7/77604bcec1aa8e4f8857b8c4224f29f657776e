@@ -1,0 +1,27 @@
+packages/mcp-shared/src/base-types.ts
+  s_fcb81335a24bc2::t_4956dc5d7a98da 13
+packages/mcp-shared/src/types.d.ts
+  s_fcb81335a24bc2::t_4956dc5d7a98da 3
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_fcb81335a24bc2::t_7c68e3cf846ceb 430
+packages/workshop-frontend/src/gatekeeper-modal/AgentSpawnerConfigForm.tsx
+  s_fcb81335a24bc2::t_96abc02a248d72 130-131
+packages/gatekeeper-cloudflare/src/types.d.ts
+  s_fcb81335a24bc2::t_0c1739c5df1143 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d777604bcec1aa8e4f8857b8c4224f29f657776e",
+  "prompts": {},
+  "sessions": {
+    "s_fcb81335a24bc2": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03601b558fferm7fC0nANC1UUW",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

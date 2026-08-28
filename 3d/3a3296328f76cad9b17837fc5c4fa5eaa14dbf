@@ -1,0 +1,24 @@
+packages/mcp-shared/__tests__/portal.test.ts
+  s_e25e29d8ebebad::t_3347151acb2fcf 178-182
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_e25e29d8ebebad::t_3347151acb2fcf 251-253,300-303,318-321,335
+packages/mcp-shared/src/portal.ts
+  s_e25e29d8ebebad::t_0dd4c9f9e98f77 229,231-232,235-236
+  s_e25e29d8ebebad::t_3347151acb2fcf 230,233-234
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3d3a3296328f76cad9b17837fc5c4fa5eaa14dbf",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

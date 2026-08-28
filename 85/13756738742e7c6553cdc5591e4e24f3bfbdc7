@@ -1,0 +1,58 @@
+packages/mcp-shared/__tests__/account-endpoint.test.ts
+  s_e25e29d8ebebad::t_80fce7550e0835 213-214
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 193-194,201-212
+packages/mcp-shared/__tests__/fetch.test.ts
+  s_e25e29d8ebebad::t_49de64696f44b0 37-47
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 31-34,53-66,186-202
+packages/mcp-shared/src/client.ts
+  s_e25e29d8ebebad::t_8c0056c99a7b26 469
+  s_e25e29d8ebebad::t_e51b1320eb1b5a 17,129-136,166,298,327,333,341-363,369,375,380-383,392,459-468
+  s_e25e29d8ebebad::t_10a335af6ad641 17
+packages/mcp-shared/src/schema-to-ts.ts
+  s_e25e29d8ebebad::t_24cc37753e394c 340
+  s_e25e29d8ebebad::t_03c69314cd73d9 341-342
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 10-16,10-14,15,16,52-58,67-74,85-91,93-97,99,102,102-106,105-106,110-114,116-117,135-144,163-165
+  s_e25e29d8ebebad::t_03c69314cd73d9 98,101,103-104,107-108,115,118-131,145-148,151-157,166,168,170
+  s_e25e29d8ebebad::t_49de64696f44b0 18
+  s_e25e29d8ebebad::t_24cc37753e394c 80
+  s_e25e29d8ebebad::t_10a335af6ad641 18
+packages/mcp-shared/__tests__/session.test.ts
+  s_e25e29d8ebebad::t_ab47560f84c54d 56
+  s_e25e29d8ebebad::t_a3f4b793f955fe 4,29-55
+  s_e25e29d8ebebad::t_10a335af6ad641 4-5,29
+packages/mcp-shared/__tests__/connection.test.ts
+  s_e25e29d8ebebad::t_aec8732427cbef 150,166-172,175,178-179,182-186
+  s_e25e29d8ebebad::t_a3f4b793f955fe 164-165,165,173-174,176-177,180-181,187
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 1-149,151-155,157-163,164,184,187
+  s_e25e29d8ebebad::t_8c25ed9521d74a 156
+packages/mcp-shared/__tests__/schema-to-ts.test.ts
+  s_e25e29d8ebebad::t_a3f4b793f955fe 307
+  s_e25e29d8ebebad::t_07aee455c4e90c 308-309
+packages/mcp-shared/src/fetch.ts
+  s_e25e29d8ebebad::t_49de64696f44b0 143-151
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 15-16,21-27,35-42,97-101,103,135,154-156,196
+packages/mcp-shared/src/session.ts
+  s_e25e29d8ebebad::t_24cc37753e394c 149-151
+packages/mcp-shared/src/account.ts
+  s_e25e29d8ebebad::t_24cc37753e394c 291
+  s_e25e29d8ebebad::t_e0bf4fcad647a4 290,557,659-667,790-791,793-797,800-802,805
+packages/workshop-backend/src/overseer.ts
+  s_e25e29d8ebebad::t_22fac969972f72 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8513756738742e7c6553cdc5591e4e24f3bfbdc7",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

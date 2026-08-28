@@ -1,0 +1,22 @@
+scripts/release/promote-release.mjs
+  s_8020c00abab0eb::t_41e6f8b843a851 64-65
+  s_8020c00abab0eb::t_62e35cb506ddc6 5-10
+AGENTS.md
+  s_8020c00abab0eb::t_dba223d7e4d1a0 45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b21a2d8b6e5b6aa4daafa6324e2d894959650a02",
+  "prompts": {},
+  "sessions": {
+    "s_8020c00abab0eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b9e9ee91-0307-41bc-9530-0bb117fda2d8",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

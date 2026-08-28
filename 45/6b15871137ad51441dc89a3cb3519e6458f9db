@@ -1,0 +1,39 @@
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_17093e0c739d17 54,95-98
+packages/gatekeeper-mcp-portal/src/config.ts
+  s_e25e29d8ebebad::t_bad2c1594bc44b 165
+packages/mcp-shared/src/client.ts
+  s_e25e29d8ebebad::t_17093e0c739d17 419-425,430
+packages/mcp-shared/__tests__/connection.test.ts
+  s_e25e29d8ebebad::t_17093e0c739d17 19,38,53,71
+  s_e25e29d8ebebad::t_a84e1c60efef55 92-118
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_e25e29d8ebebad::t_bad2c1594bc44b 269-272
+  s_e25e29d8ebebad::t_2b62f698ffdfe2 32,85,278-286,294-300
+  s_e25e29d8ebebad::t_02493684b037e4 273-277
+  s_e25e29d8ebebad::t_ec25b4d81f7654 301
+packages/gatekeeper-mcp-portal/__tests__/config.test.ts
+  s_e25e29d8ebebad::t_bad2c1594bc44b 143,145-149
+packages/mcp-shared/src/account.ts
+  s_e25e29d8ebebad::t_02493684b037e4 174-178,584-590
+  s_e25e29d8ebebad::t_cec148c8c48ddc 202-208
+  s_e25e29d8ebebad::t_bad2c1594bc44b 169-173,307-309,317-322,375-379,381
+  s_e25e29d8ebebad::t_17093e0c739d17 692-700
+  s_e25e29d8ebebad::t_05607284be8125 380
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "456b15871137ad51441dc89a3cb3519e6458f9db",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

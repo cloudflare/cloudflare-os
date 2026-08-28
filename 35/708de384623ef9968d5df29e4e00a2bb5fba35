@@ -1,0 +1,29 @@
+packages/workshop-ios/ios/Gadgets/Info.plist
+  s_4932c18ec77eef::t_5d3b7e47e7342e 40-41
+packages/workshop-ios/ios/Gadgets.xcodeproj/project.pbxproj
+  s_4932c18ec77eef::t_5d3b7e47e7342e 270,301
+packages/workshop-ios/App.tsx
+  s_4932c18ec77eef::t_eb8f2f7fe69d81 22,49-63,88,105
+packages/workshop-ios/src/screens/SignInScreen.tsx
+  s_4932c18ec77eef::t_374aabac45e231 159,161
+  s_4932c18ec77eef::t_9bb9dce2c7049f 34-40,143-158,160,162-164,228-241
+packages/workshop-ios/src/demo/DemoApp.tsx
+  s_4932c18ec77eef::t_72bad6b6f8ebbe 42-53,55-64
+  s_4932c18ec77eef::t_4e64cf38928e6c 1-41,54,65-422
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "35708de384623ef9968d5df29e4e00a2bb5fba35",
+  "prompts": {},
+  "sessions": {
+    "s_4932c18ec77eef": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_009f29c3dffeqlbbYWfd3zF5Km",
+        "model": "claude-fable-5"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,35 @@
+packages/workshop-ios/src/screens/SignInScreen.tsx
+  s_05e5fdfde14468::t_ba3bbcb7d0f02a 133-135
+packages/workshop-ios/src/screens/GatekeeperItemScreen.tsx
+  s_05e5fdfde14468::t_0466fff06ae35c 1-120
+packages/workshop-ios/src/navigation.ts
+  s_05e5fdfde14468::t_dcb92ea43ec20b 23
+  s_05e5fdfde14468::t_dcb7bfd9efbb3d 24
+packages/workshop-ios/src/gatekeeper-sections.ts
+  s_05e5fdfde14468::t_d3ef88b49d83cf 24-25,46-53,68,125-126,130-152
+  s_05e5fdfde14468::t_316fdd0e700768 35,85-91,93-96,98,100-110
+  s_05e5fdfde14468::t_0ef5a1b7ea7b54 153-154
+packages/workshop-ios/App.tsx
+  s_05e5fdfde14468::t_12081631765073 22,160-162
+  s_05e5fdfde14468::t_dcb7bfd9efbb3d 163-168
+  s_05e5fdfde14468::t_aeca95c2ff7d24 169
+packages/workshop-ios/src/screens/GatekeeperScreen.tsx
+  s_05e5fdfde14468::t_dcb7bfd9efbb3d 180
+  s_05e5fdfde14468::t_dcb92ea43ec20b 171-179,181-183,187,200-201,268-269
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9e504cc9b7aaa0d9354025f4906362b6e5173a40",
+  "prompts": {},
+  "sessions": {
+    "s_05e5fdfde14468": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01ec30fddffeTfuiapuKb6uixw",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+packages/workshop-backend/src/browser-export.ts
+  s_017f2cc25a2960::t_88541ab5d82c3f 21-30,360,364-377
+packages/workshop-backend/__tests__/browser-export.test.ts
+  s_017f2cc25a2960::t_88541ab5d82c3f 19,53,93,97,122,290,309,315-335,346-347
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f707e77a5615532dba6b6da18f91a174a913517c",
+  "prompts": {},
+  "sessions": {
+    "s_017f2cc25a2960": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0146c6b70ffefJEVz2tYFR3V1O",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "byule@cloudflare.com <byule@cloudflare.com>"
+    }
+  }
+}

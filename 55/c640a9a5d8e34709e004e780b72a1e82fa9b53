@@ -1,0 +1,85 @@
+packages/gatekeeper-google/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 11
+packages/gatekeeper-mcp/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 11
+packages/mcp-shared/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 35
+packages/gatekeeper-notion/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 12
+packages/mcp-shared/tsconfig.test.json
+  s_6b06793b4e8acf::t_d2492d06941410 2
+packages/gatekeeper-scheduler/tsconfig.json
+  s_6b06793b4e8acf::t_394b9af40721a0 8
+packages/router/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 10
+package.json
+  s_6b06793b4e8acf::t_e5ea5608b45789 10
+  s_6b06793b4e8acf::t_7dd34b71a29e5d 13
+  s_6b06793b4e8acf::t_a60900bfd47ef5 8
+packages/workshop-backend/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 11
+packages/gatekeeper-cloudflare/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 10
+packages/gatekeeper-zoominfo/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 11
+packages/workshop-frontend/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 10
+packages/error-reporting/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 13
+packages/gatekeeper-supabase/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 11
+packages/gatekeeper-linear/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 11
+packages/gatekeeper-mcp-portal/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 11
+AGENTS.md
+  s_6b06793b4e8acf::t_bd71855dd801cc 17
+  s_6b06793b4e8acf::t_851f0b432c29a3 54
+  s_6b06793b4e8acf::t_15f5b176cad2c7 56
+  s_6b06793b4e8acf::t_c8f3ac828f9d36 64
+  s_6b06793b4e8acf::t_99915fe684600e 57
+packages/workshop-shared/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 38
+packages/gatekeeper-context/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 13
+packages/configurator-ui/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 13
+packages/workshop-shared/tsconfig.json
+  s_6b06793b4e8acf::t_394b9af40721a0 4
+packages/gatekeeper-github/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 12
+packages/gatekeeper-email/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 11
+packages/backend-utils/tsconfig.json
+  s_6b06793b4e8acf::t_394b9af40721a0 8
+packages/gatekeeper-confluence/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 12
+packages/gatekeeper-scheduler/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 14
+packages/configurator-ui/tsconfig.json
+  s_6b06793b4e8acf::t_394b9af40721a0 5
+packages/gatekeeper-spotify/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 11
+packages/gatekeeper-slack/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 11
+packages/gatekeeper-homeassistant/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 11
+packages/backend-utils/package.json
+  s_6b06793b4e8acf::t_bf6ee2baae0680 26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "55c640a9a5d8e34709e004e780b72a1e82fa9b53",
+  "prompts": {},
+  "sessions": {
+    "s_6b06793b4e8acf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6f167f9-9137-46f3-884c-130e77ad244b",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}

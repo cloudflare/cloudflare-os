@@ -1,0 +1,24 @@
+AGENTS.md
+  s_8020c00abab0eb::t_3b42d02ffca315 42-48
+  s_8020c00abab0eb::t_bdc4b63bc6160f 33
+.gitlab-ci.yml
+  s_8020c00abab0eb::t_89b761eda4ba63 60-62,82-96,116-123,134-142
+scripts/release/build-release.mjs
+  s_8020c00abab0eb::t_6b5c5a232f05c4 49,54-57,59-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fdf9421c2c96fcd1662d935ebfe6223e8f73205a",
+  "prompts": {},
+  "sessions": {
+    "s_8020c00abab0eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b9e9ee91-0307-41bc-9530-0bb117fda2d8",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

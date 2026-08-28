@@ -1,0 +1,37 @@
+scripts/release/manifest-lib.mjs
+  s_340222bc767ba5::t_bc683ebf40cfe9 55-63
+  s_340222bc767ba5::t_147d0484b0fb35 64
+  s_340222bc767ba5::t_9c98c05270502e 65-67
+  s_06c5f01cfd0728::t_9dacf7df081c6d 68,222-225,232-233
+scripts/testdata/golden-manifest.json
+  s_340222bc767ba5::t_d720145b6ed399 191,193,702
+  s_06c5f01cfd0728::t_2688793d17e689 704
+scripts/release-manifest.test.js
+  s_340222bc767ba5::t_b4267b0502eb2f 160-173,175
+  s_340222bc767ba5::t_e567edccad5843 174
+  s_340222bc767ba5::t_5a028ea4b6152e 176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "75df790163654e605c9bb73a2e18ee5de08d4aee",
+  "prompts": {},
+  "sessions": {
+    "s_06c5f01cfd0728": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8bd9c7bf-d641-456e-ac80-7964090fb5dc",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_340222bc767ba5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07f1364c-8285-49ce-ae1e-a39d5c552491",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

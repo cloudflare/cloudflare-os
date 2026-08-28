@@ -1,0 +1,38 @@
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_585c8e3e6d2f79 81,97
+packages/mcp-shared/__tests__/session.test.ts
+  s_e25e29d8ebebad::t_db7d81f122a35c 7-12,76,90-91,96-99,109,139
+packages/mcp-shared/__tests__/facet.test.ts
+  s_e25e29d8ebebad::t_1ecdf49367ca54 9,47,61
+  s_e25e29d8ebebad::t_ce84a86e29987e 46,48
+packages/mcp-shared/src/facet.ts
+  s_e25e29d8ebebad::t_154769cd2e14af 14-17,29,46,77-81,195,208-210,214-258,288-293,308-309,312-329,345-348
+  s_e25e29d8ebebad::t_9d46f10d5bc3c5 24
+  s_e25e29d8ebebad::t_7b7c50d035a983 13
+packages/mcp-shared/__tests__/action-store.test.ts
+  s_e25e29d8ebebad::t_40b8a901c9ccd9 4,36-63
+packages/mcp-shared/src/session.ts
+  s_e25e29d8ebebad::t_5ccf4ebaf13fb2 12,75-78
+  s_e25e29d8ebebad::t_dcf4f3bd9473b6 42-44,68-72,83-87,187-189,207
+packages/mcp-shared/src/action-store.ts
+  s_e25e29d8ebebad::t_dcf4f3bd9473b6 21-22,36-37,52-59,72-73,79,83-89,119-123,148-150,152-153,155,188-198
+  s_e25e29d8ebebad::t_f6750bc882dcc7 80-82
+packages/mcp-shared/src/tools.ts
+  s_e25e29d8ebebad::t_dcf4f3bd9473b6 144-148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4504cb45e90fd03849ad15308bb7da4e00465525",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

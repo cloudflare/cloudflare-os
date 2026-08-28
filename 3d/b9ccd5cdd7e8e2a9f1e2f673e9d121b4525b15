@@ -1,0 +1,77 @@
+AGENTS.md
+  s_fa07440e282490::t_3fb550dbd0d2a3 57
+packages/backend-utils/package.json
+  s_fa07440e282490::t_75137a615f10ac 25
+packages/configurator-ui/package.json
+  s_fa07440e282490::t_62cf27fb4b3c38 12
+packages/error-reporting/package.json
+  s_fa07440e282490::t_adf97145e9ab4d 12
+packages/gatekeeper-cloudflare/package.json
+  s_fa07440e282490::t_6746082bbb4f8c 9
+packages/gatekeeper-confluence/package.json
+  s_fa07440e282490::t_151a9d4c0364e6 10
+packages/gatekeeper-context/package.json
+  s_fa07440e282490::t_5fa277f377b945 11-12
+packages/gatekeeper-context/tsconfig.app.json
+  s_fa07440e282490::t_97eee04d2a024a 4-5
+packages/gatekeeper-email/package.json
+  s_fa07440e282490::t_4c92999ccbfe70 10
+packages/gatekeeper-github/package.json
+  s_fa07440e282490::t_40483b8095726a 10
+packages/gatekeeper-google/package.json
+  s_fa07440e282490::t_3ea83c3f9bc66a 10
+packages/gatekeeper-homeassistant/package.json
+  s_fa07440e282490::t_3969809fe262b5 10
+packages/gatekeeper-linear/package.json
+  s_fa07440e282490::t_f992e2a0b6543e 10
+packages/gatekeeper-mcp-portal/package.json
+  s_fa07440e282490::t_a1801d6d4e5c0a 10
+packages/gatekeeper-mcp/package.json
+  s_fa07440e282490::t_565711a645e011 10
+packages/gatekeeper-notion/package.json
+  s_fa07440e282490::t_c539d333fbdfcf 10
+packages/gatekeeper-scheduler/package.json
+  s_fa07440e282490::t_502ace293e62a2 11-12
+packages/gatekeeper-scheduler/tsconfig.app.json
+  s_fa07440e282490::t_39b82b071040bc 3-4
+packages/gatekeeper-slack/package.json
+  s_fa07440e282490::t_6f66e50287355d 10
+packages/gatekeeper-spotify/package.json
+  s_fa07440e282490::t_d6438c19d0041d 10
+packages/gatekeeper-supabase/package.json
+  s_fa07440e282490::t_1f2052d19c89cb 10
+packages/gatekeeper-zoominfo/package.json
+  s_fa07440e282490::t_602c89320fa7bf 10
+packages/integration-tests/package.json
+  s_fa07440e282490::t_77f92afb42c820 12
+packages/mcp-shared/package.json
+  s_fa07440e282490::t_9badd18d1d8b89 34
+packages/router/package.json
+  s_fa07440e282490::t_b0632967cb10e3 9
+packages/typed-storage/package.json
+  s_fa07440e282490::t_4bdde947af3ee6 14-15
+packages/workshop-backend/package.json
+  s_fa07440e282490::t_da63fb8eec5b62 10
+packages/workshop-frontend/package.json
+  s_fa07440e282490::t_2552a49e6c3975 7
+packages/workshop-shared/package.json
+  s_fa07440e282490::t_cf3f688a14eba0 36-37
+tsconfig.json
+  s_fa07440e282490::t_ee6ec1f92dbe1d 15-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3db9ccd5cdd7e8e2a9f1e2f673e9d121b4525b15",
+  "prompts": {},
+  "sessions": {
+    "s_fa07440e282490": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b817187a-8d20-4ca6-92ef-7458e947c46b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

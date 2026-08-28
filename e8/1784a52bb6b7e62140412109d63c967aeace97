@@ -1,0 +1,64 @@
+packages/gatekeeper-zoominfo/src/zoominfo.ts
+  s_fcb81335a24bc2::t_f775a833690834 685
+packages/workshop-backend/src/agent.ts
+  s_fcb81335a24bc2::t_f775a833690834 383,387,389,391,393,395,397,399,401,403,415,424,426,476,480,482,484,519,526,530,532,534,540,544,546,548,552,566,599,601,605,612,615,617,627,1237,1292,1295,1772,1778,1913-1914,2086,2123-2124,2130-2131,2134,2138,2141,2149,2158,2162,2173,2312,2505,2509,2512,2516,2524,2532,2564,2569,2573,2579
+packages/workshop-frontend/src/BlueprintModal.tsx
+  s_fcb81335a24bc2::t_f775a833690834 294,477,598
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_fcb81335a24bc2::t_f775a833690834 1183,1620,1645
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_fcb81335a24bc2::t_f775a833690834 993,1026,1091
+packages/workshop-frontend/src/components/ConnectConnectorModal.tsx
+  s_fcb81335a24bc2::t_f775a833690834 320,334,343
+  s_fcb81335a24bc2::t_3e8910eb89e980 323
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_fcb81335a24bc2::t_f775a833690834 51,373,404,477,480,501
+packages/workshop-frontend/src/GadgetUseView.tsx
+  s_fcb81335a24bc2::t_f775a833690834 136
+packages/workshop-frontend/src/ShareModal.tsx
+  s_fcb81335a24bc2::t_3e8910eb89e980 789
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_fcb81335a24bc2::t_f775a833690834 404
+packages/gatekeeper-linear/src/linear.ts
+  s_fcb81335a24bc2::t_f775a833690834 105
+packages/gatekeeper-mcp/src/mcp.ts
+  s_fcb81335a24bc2::t_f775a833690834 177
+packages/workshop-backend/src/overseer.ts
+  s_fcb81335a24bc2::t_f775a833690834 1474,1486,1488,1517-1518,1526,1530,1549,1557,1561,1735,2107,2356-2357,3156,3185,3346,3695-3696,4935,5755-5756,5808,5811,5817,5819,5826,5828,5831,7507,8801,8868,9193,9274,9463
+packages/workshop-backend/src/agent-catalog.ts
+  s_fcb81335a24bc2::t_f775a833690834 93
+packages/gatekeeper-spotify/src/spotify.ts
+  s_fcb81335a24bc2::t_f775a833690834 469
+packages/gatekeeper-email/src/email.ts
+  s_fcb81335a24bc2::t_f775a833690834 266
+packages/workshop-frontend/src/AdminPage.tsx
+  s_fcb81335a24bc2::t_f775a833690834 447,800
+packages/workshop-frontend/src/gatekeeper-modal/AgentSpawnerConfigForm.tsx
+  s_fcb81335a24bc2::t_f775a833690834 130-131
+packages/workshop-frontend/src/Connections.tsx
+  s_fcb81335a24bc2::t_f775a833690834 139,203,222,247,358
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_fcb81335a24bc2::t_f775a833690834 576
+packages/workshop-frontend/src/GatekeeperModal.tsx
+  s_fcb81335a24bc2::t_f775a833690834 812
+packages/workshop-frontend/src/FileSidebar.tsx
+  s_fcb81335a24bc2::t_f775a833690834 191,259
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_fcb81335a24bc2::t_f775a833690834 657,762,830,858,884,3548,3610,6920,7245,7271,7276,7385,7423,7648
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e81784a52bb6b7e62140412109d63c967aeace97",
+  "prompts": {},
+  "sessions": {
+    "s_fcb81335a24bc2": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03601b558fferm7fC0nANC1UUW",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

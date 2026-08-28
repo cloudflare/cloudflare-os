@@ -1,0 +1,65 @@
+packages/router/worker-configuration.d.ts
+  s_26c0be70719a03::t_89fc8518fce0d2 1-14507
+.oxlintrc.json
+  s_26c0be70719a03::t_506c999bb18d8e 84
+packages/router/__tests__/router.test.ts
+  s_26c0be70719a03::t_6a64822683b63f 1-126
+pnpm-lock.yaml
+  s_26c0be70719a03::t_92fc85f79bb078 688-705
+  s_26c0be70719a03::t_d25eaa6be75b0a 20-22,2522-2524,5867-5868
+packages/router/package.json
+  s_26c0be70719a03::t_ae398d9694813f 1-22
+packages/router/src/index.ts
+  s_26c0be70719a03::t_018b3bca368b80 1-15,17-68,70
+  s_8020c00abab0eb::t_f6cd3a39643b81 16
+  s_4842f19c489ca9::t_8dfbac3a7f1783 69
+packages/workshop-backend/src/deployment-config.ts
+  s_26c0be70719a03::t_97ac74b99810b0 57
+packages/router/vitest.config.ts
+  s_26c0be70719a03::t_c43605f7266397 1-19
+packages/workshop-shared/src/api.ts
+  s_26c0be70719a03::t_959fdfa531e6d5 766-768
+  s_4842f19c489ca9::t_4c5622dc4e3337 769-770
+run-dev-server.js
+  s_4842f19c489ca9::t_866e667b32049b 230-232
+packages/router/tsconfig.json
+  s_26c0be70719a03::t_067306ce4786ba 1-17
+wrangler.jsonc
+  s_26c0be70719a03::t_06e473c2cb83e7 3-5
+packages/router/wrangler.jsonc
+  s_26c0be70719a03::t_697d0f0c4d9791 1-38
+packages/workshop-backend/src/env.d.ts
+  s_26c0be70719a03::t_d8d56983eb787d 12-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a5f9a794e45d20db171b49cc33702408ebff251f",
+  "prompts": {},
+  "sessions": {
+    "s_26c0be70719a03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "efb0fb21-f21d-4d25-99e3-8bef537b83e0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    },
+    "s_4842f19c489ca9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e639c9d9-6252-4de9-af8a-a77f107d0bcf",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    },
+    "s_8020c00abab0eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b9e9ee91-0307-41bc-9530-0bb117fda2d8",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

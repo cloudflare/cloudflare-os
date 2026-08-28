@@ -1,0 +1,63 @@
+.oxlintrc.json
+  s_26c0be70719a03::t_ed904522e4df2f 84
+packages/router/__tests__/router.test.ts
+  s_26c0be70719a03::t_32770005692617 1-126
+packages/router/package.json
+  s_26c0be70719a03::t_b9588bb21e6512 1-22
+packages/router/src/index.ts
+  s_26c0be70719a03::t_fa25642e3e4ce9 1-2,4-18,21-22,24,26-27,29,34-35,40-45,47,55,62-70
+packages/router/tsconfig.json
+  s_26c0be70719a03::t_268af5f66f9778 1-17
+packages/router/vitest.config.ts
+  s_26c0be70719a03::t_b0b9602c5000d8 1-19
+packages/router/worker-configuration.d.ts
+  s_26c0be70719a03::t_652116363d65da 1-14507
+packages/router/wrangler.jsonc
+  s_26c0be70719a03::t_6999b0f4d282d6 1-38
+packages/workshop-backend/__tests__/setup-token.test.ts
+  s_26c0be70719a03::t_ec58f308bdb635 1-68
+packages/workshop-backend/src/auth/setup-token.ts
+  s_26c0be70719a03::t_b3dbcc5cb6ad1b 1-69
+packages/workshop-backend/src/deployment-config.ts
+  s_26c0be70719a03::t_9c86ba681d3831 57
+packages/workshop-backend/src/env.d.ts
+  s_26c0be70719a03::t_47784b4bf3171e 12-22
+packages/workshop-backend/src/server.ts
+  s_26c0be70719a03::t_73641083ca16aa 8,85,87-89,691-692,702-713
+packages/workshop-backend/src/user.ts
+  s_26c0be70719a03::t_2cb4cca52d0f46 116-117
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_26c0be70719a03::t_fcd100765b1a3d 34,68-70,581-609
+packages/workshop-frontend/src/SignupPage.test.tsx
+  s_26c0be70719a03::t_b8dd39cd246888 1-133
+packages/workshop-frontend/src/SignupPage.tsx
+  s_26c0be70719a03::t_e72934d64cb9bb 14-19,22,27-29,32,37,39,41-42,76,137,139-140,149
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_26c0be70719a03::t_55696e4cc3d924 26,446-448,869-880
+packages/workshop-frontend/src/routes/signup.tsx
+  s_26c0be70719a03::t_d8e2d3f6ea3a45 7-11,14-18,23-28,33
+packages/workshop-shared/src/api.ts
+  s_26c0be70719a03::t_79725b065ba61a 100-106,108-109,773-777
+pnpm-lock.yaml
+  s_26c0be70719a03::t_dd6a0a51781192 685-702
+run-dev-server.js
+  s_26c0be70719a03::t_3d98a887f44a36 230-232
+wrangler.jsonc
+  s_26c0be70719a03::t_3968941adf09d3 3-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c8b07dc89602724bc641422a90db8a90128d8231",
+  "prompts": {},
+  "sessions": {
+    "s_26c0be70719a03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "efb0fb21-f21d-4d25-99e3-8bef537b83e0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <maximo@cloudflare.com>"
+    }
+  }
+}

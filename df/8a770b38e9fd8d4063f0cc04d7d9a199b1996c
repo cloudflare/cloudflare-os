@@ -1,0 +1,49 @@
+packages/backend-utils/README.md
+  s_42bb2f13792a5a::t_33bed30a6097e3 17-23
+packages/trace-reporting/src/index.test.ts
+  s_42bb2f13792a5a::t_d846ac9a930d41 1-97
+AGENTS.md
+  s_42bb2f13792a5a::t_329b8e0110909c 118-130
+packages/backend-utils/__tests__/trace-reporting.test.ts
+  s_42bb2f13792a5a::t_389f137db213d3 1-163
+packages/trace-reporting/tsconfig.json
+  s_42bb2f13792a5a::t_8ef69d870f0435 1-16
+packages/trace-reporting/src/index.ts
+  s_42bb2f13792a5a::t_00ced3b24922b4 1-151
+packages/backend-utils/src/tracing.ts
+  s_42bb2f13792a5a::t_ab35e5a90133e5 11-24,31-34,36-41,66-85
+packages/backend-utils/package.json
+  s_42bb2f13792a5a::t_ffec0749cdcc3e 36-37
+  s_42bb2f13792a5a::t_7dead4c38fc09a 22-25
+packages/backend-utils/src/trace-reporting.ts
+  s_42bb2f13792a5a::t_bcb5564fef412a 1-116,118-220
+  s_42bb2f13792a5a::t_9e5e6a264b7006 117
+packages/backend-utils/vitest.config.ts
+  s_42bb2f13792a5a::t_0fb216e03f4c95 28-46
+  s_42bb2f13792a5a::t_fc5b7890d7554b 14
+packages/workshop-backend/src/observability.ts
+  s_42bb2f13792a5a::t_b44071585cf1af 45-50
+  s_42bb2f13792a5a::t_268d92375b9ed8 2
+packages/trace-reporting/package.json
+  s_42bb2f13792a5a::t_957eb99a749a9a 1-20
+packages/trace-reporting/vitest.config.ts
+  s_42bb2f13792a5a::t_217af44e49646c 1-5
+pnpm-lock.yaml
+  s_42bb2f13792a5a::t_39052f1fe6c95a 40-42,708-716
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "df8a770b38e9fd8d4063f0cc04d7d9a199b1996c",
+  "prompts": {},
+  "sessions": {
+    "s_42bb2f13792a5a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "92ed027d-ca69-464c-8efc-12770ff04026",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

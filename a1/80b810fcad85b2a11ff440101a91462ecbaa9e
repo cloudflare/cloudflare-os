@@ -1,0 +1,21 @@
+packages/workshop-backend/src/chat-attachment-validation.ts
+  s_851dd2aa785588::t_07f40561b0f241 7,10-15,18,87
+  s_851dd2aa785588::t_65700bfe766c13 73-78
+  s_851dd2aa785588::t_69074d99050b5d 8-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a180b810fcad85b2a11ff440101a91462ecbaa9e",
+  "prompts": {},
+  "sessions": {
+    "s_851dd2aa785588": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0514ff91dffe7QuCQy7ut88FTy",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Kieran Hulsman <khulsman@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,149 @@
+packages/mcp-shared/src/portal.ts
+  s_df72ba6c9639e3::t_803f65e10f9545 21-26,33-38
+  s_df72ba6c9639e3::t_9e8295aad5b8e2 27-32,40-44
+  s_df72ba6c9639e3::t_466b4ca6e69343 39
+packages/mcp-shared/src/facet.ts
+  s_df72ba6c9639e3::t_830bac5d19b153 14-19,28,57,61,109-110,112,116,125,129,132-137,140-146,149,151-162
+  s_df72ba6c9639e3::t_c922dbfa4c73fd 33-39,194-199,218-219,242,245-246,254
+  s_df72ba6c9639e3::t_deb1fdd0af7855 20,215-217,220,238-241,243-244,247-253,255-257
+  s_df72ba6c9639e3::t_7b8f98694929ee 258
+packages/mcp-shared/__tests__/portal.test.ts
+  s_df72ba6c9639e3::t_9e8295aad5b8e2 9,219-231
+  s_df72ba6c9639e3::t_1b8d02838fd47c 232-233
+packages/gatekeeper-mcp-portal/__tests__/code-mode.test.ts
+  s_df72ba6c9639e3::t_17ae1e851d996a 75-76
+  s_df72ba6c9639e3::t_300fc44c6e039c 78-79,100,191
+  s_df72ba6c9639e3::t_8925b90f0db80b 95-99,101-103,105-106
+  s_df72ba6c9639e3::t_ab898fa8a99903 5,77,138-156,158
+  s_df72ba6c9639e3::t_943b0040e922ba 8,159-168,170-173,175
+  s_df72ba6c9639e3::t_6880c988ba5277 169,174
+  s_df72ba6c9639e3::t_5010d9fcc25b2f 107-116
+  s_df72ba6c9639e3::t_05a0fa9ff0ed7d 6,176-190
+  s_df72ba6c9639e3::t_b37f05d90a51d7 25-32,74,131,133,135-136,157,207
+  s_df72ba6c9639e3::t_0840dc87e05133 1-4,7,9-24,33-73,80-94,129-130,132,134,137,192-206,208-211
+  s_df72ba6c9639e3::t_b9c2ab18ca5486 104
+  s_df72ba6c9639e3::t_da335a2c2c405b 117-128
+packages/gatekeeper-mcp-portal/src/code-mode.ts
+  s_df72ba6c9639e3::t_da335a2c2c405b 38-42,44-52
+  s_df72ba6c9639e3::t_5010d9fcc25b2f 33-34,36-37,43,53,56-58,70-71
+  s_df72ba6c9639e3::t_c400a883d2467c 81,85-92,103-114,126,138-143,202,207,239,246-250,252-263,319-320
+  s_df72ba6c9639e3::t_7a113cde8a4258 73
+  s_df72ba6c9639e3::t_9f726ae82c26ff 119-123,125,127-128,144-146,270,288-306
+  s_df72ba6c9639e3::t_5e814632ad9bad 183,201
+  s_df72ba6c9639e3::t_6880c988ba5277 161-166,170-172,179-180,279,282,284-287
+  s_df72ba6c9639e3::t_4fbf586521f7a8 240
+  s_df72ba6c9639e3::t_d8710683e87852 77-78,237,241-243,245
+  s_df72ba6c9639e3::t_8925b90f0db80b 238,264-265,269
+  s_df72ba6c9639e3::t_bad5dd2f49b226 82-84,124,177-178,203-205
+  s_df72ba6c9639e3::t_17ae1e851d996a 93-94,115
+  s_df72ba6c9639e3::t_05a0fa9ff0ed7d 147-160,308-318,321-328
+  s_df72ba6c9639e3::t_803f65e10f9545 1-32,35,54-55,59-69,72,74-75,79-80,116-118,230-236,244,266-268,307,329-344
+  s_df72ba6c9639e3::t_b8692df9b99a8e 76,95-102,129-137,167-169,173-176,181-182,184-200,206,208-229,251,271-278,280-281,283
+packages/gatekeeper-mcp/README.md
+  s_df72ba6c9639e3::t_a741fa6e1429a7 62-65
+packages/mcp-shared/src/catalog.ts
+  s_df72ba6c9639e3::t_dd99fe0bd6bd27 57-62,70,124-129
+  s_df72ba6c9639e3::t_a741fa6e1429a7 63-69,174,177-178
+  s_df72ba6c9639e3::t_44b6a88c43f992 1-3,134-137
+  s_df72ba6c9639e3::t_972df1904ddd53 9,149,184,187-197,202-204
+packages/mcp-shared/__tests__/tool-search.test.ts
+  s_df72ba6c9639e3::t_48dd655de0ef2e 19,44,46
+packages/mcp-shared/__tests__/client-pagination.test.ts
+  s_df72ba6c9639e3::t_04a1d5f720edbd 29-44
+  s_df72ba6c9639e3::t_48dd655de0ef2e 110-133
+  s_df72ba6c9639e3::t_8b47449f95dc2f 15,18,20,278-280,286,290-291,356-361
+  s_df72ba6c9639e3::t_2addddc3809dae 3-7,220-224
+  s_df72ba6c9639e3::t_a8ebb0d3f57119 190-204,225,227
+  s_df72ba6c9639e3::t_59951c5f6694d3 226
+  s_df72ba6c9639e3::t_ccf722f2d6c0b8 228
+packages/mcp-shared/__tests__/session.test.ts
+  s_df72ba6c9639e3::t_bfc685245fd9dc 82-106
+  s_df72ba6c9639e3::t_39398cd4709143 71
+  s_df72ba6c9639e3::t_48dd655de0ef2e 4,159-160,170,175-191
+packages/mcp-shared/src/tool-search.ts
+  s_df72ba6c9639e3::t_972df1904ddd53 31-34,48
+  s_df72ba6c9639e3::t_a741fa6e1429a7 28-29
+  s_df72ba6c9639e3::t_44b6a88c43f992 4-6
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-ui.tsx
+  s_df72ba6c9639e3::t_7a113cde8a4258 86
+packages/gatekeeper-mcp-portal/src/config.ts
+  s_df72ba6c9639e3::t_44b6a88c43f992 102-106
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_df72ba6c9639e3::t_39fd42655204d2 147-153,155-158,164
+  s_df72ba6c9639e3::t_b6c36dde229c9a 558-560
+  s_df72ba6c9639e3::t_9ec151ec593621 40,732,734,748-761
+  s_df72ba6c9639e3::t_9e8295aad5b8e2 69,521,523,573,588
+  s_df72ba6c9639e3::t_1275b2a96a8cbc 105,109,681,693,724
+  s_df72ba6c9639e3::t_7e9c7f3a4c1833 514-516,569-570
+  s_df72ba6c9639e3::t_2addddc3809dae 26,28,32-34,572,589-594,597
+  s_df72ba6c9639e3::t_ddfb1557c5e64f 658-665
+  s_df72ba6c9639e3::t_6880c988ba5277 715-716
+  s_df72ba6c9639e3::t_0900a137815eed 362,364-374,376-377,382,385-387,394-395,412
+  s_df72ba6c9639e3::t_31b5dfc27c956e 620-621,626-627,666-669,671,673-678,696-708,712,718-723,726-731,733,735-737,763
+  s_df72ba6c9639e3::t_2da6a45ad9528e 396-398,564
+  s_df72ba6c9639e3::t_44b6a88c43f992 465-466
+  s_df72ba6c9639e3::t_efe23eba5c1ffe 27,30-31,37,60,63,103-104,107,110-111
+  s_df72ba6c9639e3::t_4479db1c65d5df 13,29,108,381,384,500,672,714,717,725,738-747,762,764-777,833
+  s_df72ba6c9639e3::t_90e09f9aea9e33 524-531
+  s_df72ba6c9639e3::t_79b3eb72afd186 451-452,494-499,505-509,519-520,522,533-540,561-563,565-566,574-587
+  s_df72ba6c9639e3::t_05a0fa9ff0ed7d 106,378-380,383
+  s_df72ba6c9639e3::t_4fbf586521f7a8 363,410,501-504,628-631,670,682-692
+  s_df72ba6c9639e3::t_c400a883d2467c 154
+  s_df72ba6c9639e3::t_dd5cb1878e3910 532
+packages/mcp-shared/__tests__/action-store.test.ts
+  s_df72ba6c9639e3::t_03e01715864083 19
+  s_df72ba6c9639e3::t_39398cd4709143 45-63
+  s_df72ba6c9639e3::t_5b90cb16bb9278 142,144-166
+  s_df72ba6c9639e3::t_943b0040e922ba 5-9,131-141
+  s_df72ba6c9639e3::t_d6de58c91a5b63 143
+packages/mcp-shared/src/client.ts
+  s_df72ba6c9639e3::t_972df1904ddd53 63-70,526-528,530-533,535,543,553,566-571
+  s_df72ba6c9639e3::t_803f65e10f9545 312-319,323,347-348,350-365,516,529,534
+  s_df72ba6c9639e3::t_78621c71ec0c77 159-161,164
+  s_df72ba6c9639e3::t_31b5dfc27c956e 324,349
+  s_df72ba6c9639e3::t_8b47449f95dc2f 223,238,375,435-438
+  s_df72ba6c9639e3::t_b8692df9b99a8e 157-158,162-163,165-167,197
+  s_df72ba6c9639e3::t_03ededfb60da02 536
+packages/mcp-shared/src/session.ts
+  s_df72ba6c9639e3::t_78621c71ec0c77 15-22,46-47,67,74-78
+  s_df72ba6c9639e3::t_fa42ce836bfdf3 129
+  s_df72ba6c9639e3::t_0fe99563605b34 175-179,191,197
+  s_df72ba6c9639e3::t_deb1fdd0af7855 11,62-66,68-69
+  s_df72ba6c9639e3::t_972df1904ddd53 14,83-91,128,145,166
+  s_df72ba6c9639e3::t_3eaa541368f3fa 130
+packages/mcp-shared/src/action-store.ts
+  s_df72ba6c9639e3::t_deb1fdd0af7855 155-158,160
+  s_df72ba6c9639e3::t_2feba892143d18 4-9,12,30,46-48,72-73,75-79,109-113,138-140,142,144,159,181-182,186-188
+packages/mcp-shared/__tests__/facet.test.ts
+  s_df72ba6c9639e3::t_e58dea408bfe95 110-119
+  s_df72ba6c9639e3::t_0a6eb73f2ee013 5
+  s_df72ba6c9639e3::t_dd99fe0bd6bd27 8,25-30,44,76,89,105
+  s_df72ba6c9639e3::t_48dd655de0ef2e 6-7,23,31-33,45-55,58,60,86-88,90-104,106-109
+packages/mcp-shared/__tests__/hydrated-tools.test.ts
+  s_df72ba6c9639e3::t_48dd655de0ef2e 27-41
+packages/mcp-shared/src/connection.ts
+  s_df72ba6c9639e3::t_a4249bb7b9f4e8 12,89-90,102,104,106-109
+packages/gatekeeper-mcp-portal/README.md
+  s_df72ba6c9639e3::t_a741fa6e1429a7 43-44,117,172-174,186-188
+  s_df72ba6c9639e3::t_b9c2ab18ca5486 31-32,35-38,40-42,199-201
+  s_df72ba6c9639e3::t_9e8295aad5b8e2 70
+  s_df72ba6c9639e3::t_7a113cde8a4258 60-69,189-196
+packages/mcp-shared/__tests__/connection.test.ts
+  s_df72ba6c9639e3::t_a4249bb7b9f4e8 1-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f84479cebf926787cc30efad0a677c772e886354",
+  "prompts": {},
+  "sessions": {
+    "s_df72ba6c9639e3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03713f2c2ffeh8iqwxXPN44Im5",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,58 @@
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_e25e29d8ebebad::t_12ec26507e9f01 27-32,38-44,52-54,84-85,95-103,123,127-138,140,147,255-258,279-355,427-455,467,506-509,518-522,525-531,533,536-564,566,569-596,599-600,602-616,685-686
+packages/gatekeeper-mcp-portal/src/config.ts
+  s_e25e29d8ebebad::t_1b1659c150e1f8 92-93
+  s_e25e29d8ebebad::t_51e11cbff5db75 9,11,15-16,95-97,104-140,174
+packages/mcp-shared/src/connection.ts
+  s_e25e29d8ebebad::t_82a3e3ad8080d2 17,204-216
+  s_e25e29d8ebebad::t_87d000431cc6d7 32
+packages/mcp-shared/src/client.ts
+  s_e25e29d8ebebad::t_b28adef7a53733 53,358,360,582-585
+  s_e25e29d8ebebad::t_87d000431cc6d7 48,50,52,56,58,60,578-581
+packages/gatekeeper-mcp-portal/__tests__/config.test.ts
+  s_e25e29d8ebebad::t_6dbf6a80948d1a 10,143,145-149,231-300
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-ui.tsx
+  s_e25e29d8ebebad::t_6104ca7be0d255 50,72,86-99,142-143
+packages/gatekeeper-mcp-portal/src/configurator/server-configurator-types.d.ts
+  s_e25e29d8ebebad::t_3543d4825e6d9d 31-33,35-36
+  s_e25e29d8ebebad::t_0ef6cefbae7c50 38
+packages/mcp-shared/src/account.ts
+  s_e25e29d8ebebad::t_19d4dafa517654 183-192,216-222,330-331,339-344,397-403,607-612
+packages/mcp-shared/src/tools.ts
+  s_e25e29d8ebebad::t_87d000431cc6d7 230-233
+packages/gatekeeper-mcp-portal/README.md
+  s_e25e29d8ebebad::t_1542fc35ce4586 31-45,58-61,108,147,149-151,156-182,184-185
+packages/mcp-shared/src/portal.ts
+  s_e25e29d8ebebad::t_db78a69b8b3f8d 220-225,228-231
+  s_e25e29d8ebebad::t_fa501c1ced5c2a 120-122,167-171,174-175,177-178,180-185,189,194-196,198,200-203,206-209,216,219,226,237,239,241-249,251
+packages/mcp-shared/src/tool-search.ts
+  s_e25e29d8ebebad::t_87d000431cc6d7 10,13,35,40
+packages/workshop-shared/src/api.ts
+  s_e25e29d8ebebad::t_87d000431cc6d7 1509
+packages/gatekeeper-mcp-portal/__tests__/configurator-ui.test.ts
+  s_e25e29d8ebebad::t_0f789a696f66fa 91,102,105-107
+packages/workshop-backend/src/overseer.ts
+  s_e25e29d8ebebad::t_87d000431cc6d7 444,446-448
+packages/mcp-shared/__tests__/client-pagination.test.ts
+  s_e25e29d8ebebad::t_b6f83fb7452057 215,217,225,228-236,281-299,366
+packages/mcp-shared/src/catalog.ts
+  s_e25e29d8ebebad::t_87d000431cc6d7 141-146,153
+packages/mcp-shared/__tests__/portal.test.ts
+  s_e25e29d8ebebad::t_852740047924f9 136-137,140-142,153,157,160,163-186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3123bf63ed2f813cab9cbbd920ed92ee9f3276e2",
+  "prompts": {},
+  "sessions": {
+    "s_e25e29d8ebebad": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012f1052effeFes400CXHyfd8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}
