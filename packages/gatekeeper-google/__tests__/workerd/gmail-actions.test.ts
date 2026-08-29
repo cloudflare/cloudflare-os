@@ -1,6 +1,7 @@
 import {env} from "cloudflare:workers";
 import {runInDurableObject} from "cloudflare:test";
 import {afterEach, describe, expect, it, vi} from "vitest";
+import type {ActionKind} from "@gadgets/workshop-shared/gatekeeper";
 import {
   base64UrlDecodedByteLength, buildEncodedEmail, decodeBase64UrlToBytes, extractRfc822Attachments,
   GmailApi, GmailOutboundSpec, parseMimeMessage,
@@ -11,8 +12,8 @@ import {
 } from "../../src/gmail-state";
 import type {GmailGatekeeperImpl, GmailGatekeeperImplProps} from "../../src/gmail";
 import type {
-  EmailContent, GmailAttachmentInfo, GmailComposeOptions, GmailDraftInfo, GmailDraftInput,
-  GmailDraftPatch, GmailMessageInfo, GmailReplyOptions, GmailThreadInfo,
+  EmailContent, GmailAttachmentInfo, GmailComposeOptions, GmailCustomLabel, GmailDraftInfo,
+  GmailDraftInput, GmailDraftPatch, GmailMessageInfo, GmailReplyOptions, GmailThreadInfo,
 } from "../../src/types";
 import {containsBytes} from "../gmail-test-utils";
 
@@ -25,6 +26,8 @@ type TestHooks = {
   applyAction(
       facetName: string, id: string, props: GmailGatekeeperImplProps,
       actionId: number): Promise<void>;
+  getAutoApprovableActions(
+      facetName: string, id: string, props: GmailGatekeeperImplProps): Promise<ActionKind[]>;
   rejectAction(
       facetName: string, id: string, props: GmailGatekeeperImplProps,
       actionId: number): Promise<void>;
@@ -193,6 +196,7 @@ class TestDraft {
   }
 
   send(): Promise<void> { return this.call("draft.send", [this.id]) as Promise<void>; }
+  delete(): Promise<void> { return this.call("draft.delete", [this.id]) as Promise<void>; }
 }
 
 class TestMessage {
@@ -225,9 +229,15 @@ class TestMessage {
     return this.call("message.reply", [this.id, body, options]) as Promise<void>;
   }
 
+  replyAll(body: string, options?: GmailReplyOptions): Promise<void> {
+    return this.call("message.replyAll", [this.id, body, options]) as Promise<void>;
+  }
+
   forward(to: string[], body?: string, options?: GmailComposeOptions): Promise<void> {
     return this.call("message.forward", [this.id, to, body, options]) as Promise<void>;
   }
+
+  archive(): Promise<void> { return this.call("message.archive", [this.id]) as Promise<void>; }
 
   async createReplyDraft(body: string, options?: GmailReplyOptions): Promise<TestDraft> {
     const info = await this.call("message.createReplyDraft", [this.id, body, options]) as GmailDraftInfo;
@@ -313,6 +323,18 @@ class TestSession {
     const info = await this.call("session.createDraft", [draft]) as GmailDraftInfo;
     return new TestDraft(this.call, info.id);
   }
+
+  createLabel(name: string): Promise<GmailCustomLabel> {
+    return this.call("session.createLabel", [name]) as Promise<GmailCustomLabel>;
+  }
+
+  renameLabel(label: GmailCustomLabel, name: string): Promise<GmailCustomLabel> {
+    return this.call("session.renameLabel", [label, name]) as Promise<GmailCustomLabel>;
+  }
+
+  deleteLabel(label: GmailCustomLabel): Promise<void> {
+    return this.call("session.deleteLabel", [label]) as Promise<void>;
+  }
 }
 
 const json = (value: unknown, status = 200) =>
@@ -364,6 +386,10 @@ function actionHarness(
     .then(() => runHook(hook, instance =>
       instance.runSessionOperation(facetName, id, gmailProps, queueId, operation, args)));
   const gatekeeper = {
+    getAutoApprovableActions(): Promise<ActionKind[]> {
+      return initialization.then(() => runHook(hook, instance =>
+        instance.getAutoApprovableActions(facetName, id, gmailProps)));
+    },
     startSession(approval: ApprovalQueueHandle): Promise<TestSession> {
       approval.read = () => runHook(hook, instance => instance.readQueue(approval.id));
       return initialization.then(() => flushStorage(userStorage)).then(() => flushStorage(storage))
@@ -548,6 +574,109 @@ async function captureForwardSnapshot(
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe("Gmail auto-approval eligibility", () => {
+  it("advertises and annotates distinct non-send actions", async () => {
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages/abc123" && !init.method) {
+        return json(messageMetadata("abc123", "def456"));
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: []});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+
+    expect(await gatekeeper.getAutoApprovableActions()).toEqual([
+      {tag: "archive", label: "Archive messages"},
+      {tag: "trash", label: "Trash messages"},
+      {tag: "markRead", label: "Mark messages as read"},
+      {tag: "markUnread", label: "Mark messages as unread"},
+      {tag: "star", label: "Star messages"},
+      {tag: "unstar", label: "Unstar messages"},
+      {tag: "applyLabel", label: "Apply labels to messages"},
+      {tag: "removeLabel", label: "Remove labels from messages"},
+      {tag: "draftCreate", label: "Create drafts"},
+      {tag: "draftUpdate", label: "Update drafts"},
+      {tag: "draftDelete", label: "Delete drafts"},
+      {tag: "labelCreate", label: "Create labels"},
+      {tag: "labelRename", label: "Rename labels"},
+      {tag: "labelDelete", label: "Delete labels"},
+    ]);
+
+    const draft = await session.createDraft({
+      to: ["to@example.com"], subject: "Subject", text: "Body",
+    });
+    await draft.update({subject: "Updated subject"});
+    await draft.delete();
+    await (await session.getMessage("abc123")).archive();
+    const label = await session.createLabel("Agent label");
+    const renamed = await session.renameLabel(label, "Renamed agent label");
+    await session.deleteLabel(renamed);
+
+    const descriptions = (await queue.read!()).submissions.map(submission => submission.description);
+    expect(descriptions).toMatchObject([
+      {actionKind: {tag: "draftCreate", label: "Create drafts"}, autoApprovable: true},
+      {actionKind: {tag: "draftUpdate", label: "Update drafts"}, autoApprovable: true},
+      {actionKind: {tag: "draftDelete", label: "Delete drafts"}, autoApprovable: true},
+      {actionKind: {tag: "archive", label: "Archive messages"}, autoApprovable: true},
+      {actionKind: {tag: "labelCreate", label: "Create labels"}, autoApprovable: true},
+      {actionKind: {tag: "labelRename", label: "Rename labels"}, autoApprovable: true},
+      {actionKind: {tag: "labelDelete", label: "Delete labels"}, autoApprovable: true},
+    ]);
+  });
+
+  it("keeps every email delivery path ineligible", async () => {
+    const sourceRaw = buildEncodedEmail({
+      from: "sender@example.com",
+      to: ["me@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Source subject",
+      text: "Source body",
+      messageId: "<source@gadgets.invalid>",
+      attachments: [],
+    });
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages/abc123" && !init.method) {
+        if (url.searchParams.get("format") === "raw") {
+          return json({id: "abc123", threadId: "def456", internalDate: "1", raw: sourceRaw});
+        }
+        return json({
+          ...messageMetadata("abc123", "def456", "<source@gadgets.invalid>"),
+          sizeEstimate: base64UrlDecodedByteLength(sourceRaw),
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const message = await session.getMessage("abc123");
+
+    await session.send(["to@example.com"], "New message", "Body");
+    await message.reply("Reply body");
+    await message.replyAll("Reply-all body");
+    await message.forward(["to@example.com"], "Forward body");
+    const draft = await session.createDraft({
+      to: ["to@example.com"], subject: "Draft", text: "Draft body",
+    });
+    await draft.send();
+
+    const descriptions = (await queue.read!()).submissions.map(submission =>
+      submission.description as {actionKind?: ActionKind; autoApprovable?: boolean});
+    expect(descriptions).toHaveLength(6);
+    for (const index of [0, 1, 2, 3, 5]) {
+      expect(descriptions[index]).not.toHaveProperty("actionKind");
+      expect(descriptions[index]).not.toHaveProperty("autoApprovable");
+    }
+    expect(descriptions[4]).toMatchObject({
+      actionKind: {tag: "draftCreate", label: "Create drafts"},
+      autoApprovable: true,
+    });
+  });
+});
 
 describe("Gmail forward action snapshots", () => {
   it("bounds approval descriptions for large outbound bodies", async () => {

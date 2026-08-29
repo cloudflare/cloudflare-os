@@ -2,6 +2,7 @@ import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { GmailForwardSnapshotStore } from "../../src/gmail-state";
 import { GmailGatekeeperImpl, type GmailGatekeeperImplProps } from "../../src/gmail";
 import { UserAccount } from "../../src/google";
+import type {ActionKind} from "@gadgets/workshop-shared/gatekeeper";
 import type {
   GmailComposeOptions, GmailDraftInput, GmailDraftPatch, GmailMessage, GmailReplyOptions,
   GmailSession,
@@ -118,6 +119,12 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
       actionId: number,
   ): Promise<void> {
     await this.#gatekeeper(facetName, id, props).applyAction(actionId);
+  }
+
+  async getAutoApprovableActions(
+      facetName: string, id: string, props: GmailGatekeeperImplProps,
+  ): Promise<ActionKind[]> {
+    return this.#gatekeeper(facetName, id, props).getAutoApprovableActions();
   }
 
   async rejectAction(
@@ -247,6 +254,12 @@ testGmailPrototype.runTestOperation = async function(
       disposeRpc(draft);
     }
   }
+  case "session.createLabel":
+    return await session.createLabel(id as string);
+  case "session.renameLabel":
+    return await session.renameLabel(id as never, value as string);
+  case "session.deleteLabel":
+    return await session.deleteLabel(id as never);
   case "message.getMetadata":
     return await withMessage(session, id as string, message => message.getMetadata());
   case "message.markReadAndRefresh":
@@ -274,6 +287,8 @@ testGmailPrototype.runTestOperation = async function(
   case "message.forward":
     return await withMessage(session, id as string, message => message.forward(
       value as string[], extra as string, options as GmailComposeOptions));
+  case "message.archive":
+    return await withMessage(session, id as string, message => message.archive());
   case "message.createReplyDraft": {
     return await withMessage(session, id as string, async message => {
       const draft = await message.createReplyDraft(value as string, extra as GmailReplyOptions);
@@ -385,6 +400,14 @@ testGmailPrototype.runTestOperation = async function(
     const draft = await session.getDraft(id as string);
     try {
       return await draft.send();
+    } finally {
+      disposeRpc(draft);
+    }
+  }
+  case "draft.delete": {
+    const draft = await session.getDraft(id as string);
+    try {
+      return await draft.delete();
     } finally {
       disposeRpc(draft);
     }

@@ -1,7 +1,7 @@
 import {DurableObject, RpcStub, RpcTarget} from "cloudflare:workers";
 import {skipRpcValidation, validateRpc} from "capnweb-validate";
 import type {
-  ActionDescription, ApprovalQueue, Cursor, Gatekeeper, GatekeeperUserVerifier,
+  ActionDescription, ActionKind, ApprovalQueue, Cursor, Gatekeeper, GatekeeperUserVerifier,
   ObservationDescription, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
@@ -162,6 +162,60 @@ type GmailAction =
   | GmailMessageMutationAction | GmailSendAction | GmailDraftCreateAction
   | GmailDraftUpdateAction | GmailDraftDeleteAction | GmailDraftSendAction
   | GmailLabelCreateAction | GmailLabelRenameAction | GmailLabelDeleteAction;
+
+const MESSAGE_MUTATION_LABELS = {
+  archive: "Archive messages",
+  trash: "Trash messages",
+  markRead: "Mark messages as read",
+  markUnread: "Mark messages as unread",
+  star: "Star messages",
+  unstar: "Unstar messages",
+  applyLabel: "Apply labels to messages",
+  removeLabel: "Remove labels from messages",
+} satisfies Record<GmailMutationOperation, string>;
+
+type GmailResourceActionType = Exclude<GmailAction["type"], "messageMutation" | "send" | "draftSend">;
+
+const RESOURCE_ACTION_LABELS = {
+  draftCreate: "Create drafts",
+  draftUpdate: "Update drafts",
+  draftDelete: "Delete drafts",
+  labelCreate: "Create labels",
+  labelRename: "Rename labels",
+  labelDelete: "Delete labels",
+} satisfies Record<GmailResourceActionType, string>;
+
+function actionKinds(labels: Record<string, string>): ActionKind[] {
+  return Object.entries(labels).map(([tag, label]) => ({tag, label}));
+}
+
+function gmailAutoApprovalMetadata(
+    action: GmailAction,
+): Partial<Pick<ActionDescription, "actionKind" | "autoApprovable">> {
+  switch (action.type) {
+  case "send":
+  case "draftSend":
+    return {};
+  case "messageMutation":
+    return {
+      actionKind: {tag: action.operation, label: MESSAGE_MUTATION_LABELS[action.operation]},
+      autoApprovable: true,
+    };
+  case "draftCreate":
+  case "draftUpdate":
+  case "draftDelete":
+  case "labelCreate":
+  case "labelRename":
+  case "labelDelete":
+    return {
+      actionKind: {tag: action.type, label: RESOURCE_ACTION_LABELS[action.type]},
+      autoApprovable: true,
+    };
+  default:
+    action satisfies never;
+    throw new Error(`Unknown Gmail action type: ${(action as GmailAction).type}`);
+  }
+}
 
 // Pending actions created by the previous implementation remain applyable after a deployment.
 type LegacyGmailAction =
@@ -1210,7 +1264,7 @@ class RpcCursor<Entry> extends GmailRpcTarget implements Cursor<Entry> {
 }
 
 async function submitAction(
-    ctx: GmailContext, action: StoredGmailAction,
+    ctx: GmailContext, action: GmailAction,
     description: {title: string; description: string; awaitDecision?: boolean},
     onFailure?: () => void): Promise<number> {
   if (ctx.store.listActions().length >= 100) {
@@ -1222,6 +1276,7 @@ async function submitAction(
       ...description,
       description: boundApprovalDescription(description.description),
       implementsRevert: false,
+      ...gmailAutoApprovalMetadata(action),
     });
     return id;
   } catch (error) {
@@ -3217,7 +3272,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
   }
 
   async getTypeScriptTypes(): Promise<string> { return TYPES_CODE; }
-  async getAutoApprovableActions() { return []; }
+  async getAutoApprovableActions(): Promise<ActionKind[]> {
+    return [...actionKinds(MESSAGE_MUTATION_LABELS), ...actionKinds(RESOURCE_ACTION_LABELS)];
+  }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GmailSession> {
     if (this.ctx.props.searchQuery !== undefined) {
