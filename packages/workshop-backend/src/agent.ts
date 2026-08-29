@@ -148,6 +148,9 @@ export type SeedBindingInfo = {
    * when the gatekeeper provides none). Such entries get their own system-prompt section.
    */
   catalog?: AgentCatalog | null;
+
+  /** True when the catalog depends on the current turn and cannot reuse prior token measurements. */
+  dynamicCatalog?: boolean;
 };
 
 /**
@@ -2214,7 +2217,9 @@ export async function runAgent(
   // `measuredTokens` covers the prompt and response of the last model step, so estimate only what
   // was added after it. A tool result carries the call's sequence but wasn't in that usage.
   // (The system prompt is not part of the projection, so the pure estimate adds it separately.)
-  let contextTokens = compaction.measuredTokens > 0 && lastMeasuredSequence !== undefined
+  let dynamicCatalog = seedBindings.some(seed => seed.dynamicCatalog === true);
+  let contextTokens = !dynamicCatalog && compaction.measuredTokens > 0 &&
+      lastMeasuredSequence !== undefined
     ? compaction.measuredTokens + estimateProjectionTokens(
         projection.filter(({message, sequence}) => sequence !== undefined &&
           (sequence > lastMeasuredSequence ||

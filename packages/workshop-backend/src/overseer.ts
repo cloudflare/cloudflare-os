@@ -41,6 +41,9 @@ import { reportIssue } from "@gadgets/backend-utils/error-reporting";
 import type { ProductAnalyticsConnectionType, ProductAnalyticsGadgetInput } from "./analytics";
 import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker";
 import { completeAgentCatalogSnapshot, normalizeAgentCatalog } from "./agent-catalog";
+import {
+  rankSkillsWithWorkersAi, retrieveContextSkillsForPrompt,
+} from "./skill-retrieval";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
 import { SharingManager, SharingCaller, CollaboratorRecord, ShareKeyRecord } from "./sharing";
 import { AutoApprovalDrainer } from "./auto-approval";
@@ -6659,7 +6662,35 @@ class OverseerImpl implements AgentHooks {
       if (!gk) continue;
       let info: SeedBindingInfo =
           {name, target, title: gk.resourceTitle || "(untitled resource)", isGadget: false};
-      if (ambientSet.has(target)) info.catalog = catalogs.get(target) ?? null;
+      if (ambientSet.has(target)) {
+        let catalog = catalogs.get(target) ?? null;
+        let started = Date.now();
+        let promptCatalog = await retrieveContextSkillsForPrompt(
+            this.env.ENABLE_SEMANTIC_SKILL_RETRIEVAL,
+            gk.creationSpec?.type === "ambient" ? gk.creationSpec.vendorId : undefined,
+            catalog,
+            chatMessages,
+            (query, entries) => rankSkillsWithWorkersAi(this.env.WORKERS_AI, query, entries));
+        if (promptCatalog.retrieval) {
+          let retrieval = promptCatalog.retrieval;
+          if (retrieval.semanticFailure) {
+            this.logger.warn("semantic skill ranking failed", {
+              event: "agent.skill.retrieval.semantic.failed",
+              failureType: retrieval.semanticFailure,
+            });
+          }
+          this.logger.info("ranked agent skills for prompt", {
+            event: "agent.skill.retrieval.completed",
+            retrievalStrategy: retrieval.strategy,
+            candidateCount: retrieval.skillCount,
+            selectedCount: retrieval.selectedSkillCount,
+            durationMs: Date.now() - started,
+          });
+          catalog = promptCatalog.catalog;
+          info.dynamicCatalog = true;
+        }
+        info.catalog = catalog;
+      }
       result.push(info);
     }
     return result;

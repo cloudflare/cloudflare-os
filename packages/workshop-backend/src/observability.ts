@@ -8,12 +8,14 @@ export type WorkshopObservabilityFields = {
   autoProvisioned: boolean;
   blueprintId: string;
   callbackInitiated: boolean;
+  candidateCount: number;
   chatId: number;
   commitCount: number;
   durableObjectId: string;
   durationMs: number;
   eventName: string;
   executionId: string;
+  failureType: "invalid_response" | "provider_error" | "timeout";
   failureCount: number;
   gadgetId: string;
   gatekeeperId: number | string;
@@ -24,7 +26,9 @@ export type WorkshopObservabilityFields = {
   outcome: "ok" | "error" | "usage_limit" | "callbacks_stalled" | "no_email" | "signups_disabled";
   path: string;
   resourceTitle: string;
+  retrievalStrategy: "full" | "hybrid" | "lexical";
   sequence: number;
+  selectedCount: number;
   size: number;
   status: number;
   statusCode: number;
