@@ -209,3 +209,14 @@ test("per-package deploy-inputs.json files are well-formed when present", () => 
     }
   }
 });
+
+// The `gatekeeper-` prefix means "gatekeeper", not "deployable": discovery keys on wrangler.jsonc
+// alone, so a library may share it (`gatekeeper-kit` here, `gatekeeper-shared` internally). Pinned
+// because the failure is otherwise indirect and puzzling — a stray wrangler.jsonc would make the
+// kit a deployable, `workerKind` would type it a gatekeeper from its name, and the deploy wizard
+// would demand CLIENT_ID/CLIENT_SECRET for a library before letting anyone install it.
+test("a gatekeeper-prefixed library is not a deployable worker", () => {
+  const deployable = readDeployablePackages(join(ROOT, "packages")).map((pkg) => pkg.name);
+  assert.ok(!deployable.includes("gatekeeper-kit"),
+      "gatekeeper-kit is a library; adding a wrangler.jsonc would publish it as a connector");
+});
