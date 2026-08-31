@@ -14,7 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
 import type { AuthenticatedApi, Overseer, PublicApi } from "@gadgets/workshop-shared/api";
 import {
-  startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness,
+  settleRestart, startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness,
 } from "../src/harness.js";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import {
@@ -176,6 +176,38 @@ describe("role-scoped observer enforcement", () => {
       } finally {
         reopened.publicApi[Symbol.dispose]();
       }
+    });
+  });
+
+  it.concurrent("binding a connection already in \"use\" scope does not restart the workspace",
+      async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "rebind");
+      using gadget = await ws.overseer.createGadget("Test Gadget", undefined, "TEST_GADGET");
+
+      // Bind before the workspace is shared: the connection is in "use" scope from here on, and
+      // with no collaborators yet there is nothing to restart for.
+      await gadget.bind("TEST_THING", ws.gatekeeperId);
+
+      const [carol] = nextUsernames("carol");
+      const carolApi = await signUp(publicApi, carol);
+      const carolAccount = await provisionAccount(carolApi);
+      if (!await ws.overseer.addCollaborator(carol, "use")) {
+        throw new Error(`Failed to share the gadget with ${carol}`);
+      }
+
+      // Carol's open verifies her against the bound connection -- her whole scope.
+      const recorder =
+          new ObserverConfigRecorder().alwaysChoose(carolAccount.id, MAX_OBSERVER_PROMPTS);
+      await carolReopens(ws, carol, recorder);
+      expect(recorder.callCount).toBe(1);
+      expect(recorder.calls[0].map(need => need.gatekeeperId)).toEqual([ws.gatekeeperId]);
+
+      // A second name onto the same connection widens nobody's scope: Carol is already verified
+      // against it. Severing every live session would be disruption bought for nothing.
+      await gadget.bind("TEST_THING_AGAIN", ws.gatekeeperId);
+      await settleRestart();
+      await expect(ws.session.readValue()).resolves.toBe(42);
     });
   });
 });

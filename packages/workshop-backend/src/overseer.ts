@@ -2510,17 +2510,21 @@ class OverseerImpl implements AgentHooks {
       }
       throw new Error(`No such gatekeeper: ${target}`);
     }
+    // A permanent edge can put an account-requiring connection into every "use" collaborator's
+    // verification scope, since the gadget UI they drive can now invoke it. Snapshot the scope
+    // first and compare after, exactly as mergeChatChanges does: the edge widens nothing when it
+    // is pending (invisible to them until promotion, which restarts then), when its target is
+    // vendorless, or when some other gadget already binds that target -- and severing every
+    // session for a rebind that changed nobody's scope is disruption bought for nothing.
+    let useScopeBefore = this.#accountRequiringUseScope();
+
     gadget.bindings[name] = {target, ...(chatId !== undefined ? {pending: {chatId}} : {})};
     this.storage.gadgets.put(gadget);
 
     // The gadget's env changed, so its code must reload.
     this.bumpVersion([gadgetId]);
 
-    // A permanent edge puts an account-requiring connection into every "use" collaborator's
-    // verification scope (#gadgetBoundGatekeeperIds), since the gadget UI they drive can now
-    // invoke it. A pending edge is invisible to them until it's promoted, which restarts then.
-    if (chatId === undefined && targetRecord.creationSpec &&
-        "vendorId" in targetRecord.creationSpec) {
+    if ([...this.#accountRequiringUseScope()].some(id => !useScopeBefore.has(id))) {
       this.#restartIfShared("Gadget restarted because a connection was bound to a gadget.");
     }
   }
