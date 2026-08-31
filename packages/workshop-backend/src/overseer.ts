@@ -5819,7 +5819,7 @@ class OverseerImpl implements AgentHooks {
   // User DO ids whose outputs index this workspace is keeping live, one token per open session.
   //
   // In memory, not persisted, which is what makes fanning out to collaborators safe: revoking
-  // access aborts the DO (see scheduleAccessRestart()), so this is destroyed with the sessions
+  // access resets the DO (see scheduleAccessRestart()), so this is destroyed with the sessions
   // it describes and can only be rebuilt by an open() that re-checks the permission graph.
   #connectedIndexes = new Map<string, Set<object>>();
 
@@ -5957,46 +5957,54 @@ class OverseerImpl implements AgentHooks {
   // - Verification scope widened (see #restartIfShared): a collaborator's live session was
   //   verified against a smaller set of gatekeepers than the workspace now holds.
   //
-  // We restart by aborting the whole DO. Aborting propagates to clients: the `notifyClosed` stub
+  // We restart by resetting the whole DO. The reset propagates to clients: the `notifyClosed` stub
   // handed to each session is disposed without being called, which AuthenticatedApiImpl detects
   // and reacts to by killing the browser WebSocket, forcing a reconnect that re-runs open() and
   // re-checks the (now-changed) permission graph. These events are rare, so the disruption is
   // acceptable -- and DOs restart unpredictably anyway, so reconnects need to be made as painless
   // as possible regardless.
   //
-  // Two precautions before the abort:
-  // - `ctx.abort()` does not respect the output gate, so we explicitly flush to disk with
-  //   `ctx.storage.sync()`. Otherwise a restart could come back with a change lost, leaving the
-  //   removed user still authorized (or the widened scope unrecorded). We sync twice: once up
-  //   front, so the triggering write is durable even if the abort below never runs, and again
-  //   immediately before the abort with nothing awaited in between. That second sync is what
-  //   covers *other* access mutations: this timer runs concurrently with them, and one that has
-  //   written its sharing edge but is still awaiting its own teardown would otherwise be aborted
-  //   with the revocation buffered -- a revocation the owner was told succeeded and that silently
-  //   never happens. Callers should still schedule the restart after the write that triggered it.
-  // - We delay the abort briefly so the triggering RPC's response can reach the caller (typically
+  // Two precautions around the reset:
+  // - Resetting the DO does not respect the output gate, so we explicitly flush to disk with
+  //   `ctx.storage.sync()` first. Otherwise a restart could come back with a change lost, leaving
+  //   the removed user still authorized (or the widened scope unrecorded). The flush has to cover
+  //   *other* access mutations too, not just the triggering one: this timer runs concurrently with
+  //   them, and one that has written its sharing edge but is still awaiting its own teardown would
+  //   otherwise be reset with the revocation buffered -- a revocation the owner was told succeeded
+  //   and that silently never happens. Hence the sync goes immediately before the reset rather
+  //   than up front. Callers should still schedule the restart after the write that triggered it.
+  // - We delay the reset briefly so the triggering RPC's response can reach the caller (typically
   //   the owner, who is also connected and will be disconnected) before their connection drops.
   //   Without the delay their own removeCollaborator()/revokeShareLink() call might reject with a
   //   connection error even though it succeeded.
   //
-  // Why the second sync is sufficient, rather than merely a narrower window: the *input* gate is
-  // what makes it airtight. "While a storage operation is executing, no events shall be delivered
-  // to the object except for storage completion events" -- so no request can slip a mutation in
-  // between that sync starting and resolving, and there is deliberately no await between it
-  // resolving and the abort, so nothing can run there either. (The one documented opt-out is
-  // `allowConcurrency: true` on a read; nothing in this repo passes it. Keep it that way here.)
-  // The window the sync closes is the open one *before* it: the input gate is open across
-  // `scheduler.wait(100)`, which is exactly when a concurrent access mutation gets to write.
+  // The flush and the reset therefore run together inside `blockConcurrencyWhile()`, which is what
+  // makes the pair airtight: a plain sync followed by `ctx.abort()` only narrows the window, since
+  // a request delivered after the sync resolves can still write a mutation that the reset then
+  // discards. Nothing is delivered to the object for the duration of the block, and throwing out
+  // of it resets the object -- so there is no moment between "everything is durable" and "the
+  // object is gone" at which anything can run.
   //
-  // Concurrent triggers coalesce onto the first one's timer rather than racing several aborts;
+  // The `scheduler.wait()` is deliberately outside the block: blocking concurrency across it would
+  // stall every unrelated request for the whole delay, and by the time the block runs the caller's
+  // response is already on its way out.
+  //
+  // Concurrent triggers coalesce onto the first one's timer rather than racing several resets;
   // whichever got there first names the reason, and they all resolve when it fires.
+  //
+  // The rejection is swallowed because callers fire and forget: unlike `ctx.abort()`, this form
+  // rejects, and nothing is left to observe it (the object is being destroyed either way). Note
+  // that deleteGadget() calls this from *inside* a blockConcurrencyWhile() of its own; that is
+  // safe only because the `scheduler.wait()` comes first, so the outer block has long since
+  // exited by the time the inner one starts. Don't reorder them.
   scheduleAccessRestart(reason: string): Promise<void> {
     return this.#pendingAccessRestart ??= (async () => {
-      await this.ctx.storage.sync();
       await scheduler.wait(100);
-      await this.ctx.storage.sync();
-      this.ctx.abort(reason);
-    })();
+      await this.ctx.blockConcurrencyWhile(async () => {
+        await this.ctx.storage.sync();
+        throw new Error(reason);
+      });
+    })().catch(() => {});
   }
 
   // The in-flight scheduleAccessRestart(), if any. Never cleared: it only settles by aborting the

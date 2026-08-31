@@ -329,7 +329,7 @@ Notes:
 Verification runs at `open()` and nowhere else, so a live session is only ever as verified as the
 scope that existed when it opened. When that scope **widens**, the overseer restarts the workspace
 rather than trying to re-verify sessions in place: `#restartIfShared(reason, affectedRole?)`
-delegates to `scheduleAccessRestart(reason)` — the same DO abort used to revoke a collaborator (see
+delegates to `scheduleAccessRestart(reason)` — the same DO reset used to revoke a collaborator (see
 `docs/sharing.md`) — so every client's browser reconnects and re-runs
 `authorizeCollaborator`/`ensureObserver` against the new scope. It is a no-op when the workspace
 has no collaborators: the owner is never an observer, so there is nobody to re-verify.
@@ -367,7 +367,7 @@ owner's brand-new connection — which gates on nothing but record existence —
 exactly once, after `describe()` resolves; `getGatekeeperFacet(id, cls?)` takes the class directly
 so nothing needs the early put.
 
-Enforcement is therefore at admission, within the ~100 ms abort delay of the moment the widening
+Enforcement is therefore at admission, within the ~100 ms restart delay of the moment the widening
 itself happens.
 
 ### Step 4 — Frontend: the configuration modal

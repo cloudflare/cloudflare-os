@@ -5,7 +5,7 @@
 // since the owner is never an observer.
 //
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding). scheduleAccessRestart is
-// replaced with a recorder: a real ctx.abort() would kill the test DO.
+// replaced with a recorder: a real reset would kill the test DO.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
