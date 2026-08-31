@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./harness": "./src/harness.ts",
+    "./mock-model": "./src/mock-model.ts",
     "./network-interceptor": "./src/network-interceptor.ts",
     "./rpc-client": "./src/rpc-client.ts"
   },
