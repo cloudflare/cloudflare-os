@@ -28,6 +28,14 @@ export type GmailThreadInfo = {
   subject: string;
   /** The number of messages represented by this thread capability. */
   messageCount: number;
+  /** The timestamp of the newest represented message. */
+  timestamp: Date;
+  /** Unique senders and recipients across the represented messages. */
+  participants: EmailAddress[];
+  /** Whether any represented message is unread. */
+  unread: boolean;
+  /** Labels applied to at least one represented message. */
+  labels: GmailLabel[];
 }
 
 /** Metadata describing a Gmail message. */
@@ -206,8 +214,11 @@ export type GmailAttachmentEntry = {
   attachment: GmailAttachment;
 }
 
-/** Access to the mailbox, search, or label selected for this Gmail binding. */
-export interface GmailSession {
+/** Access to the messages and drafts admitted by any Gmail binding. */
+export interface GmailScopedSession {
+  /** Return the connected mailbox address so it can be distinguished from other thread participants. */
+  getMailboxAddress(): Promise<EmailAddress>;
+
   /**
    * List the most recent inbox threads available to a whole-mailbox binding.
    * Search- and label-scoped bindings retain their configured restriction.
@@ -255,21 +266,6 @@ export interface GmailSession {
   getThread(id: string): Promise<GmailThread>;
 
   /**
-   * Compose and send a new email. `body` is the plain-text representation;
-   * `options.html`, when provided, is sent as its HTML alternative. At least
-   * one To, CC, or BCC recipient is required.
-   *
-   * Only available when the whole mailbox is connected. On a search- or
-   * label-scoped binding, use a message's reply or forward methods instead.
-   */
-  send(
-    to: EmailRecipient[],
-    subject: string,
-    body: string,
-    options?: GmailComposeOptions,
-  ): Promise<void>;
-
-  /**
    * List drafts available to this binding. A whole-mailbox binding can list all
    * drafts; a restricted binding lists only drafts created through that same
    * binding whose immutable source message remains available to it.
@@ -281,6 +277,21 @@ export interface GmailSession {
    * by this binding. Pending updates are reflected by the returned capability.
    */
   getDraft(id: string): Promise<GmailDraft>;
+}
+
+/** Full-mailbox Gmail access, including composing messages and managing labels. */
+export interface GmailSession extends GmailScopedSession {
+  /**
+   * Compose and send a new email. `body` is the plain-text representation;
+   * `options.html`, when provided, is sent as its HTML alternative. At least
+   * one To, CC, or BCC recipient is required.
+   */
+  send(
+    to: EmailRecipient[],
+    subject: string,
+    body: string,
+    options?: GmailComposeOptions,
+  ): Promise<void>;
 
   /**
    * Create a draft in the connected mailbox and return a capability for it.
@@ -400,7 +411,11 @@ export interface GmailMessage {
    * original attachments are included as regular attachments. At least one
    * To, CC, or BCC recipient is required.
    */
-  forward(to: EmailRecipient[], body?: string, options?: GmailComposeOptions): Promise<void>;
+  forward(
+    to: EmailRecipient[],
+    body?: string,
+    options?: GmailComposeOptions,
+  ): Promise<void>;
 
   /** Create a draft reply to the sender. */
   createReplyDraft(body: string, options?: GmailReplyOptions): Promise<GmailDraft>;

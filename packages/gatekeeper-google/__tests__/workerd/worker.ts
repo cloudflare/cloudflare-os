@@ -159,6 +159,12 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return this.#gatekeeper(facetName, id, props).getAutoApprovableActions();
   }
 
+  async describe(
+      facetName: string, id: string, props: GmailGatekeeperImplProps,
+  ) {
+    return this.#gatekeeper(facetName, id, props).describe();
+  }
+
   async rejectAction(
       facetName: string, id: string, props: GmailGatekeeperImplProps,
       actionId: number,
@@ -259,12 +265,28 @@ testGmailPrototype.captureTestSnapshot = function(bytes: Uint8Array) {
 testGmailPrototype.runTestOperation = async function(
     queue: unknown, operation: string, args: unknown[],
 ): Promise<unknown> {
-  const session = await this.startSession(queue as never);
+  const session = await this.startSession(queue as never) as GmailSession;
   const [id, value, extra, options] = args;
   try {
     switch (operation) {
+  case "session.hasMailboxMethods":
+    return ["send", "createDraft", "listLabels", "createLabel", "renameLabel", "deleteLabel"]
+      .every(method => method in session);
+  case "session.getMailboxAddress":
+    return await session.getMailboxAddress();
   case "session.send":
     return await session.send(id as string[], value as string, extra as string, options as GmailComposeOptions);
+  case "session.listThreads": {
+    const cursor = await session.listThreads();
+    try {
+      const entries = await cursor.next();
+      const result = entries?.map(entry => entry.info) ?? null;
+      for (const entry of entries ?? []) disposeRpc(entry.thread);
+      return result;
+    } finally {
+      disposeRpc(cursor);
+    }
+  }
   case "session.listMessages": {
     const cursor = await session.listMessages();
     try {

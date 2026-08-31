@@ -1,7 +1,7 @@
 import {env} from "cloudflare:workers";
 import {runInDurableObject} from "cloudflare:test";
 import {afterEach, describe, expect, it, vi} from "vitest";
-import type {ActionKind} from "@gadgets/workshop-shared/gatekeeper";
+import type {ActionKind, ResourceDescription} from "@gadgets/workshop-shared/gatekeeper";
 import {
   base64UrlDecodedByteLength, buildEncodedEmail, decodeBase64UrlToBytes, extractRfc822Attachments,
   GmailApi, GmailOutboundSpec, parseMimeMessage,
@@ -28,6 +28,8 @@ type TestHooks = {
       actionId: number): Promise<void>;
   getAutoApprovableActions(
       facetName: string, id: string, props: GmailGatekeeperImplProps): Promise<ActionKind[]>;
+  describe(
+      facetName: string, id: string, props: GmailGatekeeperImplProps): Promise<ResourceDescription>;
   rejectAction(
       facetName: string, id: string, props: GmailGatekeeperImplProps,
       actionId: number): Promise<void>;
@@ -282,6 +284,21 @@ class TestSession {
       private readonly call: SessionCall, private readonly restricted: boolean,
   ) {}
 
+  hasMailboxMethods(): Promise<boolean> {
+    return this.call("session.hasMailboxMethods") as Promise<boolean>;
+  }
+
+  getMailboxAddress(): Promise<{address: string; name?: string}> {
+    return this.call("session.getMailboxAddress") as Promise<{address: string; name?: string}>;
+  }
+
+  listThreads(): Promise<TestCursor<{info: GmailThreadInfo; thread: TestThread}>> {
+    return Promise.resolve(new TestCursor(async () => {
+      const infos = await this.call("session.listThreads") as GmailThreadInfo[] | null;
+      return infos?.map(info => ({info, thread: new TestThread(this.call, info.id)})) ?? null;
+    }));
+  }
+
   listMessages(): Promise<TestCursor<{info: GmailMessageInfo; message: TestMessage}>> {
     return Promise.resolve(new TestCursor(async () => {
       const infos = await this.call("session.listMessages") as GmailMessageInfo[] | null;
@@ -393,6 +410,10 @@ function actionHarness(
     .then(() => runHook(hook, instance =>
       instance.runSessionOperation(facetName, id, gmailProps, queueId, operation, args)));
   const gatekeeper = {
+    describe(): Promise<ResourceDescription> {
+      return initialization.then(() => runHook(hook, instance =>
+        instance.describe(facetName, id, gmailProps)));
+    },
     getAutoApprovableActions(): Promise<ActionKind[]> {
       return initialization.then(() => runHook(hook, instance =>
         instance.getAutoApprovableActions(facetName, id, gmailProps)));
@@ -591,6 +612,53 @@ async function captureForwardSnapshot(
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe("Gmail session API surface", () => {
+  it("advertises scoped and mailbox session types according to the binding", async () => {
+    const mailbox = actionHarness(url => {
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const search = actionHarness(url => {
+      throw new Error(`Unexpected request: ${url}`);
+    }, {searchQuery: "is:unread"});
+    const label = actionHarness(url => {
+      throw new Error(`Unexpected request: ${url}`);
+    }, {labelName: "Important"});
+
+    await expect(mailbox.gatekeeper.describe()).resolves.toMatchObject({
+      tsType: "GmailSession",
+    });
+    await expect(search.gatekeeper.describe()).resolves.toMatchObject({
+      tsType: "GmailScopedSession",
+    });
+    await expect(label.gatekeeper.describe()).resolves.toMatchObject({
+      tsType: "GmailScopedSession",
+    });
+
+    const mailboxSession = await mailbox.gatekeeper.startSession(approvalQueue());
+    const searchSession = await search.gatekeeper.startSession(approvalQueue());
+    await expect(mailboxSession.hasMailboxMethods()).resolves.toBe(true);
+    await expect(searchSession.hasMailboxMethods()).resolves.toBe(false);
+  });
+
+  it("authorizes and returns the connected mailbox address through a restricted binding", async () => {
+    const {gatekeeper} = actionHarness(url => {
+      throw new Error(`Unexpected request: ${url}`);
+    }, {
+      searchQuery: "is:unread",
+      userInfo: () => ({sub: "account-subject", email: "owner@example.com"}),
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+
+    await expect(session.getMailboxAddress()).resolves.toEqual({address: "owner@example.com"});
+    await expect(queue.read!()).resolves.toMatchObject({
+      observations: expect.arrayContaining([
+        expect.objectContaining({title: "Read Gmail mailbox address"}),
+      ]),
+    });
+  });
+});
 
 describe("Gmail auto-approval eligibility", () => {
   it("advertises and annotates distinct non-send actions", async () => {
@@ -1657,6 +1725,69 @@ describe("Gmail message lookup", () => {
   const messageId = "1a03a1e31ecc5e7f";
   const threadId = "1a03a1e31ecc5e70";
 
+  it("returns rich thread summaries without reading message bodies", async () => {
+    const first = messageMetadata(messageId, threadId, "<first@example.com>", [
+      "INBOX", "UNREAD", "Label_1",
+    ]);
+    first.internalDate = "1000";
+    first.payload.headers = [
+      {name: "From", value: "Alice <alice@example.com>"},
+      {name: "To", value: "owner@example.com, Team <team@example.com>"},
+      {name: "Subject", value: "Project update"},
+    ];
+    const second = messageMetadata("1a03a1e31ecc5e71", threadId, "<second@example.com>", [
+      "INBOX", "SENT",
+    ]);
+    second.internalDate = "2000";
+    second.payload.headers = [
+      {name: "From", value: "owner@example.com"},
+      {name: "To", value: "Bob <bob@example.com>, alice@example.com"},
+      {name: "Subject", value: "Re: Project update"},
+    ];
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/threads" && !init.method) {
+        return json({threads: [{id: threadId, snippet: "Latest reply"}]});
+      }
+      if (url.pathname === `/gmail/v1/users/me/threads/${threadId}` && !init.method) {
+        return json({id: threadId, snippet: "Thread snippet", messages: [first, second]});
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: [
+          {id: "INBOX", name: "INBOX", type: "system"},
+          {id: "UNREAD", name: "UNREAD", type: "system"},
+          {id: "SENT", name: "SENT", type: "system"},
+          {id: "Label_1", name: "Project", type: "user"},
+        ]});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }, {userInfo: () => ({sub: "account-subject", email: "owner@example.com"})});
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    const entries = await (await session.listThreads()).next();
+
+    expect(entries).toHaveLength(1);
+    expect(entries![0].info).toEqual({
+      id: threadId,
+      snippet: "Latest reply",
+      subject: "Project update",
+      messageCount: 2,
+      timestamp: new Date(2000),
+      participants: [
+        {address: "alice@example.com", name: "Alice"},
+        {address: "owner@example.com"},
+        {address: "team@example.com", name: "Team"},
+        {address: "bob@example.com", name: "Bob"},
+      ],
+      unread: true,
+      labels: [
+        {id: "INBOX", name: "INBOX", type: "system"},
+        {id: "UNREAD", name: "UNREAD", type: "system"},
+        {id: "Label_1", name: "Project", type: "custom"},
+        {id: "SENT", name: "SENT", type: "system"},
+      ],
+    });
+  });
+
   it("opens a known message by ID without scanning the mailbox", async () => {
     const {calls, gatekeeper} = actionHarness((url, init) => {
       if (url.pathname === `/gmail/v1/users/me/messages/${messageId}` && !init.method) {
@@ -1843,6 +1974,9 @@ describe("Gmail message lookup", () => {
           messages: [{payload: {headers: [{name: "Subject", value: "Known thread"}]}}],
         });
       }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: []});
+      }
       throw new Error(`Unexpected request: ${url}`);
     });
     const session = await gatekeeper.startSession(approvalQueue());
@@ -1892,6 +2026,65 @@ describe("Gmail message lookup", () => {
 
     expect(visible).toHaveLength(1);
     await expect(visible[0].getMetadata()).resolves.toMatchObject({id: messageId});
+  });
+
+  it("summarizes only messages admitted by a restricted thread capability", async () => {
+    const excludedMessageId = "excluded-message";
+    const admitted = messageMetadata(messageId, threadId, "<admitted@example.com>", ["INBOX"]);
+    admitted.internalDate = "1000";
+    admitted.payload.headers = [
+      {name: "From", value: "Allowed <allowed@example.com>"},
+      {name: "To", value: "owner@example.com"},
+      {name: "Subject", value: "Visible subject"},
+    ];
+    const excluded = messageMetadata(
+      excludedMessageId, threadId, "<excluded@example.com>", ["UNREAD", "Label_secret"]);
+    excluded.internalDate = "9999";
+    excluded.payload.headers = [
+      {name: "From", value: "Secret <secret@example.com>"},
+      {name: "To", value: "owner@example.com"},
+      {name: "Subject", value: "Hidden subject"},
+    ];
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === `/gmail/v1/users/me/threads/${threadId}` && !init.method) {
+        return json(threadMinimal(threadId, [messageId, excludedMessageId]));
+      }
+      if (url.pathname === `/gmail/v1/users/me/messages/${messageId}` && !init.method) {
+        return json(admitted);
+      }
+      if (url.pathname === `/gmail/v1/users/me/messages/${excludedMessageId}` && !init.method) {
+        return json(excluded);
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        return json({messages: [{id: messageId, threadId}]});
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: [
+          {id: "INBOX", name: "INBOX", type: "system"},
+          {id: "UNREAD", name: "UNREAD", type: "system"},
+          {id: "Label_secret", name: "Secret", type: "user"},
+        ]});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }, {
+      searchQuery: "from:allowed@example.com",
+      userInfo: () => ({sub: "account-subject", email: "owner@example.com"}),
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const thread = await session.getThread(threadId);
+
+    await expect(thread.getMetadata()).resolves.toEqual({
+      id: threadId,
+      subject: "Visible subject",
+      messageCount: 1,
+      timestamp: new Date(1000),
+      participants: [
+        {address: "allowed@example.com", name: "Allowed"},
+        {address: "owner@example.com"},
+      ],
+      unread: false,
+      labels: [{id: "INBOX", name: "INBOX", type: "system"}],
+    });
   });
 
   it("limits a search-scoped thread to its admitted messages", async () => {

@@ -14,13 +14,16 @@ import {
   GmailOutboundAttachment, GmailOutboundMessage, GmailOutboundSpec, GmailParsedDraft,
   GmailParsedDraftSnapshot, MAX_GMAIL_ATTACHMENT_BYTES, MAX_GMAIL_FORWARD_SOURCE_BYTES,
   extractRfc822Attachments, gmailMessageIdQueryValue, newGmailMessageId, normalizeAggregateRecipients,
-  normalizeEmailRecipients, parseGmailDraft, parseGmailMessageMetadata,
+  normalizeEmailRecipients, parseGmailDraft, parseGmailMessageMetadata, GmailThreadInfoRaw,
+  summarizeGmailThread,
 } from "./google-api";
 import type {
-  EmailContent, GmailAttachment, GmailAttachmentEntry, GmailAttachmentInfo, GmailComposeOptions, GmailCustomLabel,
+  EmailAddress, EmailContent, GmailAttachment, GmailAttachmentEntry, GmailAttachmentInfo, GmailComposeOptions,
+  GmailCustomLabel,
   GmailDraft, GmailDraftEntry, GmailDraftInfo, GmailDraftInput, GmailDraftPatch, GmailHeader,
   GmailLabel, GmailMessage, GmailMessageEntry, GmailMessageInfo, GmailMutableLabel,
-  GmailReplyOptions, GmailSession, GmailSystemLabel, GmailThread, GmailThreadEntry, GmailThreadInfo,
+  GmailReplyOptions, GmailScopedSession, GmailSession, GmailSystemLabel, GmailThread, GmailThreadEntry,
+  GmailThreadInfo,
 } from "./types";
 import {
   combineGmailQueries, MAX_GMAIL_VISIBLE_THREAD_MESSAGES, validateGmailAddress, validateGmailBody,
@@ -1323,6 +1326,11 @@ async function messageInfo(ctx: GmailContext, raw: GmailMessageInfoRaw): Promise
   };
 }
 
+async function threadInfo(ctx: GmailContext, raw: GmailThreadInfoRaw): Promise<GmailThreadInfo> {
+  const {labelIds, ...info} = raw;
+  return {...info, labels: await resolveLabels(ctx, labelIds)};
+}
+
 function admitReturnedLabels(ctx: GmailContext, labels: readonly GmailLabel[]): void {
   if (!ctx.restricted) return;
   for (const label of labels) ctx.store.admitLabel(label.id);
@@ -1659,7 +1667,7 @@ function gmailFullThreadCursor(
       try {
         for (let i = 0; i < threads.length; i += 5) {
           const enriched = await Promise.all(threads.slice(i, i + 5).map(async thread => {
-            const metadata = await ctx.api.getThreadInfo(thread.id);
+            const metadata = await threadInfo(ctx, await ctx.api.getThreadInfo(thread.id));
             return {
               thread,
               info: {
@@ -1679,10 +1687,13 @@ function gmailFullThreadCursor(
         throw error;
       }
     },
-    authorize: entries => ctx.approvalQueue.authorizeObservation({
-      title: `Read ${entries.length} Gmail threads`,
-      description: "Fetch the next page of Gmail thread results.",
-    }),
+    authorize: async entries => {
+      await ctx.approvalQueue.authorizeObservation({
+        title: `Read ${entries.length} Gmail threads`,
+        description: "Fetch the next page of Gmail thread results.",
+      });
+      for (const entry of entries) admitReturnedLabels(ctx, entry.info.labels);
+    },
     disposeEntries: entries =>
       disposeEntryTargets(entries, entry => entry.thread),
   }), ctx.approvalQueue);
@@ -1765,12 +1776,8 @@ function gmailRestrictedThreadCursor(
           }
           const first = metadata[0];
           if (!first) continue;
-          const info: GmailThreadInfo = {
-            id: group.threadId,
-            ...(first.ref.snippet !== undefined ? {snippet: first.ref.snippet} : {}),
-            subject: first.info.subject,
-            messageCount: metadata.length,
-          };
+          const info = await threadInfo(ctx, summarizeGmailThread(
+            group.threadId, first.ref.snippet, metadata.map(item => item.info)));
           const scope = gmailRestrictedScope(metadata.map(item => item.info.id));
           entries.push({info, thread: new GmailThreadStub(ctx, group.threadId, scope, info)});
         }
@@ -1780,10 +1787,13 @@ function gmailRestrictedThreadCursor(
         throw error;
       }
     },
-    authorize: entries => ctx.approvalQueue.authorizeObservation({
-      title: `Read ${entries.length} restricted Gmail threads`,
-      description: "Fetch matching messages grouped into scope-preserving thread capabilities.",
-    }),
+    authorize: async entries => {
+      await ctx.approvalQueue.authorizeObservation({
+        title: `Read ${entries.length} restricted Gmail threads`,
+        description: "Fetch matching messages grouped into scope-preserving thread capabilities.",
+      });
+      for (const entry of entries) admitReturnedLabels(ctx, entry.info.labels);
+    },
     disposeEntries: entries =>
       disposeEntryTargets(entries, entry => entry.thread),
   }), ctx.approvalQueue);
@@ -1800,6 +1810,14 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
 
   async #authorizeCursor(title: string, description: string): Promise<void> {
     await this.#ctx.approvalQueue.authorizeObservation({title, description});
+  }
+
+  async getMailboxAddress(): Promise<EmailAddress> {
+    await this.#ctx.approvalQueue.authorizeObservation({
+      title: "Read Gmail mailbox address",
+      description: "Read the email address of the connected Gmail mailbox.",
+    });
+    return {address: this.#ctx.selfEmail};
   }
 
   async listThreads(): Promise<Cursor<GmailThreadEntry>> {
@@ -1864,7 +1882,7 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
   async getThread(id: string): Promise<GmailThread> {
     if (!GMAIL_PROVIDER_ID_RE.test(id)) throw new Error("Invalid Gmail thread ID.");
     if (!this.#ctx.restricted) {
-      const info = await this.#ctx.api.getThreadInfo(id);
+      const info = await threadInfo(this.#ctx, await this.#ctx.api.getThreadInfo(id));
       await this.#ctx.approvalQueue.authorizeObservation({
         title: sanitizeApprovalTitle(`Open Gmail thread: ${info.subject || "(no subject)"}`),
         description: "Open a known Gmail thread by its stable ID within this binding.",
@@ -2036,6 +2054,36 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
   }
 }
 
+@validateRpc()
+class GmailScopedSessionImpl extends GmailRpcTarget implements GmailScopedSession {
+  #mailbox: GmailSessionImpl;
+
+  constructor(ctx: GmailContext) {
+    super(ctx.approvalQueue);
+    this.#mailbox = new GmailSessionImpl(ctx);
+  }
+
+  getMailboxAddress(): Promise<EmailAddress> { return this.#mailbox.getMailboxAddress(); }
+  listThreads(): Promise<Cursor<GmailThreadEntry>> { return this.#mailbox.listThreads(); }
+  searchThreads(query: string): Promise<Cursor<GmailThreadEntry>> {
+    return this.#mailbox.searchThreads(query);
+  }
+  search(query: string): Promise<Cursor<GmailThreadEntry>> { return this.#mailbox.search(query); }
+  listMessages(): Promise<Cursor<GmailMessageEntry>> { return this.#mailbox.listMessages(); }
+  searchMessages(query: string): Promise<Cursor<GmailMessageEntry>> {
+    return this.#mailbox.searchMessages(query);
+  }
+  getMessage(id: string): Promise<GmailMessage> { return this.#mailbox.getMessage(id); }
+  getThread(id: string): Promise<GmailThread> { return this.#mailbox.getThread(id); }
+  listDrafts(): Promise<Cursor<GmailDraftEntry>> { return this.#mailbox.listDrafts(); }
+  getDraft(id: string): Promise<GmailDraft> { return this.#mailbox.getDraft(id); }
+
+  [Symbol.dispose](): void {
+    this.#mailbox[Symbol.dispose]();
+    super[Symbol.dispose]();
+  }
+}
+
 async function resolveMutableLabel(
     ctx: GmailContext, candidate: unknown): Promise<CanonicalMutableLabel> {
   if (ctx.restricted) {
@@ -2139,7 +2187,8 @@ class GmailThreadStub extends GmailRpcTarget implements GmailThread {
   async #loadInfo(): Promise<GmailThreadInfo> {
     if (this.#cachedInfo) return this.#cachedInfo;
     if (this.#scope.kind === "mailbox") {
-      this.#cachedInfo = await this.#ctx.api.getThreadInfo(this.#threadId);
+      this.#cachedInfo = await threadInfo(
+        this.#ctx, await this.#ctx.api.getThreadInfo(this.#threadId));
       return this.#cachedInfo;
     }
     const admitted = this.#scope.admittedMessageIds;
@@ -2150,12 +2199,8 @@ class GmailThreadStub extends GmailRpcTarget implements GmailThread {
         admitted.slice(i, i + 5).map(id => this.#ctx.api.getMessageMetadata(id))));
     }
     const parsed = metadata.map(parseGmailMessageMetadata);
-    this.#cachedInfo = {
-      id: this.#threadId,
-      ...(metadata[0]?.snippet !== undefined ? {snippet: metadata[0].snippet} : {}),
-      subject: parsed[0]?.subject ?? "",
-      messageCount: parsed.length,
-    };
+    this.#cachedInfo = await threadInfo(this.#ctx, summarizeGmailThread(
+      this.#threadId, metadata[0]?.snippet, parsed));
     return this.#cachedInfo;
   }
 
@@ -2171,6 +2216,7 @@ class GmailThreadStub extends GmailRpcTarget implements GmailThread {
       title: sanitizeApprovalTitle(`Gmail thread: ${info.subject}`),
       description: "Read metadata for the messages admitted by this thread capability.",
     });
+    admitReturnedLabels(this.#ctx, info.labels);
     return info;
   }
 
@@ -3196,7 +3242,7 @@ async function applyMessageMutation(
 
 @validateRpc()
 export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplProps>
-    implements Gatekeeper<GmailSession> {
+    implements Gatekeeper<GmailScopedSession | GmailSession> {
   #applying = new Set<number>();
   #labelGeneration = 0;
   #verifiedToken?: string;
@@ -3292,7 +3338,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         title: `Gmail label: ${this.ctx.props.labelName}`,
         snippet: `Gmail messages with label: ${this.ctx.props.labelName}`,
         suggestedBindingName: "GMAIL_LABEL",
-        tsType: "GmailSession",
+        tsType: "GmailScopedSession",
       };
     }
     if (this.ctx.props.searchQuery !== undefined) {
@@ -3302,7 +3348,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         title: `Gmail: ${this.ctx.props.searchQuery}`,
         snippet: "Gmail messages matching the connected search",
         suggestedBindingName: "GMAIL_SEARCH",
-        tsType: "GmailSession",
+        tsType: "GmailScopedSession",
       };
     }
     return {
@@ -3319,7 +3365,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     return [...actionKinds(MESSAGE_MUTATION_LABELS), ...actionKinds(RESOURCE_ACTION_LABELS)];
   }
 
-  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GmailSession> {
+  async startSession(
+      approvalQueue: RpcStub<ApprovalQueue>,
+  ): Promise<GmailScopedSession | GmailSession> {
     if (this.ctx.props.searchQuery !== undefined) {
       validateGmailQueryForGrouping(this.ctx.props.searchQuery);
     }
@@ -3354,7 +3402,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         }
       },
     };
-    return new GmailSessionImpl(ctx);
+    return ctx.restricted ? new GmailScopedSessionImpl(ctx) : new GmailSessionImpl(ctx);
   }
 
   async applyAction(actionId: number): Promise<void> {

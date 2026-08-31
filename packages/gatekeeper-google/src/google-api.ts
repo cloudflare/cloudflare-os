@@ -5,7 +5,6 @@
 import { AccountDescription } from "@gadgets/workshop-shared/gatekeeper";
 import {
   EmailAddress, GmailAttachmentInfo, GmailComposeOptions, GmailHeader, GmailReplyOptions,
-  GmailThreadInfo,
 } from "./types";
 import { createMimeMessage } from "mimetext/browser";
 import PostalMime, { addressParser } from "postal-mime";
@@ -24,6 +23,17 @@ export type GmailMessageInfoRaw = {
   bcc: EmailAddress[];
   subject: string;
   timestamp: Date;
+  labelIds: string[];
+};
+
+export type GmailThreadInfoRaw = {
+  id: string;
+  snippet?: string;
+  subject: string;
+  messageCount: number;
+  timestamp: Date;
+  participants: EmailAddress[];
+  unread: boolean;
   labelIds: string[];
 };
 
@@ -373,10 +383,8 @@ export type GmailLabelRaw = {
 type GmailThreadMetadata = {
   id: string;
   snippet?: string;
-  historyId: string;
-  messages?: Array<{
-    payload: { headers: Array<{ name: string; value: string }> };
-  }>;
+  historyId?: string;
+  messages?: GmailMessageFull[];
 };
 
 // Decode a base64url-encoded string to raw bytes.
@@ -1627,6 +1635,45 @@ export function parseGmailMessageMetadata(message: GmailMessageFull): GmailMessa
   };
 }
 
+/** Aggregate message metadata into a thread summary without reading message bodies. */
+export function summarizeGmailThread(
+    id: string, snippet: string | undefined,
+    messages: readonly GmailMessageInfoRaw[]): GmailThreadInfoRaw {
+  const participants: EmailAddress[] = [];
+  const participantAddresses = new Set<string>();
+  const labelIds: string[] = [];
+  const seenLabels = new Set<string>();
+  let timestamp = 0;
+  let unread = false;
+  for (const message of messages) {
+    timestamp = Math.max(timestamp, message.timestamp.getTime());
+    unread ||= message.labelIds.includes("UNREAD");
+    for (const labelId of message.labelIds) {
+      if (!seenLabels.has(labelId)) {
+        seenLabels.add(labelId);
+        labelIds.push(labelId);
+      }
+    }
+    for (const participant of [message.from, ...message.to, ...message.cc, ...message.bcc]) {
+      const key = participant.address.toLowerCase();
+      if (key && !participantAddresses.has(key)) {
+        participantAddresses.add(key);
+        participants.push(participant);
+      }
+    }
+  }
+  return {
+    id,
+    ...(snippet !== undefined ? {snippet} : {}),
+    subject: messages[0]?.subject ?? "",
+    messageCount: messages.length,
+    timestamp: new Date(timestamp),
+    participants,
+    unread,
+    labelIds,
+  };
+}
+
 function cleanContentId(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const trimmed = value.trim();
@@ -1946,8 +1993,8 @@ export class GmailApi {
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * List threads. Gmail returns Thread resources with id/snippet, omitting only
-   * the messages array. Subject/count are enriched separately by getThreadInfo().
+   * List threads. Gmail returns only IDs and snippets here; getThreadInfo()
+   * fetches the metadata needed for public thread summaries.
    */
   async listThreads(count: number, query?: string, pageToken?: string, labelIds?: string[]):
       Promise<{ threads: Array<{ id: string; snippet?: string }>; nextPageToken?: string }> {
@@ -2010,32 +2057,28 @@ export class GmailApi {
   }
 
   /**
-   * Get thread info (id, snippet, subject) using a metadata-only fetch to
-   * avoid downloading full message payloads.
+   * Get aggregate thread metadata using a metadata-only fetch, without
+   * downloading message bodies or attachments.
    */
-  async getThreadInfo(threadId: string): Promise<GmailThreadInfo> {
+  async getThreadInfo(threadId: string): Promise<GmailThreadInfoRaw> {
     validateGmailId(threadId, "thread ID");
 
-    const response = await this.authedFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}?format=metadata&metadataHeaders=Subject`,
-    );
+    const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}`);
+    url.searchParams.set("format", "metadata");
+    for (const header of ["From", "To", "Cc", "Bcc", "Subject"]) {
+      url.searchParams.append("metadataHeaders", header);
+    }
+    const response = await this.authedFetch(url.toString());
 
     if (!response.ok) {
       await gmailApiFailure("threads.get", response);
     }
 
     const thread = await response.json() as GmailThreadMetadata;
-    const firstMsg = thread.messages?.[0];
-    const subject = firstMsg?.payload.headers.find(
-      h => h.name.toLowerCase() === 'subject'
-    )?.value ?? '';
-
-    return {
-      id: threadId,
-      ...(thread.snippet !== undefined ? {snippet: thread.snippet} : {}),
-      subject,
-      messageCount: thread.messages?.length ?? 0,
-    };
+    return summarizeGmailThread(
+      threadId, thread.snippet,
+      (thread.messages ?? []).map(parseGmailMessageMetadata),
+    );
   }
 
   /** Modify thread labels (for archive, trash, read/unread). */
