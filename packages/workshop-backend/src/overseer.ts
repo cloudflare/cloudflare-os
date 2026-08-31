@@ -8985,14 +8985,13 @@ class OverseerImpl implements AgentHooks {
             });
           };
 
-          let verifier = await clientUser.getVerifier(accountId, vendorId);
-          if (!verifier) {
-            // Account gone -> the overseer authors the reason. (Wrong vendor throws above.)
-            fail("This account is no longer connected.");
-            return;
-          }
-
           try {
+            let verifier = await clientUser.getVerifier(accountId, vendorId);
+            if (!verifier) {
+              // Account gone -> the overseer authors the reason. (Wrong vendor throws above.)
+              fail("This account is no longer connected.");
+              return;
+            }
             await this.getGatekeeperFacet(gk.id).addObserver(observerId, verifier);
             if (!registeredBeforeCall.has(gk.id)) newlyAdded.add(gk.id);
           } catch (err) {
