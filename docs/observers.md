@@ -401,8 +401,9 @@ you're allowed to see the data it uses."
 ### Step 5 — Overseer: forward exclusion in `authorizeObservation()`
 
 Extend `authorizeObservation()` (`overseer.ts:1169`) to honor `description.excludeObservers`.
-Because v1 has no per-thread hiding, the only case in which we can let an excluded-but-named
-observation proceed is when the named observer has *already lost access* in the sharing graph.
+Because v1 has no per-thread hiding, an excluded-but-named observation can only proceed when the
+named observer cannot reach it at all: either they have *already lost access* in the sharing graph,
+or the connection that produced it has left their role's verification scope.
 
 For each id in `description.excludeObservers`:
 
@@ -410,13 +411,22 @@ For each id in `description.excludeObservers`:
    no record, the id is not an active observer → ignore it.
 2. Check sharing-graph reachability for that `profileId`
    (`SharingManager.getEffectiveRole` / `computeEffectiveRoles`).
-   - **Still authorized → throw**, blocking the observation (degrade to per-observation
-     lockdown). Use a clear message, e.g.:
+   - **Still authorized, and the producing gatekeeper is still in that role's scope → throw**,
+     blocking the observation (degrade to per-observation lockdown). Use a clear message, e.g.:
      `"This observation was blocked because it contains data that a current collaborator is not permitted to see."`
+   - **Still authorized, but the gatekeeper has left their scope → allow** for this observer, and
+     drop their registration on *that gatekeeper only* (`removeObserver(observerId)`), keeping the
+     record. The scope test is `#inRoleVerificationScope` and is deliberately narrow and
+     fail-closed: the only way out is "role is `use`, the connection requires an account, and no
+     gadget binds it". This is the case a stale registration creates — a `use` collaborator's open
+     never verifies (and so never re-registers or removes) a gatekeeper outside their scope, so an
+     unbind leaves them named by a gatekeeper they can no longer reach. A rebind puts it back in
+     scope and their next open registers them again.
    - **No longer authorized → allow** for this observer, and **delete their observer record**
      (and best-effort `removeObserver(observerId)` on all gatekeepers). They are no longer set up
      to observe; if they ever regain access they reconfigure from scratch (Step 3).
-3. If, after evaluating all excluded ids, none are still-authorized, allow the observation.
+3. If, after evaluating all excluded ids, none can reach the observation, allow it. Every id is
+   classified before anything is torn down, so a blocked observation leaves no teardown behind it.
 
 This is the runtime counterpart of `addObserver`: `addObserver` covers observers configured
 *after* data was read; `excludeObservers` covers data read *after* observers were configured.
@@ -508,9 +518,11 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    gatekeeper per open. Parallelize with `Promise.all` and pipe the verifier promise straight into
    `addObserver`. Expensive gatekeepers cache on their side.
 7. **`use`-role observers and `excludeObservers`** — `use` observers are only configured against
-   named bindings, so they will never appear in `excludeObservers` from a non-named binding (the
-   gatekeeper doesn't know their id). The Step 5 logic handles this naturally (unknown id →
-   ignored).
+   named bindings, so they never appear in `excludeObservers` from a binding that was never named
+   (the gatekeeper doesn't know their id). The Step 5 logic handles this naturally (unknown id →
+   ignored). A binding that *was* named and has since been unbound is the different case Step 5's
+   scope test handles: the gatekeeper still knows the id, but the observer can no longer reach what
+   it produces, so they are de-registered from it instead of blocking.
 
 ---
 

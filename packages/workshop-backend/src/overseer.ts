@@ -5430,12 +5430,12 @@ class OverseerImpl implements AgentHooks {
     }
 
     // Forward exclusion: the gatekeeper may name observers who must not see this observation. Since
-    // v1 has no per-thread hiding, the only way to let such an observation proceed is if the named
-    // observer has already lost access in the sharing graph. If any named observer is still
-    // authorized, we cannot prevent them from seeing it, so we block the observation. See
+    // v1 has no per-thread hiding, the only way to let such an observation proceed is if no named
+    // observer could reach it -- either they have lost access in the sharing graph, or this
+    // connection has left their role's verification scope. See
     // observers-implementation-plan.md §5 Step 5.
     if (description.excludeObservers && description.excludeObservers.length > 0) {
-      await this.#enforceExcludeObservers(description.excludeObservers);
+      await this.#enforceExcludeObservers(gatekeeperId, description.excludeObservers);
     }
 
     let actionId = this.storage.nextActionId.get();
@@ -5566,39 +5566,76 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  // Enforce an observation's `excludeObservers`. For each named opaque observerId:
+  // Enforce an observation's `excludeObservers`, named by the gatekeeper `gatekeeperId` produced
+  // it. For each named opaque observerId:
   //   - Map it back to a profileId via the byObserverId index. An unknown id is not an active
   //     observer (e.g. already torn down), so it is ignored.
-  //   - If that profileId is still authorized in the sharing graph, we cannot guarantee they won't
-  //     see the observation (v1 has no per-thread hiding), so we throw to block it.
+  //   - If that profileId is still authorized in the sharing graph *and* this gatekeeper is still
+  //     in their role's verification scope, we cannot guarantee they won't see the observation (v1
+  //     has no per-thread hiding), so we throw to block it.
+  //   - If this gatekeeper has left their scope, they cannot reach the observation and must not
+  //     block it. They stay a collaborator with an intact record, so only their registration on
+  //     *this* gatekeeper is dropped -- which is what left them named here after the connection
+  //     was unbound, since a "use" collaborator's open never re-verifies (and so never re-registers
+  //     or removes) a gatekeeper outside their scope. A rebind puts it back in scope and their next
+  //     open registers them again.
   //   - If that profileId is no longer authorized, we allow the observation for them and delete
   //     their observer record (best-effort removeObserver on all gatekeepers). They are no longer
   //     set up to observe; if they regain access they reconfigure from scratch (Step 3).
-  // If no named observer is still authorized, the observation is allowed.
-  async #enforceExcludeObservers(observerIds: string[]): Promise<void> {
+  // If no named observer can reach the observation, it is allowed.
+  async #enforceExcludeObservers(gatekeeperId: number, observerIds: string[]): Promise<void> {
     let sharing = await this.getSharingManager();
 
-    // Observers who are still authorized block the observation outright.
+    // Classify every named observer before acting: a blocked observation must leave no teardown
+    // behind it.
+    let unauthorized: string[] = [];
+    let outOfScope: string[] = [];
     for (let observerId of observerIds) {
       let observer = this.storage.observers.byObserverId.get(observerId);
       if (!observer) continue;  // not an active observer -> ignore
 
-      if (sharing.getEffectiveRole(observer.profileId)) {
+      let role = sharing.getEffectiveRole(observer.profileId);
+      if (!role) {
+        unauthorized.push(observerId);
+      } else if (this.#inRoleVerificationScope(gatekeeperId, role)) {
         throw new Error(
             "This observation was blocked because it contains data that a current collaborator " +
             "is not permitted to see.");
+      } else {
+        outOfScope.push(observerId);
       }
     }
 
-    // No still-authorized observer was named. Tear down any named observers who have already lost
-    // access, since they are no longer set up to observe.
+    // Nobody named can reach the observation. Tear down those who have lost access entirely, since
+    // they are no longer set up to observe at all, and de-register the rest from this gatekeeper.
     let gatekeeperIds = [...this.storage.gatekeepers.list()].map(gk => gk.id);
-    for (let observerId of observerIds) {
+    for (let observerId of unauthorized) {
       let observer = this.storage.observers.byObserverId.get(observerId);
       if (!observer) continue;
       this.storage.observers.delete(observer.profileId);
       await this.#removeObserverFromGatekeepers(observerId, gatekeeperIds);
     }
+    for (let observerId of outOfScope) {
+      await this.#removeObserverFromGatekeepers(observerId, [gatekeeperId]);
+    }
+  }
+
+  // Whether `gatekeeperId` is in the verification scope of a collaborator holding `role`, i.e.
+  // whether an observer of that role could have been verified against it -- and so whether their
+  // being named in its `excludeObservers` means anything.
+  //
+  // Fail-closed and deliberately narrow: the only way out is "role is `use`, the connection
+  // requires an account, and no gadget binds it". A "build" collaborator's scope is every
+  // account-requiring connection, and a connection requiring no account never verifies anyone,
+  // so both stay in scope and block exactly as before.
+  //
+  // Uses #accountRequiringUseScope() rather than #inScopeGatekeepers("use"), whose
+  // observerVendorId() throws on a legacy record with no creationSpec: an unrelated legacy
+  // connection must not turn the observation path into an error.
+  #inRoleVerificationScope(gatekeeperId: number, role: CollaboratorRole): boolean {
+    if (role !== "use") return true;
+    if (!gatekeeperVendorId(this.storage.gatekeepers.get(gatekeeperId))) return true;
+    return this.#accountRequiringUseScope().has(gatekeeperId);
   }
 
   // Provides web-fetch with the Workers AI binding and AI Gateway config it needs to call
