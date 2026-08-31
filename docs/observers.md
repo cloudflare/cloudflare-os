@@ -485,7 +485,12 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    verification is parked* on an await (the modal, verifier RPCs) is covered by the same restart:
    their committed record lacks an entry for the new connection, and the restart forces the open
    that adds one. The residual is the ~100 ms window itself, which is inside the revocation window
-   the sharing model already accepts.
+   the sharing model already accepts: the tolerance for an access change taking effect is 5 s, and
+   a widening that lands early and a revocation that lands late are the same window measured from
+   opposite ends. It is ~100 ms typically rather than by construction — `#restartIfShared` resolves
+   `getSharingManager()` first, which on a cold DO is an RPC to the owner's User DO — so closing it
+   outright would mean gating reads on a per-session snapshot of what the holder was verified
+   against, which is not proportionate to what it buys.
 6. **Performance** — `ensureObserver` does one `getVerifier` + one `addObserver` per in-scope
    gatekeeper per open. Parallelize with `Promise.all` and pipe the verifier promise straight into
    `addObserver`. Expensive gatekeepers cache on their side.

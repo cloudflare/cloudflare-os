@@ -5959,20 +5959,34 @@ class OverseerImpl implements AgentHooks {
   // as possible regardless.
   //
   // Two precautions before the abort:
-  // - `ctx.abort()` does not respect the output gate, so we explicitly flush the triggering change
-  //   to disk with `ctx.storage.sync()`. Otherwise a restart could come back with the change lost,
-  //   leaving the removed user still authorized (or the widened scope unrecorded). By the same
-  //   token, callers must schedule the restart *after* the write that triggered it, never before
-  //   further writes in the same turn -- those would be racing the abort.
+  // - `ctx.abort()` does not respect the output gate, so we explicitly flush to disk with
+  //   `ctx.storage.sync()`. Otherwise a restart could come back with a change lost, leaving the
+  //   removed user still authorized (or the widened scope unrecorded). We sync twice: once up
+  //   front, so the triggering write is durable even if the abort below never runs, and again
+  //   immediately before the abort with nothing awaited in between. That second sync is what
+  //   covers *other* access mutations: this timer runs concurrently with them, and one that has
+  //   written its sharing edge but is still awaiting its own teardown would otherwise be aborted
+  //   with the revocation buffered -- a revocation the owner was told succeeded and that silently
+  //   never happens. Callers should still schedule the restart after the write that triggered it.
   // - We delay the abort briefly so the triggering RPC's response can reach the caller (typically
   //   the owner, who is also connected and will be disconnected) before their connection drops.
   //   Without the delay their own removeCollaborator()/revokeShareLink() call might reject with a
   //   connection error even though it succeeded.
-  async scheduleAccessRestart(reason: string): Promise<void> {
-    await this.ctx.storage.sync();
-    await scheduler.wait(100);
-    this.ctx.abort(reason);
+  //
+  // Concurrent triggers coalesce onto the first one's timer rather than racing several aborts;
+  // whichever got there first names the reason, and they all resolve when it fires.
+  scheduleAccessRestart(reason: string): Promise<void> {
+    return this.#pendingAccessRestart ??= (async () => {
+      await this.ctx.storage.sync();
+      await scheduler.wait(100);
+      await this.ctx.storage.sync();
+      this.ctx.abort(reason);
+    })();
   }
+
+  // The in-flight scheduleAccessRestart(), if any. Never cleared: it only settles by aborting the
+  // DO, which discards this object along with everything else.
+  #pendingAccessRestart?: Promise<void>;
 
   // Sessions are authorized and verified only at open(), so widening what a live session's holder
   // must be verified against leaves that session holding unverified access. Restart everyone --
