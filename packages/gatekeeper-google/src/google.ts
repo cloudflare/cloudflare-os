@@ -10,7 +10,8 @@ import { GoogleDocSession, DocMetadata, type GoogleDocReadSession } from "./docs
 import { GoogleDocsApi } from "./docs-api";
 import { GoogleSheetsApi } from "./sheets-api";
 import type {
-  GoogleSpreadsheetSession, SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode,
+  GoogleSpreadsheetReadSession, GoogleSpreadsheetSession, SpreadsheetInfo, SpreadsheetRange,
+  SpreadsheetValueMode,
 } from "./sheets-types";
 import { docToMarkdown, markdownToDocRequests, computeReplaceOperations, DocSnapshot } from "./markdown-converter";
 import { DriveApi } from "./drive-api";
@@ -3080,7 +3081,7 @@ export class GoogleDriveGatekeeperImpl
       title: file.name,
       snippet: `Read metadata and, when native, Google Doc or Sheet content from Drive file "${file.name}"`,
       suggestedBindingName: "GOOGLE_DRIVE_FILE",
-      tsType: "GoogleDriveSession",
+      tsType: "GoogleDriveReadSession",
     };
   }
 
@@ -3263,7 +3264,7 @@ export class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSess
     );
   }
 
-  async openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetSession> {
+  async openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetReadSession> {
     let spreadsheetId = await this.#core.openNativeFile(
       fileId, GOOGLE_SHEET_MIME_TYPE, "Google Sheet",
     );

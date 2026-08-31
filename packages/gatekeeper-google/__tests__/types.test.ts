@@ -74,14 +74,16 @@ describe("embedded agent declarations", () => {
     );
   });
 
-  it("exposes only typed native content sessions from Drive", () => {
+  it("hands out only read-only native sessions from Drive", () => {
     const driveTypes = source("drive-types.d.ts");
     expect(driveTypes).toContain(
       "openGoogleDoc(fileId: string): Promise<GoogleDocReadSession>",
     );
     expect(driveTypes).toContain(
-      "openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetSession>",
+      "openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetReadSession>",
     );
     expect(driveTypes).not.toContain("GoogleDocSession>");
+    expect(driveTypes).not.toContain("GoogleSpreadsheetSession>");
+    expect(driveTypes).toContain("export interface GoogleDriveReadSession");
   });
 });
