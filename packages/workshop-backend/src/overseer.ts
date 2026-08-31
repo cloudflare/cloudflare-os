@@ -1531,6 +1531,11 @@ export function sanitizeMessageFormatRefs(
   return accepted.toSorted((a, b) => a.position - b.position);
 }
 
+// What kind of capability an open session holds, for OverseerImpl.joinSession(). The owner's
+// session is a "build" capability but never an observer's, so it is counted apart from the
+// collaborator roles.
+type SessionKind = CollaboratorRole | "owner";
+
 class OverseerImpl implements AgentHooks {
   public storage: OverseerStorage;
   readonly logger: ReturnType<typeof createWorkshopLogger>;
@@ -1661,6 +1666,32 @@ class OverseerImpl implements AgentHooks {
         this.#broadcastPresenceAdd(this.#toParticipant(profileId));
       }
     };
+  }
+
+  // Live session counts by the kind of capability each session holds, maintained by joinSession().
+  #liveSessions: Record<SessionKind, number> = {owner: 0, build: 0, use: 0};
+
+  // Count a session for its lifetime. Returns a function that uncounts it, like joinPresence().
+  //
+  // Deliberately not derived from #presence, which looks like it holds the same thing: a session
+  // joins presence only once its fetchProfile() resolves, so a just-opened session is briefly
+  // invisible there. That is fine for a roster and wrong for an access decision, which must never
+  // conclude "nobody is here" about a session that already exists.
+  joinSession(kind: SessionKind): () => void {
+    this.#liveSessions[kind]++;
+    let left = false;
+    return () => {
+      if (left) return;
+      left = true;
+      this.#liveSessions[kind]--;
+    };
+  }
+
+  // Whether some non-owner session of `role` (or of either role, when omitted) is live right now.
+  // The owner is never an observer, so their session is counted separately and never counts here.
+  #hasCollaboratorSession(role?: CollaboratorRole): boolean {
+    if (role === undefined) return this.#liveSessions.build > 0 || this.#liveSessions.use > 0;
+    return this.#liveSessions[role] > 0;
   }
 
   // Subscribe to roster changes. The current roster is delivered immediately via init().
@@ -2525,7 +2556,8 @@ class OverseerImpl implements AgentHooks {
     this.bumpVersion([gadgetId]);
 
     if ([...this.#accountRequiringUseScope()].some(id => !useScopeBefore.has(id))) {
-      this.#restartIfShared("Gadget restarted because a connection was bound to a gadget.", "use");
+      this.#restartIfSessionsAffected(
+          "Gadget restarted because a connection was bound to a gadget.", "use");
     }
   }
 
@@ -4553,7 +4585,7 @@ class OverseerImpl implements AgentHooks {
     // above have landed: a "use" collaborator's session was admitted against the narrower scope,
     // and the gadget UI they drive can now invoke a connection nobody verified them against.
     if (widenedUseScope) {
-      this.#restartIfShared(
+      this.#restartIfSessionsAffected(
           "Gadget restarted because accepted changes added gadget bindings.", "use");
     }
 
@@ -5224,9 +5256,10 @@ class OverseerImpl implements AgentHooks {
     // The record is published only once, below, after describe() resolves -- the facet takes the
     // class directly so it needs no record to exist yet. Publishing it before the await instead
     // would expose the connection for as long as describe() takes, which is entirely before
-    // #restartIfShared severs the sessions that were never verified against it: the DO's input gate
-    // is open across the await, ids are allocated sequentially, so a live build session can guess
-    // this one, and getGatekeeperById (OverseerClientInterface) gates on nothing but existence.
+    // #restartIfSessionsAffected severs the sessions that were never verified against it: the DO's
+    // input gate is open across the await, ids are allocated sequentially, so a live build session
+    // can guess this one, and getGatekeeperById (OverseerClientInterface) gates on nothing but
+    // existence.
     let facet = this.getGatekeeperFacet(id, cls);
     try {
       let description = await facet.describe();
@@ -5247,7 +5280,8 @@ class OverseerImpl implements AgentHooks {
     // gadget binds it, which restarts then. A vendorless spec (aiModel/agentSpawner) is in nobody's
     // scope (#inScopeGatekeepers skips it), so it widens nothing.
     if (creationSpec && "vendorId" in creationSpec) {
-      this.#restartIfShared("Gadget restarted because a new connection was added.", "build");
+      this.#restartIfSessionsAffected(
+          "Gadget restarted because a new connection was added.", "build");
     }
 
     return new GatekeeperClientImpl<any>(this, id, facet);
@@ -5954,8 +5988,8 @@ class OverseerImpl implements AgentHooks {
   // disconnect it. Two kinds of change need it:
   // - Access removed or downgraded (removeCollaborator, revokeShareLink, workspace deletion):
   //   someone who just lost access could keep using the session they already have.
-  // - Verification scope widened (see #restartIfShared): a collaborator's live session was
-  //   verified against a smaller set of gatekeepers than the workspace now holds.
+  // - Verification scope widened (see #restartIfSessionsAffected): a collaborator's live session
+  //   was verified against a smaller set of gatekeepers than the workspace now holds.
   //
   // We restart by resetting the whole DO. The reset propagates to clients: the `notifyClosed` stub
   // handed to each session is disposed without being called, which AuthenticatedApiImpl detects
@@ -6007,42 +6041,35 @@ class OverseerImpl implements AgentHooks {
     })().catch(() => {});
   }
 
-  // The in-flight scheduleAccessRestart(), if any. Never cleared: it only settles by aborting the
+  // The in-flight scheduleAccessRestart(), if any. Never cleared: it only settles by resetting the
   // DO, which discards this object along with everything else.
   #pendingAccessRestart?: Promise<void>;
 
   // Sessions are authorized and verified only at open(), so widening what a live session's holder
   // must be verified against leaves that session holding unverified access. Restart everyone --
   // the same mechanism used when access is revoked -- so each client's next open() re-runs
-  // authorizeCollaborator/ensureObserver against the new scope. No-op when the workspace has no
-  // collaborators: the owner is never an observer, so there is nobody to re-verify and no reason
-  // to disturb the one session that exists.
+  // authorizeCollaborator/ensureObserver against the new scope.
+  //
+  // The condition is a live *session*, not an entry in the sharing graph: the only thing a restart
+  // achieves is severing sessions that were admitted at the narrower scope, so a workspace where
+  // only the owner is connected has nothing to sever no matter who it is shared with (the owner is
+  // never an observer). Counting sessions rather than consulting the graph also keeps this
+  // synchronous, so a widening cannot be missed because an async lookup failed, and the restart is
+  // scheduled at the moment of the change rather than an RPC round trip later.
   //
   // `affectedRole` names whose scope the caller widened, since the two roles widen independently
   // (#inScopeGatekeepers): a new connection enters every "build" collaborator's scope but no "use"
   // collaborator's until some gadget binds it, and binding one enters "use" scope having been in
-  // "build" scope since it was created. A workspace shared only the other way therefore has nobody
-  // with new verification requirements, and severing its sessions would buy nothing. Omit it for a
-  // restart that isn't a widening at all (a failed re-verification severs regardless of role).
-  //
-  // Fire-and-forget: the callers are synchronous (bindWorkpiece) or already past their last write,
-  // and getSharingManager() is async, so failures are logged rather than left as an unhandled
-  // rejection. Failing to restart is fail-open for the widened scope, hence the `error` level.
+  // "build" scope since it was created. A session holding the other role therefore has no new
+  // verification requirements, and severing it would buy nothing. Omit the argument for a restart
+  // that isn't a widening at all (one that must sever regardless of role).
   //
   // Note that ensureAmbientCapsules() calls addGatekeeper() from inside open(), so on a shared
   // workspace the first open after an ambient capsule appears bounces itself once; the capsule
   // exists by then, so the client's retry is clean.
-  #restartIfShared(reason: string, affectedRole?: CollaboratorRole): void {
-    this.getSharingManager().then(sharing => {
-      let affected = sharing.listCollaborators()
-          .filter(c => affectedRole === undefined || c.role === affectedRole);
-      if (affected.length === 0) return;
-      return this.scheduleAccessRestart(reason);
-    }).catch(error => {
-      this.logger.error("failed to restart sessions after verification scope widened", {
-        event: "workspace.scope.restart.failed", error,
-      });
-    });
+  #restartIfSessionsAffected(reason: string, affectedRole?: CollaboratorRole): void {
+    if (!this.#hasCollaboratorSession(affectedRole)) return;
+    this.scheduleAccessRestart(reason);
   }
 
   // Last timestamp generated by getChatTimestamp(), if it has been called during this session.
@@ -10283,6 +10310,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
               // this so ambient providers are attached when possible.
                private slashCommandsReady: Promise<void>) {
     super();
+    this.#leaveSession = this.impl.joinSession(this.isOwner ? "owner" : "build");
     this.#leavePresence = joinSessionPresence(
         this.impl, this.clientProfileId, "build", () => this.#getClientProfile());
     this.#leaveOutputsFanout = this.impl.joinOutputsFanout(this.clientUserId);
@@ -10303,10 +10331,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         this.impl.logger);
   }
 
+  #leaveSession: () => void;
   #leavePresence: () => void;
   #leaveOutputsFanout: () => void;
 
   [Symbol.dispose]() {
+    this.#leaveSession();
     this.#leavePresence();
     this.#leaveOutputsFanout();
     this.notifyClosed();
@@ -11781,6 +11811,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
               private clientUserId: string,
               private notifyClosed: NativeRpcStub<() => void>) {
     super();
+    this.#leaveSession = this.impl.joinSession("use");
     this.#leavePresence = joinSessionPresence(
         this.impl, this.clientProfileId, "use",
         () => retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger));
@@ -11801,10 +11832,12 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
         this.impl.logger);
   }
 
+  #leaveSession: () => void;
   #leavePresence: () => void;
   #leaveOutputsFanout: () => void;
 
   [Symbol.dispose]() {
+    this.#leaveSession();
     this.#leavePresence();
     this.#leaveOutputsFanout();
     this.notifyClosed();

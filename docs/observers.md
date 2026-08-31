@@ -92,7 +92,7 @@ This feature replaces that all-or-nothing posture with a per-user, gatekeeper-me
 | Gatekeeper RPC API (the committed surface) | `packages/workshop-shared/src/gatekeeper.ts` |
 | Overseer DO, `open()` auth entry point | `packages/workshop-backend/src/overseer.ts:2714` |
 | Authorization gate shared by `open()` and `receiveExternalMessage()` | `overseer.ts` `authorizeCollaborator()` |
-| Session restart when verification scope widens | `overseer.ts` (`#restartIfShared`, `scheduleAccessRestart`) |
+| Session restart when verification scope widens | `overseer.ts` (`#restartIfSessionsAffected`, `joinSession`, `scheduleAccessRestart`) |
 | Server `openGadget` path | `packages/workshop-backend/src/server.ts:206` |
 | Role resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveRole`, `computeEffectiveRoles`, `hasAnyShares`) |
 | `prohibitAllSharing` enforcement | `overseer.ts:1171` (`authorizeObservation`), `:1207` (web fetch), `:1258` (`submitAction`) |
@@ -328,11 +328,20 @@ Notes:
 
 Verification runs at `open()` and nowhere else, so a live session is only ever as verified as the
 scope that existed when it opened. When that scope **widens**, the overseer restarts the workspace
-rather than trying to re-verify sessions in place: `#restartIfShared(reason, affectedRole?)`
-delegates to `scheduleAccessRestart(reason)` — the same DO reset used to revoke a collaborator (see
-`docs/sharing.md`) — so every client's browser reconnects and re-runs
-`authorizeCollaborator`/`ensureObserver` against the new scope. It is a no-op when the workspace
-has no collaborators: the owner is never an observer, so there is nobody to re-verify.
+rather than trying to re-verify sessions in place: `#restartIfSessionsAffected(reason,
+affectedRole?)` delegates to `scheduleAccessRestart(reason)` — the same DO reset used to revoke a
+collaborator (see `docs/sharing.md`) — so every client's browser reconnects and re-runs
+`authorizeCollaborator`/`ensureObserver` against the new scope.
+
+What it gates on is a **live session** of the affected role, not an entry in the sharing table:
+severing sessions is all a restart achieves, so a collaborator who isn't connected has nothing to
+cut, and a solo workspace is never disturbed. `OverseerImpl.joinSession(kind)` counts them, called
+synchronously in each client interface's constructor and released in its `[Symbol.dispose]`, with
+the owner counted apart from the two collaborator roles because the owner is never an observer.
+Being synchronous is the point: the check can neither be skipped by a failed lookup nor land some
+unbounded time after the change. The count is deliberately not derived from `#presence`, which a
+session joins only once its `fetchProfile()` resolves — fine for a roster, fail-open for an access
+decision.
 
 Three events trigger it:
 
@@ -493,10 +502,8 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    that adds one. The residual is the ~100 ms window itself, which is inside the revocation window
    the sharing model already accepts: the tolerance for an access change taking effect is 5 s, and
    a widening that lands early and a revocation that lands late are the same window measured from
-   opposite ends. It is ~100 ms typically rather than by construction — `#restartIfShared` resolves
-   `getSharingManager()` first, which on a cold DO is an RPC to the owner's User DO — so closing it
-   outright would mean gating reads on a per-session snapshot of what the holder was verified
-   against, which is not proportionate to what it buys.
+   opposite ends. Closing it outright would mean gating reads on a per-session snapshot of what the
+   holder was verified against, which is not proportionate to what it buys.
 6. **Performance** — `ensureObserver` does one `getVerifier` + one `addObserver` per in-scope
    gatekeeper per open. Parallelize with `Promise.all` and pipe the verifier promise straight into
    `addObserver`. Expensive gatekeepers cache on their side.

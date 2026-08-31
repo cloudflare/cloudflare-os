@@ -82,6 +82,7 @@ export async function openFakeOverseer(
       ownerId,
       ensureAmbientCapsules: async () => {},
       markOutputsDirty: () => {},
+      joinSession: () => () => {},
       joinPresence: () => () => {},
       joinOutputsFanout: () => () => {},
       ensureObserver: async () => {},
