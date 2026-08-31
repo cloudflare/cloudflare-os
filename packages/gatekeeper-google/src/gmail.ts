@@ -55,8 +55,7 @@ const GMAIL_FORWARD_SNAPSHOT_ORPHAN_GRACE_MS = 60 * 60 * 1000;
 const MAX_GMAIL_DRAFT_MIME_BYTES = MAX_GMAIL_FORWARD_SOURCE_BYTES;
 const GMAIL_LOGICAL_ID_RE = /^[A-Za-z0-9_-]{1,256}$/;
 const GMAIL_PROVIDER_ID_RE = /^[a-f0-9]{1,256}$/i;
-const MAX_GMAIL_APPROVAL_FIELD_CHARS = 4096;
-const MAX_GMAIL_APPROVAL_DESCRIPTION_CHARS = 32 * 1024;
+const MAX_GMAIL_APPROVAL_DESCRIPTION_BYTES = 128 * 1024;
 
 export type GmailGatekeeperImplProps = {
   userObjectId: string;
@@ -577,6 +576,14 @@ class GmailStore {
       this.#kv.put(this.#actionKey(successor.id), rebased);
     }
 
+    // A queued successor already advanced the resource generation and was rebased above. Without
+    // one, completion must advance it so an update currently awaiting authorization detects that
+    // its provider baseline changed before it can store stale preconditions.
+    if (!successor) {
+      resource.version++;
+      this.putDraft(resource);
+    }
+
     this.setDecision(actionId, "applied");
     this.removeAction(actionId);
     this.clearApplying(actionId);
@@ -823,18 +830,21 @@ function labelPending(store: GmailStore): PendingOverlayAction<GmailLabelOverlay
 }
 
 function formatApprovalField(label: string, value: string): string {
-  const preview = value.length > MAX_GMAIL_APPROVAL_FIELD_CHARS
-    ? `${value.slice(0, MAX_GMAIL_APPROVAL_FIELD_CHARS)}\n` +
-      `...[truncated; ${value.length} characters total]`
-    : value;
-  const block = preview.split(/\r\n|\r|\n/).map(line => `    ${line}`).join("\n");
+  // Reject an individually oversized field before newline expansion can allocate millions of
+  // intermediate strings. The complete rendered description is checked again at submission.
+  validateApprovalDescription(value);
+  const block = value.split(/\r\n|\r|\n/).map(line => `    ${line}`).join("\n");
   return `**${label}:**\n\n${block}`;
 }
 
-function boundApprovalDescription(value: string): string {
-  if (value.length <= MAX_GMAIL_APPROVAL_DESCRIPTION_CHARS) return value;
-  return `${value.slice(0, MAX_GMAIL_APPROVAL_DESCRIPTION_CHARS)}\n\n` +
-    "...[remaining approval details truncated]";
+function validateApprovalDescription(value: string): string {
+  if (value.length > MAX_GMAIL_APPROVAL_DESCRIPTION_BYTES ||
+      new TextEncoder().encode(value).byteLength > MAX_GMAIL_APPROVAL_DESCRIPTION_BYTES) {
+    throw new Error(
+      `This Gmail action exceeds the ${MAX_GMAIL_APPROVAL_DESCRIPTION_BYTES}-byte approval ` +
+      "description limit and cannot be submitted safely.");
+  }
+  return value;
 }
 
 function sanitizeApprovalTitle(value: string): string {
@@ -902,7 +912,7 @@ async function parseSafeGmailDraft(message: GmailMessageRaw): Promise<GmailParse
   const parsed = await parseGmailDraft(message);
   const exactAttachments = extractRfc822Attachments(message.raw);
   const parsedIndexes = parsed.attachments.flatMap((attachment, index) =>
-    attachment.contentType.toLowerCase() === "message/rfc822" ? [index] : []);
+    attachment.contentType.split(";", 1)[0].trim().toLowerCase() === "message/rfc822" ? [index] : []);
   // Generic drafts may use a legal transfer encoding such as base64 for nested messages. The exact
   // extractor is only needed to verify the unencoded source attachment produced by our forward
   // pipeline, so leave other nested attachments to PostalMime's decoded representation.
@@ -1274,7 +1284,7 @@ async function submitAction(
   try {
     await ctx.approvalQueue.submitAction(id, {
       ...description,
-      description: boundApprovalDescription(description.description),
+      description: validateApprovalDescription(description.description),
       implementsRevert: false,
       ...gmailAutoApprovalMetadata(action),
     });
@@ -1466,6 +1476,36 @@ async function loadSimulatedDraft(
   return {state, resource: current};
 }
 
+async function messagesAvailableThroughQuery(
+    ctx: GmailContext, query: string, soughtMessageIds: ReadonlySet<string>): Promise<Set<string>> {
+  const remaining = new Set(soughtMessageIds);
+  const matched = new Set<string>();
+  const seenTokens = new Set<string>();
+  let pages = 0;
+  let pageToken: string | undefined;
+  do {
+    if (++pages > MAX_GMAIL_RESTRICTED_THREAD_PROVIDER_PAGES) {
+      throw new Error("Gmail returned too many pages while checking a restricted query.");
+    }
+    const result = await ctx.api.listMessages(
+      GMAIL_RESTRICTED_THREAD_PROVIDER_PAGE_SIZE, query, pageToken);
+    for (const message of result.messages) {
+      if (remaining.delete(message.id)) matched.add(message.id);
+    }
+    if (remaining.size === 0) return matched;
+    pageToken = result.nextPageToken;
+    if (pageToken) {
+      if (seenTokens.has(pageToken)) throw new Error("Gmail returned a repeated page token.");
+      seenTokens.add(pageToken);
+      // Every returned ID has been proved to satisfy the immutable query. At the bounded work
+      // limit, keep that safe subset rather than denying the entire thread because other sought
+      // IDs may appear only on later pages.
+      if (pages === MAX_GMAIL_RESTRICTED_THREAD_PROVIDER_PAGES) return matched;
+    }
+  } while (pageToken);
+  return matched;
+}
+
 async function messageStillAvailable(
     ctx: GmailContext, messageId: string, knownMetadata?: GmailMessageFull): Promise<boolean> {
   if (!ctx.restricted) return true;
@@ -1473,32 +1513,20 @@ async function messageStillAvailable(
   if (metadata.id !== messageId) throw new Error("Gmail message identity changed unexpectedly.");
   if (ctx.labelId) return metadata.labelIds?.includes(ctx.labelId) === true;
   if (!ctx.searchQuery) return false;
+  let query = ctx.searchQuery;
   const rfcMessageId = metadata.payload?.headers?.find(
     header => header.name.toLowerCase() === "message-id")?.value.trim();
-  if (!rfcMessageId) return false;
-  let queryMessageId: string;
-  try {
-    queryMessageId = gmailMessageIdQueryValue(rfcMessageId);
-  } catch {
-    return false;
+  if (rfcMessageId) {
+    try {
+      query = combineGmailQueries(
+        ctx.searchQuery, `rfc822msgid:${gmailMessageIdQueryValue(rfcMessageId)}`)!;
+    } catch {
+      // A missing or query-unsafe RFC ID only loses the optimization. The exact Gmail provider ID
+      // is still checked against a bounded walk of the immutable binding query below.
+    }
   }
-  const query = combineGmailQueries(ctx.searchQuery, `rfc822msgid:${queryMessageId}`);
-  const seenTokens = new Set<string>();
-  let pages = 0;
-  let pageToken: string | undefined;
-  do {
-    if (++pages > MAX_GMAIL_RESTRICTED_THREAD_PROVIDER_PAGES) {
-      throw new Error("Gmail returned too many pages while checking a restricted message.");
-    }
-    const result = await ctx.api.listMessages(100, query, pageToken);
-    if (result.messages.some(message => message.id === messageId)) return true;
-    pageToken = result.nextPageToken;
-    if (pageToken) {
-      if (seenTokens.has(pageToken)) throw new Error("Gmail returned a repeated page token.");
-      seenTokens.add(pageToken);
-    }
-  } while (pageToken);
-  return false;
+  const matched = await messagesAvailableThroughQuery(ctx, query, new Set([messageId]));
+  return matched.has(messageId);
 }
 
 async function sourceStillAvailable(ctx: GmailContext, source: GmailDraftSource): Promise<boolean> {
@@ -1514,19 +1542,27 @@ async function restrictedThreadScope(
       `This restricted Gmail thread contains more than ` +
       `${MAX_GMAIL_RESTRICTED_THREAD_MESSAGES} messages.`);
   }
-  const admitted: string[] = [];
   const messageIds = [...new Set(thread.messages.map(message => message.id))];
+  const metadataById = new Map<string, GmailMessageFull>();
   for (let i = 0; i < messageIds.length; i += 5) {
     const checked = await Promise.all(messageIds.slice(i, i + 5).map(async messageId => {
       const metadata = await ctx.api.getMessageMetadata(messageId);
       if (metadata.threadId !== threadId) {
         throw new Error("Gmail message thread identity changed unexpectedly.");
       }
-      return await messageStillAvailable(ctx, messageId, metadata) ? messageId : undefined;
+      return metadata;
     }));
-    for (const messageId of checked) {
-      if (messageId !== undefined) admitted.push(messageId);
-    }
+    for (const metadata of checked) metadataById.set(metadata.id, metadata);
+  }
+  let admitted: string[];
+  if (ctx.labelId) {
+    admitted = messageIds.filter(messageId =>
+      metadataById.get(messageId)?.labelIds?.includes(ctx.labelId!) === true);
+  } else if (ctx.searchQuery) {
+    const available = await messagesAvailableThroughQuery(ctx, ctx.searchQuery, new Set(messageIds));
+    admitted = messageIds.filter(messageId => available.has(messageId));
+  } else {
+    admitted = [];
   }
   if (!admitted.length) {
     throw new Error("This Gmail thread is not available through this restricted binding.");
@@ -2565,7 +2601,7 @@ function describeDraftAction(
 function describeDraftDeletion(state: GmailDraftState): string {
   return "Delete this draft without sending it.\n\n" +
     formatApprovalField("Draft ID", state.logicalId) + "\n\n" +
-    formatApprovalField("Subject", state.subject.replace(/[\r\n]+/g, " ").slice(0, 1000));
+    formatApprovalField("Subject", state.subject.replace(/[\r\n]+/g, " "));
 }
 
 async function createDraftFromMessage(
@@ -2653,6 +2689,7 @@ type DraftCursorRef = {logicalId: string; providerId?: string};
 
 function gmailDraftCursor(ctx: GmailContext): Cursor<GmailDraftEntry> {
   if (ctx.restricted) return restrictedDraftCursor(ctx);
+  const emittedLogicalIds = new Set<string>();
   return new RpcCursor(new CursorPager<DraftCursorRef, OwnedGmailDraftEntry>({
     provider: "Gmail",
     async fetchPage(pageToken) {
@@ -2660,12 +2697,15 @@ function gmailDraftCursor(ctx: GmailContext): Cursor<GmailDraftEntry> {
       const items: DraftCursorRef[] = [];
       for (const draft of page.drafts) {
         const resource = await ensureProviderDraft(ctx, draft);
-        if (items.some(item => item.logicalId === resource.logicalId)) continue;
+        if (emittedLogicalIds.has(resource.logicalId) ||
+            items.some(item => item.logicalId === resource.logicalId)) continue;
         items.push({logicalId: resource.logicalId, providerId: draft.id});
       }
       if (!pageToken) {
         for (const resource of ctx.store.listDrafts()) {
-          if (!resource.providerId && resource.status === "active") {
+          if (!resource.providerId && resource.status === "active" &&
+              !emittedLogicalIds.has(resource.logicalId) &&
+              !items.some(item => item.logicalId === resource.logicalId)) {
             items.unshift({logicalId: resource.logicalId});
           }
         }
@@ -2692,10 +2732,13 @@ function gmailDraftCursor(ctx: GmailContext): Cursor<GmailDraftEntry> {
         throw error;
       }
     },
-    authorize: entries => ctx.approvalQueue.authorizeObservation({
-      title: `Read ${entries.length} Gmail drafts`,
-      description: "Fetch the next page with pending draft changes overlaid.",
-    }),
+    authorize: async entries => {
+      await ctx.approvalQueue.authorizeObservation({
+        title: `Read ${entries.length} Gmail drafts`,
+        description: "Fetch the next page with pending draft changes overlaid.",
+      });
+      for (const entry of entries) emittedLogicalIds.add(entry.info.id);
+    },
     disposeEntries: entries =>
       disposeEntryTargets(entries, entry => entry.draft),
   }), ctx.approvalQueue);
@@ -2893,6 +2936,9 @@ class GmailDraftStub extends GmailRpcTarget implements GmailDraft {
       : undefined;
     const expectedBefore = await draftOutputFingerprint(
       this.#ctx.api, this.#ctx.store, state, sourceSnapshot);
+    const descriptionMessage = sourceSnapshot
+      ? await inlineForwardMessage(this.#ctx.api, this.#ctx.store, after, sourceSnapshot)
+      : undefined;
     const previousVersion = resource.version;
     await this.#ctx.approvalQueue.authorizeObservation({
       title: "Read Gmail draft before update",
@@ -2920,10 +2966,7 @@ class GmailDraftStub extends GmailRpcTarget implements GmailDraft {
     }, {
       title: sanitizeApprovalTitle(`Update Gmail draft: ${after.subject || "(no subject)"}`),
       description: describeDraftAction(
-        "Replace the selected draft fields.", after,
-        sourceSnapshot
-          ? await inlineForwardMessage(this.#ctx.api, this.#ctx.store, after, sourceSnapshot)
-          : undefined),
+        "Replace the selected draft fields.", after, descriptionMessage),
     });
   }
 

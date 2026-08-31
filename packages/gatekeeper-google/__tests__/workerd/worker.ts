@@ -62,6 +62,11 @@ class TestApprovalQueue extends RpcTarget {
   #submissions: Array<{actionId: number; description: unknown}> = [];
   #observations: unknown[] = [];
   #rejection?: string;
+  #pausedTitle?: string;
+  #paused?: Promise<void>;
+  #markPaused?: () => void;
+  #release?: Promise<void>;
+  #releasePaused?: () => void;
 
   constructor(rejection?: string) {
     super();
@@ -70,6 +75,16 @@ class TestApprovalQueue extends RpcTarget {
 
   async authorizeObservation(description: unknown): Promise<void> {
     this.#observations.push(description);
+    if (this.#pausedTitle && typeof description === "object" && description !== null &&
+        "title" in description && description.title === this.#pausedTitle) {
+      this.#pausedTitle = undefined;
+      this.#markPaused?.();
+      await this.#release;
+      this.#paused = undefined;
+      this.#markPaused = undefined;
+      this.#release = undefined;
+      this.#releasePaused = undefined;
+    }
   }
 
   async submitAction(actionId: number, description: unknown): Promise<void> {
@@ -79,6 +94,23 @@ class TestApprovalQueue extends RpcTarget {
 
   read() {
     return {submissions: [...this.#submissions], observations: [...this.#observations]};
+  }
+
+  pauseObservation(title: string): void {
+    if (this.#paused) throw new Error("A test observation is already paused.");
+    this.#pausedTitle = title;
+    this.#paused = new Promise(resolve => { this.#markPaused = resolve; });
+    this.#release = new Promise(resolve => { this.#releasePaused = resolve; });
+  }
+
+  waitForPausedObservation(): Promise<void> {
+    if (!this.#paused) throw new Error("No test observation is configured to pause.");
+    return this.#paused;
+  }
+
+  releasePausedObservation(): void {
+    if (!this.#releasePaused) throw new Error("The test observation has not paused yet.");
+    this.#releasePaused();
   }
 
   [Symbol.dispose](): void {}
@@ -158,6 +190,24 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return queue.read();
   }
 
+  pauseObservation(queueId: string, title: string): void {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    queue.pauseObservation(title);
+  }
+
+  waitForPausedObservation(queueId: string): Promise<void> {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    return queue.waitForPausedObservation();
+  }
+
+  releasePausedObservation(queueId: string): void {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    queue.releasePausedObservation();
+  }
+
   async applyStorage(
       facetName: string, id: string, props: GmailGatekeeperImplProps,
       operations: StorageOperation[],
@@ -233,6 +283,21 @@ testGmailPrototype.runTestOperation = async function(
       const result = entries?.map(entry => entry.info) ?? null;
       for (const entry of entries ?? []) disposeRpc(entry.draft);
       return result;
+    } finally {
+      disposeRpc(cursor);
+    }
+  }
+  case "session.listDraftPages": {
+    const cursor = await session.listDrafts();
+    const pages = [];
+    try {
+      for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+        const entries = await cursor.next();
+        if (!entries) return pages;
+        pages.push(entries.map(entry => entry.info));
+        for (const entry of entries) disposeRpc(entry.draft);
+      }
+      throw new Error("Test draft cursor did not terminate.");
     } finally {
       disposeRpc(cursor);
     }

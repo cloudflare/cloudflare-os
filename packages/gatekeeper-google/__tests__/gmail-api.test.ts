@@ -279,6 +279,171 @@ describe("Gmail recipient and MIME construction", () => {
     expect(attachment.contentId).toBe("<asset-1>");
   });
 
+  it("preserves structured attachment Content-Type parameters", async () => {
+    const contentType = 'text/plain; charset=iso-8859-1; format=flowed; x-note="semi;colon"';
+    const original = api().buildOutbound({
+      from: "me@example.com",
+      to: ["to@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Parameterized attachment",
+      text: "Body",
+      messageId: "<parameters@example.com>",
+      attachments: [{
+        filename: "notes.txt",
+        contentType,
+        data: btoa("content"),
+        disposition: "attachment",
+        description: "attachment",
+      }],
+    });
+    const parsed = await parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw: original.raw,
+    });
+    expect(parsed.attachments[0].contentType).toBe(contentType);
+
+    const rebuilt = api().buildOutbound({...parsed, from: parsed.from!, messageId: parsed.messageId!});
+    const reparsed = await parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw: rebuilt.raw,
+    });
+    expect(reparsed.attachments[0].contentType).toBe(contentType);
+  });
+
+  it("correlates attachments after a headerless default text body", async () => {
+    const boundary = "headerless-boundary";
+    const raw = [
+      "From: me@example.com",
+      "To: to@example.com",
+      "Subject: Headerless body",
+      `Content-Type: multipart/mixed; boundary=${boundary}`,
+      "",
+      `--${boundary}`,
+      "",
+      "Default text body",
+      `--${boundary}`,
+      "Content-Type: application/octet-stream (source comment); x-format=opaque",
+      "Content-Disposition: attachment (download); filename=data.bin",
+      "Content-Transfer-Encoding: base64",
+      "",
+      "YQ==",
+      `--${boundary}--`,
+      "",
+    ].join("\r\n");
+
+    const parsed = await parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw: encodeRawEmail(raw),
+    });
+
+    expect(parsed.text).toBe("Default text body\n");
+    expect(parsed.attachments[0].contentType).toBe(
+      "application/octet-stream; x-format=opaque");
+  });
+
+  it("uses message/rfc822 as the default child type for multipart/digest", async () => {
+    const raw = [
+      "From: me@example.com",
+      "To: to@example.com",
+      "Subject: Digest",
+      "Content-Type: multipart/digest; boundary=digest-boundary",
+      "",
+      "--digest-boundary",
+      "",
+      "From: nested@example.com",
+      "To: me@example.com",
+      "Subject: Nested",
+      "Content-Type: multipart/mixed; boundary=nested-boundary",
+      "",
+      "--nested-boundary",
+      "Content-Type: text/plain",
+      "",
+      "Nested body",
+      "--nested-boundary",
+      "Content-Type: application/pdf; profile=archive",
+      "Content-Disposition: attachment; filename=document.pdf",
+      "Content-Transfer-Encoding: base64",
+      "",
+      "YQ==",
+      "--nested-boundary--",
+      "--digest-boundary--",
+      "",
+    ].join("\r\n");
+
+    const parsed = await parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw: encodeRawEmail(raw),
+    });
+
+    expect(parsed.attachments[0].contentType).toBe("application/pdf; profile=archive");
+  });
+
+  it("treats an extension-disposition message/rfc822 part as an attachment", async () => {
+    const raw = [
+      "From: me@example.com",
+      "To: to@example.com",
+      "Subject: Extension disposition",
+      "Content-Type: multipart/mixed; boundary=outer-boundary",
+      "",
+      "--outer-boundary",
+      "Content-Type: text/plain",
+      "",
+      "Body",
+      "--outer-boundary",
+      "Content-Type: message/rfc822; x-envelope=preserved",
+      "Content-Disposition: preview; filename=nested.eml",
+      "",
+      "From: nested@example.com",
+      "To: me@example.com",
+      "Subject: Nested",
+      "",
+      "Nested body",
+      "--outer-boundary--",
+      "",
+    ].join("\r\n");
+
+    const parsed = await parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw: encodeRawEmail(raw),
+    });
+
+    expect(parsed.attachments).toHaveLength(1);
+    expect(parsed.attachments[0]).toMatchObject({
+      contentType: "message/rfc822; x-envelope=preserved",
+      disposition: "attachment",
+    });
+  });
+
+  it("keeps report message/rfc822 parts opaque while correlating metadata", async () => {
+    const raw = [
+      "From: mailer-daemon@example.com",
+      "To: me@example.com",
+      "Subject: Delivery report",
+      "Content-Type: multipart/report; report-type=delivery-status; boundary=report-boundary",
+      "",
+      "--report-boundary",
+      "Content-Type: text/plain",
+      "",
+      "Delivery failed.",
+      "--report-boundary",
+      "Content-Type: message/delivery-status",
+      "",
+      "Final-Recipient: rfc822; missing@example.com",
+      "Action: failed",
+      "--report-boundary",
+      "Content-Type: message/rfc822; x-report=opaque",
+      "",
+      "This is intentionally not a parseable nested message.",
+      "--report-boundary--",
+      "",
+    ].join("\r\n");
+
+    const parsed = await parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw: encodeRawEmail(raw),
+    });
+
+    expect(parsed.attachments.map(attachment => attachment.contentType)).toEqual([
+      "message/delivery-status",
+      "message/rfc822; x-report=opaque",
+    ]);
+  });
+
   it("preserves calendar methods through draft parsing and rebuilding", async () => {
     const original = api().buildOutbound({
       from: "me@example.com",
@@ -291,7 +456,7 @@ describe("Gmail recipient and MIME construction", () => {
       attachments: [{
         filename: "invite.ics",
         contentType: "text/calendar; method=REQUEST",
-        data: btoa("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n"),
+        data: btoa("BEGIN:VCALENDAR\nMETHOD:REQUEST\nEND:VCALENDAR\n"),
         disposition: "attachment",
         description: "Calendar invitation",
       }],
@@ -299,7 +464,10 @@ describe("Gmail recipient and MIME construction", () => {
     const parsed = await parseGmailDraft({
       id: "draft", threadId: "thread", internalDate: "1", raw: original.raw,
     });
-    expect(parsed.attachments[0].contentType).toBe("text/calendar; method=REQUEST");
+    expect(parsed.attachments[0].contentType).toBe(
+      "text/calendar; method=REQUEST; charset=utf-8");
+    expect(atob(parsed.attachments[0].data)).toBe(
+      "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n");
 
     const rebuilt = api().buildOutbound({
       ...parsed,
@@ -309,7 +477,8 @@ describe("Gmail recipient and MIME construction", () => {
     const reparsed = await parseGmailDraft({
       id: "draft", threadId: "thread", internalDate: "1", raw: rebuilt.raw,
     });
-    expect(reparsed.attachments[0].contentType).toBe("text/calendar; method=REQUEST");
+    expect(reparsed.attachments[0].contentType).toBe(
+      "text/calendar; method=REQUEST; charset=utf-8");
   });
 
   it("preserves calendar methods while forwarding", async () => {
@@ -333,16 +502,16 @@ describe("Gmail recipient and MIME construction", () => {
       id: "source", threadId: "thread", internalDate: "1", raw: source.raw,
     }, ["recipient@example.com"]);
 
-    expect(forwarded.attachments[0].contentType).toBe("text/calendar; method=REQUEST");
+    expect(forwarded.attachments[0].contentType).toBe(
+      "text/calendar; method=REQUEST; charset=utf-8");
     const parsed = await parseGmailDraft({
       id: "forward", threadId: "thread", internalDate: "1", raw: forwarded.raw,
     });
-    expect(parsed.attachments[0].contentType).toBe("text/calendar; method=REQUEST");
+    expect(parsed.attachments[0].contentType).toBe(
+      "text/calendar; method=REQUEST; charset=utf-8");
   });
 
   it.each([
-    'text/calendar; method="REQUEST"',
-    "text/calendar; method=REQUEST; charset=utf-8",
     "text/calendar; method=REQUE/ST",
     "text/calendar; method=REQUEST\r\nBcc: hidden@example.com",
   ])("rejects an unsafe calendar content type: %j", contentType => {
@@ -455,13 +624,13 @@ describe("Gmail recipient and MIME construction", () => {
       const raw = [
         `Content-Type: multipart/mixed; boundary="${boundary}"`,
         "",
-        `--${boundary}`,
+        `--${boundary} \t`,
         "Content-Type: message/rfc822",
         "Content-Disposition: attachment; filename=forwarded.eml",
         `Content-Transfer-Encoding: ${transferEncoding}`,
         "",
         nested,
-        `--${boundary}--`,
+        `--${boundary}-- \t`,
         "",
       ].join("\r\n");
 
@@ -563,12 +732,16 @@ describe("Gmail attachment snapshots", () => {
         headers: [{name: "Content-Type", value: "text/plain; charset=utf-8"}],
         body: {data: "aGVsbG8"},
       }, {
+        mimeType: "text/html",
+        headers: [{name: "Content-Disposition", value: "inline"}],
+        body: {data: "PGI-aGVsbG88L2I-"},
+      }, {
         mimeType: "text/plain",
         filename: "attached.txt",
         headers: [{name: "Content-Disposition", value: "attachment"}],
         body: {data: "c2VjcmV0"},
       }],
-    })).toEqual({text: "hello"});
+    })).toEqual({text: "hello", html: "<b>hello</b>"});
   });
 
   it("does not cross inline or nested attachment boundaries while reading bodies", () => {
