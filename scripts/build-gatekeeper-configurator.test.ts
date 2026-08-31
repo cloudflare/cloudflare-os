@@ -511,6 +511,23 @@ async function configuratorPackages(): Promise<string[]> {
  * `gatekeeper-slack`: a local `vp run -F <pkg> build` still looks right, which is the trap.
  */
 describe("configurator task wiring", () => {
+  it("builds Google's configurators before either supported test route", async () => {
+    const manifest = JSON.parse(await readFile(
+      "packages/gatekeeper-google/package.json", "utf8",
+    ));
+    assert.equal(
+      manifest.scripts["test:run"],
+      "vp run -F @gadgets/google-gatekeeper build:configurator && " +
+        "vitest run && vitest run -c vitest.worker.config.ts",
+    );
+
+    const config = await readFile("packages/gatekeeper-google/vite.config.ts", "utf8");
+    assert.match(
+      config,
+      /test:\s*\{\s*\.\.\.vitestTask\(\[[\s\S]*?\]\),\s*dependsOn:\s*\["build:configurator"\],?\s*\}/,
+    );
+  });
+
   it("routes every package the builder builds through the shared task", async () => {
     const names = await configuratorPackages();
     assert.ok(names.length > 0, "expected to find packages with configurator UI sources");

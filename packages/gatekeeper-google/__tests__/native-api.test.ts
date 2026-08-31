@@ -75,6 +75,34 @@ describe("native Google content API safety", () => {
     );
   });
 
+  it("requests tab-agnostic metadata for a multi-tab document", async () => {
+    let requestedUrl: string | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      requestedUrl = input instanceof Request ? input.url : input.toString();
+      return Response.json({
+        documentId: "doc-1", title: "Quarterly plan", revisionId: "revision-1",
+      });
+    }));
+
+    await expect(new GoogleDocsApi(token).getDocumentMetadata("doc-1")).resolves.toEqual({
+      documentId: "doc-1",
+      title: "Quarterly plan",
+      revisionId: "revision-1",
+    });
+    expect(requestedUrl).toBe(
+      "https://docs.googleapis.com/v1/documents/doc-1?fields=documentId,title,revisionId",
+    );
+  });
+
+  it("rejects a metadata response for another document ID", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      documentId: "doc-2", title: "Quarterly plan",
+    })));
+
+    await expect(new GoogleDocsApi(token).getDocumentMetadata("doc-1"))
+      .rejects.toThrow("Google Docs returned a different document");
+  });
+
   it("rejects a document response for another ID", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
       ...docResponse(), documentId: "doc-2",
@@ -91,20 +119,24 @@ describe("native Google content API safety", () => {
       .rejects.toThrow("Multi-tab Google Docs are not supported");
   });
 
-  it("revision-locks and marks Docs writes for retry reconciliation", async () => {
+  it("revision-locks marked writes and returns the created range ID", async () => {
     let requestInit: RequestInit | undefined;
     vi.stubGlobal("fetch", vi.fn(async (
       _input: string | URL | Request, init?: RequestInit,
     ) => {
       requestInit = init;
-      return Response.json({ writeControl: { requiredRevisionId: "revision-2" } });
+      return Response.json({
+        replies: [{ createNamedRange: { namedRangeId: "range-1" } }],
+        writeControl: { requiredRevisionId: "revision-2" },
+      });
     }));
     const request = { insertText: { text: "hello", location: { index: 1 } } };
 
-    await new GoogleDocsApi(token).batchUpdate(
+    const result = await new GoogleDocsApi(token).batchUpdate(
       "doc-1", [request], "revision-1", { name: "gadgets-write-1", rangeStart: 1 },
     );
 
+    expect(result).toEqual({ revisionId: "revision-2", writeMarkerId: "range-1" });
     expect(JSON.parse(String(requestInit?.body))).toEqual({
       requests: [
         {
@@ -116,6 +148,27 @@ describe("native Google content API safety", () => {
         request,
       ],
       writeControl: { requiredRevisionId: "revision-1" },
+    });
+  });
+
+  it("deletes a named range by exact ID without write control", async () => {
+    let requestedUrl: string | undefined;
+    let requestInit: RequestInit | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (
+      input: string | URL | Request, init?: RequestInit,
+    ) => {
+      requestedUrl = input instanceof Request ? input.url : input.toString();
+      requestInit = init;
+      return Response.json({});
+    }));
+
+    await new GoogleDocsApi(token).deleteNamedRange("doc-1", "range-1");
+
+    expect(requestedUrl).toBe(
+      "https://docs.googleapis.com/v1/documents/doc-1:batchUpdate",
+    );
+    expect(JSON.parse(String(requestInit?.body))).toEqual({
+      requests: [{ deleteNamedRange: { namedRangeId: "range-1" } }],
     });
   });
   it("cancels an unknown-length response once streamed bytes exceed the limit", async () => {

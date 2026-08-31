@@ -9,9 +9,9 @@ export type DocMetadata = {
 
 /** Read-only access to one native Google Doc. */
 export interface GoogleDocReadSession {
-  /** Return current document metadata. */
+  /** Return current document metadata. Works with any number of tabs. */
   getMetadata(): Promise<DocMetadata>;
 
-  /** Return the document body as Markdown. Throws if the document has multiple tabs. */
+  /** Return the document body as Markdown. Requires exactly one tab. */
   getContent(): Promise<string>;
 }

@@ -121,24 +121,18 @@ describe("Drive nested native sessions", () => {
   });
 
   it("gives each child an independently disposable approval-queue stub", async () => {
-    const { queue, session } = newSession();
-    try {
-      const doc = await session.openGoogleDoc("doc-1");
-      try {
-        session[Symbol.dispose]();
-        await expect(doc.getMetadata()).resolves.toEqual(expect.objectContaining({
-          title: "Quarterly plan",
-        }));
-        expect(queue.observations).toHaveLength(2);
+    const resources = newSession();
+    using session = resources.session;
+    using doc = await session.openGoogleDoc("doc-1");
 
-        doc[Symbol.dispose]();
-        await expect(Promise.resolve(doc.getContent())).rejects.toThrow();
-      } finally {
-        doc[Symbol.dispose]();
-      }
-    } finally {
-      session[Symbol.dispose]();
-    }
+    session[Symbol.dispose]();
+    await expect(doc.getMetadata()).resolves.toEqual(expect.objectContaining({
+      title: "Quarterly plan",
+    }));
+    expect(resources.queue.observations).toHaveLength(2);
+
+    doc[Symbol.dispose]();
+    await expect(Promise.resolve(doc.getContent())).rejects.toThrow();
   });
 
   it("keeps a returned cursor paging after its session is disposed", async () => {

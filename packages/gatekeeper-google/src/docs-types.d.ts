@@ -1,7 +1,10 @@
 import type { GoogleDocReadSession } from "./docs-read-types";
 export type { DocMetadata, GoogleDocReadSession } from "./docs-read-types";
 
-/** Read/write access to one directly bound native Google Doc. */
+/**
+ * Read/write access to one directly bound native Google Doc.
+ * Metadata works with any number of tabs; content conversion and edits require exactly one tab.
+ */
 export interface GoogleDocSession extends GoogleDocReadSession {
 
   /**

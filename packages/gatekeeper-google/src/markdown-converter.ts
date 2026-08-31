@@ -20,6 +20,13 @@ export type DocSnapshot = {
   sourceMap: SourceMap;
   /** `Date.now()` at the time of fetch, used for TTL checks. */
   fetchedAt: number;
+  /**
+   * Write IDs whose marked batch is already present in this snapshot's document.
+   *
+   * Filled in by the gatekeeper, which owns the write-marker convention; absent on snapshots
+   * persisted before it existed, which self-correct on the next fetch.
+   */
+  committedWriteIds?: string[];
   /** The endIndex of the last structural element in the document body. */
   bodyEndIndex: number;
 }

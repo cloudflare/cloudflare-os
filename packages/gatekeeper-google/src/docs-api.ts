@@ -19,7 +19,9 @@ export type GoogleDocsDocument = {
   revisionId: string;
   body: { content: StructuralElement[] };
   lists: Record<string, DocList>;
-  namedRanges: Record<string, unknown>;
+  namedRanges: Record<string, {
+    namedRanges: { namedRangeId: string; name?: string }[];
+  }>;
 }
 
 /** A list definition, referenced by paragraphs that are list items. */
@@ -164,6 +166,28 @@ export class GoogleDocsApi {
   }
 
   /**
+   * Fetch document metadata without loading or validating tab content.
+   *
+   * `revisionId` comes along because callers need a change token: `documents.get` exposes no
+   * modification time, so the revision is the only signal that the document actually changed.
+   */
+  async getDocumentMetadata(
+    documentId: string,
+  ): Promise<Pick<GoogleDocsDocument, "documentId" | "title" | "revisionId">> {
+    let document = await this.#request<
+      Pick<GoogleDocsDocument, "documentId" | "title" | "revisionId">
+    >(
+      `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?fields=documentId,title,revisionId`,
+      {},
+      "get document metadata",
+    );
+    if (document.documentId !== documentId) {
+      throw new Error("Google Docs returned a different document");
+    }
+    return document;
+  }
+
+  /**
    * Lightweight revision check. Uses the `fields` query parameter to request
    * only the revisionId, avoiding downloading the full document body.
    *
@@ -179,20 +203,13 @@ export class GoogleDocsApi {
     return data.revisionId;
   }
 
-  /**
-   * Send a batchUpdate request to modify the document.
-   *
-   * `revisionId` is normally a merge target. A marked write instead requires that exact revision,
-   * so concurrent retries cannot both commit. The ID should come from `getDocument()`.
-   *
-   * Returns the new revision ID after the update.
-   */
+  /** Send document updates, revision-locking marked writes. */
   async batchUpdate(
     documentId: string,
     requests: unknown[],
     revisionId?: string,
     writeMarker?: GoogleDocsWriteMarker,
-  ): Promise<string> {
+  ): Promise<{ revisionId: string; writeMarkerId?: string }> {
     let markedRequests = writeMarker
       ? [{
           createNamedRange: {
@@ -215,6 +232,7 @@ export class GoogleDocsApi {
     }
 
     let result = await this.#request<{
+      replies?: { createNamedRange?: { namedRangeId?: string } }[];
       writeControl?: { requiredRevisionId?: string };
     }>(
       `${DOCS_API_BASE}/${encodeURIComponent(documentId)}:batchUpdate`,
@@ -225,6 +243,26 @@ export class GoogleDocsApi {
       },
       "batch update document",
     );
-    return result.writeControl?.requiredRevisionId ?? "";
+    let markerId = result.replies?.[0]?.createNamedRange?.namedRangeId;
+    let update: { revisionId: string; writeMarkerId?: string } = {
+      revisionId: result.writeControl?.requiredRevisionId ?? "",
+    };
+    if (writeMarker && typeof markerId === "string" && markerId.length > 0) {
+      update.writeMarkerId = markerId;
+    }
+    return update;
+  }
+
+  /** Delete one named range by its exact provider ID. */
+  async deleteNamedRange(documentId: string, namedRangeId: string): Promise<void> {
+    await this.#request(
+      `${DOCS_API_BASE}/${encodeURIComponent(documentId)}:batchUpdate`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requests: [{ deleteNamedRange: { namedRangeId } }] }),
+      },
+      "delete named range",
+    );
   }
 }
