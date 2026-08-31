@@ -2185,7 +2185,8 @@ export class GmailApi {
     const candidate = page.messages[0];
     const metadata = await this.getMessageMetadata(candidate.id);
     if (metadata.id !== candidate.id ||
-        headerValue(metadata.payload?.headers, "Message-ID")?.trim() !== normalizedMessageId) {
+        headerValue(metadata.payload?.headers, "Message-ID")?.trim() !== normalizedMessageId ||
+        (location === "delivered" && !metadata.labelIds?.includes("SENT"))) {
       return undefined;
     }
     return candidate;

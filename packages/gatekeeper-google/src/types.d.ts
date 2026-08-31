@@ -18,6 +18,12 @@ export type EmailAddress = {
  */
 export type EmailRecipient = string;
 
+/**
+ * A stable RFC 5322 Message-ID reserved for an outgoing message.
+ * Once the message has been sent, this value can be passed to {@link GmailScopedSession.getMessage}.
+ */
+export type GmailMessageId = string;
+
 /** Metadata describing a Gmail thread. */
 export type GmailThreadInfo = {
   /** Gmail's stable identifier for the thread. */
@@ -252,9 +258,10 @@ export interface GmailScopedSession {
   searchMessages(query: string): Promise<Cursor<GmailMessageEntry>>;
 
   /**
-   * Open a message by Gmail's stable message ID. A whole-mailbox binding can
-   * open any message available to the connected account; a restricted binding
-   * can open it only when it currently matches the binding's restriction.
+   * Open a message by Gmail's stable provider ID or a {@link GmailMessageId}
+   * returned by an outbound method. A whole-mailbox binding can open any
+   * message available to the connected account; a restricted binding can open
+   * messages matching its restriction and messages sent through that binding.
    */
   getMessage(id: string): Promise<GmailMessage>;
 
@@ -284,14 +291,15 @@ export interface GmailSession extends GmailScopedSession {
   /**
    * Compose and send a new email. `body` is the plain-text representation;
    * `options.html`, when provided, is sent as its HTML alternative. At least
-   * one To, CC, or BCC recipient is required.
+   * one To, CC, or BCC recipient is required. Returns an identifier that can
+   * be passed to {@link GmailScopedSession.getMessage} once the message has been sent.
    */
   send(
     to: EmailRecipient[],
     subject: string,
     body: string,
     options?: GmailComposeOptions,
-  ): Promise<void>;
+  ): Promise<GmailMessageId>;
 
   /**
    * Create a draft in the connected mailbox and return a capability for it.
@@ -393,29 +401,33 @@ export interface GmailMessage {
    * reply uses Reply-To when present and otherwise From. For mail sent by the
    * connected mailbox, it uses the first original To recipient. Calculated
    * lists remove the connected mailbox, omit original BCC recipients, and
-   * remove duplicates.
+   * remove duplicates. Returns an identifier that can be passed to
+   * {@link GmailScopedSession.getMessage} once the reply has been sent.
    */
-  reply(body: string, options?: GmailReplyOptions): Promise<void>;
+  reply(body: string, options?: GmailReplyOptions): Promise<GmailMessageId>;
 
   /**
    * Reply to the sender plus the original To and CC recipients. Supplying any
    * recipient option replaces that complete calculated set. The connected
-   * mailbox and duplicates are removed from calculated recipients.
+   * mailbox and duplicates are removed from calculated recipients. Returns an
+   * identifier that can be passed to {@link GmailScopedSession.getMessage}
+   * once the reply has been sent.
    */
-  replyAll(body: string, options?: GmailReplyOptions): Promise<void>;
+  replyAll(body: string, options?: GmailReplyOptions): Promise<GmailMessageId>;
 
   /**
    * Forward this message inline using Gmail's standard forwarded-message
    * header block and quoted source content. `body` is an optional plain-text
    * preface and `options.html`, when provided, is its HTML alternative. The
    * original attachments are included as regular attachments. At least one
-   * To, CC, or BCC recipient is required.
+   * To, CC, or BCC recipient is required. Returns an identifier that can be
+   * passed to {@link GmailScopedSession.getMessage} once the forward has been sent.
    */
   forward(
     to: EmailRecipient[],
     body?: string,
     options?: GmailComposeOptions,
-  ): Promise<void>;
+  ): Promise<GmailMessageId>;
 
   /** Create a draft reply to the sender. */
   createReplyDraft(body: string, options?: GmailReplyOptions): Promise<GmailDraft>;
@@ -484,9 +496,10 @@ export interface GmailDraft {
   /**
    * Send the draft, preserving its thread placement when it is a reply.
    * Sending requires at least one recipient. New drafts require a plain-text body;
-   * reply drafts may have an empty body.
+   * reply drafts may have an empty body. Returns an identifier that can be passed
+   * to {@link GmailScopedSession.getMessage} once the draft has been sent.
    */
-  send(): Promise<void>;
+  send(): Promise<GmailMessageId>;
 }
 
 /** Read access to one regular attachment or inline MIME part. */

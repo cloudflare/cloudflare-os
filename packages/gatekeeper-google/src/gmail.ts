@@ -136,6 +136,17 @@ type GmailDraftWriteReceipt = {
   missing?: true;
 };
 
+type GmailSentMessageReceipt = {
+  rfcMessageId: string;
+  providerId: string;
+  threadId: string;
+};
+
+type GmailSendFingerprint = {
+  rfcMessageId: string;
+  fingerprint: string;
+};
+
 type GmailDraftProviderBaseline = GmailDraftWriteReceipt & {
   fingerprint: string;
 };
@@ -264,7 +275,12 @@ class GmailStore {
   #decisionKey(id: number) { return `gmail:decision:${id}`; }
   #applyingKey(id: number) { return `gmail:applying:${id}`; }
   #draftWriteReceiptKey(id: number) { return `gmail:draftWriteReceipt:${id}`; }
+  #sendFingerprintKey(id: number) { return `gmail:sendFingerprint:${id}`; }
   #admittedLabelKey(id: string) { return `gmail:admittedLabel:${id}`; }
+  #sentAliasKey(rfcMessageId: string) {
+    return `gmail:sentAlias:${gmailMessageIdQueryValue(rfcMessageId)}`;
+  }
+  #sentProviderKey(providerId: string) { return `gmail:sentProvider:${providerId}`; }
 
   submit(action: StoredGmailAction): number {
     const id = this.#kv.get<number>("pending:nextActionId") ?? 1;
@@ -287,6 +303,7 @@ class GmailStore {
   removeAction(id: number): void {
     this.#kv.delete(this.#actionKey(id));
     this.#kv.delete(this.#draftWriteReceiptKey(id));
+    this.#kv.delete(this.#sendFingerprintKey(id));
   }
 
   markApplying(id: number): void { this.#kv.put(this.#applyingKey(id), Date.now()); }
@@ -299,6 +316,95 @@ class GmailStore {
 
   getDraftWriteReceipt(id: number): GmailDraftWriteReceipt | undefined {
     return this.#kv.get<GmailDraftWriteReceipt>(this.#draftWriteReceiptKey(id));
+  }
+
+  setSendFingerprint(id: number, rfcMessageId: string, fingerprint: string): void {
+    this.#storage.transactionSync(() => {
+      const action = this.getAction(id);
+      const expectedMessageId = action?.type === "send"
+        ? ("spec" in action ? action.spec.messageId : undefined)
+        : action?.type === "draftSend" ? action.messageId : undefined;
+      const current = this.#kv.get<GmailSendFingerprint>(this.#sendFingerprintKey(id));
+      if (!action || expectedMessageId !== rfcMessageId ||
+          (current && (current.rfcMessageId !== rfcMessageId ||
+            current.fingerprint !== fingerprint))) {
+        throw new Error("The approved Gmail send fingerprint changed unexpectedly.");
+      }
+      this.#kv.put(this.#sendFingerprintKey(id), {rfcMessageId, fingerprint});
+    });
+  }
+
+  getSendFingerprint(id: number, rfcMessageId: string): string | undefined {
+    const stored = this.#kv.get<GmailSendFingerprint>(this.#sendFingerprintKey(id));
+    if (!stored) return undefined;
+    if (stored.rfcMessageId !== rfcMessageId) {
+      throw new Error("The stored Gmail send fingerprint belongs to another message.");
+    }
+    return stored.fingerprint;
+  }
+
+  #recordSentMessage(
+      rfcMessageId: string, message: {id: string; threadId: string}): GmailSentMessageReceipt {
+    const normalizedId = `<${gmailMessageIdQueryValue(rfcMessageId)}>`;
+    const receipt = {rfcMessageId: normalizedId, providerId: message.id, threadId: message.threadId};
+    const byAlias = this.#kv.get<GmailSentMessageReceipt>(this.#sentAliasKey(normalizedId));
+    const byProvider = this.#kv.get<GmailSentMessageReceipt>(this.#sentProviderKey(message.id));
+    for (const existing of [byAlias, byProvider]) {
+      if (existing && (existing.rfcMessageId !== receipt.rfcMessageId ||
+          existing.providerId !== receipt.providerId || existing.threadId !== receipt.threadId)) {
+        throw new Error("The sent Gmail message receipt conflicts with an existing mapping.");
+      }
+    }
+    this.#kv.put(this.#sentAliasKey(normalizedId), receipt);
+    this.#kv.put(this.#sentProviderKey(message.id), receipt);
+    return receipt;
+  }
+
+  completeSentAction(
+      actionId: number, rfcMessageId: string,
+      message: {id: string; threadId: string}): StoredGmailAction {
+    return this.#storage.transactionSync(() => {
+      const action = this.getAction(actionId);
+      const expectedMessageId = action?.type === "send"
+        ? ("spec" in action ? action.spec.messageId : undefined)
+        : action?.type === "draftSend" ? action.messageId : undefined;
+      if (!action || !this.isApplying(actionId) || expectedMessageId !== rfcMessageId) {
+        throw new Error("The pending Gmail send changed before completion.");
+      }
+      this.#recordSentMessage(rfcMessageId, message);
+      if (action.type === "draftSend") {
+        const resource = this.getDraft(action.draftId);
+        if (!resource || resource.status !== "active") {
+          throw new Error("The Gmail draft resource changed before send completion.");
+        }
+        resource.status = "sent";
+        resource.version++;
+        delete resource.forwardSnapshot;
+        delete resource.forwardBody;
+        delete resource.forwardHtml;
+        this.putDraft(resource);
+      }
+      this.setDecision(actionId, "applied");
+      this.removeAction(actionId);
+      this.clearApplying(actionId);
+      this.pruneDecisions();
+      return action;
+    });
+  }
+
+  sentMessageByRfcMessageId(rfcMessageId: string): GmailSentMessageReceipt | undefined {
+    return this.#kv.get<GmailSentMessageReceipt>(this.#sentAliasKey(rfcMessageId));
+  }
+
+  isSentMessage(providerId: string): boolean {
+    return this.#kv.get<GmailSentMessageReceipt>(this.#sentProviderKey(providerId)) !== undefined;
+  }
+
+  hasPendingSend(rfcMessageId: string): boolean {
+    const normalizedId = `<${gmailMessageIdQueryValue(rfcMessageId)}>`;
+    return this.listActions().some(({action}) =>
+      (action.type === "send" && "spec" in action && action.spec.messageId === normalizedId) ||
+      (action.type === "draftSend" && action.messageId === normalizedId));
   }
 
   markDraftWriteMissing(id: number, expected: GmailDraftWriteReceipt): void {
@@ -1542,7 +1648,8 @@ async function sourceStillAvailable(ctx: GmailContext, source: GmailDraftSource)
 }
 
 async function restrictedThreadScope(
-    ctx: GmailContext, threadId: string): Promise<GmailCapabilityScope> {
+    ctx: GmailContext, threadId: string,
+    sentMessageIds: readonly string[] = []): Promise<GmailCapabilityScope> {
   const thread = await ctx.api.getThread(threadId);
   if (thread.id !== threadId) throw new Error("Gmail thread identity changed unexpectedly.");
   if (thread.messages.length > MAX_GMAIL_RESTRICTED_THREAD_MESSAGES) {
@@ -1571,6 +1678,12 @@ async function restrictedThreadScope(
     admitted = messageIds.filter(messageId => available.has(messageId));
   } else {
     admitted = [];
+  }
+  for (const messageId of sentMessageIds) {
+    if (messageIds.includes(messageId) && ctx.store.isSentMessage(messageId) &&
+        !admitted.includes(messageId)) {
+      admitted.push(messageId);
+    }
   }
   if (!admitted.length) {
     throw new Error("This Gmail thread is not available through this restricted binding.");
@@ -1864,10 +1977,30 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
   }
 
   async getMessage(id: string): Promise<GmailMessage> {
-    if (!GMAIL_PROVIDER_ID_RE.test(id)) throw new Error("Invalid Gmail message ID.");
-    const metadata = await this.#ctx.api.getMessageMetadata(id);
-    if (metadata.id !== id) throw new Error("Gmail message identity changed unexpectedly.");
-    if (!await messageStillAvailable(this.#ctx, id, metadata)) {
+    let providerId = id;
+    let sentThroughBinding = false;
+    if (GMAIL_PROVIDER_ID_RE.test(providerId)) {
+      sentThroughBinding = this.#ctx.store.isSentMessage(providerId);
+    } else {
+      let normalizedId: string;
+      try {
+        normalizedId = `<${gmailMessageIdQueryValue(id)}>`;
+      } catch {
+        throw new Error("Invalid Gmail message ID.");
+      }
+      const receipt = this.#ctx.store.sentMessageByRfcMessageId(normalizedId);
+      if (!receipt) {
+        if (this.#ctx.store.hasPendingSend(normalizedId)) {
+          throw new Error("This Gmail send is pending or has not been reconciled yet.");
+        }
+        throw new Error("Unknown Gmail message ID.");
+      }
+      providerId = receipt.providerId;
+      sentThroughBinding = true;
+    }
+    const metadata = await this.#ctx.api.getMessageMetadata(providerId);
+    if (metadata.id !== providerId) throw new Error("Gmail message identity changed unexpectedly.");
+    if (!sentThroughBinding && !await messageStillAvailable(this.#ctx, providerId, metadata)) {
       throw new Error("This Gmail message is not available through this restricted binding.");
     }
     const info = parseGmailMessageMetadata(metadata);
@@ -1875,8 +2008,8 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
       title: sanitizeApprovalTitle(`Open Gmail message: ${info.subject || "(no subject)"}`),
       description: "Open a known Gmail message by its stable ID within this binding.",
     });
-    const scope = this.#ctx.restricted ? gmailRestrictedScope([id]) : GMAIL_MAILBOX_SCOPE;
-    return new GmailMessageStub(this.#ctx, id, info.threadId, scope, undefined, info);
+    const scope = this.#ctx.restricted ? gmailRestrictedScope([providerId]) : GMAIL_MAILBOX_SCOPE;
+    return new GmailMessageStub(this.#ctx, providerId, info.threadId, scope, undefined, info);
   }
 
   async getThread(id: string): Promise<GmailThread> {
@@ -1898,7 +2031,7 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
   }
 
   async send(
-      to: string[], subject: string, body: string, options: GmailComposeOptions = {}): Promise<void> {
+      to: string[], subject: string, body: string, options: GmailComposeOptions = {}): Promise<string> {
     if (this.#ctx.restricted) {
       throw new Error(
         "send() is unavailable on a search- or label-scoped binding. Use a message capability.");
@@ -1914,6 +2047,7 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
       description: describeOutboundMessage("Send a new email.", message),
       awaitDecision: true,
     });
+    return message.messageId;
   }
 
   async listDrafts(): Promise<Cursor<GmailDraftEntry>> {
@@ -2387,7 +2521,11 @@ class GmailMessageStub extends GmailRpcTarget implements GmailMessage {
   async thread(): Promise<GmailThread> {
     const scope = this.#scope.kind === "mailbox"
       ? this.#scope
-      : await restrictedThreadScope(this.#ctx, this.#threadId);
+      : await restrictedThreadScope(
+        this.#ctx,
+        this.#threadId,
+        this.#scope.admittedMessageIds.filter(messageId => this.#ctx.store.isSentMessage(messageId)),
+      );
     await this.#ctx.approvalQueue.authorizeObservation({
       title: "Open Gmail message thread",
       description: "Create a thread capability carrying the messages admitted by this binding.",
@@ -2431,7 +2569,7 @@ class GmailMessageStub extends GmailRpcTarget implements GmailMessage {
     }));
   }
 
-  async #reply(body: string, replyAll: boolean, options: GmailReplyOptions = {}): Promise<void> {
+  async #reply(body: string, replyAll: boolean, options: GmailReplyOptions = {}): Promise<string> {
     validateGmailBody(body);
     if (options.html !== undefined) validateGmailBody(options.html);
     const source = await this.#ctx.api.getMessageMetadata(this.#messageId);
@@ -2455,18 +2593,19 @@ class GmailMessageStub extends GmailRpcTarget implements GmailMessage {
         `\n\n${formatApprovalField("Threading mode", "reply in source thread")}`,
       awaitDecision: true,
     });
+    return message.messageId;
   }
 
-  async reply(body: string, options?: GmailReplyOptions): Promise<void> {
-    await this.#reply(body, false, options);
+  async reply(body: string, options?: GmailReplyOptions): Promise<string> {
+    return this.#reply(body, false, options);
   }
 
-  async replyAll(body: string, options?: GmailReplyOptions): Promise<void> {
-    await this.#reply(body, true, options);
+  async replyAll(body: string, options?: GmailReplyOptions): Promise<string> {
+    return this.#reply(body, true, options);
   }
 
   async forward(
-      to: string[], body?: string, options: GmailComposeOptions = {}): Promise<void> {
+      to: string[], body?: string, options: GmailComposeOptions = {}): Promise<string> {
     const source = await this.#forwardSource();
     await this.#ctx.approvalQueue.authorizeObservation({
       title: "Read Gmail source message to prepare forward",
@@ -2491,6 +2630,7 @@ class GmailMessageStub extends GmailRpcTarget implements GmailMessage {
           `\n\n${formatApprovalField("Threading mode", "new forward message")}`,
         awaitDecision: true,
       }, () => this.#ctx.store.deleteForwardSnapshot(snapshot));
+      return message.messageId;
     } catch (error) {
       this.#ctx.store.deleteForwardSnapshot(snapshot);
       throw error;
@@ -3053,7 +3193,7 @@ class GmailDraftStub extends GmailRpcTarget implements GmailDraft {
     });
   }
 
-  async send(): Promise<void> {
+  async send(): Promise<string> {
     const {state, resource} = await loadSimulatedDraft(this.#ctx, this.#logicalId, true);
     const logicalId = resource.logicalId;
     const version = resource.version;
@@ -3106,6 +3246,7 @@ class GmailDraftStub extends GmailRpcTarget implements GmailDraft {
         "Send this exact draft snapshot.", approved, approvedMessage),
       awaitDecision: true,
     });
+    return messageId;
   }
 }
 
@@ -3190,6 +3331,34 @@ async function exactSpecWithSource(
     return outboundSpec(message);
   }
   return {...spec, attachments: [materializeSourceAttachment(bytes, snapshot)]};
+}
+
+async function verifyReconciledSend(
+    api: GmailApi, action: GmailSendAction, sent: {id: string; threadId: string},
+    approvedFingerprint: string): Promise<void> {
+  const provider = await api.getMessage(sent.id);
+  if (provider.id !== sent.id || provider.threadId !== sent.threadId ||
+      (action.threadId !== undefined && provider.threadId !== action.threadId)) {
+    throw new Error(
+      "A delivered Gmail message matched the approved Message-ID but not the approved thread.");
+  }
+  const deliveredParsed = await parseSafeGmailDraft(provider);
+  if (await gmailDraftFingerprint(deliveredParsed, provider.threadId) !==
+      approvedFingerprint) {
+    throw new Error(
+      "A delivered Gmail message matched the approved Message-ID but had different content.");
+  }
+}
+
+async function sentMessageFingerprint(
+    raw: string, threadId: string | undefined): Promise<string> {
+  const parsed = await parseSafeGmailDraft({
+    id: "approved-send",
+    threadId: threadId ?? "approved-send",
+    internalDate: "0",
+    raw,
+  });
+  return gmailDraftFingerprint(parsed, threadId);
 }
 
 async function applyMessageMutation(
@@ -3435,18 +3604,46 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         await applyMessageMutation(api, store, actionId, action);
         break;
       case "send": {
-        if (await api.findMessageByRfcMessageId(action.spec.messageId, "delivered")) break;
         const sourceSnapshot = sendSourceSnapshot(action);
+        const receipt = store.sentMessageByRfcMessageId(action.spec.messageId);
+        if (receipt) {
+          const completed = store.completeSentAction(actionId, action.spec.messageId, {
+            id: receipt.providerId,
+            threadId: receipt.threadId,
+          });
+          store.deleteForwardSnapshot(actionSourceAttachment(completed));
+          return;
+        }
         if (store.isApplying(actionId)) {
-          throw new Error(
-            "The previous Gmail send outcome is still unknown; refusing to risk duplicate delivery.");
+          const existing = await api.findMessageByRfcMessageId(action.spec.messageId, "delivered");
+          if (!existing) {
+            throw new Error(
+              "The previous Gmail send outcome is still unknown; refusing to risk duplicate delivery.");
+          }
+          let approvedFingerprint = store.getSendFingerprint(actionId, action.spec.messageId);
+          if (!approvedFingerprint) {
+            const spec = await exactSpecWithSource(
+              api, store, action.spec, sourceSnapshot, action.forwardFormat === "inline");
+            approvedFingerprint = await sentMessageFingerprint(
+              api.buildOutbound(spec).raw, action.threadId);
+            store.setSendFingerprint(actionId, action.spec.messageId, approvedFingerprint);
+          }
+          await verifyReconciledSend(api, action, existing, approvedFingerprint);
+          const completed = store.completeSentAction(actionId, action.spec.messageId, existing);
+          store.deleteForwardSnapshot(actionSourceAttachment(completed));
+          return;
         }
         const spec = await exactSpecWithSource(
           api, store, action.spec, sourceSnapshot, action.forwardFormat === "inline");
         const message = api.buildOutbound(spec);
-        await applyUncertainWrite(
+        store.setSendFingerprint(
+          actionId, action.spec.messageId,
+          await sentMessageFingerprint(message.raw, action.threadId));
+        const sent = await applyUncertainWrite(
           store, actionId, () => api.sendRawMessage(message.raw, action.threadId));
-        break;
+        const completed = store.completeSentAction(actionId, action.spec.messageId, sent);
+        store.deleteForwardSnapshot(actionSourceAttachment(completed));
+        return;
       }
       case "draftCreate": {
         const resource = store.getDraft(action.draft.logicalId);
@@ -3630,6 +3827,19 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
       }
       case "draftSend": {
         const resource = store.getDraft(action.draftId)!;
+        const resourceSnapshot = resource.forwardSnapshot;
+        const receipt = action.messageId
+          ? store.sentMessageByRfcMessageId(action.messageId)
+          : undefined;
+        if (receipt) {
+          const completed = store.completeSentAction(actionId, action.messageId!, {
+            id: receipt.providerId,
+            threadId: receipt.threadId,
+          });
+          store.deleteForwardSnapshot(actionSourceAttachment(completed));
+          store.deleteForwardSnapshot(resourceSnapshot);
+          return;
+        }
         if (store.isApplying(actionId)) {
           const sent = action.messageId
             ? await api.findMessageByRfcMessageId(action.messageId, "delivered")
@@ -3646,18 +3856,21 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
               "A delivered Gmail message matched the approved Message-ID but not the approved draft.");
           }
           const sentParsed = await parseSafeGmailDraft(sentMessage);
-          const approvedOutputFingerprint = await draftOutputFingerprint(
-            api, store, action.approved, action.sourceAttachment);
+          let approvedOutputFingerprint = store.getSendFingerprint(actionId, action.messageId!);
+          if (!approvedOutputFingerprint) {
+            approvedOutputFingerprint = await draftOutputFingerprint(
+              api, store, action.approved, action.sourceAttachment);
+            store.setSendFingerprint(actionId, action.messageId!, approvedOutputFingerprint);
+          }
           if (await gmailDraftFingerprint(sentParsed, sentMessage.threadId) !==
               approvedOutputFingerprint) {
             throw new Error(
               "A delivered Gmail message matched the approved Message-ID but had different content.");
           }
-          resource.status = "sent";
-          resource.version++;
-          store.putDraft(resource);
-          store.clearDraftForwardSnapshot(action.draftId);
-          break;
+          const completed = store.completeSentAction(actionId, action.messageId!, sent);
+          store.deleteForwardSnapshot(actionSourceAttachment(completed));
+          store.deleteForwardSnapshot(resourceSnapshot);
+          return;
         }
         const id = providerDraftId(store, action.draftId);
         const current = await api.getDraft(id);
@@ -3678,8 +3891,19 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
             action.approved.source?.format === "inline")
           : draftSpec(action.approved, parsed.attachments);
         const approved = api.buildOutbound(approvedSpec);
-        await applyUncertainWrite(
+        if (action.messageId) {
+          store.setSendFingerprint(
+            actionId, action.messageId,
+            await sentMessageFingerprint(approved.raw, action.approved.threadId));
+        }
+        const sent = await applyUncertainWrite(
           store, actionId, () => api.sendDraft(id, approved.raw, action.approved.threadId));
+        if (action.messageId) {
+          const completed = store.completeSentAction(actionId, action.messageId, sent);
+          store.deleteForwardSnapshot(actionSourceAttachment(completed));
+          store.deleteForwardSnapshot(resourceSnapshot);
+          return;
+        }
         resource.status = "sent";
         resource.version++;
         store.putDraft(resource);

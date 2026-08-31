@@ -854,7 +854,7 @@ describe("Gmail attachment snapshots", () => {
 });
 
 describe("Gmail API request shapes", () => {
-  it("does not reconcile duplicate or mismatched Message-ID results", async () => {
+  it("does not reconcile duplicate, mismatched, or non-sent Message-ID results", async () => {
     stubFetch([json({messages: [{id: "m1"}, {id: "m2"}]})]);
     await expect(api().findMessageByRfcMessageId("<same@example.com>", "delivered"))
       .resolves.toBeUndefined();
@@ -864,6 +864,16 @@ describe("Gmail API request shapes", () => {
       json({
         id: "m1", threadId: "t1", internalDate: "1",
         payload: {headers: [{name: "Message-ID", value: "<different@example.com>"}]},
+      }),
+    ]);
+    await expect(api().findMessageByRfcMessageId("<same@example.com>", "delivered"))
+      .resolves.toBeUndefined();
+
+    stubFetch([
+      json({messages: [{id: "m1"}]}),
+      json({
+        id: "m1", threadId: "t1", internalDate: "1",
+        payload: {headers: [{name: "Message-ID", value: "<same@example.com>"}]},
       }),
     ]);
     await expect(api().findMessageByRfcMessageId("<same@example.com>", "delivered"))
@@ -927,7 +937,7 @@ describe("Gmail API request shapes", () => {
       .toEqual(["true", "true"]);
   });
 
-  it("searches everywhere except drafts when reconciling a delivered Message-ID", async () => {
+  it("searches all non-draft mail when reconciling a delivered Message-ID", async () => {
     const calls = stubFetch([json({messages: []})]);
     await expect(api().findMessageByRfcMessageId("<sent@example.com>", "delivered"))
       .resolves.toBeUndefined();

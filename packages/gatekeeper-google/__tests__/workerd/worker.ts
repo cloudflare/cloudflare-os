@@ -30,7 +30,7 @@ type TestGmail = GmailGatekeeperImpl & {
 async function withMessage<T>(
     session: GmailSession, id: string, callback: (message: GmailMessage) => Promise<T>,
 ): Promise<T> {
-  if (/^[a-f0-9]{1,256}$/i.test(id)) {
+  if (/^[a-f0-9]{1,256}$/i.test(id) || /^<[^<>\s@]+@[^<>\s@]+>$/.test(id)) {
     const message = await session.getMessage(id);
     try {
       return await callback(message);
