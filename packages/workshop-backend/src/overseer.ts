@@ -8887,8 +8887,15 @@ class OverseerImpl implements AgentHooks {
         inScope.filter(gk => gk.id in accountChoices).map(gk => gk.id));
 
     let observerId = record?.observerId ?? crypto.randomUUID();
+    // Whether this collaborator was already an admitted observer when the call began. A returning
+    // observer's `observerId` is already persisted, so it stays resolvable no matter how this call
+    // ends -- which is what makes keeping their registrations on a failure safe (see the catch).
+    let returningObserver = record !== undefined;
     // Gatekeepers we successfully registered the observer with during this call.
     let newlyAdded = new Set<number>();
+    // Gatekeepers that refused (or whose account was gone) during this call and have not verified
+    // since
+    let invalidated = new Set<number>();
 
     // Failures from the previous pass, keyed by gatekeeper id: an already-configured binding whose
     // chosen account was disconnected, or which the gatekeeper refused.
@@ -8979,6 +8986,7 @@ class OverseerImpl implements AgentHooks {
 
           let fail = (reason: string, err?: unknown) => {
             failures.set(gk.id, {accountId, reason});
+            invalidated.add(gk.id);
             this.logger.warn("observer verification failed", {
               event: "gatekeeper.observer.verify.failed",
               gatekeeperId: gk.id, vendorId, accountId, observerId, error: err,
@@ -8994,6 +9002,9 @@ class OverseerImpl implements AgentHooks {
             }
             await this.getGatekeeperFacet(gk.id).addObserver(observerId, verifier);
             if (!registeredBeforeCall.has(gk.id)) newlyAdded.add(gk.id);
+            // Keep `invalidated` meaning "failed and has not verified since": this binding just
+            // verified on a repaired pass, so the catch below must not roll its registration back.
+            invalidated.delete(gk.id);
           } catch (err) {
             // Either a settled denial or an operational failure (expired credentials, upstream
             // outage). Treat every failure as repairable and let the user try again.
@@ -9031,9 +9042,18 @@ class OverseerImpl implements AgentHooks {
         break;
       }
     } catch (err) {
-      // Best-effort remove all the observers that were newly-added since we didn't persist the
-      // user's observer record.
-      await this.#removeObserverFromGatekeepers(observerId, [...newlyAdded]);
+      // Best-effort remove the observers we registered during *this* call, since we didn't persist
+      // the user's observer record.
+      //
+      // A first-ever verification rolls back the invalidated ones too: nothing referenced those
+      // registrations before this call, and the freshly-minted observerId is discarded with the
+      // unpersisted record, so anything left behind lingers unresolvable.
+      //
+      // A *returning* observer's registrations are kept instead. De-registering one is fail-open:
+      // the gatekeeper stops naming that observer in `excludeObservers`, so an observation it
+      // would have excluded them from is admitted with nothing left to block it.
+      let rollback = returningObserver ? newlyAdded : new Set([...newlyAdded, ...invalidated]);
+      await this.#removeObserverFromGatekeepers(observerId, [...rollback]);
       throw err;
     }
 

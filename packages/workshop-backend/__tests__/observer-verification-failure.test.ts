@@ -36,6 +36,12 @@ function seedGatekeepers(impl: any): void {
   }
 }
 
+// A client User DO that always has the account and always mints a verifier.
+const fakeClientUser = {
+  getVerifier: async () => ({}),
+  describeConnectedAccount: async () => null,
+} as any;
+
 describe("a binding that fails verification", () => {
   it("reports a verifier rejection as a denial, not as the raw RPC error", async () => {
     let stub = env.TEST_OVERSEER.getByName("observer-verify-getverifier");
@@ -74,6 +80,69 @@ describe("a binding that fails verification", () => {
       // nothing for the rollback to remove. Her registrations are what make gatekeepers name her
       // in `excludeObservers`, so dropping one would be fail-open.
       expect(removed).toEqual([]);
+    });
+  });
+
+  it("keeps a returning observer's registration so forward exclusion survives the failure",
+      async () => {
+    let stub = env.TEST_OVERSEER.getByName("observer-verify-keeps-registration");
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = (instance as unknown as { impl: any }).impl;
+      seedOwner(impl);
+      seedGatekeepers(impl);
+      // Alice's previous open covered gatekeeper 1 only; gatekeeper 2 is a binding added since,
+      // which she has never been verified against.
+      impl.storage.observers.put(
+          { profileId: "alice", observerId: "obs-1", accountChoices: { 1: 10 } });
+
+      let removed: number[] = [];
+      impl.getGatekeeperFacet = (id: number) => ({
+        // Gatekeeper 1 has revoked her access upstream: the binding she *was* admitted for is the
+        // one that now refuses, which is exactly the case that used to drop her registration.
+        addObserver: async () => { if (id === 1) throw new Error("access revoked upstream"); },
+        removeObserver: async () => { removed.push(id); },
+      });
+
+      let configureCb = { configure: async (needs: {gatekeeperId: number}[]) =>
+          needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: 20 })) } as any;
+
+      await expect(impl.ensureObserver("alice", fakeClientUser, "build", configureCb))
+          .rejects.toThrow(/could not confirm/);
+
+      // The two registrations are treated differently, which is the whole point. Gatekeeper 1's
+      // predates this call, so it survives and keeps naming her in `excludeObservers`. Gatekeeper
+      // 2's was created by this call, so rolling it back merely restores the pre-call state --
+      // there was no prior registration whose exclusions could be lost.
+      expect(removed).toEqual([2]);
+    });
+  });
+
+  it("a first-ever verification failure still rolls its registrations back", async () => {
+    let stub = env.TEST_OVERSEER.getByName("observer-verify-first-ever");
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = (instance as unknown as { impl: any }).impl;
+      seedOwner(impl);
+      seedGatekeepers(impl);
+      // No observer record: Alice has never been admitted, so the observerId minted for this call
+      // is discarded with the unpersisted record and anything registered under it would linger
+      // unresolvable.
+      let removed: number[] = [];
+      impl.getGatekeeperFacet = (id: number) => ({
+        addObserver: async () => { if (id === 2) throw new Error("no access"); },
+        removeObserver: async () => { removed.push(id); },
+      });
+
+      let configureCb = { configure: async (needs: {gatekeeperId: number}[]) =>
+          needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: need.gatekeeperId * 10 }))
+      } as any;
+
+      await expect(impl.ensureObserver("alice", fakeClientUser, "build", configureCb))
+          .rejects.toThrow(/could not confirm/);
+
+      // Both the one that verified and the one that refused are rolled back, and no record is
+      // persisted.
+      expect(removed.toSorted()).toEqual([1, 2]);
+      expect(impl.storage.observers.get("alice")).toBeUndefined();
     });
   });
 });
