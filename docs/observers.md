@@ -328,8 +328,8 @@ Notes:
 
 Verification runs at `open()` and nowhere else, so a live session is only ever as verified as the
 scope that existed when it opened. When that scope **widens**, the overseer restarts the workspace
-rather than trying to re-verify sessions in place: `#restartIfShared(reason)` delegates to
-`scheduleAccessRestart(reason)` — the same DO abort used to revoke a collaborator (see
+rather than trying to re-verify sessions in place: `#restartIfShared(reason, affectedRole?)`
+delegates to `scheduleAccessRestart(reason)` — the same DO abort used to revoke a collaborator (see
 `docs/sharing.md`) — so every client's browser reconnects and re-runs
 `authorizeCollaborator`/`ensureObserver` against the new scope. It is a no-op when the workspace
 has no collaborators: the owner is never an observer, so there is nobody to re-verify.
@@ -342,10 +342,16 @@ Three events trigger it:
 | `bindWorkpiece()` for a permanent (non-`chatId`) edge onto a vendor-backed connection | **use** scope — the gadget UI a `use` session drives can now invoke it |
 | A merge that promotes a pending gadget or a pending binding edge into `use` scope | **use** scope, same reason |
 
-The merge trigger compares the effective `use` scope before and after promotion rather than firing
-on any promotion: most merges promote something, and a promoted gadget with no bindings — or an edge
-onto a vendorless connection nobody is verified against — widens nothing and must not sever a
-shared workspace for nothing.
+The two roles widen independently, so each trigger passes the role it grew and the restart is
+skipped when no collaborator holds it: a new connection is in every `build` collaborator's scope
+at once but in no `use` collaborator's until a gadget binds it, and binding one enters `use` scope
+having been in `build` scope since it was created. A workspace shared only the other way has nobody
+with new verification requirements.
+
+Both binding triggers compare the effective `use` scope before and after rather than firing on any
+mutation: most merges promote something, and a promoted gadget with no bindings, an edge onto a
+vendorless connection nobody is verified against, or a second name onto a connection already in
+scope all widen nothing and must not sever a shared workspace for nothing.
 
 Shrinking scope needs no restart (`unbindWorkpiece`, `removeGatekeeper`): a narrower scope can
 never under-verify a session admitted at the wider one. Role *rises*

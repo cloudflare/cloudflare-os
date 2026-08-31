@@ -69,6 +69,8 @@ type Workspace = {
   /** The fixture session bound to the workspace's (first) gatekeeper. */
   session: RpcStub<TestSession>;
   gatekeeperId: number;
+  /** Alice's test-gatekeeper account, for tests that add a second connection. */
+  account: ConnectedAccount;
 };
 
 // Alice creates a workspace bound to one Test Thing and opens a session on its gatekeeper.
@@ -83,7 +85,7 @@ async function newWorkspace(publicApi: RpcStub<PublicApi>, thingName: string): P
   const gatekeeperId = await gatekeeper.getId();
   const session = await gatekeeper.openSession() as RpcStub<TestSession>;
   const { id: gadgetId } = await overseer.getMetadata();
-  return { gadgetId, overseer, alice, aliceApi, session, gatekeeperId };
+  return { gadgetId, overseer, alice, aliceApi, session, gatekeeperId, account };
 }
 
 // The owner's own reconnect after a restart, on a fresh connection: the abort fells every client of
@@ -206,6 +208,48 @@ describe("role-scoped observer enforcement", () => {
       // A second name onto the same connection widens nobody's scope: Carol is already verified
       // against it. Severing every live session would be disruption bought for nothing.
       await gadget.bind("TEST_THING_AGAIN", ws.gatekeeperId);
+      await settleRestart();
+      await expect(ws.session.readValue()).resolves.toBe(42);
+    });
+  });
+
+  // The two roles widen independently, so each widening must leave the other role's workspace
+  // alone. One test per direction: covering only one would leave half the filter unexercised.
+  it.concurrent("binding does not restart a workspace whose collaborators are all \"build\"",
+      async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "build-only");
+      const [bob] = nextUsernames("bob");
+      await signUp(publicApi, bob);
+      if (!await ws.overseer.addCollaborator(bob, "build")) {
+        throw new Error(`Failed to share the gadget with ${bob}`);
+      }
+
+      // Binding widens "use" scope only. The connection has been in every build collaborator's
+      // scope since it was created, so Bob's requirements don't change and nothing should be cut.
+      using gadget = await ws.overseer.createGadget("Test Gadget", undefined, "TEST_GADGET");
+      await gadget.bind("TEST_THING", ws.gatekeeperId);
+      await settleRestart();
+      await expect(ws.session.readValue()).resolves.toBe(42);
+    });
+  });
+
+  it.concurrent("a new connection does not restart a workspace whose collaborators are all \"use\"",
+      async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "use-only");
+      const [carol] = nextUsernames("carol");
+      const carolApi = await signUp(publicApi, carol);
+      await provisionAccount(carolApi);
+      if (!await ws.overseer.addCollaborator(carol, "use")) {
+        throw new Error(`Failed to share the gadget with ${carol}`);
+      }
+
+      // The mirror image: a new connection enters "build" scope at once, but no gadget binds it,
+      // so it is in no "use" collaborator's scope and Carol's requirements don't change either.
+      using added = await ws.overseer.newGatekeeper(
+          ws.account.id, thingUrl("use-only-extra"));
+      expect(await added.getId()).toBeGreaterThan(0);
       await settleRestart();
       await expect(ws.session.readValue()).resolves.toBe(42);
     });

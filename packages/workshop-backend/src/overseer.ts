@@ -2525,7 +2525,7 @@ class OverseerImpl implements AgentHooks {
     this.bumpVersion([gadgetId]);
 
     if ([...this.#accountRequiringUseScope()].some(id => !useScopeBefore.has(id))) {
-      this.#restartIfShared("Gadget restarted because a connection was bound to a gadget.");
+      this.#restartIfShared("Gadget restarted because a connection was bound to a gadget.", "use");
     }
   }
 
@@ -4553,7 +4553,8 @@ class OverseerImpl implements AgentHooks {
     // above have landed: a "use" collaborator's session was admitted against the narrower scope,
     // and the gadget UI they drive can now invoke a connection nobody verified them against.
     if (widenedUseScope) {
-      this.#restartIfShared("Gadget restarted because accepted changes added gadget bindings.");
+      this.#restartIfShared(
+          "Gadget restarted because accepted changes added gadget bindings.", "use");
     }
 
     return {outcome: "merged"};
@@ -5242,10 +5243,11 @@ class OverseerImpl implements AgentHooks {
 
     // A new account-requiring connection is in every "build" collaborator's verification scope
     // immediately -- a live build session can getGatekeeperById() and openSession() on it with no
-    // observer check -- so sever those sessions. A vendorless spec (aiModel/agentSpawner) is in
-    // nobody's scope (#inScopeGatekeepers skips it), so it widens nothing.
+    // observer check -- so sever those sessions. It is in no "use" collaborator's scope until some
+    // gadget binds it, which restarts then. A vendorless spec (aiModel/agentSpawner) is in nobody's
+    // scope (#inScopeGatekeepers skips it), so it widens nothing.
     if (creationSpec && "vendorId" in creationSpec) {
-      this.#restartIfShared("Gadget restarted because a new connection was added.");
+      this.#restartIfShared("Gadget restarted because a new connection was added.", "build");
     }
 
     return new GatekeeperClientImpl<any>(this, id, facet);
@@ -5977,6 +5979,15 @@ class OverseerImpl implements AgentHooks {
   //   Without the delay their own removeCollaborator()/revokeShareLink() call might reject with a
   //   connection error even though it succeeded.
   //
+  // Why the second sync is sufficient, rather than merely a narrower window: the *input* gate is
+  // what makes it airtight. "While a storage operation is executing, no events shall be delivered
+  // to the object except for storage completion events" -- so no request can slip a mutation in
+  // between that sync starting and resolving, and there is deliberately no await between it
+  // resolving and the abort, so nothing can run there either. (The one documented opt-out is
+  // `allowConcurrency: true` on a read; nothing in this repo passes it. Keep it that way here.)
+  // The window the sync closes is the open one *before* it: the input gate is open across
+  // `scheduler.wait(100)`, which is exactly when a concurrent access mutation gets to write.
+  //
   // Concurrent triggers coalesce onto the first one's timer rather than racing several aborts;
   // whichever got there first names the reason, and they all resolve when it fires.
   scheduleAccessRestart(reason: string): Promise<void> {
@@ -5999,6 +6010,13 @@ class OverseerImpl implements AgentHooks {
   // collaborators: the owner is never an observer, so there is nobody to re-verify and no reason
   // to disturb the one session that exists.
   //
+  // `affectedRole` names whose scope the caller widened, since the two roles widen independently
+  // (#inScopeGatekeepers): a new connection enters every "build" collaborator's scope but no "use"
+  // collaborator's until some gadget binds it, and binding one enters "use" scope having been in
+  // "build" scope since it was created. A workspace shared only the other way therefore has nobody
+  // with new verification requirements, and severing its sessions would buy nothing. Omit it for a
+  // restart that isn't a widening at all (a failed re-verification severs regardless of role).
+  //
   // Fire-and-forget: the callers are synchronous (bindWorkpiece) or already past their last write,
   // and getSharingManager() is async, so failures are logged rather than left as an unhandled
   // rejection. Failing to restart is fail-open for the widened scope, hence the `error` level.
@@ -6006,9 +6024,11 @@ class OverseerImpl implements AgentHooks {
   // Note that ensureAmbientCapsules() calls addGatekeeper() from inside open(), so on a shared
   // workspace the first open after an ambient capsule appears bounces itself once; the capsule
   // exists by then, so the client's retry is clean.
-  #restartIfShared(reason: string): void {
+  #restartIfShared(reason: string, affectedRole?: CollaboratorRole): void {
     this.getSharingManager().then(sharing => {
-      if (sharing.listCollaborators().length === 0) return;
+      let affected = sharing.listCollaborators()
+          .filter(c => affectedRole === undefined || c.role === affectedRole);
+      if (affected.length === 0) return;
       return this.scheduleAccessRestart(reason);
     }).catch(error => {
       this.logger.error("failed to restart sessions after verification scope widened", {
@@ -9191,6 +9211,9 @@ class OverseerImpl implements AgentHooks {
       let rollback = returningObserver ? newlyAdded : new Set([...newlyAdded, ...invalidated]);
       await this.#removeObserverFromGatekeepers(observerId, [...rollback]);
 
+      // Only this open is denied. Sessions the collaborator already holds are left alone: they
+      // keep whatever access their own open verified until they next re-open, which is the
+      // lazy-revocation residual documented in docs/observers.md.
       throw err;
     }
 
