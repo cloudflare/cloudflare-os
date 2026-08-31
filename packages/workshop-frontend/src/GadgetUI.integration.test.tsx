@@ -144,7 +144,7 @@ function deferred<T>() {
 function dispatchIframeHandshake(iframe: HTMLIFrameElement, port: MessagePort) {
   window.dispatchEvent(new MessageEvent('message', {
     data: 'handshake',
-    origin: 'null',
+    origin: window.location.origin,
     source: iframe.contentWindow,
     ports: [port],
   }))
@@ -186,6 +186,18 @@ describe('GadgetUI RPC recovery', () => {
     expect(container.querySelector('iframe')!.srcdoc).toContain(
       '<meta name="viewport" content="width=device-width, initial-scale=1">',
     )
+  })
+
+  it('grants the gadget iframe microphone access from the inherited origin', async () => {
+    const gadget = fakeGadget('recorder', 'navigator.mediaDevices.getUserMedia({ audio: true })')
+    await act(async () => {
+      root.render(<GadgetUI gadget={gadget.stub} height="100px" />)
+    })
+
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    const iframe = container.querySelector('iframe')!
+    expect(iframe.getAttribute('allow')).toBe('microphone')
+    expect(iframe.getAttribute('sandbox')?.split(/\s+/)).toContain('allow-same-origin')
   })
 
   it('keeps the iframe while redirecting calls to the replacement gadget client', async () => {

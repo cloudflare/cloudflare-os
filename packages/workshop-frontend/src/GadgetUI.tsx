@@ -328,12 +328,11 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     let cancelled = false
 
     const handleMessage = async (event: MessageEvent) => {
-      // Only handle messages from our iframe. As an extra level of paranoia, also make sure it's
-      // from the null origin, just in case somehow the frame managed to browse away (though that
-      // should be blocked). Yes, the null origin is identified by the string value "null", not the
-      // JS `null`.
+      // Only handle messages from our iframe. `allow-same-origin` gives the srcDoc frame the
+      // workshop's origin so browser media APIs can identify it and prompt for microphone access.
+      // Also verify that inherited origin in case the frame somehow managed to browse away.
       if (event.source !== iframeRef.current?.contentWindow ||
-          event.origin !== "null") {
+          event.origin !== window.location.origin) {
         return
       }
 
@@ -500,7 +499,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           height: '100%',
           border: 'none'
         }}
-        sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+        allow="microphone"
+        sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
         title="Gadget UI"
       />
     </div>
