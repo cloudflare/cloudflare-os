@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useState, useEffect, useRef } from 'react'
 import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import { useAuthenticatedApi } from '../AuthContext'
@@ -6,9 +6,12 @@ import {
   AiChatAuthorInfo,
   AiGatewayInfo,
   AiModelProvider,
+  type GatekeeperVendorInfo,
   SUGGESTED_MODELS,
 } from '@gadgets/workshop-shared/api'
 import {
+  ArrowRight,
+  CheckCircle,
   Plus,
   Trash,
   Lightning,
@@ -18,6 +21,12 @@ import {
 import AddModelModal from '../AddModelModal'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from '../components/menuStyles'
+import { AccountsSubscriberAdapter } from '../accountsSubscriber'
+import {
+  collectManagedModels,
+  managedModelMatches,
+  type ManagedModelEntry,
+} from '../managedAiProviders'
 
 export const Route = createFileRoute('/providers')({ component: ProvidersPage })
 
@@ -118,6 +127,52 @@ function ModelRow({
   )
 }
 
+function ManagedModelRow({
+  entry,
+  onActivate,
+}: {
+  entry: ManagedModelEntry
+  onActivate: () => void
+}) {
+  const ready = entry.connected && entry.credentialsValid
+  return (
+    <button
+      type="button"
+      onClick={onActivate}
+      title={ready ? `Start a workspace with /${entry.model.command}` : `Connect ${entry.vendor.displayName}`}
+      className="group flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors duration-150 ease-out hover:bg-kumo-tint"
+    >
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-kumo-fill text-[12px] font-medium text-kumo-subtle">
+        {entry.model.displayName[0]?.toUpperCase()}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="truncate text-sm font-medium tracking-[-0.25px] text-kumo-default">
+            {entry.model.displayName}
+          </span>
+          <span className="shrink-0 rounded-full bg-kumo-tint px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.4px] text-kumo-subtle">
+            managed tool
+          </span>
+          <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] font-medium ${ready ? 'text-kumo-success' : 'text-kumo-subtle'}`}>
+            {ready && <CheckCircle size={12} weight="fill" />}
+            {ready ? 'Connected' : 'Connect required'}
+          </span>
+        </div>
+        <span className="mt-0.5 block truncate font-mono text-[12px] tracking-[-0.1px] text-kumo-inactive">
+          {entry.model.id} · /{entry.model.command} · {entry.vendor.displayName}
+        </span>
+        <span className="mt-0.5 block truncate text-[12px] tracking-[-0.1px] text-kumo-subtle">
+          {entry.model.description}
+        </span>
+      </div>
+      <span className="inline-flex shrink-0 items-center gap-1 text-[12px] font-medium text-kumo-brand">
+        {ready ? 'Use' : 'Connect'}
+        <ArrowRight size={13} weight="bold" />
+      </span>
+    </button>
+  )
+}
+
 // ─── notice ────────────────────────────────────────────────────────────────────
 
 function Notice({ children }: { children: React.ReactNode }) {
@@ -134,8 +189,13 @@ function ProvidersPage() {
   useDocumentTitle('AI Providers')
 
   const { authenticatedApi } = useAuthenticatedApi()
+  const navigate = useNavigate()
   const toasts = useKumoToastManager()
   const [models, setModels] = useState<AiChatAuthorInfo[]>([])
+  const [managedVendors, setManagedVendors] = useState<GatekeeperVendorInfo[]>([])
+  const [connectedAccounts, setConnectedAccounts] = useState<
+    Map<number, { vendorId: string; credentialsValid: boolean }>
+  >(new Map())
   const [quickModel, setQuickModel] = useState<string | null>(null)
   const [aiConfig, setAiConfig] = useState<AiGatewayInfo | null>(null)
   const [search, setSearch] = useState('')
@@ -147,14 +207,16 @@ function ProvidersPage() {
   const fetchAll = async () => {
     setLoadError(false)
     try {
-      const [modelList, qm, cfg] = await Promise.all([
+      const [modelList, qm, cfg, vendors] = await Promise.all([
         authenticatedApi.listModels(),
         authenticatedApi.getQuickModel(),
         authenticatedApi.getAiConfig(),
+        authenticatedApi.listGatekeeperVendors(),
       ])
       setModels(modelList)
       setQuickModel(qm)
       setAiConfig(cfg)
+      setManagedVendors(vendors.filter((vendor) => vendor.description.managedAiModels?.length))
     } catch (err) {
       console.error('Failed to load providers:', err)
       setLoadError(true)
@@ -164,6 +226,34 @@ function ProvidersPage() {
   }
 
   useEffect(() => { fetchAll() }, [authenticatedApi])
+
+  useEffect(() => {
+    let cancelled = false
+    const subscriber = new AccountsSubscriberAdapter({
+      add({ id, vendorId, credentialsValid }) {
+        if (cancelled) return
+        setConnectedAccounts((previous) => {
+          const next = new Map(previous)
+          next.set(id, { vendorId, credentialsValid })
+          return next
+        })
+      },
+      remove(id) {
+        if (cancelled) return
+        setConnectedAccounts((previous) => {
+          const next = new Map(previous)
+          next.delete(id)
+          return next
+        })
+      },
+    })
+    const subscription = authenticatedApi.subscribeConnectedAccounts(subscriber)
+    subscription.catch((err) => console.error('Failed to load managed AI tool connections:', err))
+    return () => {
+      cancelled = true
+      subscription[Symbol.dispose]()
+    }
+  }, [authenticatedApi])
 
   const gatewayMode = aiConfig?.enabled === true
 
@@ -211,6 +301,9 @@ function ProvidersPage() {
     const q = search.toLowerCase()
     return m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)
   })
+  const managedModels = collectManagedModels(managedVendors, connectedAccounts.values())
+  const filteredManaged = managedModels.filter((entry) => managedModelMatches(entry, search))
+  const hasProviders = models.length > 0 || managedModels.length > 0
 
   return (
     <div className="mx-auto flex h-full w-full max-w-4xl flex-col px-3 sm:px-10">
@@ -218,7 +311,7 @@ function ProvidersPage() {
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">AI providers</h1>
           <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-            Configure the AI models available to your workspaces.
+            Configure chat models and discover managed AI tools available to your workspaces.
           </p>
         </div>
         <button type="button" onClick={() => setSheetOpen(true)} className={`${PRIMARY_BTN} h-11 justify-center text-[14px] sm:h-9 sm:text-[13px]`}>
@@ -228,7 +321,7 @@ function ProvidersPage() {
       </header>
 
       {/* Search — hidden when the user has no models */}
-      {!loading && !loadError && models.length > 0 && (
+      {!loading && !loadError && hasProviders && (
         <div className="mb-3 px-3">
           <div className="relative">
             <MagnifyingGlass size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-kumo-inactive" />
@@ -245,7 +338,7 @@ function ProvidersPage() {
 
       <div className="chat-panel flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-1 pb-16">
         {/* Notices */}
-        {(gatewayMode || (!gatewayMode && models.length > 0)) && !loading && !loadError && (
+        {(gatewayMode || (!gatewayMode && models.length > 0) || managedModels.length > 0) && !loading && !loadError && (
           <div className="flex flex-col gap-2.5 px-3 pb-2">
             {gatewayMode && (
               <Notice>
@@ -270,6 +363,17 @@ function ProvidersPage() {
                 </span>
               </Notice>
             )}
+
+            {managedModels.length > 0 && (
+              <Notice>
+                <Lightning size={15} className="mt-px shrink-0 text-kumo-brand" />
+                <span>
+                  <strong className="font-medium text-kumo-default">Managed AI tools:</strong>{' '}
+                  run explicitly from a workspace using the command shown on each row. They do not
+                  replace your chat or quick model and do not use AI Gateway billing.
+                </span>
+              </Notice>
+            )}
           </div>
         )}
 
@@ -287,7 +391,7 @@ function ProvidersPage() {
               Try again
             </button>
           </div>
-        ) : models.length === 0 ? (
+        ) : !hasProviders ? (
           <div className="flex flex-col items-center gap-3 px-3 py-16 text-center">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-kumo-fill text-kumo-subtle">
               <Lightning size={18} />
@@ -303,23 +407,45 @@ function ProvidersPage() {
               Add your first provider
             </button>
           </div>
-        ) : filtered.length === 0 ? (
+        ) : filtered.length === 0 && filteredManaged.length === 0 ? (
           <div className="py-12 text-center text-sm text-kumo-inactive">No providers found</div>
         ) : (
-          filtered.map((model) => (
-            <div
-              key={model.id}
-              className={deletingId === model.id ? 'pointer-events-none opacity-50' : ''}
-            >
-              <ModelRow
-                model={model}
-                isQuick={quickModel === model.id}
-                isBuiltIn={isBuiltIn(model.id)}
-                onDelete={() => handleDelete(model)}
-                onSetQuick={() => handleSetQuick(model.id)}
-              />
-            </div>
-          ))
+          <>
+            {filtered.map((model) => (
+              <div
+                key={model.id}
+                className={deletingId === model.id ? 'pointer-events-none opacity-50' : ''}
+              >
+                <ModelRow
+                  model={model}
+                  isQuick={quickModel === model.id}
+                  isBuiltIn={isBuiltIn(model.id)}
+                  onDelete={() => handleDelete(model)}
+                  onSetQuick={() => handleSetQuick(model.id)}
+                />
+              </div>
+            ))}
+            {filteredManaged.length > 0 && (
+              <div className="mt-3 border-t border-kumo-line pt-3">
+                <p className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.4px] text-kumo-inactive">
+                  Managed AI tools
+                </p>
+                {filteredManaged.map((entry) => (
+                  <ManagedModelRow
+                    key={`${entry.vendorId}:${entry.model.id}`}
+                    entry={entry}
+                    onActivate={() => {
+                      if (!entry.connected || !entry.credentialsValid) {
+                        navigate({ to: '/gatekeepers' })
+                        return
+                      }
+                      navigate({ to: '/', search: { prompt: `/${entry.model.command} ` } })
+                    }}
+                  />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
 

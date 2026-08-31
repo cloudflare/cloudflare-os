@@ -34,6 +34,25 @@ export type AvatarImage = {
   url: string;
 }
 
+/**
+ * One model-like tool a Gatekeeper makes available through an explicit slash
+ * command. These entries are discovery metadata, not Workshop chat models:
+ * they cannot become the quick/default model and do not enter AI Gateway.
+ */
+export type ManagedAiModelDescription = {
+  /** Provider-native model identifier shown to users. */
+  id: string;
+
+  /** Human-readable model name. */
+  displayName: string;
+
+  /** Slash command name without the leading slash. */
+  command: string;
+
+  /** Short explanation of the model's intended use. */
+  description: string;
+}
+
 /** Describes a connected GatekeeperVendor, for display purposes. */
 export type VendorDescription = {
   /** Human-readable name of the service, e.g. "Google", "GitHub", etc. */
@@ -61,6 +80,13 @@ export type VendorDescription = {
    * Build agents that triage email, draft and edit documents, or run analytics queries on your data."
    */
   description?: string;
+
+  /**
+   * Model-like tools this Gatekeeper exposes through slash commands. The
+   * Providers page renders them as managed tools and directs users through the
+   * Gatekeeper connection; it never treats them as selectable chat models.
+   */
+  managedAiModels?: ManagedAiModelDescription[];
 
   /**
    * True if this vendor can authenticate a user for sign-in: i.e. its connect flow yields a
