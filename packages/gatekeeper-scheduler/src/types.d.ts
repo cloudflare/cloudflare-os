@@ -305,7 +305,7 @@ export interface ScheduledTaskHook {
  *   callback,
  *   { title: "Daily brief", description: "Prepare the morning activity summary." },
  * );
- * return scheduleId;
+ * console.log("Schedule registered:", scheduleId);
  */
 export interface ScheduleSession {
   /**

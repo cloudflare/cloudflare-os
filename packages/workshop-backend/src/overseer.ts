@@ -7261,7 +7261,7 @@ class OverseerImpl implements AgentHooks {
         }).join(" ");
       }).join("\n");
 
-      if (error) {
+      if (error !== undefined) {
         log += `\n\nUncaught exception: ${error}`;
       } else if (log === "") {
         log = "(function succeeded with no output)";
