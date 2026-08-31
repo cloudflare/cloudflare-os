@@ -242,6 +242,7 @@ export type GmailDraftState = GmailNormalizedRecipients & {
   logicalId: string;
   from: string;
   replyTo: string[];
+  date?: string;
   providerId?: string;
   messageId?: string;
   threadId?: string;
@@ -365,6 +366,8 @@ export function overlayGmailDraft(
 
 const MUTABLE_SYSTEM_LABELS = new Set<GmailMutableSystemLabel>([
   "INBOX", "TRASH", "SPAM", "UNREAD", "STARRED", "IMPORTANT",
+  "CATEGORY_PERSONAL", "CATEGORY_SOCIAL", "CATEGORY_PROMOTIONS",
+  "CATEGORY_UPDATES", "CATEGORY_FORUMS",
 ]);
 
 export type CanonicalMutableLabel = GmailCustomLabel | {
@@ -467,11 +470,16 @@ function normalizeDraftBody(value: string): string {
   return value.replace(/\r\n|\r|\n/g, "\r\n");
 }
 
-function canonicalMailbox(value: string): string {
-  return emailRecipientToAddress(value).address.toLowerCase();
+function canonicalMailbox(value: string): {address: string; name: string | null} {
+  const mailbox = emailRecipientToAddress(value);
+  const name = mailbox.name?.normalize("NFC").replace(/\s+/g, " ").trim();
+  return {
+    address: mailbox.address.toLowerCase(),
+    name: name || null,
+  };
 }
 
-function canonicalMailboxes(values: readonly string[]): string[] {
+function canonicalMailboxes(values: readonly string[]): Array<ReturnType<typeof canonicalMailbox>> {
   return values.map(canonicalMailbox);
 }
 
@@ -491,6 +499,7 @@ export async function gmailDraftFingerprint(
     to: canonicalMailboxes(draft.to),
     cc: canonicalMailboxes(draft.cc),
     bcc: canonicalMailboxes(draft.bcc),
+    date: draft.date ?? null,
     subject: draft.subject,
     text: normalizeDraftBody(draft.text),
     html: draft.html === undefined ? null : normalizeDraftBody(draft.html),
@@ -514,6 +523,7 @@ export async function gmailDraftStateFingerprint(draft: GmailDraftState): Promis
     to: canonicalMailboxes(draft.to),
     cc: canonicalMailboxes(draft.cc),
     bcc: canonicalMailboxes(draft.bcc),
+    date: draft.date ?? null,
     subject: draft.subject,
     text: normalizeDraftBody(draft.text),
     html: draft.html === undefined ? null : normalizeDraftBody(draft.html),

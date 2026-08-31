@@ -11,6 +11,7 @@ import {
 import {GmailApi, parseGmailDraft} from "../../src/google-api";
 
 const testEnv = env as unknown as {TestHooks: DurableObjectNamespace};
+const TEST_DRAFT_DATE = "Thu, 1 Jan 1970 00:00:00 +0000";
 
 type SnapshotTestStore = {
   capture(bytes: Uint8Array): Promise<GmailForwardSnapshotReference>;
@@ -173,11 +174,21 @@ describe("Gmail draft overlays", () => {
   });
 
   it("uses the same semantic fingerprint before and after a provider MIME round trip", async () => {
-    const message = new GmailApi("me@example.com", async () => "token").buildSendRaw(
-      ["to@example.com"], "Subject", "Body", {html: "<p>Body</p>"},
-      "<draft@gadgets.invalid>");
+    const message = new GmailApi("me@example.com", async () => "token").buildOutbound({
+      from: "me@example.com",
+      to: ["to@example.com"],
+      cc: [],
+      bcc: [],
+      date: TEST_DRAFT_DATE,
+      subject: "Subject",
+      text: "Body",
+      html: "<p>Body</p>",
+      messageId: "<draft@gadgets.invalid>",
+      attachments: [],
+    });
     const state = draft({
       logicalId: "d",
+      date: TEST_DRAFT_DATE,
       attachments: [],
       rfcMessageId: "<draft@gadgets.invalid>",
     });
@@ -188,31 +199,53 @@ describe("Gmail draft overlays", () => {
       .toBe(await gmailDraftStateFingerprint(state));
   });
 
-  it("ignores provider display-name formatting but binds canonical mailbox addresses", async () => {
+  it("includes the Date header in raw and simulated draft fingerprints", async () => {
+    const date = TEST_DRAFT_DATE;
+    const state = draft({date, html: undefined, attachments: []});
+    const parsed = {
+      from: state.from,
+      replyTo: state.replyTo,
+      to: state.to,
+      cc: state.cc,
+      bcc: state.bcc,
+      date,
+      subject: state.subject,
+      text: state.text,
+      attachments: [],
+    };
+    expect(await gmailDraftFingerprint(parsed)).toBe(await gmailDraftStateFingerprint(state));
+    expect(await gmailDraftFingerprint({...parsed, date: "Fri, 2 Jan 1970 00:00:00 +0000"}))
+      .not.toBe(await gmailDraftFingerprint(parsed));
+    expect(await gmailDraftStateFingerprint({
+      ...state, date: "Fri, 2 Jan 1970 00:00:00 +0000",
+    })).not.toBe(await gmailDraftStateFingerprint(state));
+  });
+
+  it("normalizes display-name formatting but fingerprints visible name changes", async () => {
     const state = draft({
       logicalId: "d",
-      from: "me@example.com",
-      replyTo: ["reply@example.com"],
-      to: ["to@example.com"],
-      cc: ["cc@example.com"],
-      bcc: ["bcc@example.com"],
+      from: "Mailbox Owner <me@example.com>",
+      replyTo: ["Replies <reply@example.com>"],
+      to: ["Provider Name <to@example.com>"],
+      cc: ["Changed Name <cc@example.com>"],
+      bcc: ["Hidden <bcc@example.com>"],
       html: undefined,
       attachments: [],
       rfcMessageId: "<draft@gadgets.invalid>",
     });
     const parsed = {
-      from: "Mailbox Owner <ME@example.com>",
-      replyTo: ["Replies <reply@example.com>"],
-      to: ["Provider Name <to@example.com>"],
-      cc: ["Changed Name <CC@example.com>"],
-      bcc: ["Hidden <bcc@example.com>"],
+      from: '"Mailbox  Owner" <ME@example.com>',
+      replyTo: ['"Replies" <reply@example.com>'],
+      to: ['"Provider Name" <to@example.com>'],
+      cc: ['"Changed Name" <CC@example.com>'],
+      bcc: ['"Hidden" <bcc@example.com>'],
       subject: state.subject,
       text: state.text,
       messageId: state.rfcMessageId,
       attachments: [],
     };
     expect(await gmailDraftFingerprint(parsed)).toBe(await gmailDraftStateFingerprint(state));
-    expect(await gmailDraftFingerprint({...parsed, to: ["Other <other@example.com>"]}))
+    expect(await gmailDraftFingerprint({...parsed, to: ["Other Name <to@example.com>"]}))
       .not.toBe(await gmailDraftStateFingerprint(state));
   });
 
@@ -229,10 +262,20 @@ describe("Gmail draft overlays", () => {
   it.each(["line one\nline two", "line one\r\nline two", "line one\rline two", "trailing\n"])(
     "keeps draft drift fingerprints stable across MIME newline normalization: %j",
     async text => {
-      const message = new GmailApi("me@example.com", async () => "token").buildSendRaw(
-        ["to@example.com"], "Subject", text, {}, "<draft@gadgets.invalid>");
+      const message = new GmailApi("me@example.com", async () => "token").buildOutbound({
+        from: "me@example.com",
+        to: ["to@example.com"],
+        cc: [],
+        bcc: [],
+        date: TEST_DRAFT_DATE,
+        subject: "Subject",
+        text,
+        messageId: "<draft@gadgets.invalid>",
+        attachments: [],
+      });
       const state = draft({
         logicalId: "d",
+        date: TEST_DRAFT_DATE,
         text,
         html: undefined,
         attachments: [],
@@ -252,6 +295,7 @@ describe("Gmail draft overlays", () => {
       to: [],
       cc: [],
       bcc: [],
+      date: TEST_DRAFT_DATE,
       subject: "",
       text: "",
       messageId: "<draft@gadgets.invalid>",
@@ -262,6 +306,7 @@ describe("Gmail draft overlays", () => {
     });
     expect(await gmailDraftFingerprint(parsed, "t")).toBe(await gmailDraftStateFingerprint(draft({
       logicalId: "d",
+      date: TEST_DRAFT_DATE,
       to: [],
       subject: "",
       text: "",
@@ -280,6 +325,7 @@ describe("Gmail draft overlays", () => {
       to: ["to@example.com"],
       cc: [],
       bcc: [],
+      date: TEST_DRAFT_DATE,
       subject: "Subject",
       text: "Body",
       messageId: "<draft@gadgets.invalid>",
@@ -296,6 +342,7 @@ describe("Gmail draft overlays", () => {
     });
     expect(await gmailDraftFingerprint(parsed, "t")).toBe(await gmailDraftStateFingerprint(draft({
       logicalId: "d",
+      date: TEST_DRAFT_DATE,
       html: undefined,
       rfcMessageId: "<draft@gadgets.invalid>",
       attachments: [{
@@ -399,6 +446,7 @@ describe("Gmail forward snapshot storage", () => {
 describe("Gmail label state and canonicalization", () => {
   const provider = [
     {id: "INBOX", name: "INBOX", type: "system" as const},
+    {id: "CATEGORY_SOCIAL", name: "CATEGORY_SOCIAL", type: "system" as const},
     {id: "Label_1", name: "Real name", type: "user" as const},
   ];
 
@@ -415,6 +463,12 @@ describe("Gmail label state and canonicalization", () => {
       {id: "SENT", name: "SENT", type: "system"}, [
         ...provider, {id: "SENT", name: "SENT", type: "system" as const},
       ], [])).toThrow(/not mutable/);
+  });
+
+  it("accepts manually applicable category labels", () => {
+    expect(canonicalizeGmailMutableLabel(
+      {id: "CATEGORY_SOCIAL", name: "CATEGORY_SOCIAL", type: "system"}, provider, []))
+      .toEqual({id: "CATEGORY_SOCIAL", name: "CATEGORY_SOCIAL", type: "system"});
   });
 
   it("accepts only this binding's active provisional labels", () => {

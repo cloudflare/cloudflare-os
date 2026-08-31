@@ -370,10 +370,18 @@ export interface GmailThread {
   /** Remove the star from the messages available through this capability. */
   unstar(): Promise<void>;
 
-  /** Apply a mutable label returned by this binding to the available messages. */
+  /**
+   * Apply a mutable label returned by this binding to the available messages.
+   * Use {@link trash}, {@link markUnread}, or {@link star} instead of applying
+   * the equivalent built-in label.
+   */
   applyLabel(label: GmailMutableLabel): Promise<void>;
 
-  /** Remove a mutable label returned by this binding from the available messages. */
+  /**
+   * Remove a mutable label returned by this binding from the available messages.
+   * Use {@link archive}, {@link markRead}, or {@link unstar} instead of removing
+   * the equivalent built-in label.
+   */
   removeLabel(label: GmailMutableLabel): Promise<void>;
 }
 
@@ -464,10 +472,18 @@ export interface GmailMessage {
   /** Remove the star from this message. */
   unstar(): Promise<void>;
 
-  /** Apply a mutable label returned by this binding to this message. */
+  /**
+   * Apply a mutable label returned by this binding to this message. Use
+   * {@link trash}, {@link markUnread}, or {@link star} instead of applying the
+   * equivalent built-in label.
+   */
   applyLabel(label: GmailMutableLabel): Promise<void>;
 
-  /** Remove a mutable label returned by this binding from this message. */
+  /**
+   * Remove a mutable label returned by this binding from this message. Use
+   * {@link archive}, {@link markRead}, or {@link unstar} instead of removing the
+   * equivalent built-in label.
+   */
   removeLabel(label: GmailMutableLabel): Promise<void>;
 }
 
@@ -526,7 +542,9 @@ export type GmailSystemLabel =
 
 /** System labels that callers can add or remove from messages. */
 export type GmailMutableSystemLabel =
-  | "INBOX" | "TRASH" | "SPAM" | "UNREAD" | "STARRED" | "IMPORTANT";
+  | "INBOX" | "TRASH" | "SPAM" | "UNREAD" | "STARRED" | "IMPORTANT"
+  | "CATEGORY_PERSONAL" | "CATEGORY_SOCIAL" | "CATEGORY_PROMOTIONS"
+  | "CATEGORY_UPDATES" | "CATEGORY_FORUMS";
 
 /** A mutable Gmail system label. */
 export type GmailMutableSystemLabelInfo = {

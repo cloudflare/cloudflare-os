@@ -4,7 +4,8 @@ import {
   enumerateGmailAttachments, extractRfc822Attachments, gmailMessageIdQueryValue, GmailApi,
   GmailApiError,
   MAX_GMAIL_ATTACHMENT_BYTES,
-  normalizeAggregateRecipients, parseGmailDraft, parseGmailPayloadContent, parseMimeMessage,
+  normalizeAggregateRecipients, parseGmailDraft, parseGmailDraftSnapshot, parseGmailPayloadContent,
+  parseMimeMessage, type GmailPayloadPart,
 } from "../src/google-api";
 import {containsBytes} from "./gmail-test-utils";
 
@@ -16,6 +17,17 @@ function encodeRawEmail(value: string): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+function encodeDraft(headers: string[], body: string): string {
+  return encodeRawEmail([
+    "From: me@example.com",
+    "To: to@example.com",
+    "Subject: MIME draft",
+    ...headers,
+    "",
+    body,
+  ].join("\r\n"));
 }
 
 function stubFetch(responses: Response[]) {
@@ -256,6 +268,60 @@ describe("Gmail recipient and MIME construction", () => {
     })).toThrow(/Invalid References/);
   });
 
+  it("re-budgets References after appending the parent Message-ID", async () => {
+    const references = Array.from({length: 19}, (_, index) =>
+      `<${String(index).padStart(2, "0")}${"a".repeat(190)}@example.com>`);
+    const parentId = `<${"p".repeat(190)}@example.com>`;
+    const source = buildEncodedEmail({
+      from: "sender@example.com",
+      to: ["me@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Long References",
+      text: "Source",
+      messageId: parentId,
+      references: references.join(" "),
+      attachments: [],
+    });
+
+    const reply = await api().buildReplyRaw({
+      id: "m1", threadId: "t1", internalDate: "1", raw: source,
+    }, "Reply", false);
+
+    expect(new TextEncoder().encode(reply.references).byteLength).toBeLessThanOrEqual(4096);
+    expect(reply.references?.replace(/\r\n[ \t]+/g, " ").split(/\s+/).at(-1)).toBe(parentId);
+    expect(reply.references).not.toContain(references[1]);
+  });
+
+  it("chunks encoded display names in every emitted address header", async () => {
+    const name = "\u00e9".repeat(100);
+    const message = buildEncodedEmail({
+      from: `${name} <from@example.com>`,
+      replyTo: [`${name} <reply@example.com>`],
+      to: [`${name} <to@example.com>`],
+      cc: [`${name} <cc@example.com>`],
+      bcc: [`${name} <bcc@example.com>`],
+      subject: "Address names",
+      text: "Body",
+      messageId: "<addresses@example.com>",
+      attachments: [],
+    });
+    const raw = new TextDecoder().decode(decodeBase64UrlToBytes(message));
+    const headerBlock = raw.slice(0, raw.indexOf("\r\n\r\n"));
+    const encodedWords = headerBlock.match(/=\?utf-8\?B\?[^?]*\?=/gi) ?? [];
+    expect(encodedWords.length).toBeGreaterThan(5);
+    expect(encodedWords.every(word => word.length <= 75)).toBe(true);
+
+    const parsed = await parseMimeMessage(message);
+    expect([
+      parsed.from?.name,
+      parsed.replyTo?.[0]?.name,
+      parsed.to?.[0]?.name,
+      parsed.cc?.[0]?.name,
+      parsed.bcc?.[0]?.name,
+    ]).toEqual(Array(5).fill(name));
+  });
+
   it("round-trips attachment filenames and canonicalizes Content-ID", async () => {
     const message = api().buildOutbound({
       from: "me@example.com",
@@ -307,6 +373,171 @@ describe("Gmail recipient and MIME construction", () => {
       id: "draft", threadId: "thread", internalDate: "1", raw: rebuilt.raw,
     });
     expect(reparsed.attachments[0].contentType).toBe(contentType);
+  });
+
+  it.each(["7bit", "8bit"])(
+    "preserves exact CRLF octets in ordinary unencoded %s attachments", async transferEncoding => {
+      const boundary = "exact-octets-boundary";
+      const raw = [
+        "From: me@example.com",
+        "To: to@example.com",
+        "Subject: Exact attachment",
+        `Content-Type: multipart/mixed; boundary=${boundary}`,
+        "",
+        `--${boundary}`,
+        "Content-Type: text/plain",
+        "",
+        "Body",
+        `--${boundary}`,
+        "Content-Type: application/octet-stream",
+        "Content-Disposition: attachment; filename=exact.bin",
+        `Content-Transfer-Encoding: ${transferEncoding} (source mechanism)`,
+        "",
+        "first line",
+        "second line",
+        `--${boundary}--`,
+        "",
+      ].join("\r\n");
+      const parsed = await parseGmailDraft({
+        id: "draft", threadId: "thread", internalDate: "1", raw: encodeRawEmail(raw),
+      });
+      expect(atob(parsed.attachments[0].data.replace(/\s/g, "")))
+        .toBe("first line\r\nsecond line");
+
+      const rebuilt = api().buildOutbound({
+        ...parsed, from: parsed.from!, messageId: "<exact@example.com>",
+      });
+      const reparsed = await parseGmailDraft({
+        id: "draft", threadId: "thread", internalDate: "1", raw: rebuilt.raw,
+      });
+      expect(atob(reparsed.attachments[0].data.replace(/\s/g, "")))
+        .toBe("first line\r\nsecond line");
+    });
+
+  it("rejects unknown draft transfer encodings but accepts comments on supported encodings", async () => {
+    const encodedDraft = (transferEncoding: string, body: string) => encodeDraft([
+      "Content-Type: text/plain; charset=utf-8",
+      `Content-Transfer-Encoding: ${transferEncoding}`,
+    ], body);
+
+    await expect(parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1",
+      raw: encodedDraft("x-foo", "Body"),
+    })).rejects.toThrow(/unsupported MIME transfer encoding/);
+    await expect(parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1",
+      raw: encodedDraft("ba(comment)se64", btoa("Body")),
+    })).rejects.toThrow(/unsupported MIME transfer encoding/);
+    await expect(parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1",
+      raw: encodedDraft("base64 (source mechanism)", btoa("Body")),
+    })).resolves.toMatchObject({text: "Body"});
+  });
+
+  it("rejects unsupported semantic headers on child MIME entities", async () => {
+    const boundary = "semantic-child";
+    const raw = encodeDraft([
+      `Content-Type: multipart/mixed; boundary=${boundary}`,
+    ], [
+      `--${boundary}`,
+      "Content-Type: text/plain",
+      "Content-Location: https://example.com/body.txt",
+      "",
+      "Body",
+      `--${boundary}--`,
+      "",
+    ].join("\r\n"));
+
+    await expect(parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw,
+    })).rejects.toThrow(/unsupported.*Content-Location/i);
+  });
+
+  it("uses quoted-pair escapes in structured MIME parameters", () => {
+    const boundary = "quoted-pair-boundary";
+    const escapedFilename = String.raw`quote\"-slash\\.eml`;
+    const raw = [
+      `Content-Type: multipart/mixed; boundary=${boundary}`,
+      "",
+      `--${boundary}`,
+      "Content-Type: message/rfc822",
+      `Content-Disposition: attachment (source comment); filename="${escapedFilename}"`,
+      "Content-Transfer-Encoding: 7bit",
+      "",
+      "From: nested@example.com",
+      "",
+      "Nested body",
+      `--${boundary}--`,
+      "",
+    ].join("\r\n");
+
+    expect(extractRfc822Attachments(encodeRawEmail(raw))[0]).toMatchObject({
+      filename: 'quote"-slash\\.eml',
+      disposition: "attachment",
+    });
+  });
+
+  it("rejects an oversized message/rfc822 multipart boundary", () => {
+    const boundary = "b".repeat(71);
+    const raw = [
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}--`,
+      "",
+    ].join("\r\n");
+
+    expect(() => extractRfc822Attachments(encodeRawEmail(raw))).toThrow(/multipart boundary/);
+  });
+
+  it("rejects only filenames whose RFC2231 replacement exceeds a 998-byte line", () => {
+    const spec = {
+      from: "me@example.com",
+      to: ["to@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Filename budget",
+      text: "Body",
+      messageId: "<filename-budget@example.com>",
+      attachments: [{
+        filename: "a".repeat(945),
+        contentType: "application/octet-stream",
+        data: "YQ==",
+        description: "attachment",
+      }],
+    };
+
+    expect(() => buildEncodedEmail(spec)).not.toThrow();
+    spec.attachments[0].filename += "a";
+    expect(() => buildEncodedEmail(spec)).toThrow(/filename is too long/);
+  });
+
+  it("uses the earliest MIME header separator regardless of newline form", async () => {
+    const boundary = "mixed-newlines-boundary";
+    const raw = [
+      "From: me@example.com",
+      "To: to@example.com",
+      "Subject: Mixed newlines",
+      `Content-Type: multipart/mixed; boundary=${boundary}`,
+    ].join("\n") + "\n\n" + [
+      `--${boundary}`,
+      "Content-Type: text/plain",
+      "",
+      "Body",
+      `--${boundary}`,
+      "Content-Type: application/octet-stream; profile=exact",
+      "Content-Disposition: attachment; filename=data.bin",
+      "Content-Transfer-Encoding: base64",
+      "",
+      "YQ==",
+      `--${boundary}--`,
+      "",
+    ].join("\r\n");
+
+    const parsed = await parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw: encodeRawEmail(raw),
+    });
+    expect(parsed.attachments[0].contentType)
+      .toBe("application/octet-stream; profile=exact");
   });
 
   it("correlates attachments after a headerless default text body", async () => {
@@ -481,6 +712,40 @@ describe("Gmail recipient and MIME construction", () => {
       "text/calendar; method=REQUEST; charset=utf-8");
   });
 
+  it("preserves unencoded non-UTF-8 calendar bytes and charset", async () => {
+    const boundary = "latin1-calendar-boundary";
+    const calendar = "BEGIN:VCALENDAR\nSUMMARY:caf\xe9\nEND:VCALENDAR\n";
+    const raw = [
+      "From: me@example.com",
+      "To: to@example.com",
+      "Subject: Latin-1 invitation",
+      `Content-Type: multipart/mixed; boundary=${boundary}`,
+      "",
+      `--${boundary}`,
+      "Content-Type: text/plain",
+      "",
+      "Body",
+      `--${boundary}`,
+      "Content-Type: text/calendar; charset=iso-8859-1; method=REQUEST",
+      "Content-Disposition: attachment; filename=invite.ics",
+      "Content-Transfer-Encoding: 8bit (source mechanism)",
+      "",
+      calendar,
+      `--${boundary}--`,
+      "",
+    ].join("\r\n");
+    const encoded = btoa(raw).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+
+    const parsed = await parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw: encoded,
+    });
+    expect(parsed.attachments[0].contentType).toBe(
+      "text/calendar; charset=iso-8859-1; method=REQUEST");
+    expect([...atob(parsed.attachments[0].data.replace(/\s/g, ""))].map(char => char.charCodeAt(0)))
+      .toEqual([..."BEGIN:VCALENDAR\r\nSUMMARY:caf\xe9\r\nEND:VCALENDAR\r\n"]
+        .map(char => char.charCodeAt(0)));
+  });
+
   it("preserves calendar methods while forwarding", async () => {
     const source = api().buildOutbound({
       from: "source@example.com",
@@ -627,7 +892,7 @@ describe("Gmail recipient and MIME construction", () => {
         `--${boundary} \t`,
         "Content-Type: message/rfc822",
         "Content-Disposition: attachment; filename=forwarded.eml",
-        `Content-Transfer-Encoding: ${transferEncoding}`,
+        `Content-Transfer-Encoding: ${transferEncoding} (source mechanism)`,
         "",
         nested,
         `--${boundary}-- \t`,
@@ -649,7 +914,7 @@ describe("Gmail recipient and MIME construction", () => {
         "",
         `--${boundary}`,
         "Content-Type: message/rfc822",
-        `Content-Transfer-Encoding: ${transferEncoding}`,
+        `Content-Transfer-Encoding: ${transferEncoding} (source mechanism)`,
         "",
         transferEncoding === "base64"
           ? btoa("From: nested@example.com\r\n\r\nNested body")
@@ -763,6 +1028,138 @@ describe("Gmail attachment snapshots", () => {
     })).toEqual({});
   });
 
+  it("treats a CID text part selected by multipart/related start as the body", () => {
+    const payload = {
+      mimeType: "multipart/related",
+      headers: [{
+        name: "Content-Type", value: 'multipart/related; start="<body-root>"',
+      }],
+      parts: [{
+        partId: "1",
+        mimeType: "text/html",
+        headers: [
+          {name: "Content-Disposition", value: "inline"},
+          {name: "Content-ID", value: "<body-root>"},
+        ],
+        body: {data: "PGI-aGVsbG88L2I-"},
+      }, {
+        partId: "2",
+        mimeType: "text/plain",
+        headers: [
+          {name: "Content-Disposition", value: "inline"},
+          {name: "Content-ID", value: "<text-resource>"},
+        ],
+        body: {data: "cmVzb3VyY2U"},
+      }, {
+        partId: "3",
+        mimeType: "image/png",
+        headers: [
+          {name: "Content-Disposition", value: "inline"},
+          {name: "Content-ID", value: "<image-resource>"},
+        ],
+        body: {data: "AQID"},
+      }],
+    };
+
+    expect(parseGmailPayloadContent(payload)).toEqual({html: "<b>hello</b>"});
+    expect(enumerateGmailAttachments("m1", payload).map(item => item.info.contentId))
+      .toEqual(["text-resource", "image-resource"]);
+  });
+
+  it("traverses a multipart/alternative selected as the related root", async () => {
+    const payload = {
+      mimeType: "multipart/related",
+      headers: [{
+        name: "Content-Type", value: 'multipart/related; start="<alternative-root>"',
+      }],
+      parts: [{
+        mimeType: "multipart/alternative",
+        headers: [
+          {name: "Content-Disposition", value: "inline"},
+          {name: "Content-ID", value: "<alternative-root>"},
+        ],
+        parts: [{
+          mimeType: "TEXT/PLAIN",
+          headers: [{name: "Content-ID", value: "<plain-representation>"}],
+          body: {data: "cGxhaW4"},
+        }, {
+          mimeType: "Text/HTML",
+          headers: [{name: "Content-ID", value: "<html-representation>"}],
+          body: {data: "PGI-aHRtbDwvYj4"},
+        }, {
+          mimeType: "text/plain",
+          filename: "attached.txt",
+          headers: [
+            {name: "Content-Disposition", value: "attachment"},
+            {name: "Content-ID", value: "<attached-text>"},
+          ],
+          body: {data: "c2VjcmV0"},
+        }],
+      }, {
+        mimeType: "image/png",
+        headers: [{name: "Content-ID", value: "<resource>"}],
+        body: {data: "AQID"},
+      }],
+    };
+
+    expect(parseGmailPayloadContent(payload)).toEqual({text: "plain", html: "<b>html</b>"});
+    await expect(api().getMessageContent({
+      id: "m1", threadId: "t1", internalDate: "1", payload,
+    })).resolves.toEqual({text: "plain", html: "<b>html</b>"});
+    expect(enumerateGmailAttachments("m1", payload).map(item => item.info.contentId))
+      .toEqual(["attached-text", "resource"]);
+  });
+
+  it("resets related root selection inside nested multipart/related", () => {
+    const cidPart = (mimeType: string, contentId: string, data: string) => ({
+      mimeType,
+      headers: [{name: "Content-ID", value: `<${contentId}>`}],
+      body: {data},
+    });
+    const payload = {
+      mimeType: "multipart/related",
+      headers: [{
+        name: "Content-Type", value: 'multipart/related; start="<outer-root>"',
+      }],
+      parts: [{
+        mimeType: "multipart/related",
+        headers: [
+          {name: "Content-Type", value: 'multipart/related; start="<nested-root>"'},
+          {name: "Content-ID", value: "<outer-root>"},
+        ],
+        parts: [
+          cidPart("text/html", "nested-root", "PGI-Ym9keTwvYj4"),
+          cidPart("text/plain", "nested-resource", "cmVzb3VyY2U"),
+        ],
+      }, cidPart("image/png", "outer-resource", "AQID")],
+    };
+
+    expect(parseGmailPayloadContent(payload)).toEqual({html: "<b>body</b>"});
+    expect(enumerateGmailAttachments("m1", payload).map(item => item.info.contentId))
+      .toEqual(["nested-resource", "outer-resource"]);
+  });
+
+  it("bounds Gmail payload depth before recursive traversals", async () => {
+    let payload: GmailPayloadPart = {mimeType: "text/plain"};
+    for (let i = 0; i <= 256; i++) {
+      payload = {mimeType: "multipart/mixed", parts: [payload]};
+    }
+
+    expect(() => parseGmailPayloadContent(payload)).toThrow(/safe parsing limits/);
+    expect(() => enumerateGmailAttachments("m1", payload)).toThrow(/safe parsing limits/);
+    await expect(api().getMessageContent({
+      id: "m1", threadId: "t1", internalDate: "1", payload,
+    })).rejects.toThrow(/safe parsing limits/);
+  });
+
+  it("rejects a just-over-limit Gmail payload before enqueueing its children", () => {
+    const payload: GmailPayloadPart = {
+      mimeType: "multipart/mixed",
+      parts: Array.from({length: 2048}, () => ({mimeType: "application/octet-stream"})),
+    };
+    expect(() => parseGmailPayloadContent(payload)).toThrow(/safe parsing limits/);
+  });
+
   it("enumerates regular and inline MIME parts and marks oversized parts unreadable", () => {
     const snapshots = enumerateGmailAttachments("m1", {
       mimeType: "multipart/mixed",
@@ -837,6 +1234,25 @@ describe("Gmail attachment snapshots", () => {
     })).resolves.toEqual({text: "hello"});
   });
 
+  it("counts aggregate inline body.data bytes before decoding an oversized part", async () => {
+    const almostLimit = "AAAA".repeat(3_495_253);
+    await expect(api().getMessageContent({
+      id: "m1",
+      threadId: "t1",
+      internalDate: "1",
+      payload: {
+        mimeType: "multipart/alternative",
+        parts: [{
+          mimeType: "text/plain",
+          body: {data: almostLimit},
+        }, {
+          mimeType: "text/html",
+          body: {data: "AQI"},
+        }],
+      },
+    })).rejects.toThrow(/safe-read limit/);
+  });
+
   it("refuses oversized attachment content before making a fetch", async () => {
     await expect(api().getAttachmentContent({
       key: "1",
@@ -850,6 +1266,111 @@ describe("Gmail attachment snapshots", () => {
         readable: false,
       },
     })).rejects.toThrow(/safe limit/);
+  });
+});
+
+describe("Gmail draft semantic headers", () => {
+  const draftWithHeader = (header: string) => {
+    const base = buildEncodedEmail({
+      from: "me@example.com",
+      to: ["to@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Draft headers",
+      text: "Body",
+      messageId: "<draft-headers@example.com>",
+      attachments: [],
+    });
+    const raw = new TextDecoder().decode(decodeBase64UrlToBytes(base));
+    return encodeRawEmail(raw.replace("\r\n", `\r\n${header}\r\n`));
+  };
+
+  it.each([
+    "Sender: delegate@example.com",
+    "Auto-Submitted: auto-generated",
+    "Disposition-Notification-To: receipts@example.com",
+    "Priority: urgent",
+    "Importance: high",
+    "X-Priority: 1",
+    "Content-Disposition: inline",
+    "Content-ID: <top-level@example.com>",
+    "Content-Description: semantic description",
+  ])("fails closed instead of dropping %s", async header => {
+    await expect(parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw: draftWithHeader(header),
+    })).rejects.toThrow(/unsupported top-level header/);
+  });
+
+  it.each([
+    "From: another@example.com",
+    "To: another@example.com",
+    "Date: Thu, 1 Jan 1970 00:00:00 +0000",
+    "Subject: Another subject",
+    "Message-ID: <another@example.com>",
+  ])("rejects a duplicate modeled singleton: %s", async header => {
+    await expect(parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw: draftWithHeader(header),
+    })).rejects.toThrow(/duplicate modeled header/);
+  });
+
+  it("accepts ordinary transport, provider, and structural headers", async () => {
+    const raw = draftWithHeader([
+      "Received: by mx.example.com with SMTP id test",
+      "X-Google-Smtp-Source: provider-metadata",
+      "Authentication-Results: mx.example.com; none",
+    ].join("\r\n"));
+    await expect(parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw,
+    })).resolves.toMatchObject({subject: "Draft headers", text: "Body"});
+  });
+
+  it("permits reconstruction-only top-level headers in draft snapshots", () => {
+    expect(parseGmailDraftSnapshot({
+      id: "draft",
+      threadId: "thread",
+      internalDate: "1",
+      payload: {
+        mimeType: "text/plain",
+        headers: [
+          {name: "From", value: "me@example.com"},
+          {name: "Subject", value: "Snapshot"},
+          {name: "Content-Location", value: "https://example.com/body.txt"},
+        ],
+        body: {data: "Qm9keQ"},
+      },
+    })).toMatchObject({subject: "Snapshot", text: "Body"});
+  });
+
+  it("preserves a validated Date header and generates one when absent", async () => {
+    const date = "Thu, 1 Jan 1970 00:00:00 +0000";
+    const spec = {
+      from: "me@example.com",
+      to: ["to@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Dated draft",
+      text: "Body",
+      messageId: "<dated@example.com>",
+      attachments: [],
+    };
+    const parsed = await parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1",
+      raw: buildEncodedEmail({...spec, date}),
+    });
+    expect(parsed.date).toBe(date);
+
+    const rebuilt = await parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1",
+      raw: buildEncodedEmail({...parsed, from: parsed.from!, messageId: parsed.messageId!}),
+    });
+    expect(rebuilt.date).toBe(date);
+
+    const generated = await parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1",
+      raw: buildEncodedEmail(spec),
+    });
+    expect(Number.isFinite(new Date(generated.date!).valueOf())).toBe(true);
+    expect(() => buildEncodedEmail({...spec, date: "not a date"})).toThrow(/Date header/);
   });
 });
 

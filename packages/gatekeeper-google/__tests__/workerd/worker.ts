@@ -67,6 +67,10 @@ class TestApprovalQueue extends RpcTarget {
   #markPaused?: () => void;
   #release?: Promise<void>;
   #releasePaused?: () => void;
+  #pausedSubmission?: Promise<void>;
+  #markSubmissionPaused?: () => void;
+  #releaseSubmission?: Promise<void>;
+  #releasePausedSubmission?: () => void;
 
   constructor(rejection?: string) {
     super();
@@ -89,6 +93,14 @@ class TestApprovalQueue extends RpcTarget {
 
   async submitAction(actionId: number, description: unknown): Promise<void> {
     this.#submissions.push({actionId, description});
+    if (this.#pausedSubmission) {
+      this.#markSubmissionPaused?.();
+      await this.#releaseSubmission;
+      this.#pausedSubmission = undefined;
+      this.#markSubmissionPaused = undefined;
+      this.#releaseSubmission = undefined;
+      this.#releasePausedSubmission = undefined;
+    }
     if (this.#rejection) throw new Error(this.#rejection);
   }
 
@@ -111,6 +123,22 @@ class TestApprovalQueue extends RpcTarget {
   releasePausedObservation(): void {
     if (!this.#releasePaused) throw new Error("The test observation has not paused yet.");
     this.#releasePaused();
+  }
+
+  pauseActionSubmission(): void {
+    if (this.#pausedSubmission) throw new Error("A test action submission is already paused.");
+    this.#pausedSubmission = new Promise(resolve => { this.#markSubmissionPaused = resolve; });
+    this.#releaseSubmission = new Promise(resolve => { this.#releasePausedSubmission = resolve; });
+  }
+
+  waitForPausedActionSubmission(): Promise<void> {
+    if (!this.#pausedSubmission) throw new Error("No test action submission is configured to pause.");
+    return this.#pausedSubmission;
+  }
+
+  releasePausedActionSubmission(): void {
+    if (!this.#releasePausedSubmission) throw new Error("The test action submission has not paused yet.");
+    this.#releasePausedSubmission();
   }
 
   [Symbol.dispose](): void {}
@@ -212,6 +240,24 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     const queue = this.#queues.get(queueId);
     if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
     queue.releasePausedObservation();
+  }
+
+  pauseActionSubmission(queueId: string): void {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    queue.pauseActionSubmission();
+  }
+
+  waitForPausedActionSubmission(queueId: string): Promise<void> {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    return queue.waitForPausedActionSubmission();
+  }
+
+  releasePausedActionSubmission(queueId: string): void {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    queue.releasePausedActionSubmission();
   }
 
   async applyStorage(
@@ -349,6 +395,11 @@ testGmailPrototype.runTestOperation = async function(
     return await session.deleteLabel(id as never);
   case "message.getMetadata":
     return await withMessage(session, id as string, message => message.getMetadata());
+  case "message.getMetadataTwice":
+    return await withMessage(session, id as string, async message => ({
+      first: await message.getMetadata(),
+      second: await message.getMetadata(),
+    }));
   case "message.markReadAndRefresh":
     return await withMessage(session, id as string, async message => {
       const before = await message.getMetadata();
@@ -409,10 +460,20 @@ testGmailPrototype.runTestOperation = async function(
   }
   case "message.applyLabel":
     return await withMessage(session, id as string, message => message.applyLabel(value as never));
+  case "message.removeLabel":
+    return await withMessage(session, id as string, message => message.removeLabel(value as never));
   case "thread.getMetadata": {
     const thread = await session.getThread(id as string);
     try {
       return await thread.getMetadata();
+    } finally {
+      disposeRpc(thread);
+    }
+  }
+  case "thread.getMetadataTwice": {
+    const thread = await session.getThread(id as string);
+    try {
+      return {first: await thread.getMetadata(), second: await thread.getMetadata()};
     } finally {
       disposeRpc(thread);
     }
