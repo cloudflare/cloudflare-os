@@ -7263,6 +7263,8 @@ class OverseerImpl implements AgentHooks {
 
       if (error) {
         log += `\n\nUncaught exception: ${error}`;
+      } else if (log === "") {
+        log = "(function succeeded with no output)";
       }
 
       return log;

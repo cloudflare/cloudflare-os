@@ -280,9 +280,6 @@ export interface ScheduledTaskHook {
  * runs through the restored Gadget and does not need the Scheduler binding.
  *
  * Every successful registration call creates a distinct hook; registration is not idempotent.
- * Return or print the schedule ID so it appears in the `executeCode` output. Empty output is not
- * evidence that registration failed, and the disabled hook appearing in Connections confirms
- * success. Do not retry solely because no ID was printed.
  *
  * @example
  * // server.js
