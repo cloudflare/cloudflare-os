@@ -126,7 +126,7 @@ describe("useComposerAttachments", () => {
       ({ addFiles } = useComposerAttachments({
         getOverseer: () => overseer,
         modelId: "model-a",
-        onError: vi.fn(),
+        onError: vi.fn<(message: string) => void>(),
       }));
       return null;
     };
