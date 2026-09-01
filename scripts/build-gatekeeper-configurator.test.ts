@@ -518,7 +518,8 @@ describe("configurator task wiring", () => {
     assert.equal(
       manifest.scripts["test:run"],
       "vp run -F @gadgets/google-gatekeeper build:configurator && " +
-        "vitest run && vitest run -c vitest.worker.config.ts",
+        "vitest run && vitest run -c vitest.worker.config.ts && " +
+        "vitest run -c vitest.docs-worker.config.ts",
     );
 
     const config = await readFile("packages/gatekeeper-google/vite.config.ts", "utf8");
