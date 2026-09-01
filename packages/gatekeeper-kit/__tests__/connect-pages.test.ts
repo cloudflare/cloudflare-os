@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   connectMutationError,
+  connectNavigationError,
   errorPageHtml,
   escapeHtml,
   htmlResponse,
@@ -35,10 +36,37 @@ describe("connect pages", () => {
     expect(response.status).toBe(400);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
-    expect(response.headers.get("Content-Security-Policy")).toBe("frame-ancestors 'none'");
+    expect(response.headers.get("Content-Security-Policy"))
+      .toBe("form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
     expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(await response.text()).toBe("<p>hi</p>");
+  });
+});
+
+describe("connectNavigationError", () => {
+  const request = (site?: string) => new Request("https://workshop.example/connect", {
+    headers: site ? { "Sec-Fetch-Site": site } : undefined,
+  });
+
+  it("accepts only a navigation initiated by the Workshop origin", () => {
+    expect(connectNavigationError(request("same-origin"))).toBeUndefined();
+    for (const site of ["same-site", "cross-site", "none", undefined]) {
+      expect(connectNavigationError(request(site))).toBe("untrusted-navigation");
+    }
+    expect(connectNavigationError(new Request("https://workshop.example/connect", {
+      method: "POST",
+      headers: { "Sec-Fetch-Site": "same-origin" },
+    }))).toBe("untrusted-navigation");
+  });
+
+  it("accepts same-site navigation only on the loopback development origin", () => {
+    expect(connectNavigationError(new Request("http://localhost:8787/connect", {
+      headers: { "Sec-Fetch-Site": "same-site" },
+    }))).toBeUndefined();
+    expect(connectNavigationError(new Request("https://workshop.example/connect", {
+      headers: { "Sec-Fetch-Site": "same-site" },
+    }))).toBe("untrusted-navigation");
   });
 });
 

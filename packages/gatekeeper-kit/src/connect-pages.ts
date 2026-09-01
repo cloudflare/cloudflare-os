@@ -31,11 +31,20 @@ export function htmlResponse(body: string, status = 200): Response {
     headers: {
       "Cache-Control": "no-store",
       "Content-Type": "text/html; charset=utf-8",
-      "Content-Security-Policy": "frame-ancestors 'none'",
+      "Content-Security-Policy": "form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
       "Referrer-Policy": "no-referrer",
       "X-Content-Type-Options": "nosniff",
     },
   });
+}
+
+/** Refuse connect links not opened by the Workshop, with a localhost exception for Vite dev. */
+export function connectNavigationError(req: Request): "untrusted-navigation" | undefined {
+  const site = req.headers.get("sec-fetch-site");
+  const trustedSite = site === "same-origin" ||
+    (site === "same-site" && new URL(req.url).hostname === "localhost");
+  if (req.method !== "GET" || !trustedSite) return "untrusted-navigation";
+  return undefined;
 }
 
 /**
