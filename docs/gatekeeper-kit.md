@@ -4,13 +4,15 @@ This is the implementation plan for the gatekeeper kit: a workspace library that
 gatekeeper be written as a TypeScript spec plus service-specific sessions, instead of ~400–500
 lines of hand-copied plumbing.
 
-**Status.** Layer 1 (§4, the leaf modules) has landed, and its §4 sections are reconciled against
-the shipped signatures — where the two ever disagree, the code and its tests win. Layer 2 (§5, the
-assembly) and §7 steps 8–16 are still proposal: nothing consumes the kit yet, so no gatekeeper has
-been ported and none of §5's ergonomics have met a real consumer. Two things to read before writing
-either: §4.8's key-layout tables and port-time obligations, before pointing the journal at any
-existing gatekeeper's keys; and §5.6's credential-projection requirement, which is a capability
-boundary the whole corpus holds and the assembly could quietly drop.
+**Status.** Layer 1 (§4, the leaf modules) has landed and has been through a review pass against
+both corpora; its §4 sections are reconciled against the shipped signatures — where the two ever
+disagree, the code and its tests win. Layer 2 (§5, the assembly) and §7 steps 8–16 are still
+proposal: nothing consumes the kit yet, so no gatekeeper has been ported and none of §5's
+ergonomics have met a real consumer. Two things to read before writing either: §4.8's key-layout
+tables and port-time obligations, before pointing the journal at any existing gatekeeper's keys;
+and §5.6's credential-projection requirement, which is a capability boundary the whole corpus
+holds and the assembly could quietly drop. Findings that review raised and *declined* are recorded
+in the obligations table (§4.8) rather than dropped, each with the trigger that would revive it.
 
 ## 1. Introduction & high-level intent
 
@@ -168,14 +170,13 @@ export type StoredNonce<Extra extends object = Record<never, never>> =
   TimedNonce & { stage: ConnectStage; cookieSecret?: string } & Extra;
 export type OAuthAttempt = { oauthNonce: string; cookieSecret: string };
 export function putInitiation(kv, initiationNonce: string, now: number): void;
-export function advanceToOAuth(kv, initiationNonce: string, now: number): OAuthAttempt | null;
-export function advanceToOAuth<Extra extends object>(   // naming Extra requires passing it
-  kv, initiationNonce: string, now: number, extra: Extra & NonceExtra): OAuthAttempt | null;
+export function advanceToOAuth<Extra extends object>(
+  kv, initiationNonce: string, now: number, extra?: Extra & NonceExtra): OAuthAttempt | null;
 export function claimOAuth<Extra extends object>(
   kv, oauthNonce: string, cookieSecret: string, now: number): StoredNonce<Extra> | null;
 export function oauthBrowserCookie(oauthNonce: string, cookieSecret: string): string;
 export function readOAuthBrowserCookie(req: Request, oauthNonce: string): string | undefined;
-export function clearOAuthBrowserCookie(oauthNonce: string): string;
+export function clearOAuthBrowserCookie(oauthNonce: string): string | undefined;
 ```
 
 `advanceToOAuth` verifies the initiation nonce (constant time, TTL, stage) and mints the
@@ -194,8 +195,10 @@ type, which defeats inference and collapses `StoredNonce<Extra>` to `never`.
 The three cookie helpers bind the provider redirect to the browser that began it.
 `oauthBrowserCookie` emits a per-nonce `__Host-` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`,
 `Path=/`) whose lifetime matches the OAuth nonce; per-nonce names keep concurrent flows independent.
-`clearOAuthBrowserCookie` is added to every terminal response, and malformed state cannot name a
-cookie to clear, so those cookies expire instead. `Lax` is sufficient because `oauth2` accepts only
+`clearOAuthBrowserCookie` is added to every terminal response and returns `undefined` when the
+nonce names no cookie — degrading like `readOAuthBrowserCookie` rather than throwing, since the
+responses it is added to include the ones refusing a malformed `state`. Those cookies expire
+instead. `Lax` is sufficient because `oauth2` accepts only
 top-level GET callbacks; a future `form_post` strategy needs its own binding policy.
 
 **The cookie carries a secret the callback URL does not reveal.** `advanceToOAuth` mints a second
@@ -247,14 +250,19 @@ connect route, has none.
 
 `connectNavigationError` accepts only a GET carrying `Sec-Fetch-Site: same-origin`, except that the
 normal Vite split (`localhost:3000` → `localhost:8787`) may carry `same-site`; that exception applies
-only when the target hostname is exactly `localhost`. Fetch Metadata is browser-controlled, so the
-existing Workshop Connect / Continue button is the first-party consent step: a copied link opened
-from email, another site, or the address bar is refused before the account DO advances. The OAuth
-cookie above closes the other transfer path — opening the link legitimately and copying the resulting
-provider URL — because that cookie carries a secret the URL does not reveal, so the recipient cannot
-reconstruct it from `state` even outside a browser. No Workshop-owned
-wrapper URL or provider-email equality is needed. This relies on the existing sandbox boundary:
-user-authored content must never execute at the Workshop origin.
+only when the target hostname is exactly `localhost`. Fetch Metadata is browser-controlled, so what
+this refuses is *browser-mediated* navigation of a copied link — one opened from email, another
+site, or the address bar is refused before the account DO advances, with the existing Workshop
+Connect / Continue button as the first-party consent step. The OAuth cookie above closes the other
+browser-shaped transfer path — opening the link legitimately and copying the resulting provider
+URL — because that cookie carries a secret the URL does not reveal, so the recipient cannot
+reconstruct it from `state` even outside a browser. What neither closes: a non-browser client
+holding a live initiation URL can forge `Sec-Fetch-Site`, advance the flow, and receive the cookie
+secret, so the initiation URL remains a 10-minute bearer capability against such a caller — exactly
+as in every shipped gatekeeper, none of which binds initiation at all. Binding it to the Workshop
+session needs a secret delivered on the authenticated `connectAccount` response, which is Layer 2's
+to design (§10). This relies on the existing sandbox boundary: user-authored content must never
+execute at the Workshop origin.
 
 `contentType` names a media type and is compared **exactly**, parameters dropped and case folded.
 Substring matching looks equivalent and is not: `application/jsonp` contains `application/json`,
@@ -312,12 +320,13 @@ text, which could match a code embedded in a 5xx body. Errors without one of tho
 be rethrown by callers, never treated as "no access". `probeAccess` wraps an ACL probe in exactly
 that policy.
 
-`probeAccess`'s callback **must throw** to report failure; the resolved value is never inspected.
-That makes one misuse silent, so it is called out on the function: `probeAccess(() => fetch(url))`
-reports *access* for a 403, because `fetch` resolves for HTTP errors. The API client checks the
-response and throws an `HttpError` carrying the status — which is what all nine internal callers
-below already do. Typing the callback `Promise<void>` would not close it: TypeScript accepts any
-return type in a `void` position, so `() => fetch(url)` still assigns.
+`probeAccess`'s callback should throw to report failure, but the likeliest misuse —
+`probeAccess(() => fetch(url))`, where `fetch` resolves for HTTP errors — is guarded at runtime: a
+resolved non-ok `Response` is classified by status like a thrown error rather than read as access.
+No legitimate caller signals access by resolving with a non-ok `Response`, and throw-style callers
+(all nine internal ones below throw an `HttpError` from their API client) pay nothing. Typing the
+callback `Promise<void>` could not have closed it: TypeScript accepts any return type in a `void`
+position, so `() => fetch(url)` still assigns.
 
 This module stays, and the evidence is worth recording so a later pass does not re-litigate
 deleting it as consumerless: the internal repo's `gatekeeper-shared/src/observers.ts:27-56` exports
@@ -338,7 +347,7 @@ export class CredentialsExpiredError extends Error {
 
 export class CredentialCoordinator<Creds> {                  // lives in the UserAccount DO
   constructor(kv, opts: {                // keys are fixed: "credentials", plus ":identity" and
-    expiresAt?(c: Creds): number | undefined;      // ":migrated" beside it
+    expiresAt?(c: Creds): number | undefined;      // finite or absent; ":migrated" beside it
     refreshSkewMs?: number;              // default ACCESS_TOKEN_SAFETY_MS
     legacyKeys?: readonly string[];      // every key the pre-kit layout owns; reaped after the
                                          // canonical record exists and again by clear(), so the
@@ -362,6 +371,9 @@ export class CredentialCoordinator<Creds> {                  // lives in the Use
                                  // authority (§4.10) and the account half of the action fence (§4.8).
                                  // Minted on first read, never ""
   fresh(refresh: (current: Creds) => Promise<Creds>): Promise<Creds>;
+  rotate(refresh: (current: Creds) => Promise<Creds>): Promise<Creds>;   // refreshes now, whatever
+                                 // the recorded expiry says: the provider rejected an unexpired
+                                 // credential, and it is the only authority that matters
 }
 
 export class CredentialSource<Creds> {          // held by User entrypoint / facet / verifier
@@ -375,6 +387,11 @@ export class CredentialSource<Creds> {          // held by User entrypoint / fac
   run<T>(fn: (creds: Creds) => Promise<T>): Promise<T>;   // hands the call its creds, captures their identity
 }
 ```
+
+A defined `expiresAt` must be finite. `Infinity` makes the grant permanently fresh so `fresh()`
+never refreshes it, and `NaN` fails every comparison so it refreshes on every call. Both are
+reachable from one ordinary bug — `Date.parse` on a provider expiry string it did not recognize —
+and both are silent, so the projection is checked where it is read rather than trusted.
 
 There is no `key` option, no `cacheTtlMs`, and **no consumer-side cache**. No consumer in either
 corpus needs a different canonical key — a split or foreign legacy layout migrates through
@@ -472,7 +489,8 @@ export type ObserverTrackerOptions<V> = {
   canonicalSetId?(setId: string): string;             // identity when omitted; applied once, at entry
   verifyBaseline?(verifier: V): Promise<void>;        // throwing coarse membership check, ADMISSION ONLY
   hasSetAccess(verifier: V, setIds: readonly string[]): Promise<boolean[]>;   // batched; copied
-  denyMessage?(setId: string): string;                // default OBSERVER_DENIED
+  denyMessage?(setId: string): string;                // default OBSERVER_DENIED; keep it generic —
+                                                      // shown verbatim to the denied collaborator
   vendorId?: string;                       // log attribution
   maxTrackedSets?: number;              // default 1000; refuses to reveal set 1001
   maxObservers?: number;                // default 10; refuses to admit observer 11
@@ -492,8 +510,10 @@ export class ObservationGate implements Disposable { authorize; [Symbol.dispose]
 never has to decide what a non-`true` answer meant (`aclObservers` takes the answering shape instead,
 and admits only a literal `true`) — then verifies the observer against every tracked set, looping
 and re-reading until no unchecked sets remain, so sets that appear mid-check are also verified — and
-only then persists the verifier under `observer:<id>`. It throws `denyMessage(setId)` naming the
-first failing set.
+only then persists the verifier under `observer:<id>`. A failing set throws `denyMessage(setId)`,
+and the overseer shows that text verbatim to the denied collaborator — so it stays generic like the
+default, as every shipped multi-set gatekeeper's does: naming the set would disclose to a party
+without access that this workspace read it. The `setId` argument is for diagnostics.
 
 **Port-time deployment requirement.** `trackedSetObservers` persists the verifier capability under
 `observer:<id>`, so a worker using it must set `compatibility_flags:
@@ -560,7 +580,10 @@ why the copy is the mechanism and the type is only the documentation.
 await, writes the verifier only if that nonce is still current, and throws when it is not — a quiet
 return would report an admission that did not happen, and an untracked observer is excluded from
 nothing. Durable rather than an in-memory counter, so a `removeObserver` reaching a different
-tracker instance over the same storage still cancels the admission.
+tracker instance over the same storage still cancels the admission. A stranded attempt does not hold
+its `maxObservers` slot for good: each admission sweeps attempts past `OBSERVER_ATTEMPT_LIFETIME_MS`,
+and one swept while its admission is still alive merely fails closed at its next nonce check and
+retries.
 
 The four strategies and the session-side gate:
 
@@ -669,8 +692,9 @@ whoever is admitted next. `prepareWithheld` therefore writes a durable `observer
 marker, which the output gate orders ahead of the overseer call itself: no crash can leave the
 record standing without the marker. `addObserver` refuses while any marker stands; `commit()`
 latches and then deletes its marker, so no state has neither; `discard()` only deletes. A stranded
-marker over-fences admission for good — the same fail-closed trade the attempt record makes, and
-the reason it has no TTL, whose expiry would reopen the window mid-read.
+marker over-fences admission for good — the attempt record's fail-closed direction, but where the
+attempt record ages out (`OBSERVER_ATTEMPT_LIFETIME_MS`), the marker deliberately has no TTL: its
+expiry would reopen the window mid-read.
 
 An earlier draft held the window with an in-memory count keyed by the storage object's identity, on
 the theory that a fence only has to reach a *concurrent* admission. That mistakes where the window
@@ -723,6 +747,8 @@ type JournalState =                                     // internal; the kit wri
   "staged" | "pending" | "claimed" | "failed" | "applied";
 export type JournalRecord<A> =                          // returned by get(); error only on "failed"
   { state: JournalState; action: A; error?: string };
+export type JournalEntry<A> =                           // listed entries; structurally the
+  { readonly id: number; readonly action: A };          // SimulationRecord createSimulationView takes
 export class ActionJournal<A> {
   constructor(kv, opts?: JournalKeys & {
     upgradeRecord?(raw: unknown): A | undefined;   // undefined leaves a raw record unadopted
@@ -733,14 +759,15 @@ export class ActionJournal<A> {
   markSubmitted(id: number): void;          // "staged" → "pending"
   markClaimed(id: number): void;            // "staged" | "pending" → "claimed"
   restorePending(id: number): void;         // "claimed" → "pending"
-  markFailed(id: number, error: string): void;    // → "failed", terminal; only reject clears it
+  markFailed(id: number, error: string): void;    // → "failed", terminal; reason capped; only reject clears it
   rollbackSubmission(id: number): void;
   get(id: number): JournalRecord<A> | undefined;  // any state; checks both tiers
   remove(id: number): void;
-  retain(id: number, action?: A): void;     // post-apply write: retained record first, then the delete
+  retain(id: number, action?: A): void;     // post-apply write: retained record first, then the
+                                            // delete; no-op on a "failed" record
   isRetained(id: number): boolean;          // tier membership — trustworthy where open consumer states are not
-  listPending(): SimulationRecord<A>[];     // "pending" + "claimed", ascending id; feeds createSimulationView
-  listUndecided(): SimulationRecord<A>[];   // "pending" only — what a decision may still retire
+  listPending(): JournalEntry<A>[];         // "pending" + "claimed", ascending id; feeds createSimulationView
+  listUndecided(): JournalEntry<A>[];       // "pending" only — what a decision may still retire
 }
 export function stageAction<A>(journal, queue: RpcStub<ApprovalQueue>,
   action: A, description: ActionDescription): Promise<number>;
@@ -775,7 +802,7 @@ export function defineActions<H, M extends Record<string, unknown>>(defs: {
 }): ActionSet<H, M>;
 
 export type BoundActionSet<M> = {
-  submit(queue, kind, payload): Promise<number>;      // NOT queued
+  submit(queue, kind, payload): Promise<number>;      // serialized against other submissions only
   apply(id: number): Promise<void>;         // both exclusive with each other and with
                                             // runExclusive; void for an already-applied id
   reject(id: number): Promise<void>;
@@ -836,7 +863,9 @@ the same records a revert reads. So the surface is `runExclusive(hook)` rather t
 object. `resolved(outcome)` stays separate from it, since folding a retirement sweep into
 `runExclusive` would fire a spurious `"reverted"`; and a caller must never invoke `apply`/`reject`
 from inside the callback, because they claim this same queue and would wait on their own
-predecessor. `submit` stays deliberately off it (see the staged-record fix options above).
+predecessor. `submit` stays off *that* queue — submission is not a resolution, and queueing it
+behind a slow apply would stall the agent for a provider round trip — but it holds a second queue
+of its own, so submissions serialize against each other (see the staged-record fix options above).
 
 There is deliberately **no** `put(id, record)` and no `listUnresolved()`. No corpus journal lets
 outside code write arbitrary states into a live record, and `put(id, { state: "applied" })` on one is
@@ -920,16 +949,28 @@ against human reject latency, and the consequence is caught downstream. GitHub
 is unresolved, just as `ProvisionalIds.requireResolved` does here. The apply reports the clear
 resolution error, and its record is restored to pending and remains retryable.
 
-The fix is one of two, and the choice needs the fixture (§7 step 11) in front of us rather than an
-argument here:
+The interleaving has two independent halves, and only one of them is closed.
+
+**Closed: two submissions racing each other.** A staged record stays staged across `submitAction`,
+and the capacity scan drops the oldest *staged* records first, so a second concurrent stage could
+delete the record the first was still waiting on — the approval queue accepts an action whose
+journal entry is already gone, and approving it later fails with `Unknown pending action`.
+`stageAction` therefore serializes per journal on its own `SerialTaskQueue` — separate from the
+resolution queue, and covering direct callers, not just `BoundActionSet.submit`: at most one staged
+record is open at a time, so a live one is never the oldest prunable. Serializing against
+resolution would have closed this too, at the cost below.
+
+**Open: a submission racing its parent's rejection.** Cascade scans still see pending records only,
+so a dependent submitted while its parent is being rejected survives, and becomes pending after the
+parent and its provisional resource are gone. The fix is one of two, and the choice needs the
+fixture (§7 step 11) in front of us rather than an argument here:
 
 1. **Converge on the majority pattern.** Write `pending` before the await and keep the rollback, as
    linear, notion, and confluence do. Cascade rejection then sees the record throughout, and the
    residual is the crash-orphan above.
-2. **Serialize submission with resolution.** The facet base already owns one queue per bound
-   resource, reached through `runExclusive`, and `submit` is deliberately off it. Putting submit on that
-   same queue makes the interleaving impossible by construction, at the cost of queueing submits
-   behind a slow apply.
+2. **Serialize submission with resolution.** Fold the submission queue into the resolution queue,
+   making the interleaving impossible by construction, at the cost of queueing every submit behind
+   a slow apply.
 
 Exposing `listUnresolved()` is *not* on that list: a consumer that can enumerate staged records will
 eventually try to resolve one, and `staged` means the overseer has not yet been told the action
@@ -951,11 +992,13 @@ and keep projecting an effect the provider has already made real. GC of the reta
 deliberately consumer-side policy: retention is inherently unbounded and retirement caps are
 per-vendor (only github has one today).
 
-With `retainApplied: false`, a reject in a later activation after an apply whose RPC result was lost
-finds no record and reports success, so the overseer can label an executed action rejected; the
-in-memory applied set already refuses it within one activation. v1 adds no durable applied
-tombstone: it is unbounded exactly like the retained tier, and the retained path throws on that
-reject anyway, so a tombstone stops the false label without unsticking the record.
+With `retainApplied: false`, a resolution replayed after an apply whose RPC result was lost would
+find no record: the retry errors for an effect that succeeded, and a reject reports success, so the
+overseer can label an executed action rejected. `retire()` therefore removes the record while
+remembering the id in one bounded array (the prunable allowance) both verbs consult: the replayed
+apply settles, the reject throws "no longer pending", and ids past the allowance degrade to the
+unknown-id error rather than growing a tombstone tier. mcp-shared ships the same semantics as full
+rows capped at 100 (`action-store.ts:137,204`); the kit keeps only the ids.
 
 **The key layouts a port must reconcile (verified across both corpora, not inferred).** The kit's
 defaults fit the largest cohort, but neither the counter convention nor the retention layout is
@@ -969,11 +1012,12 @@ tables *before* pointing the journal at existing keys.
 | Next unused (`?? 1`, store `id + 1`, return `id`) | supabase, google, notion, confluence, backstage, cf-wiki, ironclad, jira, salesforce — 9 | **this is `allocate()`** |
 | Last issued (`(?? 0) + 1`, store and return it) | github, linear, spotify — 3 | incompatible |
 
-Adopting a last-issued counter key as `nextIdKey` **re-issues the last ID and overwrites its
-pending record** — after which the overseer can approve one description while the journal
-dispatches another payload. No runtime check can catch it (N-as-next and N-as-last are the same
-byte), so those three ports must migrate the counter `+1` in the same commit that adopts the
-journal. Key name and convention vary independently — `pending:nextActionId`, `seq:action`,
+Adopting a last-issued counter key as `nextIdKey` **would re-issue the last ID and overwrite its
+pending record** — after which the overseer could approve one description while the journal
+dispatches another payload. N-as-next and N-as-last are the same byte, so the counter itself
+cannot be validated — but `allocate()` refuses to stage over an id that already has a record or
+retired-id memory, so the misport fails loudly at the moment of harm instead of corrupting it. Those three ports still
+migrate the counter `+1` in the same commit that adopts the journal. Key name and convention vary independently — `pending:nextActionId`, `seq:action`,
 `counter:action`, `pending:nextId`, `nextActionId` all appear — so a port picks both, separately.
 
 *Retention layout* — where an applied record lives:
@@ -1010,12 +1054,15 @@ defect; each is either additive later or a fact about one provider that only bit
 | **`maxObservers` is a platform bound the corpus does not have.** Every retained observer costs one verifier call per read, and Workers cap a request at **32 Worker invocations** — past that the call throws, so a binding with too many collaborators fails *every* read rather than degrading. No shipped tracker caps this: notion, confluence, context, linear and internal `gatekeeper-shared` fan out over all observers with unbounded `Promise.all`, and google throttles concurrency without bounding the total. | every strategy-C port | The kit refuses at admission instead, which is the legible half of the same failure. The default is **10**, not 20: an observer count prices only the kit's own hop, and every verifier in the corpus spends a second invocation calling its account DO (`notion.ts:615-635`), so 20 observers is 40 invocations before the read does anything. The real ceiling is per-deployment, so the number belongs in that port's options. `concurrency` is a throttle and never a bound. |
 | **Re-fetch after a reported expiry.** `run()` drops its in-flight fetch and then awaits `noteCredentialsExpired`; a concurrent `get()` in that window re-fetches the same dead grant from an account that has not been told yet. | all | Self-healing and bounded: the next use 401s and re-reports. Costs a redundant round of 401s, never a wrong authorization. A "known-dead identity" marker on the source would close it. |
 | **Corrupt-record blast radius.** A throwing `upgradeRecord` propagates out of `#coerce`, so one unreadable legacy record makes `listPending()` throw and blinds the whole simulation overlay rather than dropping that entry. | ports supplying `upgradeRecord` | Both behaviours lose something — a throw blinds everything, skipping hides one pending action from its user — so pick it with a real corpus of legacy records in view. |
-| **Cross-activation replay of a settled action.** A non-retaining `apply` deletes the only durable record, and `appliedHere` is activation-local, so if the DO is evicted before the overseer persists the callback result its retry throws `Unknown pending action` for an effect that succeeded. Retained sets are already idempotent here; `claimBeforeApply` sets are not, since success still removes the record. | every port with `retainApplied: false` | The fix is a durable applied-marker tier, i.e. exactly the unbounded retention the kit deliberately made consumer policy (ironclad's `applied:${id}` is that marker, capped per-vendor). The consequence is a misleading error on a rare retry, never a double effect — the provider call does not re-run. Choose the shape with a port's retention policy in view. |
 | **The retained tier is unbounded.** `#requireCapacity` scans only the pending prefix and skips `isRetained`, so `maxPending` bounds pending records and twice that many `staged`/`failed` ones, but never retained ones. A long-lived `retainApplied: true` binding accumulates one record per applied action indefinitely. | every retaining port | Retention is consumer policy and vendor caps differ; the binding must retire records through `runExclusive` under its own policy. |
 | **Past its bound, a pruned `failed` record takes the only account of what went wrong.** The Workshop keeps a thrown `applyPendingAction` pending and visible (`overseer.ts:9497-9500`, "the action stays pending and the turn stays suspended"), so the journal record is the sole holder of the reason. Once more than `2 × maxPending` prunable records accumulate, the oldest are dropped: a later approve degrades to `Unknown pending action` and a later reject succeeds silently, which can lose an `ActionApplyError` warning that a provider effect partly landed. | any port accumulating more than twice `maxPending` un-rejected failures on one resource | Storage must be bounded, so something must eventually go; the choice is only what and when. Counting failures against the cap instead — the obvious alternative — converts a lost diagnostic into a provider-triggered denial of service, blocking all staging until the user hand-clears them. Staged-first pruning and the doubled bound push this out; closing it entirely needs a tier that keeps reasons after their records, which is the same unbounded retention the row above defers. |
 | **A pending action is not fenced against the connection that staged it.** In-place reconnect keeps the same account DO and `userObjectId` and merely replaces the grant — `reconnectAccount()` is `record.account.reconnect()` (`user.ts:1541-1545`) and `markCredentialsRestored` re-describes on the assumption the user "may have re-authed with different info" (`user.ts:1655-1664`). Neither the overseer's approval record nor the facet's journal is touched, so an action staged under principal A can be approved and applied with principal B's credentials — and an object id that named one thing in A's tenant may name another in B's. No gatekeeper in either corpus fences this. | every port whose provider allows re-auth as a different principal | Not fixable with a nonce. A facet-side generation check followed by the handler's own `get()` is not atomic — a reconnect landing between them still yields B — so the fence has to be a credential read that takes the staged generation, `getCredentialsForGeneration(expected)` in the account DO, over the `connectionGeneration()` the coordinator already stores (§4.6; `identity()` cannot serve — every refresh supersedes it, invalidating every pending action). That reaches only handlers that resolve credentials through the kit; a handler holding its own client still calls the provider unfenced, which is the cost of the escape hatch. Land it with the first port whose provider permits principal-switching re-auth, so the handler ergonomics are designed against a real one. |
 | **The expiry latch re-arms with two writes.** `clearCredentialExpiryLatch` clears the boolean and writes a fresh arm. Were the second to fail alone, an in-flight notification for the replaced credentials would match the surviving arm and latch the new ones — the one *silencing* failure in a module whose every other window fails toward a harmless duplicate notification. | every port with a refresh flow | Both writes are adjacent, awaitless and constant-size, so one implicit transaction carries them and no trigger separates them; the function's doc comment states that adjacency as the invariant to preserve. Every candidate fix is worse than the window: swapping the order makes the silence deterministic, and one combined record breaks the plain-boolean compatibility the latch key promises. If a port ever needs it, the escape is a single record holding arm and notified together. |
+| **A crash mid-withheld-read closes admission for good.** The `observer-withhold:<nonce>` marker goes down before the overseer is asked and is stranded by an activation that dies before settling; `addObserver` refuses while any marker stands, and nothing reclaims one. A read the overseer would have refused still leaves the binding unshareable. | every strategy-C port using `withholdFromObservers` | A stranded marker cannot tell a lost reply from a lost request, and the overseer's record is durable before the reply — so reclaiming on any schedule risks disclosing a recorded owner-only description to the next collaborator admitted, while over-fencing costs sharing on a binding already handling owner-only data. The attempt record's fail-closed trade, without the TTL escape. *Trigger:* a binding observed stuck closed with no `observer-withheld` latch. |
+| **A lost `authorizeObservation` reply reopens admission over a standing withheld record.** `authorize` runs `discard()` on any throw, but a transport failure after the overseer's durable store is indistinguishable from a refusal — the marker comes down while the record stands, and the next collaborator admitted can read the owner-only description through `listActions()`. | every strategy-C port using `withholdFromObservers` | Keeping the marker on every throw inverts the earned-latch trade: refusal is the *ordinary* answer for a binding with observers (`overseer.ts:4590-4603`), and would permanently close admission for a read that disclosed nothing. Matching refusal message text was considered and rejected. The fix is a distinguishable refusal result in the `ApprovalQueue` contract, with `discard()` run only on it — batch with the next kernel contract change. *Trigger:* that change, or the first port shipping withheld reads. |
+| **A dropped action kind strands its dependents silently.** `provides`/`dependsOn` are evaluated from the live definition, so an action staged under a kind a later deploy removed reports no refs, and the dependents it was holding open are not retired with it. | any port that removes a shipped action kind | The dependent stays pending and fails at the provider instead of naming the parent it needed, so what is lost is an error message, not an effect — a ref a gatekeeper declares in `dependsOn` is by definition an identifier the provider validates. Closing it means storing the refs on the record, which puts staging metadata inside the journaled action identity and threads it through every state transition. No corpus gatekeeper stores its graph either (§4.8), so the six that cascade port without this. *Trigger:* the first port to remove a shipped action kind. |
 | **A read during an in-flight apply can overlay an effect the provider already made real.** Simulated reads project `pending` and `claimed` records, and an apply is a provider round trip followed by the journal write, so a read landing between the two fetches the real effect and overlays the same action again — a transient duplicate in the *view*, never a second provider effect (resolution is serialized). | every port with continue-with-simulation actions | Inherent to overlaying local pending state onto remote reads: no atomic instant flips both, and it holds for every projected state, so dropping `claimed` from projection would only make the action vanish mid-apply instead. Serializing reads with resolution would stall the agent for the length of a provider call on every read — the trade submission already refuses — and `runExclusive` is the opt-in for a consumer that needs a consistent snapshot. Self-healing: the next read after the journal write is correct. *Trigger:* an agent observed acting on the duplicate, e.g. staging a corrective action against it. |
+| **Pending observed-set records are never reclaimed.** `prepareObservation` marks untracked sets `"pending"` before awaiting the oracle and returns no `discard`, so a read the overseer refuses leaves them behind; only a later successful read of the same sets promotes them, and `#trackedSets()` counts pending rows against `maxTrackedSets`. Enough distinct refused reads and every `prepareObservation` throws "Bind a narrower scope". | every strategy-C port | Inherited behaviour, not introduced: google's shipped tracker writes pending before the await and returns `commit` only (`gatekeeper-google/src/observers.ts:186-236`), with `maxTrackedSets` alongside it. The naive fix is unsafe — two concurrent reads can mark one set pending, and a `discard` that deleted it after the other committed would un-track an observed set and let a later observer in unverified against it. So a reclaiming `discard` must delete only rows still `"pending"`, which is a concurrency argument that wants the fixture in front of it. *Trigger:* the first strategy-C port, or a binding observed to exhaust its budget. |
 
 `stageAction` encodes the one ordering every gatekeeper must get right: allocate the record,
 `submitAction(id, description)`, then mark it submitted — and roll the record back and rethrow if
@@ -1089,21 +1136,19 @@ the only caller who can be asking is the overseer's retry after losing the reply
 failure there gives the user an error about an action that succeeded. `reject` instead throws "no
 longer pending" (github's semantics), because the retained record is what a revert hook reads back
 and a stray rejection would destroy it. The guard behind both is `isRetained` — not the open state
-string — plus an in-memory set of the ids this activation applied, which is the only trace a
-non-retaining set keeps: it lets the same-activation retry of `apply` stay idempotent, and stops a
-reject racing the apply (the overseer can deliver both concurrently) from reporting success for an
-action the provider ran. Across activations a non-retaining set has no trace at all, so a later
-retry reports the id unknown.
+string — plus the journal's retired-id memory, the only trace a non-retaining set keeps: it lets a
+retry of `apply` stay idempotent across activations, and stops a reject racing the apply (the
+overseer can deliver both concurrently) from reporting success for an action the provider ran.
 On success the kit performs a **single atomic post-apply write**: the handler's returned
 `{ action }` (apply-time artifacts such as created entity ids — the linear/notion pattern) merged
-with the state transition — record removed, or moved to the retained tier as `"applied"` when
+with the state transition — record retired, or moved to the retained tier as `"applied"` when
 `retainApplied`. One writer by construction; handlers never write the journal mid-apply. An apply
 that throws leaves the record so the user can retry (matching supabase) unless it threw
 `ActionApplyError`, which is terminal (below), and either way still fires
 `afterResolve(host, "failed")` — a partial provider effect is exactly when caches are most stale.
 `reject(id)` is idempotent for an id the journal never had or already dropped: optional handler,
 record removed, no-op. That is what lets the overseer retry after crashing before its own state
-write, and why the applied-id guard above is per-activation rather than stored.
+write, and why only ids the retired-id memory names are refused — a rejected removal leaves none.
 `afterResolve` fires once per resolution with the outcome; it exists because every corpus
 gatekeeper invalidates caches after resolution and the big ones repeat it per branch (github calls
 `#clearCaches()` in every switch arm), where one forgotten branch is a silent stale read. The hook
@@ -1210,8 +1255,8 @@ export type SimulationStep<State> =
   | { kind: "unsupported"; reason: string };
 export type SimulationResult<State, Action> =
   | { kind: "complete"; value: State; appliedCount: number }
-  | { kind: "incomplete"; value: State; appliedCount: number;
-      unsupported: SimulationRecord<Action>; reason: string };
+  | { kind: "incomplete"; partial: State; appliedCount: number;   // `partial`, not `value`: the
+      unsupported: SimulationRecord<Action>; reason: string };    // fold stops at `unsupported`
 export function replaySimulation<State, Action>(base, records, apply): SimulationResult<State, Action>;
 
 export class ProvisionalIds<Id extends string> {
@@ -1250,6 +1295,11 @@ value that classifies as provisional throws. Either would otherwise let a pair w
 instance with no classifier — the one configuration whose `bind` validates nothing — aim an outbound
 call at a different resource. Ironclad (`ironclad.ts:945-950`) and salesforce
 (`salesforce.ts:3081-3093`) both classify before consulting their mapping for the same reason.
+`resolve()` applies that same test one step earlier: an ID the classifier calls non-provisional is
+returned before the binding table is consulted at all. Only a classifier-less instance can write a
+binding keyed by a real provider ID, but once one exists, every later `resolve()` on a correctly
+configured instance would redirect that ID and aim an outbound call at another resource. Reading
+the classifier first makes the stale row unreachable rather than authoritative.
 
 **A provisional ID may carry its logical kind, and a reference may demand one.** A provisional ID
 is a bare string, so nothing stops a caller passing a provisional comment id where a page id was
@@ -1368,20 +1418,26 @@ per-instance, so it does nothing for a consumer that constructs a cache per call
 
 ### 4.11 `./cursors`
 
-`ArrayCursor<T>`, `PageNumberCursor<T>` and `TokenCursor<T>`, all extending `RpcTarget` and
-implementing the `Cursor<T>` contract from `workshop-shared/gatekeeper`, generalized from
-`gatekeeper-github/src/github.ts:809-929`. The scope is **pagination mechanics only**: a cursor owns
-provider paging state, buffers pages, and hands out fixed-size ones. `fetchPage` returns the
-session's own item type, so `PageNumberCursor<T>` and `TokenCursor<T>` take a single type parameter.
-Both stream; the split is how the provider is paged, and a provider taking a numeric offset is
-served by `PageNumberCursor` through its page formatter.
+`ArrayCursor<T>`, `PageNumberCursor<T>`, `OffsetCursor<T>` and `TokenCursor<T>`, all extending
+`RpcTarget` and implementing the `Cursor<T>` contract from `workshop-shared/gatekeeper`, generalized
+from `gatekeeper-github/src/github.ts:809-929`. The scope is **pagination mechanics only**: a cursor
+owns provider paging state, buffers pages, and hands out fixed-size ones. `fetchPage` returns the
+session's own item type, so each provider cursor takes a single type parameter.
+
+The provider cursors stream; the split is what the paging state is, because a capped page moves each
+differently. A page number stays aligned under a cap — the provider clamps `perPage` consistently —
+so `PageNumberCursor` advances by one page. A numeric offset does not: jira clamps `maxResults`
+silently, and `page * perPage` arithmetic then skips the rows between with no error anywhere, so
+`OffsetCursor` advances by the raw rows returned instead. A provider whose short pages do not even
+reflect the rows it consumed — a server-side-filtered search with its own next signal, confluence's
+v1 CQL — is a `TokenCursor` carrying that signal as its token.
 
 There is no `overlay`, `map` or injected-item merging. Each came from one gatekeeper's shape, with
 ordering and authorization needs the others do not share. `retain` is the one post-fetch step left,
 and the ordering rule below is what keeps it from costing a page.
 
 Filtering is the exception, because a numeric walk has no end-of-list signal but the row count.
-`PageNumberCursor.fetchPage` therefore returns the provider's page **unfiltered** and an optional
+The numeric cursors' `fetchPage` therefore returns the provider's page **unfiltered** and an optional
 `retain` narrows it afterwards: dropping rows in the fetch ends the walk on a page that merely held
 none the caller may see. This is the live bug in the prior art — `#listIssueSummaries` filters
 `pull_request` rows inside its fetch (`gatekeeper-github/src/github.ts:2516-2542`) against a cursor
@@ -1406,8 +1462,8 @@ And `next()` is serialized on a `SerialTaskQueue` (§4.12), since two un-awaited
 page counter would return one page twice and skip the next.
 
 **Nothing latches a failure, because no paging state moves until every step that can throw has
-run.** `PageNumberCursor` decides exhaustion from the raw page and applies `retain` before
-`#remotePage` and `remoteExhausted` move; `TokenCursor` decides exhaustion and refuses an echoed
+run.** `PageNumberCursor` and `OffsetCursor` decide exhaustion from the raw page and apply `retain`
+before their position and `remoteExhausted` move; `TokenCursor` decides exhaustion and refuses an echoed
 token before `#token` moves. A throw therefore leaves the walk on the page it failed — advancing
 first would skip that page for good on the retry, since the position lives in the cursor and not in
 the caller's hands. Both are resumable by construction, so the cursors hold no resumable-region
@@ -1517,12 +1573,26 @@ stale notifier that stepped on one would mark a healthy grant dead — so neithe
 nor a twice-rejected credential is reported from here. Both belong to the caller's
 `CredentialSource.run(creds => withAuthRetry(...))`: `withAuthRetry` swallows the first 401 and
 rethrows only a persistent one, so `run`'s catch fires exactly once, against the identity it
-captured *before* the attempt (§5.6). A forced refresh that dies with `invalid_grant` is likewise
-already covered — `getCredentials()` on the account base turns a still-current
-`CredentialsExpiredError` into `noteCredentialsExpired()`, which carries that same identity.
+captured *before* the attempt (§5.6).
 
-This closes the "401 retry" obligation the §4.8 table used to record as deferred; the one credential
-row that remains there, re-fetch after a reported expiry, is unchanged behavior.
+**Where `getToken` comes from is the port's, and today it is a vendor RPC.** For the five providers
+whose 401 means the grant is gone, there is nothing to wire: `CredentialSource.run` alone is the
+whole story. For the four that mint a derived bearer, `getToken({ forceRefresh: true })` has to
+reach the account, because §5.6 forbids refresh material crossing to a facet — so the mint is
+account-side by construction, and the channel is per-vendor: google passes
+`getAccessToken({ forceRefresh, staleToken })`, notion calls a separate `refreshCredentials()`
+(doc'd at §5.6's projection rule). The kit does not name that channel yet; the §5.6 work item below
+records the shape it should take, and until it lands a port supplies its own.
+
+`CredentialSource` cannot serve as that channel: `getCredentials()` is `coordinator.fresh(...)`,
+which refreshes on expiry only, so a grant killed by `invalid_grant` while its access token is
+still unexpired is re-served unchanged. `coordinator.rotate()` is the account-side half that
+forces one; whatever RPC a port puts in front of it owes the same dead-grant treatment
+`getCredentials()` gives — a still-current `CredentialsExpiredError` becomes
+`noteCredentialsExpired()`, fenced on the identity.
+
+This closes the "401 retry" *logic* the §4.8 table recorded as deferred. The refresh channel the
+retry depends on stays per-vendor until the work item lands.
 
 ### 4.14 `./endpoint`
 
@@ -1593,6 +1663,13 @@ a clipped SSE stream can drop the event carrying the response — a size problem
 a protocol error. The error type is the caller's to re-wrap: cloudflare needs its own
 `CloudflareObservabilityApiError` with a status, and a shared error carrying a provider-shaped
 status would be a worse fit than a catch.
+
+Two orderings inside it are load-bearing. A bodyless response is answered `""` **before** the
+`Content-Length` check, since a HEAD or 304 legitimately advertises a length it will never send and
+refusing one would raise a size error for a body that does not exist. And both cancellations are
+best-effort: cancelling is cleanup on a path that has already decided to throw
+`ResponseTooLargeError`, so letting a rejected `cancel()` propagate would report a stream-teardown
+failure in place of the size limit that actually fired.
 
 Deliberately **only** the reader. Redirect following, SSRF re-checks per hop, retry and deadline
 composition stay out: mcp-shared re-validates every hop against a public-host blocklist and drops
@@ -1897,6 +1974,31 @@ here, by wiring the two to one type — which is precisely why this is written d
 built. `KitUserAccountBase<E, Creds, Public>` gains the third parameter; where a gatekeeper has no
 refresh flow (github), `Public = Creds` is a legitimate instantiation, not a default to fall into.
 
+**Deferred: the force-refresh channel (§4.13).** `getCredentials()` is `coordinator.fresh(...)`,
+which refreshes on expiry only, so nothing in the base's RPC list reaches `coordinator.rotate()`.
+A derived-bearer port therefore supplies `withAuthRetry`'s `getToken({ forceRefresh: true })` from
+its own vendor RPC — google's `getAccessToken({ forceRefresh, staleToken })`, notion's
+`refreshCredentials()`. Naming that channel here is what stops each port inventing one. Design
+notes for whoever lands it:
+
+- **A required method, not an optional parameter.** TypeScript accepts a zero-argument
+  implementation as satisfying `getCredentials(options?: …)`, and jsrpc drops the argument at
+  runtime, so an account that ignores `forceRefresh` compiles and silently re-serves the rejected
+  token; `withAuthRetry` then replays it, `run`'s catch fires, and a healthy grant is retired. A
+  required `rotateBearer()` fails with TS2741 at the mistake, and has no option to ignore.
+- **`staleBearer`, not `staleIdentity`.** `run` hands its callback `creds` only — `identity` stays
+  private — so an identity is unobtainable where this is wired. The rejected bearer is in scope by
+  construction, and comparing bearer values is what google already does (`google.ts:556`) to skip a
+  redundant mint. Required, since `withAuthRetry` always supplies it on the forced call.
+- **Expiry gates first.** Google refuses any cached token inside the safety window whatever the
+  request asks for (`google.ts:555`); a forced rotate must not be answered with one either.
+- **Do not widen `AccountCredentialStub`.** It would be dead surface for the five grant-death
+  providers. A free-standing type plus a small adapter over the bearer `run` already fetched keeps
+  the unforced path free of a second account round trip, which is the common case.
+- **Interaction with the fencing row (§4.8).** `getCredentialsForGeneration(expected)` extends this
+  same seam on a *different* trigger (the first principal-switching port), and generation overlaps
+  with `staleBearer` semantically. Whichever lands first should leave room for the other.
+
 ### 5.7 `./vendor` — `KitVendorBase<E>`
 
 Abstract `WorkerEntrypoint<E>` with hook `[kitVendorConfig](): { spec; accounts():
@@ -1947,13 +2049,16 @@ abstract — resource metadata lookups and the session API are the gatekeeper �
 
 **The hook returns activation-scoped values; it must not construct them.** `actions` and
 `observers` both carry in-memory state that is the whole point of them: `BoundActionSet` owns the
-`SerialTaskQueue` every resolution is ordered on plus the `appliedHere`/`claimedHere` sets, and
+`SerialTaskQueue` every resolution is ordered on plus the `claimedHere` set, and
 `ObserverTracker` owns the admission/removal fence. A hook calling `defineActions(...).bind(...)` or
-`trackedSetObservers(...)` inline — the shape a per-call hook invites — hands every call a fresh
-queue and empty sets, which silently voids both guarantees while every test still passes. So the
-hook resolves them from instance fields, built once per activation and memoized per `ctx.props`
-when a facet serves more than one resource kind; the base's own doc comment says so, and the
-fixture asserts two concurrent `applyAction` calls share one queue.
+`trackedSetObservers(...)` inline — the shape a per-call hook invites — would hand every call a
+fresh queue and empty sets, silently voiding both guarantees. `bind` blunts its likeliest form by
+being idempotent per journal: rebinding a module-scoped set to a facet-held journal returns the
+first bound set, so even the per-call shape shares one queue. Nothing equivalent covers
+`trackedSetObservers`, and a hook that rebuilds the set or the journal per call stays uncatchable
+— so the hook resolves these from instance fields, built once per activation and memoized per
+`ctx.props` when a facet serves more than one resource kind; the base's own doc comment says so,
+and the fixture asserts two concurrent `applyAction` calls share one queue.
 
 **The revert seam.** Revert behavior is not declarative (see §4.8's doctrine): the base implements
 `revertAction(id)` as `actions.runExclusive(...)` — exclusive with `apply`/`reject` (§4.8) —
@@ -2025,7 +2130,8 @@ These are load-bearing; the fixture suite (§7 step 11) exists to prove each one
   `@validateRpc<Gatekeeper<SupabaseProject | SupabaseOrganization>>()` is the fallback.
 - **workerd for nonce tests.** `crypto.subtle.timingSafeEqual` does not exist in Node, so the
   kit runs two vitest projects: `vitest.config.ts` (Node, pure modules: actions, observers,
-  credentials, auth-retry, simulation, cache, connect-pages, endpoint, spec, http routing) and
+  credentials, auth-retry, simulation, cache, connect-pages, endpoint, http-errors,
+  response-body, spec, http routing) and
   `vitest.worker.config.ts` (workerd: connect-nonce, connect-handshake, credential-expiry,
   cursors, the action queue, and the fixture). The workerd project loads
   `scripts/assert-workerd.ts` so a broken pool fails loudly. `connect-pages` and `endpoint` are
@@ -2151,7 +2257,8 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
    `reject` on it still throws "no longer pending"; `afterResolve` fires with the
    right outcome, and a throwing hook is logged but never masks the apply error nor fails a
    successful resolution; `reject` removes and no-ops on an unknown id, but refuses one racing an
-   apply that already ran; an interrupted `retain` keeps the applied record. For the claim
+   apply that already ran; an interrupted `retain` keeps the applied record, while a `retain` of a
+   `failed` one is refused and `markFailed` bounds the reason it stores. For the claim
    lifecycle (§4.8): `listPending` projects a `claimed` record and not a `failed` one; no
    transition moves a settled record and the first stored failure message wins; a stored `failed`
    record that lost its reason still reads with one; `maxPending`
@@ -2250,7 +2357,8 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
     file-local pure-JS `constantTimeEqual` in `account.ts` with a comment naming the reason (its
     account tests run in Node, where `crypto.subtle.timingSafeEqual` is unavailable; every Worker
     runtime path uses the kit comparator). Drop `escapeHtml` from `util.ts` in favor of
-    `connect-pages`, and `readTextCapped`/`MAX_RESPONSE_BYTES` from `fetch.ts` in favor of
+    `connect-pages`, `hexEncode` from `util.ts` in favor of `/connect-nonce`, and
+    `readTextCapped`/`MAX_RESPONSE_BYTES` from `fetch.ts` in favor of
     `/response-body` — catching `ResponseTooLargeError` where `fetch.ts` threw its own. Add
     `@gadgets/gatekeeper-kit` to the three `package.json`s; update `mcp-shared/README.md` and
     `__tests__/account-endpoint.test.ts` imports. In the same step, collapse
@@ -2437,6 +2545,11 @@ evidence, and the trigger.
   `claimed`, and the work is extending it past the tier boundary. *Trigger:* the first
   non-idempotent compensating write — today's are mostly restores of a previous value, which is why
   the gap has cost nothing yet.
+- **Workshop-session-bound initiation** behind the `connectAccount` → handshake seam. §4.3's fetch
+  metadata check refuses browser-mediated navigation only: a non-browser caller can forge
+  `Sec-Fetch-Site`, so the initiation URL stays a 10-minute bearer capability against it. *Trigger:*
+  Layer 2's `connectAccount` contract — a `__Host-` cookie set by workshop-backend, its secret
+  passed into the account DO via RPC.
 - **Already realized** (orientation only, no work): the `ObserverStrategy` A–D wrappers behind one
-  interface; `ArrayCursor`/`PageNumberCursor`/`TokenCursor` behind `Cursor<T>`; and Layer 2's
-  `AuthStrategy` (`oauth2` / `tokenAuth` / CF Access) — the same doctrine at the auth seam.
+  interface; `ArrayCursor`/`PageNumberCursor`/`OffsetCursor`/`TokenCursor` behind `Cursor<T>`; and
+  Layer 2's `AuthStrategy` (`oauth2` / `tokenAuth` / CF Access) — the same doctrine at the auth seam.
