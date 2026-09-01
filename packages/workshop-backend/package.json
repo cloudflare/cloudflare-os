@@ -33,7 +33,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
     "dompurify": "^3.4.13",
-    "esbuild": "^0.28.1",
+    "esbuild": "^0.28.2",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

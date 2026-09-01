@@ -47,7 +47,7 @@
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "tailwindcss": "^4.3.3",
-    "terser": "^5.49.2",
+    "terser": "^5.50.0",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plugin-singlefile": "^2.3.3",
