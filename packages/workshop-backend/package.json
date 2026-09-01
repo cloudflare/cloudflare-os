@@ -27,7 +27,7 @@
     "diff3": "^0.0.3",
     "isomorphic-git": "^1.40.0",
     "jose": "^6.2.8",
-    "yjs": "^13.6.31",
+    "yjs": "^13.6.32",
     "zod": "^4.4.3"
   },
   "devDependencies": {
