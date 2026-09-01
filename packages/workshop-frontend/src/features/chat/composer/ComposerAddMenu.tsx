@@ -246,7 +246,7 @@ export default function ComposerAddMenu({
         aria-busy={loading}
         tabIndex={skillsAvailable ? undefined : -1}
         onKeyDown={skillsAvailable ? undefined : handleKeyDown}
-        className={`sidebar-scroll min-h-0 flex-1 overflow-y-auto p-2 ${skillsAvailable ? "pb-0" : ""}`}
+        className={`sidebar-scroll min-h-0 flex-1 overflow-y-auto p-2 outline-none ${skillsAvailable ? "pb-0" : ""}`}
       >
         {items.map((item, index) => {
           const active = index === activeIndex;
