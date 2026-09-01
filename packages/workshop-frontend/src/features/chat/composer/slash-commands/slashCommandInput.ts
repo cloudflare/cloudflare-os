@@ -1,5 +1,5 @@
-import type {SlashCommandChoice} from "@gadgets/workshop-shared/api";
-import type {ComposerRange} from "./composer-tokens";
+import type { SlashCommandChoice } from "@gadgets/workshop-shared/api";
+import type { ComposerRange } from "../../../../components/chat/composer-tokens";
 
 const normalizeSearchText = (value: string) =>
   value.trim().replace(/\s+/g, " ").toLowerCase();
@@ -44,10 +44,7 @@ export function parseSlashCommandInput(
   };
 }
 
-/**
- * Identifies the command token at the cursor, or null if the cursor isn't on one. Two positions
- * with the same key parse the same way, so callers can treat them as interchangeable.
- */
+/** Identifies the command token at the cursor. */
 export function slashCommandTokenKey(input: string, cursorPosition: number): string | null {
   let parsed = parseSlashCommandInput(input, cursorPosition);
   return parsed && `${parsed.tokenStart}:${input.slice(parsed.tokenStart, parsed.tokenEnd)}`;
@@ -60,10 +57,6 @@ export function stripSlashCommandToken(input: string, token: ComposerRange)
   let after = input.slice(token.start + token.length);
   if (/\s$/.test(before) && /^\s/.test(after)) after = after.slice(1);
   let joined = before + after;
-
-  // Where the command was, in the string that remains -- what the transcript needs to show it back
-  // in place. Measured after the leading trim, and clamped because a trailing trim can leave the
-  // seam past the end (a command typed last).
   let leadingTrim = joined.length - joined.trimStart().length;
   let args = joined.trim();
   return {
@@ -82,10 +75,9 @@ export function exactSlashCommandMatches(
 export function filterSlashCommandCatalog(
     catalog: SlashCommandChoice[], query: string): SlashCommandChoice[] {
   query = normalizeSearchText(query);
-  let matches = catalog.filter(choice => !query ||
+  return catalog.filter(choice => !query ||
     normalizeSearchText(choice.name).includes(query) ||
     normalizeSearchText(choice.description).includes(query) ||
     normalizeSearchText(choice.providerLabel).includes(query) ||
     choice.resourceLabel && normalizeSearchText(choice.resourceLabel).includes(query));
-  return matches;
 }

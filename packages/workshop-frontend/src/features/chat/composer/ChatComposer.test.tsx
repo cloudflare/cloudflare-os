@@ -159,7 +159,7 @@ describe("ChatComposer", () => {
     expect(consoleError).toHaveBeenCalledTimes(transient ? 0 : 1);
     consoleError.mockRestore();
   });
-  it("inserts a menu skill at the remembered caret and gates incompatible additions", async () => {
+  it("keeps add-menu actions enabled after inserting a skill and removes the legacy button", async () => {
     const skill = {
       selection: { gatekeeperId: 42, commandId: "review" },
       name: "review",
@@ -180,6 +180,7 @@ describe("ChatComposer", () => {
         models={[]}
         selectedModel="model-a"
         onModelChange={() => {}}
+        attachLabel="Legacy resource"
       />,
     ));
 
@@ -211,10 +212,108 @@ describe("ChatComposer", () => {
     await act(async () => add.click());
     const actions = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'));
     expect(actions).toHaveLength(2);
-    expect(actions.every((action) => action.disabled)).toBe(true);
-    expect(container.querySelector<HTMLButtonElement>("button[title*='selected skill']")?.disabled)
-      .toBe(true);
+    expect(actions.every((action) => !action.disabled)).toBe(true);
+    expect(document.querySelector('[aria-label="Search skills"]')).toBeNull();
+    expect(container.textContent).not.toContain("Add resource");
+    expect(container.textContent).not.toContain("Legacy resource");
+    const connection = actions.find((action) => action.textContent?.includes("Add a new connection"))!;
+    await act(async () => connection.click());
+    expect(testState.gatekeeperModalProps?.open).toBe(true);
     expect(listSlashCommands).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires explicit slash-picker confirmation before sending an exact skill", async () => {
+    const skill: SlashCommandChoice = {
+      selection: { gatekeeperId: 42, commandId: "deploy" },
+      name: "deploy",
+      description: "Deploy the current project.",
+      providerLabel: "Projects",
+    };
+    const overseer = {
+      listSlashCommands: vi.fn<() => Promise<SlashCommandChoice[]>>(async () => [skill]),
+    } as unknown as RpcStub<Overseer>;
+    const onSend = vi.fn<Parameters<typeof ChatComposer>[0]["onSend"]>();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <ChatComposer
+        createCapsuleGatekeeper={async () => null}
+        getOverseer={() => overseer}
+        onSend={onSend}
+        isAgentActive={false}
+        models={[]}
+        selectedModel="model-a"
+        onModelChange={() => {}}
+      />,
+    ));
+
+    const textarea = container.querySelector<HTMLTextAreaElement>('[role="combobox"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+        textarea,
+        "/deploy production",
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => vi.waitFor(() => expect(
+      document.querySelectorAll('[role="option"]'),
+    ).toHaveLength(1)));
+
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await new Promise(requestAnimationFrame);
+    });
+    expect(onSend).not.toHaveBeenCalled();
+
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(onSend).toHaveBeenCalledWith(
+      { id: skill.selection, args: "production" },
+      "model-a",
+      undefined,
+      undefined,
+      undefined,
+    );
+  });
+
+  it("sends double slash as literal text without opening the skill picker", async () => {
+    const overseer = {
+      listSlashCommands: vi.fn<() => Promise<SlashCommandChoice[]>>(async () => []),
+    } as unknown as RpcStub<Overseer>;
+    const onSend = vi.fn<Parameters<typeof ChatComposer>[0]["onSend"]>();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <ChatComposer
+        createCapsuleGatekeeper={async () => null}
+        getOverseer={() => overseer}
+        onSend={onSend}
+        isAgentActive={false}
+        models={[]}
+        selectedModel={null}
+        onModelChange={() => {}}
+      />,
+    ));
+
+    const textarea = container.querySelector<HTMLTextAreaElement>('[role="combobox"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+        textarea,
+        "//deploy literally",
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(document.querySelector('[role="listbox"]')).toBeNull();
+    expect(overseer.listSlashCommands).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith(
+      "//deploy literally", null, undefined, undefined, undefined,
+    );
   });
 
   it("invalidates and refetches skills after adding a connection", async () => {

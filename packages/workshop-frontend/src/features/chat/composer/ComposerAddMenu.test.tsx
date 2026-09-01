@@ -32,7 +32,6 @@ const Harness = ({
   onAddConnection = () => {},
   onSelectSkill,
   onUpload = () => {},
-  skillDisabledReason,
   skillSelected = false,
 }: {
   catalogVersion?: number;
@@ -41,7 +40,6 @@ const Harness = ({
   onAddConnection?: () => void;
   onSelectSkill: (choice: SlashCommandChoice) => void;
   onUpload?: () => void;
-  skillDisabledReason?: string;
   skillSelected?: boolean;
 }) => {
   const anchorRef = useRef<HTMLDivElement>(null);
@@ -68,7 +66,6 @@ const Harness = ({
         catalogVersion={catalogVersion}
         chatExists={chatExists}
         getOverseer={getOverseer}
-        skillDisabledReason={skillDisabledReason}
         skillSelected={skillSelected}
         onAddConnection={onAddConnection}
         onSelectSkill={onSelectSkill}
@@ -124,34 +121,32 @@ describe("ComposerAddMenu", () => {
     expect(document.body.textContent).toContain("Review   writing");
   });
 
-  it("does not load unavailable skills and clearly gates incompatible actions", async () => {
+  it("hides selected skills without loading them or disabling other actions", async () => {
     const listSlashCommands = vi.fn<() => Promise<SlashCommandChoice[]>>(
       async () => [connectedSkill],
     );
     const getOverseer = () => ({ listSlashCommands } as unknown as RpcStub<Overseer>);
+    const onUpload = vi.fn<() => void>();
+    const onAddConnection = vi.fn<() => void>();
     const host = await mount(
-      <Harness
-        getOverseer={getOverseer}
-        onSelectSkill={() => {}}
-        skillDisabledReason="Remove resources and attachments to add a skill."
-      />,
+      <Harness getOverseer={getOverseer} onSelectSkill={() => {}} skillSelected
+               onUpload={onUpload} onAddConnection={onAddConnection} />,
     );
     const trigger = host.querySelector<HTMLButtonElement>('[aria-haspopup="dialog"]')!;
     await act(async () => trigger.click());
-    expect(document.body.textContent).toContain("Remove resources and attachments");
     expect(document.querySelector('[aria-label="Search skills"]')).toBeNull();
     expect(listSlashCommands).not.toHaveBeenCalled();
-
-    await act(async () => trigger.click());
-    await act(async () => root!.render(
-      <Harness getOverseer={getOverseer} onSelectSkill={() => {}} skillSelected />,
-    ));
-    await act(async () => trigger.click());
     const options = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'));
     expect(options).toHaveLength(2);
-    expect(options.every((option) => option.disabled)).toBe(true);
-    expect(document.body.textContent).toContain("Remove the selected skill");
-    expect(listSlashCommands).not.toHaveBeenCalled();
+    expect(options.every((option) => !option.disabled)).toBe(true);
+    await act(async () => options[0].click());
+    expect(onUpload).toHaveBeenCalledOnce();
+
+    await act(async () => trigger.click());
+    const connection = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+      .find((option) => option.textContent?.includes("Add a new connection"))!;
+    await act(async () => connection.click());
+    expect(onAddConnection).toHaveBeenCalledOnce();
   });
 
   it("uses Enter for activation, leaves Tab inert, and restores focus on Escape", async () => {

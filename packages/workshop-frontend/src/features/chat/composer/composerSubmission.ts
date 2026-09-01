@@ -5,7 +5,7 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import { locateMessageFormatRefs } from "../../../components/format/messageFormatRefs";
 import type { ComposerDocument } from "./composerDocument";
-import { stripSlashCommandToken } from "../../../components/chat/slash-command-input";
+import { stripSlashCommandToken } from "./slash-commands/slashCommandInput";
 
 export type ComposerSubmission = {
   message: string | SlashCommandRequest;

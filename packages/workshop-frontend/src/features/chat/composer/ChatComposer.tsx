@@ -9,7 +9,7 @@ import {
   type SetStateAction,
 } from "react";
 import { DropdownMenu, useKumoToastManager } from "@cloudflare/kumo";
-import { Brain, DotsThree, File as FileIcon, Plug } from "@phosphor-icons/react";
+import { Brain, DotsThree, File as FileIcon } from "@phosphor-icons/react";
 import { RpcStub } from "capnweb";
 import type {
   AiChatAuthorInfo,
@@ -23,9 +23,7 @@ import type {
   SlashCommandRequest,
 } from "@gadgets/workshop-shared/api";
 import { isTransientRpcError } from "../../../rpcErrors";
-import {
-  parseSlashCommandInput, slashCommandTokenKey,
-} from "../../../components/chat/slash-command-input";
+import { slashCommandTokenKey } from "./slash-commands/slashCommandInput";
 import {
   ComposerMirror, composerTextareaClass, type ComposerMirrorHandle, type MirrorToken,
 } from "./inline-items/ComposerMirror";
@@ -41,7 +39,7 @@ import { WorkshopIconButton } from "../../../components/WorkshopControls";
 import { handlePickerKeyDown } from "../../../pickerNavigation";
 import { useAuthenticatedApi } from "../../../AuthContext";
 import { useVendorBranding } from "../../../useVendorBranding";
-import { useSlashCommandPicker } from "../../../components/chat/SlashCommandPicker";
+import { useSlashCommandPicker } from "./slash-commands/SlashCommandPicker";
 import { isImeComposing } from "../../../keyboardEvent";
 import { ComposerAttachmentTray } from "./attachments/ComposerAttachmentTray";
 import { useComposerAttachmentDrop } from "./attachments/useComposerAttachmentDrop";
@@ -99,7 +97,6 @@ export const ChatComposer = ({
   seedText,
   seedNonce,
   draftStorageKey,
-  attachLabel,
   draftUpdateBanner,
   blockedReason,
   chatKey,
@@ -295,17 +292,8 @@ export const ChatComposer = ({
     onDrop: handleAttachmentDrop,
   } = useComposerAttachmentDrop({
     attachmentCount: pendingAttachments.length,
-    maxAttachments: selectedSlashCommand ? 0 : MAX_COMPOSER_ATTACHMENTS,
-    onFilesDropped: (files) => {
-      if (selectedSlashCommandRef.current) {
-        toasts.add({
-          title: "Remove the selected skill before adding attachments",
-          variant: "error",
-        });
-        return;
-      }
-      void addFiles(files);
-    },
+    maxAttachments: MAX_COMPOSER_ATTACHMENTS,
+    onFilesDropped: (files) => void addFiles(files),
   });
 
   useEffect(() => {
@@ -342,8 +330,6 @@ export const ChatComposer = ({
   }, [seedNonce]);
   const capsulesRef = useRef(capsules);
   capsulesRef.current = capsules;
-  const pendingAttachmentsRef = useRef(pendingAttachments);
-  pendingAttachmentsRef.current = pendingAttachments;
   // Reset overlay selection when the overlay appears or changes URL, preferring a connected account
   // so Tab never reaches for "Connect new account" first.
   useEffect(() => {
@@ -431,13 +417,6 @@ export const ChatComposer = ({
   // caret past it so the next keystroke doesn't grow the token.
   const applySlashCommandSelection = useCallback((
       choice: SlashCommandChoice, tokenStart: number, tokenEnd: number) => {
-    if (capsulesRef.current.length > 0 || pendingAttachmentsRef.current.length > 0) {
-      toasts.add({
-        title: "Remove resources and attachments before selecting a skill",
-        variant: "error",
-      });
-      return;
-    }
     recordDraftEdit();
     const commandText = `/${choice.name}`;
     const transition = resolveComposerSlashCommand(
@@ -582,13 +561,6 @@ export const ChatComposer = ({
   };
 
   const handleAttachOpen = () => {
-    if (selectedSlashCommandRef.current) {
-      toasts.add({
-        title: "Remove the selected skill before adding a resource",
-        variant: "error",
-      });
-      return;
-    }
     const position = composerTextareaRef.current?.selectionStart ?? inputValueRef.current.length;
     openAttachModal(snapCaretOutOfRanges(position, currentTokenRanges(), "nearest"));
   };
@@ -600,10 +572,7 @@ export const ChatComposer = ({
   };
 
   const selectSkillFromAddMenu = (choice: SlashCommandChoice) => {
-    if (selectedSlashCommandRef.current || capsulesRef.current.length > 0 ||
-        pendingAttachmentsRef.current.length > 0) {
-      return;
-    }
+    if (selectedSlashCommandRef.current) return;
     const position = Math.min(addMenuCaretRef.current, inputValueRef.current.length);
     applySlashCommandSelection(choice, position, position);
   };
@@ -726,7 +695,7 @@ export const ChatComposer = ({
     // captured-log floating chip with z-10, the textarea/mirror with z-[1])
     // so they can't paint on top of body-level portaled popovers like the
     // model picker dropdown opening above the composer.
-    <div className={`relative isolate px-2 py-2 sm:px-4 sm:py-4 ${styles.chatInputRoot}`}>
+    <div className="relative isolate px-2 py-2 sm:px-4 sm:py-4">
       <input
         ref={attachmentInputRef}
         type="file"
@@ -735,13 +704,6 @@ export const ChatComposer = ({
         onChange={(event) => {
           const files = Array.from(event.currentTarget.files ?? []);
           event.currentTarget.value = "";
-          if (selectedSlashCommandRef.current) {
-            toasts.add({
-              title: "Remove the selected skill before adding attachments",
-              variant: "error",
-            });
-            return;
-          }
           if (files.length > 0) void addFiles(files);
         }}
       />
@@ -770,11 +732,7 @@ export const ChatComposer = ({
               <span className={`grid h-7 w-7 place-items-center rounded-full ${canAttachMore ? "bg-kumo-brand/12 text-kumo-brand" : "bg-kumo-warning/15 text-kumo-warning"}`}>
                 <FileIcon size={16} weight="duotone" />
               </span>
-              {selectedSlashCommand
-                ? "Remove the selected skill before attaching files"
-                : canAttachMore
-                  ? "Drop files to attach"
-                  : "Messages are limited to 5 attachments"}
+              {canAttachMore ? "Drop files to attach" : "Messages are limited to 5 attachments"}
             </div>
           </div>
         )}
@@ -802,13 +760,6 @@ export const ChatComposer = ({
               <CapsuleOverlay
                 url={activeUrl.text}
                 onSelectAccount={(accountId, vendorId) => {
-                  if (selectedSlashCommandRef.current) {
-                    toasts.add({
-                      title: "Remove the selected skill before adding a resource",
-                      variant: "error",
-                    });
-                    return;
-                  }
                   void createCapsule(accountId, vendorId);
                 }}
                 onRefine={refineUrl}
@@ -886,13 +837,6 @@ export const ChatComposer = ({
                   .filter((file): file is File => file !== null);
                 if (files.length > 0) {
                   e.preventDefault();
-                  if (selectedSlashCommandRef.current) {
-                    toasts.add({
-                      title: "Remove the selected skill before adding attachments",
-                      variant: "error",
-                    });
-                    return;
-                  }
                   void addFiles(files);
                 }
               }}
@@ -1003,9 +947,6 @@ export const ChatComposer = ({
               getOverseer={getOverseer}
               chatExists={!newChat}
               skillSelected={selectedSlashCommand !== null}
-              skillDisabledReason={capsules.length > 0 || pendingAttachments.length > 0
-                ? "Remove resources and attachments to add a skill."
-                : undefined}
               onOpen={rememberAddMenuCaret}
               onUpload={() => attachmentInputRef.current?.click()}
               onAddConnection={handleAttachOpen}
@@ -1044,18 +985,6 @@ export const ChatComposer = ({
                 )}
               </DropdownMenu.Content>
             </DropdownMenu>}
-            <button
-              type="button"
-              onClick={handleAttachOpen}
-              disabled={selectedSlashCommand !== null}
-              title={selectedSlashCommand
-                ? "Remove the selected skill before adding a resource"
-                : undefined}
-              className="inline-flex h-10 flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-[14px] leading-none text-kumo-inactive transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-subtle focus-visible:bg-kumo-tint focus-visible:text-kumo-subtle focus-visible:outline-none active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40 sm:h-8 sm:text-[13px]"
-            >
-              <Plug size={15} className="flex-shrink-0" />
-              <span className={`leading-none ${styles.attachLabelText}`}>{attachLabel ?? "Add resource"}</span>
-            </button>
           </div>
 
           {/* Right actions */}

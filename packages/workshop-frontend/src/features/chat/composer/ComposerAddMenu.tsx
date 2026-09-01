@@ -18,7 +18,7 @@ import {
   ScrollIcon,
 } from "@phosphor-icons/react";
 import type { SlashCommandChoice } from "@gadgets/workshop-shared/api";
-import { filterSlashCommandCatalog } from "../../../components/chat/slash-command-input";
+import { filterSlashCommandCatalog } from "./slash-commands/slashCommandInput";
 import {
   loadSlashCommandCatalog,
   slashCommandKey,
@@ -39,7 +39,6 @@ type ComposerAddMenuProps = {
   chatExists: boolean;
   disabled?: boolean;
   getOverseer: OverseerSource;
-  skillDisabledReason?: string;
   skillSelected?: boolean;
   onAddConnection: () => void;
   onOpen?: () => void;
@@ -48,9 +47,9 @@ type ComposerAddMenuProps = {
 };
 
 type MenuItem =
-  | { kind: "upload"; key: string; disabled: boolean }
-  | { kind: "connection"; key: string; disabled: boolean }
-  | { kind: "skill"; key: string; disabled: false; choice: SlashCommandChoice };
+  | { kind: "upload"; key: string }
+  | { kind: "connection"; key: string }
+  | { kind: "skill"; key: string; choice: SlashCommandChoice };
 
 function menuLayout(anchor: HTMLElement): MenuLayout {
   const margin = 12;
@@ -80,7 +79,6 @@ export default function ComposerAddMenu({
   chatExists,
   disabled = false,
   getOverseer,
-  skillDisabledReason,
   skillSelected = false,
   onAddConnection,
   onOpen,
@@ -100,11 +98,8 @@ export default function ComposerAddMenu({
   const searchRef = useRef<HTMLInputElement>(null);
   const catalogVersionRef = useRef(catalogVersion);
   const listboxId = useId();
-  const skillsAvailable = !skillSelected && !skillDisabledReason;
+  const skillsAvailable = !skillSelected;
   const hasQuery = query.trim().length > 0;
-  const incompatibleActionReason = skillSelected
-    ? "Remove the selected skill before adding files or resources."
-    : undefined;
 
   const skills = useMemo(() => {
     if (!skillsAvailable) return [];
@@ -116,16 +111,15 @@ export default function ComposerAddMenu({
 
   const items = useMemo<MenuItem[]>(() => [
     ...(!hasQuery ? [
-      { kind: "upload" as const, key: "upload", disabled: skillSelected },
-      { kind: "connection" as const, key: "connection", disabled: skillSelected },
+      { kind: "upload" as const, key: "upload" },
+      { kind: "connection" as const, key: "connection" },
     ] : []),
     ...skills.map((choice) => ({
       kind: "skill" as const,
       key: slashCommandKey(choice.selection),
-      disabled: false as const,
       choice,
     })),
-  ], [hasQuery, skillSelected, skills]);
+  ], [hasQuery, skills]);
 
   const close = (restoreFocus = true) => {
     setOpen(false);
@@ -134,7 +128,7 @@ export default function ComposerAddMenu({
   };
 
   const activate = (item: MenuItem | undefined) => {
-    if (!item || item.disabled) return;
+    if (!item) return;
     close(false);
     if (item.kind === "upload") onUpload();
     else if (item.kind === "connection") onAddConnection();
@@ -236,9 +230,6 @@ export default function ComposerAddMenu({
     }
   };
 
-  const unavailableMessage = skillSelected
-    ? incompatibleActionReason
-    : skillDisabledReason;
   const popup = open && layout ? createPortal(
     <div
       ref={popupRef}
@@ -270,11 +261,8 @@ export default function ComposerAddMenu({
                 type="button"
                 role="option"
                 aria-selected={active}
-                aria-disabled={item.disabled}
-                disabled={item.disabled}
-                title={item.disabled ? incompatibleActionReason : undefined}
                 tabIndex={-1}
-                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-kumo-default transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${active && !item.disabled ? "bg-kumo-tint" : "hover:bg-kumo-tint/70"}`}
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-kumo-default transition-colors ${active ? "bg-kumo-tint" : "hover:bg-kumo-tint/70"}`}
                 onPointerMove={() => setActiveIndex(index)}
                 onClick={() => activate(item)}
               >
@@ -316,11 +304,6 @@ export default function ComposerAddMenu({
             </Fragment>
           );
         })}
-        {unavailableMessage && (
-          <p className="m-0 px-3 py-3 text-[12px] leading-4 text-kumo-inactive" role="status">
-            {unavailableMessage}
-          </p>
-        )}
         {skillsAvailable && !loading && items.length === 0 && (
           <p className="m-0 px-3 py-8 text-center text-[13px] text-kumo-inactive">
             {error ? "Couldn’t load skills." : "No skills match your search."}
