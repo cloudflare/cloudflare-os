@@ -665,6 +665,72 @@ describe("hooks widen use scope", () => {
   }));
 });
 
+// An agent spawner's env is a reachability edge: once a gadget binds the spawner, any "use"
+// collaborator can spawn an agent seeded with the env's connections (connectToGadget ->
+// spawn/spawnCallable), so those connections join their verification scope transitively -- and
+// binding the spawner is the widening moment, exactly like binding the connection itself.
+describe("agent spawner envs widen use scope", () => {
+  function seedSpawner(impl: any, id: number, env: Record<string, number>): void {
+    impl.storage.gatekeepers.put({
+      id,
+      resourceTitle: `Spawner ${id}`,
+      class: {} as any,
+      creationSpec: {
+        type: "agentSpawner",
+        config: { displayName: "S", modelId: null, env },
+      },
+    });
+  }
+
+  it("binding a spawner restarts a connected use collaborator and quarantines its env targets",
+      () => withImpl(async (impl, restarts) => {
+    joinSession(impl, "use");
+    seedGatekeeper(impl, 1);
+    seedSpawner(impl, 2, { DB: 1 });
+    seedGadget(impl, 100);
+
+    impl.bindWorkpiece(100, "SPAWN", 2);
+
+    expect(restarts).toHaveLength(1);
+    // The env target is what the widening exposed, so it is blocked until the reset lands; the
+    // spawner itself is vendorless -- nobody is ever verified against it -- and stays usable.
+    expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
+    expect(() => impl.assertGatekeeperUsable(2)).not.toThrow();
+  }));
+
+  it("spawner-to-spawner env edges widen transitively",
+      () => withImpl(async (impl, restarts) => {
+    joinSession(impl, "use");
+    seedGatekeeper(impl, 1);
+    seedSpawner(impl, 2, { DB: 1 });
+    seedSpawner(impl, 3, { INNER: 2 });
+    seedGadget(impl, 100);
+
+    // Binding the outer spawner reaches the connection through the inner one: the spawned agent's
+    // env includes the inner spawner, whose own spawns seed from *its* env.
+    impl.bindWorkpiece(100, "SPAWN", 3);
+
+    expect(restarts).toHaveLength(1);
+    expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
+  }));
+
+  it("binding a spawner whose env targets are already in scope widens nothing",
+      () => withImpl(async (impl, restarts) => {
+    seedGatekeeper(impl, 1);
+    seedGadget(impl, 100);
+    impl.bindWorkpiece(100, "DB", 1);  // nobody connected yet: no restart, no mark
+    joinSession(impl, "use");
+    seedSpawner(impl, 2, { DB: 1 });
+
+    // The direct binding already put the connection in scope, so the live session was verified
+    // against it and the spawner's env adds nothing new.
+    impl.bindWorkpiece(100, "SPAWN", 2);
+
+    expect(restarts).toEqual([]);
+    expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
+  }));
+});
+
 // Subscriptions are exports minted into a collaborator's session: a client can dispose the
 // interface while retaining one, and it keeps delivering workspace data -- so each counts toward
 // #hasCollaboratorSession for its own lifetime, like every other retained capability.

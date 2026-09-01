@@ -70,9 +70,11 @@ This feature replaces that all-or-nothing posture with a per-user, gatekeeper-me
     against **every** gatekeeper the Gadget has.
   - **`use`** collaborators (UI only, no chat access — see `UseOverseerInterface`,
     `overseer.ts:2816`) must be verified only against gatekeepers their sessions can actually
-    reach: those **bound by some gadget** (the UI can invoke them) plus those with an **enabled
+    reach: those **bound by some gadget** (the UI can invoke them), those with an **enabled
     hook** (a hook is a live write channel into a gadget they can open, delivering the
-    connection's data regardless of binding edges). See `#useScopeGatekeeperIds`.
+    connection's data regardless of binding edges), plus — transitively — every **env target of a
+    bound agent spawner** (spawning is reachable from the gadget UI, and the spawned agent reads
+    the env's connections with the spawner creator's authority). See `#useScopeGatekeeperIds`.
 - **Account selection.** A collaborator must have their own connected account for each vendor the
   Gadget depends on. For ordinary bindings, they choose which account to use (e.g. work or personal
   Google). If an account cannot be selected automatically, the configuration modal prompts them to
@@ -254,7 +256,8 @@ Logic:
 
 1. **Select in-scope gatekeepers** from `this.storage.gatekeepers.list()`:
    - `build`: all gatekeepers.
-   - `use`: only those some gadget binds or an enabled hook feeds (`#useScopeGatekeeperIds`).
+   - `use`: only those some gadget binds, an enabled hook feeds, or a bound agent spawner's env
+     names (`#useScopeGatekeeperIds`).
    - A `creationSpec` with a `vendorId` requires an account; other specs need no verifier or account
      choice.
 
@@ -413,7 +416,14 @@ verified against, a second name onto a connection already in scope, or a hook on
 already-bound connection all widen nothing and must not sever a shared workspace for nothing.
 
 Shrinking scope needs no restart (`unbindWorkpiece`, `removeGatekeeper`, `disableHook`,
-`deleteHook`): a narrower scope can never under-verify a session admitted at the wider one.
+`deleteHook`): a narrower scope can never under-verify a session admitted at the wider one. That
+rule is about *sessions* — the capabilities a hook firing was already issued (`startHook`'s
+callback and approval queue) are held outside the DO, in other DOs and across resets, and would
+otherwise outlive a shrink un-revoked. So `startHook` returns a per-firing wrapper over the stored
+persistent callback and a queue that both re-check the hook record on every call
+(`requireLiveHook`), implementing the session contract documented on `Gatekeeper.bindHook`: the
+record flip is an authoritative kill even for firings already handed out, and a delivery racing a
+disable throws.
 (`removeGatekeeper` also synchronously deletes the connection's hook records — the authoritative
 kill, since `startHook` re-checks the record before every delivery — and fires the gatekeeper-side
 disables best-effort rather than awaiting them, so a hung gatekeeper can't keep an orphaned hook
@@ -492,9 +502,11 @@ For each id in `description.excludeObservers`:
      drop their registration on *that gatekeeper only* (`removeObserver(observerId)`), keeping the
      record. The scope test is `#inRoleVerificationScope` and is deliberately narrow and
      fail-closed: the only way out is "role is `use`, the connection requires an account, and
-     neither a gadget binding nor an enabled hook makes it reachable" (`#useScopeGatekeeperIds` —
-     an enabled hook keeps writing the connection's data into a gadget the collaborator can open,
-     so it blocks exactly as a binding does). This is the case a stale registration creates — a
+     neither a gadget binding, an enabled hook, nor a bound agent spawner's env makes it
+     reachable" (`#useScopeGatekeeperIds` — an enabled hook keeps writing the connection's data
+     into a gadget the collaborator can open, and a bound spawner's env keeps handing it to
+     agents the collaborator can spawn, so both block exactly as a binding does). This is the
+     case a stale registration creates — a
      `use` collaborator's open never verifies (and so never re-registers or removes) a gatekeeper
      outside their scope, so an unbind leaves them named by a gatekeeper they can no longer reach.
      A rebind puts it back in scope and their next open registers them again.
@@ -513,7 +525,10 @@ For each id in `description.excludeObservers`:
    (observer, gatekeeper) pair (`#withObserverGatekeeperLock`; the overseer is the only caller of
    either, so ordering its own calls is sufficient): the add either lands before the removal
    starts (and the adjacent re-classification then blocks) or waits for it and re-registers
-   cleanly.
+   cleanly. The teardown's *last* removal has no later iteration to re-classify behind it, so a
+   final synchronous pass re-classifies every named observer once more before the observation
+   commits; a throw there can land after some de-registrations already went out, which is benign —
+   a blocked observation writes nothing, and a registration only ever admits an open.
 
 This is the runtime counterpart of `addObserver`: `addObserver` covers observers configured
 *after* data was read; `excludeObservers` covers data read *after* observers were configured.

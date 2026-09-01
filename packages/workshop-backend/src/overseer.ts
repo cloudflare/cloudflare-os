@@ -2692,7 +2692,8 @@ class OverseerImpl implements AgentHooks {
   // reachable through the gadget the hook wakes even when no binding edge names it (see
   // #useScopeGatekeeperIds), so the scope is diffed around the flip exactly as bindWorkpiece
   // does. Disabling or deleting a hook only shrinks scope, which never under-verifies anyone, so
-  // those paths need no counterpart.
+  // those paths need no counterpart -- capabilities issued to firings already in flight are
+  // revoked by their own per-call revalidation instead (see requireLiveHook).
   enableHookRecord(record: BoundHookRecord): void {
     let current = this.storage.boundHooks.get(record.id);
     if (!current || !this.storage.gatekeepers.get(current.gatekeeperId)) {
@@ -5337,7 +5338,10 @@ class OverseerImpl implements AgentHooks {
     // immediately -- a live build session can getGatekeeperById() and openSession() on it with no
     // observer check -- so sever those sessions. It is in no "use" collaborator's scope until some
     // gadget binds it, which restarts then. A vendorless spec (aiModel/agentSpawner) is in nobody's
-    // scope (#inScopeGatekeepers skips it), so it widens nothing.
+    // scope (#inScopeGatekeepers skips it), so it widens nothing at creation -- including an
+    // agentSpawner's env targets: an unbound spawner is unreachable and its env names
+    // pre-existing records, so those enter "use" scope only when a gadget binds the spawner,
+    // which the transitive bind/promotion/hook diffs pick up (#useScopeGatekeeperIds).
     //
     // When sessions were severed, additionally block the id until the reset lands: the record was
     // published above (it must be durable before the reset) but the severed sessions stay live for
@@ -5383,8 +5387,9 @@ class OverseerImpl implements AgentHooks {
     }
 
     // Hooks bound through this connection die with it, synchronously: deleting the record is the
-    // authoritative kill (startHook re-checks it before every delivery), so delivery stops even
-    // if the gatekeeper-side disable below never lands. That disable is best-effort and
+    // authoritative kill (startHook re-checks it before every delivery, and the capabilities a
+    // firing already received revalidate it per call -- see requireLiveHook), so delivery stops
+    // even if the gatekeeper-side disable below never lands. That disable is best-effort and
     // deliberately not awaited -- parking the teardown behind a gatekeeper round trip would keep
     // the connection's data flowing into the gadget for as long as that call took (or forever, if
     // it hangs), with the record gone and nobody verified against it.
@@ -5669,8 +5674,9 @@ class OverseerImpl implements AgentHooks {
   //     their observer record (best-effort removeObserver on all gatekeepers). They are no longer
   //     set up to observe; if they regain access they reconfigure from scratch (Step 3).
   // If no named observer can reach the observation, it is allowed. The teardown yields on every
-  // removal, so each observer is re-classified against current state adjacent to their own -- an
-  // observer put back in scope mid-teardown blocks the observation instead of being de-registered.
+  // removal, so each observer is re-classified at the head of their own iteration, and a final
+  // synchronous pass covers the last removal's window -- an observer put back in scope anywhere
+  // mid-teardown blocks the observation instead of being committed against a stale classification.
   async #enforceExcludeObservers(gatekeeperId: number, observerIds: string[]): Promise<void> {
     let sharing = await this.getSharingManager();
 
@@ -5699,11 +5705,11 @@ class OverseerImpl implements AgentHooks {
 
     // Nobody named can reach the observation. Tear down those who have lost access entirely, since
     // they are no longer set up to observe at all, and de-register the rest from this gatekeeper
-    // only. Each removal awaits, so re-classify adjacent to each one and act on the *current*
-    // answer: a bind plus a fresh open in an earlier removal's window can put an observer back in
-    // scope holding a fresh registration, which the stale removal would then delete -- and
-    // de-registering is fail-open (the gatekeeper stops naming them in `excludeObservers`), so
-    // throw instead, exactly as if they had been in scope all along.
+    // only. Each removal awaits, so re-classify at the head of each iteration and act on the
+    // *current* answer: a bind plus a fresh open in an earlier removal's window can put an
+    // observer back in scope holding a fresh registration, which the stale removal would then
+    // delete -- and de-registering is fail-open (the gatekeeper stops naming them in
+    // `excludeObservers`), so throw instead, exactly as if they had been in scope all along.
     for (let observerId of teardown) {
       let entry = classify(observerId);
       if (!entry) continue;
@@ -5717,6 +5723,20 @@ class OverseerImpl implements AgentHooks {
         await this.#removeObserverFromGatekeepers(observerId, [gatekeeperId]);
       }
     }
+
+    // The loop-head re-checks leave one window uncovered: the final removal's, which no later
+    // iteration classifies behind. Re-classify every named observer once more, synchronously --
+    // only microtask continuations separate this pass from the actions.put that commits the
+    // observation (authorizeObservation is synchronous after this call), and no event is
+    // delivered inside a microtask drain, so what it sees is what the observation commits
+    // against. A throw here lands after some de-registrations already went out, which is benign:
+    // a blocked observation writes nothing, a registration only ever *admits* an open, and
+    // #withObserverGatekeeperLock orders a raced open's addObserver after the removal it raced,
+    // re-registering right behind it. The full list (not just `teardown`) cannot false-block: a
+    // torn-down observer who re-opens mints a fresh observerId, so a stale id stays unresolvable.
+    for (let observerId of observerIds) {
+      if (classify(observerId)?.kind === "inScope") throw blocked();
+    }
   }
 
   // Whether `gatekeeperId` is in the verification scope of a collaborator holding `role`, i.e.
@@ -5724,10 +5744,10 @@ class OverseerImpl implements AgentHooks {
   // being named in its `excludeObservers` means anything.
   //
   // Fail-closed and deliberately narrow: the only way out is "role is `use`, the connection
-  // requires an account, and neither a gadget binding nor an enabled hook makes it reachable"
-  // (see #useScopeGatekeeperIds). A "build" collaborator's scope is every account-requiring
-  // connection, and a connection requiring no account never verifies anyone, so both stay in
-  // scope and block exactly as before.
+  // requires an account, and neither a gadget binding, an enabled hook, nor a reachable agent
+  // spawner's env makes it reachable" (see #useScopeGatekeeperIds). A "build" collaborator's
+  // scope is every account-requiring connection, and a connection requiring no account never
+  // verifies anyone, so both stay in scope and block exactly as before.
   //
   // Uses #accountRequiringUseScope() rather than #inScopeGatekeepers("use"), whose
   // observerVendorId() throws on a legacy record with no creationSpec: an unrelated legacy
@@ -9124,7 +9144,11 @@ class OverseerImpl implements AgentHooks {
   // verification scope: everything bound by some non-provisional gadget (the gadget UI they drive
   // can invoke it), plus every connection with an *enabled* hook -- a hook is a live write channel
   // into the gadget it wakes, delivering the connection's data into state that collaborator can
-  // open, regardless of binding edges.
+  // open, regardless of binding edges -- plus, transitively, every env target of a reachable
+  // agent spawner: connectToGadget mints the bound spawner's loopback with no role filter
+  // (getEnvForLoader), and spawn/spawnCallable seeds the spawned agent's bindings from
+  // config.env (spawnAgent), handing the collaborator an agent that reads those connections
+  // with the creator's authority and returns their data.
   #useScopeGatekeeperIds(): Set<WorkpieceId> {
     let ids = new Set<WorkpieceId>();
     for (let gadget of this.storage.gadgets.list()) {
@@ -9137,6 +9161,24 @@ class OverseerImpl implements AgentHooks {
     }
     for (let hook of this.storage.boundHooks.list()) {
       if (hook.enabled) ids.add(hook.gatekeeperId);
+    }
+
+    // Close over agent-spawner envs. The closure roots at the reachable set above because an
+    // *unbound* spawner is unreachable (loopbacks are minted only through gadget binding edges
+    // and chat bindings, and chats are owner/build-only), and a spawner's env is fixed at
+    // creation -- so every widening lands on the diffs around the sites that grow the roots
+    // (bindWorkpiece, mergeChatChanges, enableHookRecord), with no dedicated trigger.
+    // Spawner-to-spawner env edges are legal, hence the worklist; an env target that is a gadget
+    // is skipped -- env gadgets are non-pending, so their bindings are covered by the first loop.
+    let pending = [...ids];
+    while (pending.length > 0) {
+      let spec = this.storage.gatekeepers.get(pending.pop()!)?.creationSpec;
+      if (spec?.type !== "agentSpawner") continue;
+      for (let target of Object.values(spec.config.env)) {
+        if (ids.has(target) || !this.storage.gatekeepers.get(target)) continue;
+        ids.add(target);
+        pending.push(target);
+      }
     }
     return ids;
   }
@@ -10112,13 +10154,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   async startHook(hookId: number): Promise<{
     callback: NativeRpcStub<RpcTarget>, approvalQueue: ApprovalQueue
   }> {
-    let record = this.impl.storage.boundHooks.get(hookId);
-    if (!record?.enabled) throw new Error("Hook has been deleted or disabled.");
-
-    // The enable that armed this hook may itself be the widening that scheduled a restart
-    // (enableHookRecord), so until the reset lands the connection is quarantined and this inbound
-    // delivery route refuses like every client-reachable one (see #gatekeepersPendingRestart).
-    this.impl.assertGatekeeperUsable(record.gatekeeperId);
+    let record = requireLiveHook(this.impl, hookId);
 
     let vendorId = record.vendorId ??
         gatekeeperVendorId(this.impl.storage.gatekeepers.get(record.gatekeeperId));
@@ -10130,9 +10166,18 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       throw new Error("Gatekeeper is disabled.");
     }
 
+    // Re-read after the await: the KV read leaves the input gate open, so a disable/delete may
+    // have landed while it was in flight, and issuing from the captured record would hand out a
+    // firing on a dead hook (the enableHookRecord/disableHook idiom).
+    record = requireLiveHook(this.impl, hookId);
+
+    // Both returned capabilities revalidate the hook per call rather than trusting this moment:
+    // they are held outside this DO (even across resets -- the stored callback is a persistent
+    // stub), so this is what ties them to the firing, per the session contract documented on
+    // Gatekeeper.bindHook (workshop-shared/gatekeeper.ts).
     return {
-      callback: record.callback,
-      approvalQueue: new ApprovalQueueImpl(this.impl, record.gatekeeperId, {from: "hook"}),
+      callback: makeHookFiringCallback(this.impl, hookId),
+      approvalQueue: new ApprovalQueueImpl(this.impl, record.gatekeeperId, {from: "hook"}, hookId),
     };
   }
 
@@ -12862,14 +12907,64 @@ class SlashCommandAuthorizerImpl extends NativeRpcTarget implements ObservationA
   }
 }
 
+// Re-resolve a hook's record and refuse unless it is still enabled and its connection usable.
+// Deleting or disabling the record is the authoritative kill (removeGatekeeper, deleteHook,
+// disableHook), and the capabilities startHook issues are held outside this DO -- in other DOs
+// (e.g. a scheduler driver), across resets -- so each call through them checks the record *now*
+// rather than trusting the moment of issue. The gatekeeperId check additionally keeps a
+// quarantined connection refused on the hook routes: the enable that armed a hook may itself be
+// the widening that scheduled a restart, and a shrink-then-rewiden leaves stale firings pointing
+// at a connection pending re-verification (see #gatekeepersPendingRestart).
+function requireLiveHook(impl: OverseerImpl, hookId: number): BoundHookRecord {
+  let record = impl.storage.boundHooks.get(hookId);
+  if (!record?.enabled) throw new Error("Hook has been deleted or disabled.");
+  impl.assertGatekeeperUsable(record.gatekeeperId);
+  return record;
+}
+
+// The callback startHook returns to each firing: a wrapper that re-resolves the stored callback
+// through requireLiveHook on every call, so it dies with the hook -- the per-firing revocation
+// the session contract on Gatekeeper.bindHook documents. The stored record.callback itself never
+// leaves the DO again: it is a persistent stub (it survives row deletion and DO resets), so once
+// issued it could never be revoked, and a holder would keep a live write channel into the gadget
+// after a disable/delete shrank every collaborator's verification scope.
+function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcStub<RpcTarget> {
+  // TODO: Same workerd bug as startGatekeeperHook: a Proxy returned as an RpcTarget is judged
+  //   non-pipelineable, so wrap it in a stub manually.
+  return new NativeRpcStub(new Proxy({} as RpcTarget, {
+    get(_target, prop) {
+      // All wildcard properties of a stub appear as functions, so `then` must come back
+      // undefined (this is not a thenable) and symbols are never RPC methods -- the same
+      // dispositions as getGadgetFacet's proxy over the gadget facet.
+      if (typeof prop === "symbol" || prop === "then") return undefined;
+      // async so a refusal is a rejection of this call, not a synchronous throw escaping into
+      // the RPC machinery that invokes the function (workerd reports that as uncaught, too).
+      return async (...args: unknown[]) => {
+        let record = requireLiveHook(impl, hookId);
+        return Reflect.apply((record.callback as any)[prop], record.callback, args);
+      };
+    },
+    getPrototypeOf() {
+      return RpcTarget.prototype;
+    },
+  }));
+}
+
 @validateRpc()
 class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
+  // `hookId` is set only on the queue startHook returns with each firing: that queue is held by
+  // the gatekeeper across awaits (even other DOs), so like the firing's callback it revalidates
+  // the hook per call -- otherwise a firing raced by a disable/delete could keep authorizing
+  // observations against a scope the shrink already excluded someone from (or latch
+  // prohibitAllSharing). Session queues (openSession) pass no hookId: they are bounded by the
+  // facet's in-DO lifetime, which the session chokepoints already gate.
   constructor(private impl: OverseerImpl, private gatekeeperId: number,
-              private caller: GatekeeperCaller) {
+              private caller: GatekeeperCaller, private hookId?: number) {
     super();
   }
 
   authorizeObservation(description: ObservationDescription): Promise<void> {
+    if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
     return this.impl.authorizeObservation(this.gatekeeperId, description, this.caller);
   }
 
@@ -12878,12 +12973,14 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   }
 
   submitAction(action: number, description: ActionDescription): Promise<void> {
+    if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
     return this.impl.submitAction(this.gatekeeperId, action, description, this.caller);
   }
 
   bindHook<Hook extends RpcTarget>(
         controller: Fetcher<HookController<Hook>>, callback: NativeRpcStub<Hook>,
         description: HookDescription): Promise<void> {
+    if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
     return this.impl.bindHook(this.gatekeeperId, controller, callback, description, this.caller);
   }
 }
@@ -12946,8 +13043,11 @@ export class AgentSpawnerGatekeeper
   }
 
   async addObserver(_id: string, _user: Fetcher): Promise<void> {
-    // The agent spawner is not a restricted-access resource: it reads nothing that identifies the
-    // observer or leaks private data, so any observer is permitted. No-op (never throws).
+    // The agent spawner itself is not a restricted-access resource: it reads nothing that
+    // identifies the observer or leaks private data, so any observer is permitted. What it
+    // *reaches* -- the connections its env names -- is modeled in the use-scope closure
+    // (#useScopeGatekeeperIds), so observers are verified against those targets directly.
+    // No-op (never throws).
   }
 
   async removeObserver(_id: string): Promise<void> {

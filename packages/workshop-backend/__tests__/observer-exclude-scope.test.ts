@@ -176,7 +176,9 @@ describe("excludeObservers against the observer's verification scope", () => {
     // it with an addObserver for the same (observer, gatekeeper) pair. The overseer is the only
     // caller of either, so serializing its own calls per pair is what keeps the add from being
     // silently undone by the older removal: it runs only after the removal completes, and
-    // re-registers cleanly.
+    // re-registers cleanly. The observation itself must then block: the bind put the connection
+    // back into Carol's scope while her own removal -- the teardown's last -- was in flight, and
+    // the final re-classification pass sees exactly that.
     let events: string[] = [];
     let releaseRemove!: () => void;
     let removeReached = new Promise<void>(resolve => {
@@ -205,9 +207,32 @@ describe("excludeObservers against the observer's verification scope", () => {
     expect(events).toEqual(["remove:start"]);
 
     releaseRemove();
-    await observation;
+    await expect(observation).rejects.toThrow(/not permitted to see/);
     await open;
     expect(events).toEqual(["remove:start", "remove:end", "add"]);
+  }));
+
+  it("a widening during the final removal blocks the observation",
+      () => withImpl("use", async (impl, removals) => {
+    // Carol is the only named observer and out of scope, so her de-registration is the teardown's
+    // last awaited removal -- the one window no later iteration's loop-head re-classification
+    // covers. The owner binds the connection into a gadget inside exactly that window: Carol is
+    // back in scope, possibly holding a fresh registration from an open racing this teardown, so
+    // the observation must block rather than commit against the stale classification.
+    impl.getGatekeeperFacet = (id: number) => ({
+      removeObserver: async (observerId: string) => {
+        bindIntoGadget(impl);
+        removals.push(`${id}:${observerId}`);
+      },
+    });
+
+    await expect(observe(impl)).rejects.toThrow(/not permitted to see/);
+
+    // The already-issued de-registration is benign partial teardown: a blocked observation writes
+    // nothing, and a registration only ever *admits* an open -- Carol's next open re-registers
+    // her. Her record survives, so her observerId stays resolvable.
+    expect(removals).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`]);
+    expect(impl.storage.observers.byObserverId.get(OBSERVER_ID)).toBeDefined();
   }));
 });
 
@@ -261,6 +286,55 @@ describe("hooks keep an unbound connection in use scope", () => {
         CAROL, { getVerifier: async () => ({}), describeConnectedAccount: async () => null },
         "use");
 
+    expect(added).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`]);
+  }));
+});
+
+// A bound agent spawner's env hands the connections it names to any agent a "use" collaborator
+// spawns through the gadget (connectToGadget -> spawn/spawnCallable seeds the chat from
+// config.env), so those connections stay in their verification scope even with no direct binding
+// edge -- both for exclusion and for what a fresh open verifies them against.
+describe("a bound agent spawner's env keeps its targets in use scope", () => {
+  function bindSpawnerIntoGadget(impl: any): void {
+    impl.storage.gatekeepers.put({
+      id: 200,
+      resourceTitle: "Spawner",
+      class: {} as any,
+      creationSpec: {
+        type: "agentSpawner",
+        config: { displayName: "S", modelId: null, env: { DB: GATEKEEPER_ID } },
+      },
+    });
+    impl.storage.gadgets.put(
+        { id: 100, title: "G", created: new Date(0), bindingName: "G", bindings: {} });
+    impl.bindWorkpiece(100, "SPAWN", 200);
+  }
+
+  it("a use observer blocks an observation from a connection reachable only through the env",
+      () => withImpl("use", async (impl, removals) => {
+    bindSpawnerIntoGadget(impl);
+
+    // No gadget binds the connection itself, but an agent spawned through the bound spawner reads
+    // it with the creator's authority and returns its data into state Carol can open: the
+    // observation must block, exactly as if a gadget bound it directly.
+    await expect(observe(impl)).rejects.toThrow(/not permitted to see/);
+    expect(removals).toEqual([]);
+  }));
+
+  it("a fresh use open is verified against the env's connection",
+      () => withImpl("use", async (impl) => {
+    bindSpawnerIntoGadget(impl);
+    let added: string[] = [];
+    impl.getGatekeeperFacet = (id: number) => ({
+      addObserver: async (observerId: string) => { added.push(`${id}:${observerId}`); },
+      removeObserver: async () => {},
+    });
+
+    await impl.ensureObserver(
+        CAROL, { getVerifier: async () => ({}), describeConnectedAccount: async () => null },
+        "use");
+
+    // Only the env's connection needs verification -- the spawner itself is vendorless.
     expect(added).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`]);
   }));
 });

@@ -1606,6 +1606,10 @@ export type AgentSpawnerConfig = {
    *
    * The entries are deliberately not limited to bindings held by the gadget that owns the
    * spawner: a spawner may define bindings of its own, with its own names and targets.
+   *
+   * Once a gadget binds the spawner, every env target joins each "use" collaborator's
+   * verification scope transitively: spawning is reachable from the gadget UI, and the spawned
+   * agent reads these bindings with the spawner creator's authority.
    */
   env: Record<string, WorkpieceId>,
 };
