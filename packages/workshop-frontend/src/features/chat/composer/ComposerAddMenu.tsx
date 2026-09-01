@@ -18,6 +18,7 @@ import {
   ScrollIcon,
 } from "@phosphor-icons/react";
 import type { SlashCommandChoice } from "@gadgets/workshop-shared/api";
+import { isImeComposing } from "../../../keyboardEvent";
 import { filterSlashCommandCatalog } from "./slash-commands/slashCommandInput";
 import {
   loadSlashCommandCatalog,
@@ -209,6 +210,7 @@ export default function ComposerAddMenu({
   }, [activeIndex]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (isImeComposing(event)) return;
     if (event.key === "Escape") {
       event.preventDefault();
       close();

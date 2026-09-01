@@ -71,6 +71,8 @@ function Harness({
     <div data-testid="active-command">{picker.activeChoice?.selection.commandId}</div>
     <button type="button" data-testid="choose-second" aria-label="Choose second skill"
             onClick={() => picker.setIndex(1)} />
+    <button type="button" data-testid="invalidate-catalog" aria-label="Invalidate skills"
+            onClick={picker.invalidateCatalog} />
     {picker.popup}
   </>;
 }
@@ -175,5 +177,29 @@ describe("SlashCommandPicker", () => {
     await act(async () => vi.waitFor(() => expect(
       document.querySelectorAll('[role="option"]'),
     ).toHaveLength(3)));
+  });
+
+  it("rejects stale catalog results after invalidation", async () => {
+    let resolveFirst!: (result: SlashCommandChoice[]) => void;
+    const listSlashCommands = vi.fn<() => Promise<SlashCommandChoice[]>>(() => {
+      if (listSlashCommands.mock.calls.length === 1) {
+        return new Promise((resolve) => { resolveFirst = resolve; });
+      }
+      return Promise.resolve([choices[1]]);
+    });
+    const overseer = { listSlashCommands } as unknown as RpcStub<Overseer>;
+    const getOverseer = () => overseer;
+    await render(<Harness inputValue="/" getOverseer={getOverseer} onSelect={() => {}} />);
+    await act(async () => vi.waitFor(() => expect(listSlashCommands).toHaveBeenCalledOnce()));
+
+    await act(async () => {
+      container!.querySelector<HTMLButtonElement>('[data-testid="invalidate-catalog"]')!.click();
+    });
+    await act(async () => vi.waitFor(() => expect(listSlashCommands).toHaveBeenCalledTimes(2)));
+    await act(async () => vi.waitFor(() => expect(document.body.textContent).toContain("Debug an issue.")));
+
+    await act(async () => resolveFirst([choices[0]]));
+    expect(document.body.textContent).toContain("Debug an issue.");
+    expect(document.body.textContent).not.toContain("Deploy the current project.");
   });
 });

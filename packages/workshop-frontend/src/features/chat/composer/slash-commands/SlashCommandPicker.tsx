@@ -80,7 +80,9 @@ export function useSlashCommandPicker({
   const [explicitChoiceToken, setExplicitChoiceToken] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
   const [layout, setLayout] = useState<SlashCommandPopupLayout | null>(null);
+  const [catalogGeneration, setCatalogGeneration] = useState(0);
   const catalogRef = useRef<SlashCommandChoice[] | null>(null);
+  const catalogGenerationRef = useRef(0);
   const catalogSourceRef = useRef(getOverseer);
   const popupRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -117,8 +119,11 @@ export function useSlashCommandPicker({
   const loadCatalog = useCallback(async () => {
     if (catalogRef.current) return catalogRef.current;
     const source = getOverseer;
+    const generation = catalogGenerationRef.current;
     const catalog = await loadSlashCommandCatalog(source);
-    if (catalogSourceRef.current === source) catalogRef.current = catalog;
+    if (catalogSourceRef.current === source && catalogGenerationRef.current === generation) {
+      catalogRef.current = catalog;
+    }
     return catalog;
   }, [getOverseer]);
 
@@ -140,6 +145,8 @@ export function useSlashCommandPicker({
 
   const invalidateCatalog = useCallback(() => {
     catalogRef.current = null;
+    catalogGenerationRef.current += 1;
+    setCatalogGeneration(catalogGenerationRef.current);
     invalidateSlashCommandCatalog(getOverseer);
   }, [getOverseer]);
 
@@ -171,7 +178,7 @@ export function useSlashCommandPicker({
     return () => {
       cancelled = true;
     };
-  }, [loadCatalog, offerable, parsed !== null, query]);
+  }, [catalogGeneration, loadCatalog, offerable, parsed !== null, query]);
 
   useEffect(() => {
     if (exactIndex >= 0) setIndex(exactIndex);

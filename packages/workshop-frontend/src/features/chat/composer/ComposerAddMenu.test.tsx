@@ -189,6 +189,28 @@ describe("ComposerAddMenu", () => {
     expect(document.activeElement).toBe(trigger);
   });
 
+  it("does not activate an item when Enter completes IME composition", async () => {
+    const onUpload = vi.fn<() => void>();
+    const getOverseer = () => ({
+      listSlashCommands: async () => [connectedSkill],
+    } as unknown as RpcStub<Overseer>);
+    const host = await mount(
+      <Harness getOverseer={getOverseer} onSelectSkill={() => {}} onUpload={onUpload} />,
+    );
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-haspopup="dialog"]')!.click());
+    await waitFor(() => document.querySelectorAll('[role="option"]').length === 3);
+
+    const search = document.querySelector<HTMLInputElement>('[aria-label="Search skills"]')!;
+    await act(async () => search.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Enter",
+      isComposing: true,
+      bubbles: true,
+    })));
+
+    expect(onUpload).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
   it("refetches the catalog after a connection invalidates it", async () => {
     let catalog = [connectedSkill];
     const listSlashCommands = vi.fn<() => Promise<SlashCommandChoice[]>>(async () => catalog);
