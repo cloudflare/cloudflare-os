@@ -5,7 +5,12 @@ import { access, readdir, readFile, rename, rm, writeFile, mkdir } from "node:fs
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { extractFiles, parseArchive, readSourceFiles } from "./format-blueprint-files.ts";
+import {
+  extractFiles,
+  findInterruptedImportBackups,
+  parseArchive,
+  readSourceFiles,
+} from "./format-blueprint-files.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
@@ -45,7 +50,14 @@ function isErrorCode(err: unknown, code: string): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === code;
 }
 
-const directoryEntries = await readdir(sourceDir, {withFileTypes: true});
+let directoryEntries = await readdir(sourceDir, {withFileTypes: true});
+const interruptedBackups = findInterruptedImportBackups(directoryEntries, sourceDir);
+for (const [name, backup] of interruptedBackups) {
+  await rename(join(sourceDir, backup), join(sourceDir, name));
+}
+if (interruptedBackups.size > 0) {
+  directoryEntries = await readdir(sourceDir, {withFileTypes: true});
+}
 const extractedNames = new Set(directoryEntries
     .filter(entry => entry.isDirectory() && !entry.name.startsWith("."))
     .map(entry => entry.name));

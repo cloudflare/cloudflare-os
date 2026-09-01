@@ -1,4 +1,5 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { join } from "node:path";
 import * as Y from "yjs";
@@ -11,6 +12,28 @@ const MAX_CONTENT_BYTES = 32 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 32 * 1024 * 1024;
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
 const textEncoder = new TextEncoder();
+
+export function findInterruptedImportBackups(
+  entries: Dirent[],
+  label: string,
+): Map<string, string> {
+  const visibleDirectories = new Set(entries
+      .filter(entry => entry.isDirectory() && !entry.name.startsWith("."))
+      .map(entry => entry.name));
+  const backups = new Map<string, string>();
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const match = /^\.(.+)\.backup-\d+$/su.exec(entry.name);
+    const name = match?.[1];
+    if (!name || name.startsWith(".") || visibleDirectories.has(name)) continue;
+    const existing = backups.get(name);
+    if (existing) {
+      invalid(label, `multiple interrupted import backups for ${name}: ${existing}, ${entry.name}`);
+    }
+    backups.set(name, entry.name);
+  }
+  return backups;
+}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -151,21 +174,32 @@ export async function readSourceFiles(
   };
 
   await visit(filesDir, "");
+  validateFilePaths(files.keys(), label);
   return files;
 }
 
 function validateFilePaths(paths: Iterable<string>, label: string): void {
-  const seen = new Set<string>();
-  for (const path of [...paths].toSorted(compareNames)) {
+  const portablePaths = new Map<string, string>();
+  for (const path of paths) {
     validateFilePath(path, label);
-    let slash = path.indexOf("/");
-    while (slash !== -1) {
-      if (seen.has(path.slice(0, slash))) {
-        invalid(label, `${path} conflicts with file ${path.slice(0, slash)}`);
-      }
-      slash = path.indexOf("/", slash + 1);
+    const portable = path.normalize("NFC").toLowerCase().toUpperCase().toLowerCase()
+        .normalize("NFC");
+    const existing = portablePaths.get(portable);
+    if (existing) {
+      invalid(label, `${path} aliases ${existing} on case-insensitive filesystems`);
     }
-    seen.add(path);
+    portablePaths.set(portable, path);
+  }
+
+  for (const [portable, path] of portablePaths) {
+    let slash = portable.indexOf("/");
+    while (slash !== -1) {
+      const parent = portablePaths.get(portable.slice(0, slash));
+      if (parent) {
+        invalid(label, `${path} conflicts with file ${parent}`);
+      }
+      slash = portable.indexOf("/", slash + 1);
+    }
   }
 }
 

@@ -68,6 +68,22 @@ describe("format blueprint source", () => {
       .toThrow("lib/util.js conflicts with file lib");
   });
 
+  it.each([
+    ["Foo.js", "foo.js"],
+    ["caf\u00e9.js", "cafe\u0301.js"],
+    ["\u03a3.js", "\u03c2.js"],
+    ["S.js", "\u017f.js"],
+    ["\u00df.js", "\u1e9e.js"],
+  ])("rejects filesystem-equivalent archive paths %j and %j", (first, second) => {
+    expect(() => buildContent(new Map([[first, "first"], [second, "second"]]), "example"))
+      .toThrow("aliases");
+  });
+
+  it("rejects filesystem-equivalent file and directory conflicts", () => {
+    expect(() => buildContent(new Map([["LIB", "file"], ["lib/util.js", "nested"]]), "example"))
+      .toThrow("lib/util.js conflicts with file LIB");
+  });
+
   it("rejects non-UTF-8 source", async () => {
     let directory = await mkdtemp(join(tmpdir(), "format-blueprint-"));
     temporaryDirectories.push(directory);

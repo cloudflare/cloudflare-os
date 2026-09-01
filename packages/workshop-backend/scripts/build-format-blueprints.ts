@@ -14,7 +14,12 @@ import { readdir, readFile, writeFile, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildContent, readSourceFiles, serializeArchive } from "./format-blueprint-files.ts";
+import {
+  buildContent,
+  findInterruptedImportBackups,
+  readSourceFiles,
+  serializeArchive,
+} from "./format-blueprint-files.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
@@ -143,12 +148,15 @@ function parseManifest(name: string, raw: string): FormatBlueprintManifest {
 // An empty directory is a supported way to ship no formats, so it is a warning rather than an
 // error. A mistyped FORMAT_BLUEPRINTS_DIR fails in readdir() above, which is the case worth
 // catching.
-let contents = (await readdir(sourceDir, {withFileTypes: true}))
-    .filter(entry => !entry.name.startsWith("."));
-let directories = contents
+let allContents = await readdir(sourceDir, {withFileTypes: true});
+let contents = allContents.filter(entry => !entry.name.startsWith("."));
+let directoryPaths = new Map(contents
     .filter(entry => entry.isDirectory())
-    .map(entry => entry.name)
-    .toSorted();
+    .map(entry => [entry.name, entry.name]));
+for (const [name, backup] of findInterruptedImportBackups(allContents, sourceDir)) {
+  directoryPaths.set(name, backup);
+}
+let directories = [...directoryPaths.keys()].toSorted();
 let directorySet = new Set(directories);
 let files = contents.filter(entry => entry.isFile()).map(entry => entry.name);
 let legacyNames = files.filter(file => file.endsWith(".gadget"))
@@ -186,7 +194,8 @@ let entries: Array<Omit<FormatBlueprintManifest,
 let totalBytes = 0;
 let seen = new Map<string, string>();
 let sources = [
-  ...directories.map(name => ({name, kind: "extracted" as const})),
+  ...directories.map(name => ({name, directory: directoryPaths.get(name)!,
+    kind: "extracted" as const})),
   ...legacyNames.map(name => ({name, kind: "legacy" as const})),
 ].toSorted((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 for (let source of sources) {
@@ -195,8 +204,9 @@ for (let source of sources) {
   let entry: FormatBlueprintPresentation;
   let bytes: Uint8Array;
   if (source.kind === "extracted") {
+    let directory = source.directory;
     try {
-      raw = await readFile(join(sourceDir, name, "blueprint.json"), "utf8");
+      raw = await readFile(join(sourceDir, directory, "blueprint.json"), "utf8");
     } catch (err) {
       if (!isErrorCode(err, "ENOENT")) throw err;
       throw new Error(`${name}/ has no blueprint.json describing it.`, { cause: err });
@@ -204,7 +214,7 @@ for (let source of sources) {
     let manifest = parseManifest(name, raw);
     let {created, version, lastUpdated, bindings, ...presentation} = manifest;
     entry = presentation;
-    let sourceFiles = await readSourceFiles(join(sourceDir, name, "files"), `${name}/files`);
+    let sourceFiles = await readSourceFiles(join(sourceDir, directory, "files"), `${name}/files`);
     let metadata = {
       title: manifest.title,
       description: manifest.description,

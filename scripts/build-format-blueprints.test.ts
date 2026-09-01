@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -116,6 +116,39 @@ describe("format blueprint scripts", () => {
     let updatedManifest = JSON.parse(await readFile(join(directory, "example/blueprint.json"), "utf8"));
     assert.equal(updatedManifest.revision, 2);
     assert.equal(updatedManifest.version, 2);
+  });
+
+  it("builds and recovers a blueprint left only in an interrupted-import backup", async () => {
+    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    temporaryDirectories.push(directory);
+    let name = "example format";
+    await mkdir(join(directory, name, "files"), {recursive: true});
+    await writeFile(join(directory, name, "blueprint.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(join(directory, name, "files/client.js"), "// old\n");
+    await rename(join(directory, name), join(directory, `.${name}.backup-123`));
+
+    let build = spawnSync(process.execPath, [buildScript], {
+      cwd: packageRoot,
+      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+      encoding: "utf8",
+    });
+    assert.equal(build.status, 0, build.stderr);
+    assert.match(await readFile(generatedModule, "utf8"), /"blueprintId": "format\.example"/);
+
+    let archivePath = join(directory, ".update.gadget");
+    await writeArchive(archivePath, 2, new Map([["client.js", "// recovered\n"]]));
+    let imported = spawnSync(process.execPath, [importScript, archivePath, "format.example"], {
+      cwd: packageRoot,
+      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+      encoding: "utf8",
+    });
+
+    assert.equal(imported.status, 0, imported.stderr);
+    assert.equal(await readFile(join(directory, name, "files/client.js"), "utf8"),
+      "// recovered\n");
+    await assert.rejects(readFile(join(directory, `.${name}.backup-123/blueprint.json`)),
+      {code: "ENOENT"});
   });
 
   it("rejects dot-prefixed new blueprint names", async () => {
