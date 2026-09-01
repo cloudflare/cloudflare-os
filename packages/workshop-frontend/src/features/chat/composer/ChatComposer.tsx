@@ -968,7 +968,10 @@ export const ChatComposer = ({
                 {/* The deployment's standard formats. Picking one drops its name into the message at
                     the caret; the agent is told what to build from it. */}
                 {canChooseFormat && (
-                  <ComposerFormatMenuItems onSelect={(format) => void chooseFormat(format)} />
+                  <ComposerFormatMenuItems
+                    onSelect={(format) => void chooseFormat(format)}
+                    showTrailingSeparator={onToggleThinkingTraces !== undefined}
+                  />
                 )}
                 {onToggleThinkingTraces && (
                   <DropdownMenu.Item
