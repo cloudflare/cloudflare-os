@@ -10,11 +10,6 @@ import type {
 
 export { default } from "../../src/google";
 export { GmailGatekeeperImpl, UserAccount };
-export {
-  TestHooks as GoogleDocTestHooks,
-  UserAccount as GoogleDocUserAccount,
-} from "../worker";
-export { GoogleDocGatekeeperImpl } from "../../src/google";
 
 type StorageOperation =
   | {kind: "put"; key: string; value: unknown}

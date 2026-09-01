@@ -16,6 +16,7 @@ export default {
         ...vitestTask([
           "vitest run",
           "vitest run -c vitest.worker.config.ts",
+          "vitest run -c vitest.docs-worker.config.ts",
         ]),
         dependsOn: ["build:configurator"],
       },

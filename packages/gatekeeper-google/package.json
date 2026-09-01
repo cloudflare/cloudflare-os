@@ -7,7 +7,7 @@
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
     "deploy": "vp run --no-cache build:configurator && wrangler deploy",
     "clean": "rm -rf dist src/generated",
-    "test:run": "vp run -F @gadgets/google-gatekeeper build:configurator && vitest run && vitest run -c vitest.worker.config.ts"
+    "test:run": "vp run -F @gadgets/google-gatekeeper build:configurator && vitest run && vitest run -c vitest.worker.config.ts && vitest run -c vitest.docs-worker.config.ts"
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
