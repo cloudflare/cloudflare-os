@@ -21,7 +21,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260808.1",
+    "@cloudflare/workers-types": "^5.20260825.1",
     "@types/node": "^26.1.0",
     "capnweb-validate": "catalog:",
     "typescript": "catalog:",

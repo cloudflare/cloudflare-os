@@ -4,7 +4,7 @@ packages:
 # The toolchain versions every package shares. Declared once here so a bump is one edit rather than
 # needing to hand edit a bunch of different package.json files.
 catalog:
-  '@cloudflare/vitest-pool-workers': ^0.20.2
+  '@cloudflare/vitest-pool-workers': ^0.22.0
   capnweb: ^0.12.0
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
   capnweb-validate: 0.3.0
@@ -18,7 +18,7 @@ catalog:
   vite: 7.3.6
   vite-plus: ^0.2.8
   vitest: ^4.1.10
-  wrangler: ^4.119.0
+  wrangler: ^4.125.0
 
 overrides:
   # Vitest peers can resolve vite@latest, so the version is pinned rather than ranged. Points at the
