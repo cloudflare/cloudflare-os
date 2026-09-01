@@ -62,7 +62,7 @@ importers:
         specifier: 'catalog:'
         version: 0.2.8(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(esbuild@0.28.1)(jiti@2.7.0)(jsdom@26.1.0(supports-color@10.2.2))(terser@5.49.2)(typescript@7.0.2)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(yaml@2.9.0)
       wrangler:
-        specifier: 4.125.0
+        specifier: 'catalog:'
         version: 4.125.0(@cloudflare/workers-types@5.20260825.1)
 
   packages/backend-utils:
