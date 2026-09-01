@@ -1,6 +1,9 @@
 import type {SlashCommandChoice} from "@gadgets/workshop-shared/api";
 import type {ComposerRange} from "./composer-tokens";
 
+const normalizeSearchText = (value: string) =>
+  value.trim().replace(/\s+/g, " ").toLowerCase();
+
 export type ParsedSlashCommandInput = {
   /** Text between `/` and the first whitespace, lowercased for matching. */
   query: string;
@@ -78,11 +81,11 @@ export function exactSlashCommandMatches(
 /** Filters a loaded catalog for display in the picker. */
 export function filterSlashCommandCatalog(
     catalog: SlashCommandChoice[], query: string): SlashCommandChoice[] {
-  query = query.toLowerCase();
+  query = normalizeSearchText(query);
   let matches = catalog.filter(choice => !query ||
-    choice.name.toLowerCase().includes(query) ||
-    choice.description.toLowerCase().includes(query) ||
-    choice.providerLabel.toLowerCase().includes(query) ||
-    choice.resourceLabel?.toLowerCase().includes(query));
+    normalizeSearchText(choice.name).includes(query) ||
+    normalizeSearchText(choice.description).includes(query) ||
+    normalizeSearchText(choice.providerLabel).includes(query) ||
+    choice.resourceLabel && normalizeSearchText(choice.resourceLabel).includes(query));
   return matches;
 }

@@ -69,6 +69,9 @@ describe("slash command composer input", () => {
   it("filters a loaded catalog locally", () => {
     expect(filterSlashCommandCatalog(choices, "runbook")).toEqual([choices[0]]);
     expect(filterSlashCommandCatalog(choices, "github")).toEqual([choices[1]]);
+    expect(filterSlashCommandCatalog([
+      { ...choices[0], description: "Review   a deployment runbook" },
+    ], " review a ")).toHaveLength(1);
   });
 
   it("parses non-whitespace command tokens", () => {

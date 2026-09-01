@@ -26,6 +26,11 @@ export function loadSlashCommandCatalog(source: OverseerSource): Promise<SlashCo
   return load;
 }
 
+/** Drops a cached catalog after a connection changes the available commands. */
+export function invalidateSlashCommandCatalog(source: OverseerSource): void {
+  catalogs.delete(source);
+}
+
 /**
  * Identifies a command across providers. A built-in has no Gatekeeper, so it gets its own namespace
  * rather than colliding on an undefined one.

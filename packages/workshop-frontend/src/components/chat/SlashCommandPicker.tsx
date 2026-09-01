@@ -12,7 +12,11 @@ import {
   exactSlashCommandMatches, filterSlashCommandCatalog, parseSlashCommandInput,
   slashCommandTokenKey, type ParsedSlashCommandInput,
 } from "./slash-command-input";
-import { loadSlashCommandCatalog, slashCommandKey } from "./slash-command-catalog";
+import {
+  invalidateSlashCommandCatalog,
+  loadSlashCommandCatalog,
+  slashCommandKey,
+} from "./slash-command-catalog";
 
 type SlashCommandPopupLayout = {
   left: number;
@@ -142,6 +146,11 @@ export function useSlashCommandPicker({
     let matches = exactSlashCommandMatches(offerable(await loadCatalog()), current);
     return matches.length === 1 ? matches[0] : null;
   }, [loadCatalog, offerable]);
+
+  const invalidateCatalog = useCallback(() => {
+    catalogRef.current = null;
+    invalidateSlashCommandCatalog(getOverseer);
+  }, [getOverseer]);
 
   useEffect(() => {
     if (!parsed) {
@@ -292,6 +301,7 @@ export function useSlashCommandPicker({
       : undefined,
     choices,
     dismiss: () => setDismissedToken(activeToken),
+    invalidateCatalog,
     listboxId,
     open,
     popup,
