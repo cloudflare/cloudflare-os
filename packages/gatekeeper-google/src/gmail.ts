@@ -136,6 +136,7 @@ type GmailDraftWriteReceipt = {
   messageId: string;
   threadId?: string;
   missing?: true;
+  unverified?: true;
 };
 
 type GmailSentMessageReceipt = {
@@ -1109,6 +1110,10 @@ async function readDraftProviderBaseline(
   }
   const parsed = await parseSafeGmailDraft(current.message);
   const fingerprint = await gmailDraftFingerprint(parsed, current.message.threadId);
+  if (receipt.unverified && fingerprint !== approvedOutputFingerprint) {
+    throw new Error(
+      "The Gmail draft revision changed before its provider-normalized state could be recorded.");
+  }
   if (current.message.id !== receipt.messageId) {
     const expectedThreadId = receipt.threadId ?? approvedThreadId;
     if (fingerprint !== approvedOutputFingerprint || !expectedThreadId ||
@@ -1575,8 +1580,8 @@ async function mapMatchingApplyingDraftCreate(
     throw new Error("A discovered Gmail draft has the approved Message-ID but different content.");
   }
   const mapped = store.mapDraftToProvider(resource.logicalId, provider.id, matched.id);
-  // Listing has already verified the provider-normalized draft. Persist the provider receipt so a
-  // later retry can finish reconciliation without creating another draft.
+  // Listing has verified both identity and content. Persist the provider receipt so a later retry
+  // can finish reconciliation without creating another draft.
   store.setDraftWriteReceipt(matched.id, {
     draftId: provider.id,
     messageId: provider.message.id,
@@ -3865,18 +3870,19 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
               "The previous Gmail draft creation outcome is still unknown; refusing to create a duplicate.");
           }
           const current = await api.getDraft(existing.id);
+          const receipt = {
+            draftId: existing.id,
+            messageId: current.message.id,
+            threadId: current.message.threadId,
+            unverified: true as const,
+          };
+          store.setDraftWriteReceipt(actionId, receipt);
           const parsed = await parseSafeGmailDraft(current.message);
           if (await gmailDraftFingerprint(parsed, current.message.threadId) !==
               approvedOutputFingerprint) {
             throw new Error(
               "The reconciled Gmail draft no longer matches the approved create action.");
           }
-          const receipt = {
-            draftId: existing.id,
-            messageId: current.message.id,
-            threadId: current.message.threadId,
-          };
-          store.setDraftWriteReceipt(actionId, receipt);
           const completed = store.completeDraftWrite(actionId, {
             ...receipt,
             fingerprint: approvedOutputFingerprint,
@@ -4003,19 +4009,18 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
           break;
         }
         if (current.id !== id) throw new Error("Gmail returned a different draft during deletion.");
+        // A successful GET of this exact draft proves the earlier DELETE did not complete.
+        if (reconciling) store.clearApplying(actionId);
         if (action.expectedProviderMessageId &&
             current.message.id !== action.expectedProviderMessageId) {
-          if (reconciling) store.clearApplying(actionId);
           throw new Error(
             "The Gmail draft revision changed outside this approval sequence; refusing to delete it.");
         }
         const parsed = await parseSafeGmailDraft(current.message);
         if (await gmailDraftFingerprint(parsed, current.message.threadId) !== action.expectedSnapshot) {
-          if (reconciling) store.clearApplying(actionId);
           throw new Error(
             "The Gmail draft changed outside this approval sequence; refusing to delete a different revision.");
         }
-        if (reconciling) store.clearApplying(actionId);
         try {
           await applyUncertainWrite(store, actionId, () => api.deleteDraft(id));
         } catch (error) {
@@ -4211,8 +4216,8 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         `Gmail action ${actionId} has an uncertain provider outcome and must be reconciled first.`);
     }
     if (receipt && !receipt.missing && action.type === "draftCreate") {
-      // The remote write is real even if its normalized baseline could not be captured. Preserve
-      // the provider draft while rejecting this local reconciliation and its dependent overlays.
+      // The stable Message-ID proves the remote write is real even if its content changed before
+      // reconciliation. Preserve that provider draft while rejecting the local pending action.
       store.mapDraftToProvider(action.draft.logicalId, receipt.draftId, actionId);
     }
     store.deleteForwardSnapshot(actionSourceAttachment(action), actionId);
@@ -4222,8 +4227,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     if (action.type === "draftCreate") {
       const resource = store.getDraft(action.draft.logicalId);
       if (resource) {
-        // A mapped resource is a provider write already proven to match the approved create.
-        // Rejecting its retry cannot undo that write, so keep the real draft visible.
+        // Rejecting reconciliation cannot undo an identified provider write, so keep it visible.
         if (receipt?.missing) resource.status = "deleted";
         else if (!resource.providerId) resource.status = "rejected";
         resource.version++;

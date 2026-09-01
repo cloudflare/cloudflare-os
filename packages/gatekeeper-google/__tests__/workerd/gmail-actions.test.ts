@@ -1629,6 +1629,68 @@ describe("Gmail forward action snapshots", () => {
     expect(await values.get(`gmail:draft:${logicalId}`)).toMatchObject({providerId: "provider-draft"});
   });
 
+  it("allows rejection when an ambiguously created draft was edited externally", async () => {
+    let visible = false;
+    let creates = 0;
+    let messageRfcId: string | undefined;
+    const {gatekeeper, values} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/drafts" && init.method === "POST") {
+        creates++;
+        throw new Error("connection lost after draft create");
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        return json({messages: visible ? [{id: "provider-message", threadId: "provider-thread"}] : []});
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/provider-message" && !init.method) {
+        return json(messageMetadata("provider-message", "provider-thread", messageRfcId!));
+      }
+      if (url.pathname === "/gmail/v1/users/me/drafts" && !init.method) {
+        return json({drafts: [{id: "provider-draft", message: {id: "provider-message"}}]});
+      }
+      if (url.pathname === "/gmail/v1/users/me/drafts/provider-draft" && !init.method) {
+        return json({
+          id: "provider-draft",
+          message: {
+            id: "provider-message",
+            threadId: "provider-thread",
+            internalDate: "1",
+            raw: new GmailApi("me@example.com", async () => "token").buildOutbound({
+              ...outboundSpec(messageRfcId), subject: "Subject", text: "Externally edited",
+            }).raw,
+          },
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = await session.createDraft({
+      to: ["to@example.com"], subject: "Subject", text: "Body",
+    });
+    const {id: logicalId} = await draft.getMetadata();
+    const action = await values.get<{draft: GmailDraftState}>("pending:action:1");
+    if (!action) throw new Error("Missing staged draft action.");
+    messageRfcId = action.draft.rfcMessageId;
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost/);
+    visible = true;
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/no longer matches/);
+
+    expect(creates).toBe(1);
+    expect(await values.get("gmail:draftWriteReceipt:1")).toEqual({
+      draftId: "provider-draft",
+      messageId: "provider-message",
+      threadId: "provider-thread",
+      unverified: true,
+    });
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/revision changed/);
+    await gatekeeper.rejectAction(1);
+    expect(await values.has("pending:action:1")).toBe(false);
+    expect(await values.has("gmail:applying:1")).toBe(false);
+    expect(await values.get(`gmail:draft:${logicalId}`)).toMatchObject({
+      providerId: "provider-draft", status: "active",
+    });
+  });
+
   it("reads the initially captured bytes through a provisional attachment capability", async () => {
     const initial = new Uint8Array([0, 17, 34, 128, 255]);
     const {gatekeeper, storage} = actionHarness((url, init) => {
@@ -4530,6 +4592,83 @@ describe("Gmail draft dependency reconciliation", () => {
     expect(await values.has("gmail:applying:1")).toBe(false);
     await expect(gatekeeper.rejectAction(1)).resolves.toBeUndefined();
     expect(await values.has("pending:action:1")).toBe(false);
+    expect(deletes).toBe(1);
+  });
+
+  it("allows rejection when a retry finds a draft that cannot be parsed", async () => {
+    const providerId = "provider-draft";
+    const state: GmailDraftState = {
+      logicalId: providerId,
+      providerId,
+      messageId: "provider-message",
+      threadId: "provider-thread",
+      from: "me@example.com",
+      replyTo: [],
+      to: ["to@example.com"],
+      cc: [],
+      bcc: [],
+      date: TEST_DRAFT_DATE,
+      subject: "Subject",
+      text: "Body",
+      rfcMessageId: "<ambiguous-delete-parse@gadgets.invalid>",
+      timestamp: 1,
+      attachments: [],
+      version: 0,
+    };
+    const originalRaw = new GmailApi("me@example.com", async () => "token").buildOutbound({
+      ...outboundSpec(state.rfcMessageId), subject: state.subject, text: state.text,
+    }).raw;
+    const unsupportedRaw = base64Url([
+      "From: me@example.com",
+      "To: to@example.com",
+      `Date: ${TEST_DRAFT_DATE}`,
+      "Subject: Subject",
+      `Message-ID: ${state.rfcMessageId}`,
+      "Sender: delegate@example.com",
+      "Content-Type: text/plain; charset=utf-8",
+      "",
+      "Body",
+    ].join("\r\n"));
+    let malformed = false;
+    let deletes = 0;
+    const {gatekeeper, storage, values} = actionHarness((url, init) => {
+      if (url.pathname === `/gmail/v1/users/me/drafts/${providerId}` && !init.method) {
+        return json({
+          id: providerId,
+          message: {
+            id: state.messageId,
+            threadId: state.threadId,
+            internalDate: "1",
+            raw: malformed ? unsupportedRaw : originalRaw,
+          },
+        });
+      }
+      if (url.pathname === `/gmail/v1/users/me/drafts/${providerId}` && init.method === "DELETE") {
+        deletes++;
+        return json({error: "failed"}, 500);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    storage.kv.put(`gmail:draft:${providerId}`, {
+      logicalId: providerId, providerId, createdAt: 1, status: "active", version: 1,
+    });
+    storage.kv.put("pending:action:1", {
+      type: "draftDelete",
+      draftId: providerId,
+      expectedSnapshot: await gmailDraftStateFingerprint(state),
+      expectedProviderMessageId: state.messageId,
+      dependsOn: [],
+    });
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/drafts\.delete failed/);
+    expect(await values.has("gmail:applying:1")).toBe(true);
+    malformed = true;
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/unsupported top-level header/);
+    expect(await values.has("gmail:applying:1")).toBe(false);
+    await expect(gatekeeper.rejectAction(1)).resolves.toBeUndefined();
+    expect(await values.has("pending:action:1")).toBe(false);
+    expect(await values.get(`gmail:draft:${providerId}`)).toMatchObject({status: "active"});
     expect(deletes).toBe(1);
   });
 
