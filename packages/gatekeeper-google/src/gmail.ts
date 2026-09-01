@@ -73,6 +73,7 @@ type GmailMutationOperation =
 type GmailSourceAttachment = GmailForwardSnapshotReference & {
   messageId: string;
   description: string;
+  contentType?: "application/octet-stream";
 };
 
 type GmailMessageMutationAction = {
@@ -230,8 +231,6 @@ function gmailAutoApprovalMetadata(
   }
 }
 
-// Legacy non-delivery actions remain applyable. Outbound records fail closed because this state
-// cannot prove whether a previous implementation already attempted delivery.
 type LegacyGmailAction =
   | {type: "archive" | "trash" | "markRead" | "markUnread"; threadId: string}
   | {type: "send"; to: string[]; subject: string; body: string}
@@ -241,10 +240,12 @@ type LegacyGmailAction =
       threadId: string;
       body: string;
       replyAll: boolean;
+      sourceWasSent?: boolean;
     }
   | {type: "forward"; sourceMessageId: string; to: string[]; body?: string};
 
 type StoredGmailAction = GmailAction | LegacyGmailAction;
+type LegacyGmailOutboundAction = Extract<LegacyGmailAction, {type: "send" | "reply" | "forward"}>;
 
 class GmailStore {
   #storage: DurableObjectStorage;
@@ -283,10 +284,19 @@ class GmailStore {
   }
   #sentProviderKey(providerId: string) { return `gmail:sentProvider:${providerId}`; }
 
+  #bumpActionGeneration(): void {
+    this.#kv.put("pending:actionGeneration", this.actionGeneration() + 1);
+  }
+
+  actionGeneration(): number {
+    return this.#kv.get<number>("pending:actionGeneration") ?? 0;
+  }
+
   submit(action: StoredGmailAction): number {
     const id = this.#kv.get<number>("pending:nextActionId") ?? 1;
     this.#kv.put("pending:nextActionId", id + 1);
     this.#kv.put(this.#actionKey(id), action);
+    this.#bumpActionGeneration();
     return id;
   }
 
@@ -302,9 +312,22 @@ class GmailStore {
   }
 
   removeAction(id: number): void {
+    const existed = this.getAction(id) !== undefined;
     this.#kv.delete(this.#actionKey(id));
     this.#kv.delete(this.#draftWriteReceiptKey(id));
     this.#kv.delete(this.#sendFingerprintKey(id));
+    if (existed) this.#bumpActionGeneration();
+  }
+
+  upgradeLegacyOutboundAction(id: number, action: GmailSendAction): void {
+    this.#storage.transactionSync(() => {
+      const current = this.getAction(id);
+      if (!current || !isLegacyOutboundGmailAction(current)) {
+        throw new Error("The pending legacy Gmail action changed while it was being upgraded.");
+      }
+      this.#kv.put(this.#actionKey(id), action);
+      this.#bumpActionGeneration();
+    });
   }
 
   markApplying(id: number): void { this.#kv.put(this.#applyingKey(id), Date.now()); }
@@ -818,6 +841,12 @@ function isLegacyGmailAction(action: StoredGmailAction): action is LegacyGmailAc
     (action.type === "send" && !("spec" in action));
 }
 
+function isLegacyOutboundGmailAction(
+    action: StoredGmailAction): action is LegacyGmailOutboundAction {
+  return isLegacyGmailAction(action) &&
+    (action.type === "send" || action.type === "reply" || action.type === "forward");
+}
+
 function actionSourceAttachment(action: StoredGmailAction): GmailSourceAttachment | undefined {
   if (action.type === "draftCreate") return action.sourceAttachment;
   if (action.type === "draftUpdate" || action.type === "draftDelete" ||
@@ -1116,7 +1145,7 @@ function materializeSourceAttachment(
   }
   return {
     filename: "forwarded-message.eml",
-    contentType: "message/rfc822",
+    contentType: snapshot.contentType ?? "message/rfc822",
     data: bytesToBase64(bytes),
     disposition: "attachment",
     description: snapshot.description,
@@ -2213,7 +2242,12 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
       throw new Error("renameLabel() is only available on a whole-mailbox Gmail binding.");
     }
     validateGmailLabelName(name);
-    const canonical = await resolveMutableLabel(this.#ctx, label);
+    let generation: number;
+    let canonical: CanonicalMutableLabel;
+    do {
+      generation = this.#ctx.store.actionGeneration();
+      canonical = await resolveMutableLabel(this.#ctx, label);
+    } while (generation !== this.#ctx.store.actionGeneration());
     if (canonical.type !== "custom") throw new Error("System Gmail labels cannot be renamed.");
     const resource = ensureLabelResource(this.#ctx, canonical);
     const dependencies = dependenciesFor(this.#ctx.store, resource.logicalId, "label");
@@ -3412,6 +3446,66 @@ async function applyUncertainWrite<T>(
   }
 }
 
+async function upgradeLegacyOutboundAction(
+    api: GmailApi, store: GmailStore, actionId: number,
+    action: LegacyGmailOutboundAction): Promise<GmailSendAction> {
+  let upgraded: GmailSendAction;
+  if (action.type === "send") {
+    const message = api.buildSendRaw(action.to, action.subject, action.body);
+    validateOutboundFields(message, message.subject, message.body, message.html);
+    upgraded = {type: "send", mode: "new", spec: outboundSpec(message)};
+  } else if (action.type === "reply") {
+    const source = await api.getMessage(action.sourceMessageId);
+    if (source.id !== action.sourceMessageId || source.threadId !== action.threadId) {
+      throw new Error("Gmail returned a different source message while upgrading a legacy reply.");
+    }
+    const message = await api.buildLegacyReplyRaw(
+      source, action.body, action.replyAll, action.sourceWasSent);
+    validateOutboundFields(message, message.subject, message.body, message.html);
+    upgraded = {
+      type: "send",
+      mode: "reply",
+      spec: outboundSpec(message),
+      threadId: action.threadId,
+      sourceMessageId: action.sourceMessageId,
+    };
+  } else {
+    const source = await api.getMessage(action.sourceMessageId);
+    if (source.id !== action.sourceMessageId) {
+      throw new Error("Gmail returned a different source message while upgrading a legacy forward.");
+    }
+    const info = await api.parseMessageInfo(source);
+    const subject = info.subject.toLowerCase().startsWith("fwd:")
+      ? info.subject
+      : `Fwd: ${info.subject}`;
+    const message = api.buildSendRaw(
+      action.to, subject, action.body ?? "Forwarded message attached.");
+    validateOutboundFields(message, message.subject, message.body, message.html);
+    const bytes = decodeBase64UrlToBytes(source.raw);
+    const snapshot = await store.captureForwardSnapshot(bytes);
+    const sourceAttachment: GmailSourceAttachment = {
+      ...snapshot,
+      messageId: source.id,
+      description: "Complete original message approved by a legacy Gmail forward action.",
+      contentType: "application/octet-stream",
+    };
+    upgraded = {
+      type: "send",
+      mode: "forward",
+      spec: outboundSpec(message),
+      sourceMessageId: action.sourceMessageId,
+      sourceAttachment,
+    };
+  }
+  try {
+    store.upgradeLegacyOutboundAction(actionId, upgraded);
+  } catch (error) {
+    store.deleteForwardSnapshot(upgraded.sourceAttachment);
+    throw error;
+  }
+  return upgraded;
+}
+
 async function exactSpecWithSource(
     api: GmailApi, store: GmailStore, spec: GmailOutboundSpec,
     snapshot: GmailSourceAttachment | undefined, inline = false): Promise<GmailOutboundSpec> {
@@ -3687,19 +3781,20 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
       const api = new GmailApi(selfEmail, opts => this.#getAccessToken(opts));
 
       await reconcileDraftActionAlias(api, store, initialAction);
-      const action = store.getAction(actionId);
+      let action = store.getAction(actionId);
       if (!action) throw new Error(`Unknown pending Gmail action: ${actionId}`);
       if ("dependsOn" in action) assertDependencies(store, action);
-      if (isLegacyGmailAction(action) &&
-          (action.type === "send" || action.type === "reply" || action.type === "forward")) {
-        throw new Error(
-          "This legacy outbound Gmail action cannot be retried safely. Inspect Sent mail to " +
-          "determine whether it was delivered before rejecting or resubmitting it.");
-      }
-      if ((this.ctx.props.searchQuery !== undefined || this.ctx.props.labelName !== undefined) &&
-          isLegacyGmailAction(action)) {
+      const restricted = this.ctx.props.searchQuery !== undefined ||
+        this.ctx.props.labelName !== undefined;
+      // Legacy replies and forwards were minted from an admitted message capability. A legacy
+      // standalone send could only have been minted by a whole-mailbox binding.
+      if (restricted && isLegacyGmailAction(action) &&
+          action.type !== "reply" && action.type !== "forward") {
         throw new Error(
           "This legacy Gmail action cannot be applied through a restricted binding safely.");
+      }
+      if (isLegacyOutboundGmailAction(action)) {
+        action = await upgradeLegacyOutboundAction(api, store, actionId, action);
       }
 
       switch (action.type) {
@@ -3890,6 +3985,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
       case "draftDelete": {
         const existing = store.getDraft(action.draftId);
         if (store.isApplying(actionId) && existing?.status === "deleted") break;
+        const reconciling = store.isApplying(actionId);
         const id = providerDraftId(store, action.draftId);
         let current: GmailDraftRaw;
         try {
@@ -3910,17 +4006,25 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
           store.clearApplying(actionId);
           break;
         }
+        if (current.id !== id) throw new Error("Gmail returned a different draft during deletion.");
         if (action.expectedProviderMessageId &&
             current.message.id !== action.expectedProviderMessageId) {
+          if (reconciling) store.clearApplying(actionId);
           throw new Error(
             "The Gmail draft revision changed outside this approval sequence; refusing to delete it.");
         }
         const parsed = await parseSafeGmailDraft(current.message);
         if (await gmailDraftFingerprint(parsed, current.message.threadId) !== action.expectedSnapshot) {
+          if (reconciling) store.clearApplying(actionId);
           throw new Error(
             "The Gmail draft changed outside this approval sequence; refusing to delete a different revision.");
         }
-        await applyUncertainWrite(store, actionId, () => api.deleteDraft(id));
+        if (reconciling) store.clearApplying(actionId);
+        try {
+          await applyUncertainWrite(store, actionId, () => api.deleteDraft(id));
+        } catch (error) {
+          if (!(error instanceof GmailApiError && error.status === 404)) throw error;
+        }
         const resource = store.getDraft(action.draftId)!;
         resource.status = "deleted";
         resource.version++;

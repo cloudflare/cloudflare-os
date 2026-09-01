@@ -2756,6 +2756,68 @@ export class GmailApi {
     }, body, replyAll, options, messageId);
   }
 
+  /** Rebuild a persisted pre-snapshot reply with its historical recipient semantics. */
+  async buildLegacyReplyRaw(
+      originalMessage: GmailMessageRaw, body: string, replyAll: boolean,
+      sourceWasSent?: boolean, messageId = newGmailMessageId()): Promise<GmailOutboundMessage> {
+    const original = await parseMimeMessage(originalMessage.raw);
+    const originalFromAddr = original.from?.address ?? "";
+    const originalSubject = original.subject ?? "";
+    const self = this.selfEmail.toLowerCase();
+    const originalTo = postalAddressListToEmailAddresses(original.to)
+      .map(address => address.address)
+      .filter(address => address && address.toLowerCase() !== self);
+    const originalCc = postalAddressListToEmailAddresses(original.cc)
+      .map(address => address.address)
+      .filter(address => address && address.toLowerCase() !== self);
+    const sentBySelf = sourceWasSent ??
+      (originalMessage.labelIds?.includes("SENT") === true ||
+        originalFromAddr.toLowerCase() === self);
+    const replyTo = postalAddressListToEmailAddresses(original.replyTo)
+      .map(address => address.address)
+      .filter(Boolean);
+    let to = sentBySelf
+      ? (replyAll ? originalTo : originalTo.slice(0, 1))
+      : (replyTo.length > 0 ? replyTo : [originalFromAddr].filter(Boolean));
+    let cc: string[] = [];
+    if (replyAll) {
+      const seen = new Set(to.map(address => address.toLowerCase()));
+      const candidates = sentBySelf ? originalCc : [...originalTo, ...originalCc];
+      cc = candidates.filter(address => {
+        const lower = address.toLowerCase();
+        if (lower === self || seen.has(lower)) return false;
+        seen.add(lower);
+        return true;
+      });
+    }
+    to = normalizeEmailRecipients(to);
+    cc = normalizeEmailRecipients(cc)
+      .filter(address => !to.some(item => item.toLowerCase() === address.toLowerCase()));
+    if (to.length === 0) {
+      throw new Error("Cannot construct a reply: source message has no usable recipient.");
+    }
+    const subject = originalSubject.toLowerCase().startsWith("re:")
+      ? originalSubject
+      : `Re: ${originalSubject}`;
+    const originalMsgId = original.messageId?.trim();
+    if (!originalMsgId) {
+      throw new Error("Cannot construct a threaded reply: source message has no Message-ID header.");
+    }
+    const parentId = validateMessageId(originalMsgId, "source Message-ID");
+    return this.buildOutbound({
+      from: this.selfEmail,
+      to,
+      cc,
+      bcc: [],
+      subject,
+      text: body,
+      messageId,
+      inReplyTo: parentId,
+      references: foldReferences(original.references, parentId),
+      attachments: [],
+    });
+  }
+
   async buildReplyRaw(
       originalMessage: GmailMessageRaw,
       body: string,
