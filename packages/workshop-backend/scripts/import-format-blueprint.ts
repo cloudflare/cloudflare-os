@@ -43,7 +43,8 @@ function isErrorCode(err: unknown, code: string): boolean {
 
 const manifests: BlueprintManifest[] = [];
 for (const entry of (await readdir(sourceDir, {withFileTypes: true}))
-    .filter(entry => entry.isDirectory()).toSorted((a, b) => a.name < b.name ? -1 : 1)) {
+    .filter(entry => entry.isDirectory() && !entry.name.startsWith("."))
+    .toSorted((a, b) => a.name < b.name ? -1 : 1)) {
   const path = join(sourceDir, entry.name, "blueprint.json");
   let source: string;
   try {
