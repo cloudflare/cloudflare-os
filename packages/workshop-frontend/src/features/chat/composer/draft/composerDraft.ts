@@ -81,7 +81,7 @@ export function serializeComposerDraft(
       ? token.url
       : token.kind === "format"
         ? token.noun
-        : text.slice(token.start, token.start + token.length);
+        : `/${token.choice.name}`;
     if (token.kind === "format") {
       storedFormats.push({
         position: normalized.length,
@@ -141,7 +141,20 @@ export function decorateComposerDraft(
     cursor = format.position + format.length;
   }
   text += draft.text.slice(cursor);
-  return { text, formats, ...(command && { command }) };
+  if (!command) return { text, formats };
+
+  const commandText = `/${command.choice.name}`;
+  const commandEnd = command.start + command.length;
+  const delta = commandText.length - command.length;
+  text = text.slice(0, command.start) + commandText + text.slice(commandEnd);
+  command.length = commandText.length;
+  return {
+    text,
+    formats: formats.map(format => format.start >= commandEnd
+      ? {...format, start: format.start + delta}
+      : format),
+    command,
+  };
 }
 
 function readSlashCommandId(value: unknown): SlashCommandId | undefined {

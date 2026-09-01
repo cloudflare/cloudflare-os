@@ -109,9 +109,7 @@ import { copyToClipboard } from "./clipboard";
 import { isImeComposing } from "./keyboardEvent";
 import { formatAttachmentSize } from "./features/chat/attachmentFormatting";
 import { ChatComposer } from "./features/chat/composer/ChatComposer";
-import {
-  composerDraftStorageKey,
-} from "./composerDraft";
+import { composerDraftStorageKey } from "./features/chat/composer/draft/composerDraft";
 
 /**
  * The selected chat's live (accepted but not yet materialized) change row stream, delivered via

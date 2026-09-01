@@ -103,9 +103,10 @@ describe("composer drafts", () => {
 
   it("preserves an inline slash command through token normalization and decoration", () => {
     const logoSlot = "\u2003\u2060\u00a0";
-    const text = `Use Q3 Plan as a ${logoSlot}Document, then /deploy it`;
+    const commandText = "/deploy";
+    const text = `Use Q3 Plan as a ${logoSlot}Document, then ${commandText} it`;
     const formatStart = text.indexOf(logoSlot);
-    const commandStart = text.indexOf("/deploy");
+    const commandStart = text.indexOf(commandText);
 
     const stored = serializeComposerDraft(
       text,
@@ -116,7 +117,7 @@ describe("composer drafts", () => {
         noun: "Document",
         icon: "fileText",
       }],
-      { start: commandStart, length: "/deploy".length, choice: deployCommand },
+      { start: commandStart, length: commandText.length, choice: deployCommand },
     );
 
     expect(stored.text).toBe("Use https://example.com/q3 as a Document, then /deploy it");
@@ -128,10 +129,36 @@ describe("composer drafts", () => {
 
     const restored = decorateComposerDraft(stored, ["data:doc"], logoSlot);
     expect(restored.command).toEqual({
-      start: restored.text.indexOf("/deploy"),
-      length: "/deploy".length,
+      start: restored.text.indexOf(commandText),
+      length: commandText.length,
       choice: deployCommand,
     });
+    expect(restored.text.slice(
+      restored.command!.start,
+      restored.command!.start + restored.command!.length,
+    )).toBe(commandText);
+  });
+
+  it("keeps a following format positioned after a restored slash command", () => {
+    const logoSlot = "\u2003\u2060\u00a0";
+    const commandText = "/deploy";
+    const formatStart = commandText.length + " then ".length;
+    const stored = serializeComposerDraft(
+      `${commandText} then ${logoSlot}Document`,
+      [],
+      [{
+        start: formatStart,
+        length: logoSlot.length + "Document".length,
+        noun: "Document",
+        icon: "fileText",
+      }],
+      {start: 0, length: commandText.length, choice: deployCommand},
+    );
+
+    const restored = decorateComposerDraft(stored, ["data:doc"], logoSlot);
+    expect(restored.formats[0].start)
+      .toBe(commandText.length + " then ".length);
+    expect(restored.text).toBe(`${commandText} then ${logoSlot}Document`);
   });
 
   it("round-trips the exact slash command provider selection", () => {
