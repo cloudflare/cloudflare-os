@@ -16,7 +16,7 @@
   "dependencies": {
     "@cloudflare/puppeteer": "^1.3.0",
     "@earendil-works/pi-agent-core": "0.84.3",
-    "@earendil-works/pi-ai": "0.84.3",
+    "@earendil-works/pi-ai": "0.84.4",
     "@gadgets/backend-utils": "workspace:*",
     "@gadgets/error-reporting": "workspace:*",
     "@gadgets/typed-storage": "workspace:*",

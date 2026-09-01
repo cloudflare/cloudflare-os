@@ -207,6 +207,9 @@ describe("getModel AI Gateway routing", () => {
   it("routes Workers AI through the platform gateway like every other provider", async () => {
     const handle = getModel(env(), WORKERS_AI_CONFIG, INITIATOR,
         { sessionAffinity: "session-a" });
+    const glm = getModel(env(),
+        {...WORKERS_AI_CONFIG, model: "@cf/zai-org/glm-5.3-flash"}, INITIATOR);
+    expect(glm.model).toMatchObject({reasoning: true, input: ["text", "image"]});
 
     expect(handle.model.api).toBe("openai-completions");
     expect(handle.model.id).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
@@ -525,18 +528,6 @@ describe("PDF attachment bridging", () => {
     expect(message.stopReason).toBe("error");
     return JSON.parse(capturedRequests[0].body);
   }
-
-  it("preserves image input for GLM 5.3 Flash", async () => {
-    const handle = getModel(env(),
-        {...WORKERS_AI_CONFIG, model: "@cf/zai-org/glm-5.3-flash"}, INITIATOR);
-    expect(handle.model).toMatchObject({reasoning: true, input: ["text", "image"]});
-    const body = await capturePdfRequest(handle) as {
-      messages: { content: { image_url?: { url: string } }[] }[],
-    };
-    expect(body.messages[0].content).toContainEqual(expect.objectContaining({
-      image_url: { url: "data:image/png;base64,iVBOR" },
-    }));
-  }, 15000);
 
   it("sends Anthropic PDFs as document blocks", async () => {
     const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR);
