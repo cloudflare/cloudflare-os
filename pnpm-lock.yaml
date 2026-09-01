@@ -373,7 +373,7 @@ importers:
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: 'catalog:'
-        version: 0.20.3(@cloudflare/workers-types@5.20260808.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10)
+        version: 0.22.0(@cloudflare/workers-types@5.20260825.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10)
       miniflare:
         specifier: 5.20260801.0-alpha
         version: 5.20260801.0-alpha
