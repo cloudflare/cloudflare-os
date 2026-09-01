@@ -169,4 +169,98 @@ describe("excludeObservers against the observer's verification scope", () => {
 
     expect(removals).toEqual([]);
   }));
+
+  it("a concurrent registration waits for the in-flight de-registration it raced",
+      () => withImpl("use", async (impl, removals) => {
+    // The exclusion teardown's removeObserver parks in flight; a bind plus a fresh open then race
+    // it with an addObserver for the same (observer, gatekeeper) pair. The overseer is the only
+    // caller of either, so serializing its own calls per pair is what keeps the add from being
+    // silently undone by the older removal: it runs only after the removal completes, and
+    // re-registers cleanly.
+    let events: string[] = [];
+    let releaseRemove!: () => void;
+    let removeReached = new Promise<void>(resolve => {
+      impl.getGatekeeperFacet = (id: number) => ({
+        removeObserver: async (observerId: string) => {
+          events.push("remove:start");
+          resolve();
+          await new Promise<void>(release => { releaseRemove = release; });
+          removals.push(`${id}:${observerId}`);
+          events.push("remove:end");
+        },
+        addObserver: async () => { events.push("add"); },
+      });
+    });
+
+    // The connection is unbound, so the observation proceeds by de-registering Carol -- parked.
+    let observation = observe(impl);
+    await removeReached;
+
+    // Rebind and re-open: the fresh open's registration must queue behind the parked removal.
+    bindIntoGadget(impl);
+    let open = impl.ensureObserver(
+        CAROL, { getVerifier: async () => ({}), describeConnectedAccount: async () => null },
+        "use");
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(events).toEqual(["remove:start"]);
+
+    releaseRemove();
+    await observation;
+    await open;
+    expect(events).toEqual(["remove:start", "remove:end", "add"]);
+  }));
+});
+
+// An enabled hook is a live write channel into a gadget a "use" collaborator can open, so its
+// connection stays in their verification scope even with no binding edge -- both for exclusion
+// (above) and for what a fresh open verifies them against.
+describe("hooks keep an unbound connection in use scope", () => {
+  function armHook(impl: any, enabled: boolean): void {
+    impl.storage.boundHooks.put({
+      id: 5,
+      actionId: 999,
+      gatekeeperId: GATEKEEPER_ID,
+      vendorId: "testvendor",
+      controller: {} as any,
+      callback: {} as any,
+      description: { title: "Hook", description: "Delivers events" },
+      enabled,
+    });
+  }
+
+  it("an enabled hook blocks an excluded observation from an unbound connection",
+      () => withImpl("use", async (impl, removals) => {
+    armHook(impl, true);
+
+    // The hook keeps writing the connection's data into a gadget Carol can open, so she can still
+    // reach what it produces: the observation must block, exactly as if a gadget bound it.
+    await expect(observe(impl)).rejects.toThrow(/not permitted to see/);
+    expect(removals).toEqual([]);
+  }));
+
+  it("a disabled hook leaves the unbound connection out of scope",
+      () => withImpl("use", async (impl, removals) => {
+    armHook(impl, false);
+
+    // A disabled hook delivers nothing (startHook re-checks `enabled`), so nothing reaches Carol
+    // and she is de-registered as usual.
+    await observe(impl);
+    expect(removals).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`]);
+  }));
+
+  it("a fresh use open is verified against a hook-armed unbound connection",
+      () => withImpl("use", async (impl) => {
+    armHook(impl, true);
+    let added: string[] = [];
+    impl.getGatekeeperFacet = (id: number) => ({
+      addObserver: async (observerId: string) => { added.push(`${id}:${observerId}`); },
+      removeObserver: async () => {},
+    });
+
+    await impl.ensureObserver(
+        CAROL, { getVerifier: async () => ({}), describeConnectedAccount: async () => null },
+        "use");
+
+    expect(added).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`]);
+  }));
 });

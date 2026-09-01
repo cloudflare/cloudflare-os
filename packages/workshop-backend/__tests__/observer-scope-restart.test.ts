@@ -9,7 +9,7 @@
 // replaced with a recorder: a real reset would kill the test DO.
 
 import { describe, expect, it } from "vitest";
-import { env } from "cloudflare:workers";
+import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
@@ -205,6 +205,24 @@ describe("restarting sessions when verification scope widens", () => {
     impl.bindWorkpiece(100, "DB", 1);
 
     expect(restarts).toHaveLength(1);
+    // The severed sessions stay live for the reset's delay, and a gadget facet reload in that
+    // window would mint fresh binding loopbacks onto the connection -- so, like a newly added
+    // one, it is blocked until the reset lands (loopbacks funnel through openSession, which
+    // checks this).
+    expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
+  }));
+
+  it("binding with nobody to sever leaves the connection immediately usable",
+      () => withImpl(async (impl, restarts) => {
+    seedGatekeeper(impl, 1);
+    seedGadget(impl, 100);
+
+    // No restart is scheduled, so nothing would ever clear a mark: the connection must not be
+    // blocked, or binding in a solo workspace would brick it.
+    impl.bindWorkpiece(100, "DB", 1);
+
+    expect(restarts).toEqual([]);
+    expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
   }));
 
   it("a pending bind is invisible to collaborators, so it restarts nothing",
@@ -213,7 +231,7 @@ describe("restarting sessions when verification scope widens", () => {
     seedGatekeeper(impl, 1);
     seedGadget(impl, 100);
 
-    // An edge provisional to a chat isn't in #gadgetBoundGatekeeperIds until it's promoted, which
+    // An edge provisional to a chat isn't in #useScopeGatekeeperIds until it's promoted, which
     // is what restarts (see the merge case below).
     impl.bindWorkpiece(100, "DB", 1, 7);
 
@@ -242,6 +260,8 @@ describe("restarting sessions when verification scope widens", () => {
     // Accepting the change is the moment the edge becomes visible to "use" collaborators.
     expect(impl.storage.gadgets.get(100).bindings.DB.pending).toBeUndefined();
     expect(restarts).toHaveLength(1);
+    // And, as with a direct bind, the promoted connection is blocked until the reset lands.
+    expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
   }));
 
   it("a merge that promotes only a vendorless edge restarts nothing",
@@ -313,28 +333,30 @@ describe("restarting sessions when verification scope widens", () => {
     expect(restarts).toHaveLength(1);
   }));
 
-  it("an external message counts as a live build session while it is processed",
+  it("an external message counts as a live build session once its caller is authorized",
       () => withImpl(async (impl, restarts, instance) => {
     stubFacets(impl);
-    // A workspace owned by someone else, so the caller is a collaborator.
-    impl.ownerId = "owner-user-id";
-    impl.users = {
-      getByName: () => ({
-        id: { toString: () => "caller-user-id" },
-        whoamiIfExists: async () => ({ type: "user", id: "carol", name: "Carol" }),
-      }),
-    };
-    let fail!: (err: Error) => void;
-    let reached = new Promise<void>(resolve => {
-      impl.authorizeCollaborator = () => {
-        resolve();
-        return new Promise((_, reject) => { fail = reject; });
-      };
-    });
-
-    // This path never constructs a counted client interface, so without its own lease a widening
+    // A workspace owned by someone else, so the caller is a collaborator. The call parks *after*
+    // authorization (on the caller's model lookup), which is when the lease must be held: this
+    // path never constructs a counted client interface, so without its own lease a widening
     // mid-call would find no session to sever and the reply would be produced under stale
     // verification.
+    impl.ownerId = "owner-user-id";
+    let fail!: (err: Error) => void;
+    let reached = new Promise<void>(resolve => {
+      impl.users = {
+        getByName: () => ({
+          id: { toString: () => "caller-user-id" },
+          whoamiIfExists: async () => ({ type: "user", id: "carol", name: "Carol" }),
+          getExternalMessageChatContext: () => {
+            resolve();
+            return new Promise((_, reject) => { fail = reject; });
+          },
+        }),
+      };
+    });
+    impl.authorizeCollaborator = async () => "build";
+
     let pending = instance.receiveExternalMessage({
       callerEmail: "carol@example.com", externalChatKey: "k", idempotencyKey: "i",
       prompt: "hello", chatGatewayRpcTarget: {} as any, title: "T",
@@ -344,12 +366,46 @@ describe("restarting sessions when verification scope widens", () => {
     await impl.addGatekeeper({} as any, CONNECTION_SPEC);
     expect(restarts).toHaveLength(1);
 
-    fail(new Error("verification failed"));
-    expect((await pending).accepted).toBe(false);
+    fail(new Error("model lookup failed"));
+    await expect(pending).rejects.toThrow(/model lookup failed/);
 
     // The lease died with the call.
     await impl.addGatekeeper({} as any, CONNECTION_SPEC);
     expect(restarts).toHaveLength(1);
+  }));
+
+  it("an external-message caller who is denied never joins the count",
+      () => withImpl(async (impl, restarts, instance) => {
+    stubFacets(impl);
+    impl.ownerId = "owner-user-id";
+    impl.users = {
+      getByName: () => ({
+        id: { toString: () => "caller-user-id" },
+        whoamiIfExists: async () => ({ type: "user", id: "mallory", name: "Mallory" }),
+      }),
+    };
+    // Authorization itself is covered by authorizeCollaborator's own internal lease (which counts
+    // nobody until a role is resolved), so this path must not take its lease up front: a stranger
+    // parked in authorization racing an addGatekeeper would otherwise cause a needless reset.
+    let deny!: () => void;
+    let reached = new Promise<void>(resolve => {
+      impl.authorizeCollaborator = () => {
+        resolve();
+        return new Promise(resolveAuth => { deny = () => resolveAuth(null); });
+      };
+    });
+
+    let pending = instance.receiveExternalMessage({
+      callerEmail: "mallory@example.com", externalChatKey: "k", idempotencyKey: "i",
+      prompt: "hello", chatGatewayRpcTarget: {} as any, title: "T",
+    } as any);
+    await reached;
+
+    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
+    expect(restarts).toEqual([]);
+
+    deny();
+    expect((await pending).accepted).toBe(false);
   }));
 
   it("a retained connection capability holds the gate open after its interface is gone",
@@ -433,5 +489,284 @@ describe("restarting sessions when verification scope widens", () => {
     // choice she made -- it records that choice, not a verification result.
     expect(impl.storage.observers.get("alice").accountChoices).toEqual({ 1: 10 });
     expect(restarts).toEqual([]);
+  }));
+});
+
+// An enabled hook is a live write channel into the gadget it wakes, so its connection is in every
+// "use" collaborator's verification scope regardless of binding edges -- and enabling one is a
+// scope widening like binding one.
+describe("hooks widen use scope", () => {
+  function seedHook(impl: any, opts: { enabled?: boolean; controller?: object } = {}): void {
+    impl.storage.boundHooks.put({
+      id: 5,
+      actionId: 999,
+      gatekeeperId: 1,
+      vendorId: "testvendor",
+      controller: (opts.controller ?? {}) as any,
+      callback: {} as any,
+      description: { title: "Hook", description: "Delivers events" },
+      enabled: opts.enabled ?? false,
+    });
+  }
+
+  it("enabling a hook on an unbound connection restarts a connected use collaborator",
+      () => withImpl(async (impl, restarts) => {
+    joinSession(impl, "use");
+    seedGatekeeper(impl, 1);
+    seedHook(impl);
+
+    impl.enableHookRecord(impl.storage.boundHooks.get(5));
+
+    expect(impl.storage.boundHooks.get(5).enabled).toBe(true);
+    expect(restarts).toHaveLength(1);
+    // And, like any other widening, the connection is blocked until the reset lands.
+    expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
+  }));
+
+  it("enabling a hook on an already-bound connection widens nothing",
+      () => withImpl(async (impl, restarts) => {
+    seedGatekeeper(impl, 1);
+    seedGadget(impl, 100);
+    impl.bindWorkpiece(100, "DB", 1);  // nobody connected yet: no restart, no mark
+    joinSession(impl, "use");
+    seedHook(impl);
+
+    // The binding already put the connection in "use" scope, so the live session was verified
+    // against it and the hook adds nothing new.
+    impl.enableHookRecord(impl.storage.boundHooks.get(5));
+
+    expect(restarts).toEqual([]);
+    expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
+  }));
+
+  it("removing a connection synchronously deletes its hooks",
+      () => withImpl(async (impl, restarts, instance) => {
+    seedGatekeeper(impl, 1);
+    // A live controller stub can't be persisted through the test's real storage (functions don't
+    // structured-clone), so this test fakes the collection.
+    let disabled = 0;
+    let record = {
+      id: 5, actionId: 999, gatekeeperId: 1, vendorId: "testvendor",
+      controller: { disable: async () => { disabled++; } },
+      callback: {},
+      description: { title: "Hook", description: "Delivers events" },
+      enabled: true,
+    };
+    let hooks = new Map([[5, record]]);
+    impl.storage.boundHooks = {
+      get: (id: number) => hooks.get(id),
+      put: (r: any) => hooks.set(r.id, r),
+      delete: (id: number) => hooks.delete(id),
+      list: () => hooks.values(),
+    };
+
+    impl.removeGatekeeper(1);
+
+    // The record delete is the authoritative kill: delivery refuses even before (or without) the
+    // gatekeeper-side disable landing, which is fired best-effort rather than awaited.
+    expect(impl.storage.boundHooks.get(5)).toBeUndefined();
+    await expect(instance.startHook(5)).rejects.toThrow(/deleted or disabled/);
+    expect(disabled).toBe(1);
+  }));
+});
+
+// Subscriptions are exports minted into a collaborator's session: a client can dispose the
+// interface while retaining one, and it keeps delivering workspace data -- so each counts toward
+// #hasCollaboratorSession for its own lifetime, like every other retained capability.
+describe("subscriptions count as sessions", () => {
+  it("a retained subscription from a build session holds the gate open",
+      () => withImpl(async (impl, restarts) => {
+    stubFacets(impl);
+    // A collaborator's (non-owner) build session whose session counting is the real impl's.
+    let client = await openFakeOverseer({}, { impl: {
+      ownerId: "real-owner-id",
+      joinSession: (kind: string) => impl.joinSession(kind),
+      subscribeToConsoleLogs: async () => new NativeRpcStub<{}>({ [Symbol.dispose]() {} } as any),
+    } });
+    let sub = await client.subscribeToConsoleLogs(
+        new NativeRpcStub({ event: async () => {} } as any) as any);
+
+    // Disposing the interface leaves the subscription live, still delivering workspace data.
+    (client as any)[Symbol.dispose]();
+    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
+    expect(restarts).toHaveLength(1);
+
+    // Only once it too is gone does a widening find nothing to sever. (Stub disposal reaches the
+    // wrapped target's disposer asynchronously, so let it settle.)
+    (sub as any)[Symbol.dispose]();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
+    expect(restarts).toHaveLength(1);
+  }));
+
+  it("a retained subscription from a use session holds the gate open",
+      () => withImpl(async (impl, restarts) => {
+    seedGatekeeper(impl, 1);
+    seedGadget(impl, 100);
+    let client = await openFakeOverseer({}, { role: "use", impl: {
+      joinSession: (kind: string) => impl.joinSession(kind),
+      subscribeToWorkpieces: () => new NativeRpcStub<{}>({ [Symbol.dispose]() {} } as any),
+    } });
+    let sub = await client.subscribeToWorkpieces(
+        new NativeRpcStub({ init: async () => {} } as any) as any);
+
+    (client as any)[Symbol.dispose]();
+    impl.bindWorkpiece(100, "DB", 1);
+    expect(restarts).toHaveLength(1);
+
+    // (Stub disposal reaches the wrapped target's disposer asynchronously, so let it settle.)
+    (sub as any)[Symbol.dispose]();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    seedGatekeeper(impl, 2);
+    impl.bindWorkpiece(100, "DB2", 2);
+    expect(restarts).toHaveLength(1);
+  }));
+
+  it("disposing a chat subscription that already tore down is a no-op", async () => {
+    let unsubs: string[] = [];
+    let client = await openFakeOverseer({
+      chats: { subscribe() {}, unsubscribe: () => unsubs.push("chats") },
+      chatMeta: { subscribe() {}, unsubscribe: () => unsubs.push("chatMeta") },
+      chatChanges: { list: () => [] },
+    }, { impl: {
+      addChatSubscriber() {},
+      removeChatSubscriber: () => unsubs.push("removeChatSubscriber"),
+      streamGeneration: 1,
+      logger: { debug() {} },
+    } });
+
+    // The failed generation delivery tears the subscription down before the client disposes it.
+    // (onRpcBroken must exist on the mock: a native stub over a plain object forwards it.)
+    using subscriber = new NativeRpcStub({
+      onRpcBroken: () => {},
+      streamGeneration: async () => { throw new Error("client gone"); },
+    } as any);
+    let sub = await client.subscribeToChat(subscriber as any);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(unsubs).toEqual(["chats", "chatMeta", "removeChatSubscriber"]);
+
+    // The later dispose must not tear down (or dispose the subscriber) a second time. (Stub
+    // disposal reaches the wrapped target's disposer asynchronously, so let it settle.)
+    (sub as any)[Symbol.dispose]();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(unsubs).toEqual(["chats", "chatMeta", "removeChatSubscriber"]);
+  });
+});
+
+// Revoking access must sever the revoked collaborator's live sessions promptly: the restart is
+// scheduled in the same synchronous step as the sharing mutation, never behind the best-effort
+// cross-DO cleanup, which can stall or hang.
+describe("revocation restart ordering", () => {
+  it("removeCollaborator schedules the restart before the observer teardown", async () => {
+    let restarts: string[] = [];
+    let restartRecorded = Promise.withResolvers<void>();
+    let client = await openFakeOverseer({}, { impl: {
+      getSharingManager: async () => ({
+        removeCollaborator: () =>
+            [{ profile: { type: "user", id: "carol", name: "Carol" }, newRole: null }],
+      }),
+      // A hung gatekeeper/User-DO round trip: the cleanup never settles.
+      tearDownLostObservers: () => new Promise(() => {}),
+      refreshAffectedCollaboratorListings: async () => {},
+      scheduleAccessRestart: (reason: string) => {
+        restarts.push(reason);
+        restartRecorded.resolve();
+        return Promise.resolve();
+      },
+    } });
+
+    let pending = client.removeCollaborator("carol", []);
+    pending.catch(() => {});  // never settles; the restart is what revokes
+
+    await restartRecorded.promise;
+    expect(restarts).toHaveLength(1);
+  });
+});
+
+// Every client-reachable route to a connection blocked pending a scope-widening restart is gated:
+// the direct routes throw (getGatekeeperById/openSession, covered above; the slash-command invoke
+// here), and the enumerating routes silently omit it until the reset lands.
+describe("connections blocked pending restart", () => {
+  // rpcPromise-style provider stub, as collectSlashCommands sees over RPC.
+  function slashProvider(commandId: string) {
+    return {
+      getSlashCommandProvider: () => Object.assign(Promise.resolve({
+        list: async () => [{ id: commandId, name: commandId, description: "d" }],
+        [Symbol.dispose]() {},
+      }), { [Symbol.dispose]() {} }),
+    };
+  }
+
+  it("a blocked connection's slash-command invoke is refused",
+      () => withImpl(async (impl) => {
+    joinSession(impl);
+    impl.getGatekeeperFacet = () => ({
+      describe: async () =>
+          ({ title: "Test", url: "https://example.com/new", hasSlashCommands: true }),
+    });
+    let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC);
+    let id = await added.getId();
+    impl.storage.chatMeta.put(
+        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+
+    // The id is client-supplied: without the gate this would read the connection and mint an
+    // observation on behalf of a session the reset is about to sever.
+    await expect(impl.sendChatMessage(
+        { id: { toString: () => "user-do" } } as any, USER_META as any, 1,
+        { id: { gatekeeperId: id, commandId: "deploy" }, args: "" } as any))
+        .rejects.toThrow(/restarting/);
+  }));
+
+  it("a blocked connection's slash commands are omitted from the listing",
+      () => withImpl(async (impl) => {
+    joinSession(impl);
+    impl.env = { BLUEPRINTS: { get: async () => null } };
+    impl.storage.gatekeepers.put({
+      id: 1, resourceTitle: "Usable", class: {} as any, hasSlashCommands: true,
+      creationSpec: {
+        type: "gatekeeper", vendorId: "testvendor",
+        resourceUrl: "https://example.com/1", typeUrlPattern: "https://*",
+      },
+    });
+    impl.getGatekeeperFacet = (id: number) => ({
+      describe: async () =>
+          ({ title: "Test", url: "https://example.com/new", hasSlashCommands: true }),
+      ...slashProvider(id === 1 ? "usable" : "blocked"),
+    });
+    let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC);
+    await added.getId();
+
+    let names = (await impl.listSlashCommands()).map((choice: any) => choice.name);
+    expect(names).toContain("usable");
+    expect(names).not.toContain("blocked");
+  }));
+
+  it("a blocked connection is skipped by the ambient catalog load",
+      () => withImpl(async (impl) => {
+    joinSession(impl);
+    let catalogLoads: number[] = [];
+    impl.getGatekeeperFacet = (id: number) => ({
+      describe: async () =>
+          ({ title: `T${id}`, url: "https://example.com", suggestedBindingName: "RES" }),
+      getAgentCatalog: async () => { catalogLoads.push(id); return { entries: [] }; },
+    });
+    impl.storage.gatekeepers.put({
+      id: 1, resourceTitle: "Usable", class: {} as any,
+      creationSpec: { type: "ambient", vendorId: "v1" },
+    });
+    let added = await impl.addGatekeeper({} as any, { type: "ambient", vendorId: "v2" });
+    let blockedId = await added.getId();
+    impl.storage.chatMeta.put(
+        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+
+    let seeds = await impl.prepareChatBindings(1, []);
+
+    // The blocked connection still gets its seed binding (it reappears after the reset); only its
+    // catalog is withheld for this turn -- neither queried nor cached, so the next turn (after
+    // the reset) loads it as a missing id.
+    expect(catalogLoads).toEqual([1]);
+    expect(seeds.find((seed: any) => seed.target === blockedId)?.catalog).toBeNull();
+    expect(impl.storage.chatContext.get(1).alwaysAvailableCatalogs
+        .map((entry: any) => entry.gatekeeperId)).toEqual([1]);
   }));
 });

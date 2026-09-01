@@ -69,8 +69,10 @@ This feature replaces that all-or-nothing posture with a per-user, gatekeeper-me
   - **`build`** collaborators (full access — chat + code + all bindings) must be verified
     against **every** gatekeeper the Gadget has.
   - **`use`** collaborators (UI only, no chat access — see `UseOverseerInterface`,
-    `overseer.ts:2816`) must be verified only against **named bindings** (gatekeepers with a
-    `bindingName`), since that is all the UI can invoke.
+    `overseer.ts:2816`) must be verified only against gatekeepers their sessions can actually
+    reach: those **bound by some gadget** (the UI can invoke them) plus those with an **enabled
+    hook** (a hook is a live write channel into a gadget they can open, delivering the
+    connection's data regardless of binding edges). See `#useScopeGatekeeperIds`.
 - **Account selection.** A collaborator must have their own connected account for each vendor the
   Gadget depends on. For ordinary bindings, they choose which account to use (e.g. work or personal
   Google). If an account cannot be selected automatically, the configuration modal prompts them to
@@ -252,7 +254,7 @@ Logic:
 
 1. **Select in-scope gatekeepers** from `this.storage.gatekeepers.list()`:
    - `build`: all gatekeepers.
-   - `use`: only those with a `bindingName`.
+   - `use`: only those some gadget binds or an enabled hook feeds (`#useScopeGatekeeperIds`).
    - A `creationSpec` with a `vendorId` requires an account; other specs need no verifier or account
      choice.
 
@@ -354,6 +356,12 @@ interfaces — anything that escaped it would let a widening find no session to 
   interface while retaining a child stub. They join when minted for a collaborator (the
   constructor's `joinedAs` / `addGatekeeper`'s `joinAs`) and skip it for the owner's mints and
   internal construction.
+- **Subscriptions** (`subscribeToMetadata`/`Presence`/`Workpieces`/`Actions`/`Chat`/`ConsoleLogs`,
+  on both client interfaces, including the `use` interface's inert ones) are exports minted into
+  the session like any other: a client can dispose the interface while a retained chat or action
+  subscription keeps streaming gatekeeper-derived data. Each is wrapped in a handle that holds a
+  lease for its own lifetime (`#subscriptionLease`); the owner's subscriptions pass through
+  uncounted.
 - **In-flight authorization** counts as a session-to-be: `authorizeCollaborator` holds a lease for
   the resolved role across `ensureObserver`, which can park indefinitely on collaborator-controlled
   awaits (the configuration modal, verifier RPCs). A widening then schedules the restart, the DO
@@ -361,16 +369,21 @@ interfaces — anything that escaped it would let a widening find no session to 
   lease's release and `open()` constructing the counted interface there are only microtask
   continuations, in which no incoming event can be delivered, so nothing can observe the count dip
   to zero across the handoff.
-- **`receiveExternalMessage`** holds a `build` lease for a non-owner caller across the whole call,
-  since it produces a reply from workspace data without ever constructing a counted interface.
+- **`receiveExternalMessage`** holds a `build` lease for a non-owner caller from the moment
+  `authorizeCollaborator` admits them until the call completes, since it produces a reply from
+  workspace data without ever constructing a counted interface. The lease deliberately starts
+  only after authorization (verification itself is covered by `authorizeCollaborator`'s internal
+  lease): a caller who is turned away must never have counted, or a stranger racing an
+  `addGatekeeper()` would cause a needless workspace reset.
 
-Three events trigger it:
+Four events trigger it:
 
 | Event | What grows |
 |---|---|
 | `addGatekeeper()` with a vendor-backed `creationSpec` | **build** scope — a live `build` session can `getGatekeeperById()`/`openSession()` on it with no observer check |
 | `bindWorkpiece()` for a permanent (non-`chatId`) edge onto a vendor-backed connection | **use** scope — the gadget UI a `use` session drives can now invoke it |
 | A merge that promotes a pending gadget or a pending binding edge into `use` scope | **use** scope, same reason |
+| `enableHook` on a vendor-backed connection not already in `use` scope | **use** scope — the hook delivers the connection's data into a gadget a `use` session can open |
 
 The two roles widen independently, so each trigger passes the role it grew and the restart is
 skipped when no collaborator holds it: a new connection is in every `build` collaborator's scope
@@ -378,16 +391,20 @@ at once but in no `use` collaborator's until a gadget binds it, and binding one 
 having been in `build` scope since it was created. A workspace shared only the other way has nobody
 with new verification requirements.
 
-Both binding triggers compare the effective `use` scope before and after rather than firing on any
-mutation: most merges promote something, and a promoted gadget with no bindings, an edge onto a
-vendorless connection nobody is verified against, or a second name onto a connection already in
-scope all widen nothing and must not sever a shared workspace for nothing.
+The three `use`-scope triggers share one helper (`#restartIfUseScopeWidened`) that compares the
+effective `use` scope before and after rather than firing on any mutation: most merges promote
+something, and a promoted gadget with no bindings, an edge onto a vendorless connection nobody is
+verified against, a second name onto a connection already in scope, or a hook on an
+already-bound connection all widen nothing and must not sever a shared workspace for nothing.
 
-Shrinking scope needs no restart (`unbindWorkpiece`, `removeGatekeeper`): a narrower scope can
-never under-verify a session admitted at the wider one. Role *rises*
-(`addCollaborator`, share-key redemption) are deliberately not triggers either — a live session's
-capability set is fixed at open, so raising someone's graph role does not widen the session they
-already hold.
+Shrinking scope needs no restart (`unbindWorkpiece`, `removeGatekeeper`, `disableHook`,
+`deleteHook`): a narrower scope can never under-verify a session admitted at the wider one.
+(`removeGatekeeper` also synchronously deletes the connection's hook records — the authoritative
+kill, since `startHook` re-checks the record before every delivery — and fires the gatekeeper-side
+disables best-effort rather than awaiting them, so a hung gatekeeper can't keep an orphaned hook
+delivering.) Role *rises* (`addCollaborator`, share-key redemption) are deliberately not triggers
+either — a live session's capability set is fixed at open, so raising someone's graph role does
+not widen the session they already hold.
 
 The restart is what makes `addGatekeeper()`'s publication order load-bearing. The DO's input gate
 is open across the gatekeeper's `describe()` and ids are allocated sequentially, so publishing the
@@ -397,15 +414,21 @@ owner's brand-new connection — which gates on nothing but record existence —
 exactly once, after `describe()` resolves; `getGatekeeperFacet(id, cls?)` takes the class directly
 so nothing needs the early put.
 
-The reset itself lands only after a ~100 ms response-delivery delay, and the record must be
-durable before it (or the connection is lost with the restart) — so when a restart was actually
-scheduled, the just-published id is additionally marked in the in-memory
-`#gatekeepersPendingRestart` set and every client-reachable route to it
-(`getGatekeeperById`, `GatekeeperClientImpl.openSession`, which binding loopbacks also pass
-through) refuses with a retryable error until the reset destroys the mark along with the sessions.
-Publish, restart-check, and mark share one synchronous block, so no request can interleave between
-the record appearing and the block taking effect; the mark is only ever set when a restart is
-scheduled, since nothing else would clear it.
+The reset itself lands only after a ~100 ms response-delivery delay, and the widening write must
+be durable before it (or the change is lost with the restart) — so when a restart was actually
+scheduled, every trigger additionally marks the widened connection ids in the in-memory
+`#gatekeepersPendingRestart` set: `addGatekeeper` marks the just-published id, and the three
+`use`-scope triggers mark each id their diff widened (marking gatekeeper ids suffices as
+quarantine because a severed `use` session's gadget facet reload mints its binding loopbacks
+through `openSession`). Every client-reachable route to a marked connection refuses with a
+retryable error until the reset destroys the mark along with the sessions: `getGatekeeperById`
+(the mint clients pipeline on), `GatekeeperClientImpl.openSession` (which binding loopbacks also
+pass through), the slash-command invoke in `#prepareChatMessage`, and
+`GadgetClientImpl.bindWithSuggestedName` — while the enumerating routes (`listSlashCommands`, the
+ambient catalog load in `prepareChatBindings`) silently omit it until clients reconnect. Publish,
+restart-check, and mark share one synchronous block, so no request can interleave between the
+change appearing and the block taking effect; marks are only ever set when a restart is
+scheduled, since nothing else would clear them.
 
 ### Step 4 — Frontend: the configuration modal
 
@@ -445,11 +468,13 @@ For each id in `description.excludeObservers`:
    - **Still authorized, but the gatekeeper has left their scope → allow** for this observer, and
      drop their registration on *that gatekeeper only* (`removeObserver(observerId)`), keeping the
      record. The scope test is `#inRoleVerificationScope` and is deliberately narrow and
-     fail-closed: the only way out is "role is `use`, the connection requires an account, and no
-     gadget binds it". This is the case a stale registration creates — a `use` collaborator's open
-     never verifies (and so never re-registers or removes) a gatekeeper outside their scope, so an
-     unbind leaves them named by a gatekeeper they can no longer reach. A rebind puts it back in
-     scope and their next open registers them again.
+     fail-closed: the only way out is "role is `use`, the connection requires an account, and
+     neither a gadget binding nor an enabled hook makes it reachable" (`#useScopeGatekeeperIds` —
+     an enabled hook keeps writing the connection's data into a gadget the collaborator can open,
+     so it blocks exactly as a binding does). This is the case a stale registration creates — a
+     `use` collaborator's open never verifies (and so never re-registers or removes) a gatekeeper
+     outside their scope, so an unbind leaves them named by a gatekeeper they can no longer reach.
+     A rebind puts it back in scope and their next open registers them again.
    - **No longer authorized → allow** for this observer, and **delete their observer record**
      (and best-effort `removeObserver(observerId)` on all gatekeepers). They are no longer set up
      to observe; if they ever regain access they reconfigure from scratch (Step 3).
@@ -459,7 +484,13 @@ For each id in `description.excludeObservers`:
    against current state adjacent to their own removal*: a bind plus a fresh open in an earlier
    removal's window can put an observer back in scope holding a fresh registration, which the
    stale removal would delete (fail-open). Such an observer blocks the observation instead,
-   exactly as if they had been in scope all along.
+   exactly as if they had been in scope all along. The last interleaving — a fresh open's
+   `addObserver` landing while that observer's own `removeObserver` RPC is already in flight — is
+   closed by serializing the overseer's `addObserver`/`removeObserver` calls per
+   (observer, gatekeeper) pair (`#withObserverGatekeeperLock`; the overseer is the only caller of
+   either, so ordering its own calls is sufficient): the add either lands before the removal
+   starts (and the adjacent re-classification then blocks) or waits for it and re-registers
+   cleanly.
 
 This is the runtime counterpart of `addObserver`: `addObserver` covers observers configured
 *after* data was read; `excludeObservers` covers data read *after* observers were configured.
@@ -476,6 +507,13 @@ Persisting the observation record itself is unchanged; we only gate it.
 When sharing changes, configured observers who lose access must be torn down. In the overseer
 methods wrapping `SharingManager` mutations (`removeCollaborator`, `revokeShareLink`, and role
 downgrades — see the matching methods on `OverseerClientInterface` and `SharingManager`):
+
+- The **session-severing restart is scheduled first**, in the same synchronous step as the sharing
+  mutation, and only then does the best-effort teardown below run: the teardown crosses gatekeeper
+  and User-DO round trips that can stall or hang, and a revoked collaborator's live sessions must
+  not outlive it. The reset's ~100 ms delay gives the cleanup a head start; whatever it cuts off
+  self-heals (a leftover registration is lazily cleaned at exclusion time or by a later open, a
+  stale cached workspace listing just yields a denied open).
 
 - After a mutation, use the returned `AffectedCollaborator[]` to find users who **lost access**.
   For each who is now unreachable, if they have an observer record: best-effort
@@ -554,11 +592,12 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    gatekeeper per open. Parallelize with `Promise.all` and pipe the verifier promise straight into
    `addObserver`. Expensive gatekeepers cache on their side.
 7. **`use`-role observers and `excludeObservers`** — `use` observers are only configured against
-   named bindings, so they never appear in `excludeObservers` from a binding that was never named
-   (the gatekeeper doesn't know their id). The Step 5 logic handles this naturally (unknown id →
-   ignored). A binding that *was* named and has since been unbound is the different case Step 5's
-   scope test handles: the gatekeeper still knows the id, but the observer can no longer reach what
-   it produces, so they are de-registered from it instead of blocking.
+   in-scope connections, so they never appear in `excludeObservers` from a connection that was
+   never in their scope (the gatekeeper doesn't know their id). The Step 5 logic handles this
+   naturally (unknown id → ignored). A connection that *was* in scope and has since left it
+   (unbound, with no enabled hook keeping it reachable) is the different case Step 5's scope test
+   handles: the gatekeeper still knows the id, but the observer can no longer reach what it
+   produces, so they are de-registered from it instead of blocking.
 
 ---
 

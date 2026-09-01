@@ -108,22 +108,30 @@ async function makeTargetOverseer(gadgetId?: number) {
     description: {title: "Incoming email", description: "Receives email"},
     enabled: false,
   };
+  let enableHookRecord = vi.fn();
   let client = await openFakeOverseer({
     boundHooks: {get: () => record, put: vi.fn()},
     actions: {get: () => undefined, put: vi.fn()},
-  }, {exports: {GatekeeperHookLoopback: ({props}: {props: object}) => props}});
-  return {client, controllerEnable};
+  }, {
+    exports: {GatekeeperHookLoopback: ({props}: {props: object}) => props},
+    // The record flip (and its scope-widening check) lives in the impl; these tests cover only
+    // what the interface passes to the gatekeeper-side enable().
+    impl: {enableHookRecord},
+  });
+  return {client, controllerEnable, enableHookRecord};
 }
 
 describe("hook target", () => {
 
   it("passes the workspace and gadget IDs to enable()", async () => {
-    let {client, controllerEnable} = await makeTargetOverseer(17);
+    let {client, controllerEnable, enableHookRecord} = await makeTargetOverseer(17);
 
     await client.enableHook(4);
 
     expect(controllerEnable).toHaveBeenCalledTimes(1);
     expect(controllerEnable.mock.calls[0][1]).toEqual({workspaceId: "workspace-id", gadgetId: 17});
+    // The record flip happens only after the gatekeeper-side enable succeeded.
+    expect(enableHookRecord).toHaveBeenCalledTimes(1);
   });
 
   it("omits the gadget ID for a hook that is not pinned to one", async () => {

@@ -130,21 +130,27 @@ describe("a binding that fails verification", () => {
           { profileId: "alice", observerId: "obs-1", accountChoices: { 1: 10 } });
 
       let removed: number[] = [];
-      // Connection 3 admits only call B's attempt (the 2nd): call A's first attempt parks until
-      // the test releases it, and its repaired retry (the 3rd) is refused outright.
-      let rejectFirst!: () => void;
-      let firstAttempt = new Promise<never>((_, reject) => {
-        rejectFirst = () => reject(new Error("no access"));
-      });
+      // Call A parks on connection 3's *verifier* -- deliberately outside the per-(observer,
+      // gatekeeper) serialization of the addObserver RPCs themselves, which would otherwise queue
+      // call B's registration behind a parked one. Connection 3 then admits only call B's
+      // registration (the 1st): call A's attempts (the 2nd, and the 3rd after its repair
+      // re-prompt) are refused.
+      let releaseVerifier!: () => void;
+      let verifierParked = new Promise<void>(resolve => { releaseVerifier = resolve; });
       let reached!: () => void;
-      let firstAttemptReached = new Promise<void>(resolve => { reached = resolve; });
-      let gk3Calls = 0;
+      let verifierReached = new Promise<void>(resolve => { reached = resolve; });
+      let gk3Verifiers = 0;
+      let parkingClientUser = {
+        getVerifier: async (accountId: number) => {
+          if (accountId === 30 && ++gk3Verifiers === 1) { reached(); await verifierParked; }
+          return {};
+        },
+        describeConnectedAccount: async () => null,
+      } as any;
+      let gk3Adds = 0;
       impl.getGatekeeperFacet = (id: number) => ({
         addObserver: async () => {
-          if (id !== 3) return;
-          let call = ++gk3Calls;
-          if (call === 1) { reached(); await firstAttempt; }
-          if (call === 3) throw new Error("no access");
+          if (id === 3 && ++gk3Adds > 1) throw new Error("no access");
         },
         removeObserver: async () => { removed.push(id); },
       });
@@ -152,10 +158,10 @@ describe("a binding that fails verification", () => {
           needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: need.gatekeeperId * 10 }))
       } as any;
 
-      // Call A registers her with connection 2, then parks on connection 3.
-      let callA = impl.ensureObserver("alice", fakeClientUser, "build", configureCb);
+      // Call A registers her with connection 2, then parks before registering with connection 3.
+      let callA = impl.ensureObserver("alice", parkingClientUser, "build", configureCb);
       callA.catch(() => {});  // asserted below; not unhandled in the meantime
-      await firstAttemptReached;
+      await verifierReached;
 
       // Call B -- the same returning observer opening concurrently -- verifies everything and
       // persists the record asserting all three registrations.
@@ -163,7 +169,7 @@ describe("a binding that fails verification", () => {
       expect(impl.storage.observers.get("alice").accountChoices).toEqual({ 1: 10, 2: 20, 3: 30 });
 
       // Now connection 3 refuses call A terminally.
-      rejectFirst();
+      releaseVerifier();
       await expect(callA).rejects.toThrow(/could not confirm/);
 
       // Call A also registered her with connection 2 before failing on 3, but must not roll that
