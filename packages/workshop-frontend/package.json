@@ -9,7 +9,7 @@
     "test:run": "vitest run"
   },
   "dependencies": {
-    "@cloudflare/kumo": "^2.9.2",
+    "@cloudflare/kumo": "^2.12.0",
     "@codemirror/commands": "^6.10.4",
     "@codemirror/lang-cpp": "^6.0.3",
     "@codemirror/lang-css": "^6.3.1",
@@ -35,7 +35,7 @@
     "@lezer/highlight": "^1.2.3",
     "@phosphor-icons/react": "^2.1.10",
     "@tailwindcss/vite": "^4.3.3",
-    "@tanstack/react-router": "^1.170.23",
+    "@tanstack/react-router": "^1.170.32",
     "capnweb": "catalog:",
     "hash-wasm": "^4.12.0",
     "react": "^19.2.8",
@@ -46,9 +46,9 @@
     "vite-tsconfig-paths": "^6.1.1"
   },
   "devDependencies": {
-    "@tanstack/router-plugin": "^1.168.27",
+    "@tanstack/router-plugin": "^1.168.35",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^5.2.0",
     "jsdom": "^26.1.0",
     "typescript": "catalog:",
