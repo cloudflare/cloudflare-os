@@ -68,11 +68,12 @@ export function putAction(
 /**
  * Forges a client interface over the given storage via open(). `role` picks the returned
  * interface class ("build" opens as the owner); `exports` supplies any ctx.exports entries the
- * exercised paths dereference.
+ * exercised paths dereference; `impl` overrides individual members of the forged impl (e.g. to
+ * delegate one method to a real OverseerImpl under test).
  */
 export async function openFakeOverseer(
     storage: object,
-    opts: { role?: "build" | "use", exports?: object } = {}): Promise<Overseer> {
+    opts: { role?: "build" | "use", exports?: object, impl?: object } = {}): Promise<Overseer> {
   let role = opts.role ?? "build";
   let ownerId = "owner-id";
   let userId = role === "build" ? ownerId : "viewer-id";
@@ -80,6 +81,7 @@ export async function openFakeOverseer(
     open: OverseerDurableObject.prototype.open,
     impl: {
       ownerId,
+      assertGatekeeperUsable: () => {},
       ensureAmbientCapsules: async () => {},
       markOutputsDirty: () => {},
       joinSession: () => () => {},
@@ -104,6 +106,7 @@ export async function openFakeOverseer(
         prohibitAllSharing: { get: () => false },
         title: { get: () => "Test Workspace" },
       }),
+      ...opts.impl,
     },
   } satisfies Pick<OverseerDurableObject, "open"> & { impl: object };
   return overseer.open(userId, `${userId}-profile`, new NativeRpcStub<() => void>(() => {}));

@@ -282,6 +282,7 @@ describe("role-scoped observer enforcement", () => {
         // so it is in no "use" collaborator's scope and Carol's requirements don't change either.
         using added = await ws.overseer.newGatekeeper(
             ws.account.id, thingUrl("use-only-extra"));
+        if (!added) throw new Error("Failed to create the test connection");
         expect(await added.getId()).toBeGreaterThan(0);
         await settleRestart();
         await expect(ws.session.readValue()).resolves.toBe(42);

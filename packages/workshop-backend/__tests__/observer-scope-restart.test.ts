@@ -27,7 +27,9 @@ const USER_META = { profile: { type: "user", id: OWNER, name: "Owner" } as AiCha
 
 let doCounter = 0;
 
-async function withImpl(fn: (impl: any, restarts: string[]) => Promise<void>): Promise<void> {
+async function withImpl(
+    fn: (impl: any, restarts: string[], instance: OverseerDurableObject) => Promise<void>)
+    : Promise<void> {
   let stub = env.TEST_OVERSEER.getByName(`observer-scope-restart-${++doCounter}`);
   await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
     let impl = (instance as unknown as { impl: any }).impl;
@@ -35,7 +37,7 @@ async function withImpl(fn: (impl: any, restarts: string[]) => Promise<void>): P
     impl.ownerProfileId = OWNER;
     let restarts: string[] = [];
     impl.scheduleAccessRestart = async (reason: string) => { restarts.push(reason); };
-    await fn(impl, restarts);
+    await fn(impl, restarts, instance);
   });
 }
 
@@ -133,6 +135,39 @@ describe("restarting sessions when verification scope widens", () => {
 
     expect(impl.storage.gatekeepers.get(id).resourceTitle).toBe("Test");
     expect(restarts).toHaveLength(1);
+  }));
+
+  it("the added connection stays blocked until the scheduled reset lands",
+      () => withImpl(async (impl, restarts) => {
+    joinSession(impl);
+    stubFacets(impl);
+    // A "build" client interface whose blocked-connection check is the real impl's.
+    let client = await openFakeOverseer(
+        { gatekeepers: impl.storage.gatekeepers },
+        { impl: { assertGatekeeperUsable: (id: number) => impl.assertGatekeeperUsable(id) } });
+
+    let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC);
+    let id = await added.getId();
+    expect(restarts).toHaveLength(1);
+
+    // The record had to be published before the reset (or the connection would be lost with the
+    // restart), but the sessions the reset is about to sever stay live for its response-delivery
+    // delay. Until the reset lands -- destroying this object, in-memory mark and all -- every
+    // route to the new connection is refused: the mint a stale client can pipeline on...
+    await expect(client.getGatekeeperById(id)).rejects.toThrow(/restarting/);
+    // ...and the session chokepoint itself, which binding loopbacks also pass through.
+    await expect(added.openSession()).rejects.toThrow(/restarting/);
+  }));
+
+  it("with nobody to sever, the added connection is immediately usable",
+      () => withImpl(async (impl, restarts) => {
+    stubFacets(impl);
+
+    // No restart is scheduled, so nothing will ever clear a mark: the connection must not be
+    // blocked, or an unshared workspace would brick every new connection.
+    let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC);
+    expect(restarts).toEqual([]);
+    expect(() => impl.assertGatekeeperUsable(added.id)).not.toThrow();
   }));
 
   it("adding a connection with no collaborator connected disturbs nobody",
@@ -244,6 +279,120 @@ describe("restarting sessions when verification scope widens", () => {
     impl.bindWorkpiece(100, "DB", 1);
 
     expect(restarts).toEqual([]);
+  }));
+
+  it("an open parked in verification counts as a session of its role",
+      () => withImpl(async (impl, restarts) => {
+    stubFacets(impl);
+    impl.getSharingManager = async () => ({ getEffectiveRole: () => "build" });
+    // Verification parks on collaborator-controlled awaits (the configuration prompt, verifier
+    // RPCs), and the parked open holds no client interface yet -- only the authorization lease
+    // counts it.
+    let release!: () => void;
+    let reached = new Promise<void>(resolve => {
+      impl.ensureObserver = () => {
+        resolve();
+        return new Promise<void>(r => { release = r; });
+      };
+    });
+    let parked = impl.authorizeCollaborator("carol", {} as any, {});
+    await reached;
+
+    // A connection added while the open is parked widens the scope it is being verified against,
+    // so the restart must fire -- resetting the DO takes the parked open with it and the client
+    // retries against the new scope.
+    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
+    expect(restarts).toHaveLength(1);
+
+    release();
+    expect(await parked).toBe("build");
+
+    // The lease ended with the call (the caller's interface, not tested here, takes over the
+    // count), so a further widening finds nothing to sever.
+    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
+    expect(restarts).toHaveLength(1);
+  }));
+
+  it("an external message counts as a live build session while it is processed",
+      () => withImpl(async (impl, restarts, instance) => {
+    stubFacets(impl);
+    // A workspace owned by someone else, so the caller is a collaborator.
+    impl.ownerId = "owner-user-id";
+    impl.users = {
+      getByName: () => ({
+        id: { toString: () => "caller-user-id" },
+        whoamiIfExists: async () => ({ type: "user", id: "carol", name: "Carol" }),
+      }),
+    };
+    let fail!: (err: Error) => void;
+    let reached = new Promise<void>(resolve => {
+      impl.authorizeCollaborator = () => {
+        resolve();
+        return new Promise((_, reject) => { fail = reject; });
+      };
+    });
+
+    // This path never constructs a counted client interface, so without its own lease a widening
+    // mid-call would find no session to sever and the reply would be produced under stale
+    // verification.
+    let pending = instance.receiveExternalMessage({
+      callerEmail: "carol@example.com", externalChatKey: "k", idempotencyKey: "i",
+      prompt: "hello", chatGatewayRpcTarget: {} as any, title: "T",
+    } as any);
+    await reached;
+
+    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
+    expect(restarts).toHaveLength(1);
+
+    fail(new Error("verification failed"));
+    expect((await pending).accepted).toBe(false);
+
+    // The lease died with the call.
+    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
+    expect(restarts).toHaveLength(1);
+  }));
+
+  it("a retained connection capability holds the gate open after its interface is gone",
+      () => withImpl(async (impl, restarts) => {
+    stubFacets(impl);
+
+    // A connection capability minted into a collaborator's session (joinAs "build") counts for
+    // its own lifetime: the client can dispose the interface that minted it and retain this.
+    let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC, "build");
+    expect(restarts).toEqual([]);
+
+    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
+    expect(restarts).toHaveLength(1);
+
+    added[Symbol.dispose]();
+    await impl.addGatekeeper({} as any, CONNECTION_SPEC);
+    expect(restarts).toHaveLength(1);
+  }));
+
+  it("a retained gadget capability from a use session holds the gate open",
+      () => withImpl(async (impl, restarts) => {
+    seedGatekeeper(impl, 1);
+    seedGadget(impl, 100);
+    // A real "use" client interface whose session counting is the real impl's.
+    let client = await openFakeOverseer(
+        { gadgets: impl.storage.gadgets },
+        { role: "use", impl: {
+            joinSession: (kind: string) => impl.joinSession(kind),
+            getGadgetRecord: (id: number) => impl.getGadgetRecord(id),
+          } });
+    let child = await client.getGadget(100);
+
+    // Disposing the top-level interface leaves the child capability live, and the gadget UI it
+    // reaches can invoke whatever the gadget binds -- so it must keep counting.
+    (client as any)[Symbol.dispose]();
+    impl.bindWorkpiece(100, "DB", 1);
+    expect(restarts).toHaveLength(1);
+
+    // Only once it too is gone does a widening find nothing to sever.
+    (child as any)[Symbol.dispose]();
+    seedGatekeeper(impl, 2);
+    impl.bindWorkpiece(100, "DB2", 2);
+    expect(restarts).toHaveLength(1);
   }));
 
   it("a session that has closed no longer holds the gate open",

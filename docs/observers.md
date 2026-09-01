@@ -287,11 +287,14 @@ Logic:
      registrations this call added are best-effort-removed while no record is persisted. The
      persisted `accountChoices` are left as they are: an entry records the choice the user made so
      they are not asked again, and asserts nothing about whether the gatekeeper still admits them.
-   - Roll back only what *this call* added. A returning observer's registrations are kept: their
-     `observerId` is already persisted, a registration can only ever add exclusion names (so
-     keeping it is fail-closed), and the next successful open's `addObserver` overwrites its
-     verifier. Only a *first-ever* verification rolls back fully, since that collaborator was never
-     admitted and the minted id would otherwise linger unresolvable.
+   - Only a *first-ever* verification rolls anything back (fully — nothing referenced its
+     registrations before the call, and the minted id would otherwise linger unresolvable). A
+     returning observer's registrations are **all** kept, including ones this call added: their
+     persisted `observerId` is shared with concurrent opens, so a rollback could delete a
+     registration a concurrent successful open just made and persisted. De-registering is the
+     fail-open direction (the gatekeeper stops naming them in `excludeObservers`); a spurious
+     registration only blocks fail-closed until the lazy cleanup at exclusion time or a later
+     open re-verifies it, and the next successful `addObserver` overwrites its verifier.
    - A denial ends only this open. Sessions the collaborator already holds are untouched, and keep
      the access their own opens verified until they next re-open — the lazy-revocation residual
      described under "Known gaps" below.
@@ -343,6 +346,24 @@ unbounded time after the change. The count is deliberately not derived from `#pr
 session joins only once its `fetchProfile()` resolves — fine for a roster, fail-open for an access
 decision.
 
+The count covers everything a collaborator holds a role's access *through*, not just the top-level
+interfaces — anything that escaped it would let a widening find no session to sever:
+
+- **Capabilities minted into a session** (`GadgetClientImpl`, `UseGadgetClientInterface`,
+  `GatekeeperClientImpl`) each count for their own lifetime, since a client can dispose the parent
+  interface while retaining a child stub. They join when minted for a collaborator (the
+  constructor's `joinedAs` / `addGatekeeper`'s `joinAs`) and skip it for the owner's mints and
+  internal construction.
+- **In-flight authorization** counts as a session-to-be: `authorizeCollaborator` holds a lease for
+  the resolved role across `ensureObserver`, which can park indefinitely on collaborator-controlled
+  awaits (the configuration modal, verifier RPCs). A widening then schedules the restart, the DO
+  reset takes the parked open with it, and the client retries against the new scope. Between the
+  lease's release and `open()` constructing the counted interface there are only microtask
+  continuations, in which no incoming event can be delivered, so nothing can observe the count dip
+  to zero across the handoff.
+- **`receiveExternalMessage`** holds a `build` lease for a non-owner caller across the whole call,
+  since it produces a reply from workspace data without ever constructing a counted interface.
+
 Three events trigger it:
 
 | Event | What grows |
@@ -376,8 +397,15 @@ owner's brand-new connection — which gates on nothing but record existence —
 exactly once, after `describe()` resolves; `getGatekeeperFacet(id, cls?)` takes the class directly
 so nothing needs the early put.
 
-Enforcement is therefore at admission, within the ~100 ms restart delay of the moment the widening
-itself happens.
+The reset itself lands only after a ~100 ms response-delivery delay, and the record must be
+durable before it (or the connection is lost with the restart) — so when a restart was actually
+scheduled, the just-published id is additionally marked in the in-memory
+`#gatekeepersPendingRestart` set and every client-reachable route to it
+(`getGatekeeperById`, `GatekeeperClientImpl.openSession`, which binding loopbacks also pass
+through) refuses with a retryable error until the reset destroys the mark along with the sessions.
+Publish, restart-check, and mark share one synchronous block, so no request can interleave between
+the record appearing and the block taking effect; the mark is only ever set when a restart is
+scheduled, since nothing else would clear it.
 
 ### Step 4 — Frontend: the configuration modal
 
@@ -427,6 +455,11 @@ For each id in `description.excludeObservers`:
      to observe; if they ever regain access they reconfigure from scratch (Step 3).
 3. If, after evaluating all excluded ids, none can reach the observation, allow it. Every id is
    classified before anything is torn down, so a blocked observation leaves no teardown behind it.
+   The teardown then yields on every awaited `removeObserver`, so each observer is *re-classified
+   against current state adjacent to their own removal*: a bind plus a fresh open in an earlier
+   removal's window can put an observer back in scope holding a fresh registration, which the
+   stale removal would delete (fail-open). Such an observer blocks the observation instead,
+   exactly as if they had been in scope all along.
 
 This is the runtime counterpart of `addObserver`: `addObserver` covers observers configured
 *after* data was read; `excludeObservers` covers data read *after* observers were configured.
@@ -508,12 +541,15 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    client reconnects within ~100 ms and re-opens at the new scope, so no session keeps watching a
    connection its holder was never verified against. A connection added *while a collaborator's
    verification is parked* on an await (the modal, verifier RPCs) is covered by the same restart:
-   their committed record lacks an entry for the new connection, and the restart forces the open
-   that adds one. The residual is the ~100 ms window itself, which is inside the revocation window
-   the sharing model already accepts: the tolerance for an access change taking effect is 5 s, and
-   a widening that lands early and a revocation that lands late are the same window measured from
-   opposite ends. Closing it outright would mean gating reads on a per-session snapshot of what the
-   holder was verified against, which is not proportionate to what it buys.
+   the parked open holds an authorization lease that counts as a session of its role, so the
+   widening schedules the reset, which takes the parked open with it, and the client retries
+   against the new scope. The residual is the ~100 ms window itself — during which the new
+   connection is unreachable anyway (`#gatekeepersPendingRestart`), leaving only what live
+   sessions already held — and it is inside the revocation window the sharing model already
+   accepts: the tolerance for an access change taking effect is 5 s, and a widening that lands
+   early and a revocation that lands late are the same window measured from opposite ends. Closing
+   it outright would mean gating reads on a per-session snapshot of what the holder was verified
+   against, which is not proportionate to what it buys.
 6. **Performance** — `ensureObserver` does one `getVerifier` + one `addObserver` per in-scope
    gatekeeper per open. Parallelize with `Promise.all` and pipe the verifier promise straight into
    `addObserver`. Expensive gatekeepers cache on their side.
@@ -535,8 +571,9 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
   - build = all gatekeepers in scope; use = named bindings only.
   - first open invokes the `configure` callback with all account-requiring bindings; subsequent
     opens do not (record covers them) but still re-run `addObserver`.
-  - a thrown `addObserver` denies the open and triggers best-effort `removeObserver` rollback on
-    bindings added in the same pass, and does not persist the record.
+  - a thrown `addObserver` denies the open without persisting the record; a first-ever
+    verification also best-effort `removeObserver`s everything it registered, while a returning
+    observer's registrations are all kept.
   - missing account → binding reported as a need to the callback; callback rejection denies open.
 - **`authorizeObservation` exclusion:** observation naming a still-authorized observer throws;
   observation naming an observer who lost access proceeds and deletes that observer record (+

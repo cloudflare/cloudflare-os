@@ -128,6 +128,37 @@ describe("excludeObservers against the observer's verification scope", () => {
     expect(impl.storage.observers.get(CAROL)).toBeUndefined();
   }));
 
+  it("an observer put back in scope mid-teardown blocks instead of being de-registered",
+      () => withImpl("use", async (impl, removals) => {
+    // A second "use" collaborator, Dave, named after Carol.
+    impl.storage.observers.put(
+        { profileId: "dave", observerId: "obs-dave", accountChoices: { [GATEKEEPER_ID]: 11 } });
+    impl.getSharingManager = async () => ({
+      getEffectiveRole: (profileId: string) =>
+          profileId === CAROL || profileId === "dave" ? "use" : null,
+      hasAnyShares: () => true,
+    });
+    // Both start out of scope (nothing binds the connection), so both are due to be de-registered
+    // -- but each removal awaits, and during Carol's the owner binds the connection into a gadget,
+    // putting it back into everyone's "use" scope. Dave can now reach the observation, and his
+    // registration may be freshly re-asserted by an open racing this teardown, so his stale
+    // removal must not be issued: he is re-classified adjacent to it and blocks instead.
+    impl.getGatekeeperFacet = (id: number) => ({
+      removeObserver: async (observerId: string) => {
+        if (observerId === OBSERVER_ID) bindIntoGadget(impl);
+        removals.push(`${id}:${observerId}`);
+      },
+    });
+
+    await expect(impl.authorizeObservation(
+        GATEKEEPER_ID, { ...DESCRIPTION, excludeObservers: [OBSERVER_ID, "obs-dave"] }, CALLER))
+        .rejects.toThrow(/not permitted to see/);
+
+    // Carol's removal was already in flight; Dave's never happened and his record is intact.
+    expect(removals).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`]);
+    expect(impl.storage.observers.byObserverId.get("obs-dave")).toBeDefined();
+  }));
+
   it("an unknown observer id is ignored", () => withImpl("use", async (impl, removals) => {
     bindIntoGadget(impl);
 

@@ -20,8 +20,8 @@ function seedOwner(impl: any): void {
   impl.ownerProfileId = "owner";
 }
 
-function seedGatekeepers(impl: any): void {
-  for (let id of [1, 2]) {
+function seedGatekeepers(impl: any, ids: number[] = [1, 2]): void {
+  for (let id of ids) {
     impl.storage.gatekeepers.put({
       id,
       resourceTitle: `Connection ${id}`,
@@ -83,7 +83,7 @@ describe("a binding that fails verification", () => {
     });
   });
 
-  it("keeps a returning observer's registration so forward exclusion survives the failure",
+  it("keeps all of a returning observer's registrations, including ones this call added",
       async () => {
     let stub = env.TEST_OVERSEER.getByName("observer-verify-keeps-registration");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
@@ -109,11 +109,69 @@ describe("a binding that fails verification", () => {
       await expect(impl.ensureObserver("alice", fakeClientUser, "build", configureCb))
           .rejects.toThrow(/could not confirm/);
 
-      // The two registrations are treated differently, which is the whole point. Gatekeeper 1's
-      // predates this call, so it survives and keeps naming her in `excludeObservers`. Gatekeeper
-      // 2's was created by this call, so rolling it back merely restores the pre-call state --
-      // there was no prior registration whose exclusions could be lost.
-      expect(removed).toEqual([2]);
+      // Gatekeeper 1's registration predates this call and survives, so it keeps naming her in
+      // `excludeObservers`. Gatekeeper 2's was created by this call -- but her persisted
+      // observerId is shared with any concurrent open, which may have registered (and persisted)
+      // the very same gatekeeper, so it is kept too: de-registering is the fail-open direction,
+      // a spurious registration only blocks fail-closed until a later open re-verifies it.
+      expect(removed).toEqual([]);
+    });
+  });
+
+  it("a failed open does not roll back registrations a concurrent open persisted", async () => {
+    let stub = env.TEST_OVERSEER.getByName("observer-verify-concurrent");
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = (instance as unknown as { impl: any }).impl;
+      seedOwner(impl);
+      seedGatekeepers(impl, [1, 2, 3]);
+      // Alice's record predates connections 2 and 3, so both opens must register her with both --
+      // under the one persisted observerId they share.
+      impl.storage.observers.put(
+          { profileId: "alice", observerId: "obs-1", accountChoices: { 1: 10 } });
+
+      let removed: number[] = [];
+      // Connection 3 admits only call B's attempt (the 2nd): call A's first attempt parks until
+      // the test releases it, and its repaired retry (the 3rd) is refused outright.
+      let rejectFirst!: () => void;
+      let firstAttempt = new Promise<never>((_, reject) => {
+        rejectFirst = () => reject(new Error("no access"));
+      });
+      let reached!: () => void;
+      let firstAttemptReached = new Promise<void>(resolve => { reached = resolve; });
+      let gk3Calls = 0;
+      impl.getGatekeeperFacet = (id: number) => ({
+        addObserver: async () => {
+          if (id !== 3) return;
+          let call = ++gk3Calls;
+          if (call === 1) { reached(); await firstAttempt; }
+          if (call === 3) throw new Error("no access");
+        },
+        removeObserver: async () => { removed.push(id); },
+      });
+      let configureCb = { configure: async (needs: {gatekeeperId: number}[]) =>
+          needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: need.gatekeeperId * 10 }))
+      } as any;
+
+      // Call A registers her with connection 2, then parks on connection 3.
+      let callA = impl.ensureObserver("alice", fakeClientUser, "build", configureCb);
+      callA.catch(() => {});  // asserted below; not unhandled in the meantime
+      await firstAttemptReached;
+
+      // Call B -- the same returning observer opening concurrently -- verifies everything and
+      // persists the record asserting all three registrations.
+      await impl.ensureObserver("alice", fakeClientUser, "build", configureCb);
+      expect(impl.storage.observers.get("alice").accountChoices).toEqual({ 1: 10, 2: 20, 3: 30 });
+
+      // Now connection 3 refuses call A terminally.
+      rejectFirst();
+      await expect(callA).rejects.toThrow(/could not confirm/);
+
+      // Call A also registered her with connection 2 before failing on 3, but must not roll that
+      // back: the registration is keyed by the shared observerId, so removing it would delete the
+      // one call B just made -- while B's persisted record asserts it exists, breaking every
+      // future exclusion that names her.
+      expect(removed).toEqual([]);
+      expect(impl.storage.observers.get("alice").accountChoices).toEqual({ 1: 10, 2: 20, 3: 30 });
     });
   });
 
