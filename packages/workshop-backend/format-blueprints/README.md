@@ -14,10 +14,13 @@ workspace-docs/
   files/
     README.md
     client.js
+    lib/
+      helpers.js
     server.js
 ```
 
-`files/` is the gadget's code. `blueprint.json` contains its install ID, presentation, provenance,
+`files/` is the gadget's code and may contain nested directories. `blueprint.json` contains its
+install ID, presentation, provenance,
 bindings, blueprint `version`, and bundled `revision`. The build converts these files into the same
 gzip-compressed Yjs `.gadget` representation used by uploaded blueprints and embeds it in the
 generated Worker module. No binary archive is committed.
@@ -65,6 +68,10 @@ FORMAT_BLUEPRINTS_DIR=../../acme-formats pnpm exec vp run build
 The named directory replaces this set rather than extending it. It can be empty to ship no bundled
 formats. The import command honors the same variable. Keeping deployment-owned formats outside this
 repo avoids modifying it when it is consumed as a submodule.
+
+Directories using the previous `<name>.gadget` plus `<name>.json` layout remain supported, so an
+existing deployment can update this repo without coordinating a format conversion. Importing a new
+export into one of those entries migrates that pair to the extracted layout automatically.
 
 Administrators can also publish and promote ordinary blueprints at runtime instead of rebuilding a
 deployment.

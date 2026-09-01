@@ -1,16 +1,16 @@
 // Extracts a `.gadget` archive exported from a running Workshop into the repo's reviewable bundled
 // format-blueprint source. See format-blueprints/README.md for the workflow this belongs to.
 
-import { readdir, readFile, rename, rm, writeFile, mkdir } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { access, readdir, readFile, rename, rm, writeFile, mkdir } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { extractFiles, parseArchive } from "./format-blueprint-files.ts";
+import { extractFiles, parseArchive, readSourceFiles } from "./format-blueprint-files.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
 const sourceDir = resolve(pkgRoot, process.env.FORMAT_BLUEPRINTS_DIR ?? "format-blueprints");
-type BlueprintManifest = {
+type BlueprintPresentation = {
   name: string;
   source: string;
   blueprintId: string;
@@ -19,11 +19,15 @@ type BlueprintManifest = {
   output: {id: string; noun: string; plural: string; icon: string};
   author: {type: "user"; name: string; id: string};
   revision: number;
+};
+type BlueprintManifest = BlueprintPresentation & {
   created: string;
   version: number;
   lastUpdated: string;
   bindings: Record<string, unknown>;
 };
+type BlueprintEntry = (BlueprintManifest & {layout: "extracted"}) |
+    (BlueprintPresentation & {layout: "legacy"});
 
 const sha = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("hex").slice(0, 12);
@@ -41,11 +45,15 @@ function isErrorCode(err: unknown, code: string): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === code;
 }
 
-const manifests: BlueprintManifest[] = [];
-for (const entry of (await readdir(sourceDir, {withFileTypes: true}))
+const directoryEntries = await readdir(sourceDir, {withFileTypes: true});
+const extractedNames = new Set(directoryEntries
     .filter(entry => entry.isDirectory() && !entry.name.startsWith("."))
+    .map(entry => entry.name));
+const manifests: BlueprintEntry[] = [];
+for (const dirent of directoryEntries
+    .filter(candidate => candidate.isDirectory() && !candidate.name.startsWith("."))
     .toSorted((a, b) => a.name < b.name ? -1 : 1)) {
-  const path = join(sourceDir, entry.name, "blueprint.json");
+  const path = join(sourceDir, dirent.name, "blueprint.json");
   let source: string;
   try {
     source = await readFile(path, "utf8");
@@ -53,7 +61,24 @@ for (const entry of (await readdir(sourceDir, {withFileTypes: true}))
     if (isErrorCode(err, "ENOENT")) continue;
     throw err;
   }
-  manifests.push({name: entry.name, source, ...JSON.parse(source)} as BlueprintManifest);
+  manifests.push({
+    name: dirent.name, source, ...JSON.parse(source), layout: "extracted",
+  } as BlueprintManifest & {layout: "extracted"});
+}
+for (const dirent of directoryEntries
+    .filter(candidate => candidate.isFile() && candidate.name.endsWith(".json") &&
+        !candidate.name.startsWith(".") &&
+        !extractedNames.has(basename(candidate.name, ".json")))
+    .toSorted((a, b) => a.name < b.name ? -1 : 1)) {
+  const name = basename(dirent.name, ".json");
+  try {
+    await access(join(sourceDir, `${name}.gadget`));
+  } catch (err) {
+    if (isErrorCode(err, "ENOENT")) continue;
+    throw err;
+  }
+  const source = await readFile(join(sourceDir, dirent.name), "utf8");
+  manifests.push({name, source, ...JSON.parse(source), layout: "legacy"} as BlueprintEntry);
 }
 
 const rawArgs = process.argv.slice(2);
@@ -77,8 +102,9 @@ if ((newName && args.length !== 1) || (!newName && args.length !== 2) ||
     rawArgs.filter(arg => arg === "--new").length > 1) {
   fail("unexpected arguments");
 }
-if (newName && !/^[a-zA-Z0-9._-]+$/.test(newName)) {
-  fail(`--new ${newName}: name must be [a-zA-Z0-9._-]`);
+if (newName && !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(newName)) {
+  fail(`--new ${newName}: name must start with an alphanumeric character and contain only ` +
+      `[a-zA-Z0-9._-]`);
 }
 if (newName && manifests.some(entry => entry.name === newName)) {
   fail(`${newName}/ already exists; import into it by blueprintId instead`);
@@ -88,7 +114,7 @@ const foundEntry = manifests.find(candidate => candidate.blueprintId === bluepri
 if (!newName && !foundEntry) {
   fail(`no blueprint declares blueprintId "${blueprintId}". Use --new <name> to add one.`);
 }
-const entry: BlueprintManifest | {name: string; scaffold: true} = newName
+const entry: BlueprintEntry | {name: string; scaffold: true} = newName
     ? {name: newName, scaffold: true}
     : foundEntry!;
 
@@ -109,19 +135,31 @@ try {
   fail(errorMessage(err));
 }
 
-let oldFiles = new Map<string, string>();
-if (!("scaffold" in entry)) {
-  const oldDir = join(sourceDir, entry.name, "files");
-  for (const file of await readdir(oldDir)) {
-    oldFiles.set(file, await readFile(join(oldDir, file), "utf8"));
-  }
+let oldFiles: Map<string, string>;
+let current: BlueprintManifest | undefined;
+if ("scaffold" in entry) {
+  oldFiles = new Map();
+} else if (entry.layout === "legacy") {
+  let existing = parseArchive(await readFile(join(sourceDir, `${entry.name}.gadget`)),
+      `${entry.name}.gadget`);
+  oldFiles = extractFiles(existing.content, `${entry.name}.gadget`);
+  current = {
+    ...entry,
+    created: String(existing.metadata.created),
+    version: Number(existing.metadata.version),
+    lastUpdated: String(existing.metadata.lastUpdated),
+    bindings: (existing.metadata.bindings as Record<string, unknown> | undefined) ?? {},
+  };
+} else {
+  oldFiles = await readSourceFiles(join(sourceDir, entry.name, "files"), `${entry.name}/files`);
+  current = entry;
 }
 
 const scaffold = "scaffold" in entry;
-const title = scaffold ? String(incoming.metadata.title || entry.name) : entry.title;
+const title = scaffold ? String(incoming.metadata.title || entry.name) : current!.title;
 const author = scaffold
     ? (manifests[0]?.author ?? incoming.metadata.author as BlueprintManifest["author"])
-    : entry.author;
+    : current!.author;
 const manifest = scaffold ? {
   blueprintId: entry.name,
   title,
@@ -134,8 +172,8 @@ const manifest = scaffold ? {
   lastUpdated: String(incoming.metadata.lastUpdated),
   bindings: (incoming.metadata.bindings as Record<string, unknown> | undefined) ?? {},
 } : {
-  ...JSON.parse(entry.source),
-  revision: entry.revision + 1,
+  ...JSON.parse(current!.source),
+  revision: current!.revision + 1,
   created: String(incoming.metadata.created),
   version: Number(incoming.metadata.version),
   lastUpdated: String(incoming.metadata.lastUpdated),
@@ -151,9 +189,11 @@ try {
   await mkdir(join(stagedDir, "files"), {recursive: true});
   await writeFile(join(stagedDir, "blueprint.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   for (const [filename, source] of files) {
-    await writeFile(join(stagedDir, "files", filename), source);
+    const path = join(stagedDir, "files", filename);
+    await mkdir(dirname(path), {recursive: true});
+    await writeFile(path, source);
   }
-  if (!scaffold) await rename(targetDir, backupDir);
+  if (!scaffold && entry.layout === "extracted") await rename(targetDir, backupDir);
   await rename(stagedDir, targetDir);
   await rm(backupDir, {recursive: true, force: true});
 } catch (err) {
@@ -169,10 +209,14 @@ try {
   }
   throw err;
 }
+// An extracted directory is authoritative if migration was interrupted, so cleanup can safely be
+// retried by a later import without ever making the legacy pair win again.
+await rm(join(sourceDir, `${entry.name}.gadget`), {force: true});
+await rm(join(sourceDir, `${entry.name}.json`), {force: true});
 
 const changed = [...new Set([...oldFiles.keys(), ...files.keys()])]
     .filter(filename => oldFiles.get(filename) !== files.get(filename)).toSorted();
-const oldBindings = Object.keys(scaffold ? {} : entry.bindings).toSorted().join(",");
+const oldBindings = Object.keys(scaffold ? {} : current!.bindings).toSorted().join(",");
 const newBindings = Object.keys(manifest.bindings).toSorted().join(",");
 
 console.log(`${scaffold ? "Imported" : "Updated"} ${entry.name}/ (${manifest.blueprintId})`);
@@ -180,8 +224,8 @@ console.log(`  files        ${files.size} (${changed.length ? `changed: ${change
 console.log(`  snapshot     ${incoming.content.byteLength} bytes (${sha(incoming.content)})`);
 console.log(`  bindings     ${newBindings || "(none)"}` +
     `${oldBindings !== newBindings ? `   [CHANGED from ${oldBindings || "(none)"}]` : ""}`);
-console.log(`  version      ${scaffold ? manifest.version : `${entry.version} -> ${manifest.version}`}`);
-console.log(`  revision     ${scaffold ? "1 (new)" : `${entry.revision} -> ${manifest.revision}`}`);
+console.log(`  version      ${scaffold ? manifest.version : `${current!.version} -> ${manifest.version}`}`);
+console.log(`  revision     ${scaffold ? "1 (new)" : `${current!.revision} -> ${manifest.revision}`}`);
 console.log(`  presented as "${manifest.title}" by ${manifest.author.name}` +
     `${incoming.metadata.title !== manifest.title ? ` [export called it "${incoming.metadata.title}"]` : ""}`);
 

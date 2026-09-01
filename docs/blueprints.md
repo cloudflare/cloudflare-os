@@ -126,7 +126,7 @@ A deployment can also ship blueprints as data. `packages/workshop-backend/format
 - They have **no owning User DO**. `AdminSettings` writes them straight into the featured mirror, because there is no publishing user whose `featured` bit could be authoritative.
 - Their `output` lives in `blueprint.json`, so the deployment's presentation has a single source of truth.
 
-The first `/api` request a deployment serves installs any whose manifest fingerprint has changed. The fingerprint covers its title, description, author, revision, and output presentation; `revision` represents changes to the archive bytes. Each bundled blueprint is promoted only once ever -- an upgrade never undoes an admin's later removal or overrides.
+The first `/api` request a deployment serves installs any whose manifest fingerprint has changed. The fingerprint covers its title, description, author, revision, output presentation, and generated archive content hash. Each bundled blueprint is promoted only once ever -- an upgrade never undoes an admin's later removal or overrides.
 
 ## Creating and Managing Blueprints
 

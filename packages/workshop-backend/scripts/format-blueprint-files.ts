@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { join } from "node:path";
 import * as Y from "yjs";
@@ -91,9 +91,10 @@ export function extractFiles(content: Uint8Array, label: string): Map<string, st
     invalid(label, "content contains a non-canonical named Yjs root");
   }
   const root = doc.getMap();
+  const entries = [...root];
+  validateFilePaths(entries.map(([filename]) => filename), label);
   const files = new Map<string, string>();
-  for (const [filename, value] of root) {
-    validateFilename(filename, label);
+  for (const [filename, value] of entries) {
     if (!(value instanceof Y.Text)) invalid(label, `${filename} is not text`);
     files.set(filename, value.toString());
   }
@@ -101,13 +102,13 @@ export function extractFiles(content: Uint8Array, label: string): Map<string, st
 }
 
 export function buildContent(files: Map<string, string>, label: string): Uint8Array {
+  validateFilePaths(files.keys(), label);
   const doc = new Y.Doc();
   // The generated update is embedded as build output, not committed source. A fixed client ID makes
   // repeated builds byte-identical while preserving the same minimal one-insert-per-file snapshot.
   doc.clientID = 1;
   const root = doc.getMap();
   for (const [filename, source] of [...files].toSorted(([a], [b]) => compareNames(a, b))) {
-    validateFilename(filename, label);
     const text = new Y.Text();
     root.set(filename, text);
     text.insert(0, source);
@@ -123,28 +124,55 @@ export async function readSourceFiles(
 ): Promise<Map<string, string>> {
   const files = new Map<string, string>();
   let totalBytes = 0;
-  for (const entry of (await readdir(filesDir, { withFileTypes: true }))
-      .toSorted((a, b) => compareNames(a.name, b.name))) {
-    validateFilename(entry.name, label);
-    if (entry.isSymbolicLink()) invalid(label, `${entry.name} must not be a symlink`);
-    if (!entry.isFile()) invalid(label, `${entry.name} must be a regular file`);
-    const bytes = await readFile(join(filesDir, entry.name));
-    totalBytes += bytes.byteLength;
-    if (totalBytes > MAX_SOURCE_BYTES) invalid(label, "source files are too large");
-    try {
-      files.set(entry.name, textDecoder.decode(bytes));
-    } catch (err) {
-      invalid(label, `${entry.name} is not valid UTF-8 (${errorMessage(err)})`);
+  const root = await lstat(filesDir);
+  if (root.isSymbolicLink()) invalid(label, "must not be a symlink");
+  if (!root.isDirectory()) invalid(label, "must be a directory");
+
+  const visit = async (directory: string, prefix: string): Promise<void> => {
+    for (const entry of (await readdir(directory, { withFileTypes: true }))
+        .toSorted((a, b) => compareNames(a.name, b.name))) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      validateFilePath(path, label);
+      if (entry.isSymbolicLink()) invalid(label, `${path} must not be a symlink`);
+      if (entry.isDirectory()) {
+        await visit(join(directory, entry.name), path);
+        continue;
+      }
+      if (!entry.isFile()) invalid(label, `${path} must be a regular file or directory`);
+      const bytes = await readFile(join(directory, entry.name));
+      totalBytes += bytes.byteLength;
+      if (totalBytes > MAX_SOURCE_BYTES) invalid(label, "source files are too large");
+      try {
+        files.set(path, textDecoder.decode(bytes));
+      } catch (err) {
+        invalid(label, `${path} is not valid UTF-8 (${errorMessage(err)})`);
+      }
     }
-  }
+  };
+
+  await visit(filesDir, "");
   return files;
 }
 
-export function validateFilename(filename: string, label: string): void {
-  if (typeof filename !== "string" || filename === "" || filename === "." ||
-      filename === ".." || filename.includes("/") || filename.includes("\\") ||
-      filename.includes("\0")) {
-    invalid(label, `unsafe blueprint filename ${JSON.stringify(filename)}`);
+function validateFilePaths(paths: Iterable<string>, label: string): void {
+  const seen = new Set<string>();
+  for (const path of [...paths].toSorted(compareNames)) {
+    validateFilePath(path, label);
+    let slash = path.indexOf("/");
+    while (slash !== -1) {
+      if (seen.has(path.slice(0, slash))) {
+        invalid(label, `${path} conflicts with file ${path.slice(0, slash)}`);
+      }
+      slash = path.indexOf("/", slash + 1);
+    }
+    seen.add(path);
+  }
+}
+
+function validateFilePath(path: string, label: string): void {
+  if (typeof path !== "string" || path.includes("\\") || path.includes("\0") ||
+      path.split("/").some(segment => segment === "" || segment === "." || segment === "..")) {
+    invalid(label, `unsafe blueprint file path ${JSON.stringify(path)}`);
   }
 }
 
