@@ -355,7 +355,11 @@ interfaces — anything that escaped it would let a widening find no session to 
   `GatekeeperClientImpl`) each count for their own lifetime, since a client can dispose the parent
   interface while retaining a child stub. They join when minted for a collaborator (the
   constructor's `joinedAs` / `addGatekeeper`'s `joinAs`) and skip it for the owner's mints and
-  internal construction.
+  internal construction. The raw gadget facet stub `connectToGadget()` returns counts the same
+  way (`getGadgetFacet`'s `joinAs`, released when the stub is disposed): it is the very stub an
+  enabled hook's data flows through, and unlike a bind — which aborts gadget facets via
+  `bumpVersion` — enabling a hook leaves existing facets running, so an uncounted retained facet
+  would let that widening find no session to sever.
 - **Subscriptions** (`subscribeToMetadata`/`Presence`/`Workpieces`/`Actions`/`Chat`/`ConsoleLogs`,
   on both client interfaces, including the `use` interface's inert ones) are exports minted into
   the session like any other: a client can dispose the interface while a retained chat or action
@@ -375,6 +379,17 @@ interfaces — anything that escaped it would let a widening find no session to 
   only after authorization (verification itself is covered by `authorizeCollaborator`'s internal
   lease): a caller who is turned away must never have counted, or a stranger racing an
   `addGatekeeper()` would cause a needless workspace reset.
+- **Known gap — the agent turn an external message starts** outlives that RPC's lease (it is
+  fire-and-forget, and its persisted `ActiveAgentRecord` even survives DO resets, resuming with
+  no re-verification), so a widening mid-turn finds no session to sever and the reply egresses
+  to the persisted external response target under stale verification. Tolerated only because
+  nothing calls `receiveExternalMessage` yet; the required fix (a per-turn `build` lease from
+  `#registerRunningAgent` to `#unregisterRunningAgent`, persisted as a marker on
+  `ActiveAgentRecord`, plus `authorizeCollaborator` re-run on resume with the turn cancelled on
+  denial) is spelled out in the comment at the endpoint and must land before it gets real
+  callers. Owner and UI-collaborator turns are not affected: the owner is never an observer, a
+  UI collaborator's replies land in the chat log behind re-verified opens, and gadget-callback
+  turns have no external egress.
 
 Four events trigger it:
 
@@ -402,7 +417,13 @@ Shrinking scope needs no restart (`unbindWorkpiece`, `removeGatekeeper`, `disabl
 (`removeGatekeeper` also synchronously deletes the connection's hook records — the authoritative
 kill, since `startHook` re-checks the record before every delivery — and fires the gatekeeper-side
 disables best-effort rather than awaiting them, so a hung gatekeeper can't keep an orphaned hook
-delivering.) Role *rises* (`addCollaborator`, share-key redemption) are deliberately not triggers
+delivering. The hook state flips guard that kill against their own gatekeeper round trips, whose
+awaits leave the input gate open: `enableHookRecord` re-reads the hook and its connection after
+`controller.enable()` resolves — refusing, with a best-effort compensating disable, when either
+was deleted meanwhile, since re-putting the captured record would resurrect an enabled hook the
+widening detector can't even see — and `disableHook` likewise re-reads rather than re-putting a
+deleted record back as a zombie.) Role *rises* (`addCollaborator`, share-key redemption) are
+deliberately not triggers
 either — a live session's capability set is fixed at open, so raising someone's graph role does
 not widen the session they already hold.
 
@@ -420,12 +441,14 @@ scheduled, every trigger additionally marks the widened connection ids in the in
 `#gatekeepersPendingRestart` set: `addGatekeeper` marks the just-published id, and the three
 `use`-scope triggers mark each id their diff widened (marking gatekeeper ids suffices as
 quarantine because a severed `use` session's gadget facet reload mints its binding loopbacks
-through `openSession`). Every client-reachable route to a marked connection refuses with a
-retryable error until the reset destroys the mark along with the sessions: `getGatekeeperById`
-(the mint clients pipeline on), `GatekeeperClientImpl.openSession` (which binding loopbacks also
-pass through), the slash-command invoke in `#prepareChatMessage`, and
-`GadgetClientImpl.bindWithSuggestedName` — while the enumerating routes (`listSlashCommands`, the
-ambient catalog load in `prepareChatBindings`) silently omit it until clients reconnect. Publish,
+through `openSession`). Every route to a marked connection refuses with a retryable error until
+the reset destroys the mark along with the sessions: `getGatekeeperById` (the mint clients
+pipeline on), `GatekeeperClientImpl.openSession` (which binding loopbacks also pass through), the
+slash-command invoke in `#prepareChatMessage`, `GadgetClientImpl.bindWithSuggestedName`, and
+`startHook` — the inbound gatekeeper→gadget delivery route, whose arming enable may itself be the
+widening that scheduled the restart — while the enumerating routes (`listSlashCommands`, the
+ambient catalog load and seed materialization in `prepareChatBindings`) silently omit it until
+clients reconnect. Publish,
 restart-check, and mark share one synchronous block, so no request can interleave between the
 change appearing and the block taking effect; marks are only ever set when a restart is
 scheduled, since nothing else would clear them.

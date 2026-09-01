@@ -2677,16 +2677,38 @@ class OverseerImpl implements AgentHooks {
 
   // Record a hook as enabled, updating its action-log record to match -- the synchronous state
   // flip at the heart of OverseerClientInterface.enableHook (the gatekeeper-side
-  // controller.enable() has already succeeded by the time this runs). Enabling can widen every
-  // "use" collaborator's verification scope: the connection becomes reachable through the gadget
-  // the hook wakes even when no binding edge names it (see #useScopeGatekeeperIds), so the scope
-  // is diffed around the flip exactly as bindWorkpiece does. Disabling or deleting a hook only
-  // shrinks scope, which never under-verifies anyone, so those paths need no counterpart.
+  // controller.enable() has already succeeded by the time this runs).
+  //
+  // The hook and its connection are re-read rather than trusting the caller's captured record:
+  // the enable() round trip leaves the input gate open, so deleteHook/removeGatekeeper may have
+  // deleted either while it was in flight, and putting the captured record back would silently
+  // resurrect an enabled hook on a connection that no longer exists -- one delivering into the
+  // gadget (startHook accepts via the record's denormalized vendorId) while being invisible to
+  // the widening detector (#accountRequiringUseScope filters on the gatekeeper record). Deleting
+  // the record must stay the authoritative kill, so in that case the goal state is "no hook":
+  // send the compensating gatekeeper-side disable best-effort and refuse the flip.
+  //
+  // Enabling can widen every "use" collaborator's verification scope: the connection becomes
+  // reachable through the gadget the hook wakes even when no binding edge names it (see
+  // #useScopeGatekeeperIds), so the scope is diffed around the flip exactly as bindWorkpiece
+  // does. Disabling or deleting a hook only shrinks scope, which never under-verifies anyone, so
+  // those paths need no counterpart.
   enableHookRecord(record: BoundHookRecord): void {
+    let current = this.storage.boundHooks.get(record.id);
+    if (!current || !this.storage.gatekeepers.get(current.gatekeeperId)) {
+      this.ctx.waitUntil(record.controller.disable().catch(error => {
+        this.logger.warn("failed to disable a hook removed while enabling", {
+          event: "gatekeeper.hook.enable.compensate.failed",
+          gatekeeperId: record.gatekeeperId, hookId: record.id, error,
+        });
+      }));
+      throw new Error("The connection or hook was removed while the hook was being enabled.");
+    }
+
     let useScopeBefore = this.#accountRequiringUseScope();
-    record.enabled = true;
-    this.storage.boundHooks.put(record);
-    stampBindHookAction(this.storage, record.actionId, true);
+    current.enabled = true;
+    this.storage.boundHooks.put(current);
+    stampBindHookAction(this.storage, current.actionId, true);
     this.#restartIfUseScopeWidened(
         useScopeBefore, "Gadget restarted because a connection's hook was enabled.");
   }
@@ -4972,16 +4994,37 @@ class OverseerImpl implements AgentHooks {
 
   // Get an RpcStub for the gadget facet, which can be returned to the client.
   //
+  // `joinAs` counts the returned stub toward #hasCollaboratorSession for its own lifetime, like
+  // every other capability minted into a collaborator's session (see GadgetClientImpl): the facet
+  // is a live channel into the gadget's state -- including whatever an enabled hook writes into
+  // it -- and a stub that escaped the count would let a scope widening find no session to sever
+  // while the retained stub kept reading. Passed by the collaborator-facing connectToGadget
+  // mints; omitted for the owner's and for internal callers (binding loopbacks already live
+  // inside a counted session).
+  //
   // Since facet stubs currently can't be sent over RPC, the stub is wrapped in a Proxy to make it
   // look like an RpcTarget instead.
-  async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number): Promise<RpcStub<any>> {
+  async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number, joinAs?: SessionKind)
+      : Promise<RpcStub<any>> {
     let facet = this.getGadgetFacetFetcher(gadgetId, chatId);
+    let leaveSession = joinAs ? this.joinSession(joinAs) : undefined;
 
     let self = this;
 
     // TODO: Make possible to return facet stub over RPC. This Proxy is a hack.
     let proxy = new Proxy(facet, {
       get(target, prop, receiver) {
+        // The lease ends when the client disposes the stub. (The DO reset that severs sessions
+        // releases it implicitly, by discarding this object -- and joinSession's leave is
+        // idempotent, so a double dispose is harmless.)
+        if (prop === Symbol.dispose && leaveSession) {
+          let inner = Reflect.get(target, prop, target);
+          return () => {
+            leaveSession!();
+            if (typeof inner === "function") Reflect.apply(inner, target, []);
+          };
+        }
+
         // Note: We need `target` to be used as the receiver. If we use `receiver` as the receiver,
         //   we'll get an illegal invocation, as `receiver` points to our Proxy.
         let method = Reflect.get(target, prop, target);
@@ -6165,8 +6208,10 @@ class OverseerImpl implements AgentHooks {
   // #gatekeepersPendingRestart. Called from getGatekeeperById (the mint clients pipeline on),
   // GatekeeperClientImpl.openSession (the chokepoint every gatekeeper session -- including
   // binding loopbacks via startGatekeeperSession -- passes through), the slash-command invoke in
-  // #prepareChatMessage, and GadgetClientImpl.bindWithSuggestedName (the latter two take a
-  // client-supplied gatekeeper id and reach the connection outside openSession).
+  // #prepareChatMessage, GadgetClientImpl.bindWithSuggestedName (the latter two take a
+  // client-supplied gatekeeper id and reach the connection outside openSession), and startHook
+  // (the inbound delivery route, whose arming enable may itself be the widening that scheduled
+  // the restart).
   assertGatekeeperUsable(id: number): void {
     if (!this.gatekeeperUsable(id)) {
       throw new Error(
@@ -7916,8 +7961,10 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
-    // Materialize the seed entries, skipping targets that no longer exist (mirroring env build);
-    // ambient entries carry their catalogs.
+    // Materialize the seed entries, skipping targets that no longer exist (mirroring env build)
+    // or that are blocked pending a scope-widening restart (like the enumerating routes above:
+    // even the connection's metadata belongs to a scope nobody live was verified against, and
+    // the entry reappears once the reset lands); ambient entries carry their catalogs.
     let catalogs = new Map(snapshots.map(entry => [entry.gatekeeperId, entry.catalog]));
     let ambientSet = new Set(ambientIds);
     let result: SeedBindingInfo[] = [];
@@ -7929,7 +7976,7 @@ class OverseerImpl implements AgentHooks {
       }
       if (gadget) continue;  // a worktree never seeds a chat
       let gk = this.storage.gatekeepers.get(target);
-      if (!gk) continue;
+      if (!gk || !this.gatekeeperUsable(gk.id)) continue;
       let info: SeedBindingInfo =
           {name, target, title: gk.resourceTitle || "(untitled resource)", isGadget: false};
       if (ambientSet.has(target)) info.catalog = catalogs.get(target) ?? null;
@@ -9869,6 +9916,20 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // away must never have counted at all -- a stranger racing an addGatekeeper would otherwise
     // cause a needless workspace reset. The handoff between the two leases is microtask-only,
     // the same argument as open()'s.
+    //
+    // KNOWN GAP, tolerable only while nothing calls this endpoint: the lease ends when this call
+    // returns, but the agent turn newChat/sendChatMessage start is fire-and-forget and outlives
+    // it -- and via its persisted ActiveAgentRecord even survives DO resets, resuming with the
+    // in-memory quarantine cleared and no re-verification. A scope widening mid-turn therefore
+    // finds no session to sever, and the reply -- which egresses to the persisted external
+    // response target with no further check -- is produced under stale verification (e.g. a new
+    // external chat freezes its binding seed lazily inside the turn, folding in a connection
+    // added after this authorization). Before wiring this endpoint to real callers: give the
+    // turn its own "build" session lease from #registerRunningAgent to #unregisterRunningAgent,
+    // persisted as a marker on ActiveAgentRecord so a resumed turn re-takes it, and have
+    // #resumeAgent re-run authorizeCollaborator(initiator, {requireRole: "build"}) for marked
+    // records before #runAgentTurn, cancelling the turn (error posted, record cleared, waiting
+    // response delivered as the terminal error) when the initiator no longer verifies.
     let leaveSession = () => {};
     using _sessionLease = {[Symbol.dispose]: () => leaveSession()};
 
@@ -10053,6 +10114,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }> {
     let record = this.impl.storage.boundHooks.get(hookId);
     if (!record?.enabled) throw new Error("Hook has been deleted or disabled.");
+
+    // The enable that armed this hook may itself be the widening that scheduled a restart
+    // (enableHookRecord), so until the reset lands the connection is quarantined and this inbound
+    // delivery route refuses like every client-reachable one (see #gatekeepersPendingRestart).
+    this.impl.assertGatekeeperUsable(record.gatekeeperId);
 
     let vendorId = record.vendorId ??
         gatekeeperVendorId(this.impl.storage.gatekeepers.get(record.gatekeeperId));
@@ -11074,9 +11140,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (record.enabled) {
       await record.controller.disable();
 
-      record.enabled = false;
-      this.impl.storage.boundHooks.put(record);
-      stampBindHookAction(this.impl.storage, record.actionId, false);
+      // Re-read after the await: a deleteHook/removeGatekeeper landing while disable() was in
+      // flight already reached the goal state (no hook), and putting the captured record back
+      // would resurrect it as a zombie -- deleting the record must stay the authoritative kill.
+      let current = this.impl.storage.boundHooks.get(id);
+      if (!current) return;
+      current.enabled = false;
+      this.impl.storage.boundHooks.put(current);
+      stampBindHookAction(this.impl.storage, current.actionId, false);
     }
   }
 
@@ -12392,7 +12463,9 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       chat_id: chatId,
       interaction_type: "gadget_ui_connected",
     });
-    return this.impl.getGadgetFacet(this.id, chatId);
+    // The facet stub counts exactly as this capability does (joinedAs): it can outlive this
+    // object, and it is the very stub a hook-enable widening's data flows through.
+    return this.impl.getGadgetFacet(this.id, chatId, this.joinedAs);
   }
 
   async getExportFormats(chatId?: number): Promise<GadgetExportFormat[]> {
@@ -12661,7 +12734,9 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
       user_id: this.#clientUser.id.toString(),
       interaction_type: "gadget_ui_connected",
     });
-    return this.impl.getGadgetFacet(this.id, undefined);
+    // The facet stub counts as a "use" session for its own lifetime, like this interface: it can
+    // outlive this object, and it is the very stub a hook-enable widening's data flows through.
+    return this.impl.getGadgetFacet(this.id, undefined, "use");
   }
 
   async getExportFormats(chatId?: number): Promise<GadgetExportFormat[]> {

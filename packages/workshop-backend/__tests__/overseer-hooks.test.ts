@@ -15,6 +15,9 @@ function makeOverseer(
   Object.assign(overseer, {
     env: { BLUEPRINTS: { get: getConfig } },
     impl: {
+      // The quarantine gate (see the dedicated pending-restart tests); no connection is blocked
+      // in these fixtures.
+      assertGatekeeperUsable: () => {},
       storage: {
         boundHooks: { get: () => hook && ({ ...hook, gatekeeperId: 1 }) },
         gatekeepers: {

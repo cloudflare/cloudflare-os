@@ -539,6 +539,101 @@ describe("hooks widen use scope", () => {
     expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
   }));
 
+  it("hook delivery is refused while the connection is blocked pending the restart",
+      () => withImpl(async (impl, restarts, instance) => {
+    joinSession(impl, "use");
+    seedGatekeeper(impl, 1);
+    seedHook(impl);
+
+    // The enable is itself the widening that schedules the restart and marks the connection.
+    impl.enableHookRecord(impl.storage.boundHooks.get(5));
+    expect(restarts).toHaveLength(1);
+
+    // The severed sessions stay live for the reset's delay, and the gatekeeper can fire the
+    // just-armed hook immediately -- the inbound delivery route must refuse like every
+    // client-reachable one, or the hook writes into a gadget those sessions still read.
+    await expect(instance.startHook(5)).rejects.toThrow(/restarting/);
+  }));
+
+  it("a connection removed while its hook enable was in flight is not resurrected",
+      () => withImpl(async (impl) => {
+    seedGatekeeper(impl, 1);
+    let disabled = 0;
+    let releaseEnable!: () => void;
+    let record = {
+      id: 5, actionId: 999, gatekeeperId: 1, vendorId: "testvendor",
+      controller: {
+        enable: () => new Promise<void>(resolve => { releaseEnable = resolve; }),
+        disable: async () => { disabled++; },
+      },
+      callback: {},
+      description: { title: "Hook", description: "Delivers events" },
+      enabled: false,
+    };
+    let hooks = new Map<number, object>([[5, record]]);
+    impl.storage.boundHooks = {
+      get: (id: number) => hooks.get(id),
+      put: (r: { id: number }) => hooks.set(r.id, r),
+      delete: (id: number) => hooks.delete(id),
+      list: () => [...hooks.values()],
+    };
+    // A client interface over the real impl's hook flip, so enableHook's post-await call is the
+    // real revalidation.
+    let client = await openFakeOverseer(
+        { boundHooks: impl.storage.boundHooks, actions: { get: () => undefined, put: () => {} } },
+        {
+          exports: { GatekeeperHookLoopback: ({ props }: { props: object }) => props },
+          impl: { enableHookRecord: (r: object) => impl.enableHookRecord(r) },
+        });
+
+    let pending = client.enableHook(5);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    // The gatekeeper-side enable is parked with the input gate open; the connection is removed
+    // in that window. The teardown's snapshot sees enabled=false, so it sends no disable of its
+    // own -- only the post-await revalidation stands between the captured record and a
+    // resurrected enabled hook on a connection nobody can see (or ever be verified against).
+    impl.removeGatekeeper(1);
+    expect(impl.storage.boundHooks.get(5)).toBeUndefined();
+    releaseEnable();
+
+    await expect(pending).rejects.toThrow(/removed while/);
+    expect(hooks.size).toBe(0);
+    // The compensating gatekeeper-side disable is fired best-effort.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(disabled).toBe(1);
+  }));
+
+  it("a hook deleted while its disable was in flight is not resurrected as a zombie", async () => {
+    let releaseDisable!: () => void;
+    let record = {
+      id: 5, actionId: 999, gatekeeperId: 1, vendorId: "testvendor",
+      controller: { disable: () => new Promise<void>(resolve => { releaseDisable = resolve; }) },
+      callback: {},
+      description: { title: "Hook", description: "Delivers events" },
+      enabled: true,
+    };
+    let hooks = new Map<number, object>([[5, record]]);
+    let client = await openFakeOverseer({
+      boundHooks: {
+        get: (id: number) => hooks.get(id),
+        put: (r: { id: number }) => hooks.set(r.id, r),
+        delete: (id: number) => hooks.delete(id),
+        list: () => [...hooks.values()],
+      },
+      actions: { get: () => undefined, put: () => {} },
+    });
+
+    let pending = client.disableHook(5);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    // deleteHook/removeGatekeeper land while the gatekeeper-side disable is parked: deleting the
+    // record is the authoritative kill, and the captured record must not undo it.
+    hooks.delete(5);
+    releaseDisable();
+    await pending;
+
+    expect(hooks.size).toBe(0);
+  });
+
   it("removing a connection synchronously deletes its hooks",
       () => withImpl(async (impl, restarts, instance) => {
     seedGatekeeper(impl, 1);
@@ -653,6 +748,50 @@ describe("subscriptions count as sessions", () => {
   });
 });
 
+// The raw gadget facet stub returned by connectToGadget() is a capability like any other export:
+// a client can dispose every counted wrapper while retaining it, and it is the very stub a
+// hook-enable widening's data flows through (the hook writes into the gadget it reads) -- so it
+// counts toward #hasCollaboratorSession for its own lifetime.
+describe("gadget facet stubs count as sessions", () => {
+  it("a retained connectToGadget facet from a use session holds the gate open",
+      () => withImpl(async (impl, restarts) => {
+    seedGatekeeper(impl, 1);
+    seedGadget(impl, 100);
+    impl.getGadgetFacetFetcher = () => ({});
+    // A real "use" client whose session counting and facet minting are the real impl's.
+    let client = await openFakeOverseer({ gadgets: impl.storage.gadgets }, { role: "use", impl: {
+      joinSession: (kind: string) => impl.joinSession(kind),
+      getGadgetRecord: (id: number) => impl.getGadgetRecord(id),
+      getGadgetFacet: (id: number, chatId?: number, joinAs?: string) =>
+          impl.getGadgetFacet(id, chatId, joinAs),
+      recordGadgetAnalytics: () => {},
+      users: { idFromString: (id: string) => id,
+               get: () => ({
+                 id: { toString: () => "viewer-user-do" },
+                 whoami: async () => ({ type: "user", id: "viewer", name: "Viewer" }),
+                 recordSharedGadgetOpen: async () => {},
+               }) },
+    } });
+    let child = await client.getGadget(100);
+    let facet = await (child as any).connectToGadget();
+
+    // With every wrapper disposed, the retained facet must keep counting on its own, or a
+    // widening would find no session to sever while the stub kept reading gadget state.
+    (client as any)[Symbol.dispose]();
+    (child as any)[Symbol.dispose]();
+    impl.bindWorkpiece(100, "DB", 1);
+    expect(restarts).toHaveLength(1);
+
+    // Only once the facet too is gone does a widening find nothing to sever. (Stub disposal
+    // reaches the wrapped target's disposer asynchronously, so let it settle.)
+    (facet as any)[Symbol.dispose]();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    seedGatekeeper(impl, 2);
+    impl.bindWorkpiece(100, "DB2", 2);
+    expect(restarts).toHaveLength(1);
+  }));
+});
+
 // Revoking access must sever the revoked collaborator's live sessions promptly: the restart is
 // scheduled in the same synchronous step as the sharing mutation, never behind the best-effort
 // cross-DO cleanup, which can stall or hang.
@@ -761,11 +900,12 @@ describe("connections blocked pending restart", () => {
 
     let seeds = await impl.prepareChatBindings(1, []);
 
-    // The blocked connection still gets its seed binding (it reappears after the reset); only its
-    // catalog is withheld for this turn -- neither queried nor cached, so the next turn (after
-    // the reset) loads it as a missing id.
+    // The blocked connection is left out entirely, like the other enumerating routes: its
+    // catalog is neither queried nor cached, and even its seed entry's metadata belongs to a
+    // scope nobody live was verified against. It reappears once the reset lands and clients
+    // reconnect; the next turn then loads its catalog as a missing id.
     expect(catalogLoads).toEqual([1]);
-    expect(seeds.find((seed: any) => seed.target === blockedId)?.catalog).toBeNull();
+    expect(seeds.some((seed: any) => seed.target === blockedId)).toBe(false);
     expect(impl.storage.chatContext.get(1).alwaysAvailableCatalogs
         .map((entry: any) => entry.gatekeeperId)).toEqual([1]);
   }));
