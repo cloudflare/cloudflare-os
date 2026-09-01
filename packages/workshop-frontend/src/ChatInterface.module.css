@@ -140,21 +140,6 @@
 }
 .markdownContent img { max-width: 100%; height: auto; }
 
-/* ── Chat input ───────────────────────────────────────────────────────────── */
-.chatInputRoot {
-  container-type: inline-size;
-}
-
-.attachLabelText {
-  display: inline;
-}
-
-@container (max-width: 460px) {
-  .attachLabelText {
-    display: none;
-  }
-}
-
 /* ── Streaming placeholder ────────────────────────────────────────────────── */
 .thinkingShimmer {
   color: var(--text-color-kumo-inactive);
@@ -194,13 +179,6 @@
   border-radius: 3px;
   font-family: var(--font-mono, monospace);
   font-size: 0.85em;
-}
-
-/* ── Composer text ────────────────────────────────────────────────────────── */
-/* Stacks the textarea over the mirror that paints its text (see ComposerMirror.module.css). */
-.capsuleInputWrapper {
-  position: relative;
-  flex: 1;
 }
 
 /* ── Capsule in messages ──────────────────────────────────────────────────── */

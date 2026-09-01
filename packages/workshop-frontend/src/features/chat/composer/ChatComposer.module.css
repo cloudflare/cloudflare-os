@@ -1,0 +1,19 @@
+.chatInputRoot {
+  container-type: inline-size;
+}
+
+.attachLabelText {
+  display: inline;
+}
+
+@container (max-width: 460px) {
+  .attachLabelText {
+    display: none;
+  }
+}
+
+/* Stacks the textarea over the mirror that paints its text (see ComposerMirror.module.css). */
+.capsuleInputWrapper {
+  position: relative;
+  flex: 1;
+}
