@@ -390,7 +390,10 @@ export interface GmailMessage {
   /** Get sender, recipients, subject, timestamp, and labels. */
   getMetadata(): Promise<GmailMessageInfo>;
 
-  /** Get the ordered RFC 5322 headers retained in this mailbox's copy. */
+  /**
+   * Get the ordered RFC 5322 headers retained in this mailbox's copy.
+   * Throws when the header set exceeds the safe read limit.
+   */
   getHeaders(): Promise<GmailHeader[]>;
 
   /** Get the thread containing this message. */

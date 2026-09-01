@@ -395,6 +395,8 @@ testGmailPrototype.runTestOperation = async function(
     return await session.deleteLabel(id as never);
   case "message.getMetadata":
     return await withMessage(session, id as string, message => message.getMetadata());
+  case "message.getHeaders":
+    return await withMessage(session, id as string, message => message.getHeaders());
   case "message.getMetadataTwice":
     return await withMessage(session, id as string, async message => ({
       first: await message.getMetadata(),

@@ -11,7 +11,7 @@ import {
   GmailDraftFull, GmailDraftRaw, GmailDraftRef, GmailLabelRaw, GmailMessageFull, GmailMessageInfoRaw,
   GmailMessageRaw,
   GmailMessageRef,
-  GmailOutboundAttachment, GmailOutboundMessage, GmailOutboundSpec, GmailParsedDraft,
+  GmailNormalizedRecipients, GmailOutboundAttachment, GmailOutboundMessage, GmailOutboundSpec, GmailParsedDraft,
   GmailParsedDraftSnapshot, MAX_GMAIL_ATTACHMENT_BYTES, MAX_GMAIL_FORWARD_SOURCE_BYTES,
   extractRfc822Attachments, gmailMessageIdQueryValue, newGmailMessageId, normalizeAggregateRecipients,
   normalizeEmailRecipients, parseGmailDraft, parseGmailMessageMetadata, GmailThreadInfoRaw,
@@ -134,6 +134,7 @@ type GmailDraftSendAction = {
 type GmailDraftWriteReceipt = {
   draftId: string;
   messageId: string;
+  threadId?: string;
   missing?: true;
 };
 
@@ -231,6 +232,8 @@ function gmailAutoApprovalMetadata(
   }
 }
 
+// Legacy non-delivery actions remain applyable. Outbound records fail closed because this state
+// cannot prove whether a previous implementation already attempted delivery.
 type LegacyGmailAction =
   | {type: "archive" | "trash" | "markRead" | "markUnread"; threadId: string}
   | {type: "send"; to: string[]; subject: string; body: string}
@@ -245,7 +248,6 @@ type LegacyGmailAction =
   | {type: "forward"; sourceMessageId: string; to: string[]; body?: string};
 
 type StoredGmailAction = GmailAction | LegacyGmailAction;
-type LegacyGmailOutboundAction = Extract<LegacyGmailAction, {type: "send" | "reply" | "forward"}>;
 
 class GmailStore {
   #storage: DurableObjectStorage;
@@ -317,17 +319,6 @@ class GmailStore {
     this.#kv.delete(this.#draftWriteReceiptKey(id));
     this.#kv.delete(this.#sendFingerprintKey(id));
     if (existed) this.#bumpActionGeneration();
-  }
-
-  upgradeLegacyOutboundAction(id: number, action: GmailSendAction): void {
-    this.#storage.transactionSync(() => {
-      const current = this.getAction(id);
-      if (!current || !isLegacyOutboundGmailAction(current)) {
-        throw new Error("The pending legacy Gmail action changed while it was being upgraded.");
-      }
-      this.#kv.put(this.#actionKey(id), action);
-      this.#bumpActionGeneration();
-    });
   }
 
   markApplying(id: number): void { this.#kv.put(this.#applyingKey(id), Date.now()); }
@@ -431,10 +422,16 @@ class GmailStore {
       (action.type === "draftSend" && action.messageId === normalizedId));
   }
 
+  hasApplyingDraftSend(logicalId: string): boolean {
+    return this.listActions().some(({id, action}) => action.type === "draftSend" &&
+      this.isApplying(id) && this.resolveDraftId(action.draftId) === logicalId);
+  }
+
   markDraftWriteMissing(id: number, expected: GmailDraftWriteReceipt): void {
     this.#storage.transactionSync(() => {
       const current = this.getDraftWriteReceipt(id);
-      if (current?.draftId === expected.draftId && current.messageId === expected.messageId) {
+      if (current?.draftId === expected.draftId && current.messageId === expected.messageId &&
+          current.threadId === expected.threadId) {
         this.setDraftWriteReceipt(id, {...current, missing: true});
       }
     });
@@ -612,7 +609,8 @@ class GmailStore {
 
   completeDraftWrite(
       actionId: number, baseline: GmailDraftProviderBaseline,
-      approvedOutputFingerprint: string): StoredGmailAction {
+      approvedOutputFingerprint: string,
+      expectedReceipt: GmailDraftWriteReceipt = baseline): StoredGmailAction {
     const action = this.getAction(actionId);
     if (action?.type !== "draftCreate" && action?.type !== "draftUpdate") {
       throw new Error("The pending Gmail draft write changed before completion.");
@@ -623,11 +621,12 @@ class GmailStore {
         action.draft.logicalId, baseline.draftId, actionId,
         resource => {
           completed = this.#completeDraftWrite(
-            actionId, resource.logicalId, baseline, approvedOutputFingerprint);
+            actionId, resource.logicalId, baseline, approvedOutputFingerprint, expectedReceipt);
         });
     } else {
       completed = this.#storage.transactionSync(() => this.#completeDraftWrite(
-        actionId, this.resolveDraftId(action.draftId), baseline, approvedOutputFingerprint));
+        actionId, this.resolveDraftId(action.draftId), baseline, approvedOutputFingerprint,
+        expectedReceipt));
     }
     if (!completed) throw new Error("The Gmail draft write was not completed.");
     return completed;
@@ -641,19 +640,22 @@ class GmailStore {
       throw new Error("The matching Gmail draft update changed before completion.");
     }
     return this.#storage.transactionSync(() => this.#completeDraftWrite(
-      actionId, this.resolveDraftId(action.draftId), baseline, approvedOutputFingerprint, false));
+      actionId, this.resolveDraftId(action.draftId), baseline, approvedOutputFingerprint));
   }
 
   #completeDraftWrite(
       actionId: number, logicalId: string, baseline: GmailDraftProviderBaseline,
-      approvedOutputFingerprint: string, requireReceipt = true): StoredGmailAction {
+      approvedOutputFingerprint: string,
+      expectedReceipt?: GmailDraftWriteReceipt): StoredGmailAction {
     const action = this.getAction(actionId);
     if (action?.type !== "draftCreate" && action?.type !== "draftUpdate") {
       throw new Error("The pending Gmail draft write changed before completion.");
     }
     const receipt = this.getDraftWriteReceipt(actionId);
-    if (requireReceipt && (!this.isApplying(actionId) || !receipt ||
-        receipt.draftId !== baseline.draftId || receipt.messageId !== baseline.messageId)) {
+    if (expectedReceipt && (!this.isApplying(actionId) || !receipt ||
+        receipt.draftId !== expectedReceipt.draftId ||
+        receipt.messageId !== expectedReceipt.messageId ||
+        receipt.threadId !== expectedReceipt.threadId)) {
       throw new Error("The Gmail draft write receipt changed before completion.");
     }
     const resource = this.getDraft(logicalId);
@@ -839,12 +841,6 @@ function isLegacyGmailAction(action: StoredGmailAction): action is LegacyGmailAc
   return action.type === "archive" || action.type === "trash" || action.type === "markRead" ||
     action.type === "markUnread" || action.type === "reply" || action.type === "forward" ||
     (action.type === "send" && !("spec" in action));
-}
-
-function isLegacyOutboundGmailAction(
-    action: StoredGmailAction): action is LegacyGmailOutboundAction {
-  return isLegacyGmailAction(action) &&
-    (action.type === "send" || action.type === "reply" || action.type === "forward");
 }
 
 function actionSourceAttachment(action: StoredGmailAction): GmailSourceAttachment | undefined {
@@ -1095,7 +1091,9 @@ async function parseSafeGmailDraft(message: GmailMessageRaw): Promise<GmailParse
 
 async function readDraftProviderBaseline(
     api: GmailApi, store: GmailStore, actionId: number,
-    receipt: GmailDraftWriteReceipt): Promise<GmailDraftProviderBaseline> {
+    receipt: GmailDraftWriteReceipt,
+    approvedOutputFingerprint?: string,
+    approvedThreadId?: string): Promise<GmailDraftProviderBaseline> {
   let current: GmailDraftRaw;
   try {
     current = await api.getDraft(receipt.draftId);
@@ -1105,14 +1103,25 @@ async function readDraftProviderBaseline(
     }
     throw error;
   }
-  if (current.id !== receipt.draftId || current.message.id !== receipt.messageId) {
+  if (current.id !== receipt.draftId) {
     throw new Error(
       "The Gmail draft revision changed before its provider-normalized state could be recorded.");
   }
   const parsed = await parseSafeGmailDraft(current.message);
+  const fingerprint = await gmailDraftFingerprint(parsed, current.message.threadId);
+  if (current.message.id !== receipt.messageId) {
+    const expectedThreadId = receipt.threadId ?? approvedThreadId;
+    if (fingerprint !== approvedOutputFingerprint || !expectedThreadId ||
+        current.message.threadId !== expectedThreadId) {
+      throw new Error(
+        "The Gmail draft revision changed before its provider-normalized state could be recorded.");
+    }
+  }
   return {
-    ...receipt,
-    fingerprint: await gmailDraftFingerprint(parsed, current.message.threadId),
+    draftId: current.id,
+    messageId: current.message.id,
+    threadId: current.message.threadId,
+    fingerprint,
   };
 }
 
@@ -1168,6 +1177,26 @@ function validateDraftPatch(patch: GmailDraftPatch): void {
   if (patch.html !== undefined && patch.html !== null) validateGmailBody(patch.html);
   if (patch.text !== undefined && patch.html !== undefined && patch.html !== null) {
     validateGmailBodyAlternatives(patch.text, patch.html);
+  }
+}
+
+function validateDraftRecipientPatch(
+    draft: GmailDraftState, patch: Partial<GmailNormalizedRecipients>): void {
+  const fields = ["to", "cc", "bcc"] as const;
+  const effective = {
+    to: patch.to ?? draft.to,
+    cc: patch.cc ?? draft.cc,
+    bcc: patch.bcc ?? draft.bcc,
+  };
+  for (const field of fields) {
+    if (patch[field] === undefined) continue;
+    const otherAddresses = new Set(fields.filter(other => other !== field)
+      .flatMap(other => effective[other])
+      .map(recipient => emailRecipientToAddress(recipient).address.toLowerCase()));
+    if (effective[field].some(recipient =>
+      otherAddresses.has(emailRecipientToAddress(recipient).address.toLowerCase()))) {
+      throw new Error("A Gmail draft recipient cannot appear in more than one of To, Cc, or Bcc.");
+    }
   }
 }
 
@@ -1549,7 +1578,9 @@ async function mapMatchingApplyingDraftCreate(
   // Listing has already verified the provider-normalized draft. Persist the provider receipt so a
   // later retry can finish reconciliation without creating another draft.
   store.setDraftWriteReceipt(matched.id, {
-    draftId: provider.id, messageId: provider.message.id,
+    draftId: provider.id,
+    messageId: provider.message.id,
+    threadId: provider.message.threadId,
   });
   return mapped;
 }
@@ -1630,6 +1661,9 @@ async function loadSimulatedDraft(
         current.version !== version || current.status !== "active") {
       throw new Error(
         "The Gmail draft changed identity while it was being read. Retry it.", {cause: error});
+    }
+    if (ctx.store.hasApplyingDraftSend(canonicalId)) {
+      throw new Error("This Gmail draft has an uncertain send outcome.", {cause: error});
     }
     current.status = "deleted";
     current.version++;
@@ -2629,10 +2663,7 @@ class GmailMessageStub extends GmailRpcTarget implements GmailMessage {
     } else {
       const full = await this.#ctx.api.getMessageFull(this.#messageId);
       if (full.threadId !== this.#threadId) throw new Error("Gmail message identity changed.");
-      headers = (full.payload?.headers ?? []).map(header => ({
-        name: header.name,
-        value: header.value,
-      }));
+      headers = this.#ctx.api.collectMessageHeaders(full.payload?.headers ?? []);
     }
     await this.#ctx.approvalQueue.authorizeObservation({
       title: "Read Gmail message headers",
@@ -3031,7 +3062,8 @@ function gmailDraftCursor(ctx: GmailContext): Cursor<GmailDraftEntry> {
             entries.push({info: draftInfo(state), draft: new GmailDraftStub(ctx, item.logicalId)});
           } catch (error) {
             if (!(error instanceof Error) ||
-                !/pending deletion|already been sent|has been deleted|was rejected/.test(error.message)) {
+                !/pending deletion|already been sent|has been deleted|was rejected|uncertain send outcome/
+                  .test(error.message)) {
               throw error;
             }
           }
@@ -3081,7 +3113,8 @@ function restrictedDraftCursor(ctx: GmailContext): Cursor<GmailDraftEntry> {
             });
           } catch (error) {
             if (!(error instanceof Error) ||
-                !/pending deletion|already been sent|has been deleted|was rejected/.test(error.message)) {
+                !/pending deletion|already been sent|has been deleted|was rejected|uncertain send outcome/
+                  .test(error.message)) {
               throw error;
             }
           }
@@ -3236,6 +3269,7 @@ class GmailDraftStub extends GmailRpcTarget implements GmailDraft {
       ...(patch.cc !== undefined ? {cc: normalizeEmailRecipients(patch.cc)} : {}),
       ...(patch.bcc !== undefined ? {bcc: normalizeEmailRecipients(patch.bcc)} : {}),
     };
+    validateDraftRecipientPatch(state, recipientPatch);
     const patched = applyGmailDraftPatch(state, {...patch, ...recipientPatch});
     const revision = Math.max(patched.version, resource.version + 1);
     // Updating raw MIME necessarily writes Date and Message-ID headers. Persist them in the
@@ -3444,66 +3478,6 @@ async function applyUncertainWrite<T>(
     if (isDefinitiveWriteRejection(error)) store.clearApplying(actionId);
     throw error;
   }
-}
-
-async function upgradeLegacyOutboundAction(
-    api: GmailApi, store: GmailStore, actionId: number,
-    action: LegacyGmailOutboundAction): Promise<GmailSendAction> {
-  let upgraded: GmailSendAction;
-  if (action.type === "send") {
-    const message = api.buildSendRaw(action.to, action.subject, action.body);
-    validateOutboundFields(message, message.subject, message.body, message.html);
-    upgraded = {type: "send", mode: "new", spec: outboundSpec(message)};
-  } else if (action.type === "reply") {
-    const source = await api.getMessage(action.sourceMessageId);
-    if (source.id !== action.sourceMessageId || source.threadId !== action.threadId) {
-      throw new Error("Gmail returned a different source message while upgrading a legacy reply.");
-    }
-    const message = await api.buildLegacyReplyRaw(
-      source, action.body, action.replyAll, action.sourceWasSent);
-    validateOutboundFields(message, message.subject, message.body, message.html);
-    upgraded = {
-      type: "send",
-      mode: "reply",
-      spec: outboundSpec(message),
-      threadId: action.threadId,
-      sourceMessageId: action.sourceMessageId,
-    };
-  } else {
-    const source = await api.getMessage(action.sourceMessageId);
-    if (source.id !== action.sourceMessageId) {
-      throw new Error("Gmail returned a different source message while upgrading a legacy forward.");
-    }
-    const info = await api.parseMessageInfo(source);
-    const subject = info.subject.toLowerCase().startsWith("fwd:")
-      ? info.subject
-      : `Fwd: ${info.subject}`;
-    const message = api.buildSendRaw(
-      action.to, subject, action.body ?? "Forwarded message attached.");
-    validateOutboundFields(message, message.subject, message.body, message.html);
-    const bytes = decodeBase64UrlToBytes(source.raw);
-    const snapshot = await store.captureForwardSnapshot(bytes);
-    const sourceAttachment: GmailSourceAttachment = {
-      ...snapshot,
-      messageId: source.id,
-      description: "Complete original message approved by a legacy Gmail forward action.",
-      contentType: "application/octet-stream",
-    };
-    upgraded = {
-      type: "send",
-      mode: "forward",
-      spec: outboundSpec(message),
-      sourceMessageId: action.sourceMessageId,
-      sourceAttachment,
-    };
-  }
-  try {
-    store.upgradeLegacyOutboundAction(actionId, upgraded);
-  } catch (error) {
-    store.deleteForwardSnapshot(upgraded.sourceAttachment);
-    throw error;
-  }
-  return upgraded;
 }
 
 async function exactSpecWithSource(
@@ -3781,20 +3755,19 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
       const api = new GmailApi(selfEmail, opts => this.#getAccessToken(opts));
 
       await reconcileDraftActionAlias(api, store, initialAction);
-      let action = store.getAction(actionId);
+      const action = store.getAction(actionId);
       if (!action) throw new Error(`Unknown pending Gmail action: ${actionId}`);
       if ("dependsOn" in action) assertDependencies(store, action);
-      const restricted = this.ctx.props.searchQuery !== undefined ||
-        this.ctx.props.labelName !== undefined;
-      // Legacy replies and forwards were minted from an admitted message capability. A legacy
-      // standalone send could only have been minted by a whole-mailbox binding.
-      if (restricted && isLegacyGmailAction(action) &&
-          action.type !== "reply" && action.type !== "forward") {
+      if (isLegacyGmailAction(action) &&
+          (action.type === "send" || action.type === "reply" || action.type === "forward")) {
+        throw new Error(
+          "This legacy outbound Gmail action cannot be retried safely. Inspect Sent mail to " +
+          "determine whether it was delivered before rejecting or resubmitting it.");
+      }
+      if ((this.ctx.props.searchQuery !== undefined || this.ctx.props.labelName !== undefined) &&
+          isLegacyGmailAction(action)) {
         throw new Error(
           "This legacy Gmail action cannot be applied through a restricted binding safely.");
-      }
-      if (isLegacyOutboundGmailAction(action)) {
-        action = await upgradeLegacyOutboundAction(api, store, actionId, action);
       }
 
       switch (action.type) {
@@ -3853,9 +3826,10 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
           api, store, action.draft, sourceSnapshot);
         const storedReceipt = store.getDraftWriteReceipt(actionId);
         if (storedReceipt) {
-          const baseline = await readDraftProviderBaseline(api, store, actionId, storedReceipt);
+          const baseline = await readDraftProviderBaseline(
+            api, store, actionId, storedReceipt, approvedOutputFingerprint, action.draft.threadId);
           const completed = store.completeDraftWrite(
-            actionId, baseline, approvedOutputFingerprint);
+            actionId, baseline, approvedOutputFingerprint, storedReceipt);
           store.deleteForwardSnapshot(actionSourceAttachment(completed));
           return;
         }
@@ -3867,7 +3841,11 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
             throw new Error(
               "The mapped Gmail draft no longer matches the approved create action.");
           }
-          const receipt = {draftId: resource.providerId, messageId: current.message.id};
+          const receipt = {
+            draftId: resource.providerId,
+            messageId: current.message.id,
+            threadId: current.message.threadId,
+          };
           store.setDraftWriteReceipt(actionId, receipt);
           const completed = store.completeDraftWrite(actionId, {
             ...receipt,
@@ -3893,7 +3871,11 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
             throw new Error(
               "The reconciled Gmail draft no longer matches the approved create action.");
           }
-          const receipt = {draftId: existing.id, messageId: current.message.id};
+          const receipt = {
+            draftId: existing.id,
+            messageId: current.message.id,
+            threadId: current.message.threadId,
+          };
           store.setDraftWriteReceipt(actionId, receipt);
           const completed = store.completeDraftWrite(actionId, {
             ...receipt,
@@ -3908,10 +3890,16 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         const message = api.buildOutbound(spec);
         const created = await applyUncertainWrite(
           store, actionId, () => api.createDraft(message.raw, action.draft.threadId));
-        const receipt = {draftId: created.id, messageId: created.message.id};
+        const receipt = {
+          draftId: created.id,
+          messageId: created.message.id,
+          ...(created.message.threadId ? {threadId: created.message.threadId} : {}),
+        };
         store.setDraftWriteReceipt(actionId, receipt);
-        const baseline = await readDraftProviderBaseline(api, store, actionId, receipt);
-        const completed = store.completeDraftWrite(actionId, baseline, approvedOutputFingerprint);
+        const baseline = await readDraftProviderBaseline(
+          api, store, actionId, receipt, approvedOutputFingerprint, action.draft.threadId);
+        const completed = store.completeDraftWrite(
+          actionId, baseline, approvedOutputFingerprint, receipt);
         store.deleteForwardSnapshot(actionSourceAttachment(completed));
         return;
       }
@@ -3926,8 +3914,10 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         const approvedOutputFingerprint = await draftOutputFingerprint(
           api, store, action.after, action.sourceAttachment);
         if (storedReceipt) {
-          const baseline = await readDraftProviderBaseline(api, store, actionId, storedReceipt);
-          const completed = store.completeDraftWrite(actionId, baseline, approvedOutputFingerprint);
+          const baseline = await readDraftProviderBaseline(
+            api, store, actionId, storedReceipt, approvedOutputFingerprint, action.after.threadId);
+          const completed = store.completeDraftWrite(
+            actionId, baseline, approvedOutputFingerprint, storedReceipt);
           store.updateDraftForwardContent(action.draftId, action.after);
           store.deleteForwardSnapshot(actionSourceAttachment(completed));
           return;
@@ -3974,10 +3964,16 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         if (updated.id !== id) {
           throw new Error("Gmail returned a different draft after updating it.");
         }
-        const receipt = {draftId: updated.id, messageId: updated.message.id};
+        const receipt = {
+          draftId: updated.id,
+          messageId: updated.message.id,
+          threadId: updated.message.threadId ?? current.message.threadId,
+        };
         store.setDraftWriteReceipt(actionId, receipt);
-        const baseline = await readDraftProviderBaseline(api, store, actionId, receipt);
-        const completed = store.completeDraftWrite(actionId, baseline, approvedOutputFingerprint);
+        const baseline = await readDraftProviderBaseline(
+          api, store, actionId, receipt, approvedOutputFingerprint, action.after.threadId);
+        const completed = store.completeDraftWrite(
+          actionId, baseline, approvedOutputFingerprint, receipt);
         store.updateDraftForwardContent(action.draftId, action.after);
         store.deleteForwardSnapshot(actionSourceAttachment(completed));
         return;

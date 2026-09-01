@@ -47,6 +47,32 @@ const api = () => new GmailApi("me@example.com", async () => "token");
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Gmail recipient and MIME construction", () => {
+  it("bounds ordered message headers without changing duplicates", () => {
+    const gmail = api();
+    expect(gmail.collectMessageHeaders([
+      {name: "Received", value: "first"},
+      {name: "Received", value: "second"},
+    ])).toEqual([
+      {name: "Received", value: "first"},
+      {name: "Received", value: "second"},
+    ]);
+    expect(() => gmail.collectMessageHeaders(
+      Array.from({length: 257}, (_, index) => ({name: `X-${index}`, value: "value"}))))
+      .toThrow(/more than 256 headers/);
+    expect(gmail.collectMessageHeaders([{
+      name: "X", value: "a".repeat(128 * 1024 - 1),
+    }])).toHaveLength(1);
+    expect(() => gmail.collectMessageHeaders([{
+      name: "X", value: "a".repeat(128 * 1024),
+    }])).toThrow(/131072-byte safe-read limit/);
+    expect(() => gmail.collectMessageHeaders([{
+      name: "X", value: "a".repeat(1024 * 1024),
+    }])).toThrow(/131072-byte safe-read limit/);
+    expect(() => gmail.collectMessageHeaders([{
+      name: "X", value: "\u00e9".repeat(64 * 1024),
+    }])).toThrow(/131072-byte safe-read limit/);
+  });
+
   it("normalizes aggregate recipients and de-duplicates across To/CC/BCC", () => {
     expect(normalizeAggregateRecipients(
       ["A@example.com"], ["a@example.com", "c@example.com"],
@@ -140,6 +166,52 @@ describe("Gmail recipient and MIME construction", () => {
     expect(parsed.html).toContain("gmail_quote");
     expect(parsed.html).toContain("Original <strong>HTML</strong>");
     expect(parsed.html).toContain("Source Person");
+  });
+
+  it("preserves related CID attachments without Content-Disposition", async () => {
+    const source = {
+      id: "source",
+      threadId: "thread",
+      internalDate: "1",
+      raw: encodeRawEmail([
+        "From: source@example.com",
+        "To: me@example.com",
+        "Subject: Related image",
+        "Message-ID: <related@example.com>",
+        "MIME-Version: 1.0",
+        'Content-Type: multipart/related; boundary="related-boundary"',
+        "",
+        "--related-boundary",
+        "Content-Type: text/html; charset=utf-8",
+        "",
+        '<p><img src="cid:logo"></p>',
+        "--related-boundary",
+        "Content-Type: image/png",
+        "Content-Transfer-Encoding: base64",
+        "Content-ID: <logo>",
+        "",
+        btoa("image-bytes"),
+        "--related-boundary--",
+        "",
+      ].join("\r\n")),
+    };
+
+    const draft = await parseGmailDraft(source);
+    expect(draft.attachments[0]).toMatchObject({contentId: "<logo>", disposition: "inline"});
+    const rebuilt = api().buildOutbound({...draft, from: draft.from!, messageId: draft.messageId!});
+    expect((await parseMimeMessage(rebuilt.raw)).attachments[0]).toMatchObject({
+      contentId: "<logo>",
+      disposition: "inline",
+      related: true,
+    });
+
+    const forwarded = await api().buildForwardRaw(
+      source, ["target@example.com"], undefined, {}, "<forward@gadgets.invalid>");
+    expect((await parseMimeMessage(forwarded.raw)).attachments[0]).toMatchObject({
+      contentId: "<logo>",
+      disposition: "inline",
+      related: true,
+    });
   });
 
   it("keeps a plain-text preface in HTML without deriving a plaintext source", async () => {

@@ -220,6 +220,10 @@ class TestMessage {
     return this.call("message.getMetadata", [this.id]) as Promise<GmailMessageInfo>;
   }
 
+  getHeaders(): Promise<Array<{name: string; value: string}>> {
+    return this.call("message.getHeaders", [this.id]) as Promise<Array<{name: string; value: string}>>;
+  }
+
   markReadAndRefresh(actionId: number): Promise<{
     before: GmailMessageInfo;
     after: GmailMessageInfo;
@@ -742,48 +746,29 @@ describe("Gmail session API surface", () => {
     }
   });
 
-  it("upgrades a legacy send before writing and reconciles an ambiguous outcome", async () => {
-    let raw = "";
-    let writes = 0;
-    let delivered = false;
-    let rfcMessageId = "";
-    const {gatekeeper, storage, values} = actionHarness((url, init) => {
-      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
-        return json({messages: delivered ? [{id: "abc123", threadId: "def456"}] : []});
-      }
-      if (url.pathname === "/gmail/v1/users/me/messages/abc123" && !init.method) {
-        if (url.searchParams.get("format") === "metadata") {
-          return json(messageMetadata("abc123", "def456", rfcMessageId, ["SENT"]));
-        }
-        return json({id: "abc123", threadId: "def456", internalDate: "1", raw});
-      }
-      if (url.pathname === "/gmail/v1/users/me/messages/send" && init.method === "POST") {
-        writes++;
-        raw = (JSON.parse(String(init.body)) as {raw: string}).raw;
-        delivered = true;
-        throw new Error("connection lost after write");
-      }
+  it("fails legacy outbound actions closed without writing", async () => {
+    const {calls, gatekeeper, storage, values} = actionHarness(url => {
       throw new Error(`Unexpected request: ${url}`);
     });
-    storage.kv.put("pending:action:1", {
-      type: "send", to: ["to@example.com"], subject: "Subject", body: "Body",
-    });
+    const actions = [
+      {type: "send", to: ["to@example.com"], subject: "Subject", body: "Body"},
+      {
+        type: "reply", sourceMessageId: "source", threadId: "source-thread",
+        body: "Legacy reply", replyAll: true,
+      },
+      {type: "forward", sourceMessageId: "source", to: ["target@example.com"], body: "Forward"},
+    ];
+    actions.forEach((action, index) => storage.kv.put(`pending:action:${index + 1}`, action));
 
-    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost/);
+    for (let id = 1; id <= actions.length; id++) {
+      await expect(gatekeeper.applyAction(id)).rejects.toThrow(/cannot be retried safely/);
+      expect(await values.get(`pending:action:${id}`)).toEqual(actions[id - 1]);
+      expect(await values.has(`gmail:applying:${id}`)).toBe(false);
+      await gatekeeper.rejectAction(id);
+      expect(await values.has(`pending:action:${id}`)).toBe(false);
+    }
 
-    const upgraded = await values.get<{
-      type: string; mode: string; spec: GmailOutboundSpec;
-    }>("pending:action:1");
-    expect(upgraded).toMatchObject({type: "send", mode: "new"});
-    expect(upgraded?.spec.messageId).toMatch(/^<[-0-9a-f]+@gadgets\.invalid>$/);
-    expect((await parseMimeMessage(raw)).messageId).toBe(upgraded?.spec.messageId);
-    rfcMessageId = upgraded!.spec.messageId;
-
-    await gatekeeper.applyAction(1);
-
-    expect(writes).toBe(1);
-    expect(await values.has("pending:action:1")).toBe(false);
-    expect(await values.has("gmail:applying:1")).toBe(false);
+    expect(calls.some(call => call.url.hostname === "gmail.googleapis.com")).toBe(false);
   });
 
   it("does not migrate a legacy standalone send through a restricted binding", async () => {
@@ -794,70 +779,9 @@ describe("Gmail session API surface", () => {
       type: "send", to: ["to@example.com"], subject: "Subject", body: "Body",
     });
 
-    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/restricted binding/);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/cannot be retried safely/);
 
     expect(calls.some(call => call.url.pathname === "/gmail/v1/users/me/messages/send")).toBe(false);
-  });
-
-  it("upgrades legacy reply and forward actions with their approved semantics", async () => {
-    const sourceRaw = base64Url([
-      "From: me@example.com",
-      "To: Friend <friend@example.com>",
-      "Cc: Alias <alias@example.com>",
-      "Delivered-To: alias@example.com",
-      "Subject: Source subject",
-      "Message-ID: <source@gadgets.invalid>",
-      "MIME-Version: 1.0",
-      "Content-Type: text/plain; charset=utf-8",
-      "",
-      "Source body",
-    ].join("\r\n"));
-    const sent: Array<{raw: string; threadId?: string}> = [];
-    const {gatekeeper, storage, values} = actionHarness((url, init) => {
-      if (url.pathname === "/gmail/v1/users/me/messages/source" && !init.method) {
-        return json({
-          id: "source", threadId: "source-thread", labelIds: [],
-          internalDate: "1", raw: sourceRaw,
-        });
-      }
-      if (url.pathname === "/gmail/v1/users/me/messages/send" && init.method === "POST") {
-        const body = JSON.parse(String(init.body)) as {raw: string; threadId?: string};
-        sent.push(body);
-        return json({id: `sent-${sent.length}`, threadId: body.threadId ?? `thread-${sent.length}`});
-      }
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    storage.kv.put("pending:action:1", {
-      type: "reply",
-      sourceMessageId: "source",
-      threadId: "source-thread",
-      body: "Legacy reply",
-      replyAll: true,
-      sourceWasSent: true,
-    });
-    storage.kv.put("pending:action:2", {
-      type: "forward",
-      sourceMessageId: "source",
-      to: ["target@example.com"],
-      body: "Legacy forward",
-    });
-
-    await gatekeeper.applyAction(1);
-    await gatekeeper.applyAction(2);
-
-    const reply = await parseMimeMessage(sent[0].raw);
-    expect(sent[0].threadId).toBe("source-thread");
-    expect(reply.to?.[0]).toMatchObject({address: "friend@example.com"});
-    expect(reply.cc?.[0]).toMatchObject({address: "alias@example.com"});
-    expect(reply.text).toContain("Legacy reply");
-    const forwarded = (await parseMimeMessage(sent[1].raw)).attachments[0];
-    expect(forwarded.mimeType).toBe("application/octet-stream");
-    const forwardedBytes = typeof forwarded.content === "string"
-      ? new TextEncoder().encode(forwarded.content)
-      : new Uint8Array(forwarded.content);
-    expect(forwardedBytes).toEqual(decodeBase64UrlToBytes(sourceRaw));
-    expect(await values.has("pending:action:1")).toBe(false);
-    expect(await values.has("pending:action:2")).toBe(false);
   });
 
   it("rejects a colliding Message-ID while reconciling an uncertain send", async () => {
@@ -1392,6 +1316,37 @@ describe("Gmail forward action snapshots", () => {
     expect(await values.has("pending:action:1")).toBe(false);
   });
 
+  it("preserves the attachment type of a partially migrated legacy forward", async () => {
+    const source = new TextEncoder().encode(
+      "From: source@example.com\r\nTo: me@example.com\r\nSubject: Source\r\n\r\nBody");
+    let sentRaw: string | undefined;
+    const {gatekeeper, storage} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages/send" && init.method === "POST") {
+        sentRaw = (JSON.parse(String(init.body)) as {raw: string}).raw;
+        return json({id: "sent-message", threadId: "sent-thread"});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const snapshot = await captureForwardSnapshot(storage, source);
+    storage.kv.put("pending:action:1", {
+      type: "send",
+      mode: "forward",
+      spec: outboundSpec(),
+      sourceMessageId: "source-message",
+      sourceAttachment: {
+        ...snapshot,
+        messageId: "source-message",
+        description: "Complete original message approved by a legacy Gmail forward action.",
+        contentType: "application/octet-stream",
+      },
+    });
+
+    await gatekeeper.applyAction(1);
+
+    expect((await parseMimeMessage(sentRaw!)).attachments[0].mimeType)
+      .toBe("application/octet-stream");
+  });
+
   it("fails corrupt chunks before a Gmail write", async () => {
     let writes = 0;
     const {gatekeeper, storage, values} = actionHarness((url, init) => {
@@ -1758,7 +1713,7 @@ describe("Gmail forward action snapshots", () => {
 describe("Gmail draft lookup", () => {
   it("assigns a stable query-safe Message-ID when sending an imported draft without one", async () => {
     const providerId = "provider-draft";
-    const providerMessageId = "provider-message";
+    let providerMessageId = "provider-message";
     const threadId = "provider-thread";
     const raw = [
       "From: me@example.com",
@@ -1853,12 +1808,16 @@ describe("Gmail draft lookup", () => {
     const searches: string[] = [];
     const {gatekeeper, values, storage} = actionHarness((url, init) => {
       if (url.pathname === `/gmail/v1/users/me/drafts/${providerId}` && !init.method) {
+        if (delivered) return json({error: "draft consumed"}, 404);
         return url.searchParams.get("format") === "full"
           ? json(draftFull(providerId, providerMessageId, threadId, state))
           : json({
               id: providerId,
               message: {id: providerMessageId, threadId, internalDate: "1", raw},
             });
+      }
+      if (url.pathname === "/gmail/v1/users/me/drafts" && !init.method) {
+        return json({drafts: [{id: providerId, message: {id: providerMessageId}}]});
       }
       if (url.pathname === "/gmail/v1/users/me/drafts/send" && init.method === "POST") {
         sends++;
@@ -1895,6 +1854,9 @@ describe("Gmail draft lookup", () => {
     reconciliationMessageId = action.messageId;
 
     await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost/);
+    await expect(draft.getMetadata()).rejects.toThrow(/uncertain send outcome/);
+    await expect((await session.listDrafts()).next()).resolves.toBeNull();
+    expect(await values.get(`gmail:draft:${providerId}`)).toMatchObject({status: "active"});
     await gatekeeper.applyAction(1);
 
     expect((await parseMimeMessage(sentRaw!)).messageId).toBe(action.messageId);
@@ -2030,6 +1992,54 @@ describe("Gmail draft lookup", () => {
     await expect(reopened.getMetadata()).resolves.toMatchObject({
       id,
       subject: "Updated subject",
+    });
+  });
+
+  it.each([
+    {to: ["Cc Person <CC@EXAMPLE.COM>"]},
+    {cc: ["To Person <TO@EXAMPLE.COM>"]},
+    {bcc: ["to@example.com"]},
+    {to: ["duplicate@example.com"], cc: ["Duplicate <DUPLICATE@example.com>"]},
+  ] satisfies GmailDraftPatch[])(
+    "rejects a recipient patch that duplicates a mailbox across fields: %j",
+    async patch => {
+      const {gatekeeper, values} = actionHarness(url => {
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      const session = await gatekeeper.startSession(approvalQueue());
+      const draft = await session.createDraft({
+        to: ["to@example.com"],
+        cc: ["cc@example.com"],
+        subject: "Subject",
+        text: "Body",
+      });
+
+      await expect(draft.update(patch)).rejects.toThrow(/cannot appear in more than one/);
+
+      expect(await values.has("pending:action:2")).toBe(false);
+      expect((await values.keys()).filter(key => key.startsWith("pending:action:"))).toEqual([
+        "pending:action:1",
+      ]);
+    },
+  );
+
+  it("preserves omitted recipient fields in a unique draft recipient patch", async () => {
+    const {gatekeeper} = actionHarness(url => {
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = await session.createDraft({
+      to: ["to@example.com"],
+      cc: ["cc@example.com"],
+      subject: "Subject",
+      text: "Body",
+    });
+
+    await draft.update({to: ["new@example.com"]});
+
+    await expect(draft.getMetadata()).resolves.toMatchObject({
+      to: [{address: "new@example.com"}],
+      cc: [{address: "cc@example.com"}],
     });
   });
 
@@ -2299,6 +2309,62 @@ describe("Gmail draft lookup", () => {
     expect((await values.keys()).some(key => key.includes(snapshot.handle))).toBe(false);
   });
 
+  it("skips an uncertain missing restricted draft without tombstoning it", async () => {
+    const providerId = "abc123";
+    const messageId = "def456";
+    const threadId = "abc456";
+    const sourceMessageId = "def123";
+    const state: GmailDraftState = {
+      logicalId: providerId,
+      providerId,
+      messageId,
+      threadId,
+      from: "me@example.com",
+      replyTo: [],
+      to: ["to@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Subject",
+      text: "Body",
+      rfcMessageId: "<uncertain-restricted-draft@gadgets.invalid>",
+      timestamp: 1,
+      source: {kind: "reply", messageId: sourceMessageId},
+      attachments: [],
+      version: 0,
+    };
+    const {gatekeeper, storage, values} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        return json({messages: [{id: sourceMessageId, threadId}]});
+      }
+      if (url.pathname === `/gmail/v1/users/me/drafts/${providerId}` && !init.method) {
+        return json({error: "draft consumed"}, 404);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }, {searchQuery: "from:sender@example.com"});
+    storage.kv.put(`gmail:draft:${providerId}`, {
+      logicalId: providerId,
+      providerId,
+      source: state.source,
+      createdAt: 1,
+      status: "active",
+      version: 0,
+    });
+    storage.kv.put("pending:action:1", {
+      type: "draftSend",
+      draftId: providerId,
+      approved: state,
+      expectedSnapshot: await gmailDraftStateFingerprint(state),
+      expectedProviderMessageId: messageId,
+      messageId: state.rfcMessageId,
+      dependsOn: [],
+    });
+    storage.kv.put("gmail:applying:1", Date.now());
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    await expect((await session.listDrafts()).next()).resolves.toBeNull();
+    expect(await values.get(`gmail:draft:${providerId}`)).toMatchObject({status: "active"});
+  });
+
   it("reports the verification limit when a restricted draft source walk exhausts its cap", async () => {
     let pages = 0;
     const {gatekeeper, storage} = actionHarness((url, init) => {
@@ -2471,6 +2537,34 @@ describe("Gmail message lookup", () => {
       call.url.pathname === "/gmail/v1/users/me/messages")).toHaveLength(0);
     expect(calls.filter(call =>
       call.url.pathname === `/gmail/v1/users/me/messages/${messageId}`)).toHaveLength(2);
+  });
+
+  it("bounds ordered message headers before authorizing their return", async () => {
+    let headers = [
+      {name: "Received", value: "first"},
+      {name: "Received", value: "second"},
+    ];
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === `/gmail/v1/users/me/messages/${messageId}` && !init.method) {
+        const metadata = messageMetadata(messageId, threadId);
+        metadata.payload.headers = headers;
+        return json(metadata);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const message = await session.getMessage(messageId);
+
+    await expect(message.getHeaders()).resolves.toEqual(headers);
+    const headerObservations = () => queue.read!().then(result => result.observations.filter(
+      observation => typeof observation === "object" && observation !== null &&
+        "title" in observation && observation.title === "Read Gmail message headers"));
+    expect(await headerObservations()).toHaveLength(1);
+    headers = Array.from({length: 257}, (_, index) => ({name: `X-${index}`, value: "value"}));
+
+    await expect(message.getHeaders()).rejects.toThrow(/more than 256 headers/);
+    expect(await headerObservations()).toHaveLength(1);
   });
 
   it("refreshes metadata on one message capability after an approved mark-read", async () => {
@@ -3449,7 +3543,7 @@ describe("Gmail draft dependency reconciliation", () => {
   it("proactively reconciles an uncertain inline-forward draft", async () => {
     const logicalId = "provisional-forward-draft";
     const providerId = "provider-draft";
-    const providerMessageId = "provider-message";
+    let providerMessageId = "provider-message";
     const threadId = "provider-thread";
     const source = new TextEncoder().encode([
       "From: source@example.com",
@@ -3517,6 +3611,17 @@ describe("Gmail draft dependency reconciliation", () => {
     expect(entries).toHaveLength(1);
     expect(entries![0].info).toMatchObject({id: logicalId, messageId: providerMessageId});
     expect(await values.get(`gmail:draft:${logicalId}`)).toMatchObject({providerId});
+    expect(await values.get("gmail:draftWriteReceipt:1")).toEqual({
+      draftId: providerId,
+      messageId: providerMessageId,
+      threadId,
+    });
+
+    providerMessageId = "provider-message-2";
+    await gatekeeper.applyAction(1);
+
+    expect(await values.has("pending:action:1")).toBe(false);
+    expect(await values.has("gmail:draftWriteReceipt:1")).toBe(false);
   });
 
   it("rebases each dependent action onto Gmail's normalized provider revision", async () => {
@@ -3714,10 +3819,14 @@ describe("Gmail draft dependency reconciliation", () => {
       ...outboundSpec(before.rfcMessageId), subject: before.subject, text: before.text,
     }).raw;
     const normalizedAfterRaw = api.buildOutbound({
-      ...outboundSpec(after.rfcMessageId), subject: after.subject, text: after.text + "\n",
+      ...outboundSpec(after.rfcMessageId), subject: after.subject, text: after.text,
+    }).raw;
+    const differentAfterRaw = api.buildOutbound({
+      ...outboundSpec(after.rfcMessageId), subject: after.subject, text: "Different\n",
     }).raw;
     let providerMessageId = "provider-message-1";
-    let baselineMode: "unavailable" | "changed" | "expected" = "unavailable";
+    let providerThreadId = "provider-thread";
+    let baselineMode: "unavailable" | "different" | "changed" | "changedThread" = "unavailable";
     let updates = 0;
     const {gatekeeper, storage, values} = actionHarness((url, init) => {
       if (url.pathname === `/gmail/v1/users/me/drafts/${providerId}` && !init.method) {
@@ -3726,7 +3835,7 @@ describe("Gmail draft dependency reconciliation", () => {
             id: providerId,
             message: {
               id: providerMessageId,
-              threadId: "provider-thread",
+              threadId: providerThreadId,
               internalDate: "1",
               raw: beforeRaw,
             },
@@ -3736,10 +3845,10 @@ describe("Gmail draft dependency reconciliation", () => {
         return json({
           id: providerId,
           message: {
-            id: baselineMode === "changed" ? "provider-message-3" : "provider-message-2",
-            threadId: "provider-thread",
+            id: "provider-message-3",
+            threadId: providerThreadId,
             internalDate: "1",
-            raw: normalizedAfterRaw,
+            raw: baselineMode === "different" ? differentAfterRaw : normalizedAfterRaw,
           },
         });
       }
@@ -3751,7 +3860,7 @@ describe("Gmail draft dependency reconciliation", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
     storage.kv.put(`gmail:draft:${providerId}`, {
-      logicalId: providerId, providerId, createdAt: 1, status: "active", version: 1,
+      logicalId: providerId, providerId, createdAt: 1, status: "active", version: 2,
     });
     storage.kv.put("pending:action:1", {
       type: "draftUpdate",
@@ -3761,22 +3870,39 @@ describe("Gmail draft dependency reconciliation", () => {
       expectedProviderMessageId: "provider-message-1",
       dependsOn: [],
     });
+    storage.kv.put("pending:action:2", {
+      type: "draftDelete",
+      draftId: providerId,
+      expectedSnapshot: await gmailDraftStateFingerprint(after),
+      expectedProviderMessageId: "provider-message-2",
+      dependsOn: [1],
+    });
 
     await expect(gatekeeper.applyAction(1)).rejects.toThrow(/drafts\.get failed/);
     expect(await values.get("gmail:draftWriteReceipt:1")).toEqual({
-      draftId: providerId, messageId: "provider-message-2",
+      draftId: providerId, messageId: "provider-message-2", threadId: "provider-thread",
     });
 
-    baselineMode = "changed";
+    baselineMode = "different";
     await expect(gatekeeper.applyAction(1)).rejects.toThrow(/revision changed/);
     expect(updates).toBe(1);
 
-    baselineMode = "expected";
+    baselineMode = "changedThread";
+    providerThreadId = "different-thread";
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/revision changed/);
+    expect(updates).toBe(1);
+
+    baselineMode = "changed";
+    providerThreadId = "provider-thread";
     await gatekeeper.applyAction(1);
 
     expect(updates).toBe(1);
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.has("gmail:draftWriteReceipt:1")).toBe(false);
+    expect(await values.get("pending:action:2")).toMatchObject({
+      expectedProviderMessageId: "provider-message-3",
+      dependsOn: [1],
+    });
   });
 
   it("invalidates an update prepared while an earlier draft write completes", async () => {

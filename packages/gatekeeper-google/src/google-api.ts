@@ -393,6 +393,36 @@ type GmailThreadMetadata = {
 export const MAX_GMAIL_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 /** Conservative raw-message ceiling aligned with Gmail's documented 25 MB personal limit. */
 export const MAX_GMAIL_FORWARD_SOURCE_BYTES = 25 * 1024 * 1024;
+const MAX_GMAIL_MESSAGE_HEADERS = 256;
+const MAX_GMAIL_MESSAGE_HEADER_BYTES = 128 * 1024;
+
+function boundedGmailHeaders<T>(headers: Iterable<T>, convert: (header: T) => GmailHeader): GmailHeader[] {
+  const encoder = new TextEncoder();
+  const result: GmailHeader[] = [];
+  let totalBytes = 0;
+  for (const source of headers) {
+    if (result.length === MAX_GMAIL_MESSAGE_HEADERS) {
+      throw new Error(`Gmail message has more than ${MAX_GMAIL_MESSAGE_HEADERS} headers.`);
+    }
+    const header = convert(source);
+    const remainingBytes = MAX_GMAIL_MESSAGE_HEADER_BYTES - totalBytes;
+    // UTF-8 uses at least one byte per UTF-16 code unit, so reject obviously oversized values
+    // before TextEncoder allocates an equally unbounded byte array.
+    if (header.name.length + header.value.length > remainingBytes) {
+      throw new Error(
+        `Gmail message headers exceed the ${MAX_GMAIL_MESSAGE_HEADER_BYTES}-byte safe-read limit.`);
+    }
+    const encodedBytes = encoder.encode(header.name).byteLength +
+      encoder.encode(header.value).byteLength;
+    if (encodedBytes > remainingBytes) {
+      throw new Error(
+        `Gmail message headers exceed the ${MAX_GMAIL_MESSAGE_HEADER_BYTES}-byte safe-read limit.`);
+    }
+    totalBytes += encodedBytes;
+    result.push(header);
+  }
+  return result;
+}
 
 /** Return the exact decoded byte length of valid padded or unpadded base64url data. */
 export function base64UrlDecodedByteLength(data: string): number {
@@ -1601,21 +1631,30 @@ function parseGmailLabelResponse(
 }
 
 function parseGmailDraftWriteResult(
-    value: unknown, operation: "creation" | "update"): {id: string; message: {id: string}} {
+    value: unknown, operation: "creation" | "update"):
+    {id: string; message: {id: string; threadId?: string}} {
   const result = value && typeof value === "object" ? value as Record<string, unknown> : undefined;
   const message = result?.message && typeof result.message === "object"
     ? result.message as Record<string, unknown>
     : undefined;
   if (typeof result?.id !== "string" || !GMAIL_ID_RE.test(result.id) ||
-      typeof message?.id !== "string" || !GMAIL_ID_RE.test(message.id)) {
+      typeof message?.id !== "string" || !GMAIL_ID_RE.test(message.id) ||
+      (message.threadId !== undefined &&
+        (typeof message.threadId !== "string" || !GMAIL_ID_RE.test(message.threadId)))) {
     throw new Error(`Gmail accepted the draft ${operation} but returned an invalid response.`);
   }
-  return {id: result.id, message: {id: message.id}};
+  return {
+    id: result.id,
+    message: {
+      id: message.id,
+      ...(typeof message.threadId === "string" ? {threadId: message.threadId} : {}),
+    },
+  };
 }
 
 async function readGmailDraftWriteResult(
     response: Response, operation: "creation" | "update"):
-    Promise<{id: string; message: {id: string}}> {
+    Promise<{id: string; message: {id: string; threadId?: string}}> {
   let value: unknown;
   try {
     value = await response.json();
@@ -1990,14 +2029,21 @@ function attachmentFromPostal(
     attachment, metadata.contentType, metadata.exactBytes !== undefined);
   const bytes = postalAttachmentBytes(attachment.content, contentType, metadata.exactBytes);
   const filename = attachment.filename ?? "";
+  const disposition = postalAttachmentDisposition(attachment);
   return {
     filename,
     contentType,
     data: foldBase64(bytesToBase64(bytes)),
-    ...(attachment.disposition === "inline" ? {disposition: "inline" as const} : {}),
+    ...(disposition ? {disposition} : {}),
     ...(attachment.contentId ? {contentId: attachment.contentId} : {}),
     description: `${filename || "(unnamed)"} (${contentType}, ${bytes.byteLength} bytes)`,
   };
+}
+
+function postalAttachmentDisposition(
+    attachment: import("postal-mime").Attachment): "inline" | "attachment" | undefined {
+  if (attachment.related === true || attachment.disposition === "inline") return "inline";
+  return attachment.disposition ? "attachment" : undefined;
 }
 
 function postalAttachmentContentType(
@@ -2182,14 +2228,13 @@ export async function parseGmailDraft(message: GmailMessageRaw): Promise<GmailPa
         attachment, metadata[index].contentType, metadata[index].exactBytes !== undefined);
       const bytes = postalAttachmentBytes(
         attachment.content, contentType, metadata[index].exactBytes);
+      const disposition = postalAttachmentDisposition(attachment);
       return {
         // MIMEText requires a string; an empty filename round-trips as unnamed.
         filename: attachment.filename ?? "",
         contentType,
         data: foldBase64(bytesToBase64(bytes)),
-        ...(attachment.disposition
-          ? {disposition: attachment.disposition === "inline" ? "inline" as const : "attachment" as const}
-          : {}),
+        ...(disposition ? {disposition} : {}),
         ...(attachment.contentId ? {contentId: attachment.contentId} : {}),
         description: `${attachment.filename ?? "(unnamed)"} (${contentType}, ${bytes.byteLength} bytes)`,
       };
@@ -2679,7 +2724,14 @@ export class GmailApi {
 
   async parseMessageHeaders(message: GmailMessageRaw): Promise<GmailHeader[]> {
     const parsed = await parseMimeMessage(message.raw);
-    return parsed.headers.map(header => ({name: header.originalKey, value: header.value}));
+    return boundedGmailHeaders(parsed.headers, header => ({
+      name: header.originalKey,
+      value: header.value,
+    }));
+  }
+
+  collectMessageHeaders(headers: Iterable<GmailHeader>): GmailHeader[] {
+    return boundedGmailHeaders(headers, header => ({name: header.name, value: header.value}));
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -2754,68 +2806,6 @@ export class GmailApi {
       internalDate: originalMessage.internalDate,
       raw,
     }, body, replyAll, options, messageId);
-  }
-
-  /** Rebuild a persisted pre-snapshot reply with its historical recipient semantics. */
-  async buildLegacyReplyRaw(
-      originalMessage: GmailMessageRaw, body: string, replyAll: boolean,
-      sourceWasSent?: boolean, messageId = newGmailMessageId()): Promise<GmailOutboundMessage> {
-    const original = await parseMimeMessage(originalMessage.raw);
-    const originalFromAddr = original.from?.address ?? "";
-    const originalSubject = original.subject ?? "";
-    const self = this.selfEmail.toLowerCase();
-    const originalTo = postalAddressListToEmailAddresses(original.to)
-      .map(address => address.address)
-      .filter(address => address && address.toLowerCase() !== self);
-    const originalCc = postalAddressListToEmailAddresses(original.cc)
-      .map(address => address.address)
-      .filter(address => address && address.toLowerCase() !== self);
-    const sentBySelf = sourceWasSent ??
-      (originalMessage.labelIds?.includes("SENT") === true ||
-        originalFromAddr.toLowerCase() === self);
-    const replyTo = postalAddressListToEmailAddresses(original.replyTo)
-      .map(address => address.address)
-      .filter(Boolean);
-    let to = sentBySelf
-      ? (replyAll ? originalTo : originalTo.slice(0, 1))
-      : (replyTo.length > 0 ? replyTo : [originalFromAddr].filter(Boolean));
-    let cc: string[] = [];
-    if (replyAll) {
-      const seen = new Set(to.map(address => address.toLowerCase()));
-      const candidates = sentBySelf ? originalCc : [...originalTo, ...originalCc];
-      cc = candidates.filter(address => {
-        const lower = address.toLowerCase();
-        if (lower === self || seen.has(lower)) return false;
-        seen.add(lower);
-        return true;
-      });
-    }
-    to = normalizeEmailRecipients(to);
-    cc = normalizeEmailRecipients(cc)
-      .filter(address => !to.some(item => item.toLowerCase() === address.toLowerCase()));
-    if (to.length === 0) {
-      throw new Error("Cannot construct a reply: source message has no usable recipient.");
-    }
-    const subject = originalSubject.toLowerCase().startsWith("re:")
-      ? originalSubject
-      : `Re: ${originalSubject}`;
-    const originalMsgId = original.messageId?.trim();
-    if (!originalMsgId) {
-      throw new Error("Cannot construct a threaded reply: source message has no Message-ID header.");
-    }
-    const parentId = validateMessageId(originalMsgId, "source Message-ID");
-    return this.buildOutbound({
-      from: this.selfEmail,
-      to,
-      cc,
-      bcc: [],
-      subject,
-      text: body,
-      messageId,
-      inReplyTo: parentId,
-      references: foldReferences(original.references, parentId),
-      attachments: [],
-    });
   }
 
   async buildReplyRaw(
@@ -3064,7 +3054,8 @@ export class GmailApi {
     return draft;
   }
 
-  async createDraft(raw: string, threadId?: string): Promise<{id: string; message: {id: string}}> {
+  async createDraft(
+      raw: string, threadId?: string): Promise<{id: string; message: {id: string; threadId?: string}}> {
     if (threadId) validateGmailId(threadId, "thread ID");
     const response = await this.authedFetch(
       "https://gmail.googleapis.com/gmail/v1/users/me/drafts", {
@@ -3077,7 +3068,8 @@ export class GmailApi {
   }
 
   async updateDraft(
-      draftId: string, raw: string, threadId?: string): Promise<{id: string; message: {id: string}}> {
+      draftId: string, raw: string, threadId?: string):
+      Promise<{id: string; message: {id: string; threadId?: string}}> {
     validateGmailId(draftId, "draft ID");
     if (threadId) validateGmailId(threadId, "thread ID");
     const response = await this.authedFetch(
