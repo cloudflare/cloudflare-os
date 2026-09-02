@@ -45,15 +45,38 @@ const currentResourceUrl = (
   source: ActiveResourceUrl,
   document: ComposerDocument,
 ): ComposerUrlRange | null => {
-  const originalUrls = [...source.snapshot.document.text.matchAll(new RegExp(URL_REGEX))];
+  const originalUrls = [
+    ...source.snapshot.document.text.matchAll(/https?:\/\/[^\s)>\]]*/g),
+  ];
   const sourceIndex = originalUrls.findIndex((match) =>
     match.index === source.start && match.index + match[0].length === source.end &&
     match[0] === source.text);
   if (sourceIndex < 0) return null;
 
-  const match = [...document.text.matchAll(new RegExp(URL_REGEX))][sourceIndex];
+  const match = [...document.text.matchAll(/https?:\/\/[^\s)>\]]*/g)][sourceIndex];
   if (!match || match[0] !== source.text) return null;
   return { text: match[0], start: match.index, end: match.index + match[0].length };
+};
+
+const currentPresentationPosition = (
+  source: ComposerDocumentSnapshot,
+  document: ComposerDocument,
+  position: number,
+): number | null => {
+  if (source.document.formats.length !== document.formats.length) return null;
+  let shift = 0;
+  for (const [index, previous] of source.document.formats.entries()) {
+    const current = document.formats[index];
+    if (current.noun !== previous.noun || current.icon !== previous.icon ||
+        current.start !== previous.start + shift) {
+      return null;
+    }
+    if (position > previous.start && position < previous.start + previous.length) return null;
+    if (position >= previous.start + previous.length) {
+      shift += current.length - previous.length;
+    }
+  }
+  return position + shift;
 };
 
 const removeUnusedGatekeeper = async (gatekeeper: RpcStub<GatekeeperClient<any>>) => {
@@ -234,13 +257,15 @@ export const useComposerResources = ({
       ]);
       if (!source || attachSnapshotRef.current !== source) return;
       const vendorId = creationSpec.type === "gatekeeper" ? creationSpec.vendorId : undefined;
-      const result = commitDocumentEdit(source.snapshot, (document) =>
-        insertComposerCapsule(
+      const result = commitDocumentEdit(source.snapshot, (document) => {
+        const position = currentPresentationPosition(source.snapshot, document, source.position);
+        return position === null ? null : insertComposerCapsule(
           document,
-          source.position,
+          position,
           { gatekeeperId, description, vendorId },
           capsuleTokenText(description, vendorId),
-        ));
+        );
+      }, { allowPresentationChanges: true });
       closeAttachModal();
       if (!result) {
         onError("The prompt changed before the resource could be added");

@@ -42,7 +42,7 @@ const emptyDocument = (text: string): ComposerDocument => ({
 
 const fakeGatekeeper = (describeResource = async () => description) => {
   const dispose = vi.fn<() => void>();
-  const remove = vi.fn(async () => {});
+  const remove = vi.fn<() => Promise<void>>(async () => {});
   return {
     dispose,
     remove,
@@ -259,10 +259,54 @@ describe("useComposerResources", () => {
     expect(harness.onError).not.toHaveBeenCalled();
   });
 
+  it("attaches a modal resource after async decoration shifts its position", async () => {
+    const storedDraft: StoredComposerDraft = {
+      version: 1,
+      text: "Document notes",
+      formats: [{ position: 0, length: 8, noun: "Document", icon: "fileText" }],
+    };
+    writeComposerDraft("draft:user-a", storedDraft);
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    let resolveId!: (value: number) => void;
+    const dispose = vi.fn<() => void>();
+    const remove = vi.fn<() => Promise<void>>(async () => {});
+    const gatekeeper = {
+      getId: () => new Promise<number>((resolve) => { resolveId = resolve; }),
+      describe: async () => description,
+      getCreationSpec: async () => ({ type: "gatekeeper" as const, vendorId: "vendor" }),
+      remove,
+      [Symbol.dispose]: dispose,
+    } as unknown as RpcStub<GatekeeperClient<any>>;
+    const harness = await renderHarness(
+      async () => null,
+      { storageKey: "draft:user-a", logoSlot: "[icon]" },
+    );
+    act(() => harness.controls.resources.openAttachModal(storedDraft.text.length));
+    const creation = harness.controls.resources.attachCreated(gatekeeper);
+
+    await act(async () => {
+      iconState.resolve!("data:image/svg+xml,icon");
+      await Promise.resolve();
+    });
+    await act(async () => {
+      resolveId(7);
+      await creation;
+    });
+
+    expect(harness.controls.draft.document.text).toBe("[icon]Document notes Plan ");
+    expect(harness.controls.draft.document.capsules).toHaveLength(1);
+    expect(remove).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(harness.onError).not.toHaveBeenCalled();
+  });
+
   it("suppresses a metadata failure after the attach modal is canceled", async () => {
     let rejectMetadata!: (reason: Error) => void;
     const dispose = vi.fn<() => void>();
-    const remove = vi.fn(async () => {});
+    const remove = vi.fn<() => Promise<void>>(async () => {});
     const gatekeeper = {
       getId: () => new Promise<number>((_resolve, reject) => {
         rejectMetadata = reject;
