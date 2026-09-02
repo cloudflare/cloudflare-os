@@ -207,6 +207,8 @@ describe("ChatComposer", () => {
     });
 
     expect(textarea.value).toBe("before /review after");
+    expect(document.body.textContent)
+      .toContain("Slash command /review from Projects is ready to send");
     expect(document.activeElement).toBe(textarea);
 
     await act(async () => add.click());

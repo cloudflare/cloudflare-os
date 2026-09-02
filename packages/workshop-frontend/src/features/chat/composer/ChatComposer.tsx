@@ -477,49 +477,8 @@ export const ChatComposer = ({
     setIsSending(true);
     const draftSend = beginDraftSend();
     try {
-      let documentForSubmission = composerDocument;
-      if (!documentForSubmission.command && documentForSubmission.text.startsWith("//")) {
-        documentForSubmission = {
-          ...documentForSubmission,
-          text: documentForSubmission.text.slice(1),
-          capsules: documentForSubmission.capsules.map((capsule) => ({
-            ...capsule,
-            start: Math.max(0, capsule.start - 1),
-          })),
-          formats: documentForSubmission.formats.map((format) => ({
-            ...format,
-            start: Math.max(0, format.start - 1),
-          })),
-        };
-      } else if (!documentForSubmission.command && documentForSubmission.text.startsWith("/")) {
-        const parsed = parseSlashCommandInput(documentForSubmission.text, 1);
-        if (!parsed) {
-          toasts.add({ title: "Slash command is invalid", variant: "error" });
-          return;
-        }
-        let match: SlashCommandChoice | null;
-        try {
-          match = await slashCommandPicker.resolveExact(parsed);
-        } catch (error) {
-          console.error("Failed to resolve slash command:", error);
-          toasts.add({ title: "Couldn't load slash commands", variant: "error" });
-          return;
-        }
-        if (!match) {
-          toasts.add({ title: "Choose a slash command", variant: "error" });
-          return;
-        }
-        documentForSubmission = {
-          ...documentForSubmission,
-          command: {
-            choice: match,
-            start: parsed.tokenStart,
-            length: parsed.tokenEnd - parsed.tokenStart,
-          },
-        };
-      }
       const submissionResult = buildComposerSubmission({
-        document: documentForSubmission,
+        document: composerDocument,
         hasAttachments: readyAttachments.length > 0,
       });
       if (!submissionResult.ok) {
