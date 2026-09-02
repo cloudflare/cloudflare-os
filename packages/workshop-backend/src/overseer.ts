@@ -12946,16 +12946,25 @@ function requireLiveHook(impl: OverseerImpl, hookId: number): BoundHookRecord {
 // issued it could never be revoked, and a holder would keep a live write channel into the gadget
 // after a disable/delete shrank every collaborator's verification scope.
 function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcStub<RpcTarget> {
+  // The proxy target must be callable for the `apply` trap to ever fire (a Proxy over a
+  // non-callable target is itself non-callable), and the bindHook contract allows the bound
+  // callback to be a function type, invoked by calling the firing's callback directly. An arrow
+  // function also has no `prototype` own-property to conflict with the wildcard `get` below.
   // TODO: Same workerd bug as startGatekeeperHook: a Proxy returned as an RpcTarget is judged
   //   non-pipelineable, so wrap it in a stub manually.
-  return new NativeRpcStub(new Proxy({} as RpcTarget, {
+  return new NativeRpcStub(new Proxy((() => {}) as unknown as RpcTarget, {
+    // Both traps are async so a refusal is a rejection of that call, not a synchronous throw
+    // escaping into the RPC machinery that invokes the function (workerd reports that as
+    // uncaught, too).
+    async apply(_target, _thisArg, args: unknown[]) {
+      let record = requireLiveHook(impl, hookId);
+      return Reflect.apply(record.callback as any, undefined, args);
+    },
     get(_target, prop) {
       // All wildcard properties of a stub appear as functions, so `then` must come back
       // undefined (this is not a thenable) and symbols are never RPC methods -- the same
       // dispositions as getGadgetFacet's proxy over the gadget facet.
       if (typeof prop === "symbol" || prop === "then") return undefined;
-      // async so a refusal is a rejection of this call, not a synchronous throw escaping into
-      // the RPC machinery that invokes the function (workerd reports that as uncaught, too).
       return async (...args: unknown[]) => {
         let record = requireLiveHook(impl, hookId);
         return Reflect.apply((record.callback as any)[prop], record.callback, args);

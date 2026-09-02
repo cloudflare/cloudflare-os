@@ -57,6 +57,20 @@ describe("OverseerDurableObject.startHook", () => {
     expect(deliver).toHaveBeenCalledWith("evt");
   });
 
+  it("allows delivery for a function-valued callback invoked directly", async () => {
+    // The bindHook contract (workshop-shared/gatekeeper.ts) allows the bound callback to be a
+    // function type, delivered by calling the firing's callback itself rather than a method on
+    // it -- so the per-firing wrapper must be callable too.
+    let deliver = vi.fn(async (payload: string) => `delivered:${payload}`);
+    let overseer = makeOverseer(
+        async () => serializeAdminConfig(DEFAULT_ADMIN_CONFIG),
+        { enabled: true, vendorId: "email", callback: deliver });
+
+    let { callback } = await overseer.startHook(1);
+    await expect((callback as any)("evt")).resolves.toBe("delivered:evt");
+    expect(deliver).toHaveBeenCalledWith("evt");
+  });
+
   it("rejects delivery for an administratively disabled ordinary vendor", async () => {
     let config = { ...DEFAULT_ADMIN_CONFIG, disabledGatekeepers: ["email"] };
     let overseer = makeOverseer(async () => serializeAdminConfig(config));
@@ -141,6 +155,20 @@ describe("OverseerDurableObject.startHook", () => {
     (overseer as any).impl.storage.boundHooks.get = () => undefined;
 
     await expectRejection((callback as any).deliver("evt"), /deleted or disabled/);
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("a firing's direct invocation refuses once the hook is disabled", async () => {
+    let deliver = vi.fn();
+    let hook = { enabled: true, vendorId: "email", callback: deliver };
+    let overseer = makeOverseer(async () => serializeAdminConfig(DEFAULT_ADMIN_CONFIG), hook);
+    let { callback } = await overseer.startHook(1);
+
+    hook.enabled = false;
+
+    // The apply route revalidates like the method route: a function-valued callback must not be
+    // the one shape that escapes the per-firing revocation.
+    await expectRejection((callback as any)("evt"), /deleted or disabled/);
     expect(deliver).not.toHaveBeenCalled();
   });
 
