@@ -20,7 +20,6 @@ const NON_HEX = /[^0-9a-f]/;
 const OAUTH_COOKIE_MAX_AGE = Math.ceil(OAUTH_NONCE_LIFETIME_MS / 1000);
 const OAUTH_COOKIE_SECURITY = "Secure; HttpOnly; SameSite=Lax";
 
-/** Nonce-shaped, and so cookie-safe by construction. */
 function isNonce(value: string): boolean {
   return value.length === NONCE_BYTES * 2 && !NON_HEX.test(value);
 }
@@ -30,9 +29,11 @@ function oauthCookieName(nonce: string): string | undefined {
 }
 
 /**
- * A `Set-Cookie` value binding the OAuth callback to the browser that began the redirect. The value
- * is the attempt's `cookieSecret`, never the nonce or a constant: the nonce travels to the provider
- * as `state`, so a cookie derived from it would be forgeable by anyone holding the callback URL.
+ * Creates an OAuth browser-binding cookie. Its secret is independent of OAuth state, which leaves the
+ * browser during the redirect.
+ * @param nonce OAuth callback nonce.
+ * @param cookieSecret Browser-binding secret.
+ * @returns A hardened `Set-Cookie` value.
  */
 export function oauthBrowserCookie(nonce: string, cookieSecret: string): string {
   if (!isNonce(cookieSecret)) throw new TypeError("Invalid OAuth cookie secret.");
@@ -43,9 +44,9 @@ export function oauthBrowserCookie(nonce: string, cookieSecret: string): string 
 }
 
 /**
- * A `Set-Cookie` value expiring the browser binding after the OAuth callback, or `undefined` when
- * `nonce` names no cookie. Degrades rather than throws, like `readOAuthBrowserCookie`: this is
- * added to every terminal response, including the ones refusing a malformed `state`.
+ * Expires an OAuth browser-binding cookie.
+ * @param nonce OAuth callback nonce.
+ * @returns A clearing `Set-Cookie` value, or `undefined` for an invalid nonce.
  */
 export function clearOAuthBrowserCookie(nonce: string): string | undefined {
   const name = oauthCookieName(nonce);
@@ -53,8 +54,12 @@ export function clearOAuthBrowserCookie(nonce: string): string | undefined {
   return `${name}=; Path=/; Max-Age=0; ${OAUTH_COOKIE_SECURITY}`;
 }
 
-/** The browser-binding secret this callback presents, if any. Absence is refusable before the
- *  account DO is touched; `claimOAuth` holds the secret needed to verify the value. */
+/**
+ * Reads the browser-binding secret for an OAuth nonce.
+ * @param req OAuth callback request.
+ * @param nonce OAuth callback nonce.
+ * @returns The cookie secret, or `undefined` when absent.
+ */
 export function readOAuthBrowserCookie(req: Request, nonce: string): string | undefined {
   const name = oauthCookieName(nonce);
   if (!name) return undefined;
@@ -72,17 +77,10 @@ export type ConnectStage = "initiation" | "oauth";
 /** Fields the record owns; provider metadata may not redeclare them. */
 const RESERVED_KEYS = ["value", "expiresAt", "stage", "cookieSecret"] as const;
 
-/**
- * The record's own fields, forbidden in provider metadata. The record stays flat rather than
- * nesting metadata under a property, because the flat shape is what keeps records written by
- * existing gatekeepers readable — so the reserved keys are excluded instead of the shape changed.
- * Intersected with the caller's own type rather than used as a constraint, which would make it a
- * weak type and defeat inference.
- */
+/** Reserved record fields that provider metadata may not declare. */
 export type NonceExtra = { [K in (typeof RESERVED_KEYS)[number]]?: never };
 
-/** A stored nonce and optional provider-owned state for one connect attempt. `cookieSecret` is
- *  present only at the OAuth stage; the initiation link has its own navigation fence. */
+/** Stored state for one connect attempt. `cookieSecret` exists only during OAuth. */
 export type StoredNonce<Extra extends object = Record<never, never>> = TimedNonce &
   { stage: ConnectStage; cookieSecret?: string } & Extra;
 
@@ -94,7 +92,12 @@ function rejectReservedKeys(extra: object): void {
   }
 }
 
-/** Record the initiation nonce carried by the link handed to the user. */
+/**
+ * Stores a connect-flow initiation nonce.
+ * @param kv Durable Object nonce storage.
+ * @param initiationNonce Nonce carried by the connect link.
+ * @param now Current Unix time in milliseconds.
+ */
 export function putInitiation(kv: ConnectNonceKv, initiationNonce: string, now: number): void {
   kv.put<StoredNonce>(NONCE_KEY, {
     value: initiationNonce,
@@ -107,8 +110,12 @@ export function putInitiation(kv: ConnectNonceKv, initiationNonce: string, now: 
 export type OAuthAttempt = { oauthNonce: string; cookieSecret: string };
 
 /**
- * Consume the initiation nonce and mint the OAuth-stage nonce in one uninterruptible step.
- * Returns null when the presented nonce is absent, expired, of the wrong stage, or does not match.
+ * Advances a valid connect attempt to OAuth.
+ * @param kv Durable Object nonce storage.
+ * @param initiationNonce Nonce carried by the connect link.
+ * @param now Current Unix time in milliseconds.
+ * @param extra Provider metadata to retain through the callback.
+ * @returns The OAuth nonce and cookie secret, or `null` when invalid.
  */
 export function advanceToOAuth<Extra extends object>(
   kv: ConnectNonceKv,
@@ -134,9 +141,12 @@ export function advanceToOAuth<Extra extends object>(
 }
 
 /**
- * Consume the OAuth-stage nonce, returning the record it replaced (so callers can read `extra`
- * off it) or null when it does not validate. Deletes the record on success. `Extra` is the caller's
- * assertion about what it stored, like every other typed read of durable storage.
+ * Claims a valid OAuth callback.
+ * @param kv Durable Object nonce storage.
+ * @param oauthNonce Provider-returned nonce.
+ * @param cookieSecret Browser-binding secret.
+ * @param now Current Unix time in milliseconds.
+ * @returns Stored provider metadata, or `null` when invalid.
  */
 export function claimOAuth<Extra extends object = Record<never, never>>(
   kv: ConnectNonceKv,

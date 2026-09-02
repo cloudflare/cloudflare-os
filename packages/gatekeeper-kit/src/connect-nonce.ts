@@ -13,26 +13,28 @@ export const CONNECT_TIMEOUT_MS = 60 * 60 * 1000;
 /** Safety margin used when deciding whether an access token remains usable. */
 export const ACCESS_TOKEN_SAFETY_MS = 60 * 1000;
 
-/** Hoisted: `constantTimeEqual` runs on the auth path, and a per-call encoder is pure overhead. */
 const encoder = new TextEncoder();
 
 /**
- * Encode bytes as lowercase hexadecimal. Hand-rolled rather than `Uint8Array.toHex()`, which this
- * package's Node suite does not have (`workshop-backend` can use it: workerd only).
+ * Encodes bytes as lowercase hexadecimal without `Uint8Array.toHex()`, which Node tests lack.
+ * @param bytes Bytes to encode.
+ * @returns Lowercase hexadecimal.
  */
 export function hexEncode(bytes: Uint8Array): string {
   return [...bytes].map(byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
-/** Generate a cryptographically random connect nonce. */
+/** @returns A cryptographically random connect nonce. */
 export function generateNonce(): string {
   return hexEncode(crypto.getRandomValues(new Uint8Array(NONCE_BYTES)));
 }
 
 /**
- * Compare two strings without data-dependent timing when their lengths match. An ill-formed string
- * is refused: UTF-8 maps every lone surrogate to U+FFFD, so `"\uD800"` and `"\uD801"` encode alike,
- * and a capability check may not report distinct strings as equal.
+ * Compares well-formed strings without data-dependent timing. Ill-formed UTF-16 is rejected because
+ * distinct lone surrogates encode to the same bytes.
+ * @param a First string.
+ * @param b Second string.
+ * @returns Whether the strings match.
  */
 export function constantTimeEqual(a: string, b: string): boolean {
   if (!a.isWellFormed() || !b.isWellFormed()) return false;
@@ -46,12 +48,12 @@ export function constantTimeEqual(a: string, b: string): boolean {
 export type TimedNonce = { value: string; expiresAt: number };
 
 /**
- * True when `stored` exists, has not expired at `now`, and matches `presented`.
- *
- * `stored` comes from unvalidated storage, so the shape is checked before comparing: an absent
- * `value` encodes to the same empty buffer an empty `presented` does, which would make a corrupt
- * record admit. The clock is checked for the same reason — `NaN` loses every comparison, so it
- * would read as unexpired. A capability check may not have a fail-open branch.
+ * Validates and compares a stored nonce. Persisted values are untrusted, so malformed records and
+ * non-finite clocks fail closed.
+ * @param stored Persisted nonce and expiry.
+ * @param presented Nonce supplied by the caller.
+ * @param now Current Unix time in milliseconds.
+ * @returns Whether the nonce is present, live, and equal.
  */
 export function isLiveNonce(
   stored: TimedNonce | undefined,

@@ -13,13 +13,7 @@ import {
 } from "../../src/connect-nonce";
 import { NONCE_KEY } from "../../src/connect-handshake";
 
-/**
- * These values are observable outside the kit -- the key names a record live accounts already hold,
- * and each duration is a window a user experiences -- so every one is restated as a literal rather
- * than compared against its own export. A port reading `"nonce"` keeps working only while the key
- * is spelled that way, and turning ten minutes into a day is a security change, not a tuning one:
- * both should fail here and be decided, not ride along in a refactor.
- */
+// Pin storage keys and user-visible security windows independently of their exports.
 describe("wire-visible constants", () => {
   it("pins the durable key and every published duration", () => {
     expect(NONCE_KEY).toBe("nonce");

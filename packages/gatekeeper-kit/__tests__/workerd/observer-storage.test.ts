@@ -1,16 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-/**
- * Strategy C persists the verifier capability itself, which is the one thing the Node fake cannot
- * model: it clones every stored value, and a stub does not clone. Real Durable Object storage
- * accepts one only under `allow_irrevocable_stub_storage`, so without this suite a port compiles,
- * passes the Node tests, and then fails on its first `addObserver` in production.
- *
- * The exclusion-on-throw path stays in the Node suite: workerd reports a throwing RPC handler as an
- * uncaught exception on the callee side whatever the caller does with it, and the pool fails the run
- * on that log -- so asserting it here exits 1 with every assertion green.
- */
+// Exercise verifier-stub persistence, which the cloning Node fake cannot represent.
 function host(name: string) {
   return env.TRACKER_HOST.getByName(name);
 }

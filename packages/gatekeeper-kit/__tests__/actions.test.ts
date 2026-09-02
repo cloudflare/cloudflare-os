@@ -24,7 +24,7 @@ type Sql = { sql: string; rows?: number };
 
 const presentation = { title: "Run SQL", description: "…", implementsRevert: false };
 
-/** A spy with `submitAction`'s real signature, so recorded calls stay typed. */
+// Keep recorded submissions typed to the real RPC signature.
 function submitSpy() {
   return vi.fn<ApprovalQueue["submitAction"]>(async () => {});
 }

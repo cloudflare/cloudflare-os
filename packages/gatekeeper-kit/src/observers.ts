@@ -1,6 +1,3 @@
-// The observer-verification contract (getVerifier/addObserver/removeObserver), as four
-// interchangeable strategies, plus the gate that authorizes a read against the approval queue.
-
 import type { RpcStub } from "cloudflare:workers";
 import type {
   ApprovalQueue,
@@ -27,47 +24,46 @@ export {
   type ObserverTrackerOptions,
 } from "./observer-tracker";
 
-/**
- * How a gatekeeper admits collaborators, and which of them a given observation must be hidden from.
- * A strategy without `prepare` reveals nothing an admitted observer cannot already see.
- */
+/** Defines collaborator admission and per-observation exclusion. */
 export interface ObserverStrategy {
-  addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void>;
-  removeObserver(id: string): Promise<void>;
-  prepare?(setIds: readonly string[]): Promise<ObservationCheck>;
   /**
-   * Every observer retained by this binding; absent where none are. For inspection -- naming them
-   * in a description, reporting them to an admin. A read that must be withheld from all of them
-   * takes `prepareWithheld()` instead, which enumerates and fences in one step; a list taken from
-   * here fences nothing, so an admission landing before the read reaches the overseer would be
-   * absent from it.
+   * Attempts to admit an observer.
+   * @param id Observer ID.
+   * @param user Overseer verifier capability.
    */
+  addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void>;
+  /**
+   * Removes an observer.
+   * @param id Observer ID.
+   */
+  removeObserver(id: string): Promise<void>;
+  /**
+   * Prepares exclusions for observed sets.
+   * @param setIds Provider set IDs disclosed by the read.
+   * @returns Prepared observer state.
+   */
+  prepare?(setIds: readonly string[]): Promise<ObservationCheck>;
+  /** @returns Retained observer IDs without fencing concurrent admission. */
   observerIds?(): string[];
   /**
-   * Reserves a read withheld from every observer. Required, so a strategy that cannot honour
-   * owner-only disclosure refuses loudly instead of inheriting a silent no-exclusions default --
-   * a misclassified strategy must not void the caller's per-read declaration.
-   *
-   * The returned check must name every observer the binding may yet owe an exclusion to,
-   * candidates mid-admission included, and must fence admission durably until it settles: the gate
-   * calls this and then awaits the overseer, whose record of the description is durable before the
-   * reply -- a fence that dies with the activation reopens admission on a read that stands
-   * recorded. Such a read registers no set, so nothing can later prove a candidate was entitled to
-   * it -- on `commit` a gatekeeper is unshareable for good, which the kernel sanctions, and on
-   * `discard` nothing was disclosed and nothing is owed.
+   * Reserves a read hidden from every observer.
+   * @returns A check that fences admission until settled.
    */
   prepareWithheld(): ObservationCheck;
 }
 
-/** B and D share every read with their admitted observers by their own premise, so an owner-only
- *  read contradicts the strategy choice rather than needing an empty exclusion list. */
+// Baseline and public strategies cannot support owner-only reads.
 function cannotWithhold(): never {
   throw new Error(
     "This binding's strategy shares every read with admitted observers; use a baseline scope, " +
     "or track observed sets to withhold a read.");
 }
 
-/** A: nothing this resource exposes may be shared. Admission always fails with `message`. */
+/**
+ * Creates a strategy that rejects every observer.
+ * @param message Admission-denial message.
+ * @returns A private observer strategy.
+ */
 export function privateObservers(message: string): ObserverStrategy {
   return {
     addObserver: async () => { throw new Error(message); },
@@ -78,12 +74,17 @@ export function privateObservers(message: string): ObserverStrategy {
 }
 
 /**
- * B: the resource is one ACL unit — an observer who can read it can read everything read here.
- *
- * The oracle answers rather than throws, which is the shape every verifier API in the corpus
- * already has; the denial text belongs to the binding, not to the check.
+ * Creates a resource-level ACL strategy.
+ * @param options ACL oracle and denial message.
+ * @returns An ACL observer strategy.
  */
 export function aclObservers<V>(options: {
+  /**
+   * Checks resource-level access. An error thrown here may be shown to the denied collaborator:
+   * keep its message display-safe and free of resource identifiers.
+   * @param verifier Vendor-specific verifier capability.
+   * @returns Whether the observer may access the resource.
+   */
   hasAccess(verifier: V): Promise<boolean>;
   denyMessage?: string;
 }): ObserverStrategy {
@@ -100,7 +101,11 @@ export function aclObservers<V>(options: {
   };
 }
 
-/** C: the binding spans sub-resources with distinct ACLs, so observed sets are tracked. */
+/**
+ * Creates a strategy that tracks observed set ACLs.
+ * @param options Observer-tracker storage and ACL policy.
+ * @returns A tracked-set observer strategy.
+ */
 export function trackedSetObservers<V>(options: ObserverTrackerOptions<V>): ObserverStrategy {
   const tracker = new ObserverTracker<V>(options);
   return {
@@ -112,7 +117,7 @@ export function trackedSetObservers<V>(options: ObserverTrackerOptions<V>): Obse
   };
 }
 
-/** D: the data is public to anyone with the workspace, so every observer is admitted. */
+/** @returns A strategy that admits every observer. */
 export function openObservers(): ObserverStrategy {
   return {
     addObserver: async () => {},
@@ -122,63 +127,48 @@ export function openObservers(): ObserverStrategy {
 }
 
 /**
- * Flattens newlines and escapes Markdown control characters, for interpolating provider-controlled
- * text into an ObservationDescription. Whole-description escaping is consumer policy:
- * `description` is Markdown by contract, and this must not destroy deliberate structure.
+ * Escapes provider text for a Markdown description.
+ * @param value Provider text.
+ * @returns Escaped single-line Markdown text.
  */
 export function escapeObservationValue(value: string): string {
   return value.replace(/[\r\n]+/g, " ").replace(/[\\`*_{}[\]()#+.!|>~-]/g, "\\$&");
 }
 
-/**
- * What a read is disclosing, so the gate can decide who must not see it.
- *
- * - `baseline`: the caller asserts the admission baseline already covers the disclosure. No oracle
- *   call, no exclusions.
- * - `sets`: per-set verification against every admitted observer.
- * - `withholdFromObservers`: disclose to nobody but the owner — for a read no set id describes,
- *   such as a search whose empty result is itself the disclosure.
- */
+/** Describes whether a read uses baseline access, set ACLs, or owner-only disclosure. */
 export type ObservationScope =
   | { kind: "baseline" }
   | { kind: "sets"; ids: readonly string[] }
   | { kind: "withholdFromObservers" };
 
-/**
- * A description the gate completes: it owns `excludeObservers`, derived from the scope.
- *
- * `prohibitAllSharing` stays the caller's, and is passed through untouched: it puts the gadget into
- * lockdown for good rather than withholding one read, so no scope can imply it.
- */
+/** Observation text completed by the gate with derived exclusions. */
 export type ObservationInput = Omit<ObservationDescription, "excludeObservers">;
 
-/**
- * Authorizes observations against the approval queue, folding in the strategy's exclusions and
- * promoting its newly-revealed sets only once the overseer has agreed to hide them.
- */
+/** Authorizes observations after applying the selected observer strategy. */
 export class ObservationGate implements Disposable {
   readonly #queue: RpcStub<ApprovalQueue>;
   readonly #strategy: ObserverStrategy;
 
   /**
-   * Takes ownership of `queue`, which must be a `.dup()`: the gate outlives `startSession`, and
-   * whoever made the dup needs a way to release it.
+   * Creates an observation gate.
+   * @param queue Duplicated approval-queue stub owned by the gate.
+   * @param strategy Observer strategy for this binding.
    */
   constructor(queue: RpcStub<ApprovalQueue>, strategy: ObserverStrategy) {
     this.#queue = queue;
     this.#strategy = strategy;
   }
 
-  /** Releases the duplicated queue stub. */
+  /** Releases the duplicated approval-queue stub. */
   [Symbol.dispose](): void {
     this.#queue[Symbol.dispose]();
   }
 
   /**
-   * Authorize a read, naming what it discloses.
-   *
-   * A refusal discards the preparation: the read returns nothing, so it stands for no disclosure,
-   * and no reservation it made may outlive it.
+   * Authorizes a read and commits its prepared observer state.
+   * @param input Observation description without derived exclusions.
+   * @param scope Data scope disclosed by the read.
+   * @returns A promise that resolves after authorization commits.
    */
   async authorize(input: ObservationInput, scope: ObservationScope): Promise<void> {
     const check = await this.#prepare(scope);
@@ -194,9 +184,9 @@ export class ObservationGate implements Disposable {
   }
 
   /**
-   * A strategy without `prepare` retains no per-set verdicts, which is then no exclusions: B and D
-   * admit only observers who see everything read here. `prepareWithheld` has no such default --
-   * each strategy answers the owner-only question itself.
+   * Prepares observer exclusions for a scope.
+   * @param scope Data scope disclosed by the read.
+   * @returns Prepared observer state.
    */
   async #prepare(scope: ObservationScope): Promise<ObservationCheck> {
     switch (scope.kind) {

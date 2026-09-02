@@ -1,5 +1,9 @@
-/** Rejects a bound that would silently disable itself: `NaN` and `Infinity` fail every comparison
- *  they appear in, and a zero or negative cap refuses the first allocation instead of the last. */
+/**
+ * Requires a finite positive integer so invalid bounds cannot silently disable their cap.
+ * @param label Value name used in errors.
+ * @param value Number to validate.
+ * @returns The validated number.
+ */
 export function requirePositiveInt(label: string, value: number): number {
   if (!Number.isInteger(value) || value < 1) {
     throw new Error(`${label} must be a positive integer, got ${value}.`);

@@ -6,13 +6,10 @@ import {
 } from "../../src/credential-expiry";
 import { fakeKv } from "../fake-kv";
 
-/**
- * The literal every pre-kit gatekeeper wrote, restated here rather than imported: the module keeps
- * the key private, so pinning it is what stops a rename from silently re-notifying live accounts.
- */
+// Pin the legacy latch key because renaming it would re-notify existing accounts.
 const EXPIRED_NOTIFIED_KEY = "expiredNotified";
 
-/** Restated for the same reason: the arm lives beside the latch and is equally load-bearing. */
+// Pin the adjacent arm key for the same compatibility reason.
 const EXPIRY_ARM_KEY = "expiredNotifiedArm";
 
 function makeKv(): ExpiryLatchKv {

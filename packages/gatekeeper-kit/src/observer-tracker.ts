@@ -1,6 +1,3 @@
-// Observer admission and forward exclusion across the data sets a binding has revealed: the
-// tracker behind `trackedSetObservers`, plus the storage vocabulary it shares with `./observers`.
-
 import { createLogger } from "@gadgets/backend-utils/logger";
 import { generateNonce } from "./connect-nonce";
 import type { KvScannable } from "./kv";
@@ -11,10 +8,10 @@ const logger = createLogger<{ vendorId: string; observerId: string }>({
 });
 
 /**
- * Reinterpret the opaque verifier stub the overseer hands to `addObserver()` as this gatekeeper's
- * concrete verifier API. A cast is unavoidable: Workers RPC types cannot express that
- * `Fetcher<Sub>` is assignable to `Fetcher<Base>`. It is safe at runtime because the overseer only
- * routes a verifier back to the vendor that minted it. Centralized so the cast lives in one place.
+ * Casts an overseer verifier to a vendor-specific API. The overseer returns a verifier only to the
+ * vendor that minted it.
+ * @param user Overseer verifier capability.
+ * @returns The same capability with its vendor-specific type.
  */
 export function asVerifier<T>(user: unknown): T {
   return user as T;
@@ -33,103 +30,59 @@ export const OBSERVER_WITHHELD =
 /** The Durable Object KV surface used by observer tracking. */
 export type ObserverKv = KvScannable;
 
-/** How far a tracked set has gone: revealed but awaiting an authorized read, or observed. */
 type SetState = "pending" | "observed";
 
-/**
- * How a prepared observation ends. Exactly one of these runs: `commit` when the overseer agreed to
- * hide the read from the observers named here, `discard` when it did not. Both MUST be synchronous
- * -- the gate does not await them, and the tracker's fences rely on their writes landing in one
- * awaitless run.
- *
- * `discard` is for state a refusal must not leave behind. Pending set records are not that: a read
- * that never committed disclosed nothing, so leaving them costs a slot of the tracking budget and
- * a later read of the same sets promotes them -- which is what the corpus does, to a gatekeeper.
- */
+/** Prepared observation state. Exactly one of `commit` or `discard` may run, synchronously. */
 export type ObservationCheck = {
   excludeObservers?: string[];
+  /** Commits prepared observation state. */
   commit(): void;
+  /** Discards prepared observation state. */
   discard?(): void;
 };
 
 /** Internal: the check for a read that reveals no tracked set. */
-export const NOTHING_TO_RESOLVE: ObservationCheck = { commit() {} };
+export const NOTHING_TO_RESOLVE: ObservationCheck = {
+  /** Commits the empty observation check. */
+  commit() {},
+};
 
-/**
- * Where stored verifiers live. Fixed: every gatekeeper in the corpus keys its observers under this
- * prefix, and only the observed-set family varies (`observedProject:`, `trackedConversation:`, ...).
- */
 const OBSERVER_PREFIX = "observer:";
 
-/**
- * A candidate's verifier while its admission verifies, and the nonce naming that attempt.
- * Enumerated beside admitted observers, so a read in flight already withholds from it. Durable, so
- * it also fences an admission running through another tracker over the same storage.
- */
+// Admission attempts are durable so concurrent reads already exclude the candidate.
 const OBSERVER_ATTEMPT_PREFIX = "observer-attempt:";
 const OBSERVER_NONCE_PREFIX = "observer-nonce:";
 
-/** What an attempt record stores: the candidate's verifier and when the admission began. */
 type ObserverAttempt<V> = { verifier: V; at: number };
 
-/**
- * How long an attempt record fences before a later admission may sweep it. Matches
- * `INITIATION_NONCE_LIFETIME_MS`, and sweeping a live attempt is safe: it just fails closed at its
- * next nonce check and retries.
- */
+/** Maximum age of a pending observer-admission attempt. */
 export const OBSERVER_ATTEMPT_LIFETIME_MS = 10 * 60 * 1000;
 
-/** Latches this binding closed to admission. One key, not a family: it names no observer. */
 const OBSERVER_WITHHELD_KEY = "observer-withheld";
 
-/**
- * Withheld reads awaiting the overseer, one nonce-named marker each. Durable, and written before
- * the overseer call so the output gate orders it ahead of the remote record: the overseer stores
- * the description durably before our continuation runs, and a crash there must not reopen
- * admission. Stranded by a crash, a marker over-fences for good -- the safe direction.
- */
+// Durable markers fence withheld reads until the overseer accepts or rejects them.
+// A marker stranded by a crash fails closed.
 const OBSERVER_WITHHOLD_PREFIX = "observer-withhold:";
 
-/** Every prefix the observer family owns, which an observed-set prefix may not overlap. */
 const RESERVED_PREFIXES = [
   OBSERVER_PREFIX, OBSERVER_ATTEMPT_PREFIX, OBSERVER_NONCE_PREFIX, OBSERVER_WITHHOLD_PREFIX,
   OBSERVER_WITHHELD_KEY,
 ];
 
-/** How many distinct sets a binding may track before it stops being verifiable. */
 const DEFAULT_MAX_TRACKED_SETS = 1000;
 
-/**
- * How many observers a binding may retain. Each costs a verifier call per read, and past the
- * platform ceiling every read throws -- so admission is where the refusal has to be legible.
- *
- * The ceiling is documented once and loosely ("a single request has a maximum of 32 Worker
- * invocations"), leaving open whether a callee's own invocations are charged to the same request.
- * A corpus verifier calls its account DO, so 20 observers is 40 under the strict reading and fits
- * under the loose one; workerd enforces neither locally. 10 is safe under both, and the trade is
- * asymmetric: too high locks every collaborator out for good, too low is one raised `maxObservers`.
- */
+// Keep verifier fan-out below the Workers subrequest ceiling.
 const DEFAULT_MAX_OBSERVERS = 10;
 
-/** How many verifiers may be consulted at once. */
 const DEFAULT_CONCURRENCY = 6;
 
-/**
- * Awaits `fn` over `items` with at most `limit` in flight, preserving order. A pool rather than
- * fixed windows, so one slow verifier delays only its own slot, not the start of everything behind
- * it -- this runs on the gated read path.
- *
- * The observer dimension is the kit's to bound; the set dimension is the oracle's, since
- * `hasSetAccess` receives every observed set in one call and can chunk them as its provider
- * requires. Unbounded here, a binding with many observers would exceed the Workers subrequest budget
- * on a path the overseer re-runs at every open, locking out every collaborator at once.
- */
+// Map with bounded concurrency while preserving result order.
 async function mapLimit<In, Out>(
   items: readonly In[],
   limit: number,
   fn: (item: In) => Promise<Out>,
 ): Promise<Out[]> {
-  const results = new Array<Out>(items.length);
+  const results: Out[] = [];
   let next = 0;
   const worker = async () => {
     for (let index = next++; index < items.length; index = next++) {
@@ -140,50 +93,43 @@ async function mapLimit<In, Out>(
   return results;
 }
 
-/** Configuration for an observer tracker and its provider-owned ACL oracle. */
+/**
+ * Configuration for an observer tracker and its provider-owned ACL oracle. An error thrown by the
+ * oracle may be shown to the denied collaborator: keep messages display-safe and free of resource
+ * identifiers.
+ */
 export type ObserverTrackerOptions<V> = {
   /** The binding's `ctx.storage.kv`. */
   kv: ObserverKv;
   /** Key prefix for observed-set records; observers always live under `"observer:"`. */
   setPrefix?: string;
   /**
-   * Canonicalizes a set id before it is stored, compared, or handed to the oracle, so two spellings
-   * of one resource cannot become two tracked sets (Notion's equivalent item-id forms). Identity
-   * when omitted. Set ids stay opaque strings: a compound identity is the caller's own join, the
-   * shape Confluence already uses for its `space:`/`content:` families.
+   * Canonicalizes a provider set ID so equivalent spellings share one stored ACL record.
+   * @param setId Provider set ID.
+   * @returns Canonical set ID for storage and ACL checks.
    */
   canonicalSetId?(setId: string): string;
   /**
-   * Throwing membership check run before per-set checks at admission, e.g. org or workspace
-   * membership. Admission-only: a per-observation re-check would cost a provider round trip per
-   * observer per read, and a baseline that can be revoked belongs in `hasSetAccess`, which can
-   * answer all-`false` from one batched call.
+   * Checks admission-level access before set ACLs.
+   * @param verifier Vendor-specific verifier capability.
    */
   verifyBaseline?(verifier: V): Promise<void>;
   /**
-   * Batched per-set ACL oracle: one entry per requested set, in order. Free to chunk the array
-   * destructively (see `mapLimit`) -- every call receives its own copy.
+   * Checks access to canonical provider sets.
+   * @param verifier Vendor-specific verifier capability.
+   * @param setIds Canonical set IDs.
+   * @returns One ACL verdict per set ID.
    */
   hasSetAccess(verifier: V, setIds: readonly string[]): Promise<boolean[]>;
   /**
-   * Denial text for a failing set; defaults to `OBSERVER_DENIED`. Shown verbatim to the denied
-   * collaborator, who by definition lacks access to `setId` -- naming the set would disclose that
-   * this workspace read it. Keep the text generic; `setId` is for diagnostics or category-level
-   * wording, never the message.
+   * Builds a generic denial message.
+   * @param setId Inaccessible canonical set ID.
+   * @returns A message that does not disclose the set ID.
    */
   denyMessage?(setId: string): string;
-  /**
-   * Distinct sets this binding may track before it refuses to reveal another.
-   *
-   * Enforced when a set is recorded rather than when an observer joins, because the alternative is
-   * worse: a binding that has already read past the cap could never be verified against, which
-   * locks out the collaborators already using it as well as new ones, with no way back.
-   */
+  /** Caps distinct sets before disclosure, so existing observers never become unverifiable. */
   maxTrackedSets?: number;
-  /**
-   * Observers this binding may retain. `concurrency` throttles the fan-out but does not bound it;
-   * this does, and refuses at admission rather than letting every later read throw.
-   */
+  /** Caps fan-out before reads can exceed Worker invocation limits. */
   maxObservers?: number;
   /** Concurrent verifier round trips. */
   concurrency?: number;
@@ -191,11 +137,7 @@ export type ObserverTrackerOptions<V> = {
   vendorId?: string;
 };
 
-/**
- * A set id that has been through `canonicalSetId`. Purely internal: it appears in no exported
- * signature, so a consumer never has to produce one, and the brand cannot leak into their types.
- * Its whole job is to make "canonicalize once, at the entry point" a compile error to get wrong.
- */
+// Brands set IDs after canonicalization so internal helpers cannot accept raw IDs.
 type CanonicalSetId = string & { readonly __canonical: true };
 
 /** Tracks observer admission and forward exclusion across revealed data sets. */
@@ -208,6 +150,10 @@ export class ObserverTracker<V> {
   readonly #concurrency: number;
   readonly #logger: typeof logger;
 
+  /**
+   * Creates an observer tracker.
+   * @param options Storage, ACL oracle, and capacity settings.
+   */
   constructor(options: ObserverTrackerOptions<V>) {
     this.#options = options;
     this.#logger = options.vendorId ? logger.with({ vendorId: options.vendorId }) : logger;
@@ -236,15 +182,10 @@ export class ObserverTracker<V> {
   }
 
   /**
-   * Verify against every set observed so far, then persist the verifier for forward exclusion. The
-   * loop re-reads tracked sets so sets appearing mid-check are also verified before we store.
-   *
-   * The attempt record goes down before the first await, so a concurrent read already treats the
-   * candidate as an observer. A removal or a later attempt rotates the nonce, and the check after
-   * every await refuses rather than reinstating an observer nothing tracks. A crash leaves the
-   * attempt behind, which fails closed: the candidate stays excluded until it retries -- and the
-   * next admission sweeps attempts past their lifetime, so a stranded one cannot hold a slot for
-   * good.
+   * Verifies and stores an observer.
+   * @param id Observer ID.
+   * @param verifier Vendor-specific verifier capability.
+   * @returns A promise that resolves after admission is durable.
    */
   async addObserver(id: string, verifier: V): Promise<void> {
     const { kv, verifyBaseline, hasSetAccess, denyMessage } = this.#options;
@@ -306,11 +247,7 @@ export class ObserverTracker<V> {
     }
   }
 
-  /**
-   * Reserve a withheld read: see `ObserverStrategy.prepareWithheld`. `commit` latches the binding
-   * closed for good; `discard` leaves it as it was, since a refused read discloses nothing.
-   * Nonce-named markers, so one read being refused cannot release another's fence.
-   */
+  /** @returns A fenced owner-only observation check. */
   prepareWithheld(): ObservationCheck {
     const { kv } = this.#options;
     // Enumerated before the marker goes down: a throw here must strand nothing.
@@ -329,13 +266,16 @@ export class ObserverTracker<V> {
     };
   }
 
-  /** True while any withheld read awaits the overseer, a crashed activation's included. */
+  /** @returns Whether any owner-only read remains unsettled. */
   #withholdInFlight(): boolean {
     for (const _ of this.#options.kv.list({ prefix: OBSERVER_WITHHOLD_PREFIX })) return true;
     return false;
   }
 
-  /** Idempotently stop tracking an observer, cancelling any admission still in flight for it. */
+  /**
+   * Removes an observer and cancels its in-flight admission.
+   * @param id Observer ID to remove.
+   */
   removeObserver(id: string): void {
     const { kv } = this.#options;
     // The nonce deletion is the cancellation, and it reaches an admission parked anywhere.
@@ -344,10 +284,7 @@ export class ObserverTracker<V> {
     kv.delete(`${OBSERVER_PREFIX}${id}`);
   }
 
-  /**
-   * Delete attempts past their lifetime. The overseer mints a fresh id per admission and never
-   * retries one, so an attempt a crash stranded holds its `maxObservers` slot until swept.
-   */
+  /** Removes observer-admission attempts that exceeded their lifetime. */
   #sweepStaleAttempts(): void {
     const { kv } = this.#options;
     const now = Date.now();
@@ -362,38 +299,27 @@ export class ObserverTracker<V> {
     }
   }
 
-  /** Refuse an admission whose attempt has been superseded by a removal or a later attempt. */
+  /**
+   * Verifies that an admission attempt still owns its nonce.
+   * @param id Observer ID.
+   * @param nonceKey Storage key for the attempt nonce.
+   * @param nonce Expected nonce.
+   */
   #requireCurrentAttempt(id: string, nonceKey: string, nonce: string): void {
     if (this.#options.kv.get<string>(nonceKey) !== nonce) {
       throw new Error(`Observer ${id} was removed while being admitted.`);
     }
   }
 
-  /**
-   * Every observer this binding must answer for, for a read that must be withheld from all of them
-   * at once — an empty result set discloses as much as a populated one, and no set id describes it.
-   * Consumed by `ObservationGate`; a facet reaches it through the `withholdFromObservers` scope.
-   *
-   * Candidates mid-admission included, so a read cannot disclose to one that landed while it was
-   * awaiting the overseer.
-   */
+  /** @returns Admitted observers and candidates still being verified. */
   observerIds(): string[] {
     return [...this.#observers()].map(([id]) => id);
   }
 
   /**
-   * Mark newly-revealed sets pending (before any await, so a concurrent addObserver sees them) and
-   * return the observers who cannot see this observation's sets. Sets are promoted to "observed"
-   * only via commit(), after the overseer authorizes the observation; a refusal leaves them
-   * pending, to be re-verified and promoted by a later read that succeeds.
-   *
-   * Every set in the read is re-verified, not just the newly revealed ones: a verdict recorded at
-   * first disclosure must not outlive a provider-side ACL revocation. It stays one oracle call per
-   * admitted observer, so a binding with no observers still makes none.
-   *
-   * Throws when recording would take the binding past `maxTrackedSets`: revealing the set anyway
-   * would disclose data no observer is ever verified against, and silently not recording it would
-   * do the same. The check precedes the writes, so a refusal leaves nothing to release.
+   * Prepares a set-scoped observation.
+   * @param setIds Provider set IDs disclosed by the read.
+   * @returns A check naming observers that lack access.
    */
   async prepareObservation(setIds: readonly string[]): Promise<ObservationCheck> {
     const { kv, hasSetAccess } = this.#options;
@@ -455,11 +381,20 @@ export class ObserverTracker<V> {
     };
   }
 
-  /** The brand is the precondition: a raw set id will not type-check here. */
+  /**
+   * Builds an observed-set storage key.
+   * @param setId Canonical set ID.
+   * @returns Storage key for the set.
+   */
   #setKey(setId: CanonicalSetId): string {
     return `${this.#setPrefix}${setId}`;
   }
 
+  /**
+   * Reads an observed set's state.
+   * @param setId Canonical set ID.
+   * @returns Current state, including normalized legacy values.
+   */
   #state(setId: CanonicalSetId): SetState | undefined {
     // `true` is the legacy encoding of "observed" some gatekeepers already have in storage. The kit
     // never writes it, and normalizing it here keeps the two spellings out of every other line.
@@ -467,17 +402,14 @@ export class ObserverTracker<V> {
     return stored === true ? "observed" : stored;
   }
 
-  /** Canonical by construction: every key under this prefix was written through `#setKey`. */
+  /** @returns Every canonical set ID retained by this tracker. */
   #trackedSets(): CanonicalSetId[] {
     return [...this.#options.kv.list<unknown>({ prefix: this.#setPrefix })].map(([key]) =>
       key.slice(this.#setPrefix.length) as CanonicalSetId,
     );
   }
 
-  /**
-   * Admitted observers, then the candidates still verifying. Admitted first, so a re-admission of a
-   * live observer is answered for once, by the verifier already stored for it.
-   */
+  /** @returns Admitted observers followed by unique in-flight candidates. */
   *#observers(): IterableIterator<[string, V]> {
     const { kv } = this.#options;
     const seen = new Set<string>();

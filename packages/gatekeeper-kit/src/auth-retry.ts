@@ -1,29 +1,24 @@
-// The single retry three gatekeepers hand-roll around a rejected credential (google
-// `auth-retry.ts:100-141`, notion `notion-api.ts:1022-1052`, confluence
-// `confluence-api.ts:527-550`). `CredentialSource` has only two outcomes -- pass through, or report
-// the grant dead -- so a provider whose rejection can mean a stale derived bearer needs this in
-// front of it.
-
 /** How `withAuthRetry` obtains tokens and classifies failures. */
 export type AuthRetryOptions<Token> = {
   /**
-   * Returns a usable token. `forceRefresh` demands a provider round trip; `staleToken` is the
-   * token the provider just rejected, so a shared cache can skip a redundant mint when another
-   * caller already advanced it.
+   * Gets a token, optionally replacing a stale one.
+   * @param options Refresh policy and optional stale token.
+   * @returns A usable token.
    */
   getToken(options: { forceRefresh: boolean; staleToken?: Token }): Promise<Token>;
-  /** Classifies a caught error as the provider rejecting the credential (not transport/5xx). */
+  /**
+   * Classifies provider credential rejection.
+   * @param error Caught provider error.
+   * @returns Whether credentials caused the failure.
+   */
   isAuthError(error: unknown): boolean;
 };
 
 /**
- * Retries once when `isAuthError` means a stale derived bearer rather than a dead grant -- the
- * classifier is the provider's, so a non-401 envelope counts. `run` is executed at most twice and
- * must therefore be replayable; build the request inside it for each attempt.
- *
- * Reporting a twice-rejected credential is the caller's, and belongs outside this module, which
- * holds no credential identity to fence a notification on: wrap the call in `CredentialSource.run`
- * (`./credentials`), whose catch reports against the identity it captured before the attempt.
+ * Retries once after provider-confirmed credential rejection.
+ * @param options Token acquisition and error policy.
+ * @param run Replayable provider operation.
+ * @returns The first successful result.
  */
 export async function withAuthRetry<Token, T>(
   options: AuthRetryOptions<Token>,

@@ -1,8 +1,10 @@
-/**
- * An HTTP error carrying its response status, so verifiers can classify failures numerically
- * instead of parsing message text.
- */
+/** HTTP error with a numeric response status. */
 export class HttpError extends Error {
+  /**
+   * Creates an HTTP error.
+   * @param status Numeric HTTP status.
+   * @param message Error message.
+   */
   constructor(readonly status: number, message: string) {
     super(message);
     this.name = "HttpError";
@@ -10,9 +12,9 @@ export class HttpError extends Error {
 }
 
 /**
- * True only when the error carries a numeric `status` of 401/403/404 (observer lacks access).
- * Classification is numeric and never parses message text. Anything without a numeric 401/403/404
- * status MUST be rethrown by the caller, never treated as "no access".
+ * Classifies access failures.
+ * @param error Caught value with an optional status.
+ * @returns Whether the status is 401, 403, or 404.
  */
 export function isNoAccessError(error: unknown): boolean {
   if (typeof error !== "object" || error === null || !("status" in error)) return false;
@@ -20,11 +22,10 @@ export function isNoAccessError(error: unknown): boolean {
 }
 
 /**
- * Runs an ACL probe, mapping no-access statuses to `false` and rethrowing anything operational.
- *
- * `check` should throw to report failure. The one resolved value that still counts as an answer is
- * a non-ok `Response` — `fetch` resolves for HTTP errors, so a bare `probeAccess(() => fetch(url))`
- * would otherwise report access for a 403. It is classified by status like a thrown error.
+ * Runs an ACL probe. Resolved non-ok `Response` values are classified because `fetch` does not throw
+ * for HTTP errors; every other failure is rethrown.
+ * @param check Access check to run.
+ * @returns `false` for access failures and `true` for success.
  */
 export async function probeAccess(check: () => Promise<unknown>): Promise<boolean> {
   let result: unknown;

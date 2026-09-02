@@ -22,7 +22,7 @@ function makeKv(): ObserverKv {
   return fakeKv();
 }
 
-/** A verifier whose ACL is a fixed allow-list, recording each batched oracle call. */
+// Fixed ACL verifier that records each batched check.
 type V = { allowed: string[]; batches: (readonly string[])[] };
 
 function verifier(...allowed: string[]): V {
@@ -46,7 +46,7 @@ async function observe(instance: ObserverTracker<V>, sets: string[]) {
   return check.excludeObservers;
 }
 
-/** The overseer's side of the gate: records the descriptions it was asked to authorize. */
+// Approval queue fake that records authorization requests.
 function fakeQueue(authorizeObservation = vi.fn(async () => {})) {
   return { authorizeObservation } as unknown as RpcStub<ApprovalQueue>;
 }

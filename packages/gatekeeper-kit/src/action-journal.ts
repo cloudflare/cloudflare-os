@@ -1,6 +1,3 @@
-// Durable record of the actions a resource has queued: the two-tier keyspace `./actions` resolves
-// against, and the capacity rule that keeps its pending scan bounded.
-
 import type { KvScannable } from "./kv";
 import { requirePositiveInt } from "./positive-int";
 
@@ -15,85 +12,57 @@ export type JournalKeys = {
 };
 
 /**
- * Where a record sits. `"applied"` exists only in the retained tier; `"claimed"` means a dispatch
- * is in flight against the provider, and `"failed"` that one ended terminally.
+ * Journal lifecycle state. Applied records live only in retained storage; claimed records have a
+ * provider dispatch in flight.
  */
 type JournalState = "staged" | "pending" | "claimed" | "failed" | "applied";
 
-/** A stored action and where it sits. Only a `"failed"` record carries an `error`, and it always
- *  does: that reason is why the record outlives the dispatch. */
+/** A stored action. Failed records always include a reason. */
 export type JournalRecord<A> =
   | { state: Exclude<JournalState, "failed">; action: A; error?: never }
   | { state: "failed"; action: A; error: string };
 
-/** One listed entry: the id the overseer knows and the action stored against it. Structurally the
- *  `SimulationRecord` that `createSimulationView` takes. */
+/** An action ID and payload used by simulation. */
 export type JournalEntry<A> = { readonly id: number; readonly action: A };
 
-/** The states a read simulates: an in-flight dispatch is still part of the pending world, while
- *  `staged` is not provably the overseer's (a callback naming one promotes it) and `failed` must
- *  stop projecting. */
+// Reads project pending and claimed actions; staged is not yet proven submitted, and failed is terminal.
 const PROJECTED: readonly JournalState[] = ["pending", "claimed"];
 
-/** The states a decision may still retire. Deliberately not `PROJECTED`: see `listUndecided`. */
 const UNDECIDED: readonly JournalState[] = ["pending"];
 
-/**
- * Marks a record this journal wrote. What this resource stored before adopting the journal is
- * `{ action, state }` too, with its own discriminants (github's actions key on `type`, not `kind`),
- * so shape alone cannot tell them apart — an unmarked record goes to `upgradeRecord` instead of
- * being trusted as current.
- */
+// The version distinguishes kit records from legacy rows that may have the same shape.
+// Unmarked rows must go through `upgradeRecord`.
 const JOURNAL_VERSION = 1;
 
 type StoredJournalRecord<A> = JournalRecord<A> & { v: typeof JOURNAL_VERSION };
 
-/** Unresolved actions one resource may hold. A kit default, not any port's historical limit. */
 const DEFAULT_MAX_PENDING = 50;
 
-/**
- * Bound on the records sitting beside the unresolved ones -- `staged`, plus `failed` awaiting the
- * reject that clears it -- as a multiple of `maxPending`. Separate, because counting a `failed`
- * record against the decision cap would let a run of provider failures stop the agent staging
- * anything until the user cleared them by hand. The ratio follows mcp-shared's 50 pending against
- * 100 retained (`action-store.ts:9-12`).
- */
+// Bound staged and failed records separately; terminal failures must not consume decision capacity.
 const PRUNABLE_RECORD_FACTOR = 2;
 
-/** What a `failed` record says when storage lost the reason it should carry. */
 const FAILURE_REASON_LOST = "This action failed, and the reason was not recorded.";
 
-/** Failure reasons are bounded: `markFailed` rewrites a record that already holds its action, just
- *  after a provider effect, and a value over the storage limit would throw there -- leaving the
- *  record pending and re-running a handler classified non-replayable. */
+// Bound the reason so a post-provider storage write cannot exceed DO limits.
 const MAX_FAILURE_REASON = 1024;
 
 export type ActionJournalOptions<A> = JournalKeys & {
   /**
-   * Reads a record written before this gatekeeper adopted the journal; adopted records are taken as
-   * `pending`. Return `undefined` to leave one unadopted, and do so for anything already resolved:
-   * a store that also kept applied rows would re-offer them as decidable, and approving one re-runs
-   * its provider call.
+   * Converts a legacy unresolved record. Resolved records must return `undefined`, or their provider
+   * effects could be replayed.
+   * @param raw Stored legacy value.
+   * @returns The converted action, or `undefined` when unsupported.
    */
   upgradeRecord?(raw: unknown): A | undefined;
   /**
-   * How many unresolved actions this resource may hold, enforced by `allocate`. Defaults to 50.
-   * Only a record awaiting a user decision counts; `staged` and `failed` are bounded by
-   * `PRUNABLE_RECORD_FACTOR` times this number instead.
-   *
-   * Accepted edge: past that bound the oldest `failed` record loses its reason, so a later approve
-   * reports `Unknown pending action` and a later reject clears it silently.
+   * Maximum unresolved actions. Staged and failed records have a separate bounded allowance.
    */
   maxPending?: number;
 };
 
 /**
- * Durable record of the actions this resource has queued.
- *
- * Two tiers: staged and pending records live under `recordPrefix`, and a retained applied record
- * moves to a sibling prefix, so `listPending()`'s scan stays bounded by genuinely pending records
- * however many applied ones accumulate (the shape github already uses). Lookups check both.
- * Retiring the retained tier is consumer policy -- retention is unbounded and caps are per-vendor.
+ * Durable record of a resource's queued actions. Pending and retained records use separate prefixes
+ * so pending scans stay bounded. Retention policy belongs to the consumer.
  */
 export class ActionJournal<A> {
   readonly #kv: ActionJournalKv;
@@ -104,6 +73,11 @@ export class ActionJournal<A> {
   readonly #upgradeRecord?: (raw: unknown) => A | undefined;
   readonly #maxPending: number;
 
+  /**
+   * Creates an action journal.
+   * @param kv Durable Object storage for journal records.
+   * @param options Storage keys, migration, and capacity settings.
+   */
   constructor(kv: ActionJournalKv, options: ActionJournalOptions<A> = {}) {
     this.#kv = kv;
     this.#nextIdKey = options.nextIdKey ?? "pending:nextActionId";
@@ -128,7 +102,11 @@ export class ActionJournal<A> {
     }
   }
 
-  /** Reserve the next id and stage the action against it. */
+  /**
+   * Reserves and stages the next action.
+   * @param action Payload to store.
+   * @returns Allocated action ID.
+   */
   allocate(action: A): number {
     this.#requireCapacity();
     const id = this.#kv.get<number>(this.#nextIdKey) ?? 1;
@@ -146,28 +124,33 @@ export class ActionJournal<A> {
   }
 
   /**
-   * The overseer has the action; it is now awaiting a decision. Only a record still staged in the
-   * pending tier moves: an auto-approval can apply and retain the record while `submitAction` is
-   * still in flight, and stamping "pending" over that would contradict a completed apply.
+   * Marks a staged action as submitted, leaving later states unchanged.
+   * @param id Action ID to update.
    */
   markSubmitted(id: number): void {
     this.#transition(id, ["staged"], "pending");
   }
 
-  /** A dispatch is in flight against the provider. Durable, so a later activation can tell an
-   *  interrupted apply from one that never started. */
+  /**
+   * Marks a provider dispatch in flight.
+   * @param id Action ID to claim.
+   */
   markClaimed(id: number): void {
     this.#transition(id, ["staged", "pending"], "claimed");
   }
 
-  /** The claimed dispatch failed in a way the user can retry, so the record awaits a decision again. */
+  /**
+   * Restores a retryable claim to pending.
+   * @param id Action ID to restore.
+   */
   restorePending(id: number): void {
     this.#transition(id, ["claimed"], "pending");
   }
 
   /**
-   * The action failed terminally: it stops projecting into simulation, and `error` becomes the
-   * answer every later resolution attempt sees. Only rejecting it clears the record.
+   * Records a terminal failure and removes the action from simulation.
+   * @param id Action ID that failed.
+   * @param error Display-safe failure reason.
    */
   markFailed(id: number, error: string): void {
     const record = this.#transitionable(id, ["staged", "pending", "claimed"]);
@@ -179,31 +162,27 @@ export class ActionJournal<A> {
     }
   }
 
-  /** Submission failed, so the action was never queued -- unless it was already resolved. */
+  /**
+   * Removes a submission that never reached the overseer.
+   * @param id Action ID to roll back.
+   */
   rollbackSubmission(id: number): void {
     if (this.#isStaged(id)) this.remove(id);
   }
 
   /**
-   * The record behind an id, in any state, preferring the retained tier. A lookup must never filter
-   * by state: the output gate commits the staged record before the `submitAction` RPC can leave, so
-   * a record still marked "staged" may already be pending for the overseer. It must prefer the
-   * retained copy, because an interrupted `retain` leaves the id in both tiers and the applied
-   * record is the true one -- it carries the apply-time artifacts a revert hook reads back.
+   * Finds a record, preferring a retained copy after an interrupted move.
+   * @param id Action ID to find.
+   * @returns The stored record, or `undefined` when absent.
    */
   get(id: number): JournalRecord<A> | undefined {
     return this.#read(this.#retainedKey(id)) ?? this.#read(this.#pendingKey(id));
   }
 
   /**
-   * Move the record to the retained tier as "applied", optionally replacing the action with one
-   * carrying apply-time artifacts. This is the whole post-apply write: one writer, one record.
-   *
-   * Retained record first, then the delete: a throw does not roll back the implicit transaction
-   * (see `credentials.ts`), and this runs just after a provider effect. Losing the record would
-   * leave nothing to revert from; a failed delete leaves the id in both tiers, which `get` and
-   * `listPending` both resolve in the retained tier's favour, so it still reads as applied
-   * everywhere.
+   * Moves a record to the retained tier as applied.
+   * @param id Action ID to retain.
+   * @param action Optional replacement carrying apply-time artifacts.
    */
   retain(id: number, action?: A): void {
     const record = this.get(id);
@@ -218,8 +197,8 @@ export class ActionJournal<A> {
   }
 
   /**
-   * Forget the id in both tiers. The kit calls this for a rejection and a rolled-back submission;
-   * a consumer's own use is retiring its retained tier, which is consumer policy (above).
+   * Removes an action from both storage tiers.
+   * @param id Action ID to remove.
    */
   remove(id: number): void {
     this.#kv.delete(this.#pendingKey(id));
@@ -227,8 +206,9 @@ export class ActionJournal<A> {
   }
 
   /**
-   * Forget an applied id, remembering that it was applied. A replayed resolution then settles
-   * instead of erroring or mislabeling it, and the memory is bounded to the prunable allowance.
+   * Removes an applied action, remembering the id so a replayed resolution settles instead of
+   * erroring or mislabeling it. Memory is bounded to the prunable allowance.
+   * @param id Action ID to retire.
    */
   retire(id: number): void {
     const ids = this.#kv.get<number[]>(this.#appliedIdsKey) ?? [];
@@ -239,35 +219,39 @@ export class ActionJournal<A> {
     this.#kv.put(this.#appliedIdsKey, ids.slice(-this.#maxPending * PRUNABLE_RECORD_FACTOR));
   }
 
-  /** True when a removed id is still within the retired-action memory. */
+  /**
+   * Checks whether a removed action is remembered as applied.
+   * @param id Action ID to check.
+   * @returns Whether the id is within the retired-action memory.
+   */
   wasApplied(id: number): boolean {
     return (this.#kv.get<number[]>(this.#appliedIdsKey) ?? []).includes(id);
   }
 
   /**
-   * True when this id has been applied and retained. Reads through the same coercion as every other
-   * lookup: a value this journal would refuse to return from `get()` must not be reported as a
-   * retained record either, or the two answers disagree about whether the action exists.
+   * Checks whether an action has a valid retained record.
+   * @param id Action ID to check.
+   * @returns Whether a retained record exists.
    */
   isRetained(id: number): boolean {
     return this.#read(this.#retainedKey(id)) !== undefined;
   }
 
-  /** Actions a read simulates, ascending — the input `createSimulationView` expects. */
+  /** @returns Actions visible to simulation, ordered by ID. */
   listPending(): JournalEntry<A>[] {
     return this.#scan(PROJECTED);
   }
 
-  /**
-   * Actions the overseer may still decide on, ascending. A claimed dispatch is excluded because its
-   * outcome is unknown: nothing may retire it, and nothing may treat the effect it would have had
-   * as certain not to have happened.
-   */
+  /** @returns Actions still eligible for a decision, ordered by ID. */
   listUndecided(): JournalEntry<A>[] {
     return this.#scan(UNDECIDED);
   }
 
-  /** One bounded pass over the pending tier, keeping the records sitting in `states`. */
+  /**
+   * Scans the pending tier for selected states.
+   * @param states States to include.
+   * @returns Matching actions ordered by ID.
+   */
   #scan(states: readonly JournalState[]): JournalEntry<A>[] {
     const found: JournalEntry<A>[] = [];
     for (const [key, raw] of this.#kv.list<unknown>({ prefix: this.#prefix })) {
@@ -282,10 +266,7 @@ export class ActionJournal<A> {
     return found.toSorted((a, b) => a.id - b.id);
   }
 
-  /**
-   * Enforce `maxPending` before an allocation, and bound the records sitting beside the unresolved
-   * ones. One scan does both, and the scan is bounded by what it enforces.
-   */
+  /** Enforces capacity and prunes excess staged or failed records. */
   #requireCapacity(): void {
     let unresolved = 0;
     const staged: number[] = [];
@@ -318,50 +299,88 @@ export class ActionJournal<A> {
     for (const id of prunable.slice(0, Math.max(excess, 0))) this.remove(id);
   }
 
-  /** Where a staged, pending, claimed or failed record lives. */
+  /**
+   * Builds a pending-tier key.
+   * @param id Action ID.
+   * @returns Storage key for the action.
+   */
   #pendingKey(id: number): string {
     return `${this.#prefix}${id}`;
   }
 
-  /** Where an applied record lives, once `retain` has moved it out of the pending scan. */
+  /**
+   * Builds a retained-tier key.
+   * @param id Action ID.
+   * @returns Storage key for the action.
+   */
   #retainedKey(id: number): string {
     return `${this.#retainedPrefix}${id}`;
   }
 
-  /** The id a scanned record key names, or undefined when the key is not one this journal wrote.
-   *  Leading zeros and exponents are rejected rather than coerced: `Number("01")` would alias a
-   *  live record that `remove(id)` then writes a different key for. */
+  /**
+   * Parses a canonical action ID from a storage key.
+   * @param key Scanned storage key.
+   * @returns The action ID, or `undefined` for an unrelated key.
+   */
   #idFrom(key: string): number | undefined {
     const suffix = key.slice(this.#prefix.length);
     return /^[1-9]\d*$/.test(suffix) ? Number(suffix) : undefined;
   }
 
-  /** The record at `id` when it is in one of `from`, or undefined when no transition may happen.
-   *  A record in any other state is left alone, which is what keeps a resolved or terminally
-   *  failed one from being revived. */
+  /**
+   * Finds a record eligible for a transition.
+   * @param id Action ID to inspect.
+   * @param from Allowed current states.
+   * @returns The record, or `undefined` when the transition is invalid.
+   */
   #transitionable(id: number, from: readonly JournalState[]): JournalRecord<A> | undefined {
     const record = this.#read(this.#pendingKey(id));
     return record !== undefined && from.includes(record.state) ? record : undefined;
   }
 
-  /** Rewrite a pending-tier record into a state that carries no failure reason. */
+  /**
+   * Applies a state transition when allowed.
+   * @param id Action ID to update.
+   * @param from Allowed current states.
+   * @param next New state.
+   */
   #transition(id: number, from: readonly JournalState[], next: Exclude<JournalState, "failed">) {
     const record = this.#transitionable(id, from);
     if (record) this.#write(this.#pendingKey(id), { state: next, action: record.action });
   }
 
+  /**
+   * Checks whether an action is still staged.
+   * @param id Action ID to inspect.
+   * @returns Whether the action is staged.
+   */
   #isStaged(id: number): boolean {
     return this.#read(this.#pendingKey(id))?.state === "staged";
   }
 
+  /**
+   * Writes a versioned record.
+   * @param key Storage key.
+   * @param record Record to store.
+   */
   #write(key: string, record: JournalRecord<A>): void {
     this.#kv.put<StoredJournalRecord<A>>(key, { ...record, v: JOURNAL_VERSION });
   }
 
+  /**
+   * Reads and validates a journal record.
+   * @param key Storage key.
+   * @returns The record, or `undefined` when absent or invalid.
+   */
   #read(key: string): JournalRecord<A> | undefined {
     return this.#coerce(this.#kv.get<unknown>(key));
   }
 
+  /**
+   * Converts current or legacy storage into a journal record.
+   * @param raw Stored value.
+   * @returns A journal record, or `undefined` when unsupported.
+   */
   #coerce(raw: unknown): JournalRecord<A> | undefined {
     if (typeof raw !== "object" || raw === null) return undefined;
     if ("v" in raw && raw.v === JOURNAL_VERSION) {

@@ -6,26 +6,24 @@ export type SimulationRecord<Action> = {
   readonly action: Action;
 };
 
-/** An immutable, chronologically ordered view of simulation records. Generic over the record, so a
- *  store whose entries carry more than `{ id, action }` keeps those fields through the view. */
+/** Immutable, ordered simulation records, optionally indexed by target. */
 export type SimulationView<R extends SimulationRecord<unknown>, Target> = {
-  /** Every visible record in action ID order. */
+  /** @returns Every visible record in action ID order. */
   readonly all: () => readonly R[];
-  /** Records affecting `target` in action ID order. */
+  /**
+   * Finds records affecting a target.
+   * @param target Target to find.
+   * @returns Matching records in action ID order.
+   */
   readonly forTarget: (target: Target) => readonly R[];
 };
 
 /**
- * Sort a journal snapshot once and index each action under every target it affects. The caller owns
- * target extraction and canonicalization, including provisional-to-provider ID resolution.
- *
- * `targets` returns an array, not an `Iterable`: where `Target` is `string`, `Iterable<Target>`
- * would accept a bare target and index it one character at a time.
- *
- * The returned arrays are frozen, but the records in them are the caller's: this indexes them, it
- * does not copy them. Feed it a fresh snapshot (`journal.listPending()` mints one per call) and do
- * not mutate records afterwards, or the order and target index stop describing them. Nested action
- * values stay consumer-owned throughout.
+ * Sorts a journal snapshot and indexes its targets. Returned arrays are frozen, but records remain
+ * caller-owned and must not be mutated afterwards.
+ * @param records Journal snapshot.
+ * @param targets Extracts targets from an action.
+ * @returns A frozen, indexed simulation view.
  */
 export function createSimulationView<R extends SimulationRecord<unknown>, Target>(
   records: readonly R[],
@@ -59,8 +57,7 @@ export type SimulationStep<State> =
   | { kind: "known-no-effect" }
   | { kind: "unsupported"; reason: string };
 
-/** Incomplete replay carries the honest fold up to the first unsupported effect, but names it
- * `partial` so callers must discriminate. */
+/** Partial replay result, discriminated so callers must handle unsupported effects. */
 export type SimulationResult<State, R> =
   | { kind: "complete"; value: State; appliedCount: number }
   | {
@@ -72,11 +69,12 @@ export type SimulationResult<State, R> =
     };
 
 /**
- * Replay relevant actions in order. A known non-effect is skipped; an unsupported effect stops
- * replay so later actions are never projected onto a state already known to be wrong.
- *
- * `apply` must return the next value rather than mutate the one it was handed: `appliedCount` and
- * the `incomplete` result describe how far the fold got, and an in-place reducer makes both lie.
+ * Replays actions until an effect is unsupported. `apply` must return the next value rather than
+ * mutate its input, so partial results remain honest.
+ * @param base Initial simulated value.
+ * @param records Ordered action records.
+ * @param apply Projects one action onto the current value.
+ * @returns Complete or partial replay state.
  */
 export function replaySimulation<State, R>(
   base: State,
@@ -113,9 +111,22 @@ export class ProvisionalIds<Id extends string> {
   readonly #namespace: string;
   readonly #isProvisional?: (id: Id) => boolean;
 
+  /**
+   * Creates a provisional-ID store.
+   * @param kv Durable Object storage for sequences and bindings.
+   * @param options Namespace and optional provisional-ID classifier.
+   */
   constructor(
     kv: SimulationKv,
-    options: { namespace: string; isProvisional?(id: Id): boolean },
+    options: {
+      namespace: string;
+      /**
+       * Classifies provisional IDs.
+       * @param id ID to inspect.
+       * @returns Whether the ID is provisional.
+       */
+      isProvisional?(id: Id): boolean;
+    },
   ) {
     this.#kv = kv;
     this.#namespace = options.namespace;
@@ -123,16 +134,11 @@ export class ProvisionalIds<Id extends string> {
   }
 
   /**
-   * Allocate the next monotonic provisional ID using the provider's formatter.
-   *
-   * When `isProvisional` is supplied it is enforced here, at the one point where a provisional ID
-   * enters the system: a formatter whose output the classifier does not recognise mints IDs
-   * indistinguishable from real provider ones, and `resolve()` would then hand an unbound
-   * provisional ID straight to the provider as if it were ready. Cheaper to reject the formatter
-   * than to diagnose that.
-   *
-   * `kind` records the logical entity type so later references can reject cross-kind mistakes
-   * before they reach the provider.
+   * Allocates a monotonic provisional ID. When a classifier is supplied, the formatted ID must satisfy
+   * it before the ID is stored.
+   * @param format Converts the sequence into a provider-shaped ID.
+   * @param options Optional logical entity kind.
+   * @returns The allocated provisional ID.
    */
   allocate(format: (sequence: number) => Id, options?: { kind?: string }): Id {
     const key = `${this.#namespace}seq:provisional`;
@@ -150,18 +156,9 @@ export class ProvisionalIds<Id extends string> {
   }
 
   /**
-   * Persist the provider ID assigned when a provisional creation is applied.
-   *
-   * The pair is checked in both directions where a classifier exists: binding a real ID as the key
-   * would shadow a provider ID for every later `resolve()`, and binding a provisional ID as the
-   * value would resolve one provisional to another and defeat `requireResolved`.
-   *
-   * Rebinding to a different provider ID throws, because apply is at-least-once: a create whose
-   * journal write was lost is re-applied, and the provider answers with a *second* entity. Silently
-   * taking the newer one would retarget every queued action that resolves this provisional and
-   * orphan the entity the earlier apply created -- a duplicate the user can see and delete beats a
-   * mutation aimed at the wrong resource. Rebinding the same ID is that retry's ordinary path and
-   * stays a no-op.
+   * Binds a provisional ID to its provider ID.
+   * @param provisional Provisional ID to bind.
+   * @param real Provider-assigned ID.
    */
   bind(provisional: Id, real: Id): void {
     if (this.#isProvisional !== undefined) {
@@ -180,29 +177,39 @@ export class ProvisionalIds<Id extends string> {
     this.#kv.put(`${this.#namespace}prov:${provisional}`, real);
   }
 
-  /** Resolve a bound provisional ID; return any unbound or provider ID unchanged. */
+  /**
+   * Resolves a bound provisional ID.
+   * @param id Provisional or provider ID.
+   * @returns The bound provider ID, or the input when unbound.
+   */
   resolve(id: Id): Id {
     if (this.#isProvisional?.(id) === false) return id;
     return this.#bound(id) ?? id;
   }
 
-  /** Whether this ID has a persisted provisional-to-provider binding. */
+  /**
+   * Checks whether an ID has a durable binding.
+   * @param id ID to check.
+   * @returns Whether a binding exists.
+   */
   isResolved(id: Id): boolean {
     return this.#bound(id) !== undefined;
   }
 
-  /** Reads the durable kind so callers can stop cross-kind references before provider I/O. */
+  /**
+   * Reads an ID's logical entity kind.
+   * @param id ID to inspect.
+   * @returns The stored kind, or `undefined`.
+   */
   kindOf(id: Id): string | undefined {
     return this.#kv.get<string>(this.#kindKey(id));
   }
 
   /**
-   * The provider ID for `id`, or a throw when it names a creation the provider has not applied yet.
-   * `resolve` cannot distinguish an unbound provisional from a real ID, so anything about to be
-   * sent to the provider goes through here — which needs `isProvisional` to tell them apart.
-   *
-   * `expectedKind` rejects a tagged ID of the wrong logical type before resolution, keeping a
-   * mistyped reference from becoming an inexplicable provider error. Untagged IDs skip this guard.
+   * Resolves an ID for provider use.
+   * @param id Provisional or provider ID.
+   * @param options Optional expected logical entity kind.
+   * @returns A provider ID.
    */
   requireResolved(id: Id, options?: { expectedKind?: string }): Id {
     const isProvisional = this.#isProvisional;
@@ -230,11 +237,20 @@ export class ProvisionalIds<Id extends string> {
     return bound;
   }
 
-  /** The provider ID `id` was bound to, or undefined when nothing has been. */
+  /**
+   * Reads a provisional ID's binding.
+   * @param id Provisional ID.
+   * @returns The provider ID, or `undefined`.
+   */
   #bound(id: Id): Id | undefined {
     return this.#kv.get<Id>(`${this.#namespace}prov:${id}`);
   }
 
+  /**
+   * Builds a logical-kind storage key.
+   * @param id ID whose kind is stored.
+   * @returns Storage key for the kind.
+   */
   #kindKey(id: Id): string {
     return `${this.#namespace}kind:${id}`;
   }

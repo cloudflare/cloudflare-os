@@ -9,12 +9,18 @@ export class ArrayCursor<T> extends RpcTarget implements Cursor<T> {
   readonly #pageSize: number;
   #index = 0;
 
+  /**
+   * Creates an in-memory cursor.
+   * @param items Items to page.
+   * @param pageSize Maximum items returned by `next()`.
+   */
   constructor(items: readonly T[], pageSize: number) {
     super();
     this.#items = items;
     this.#pageSize = requirePositiveInt("pageSize", pageSize);
   }
 
+  /** @returns The next page, or `null` after exhaustion. */
   async next(): Promise<T[] | null> {
     if (this.#index >= this.#items.length) return null;
     const page = this.#items.slice(this.#index, this.#index + this.#pageSize);
@@ -30,34 +36,26 @@ type CursorShape = {
   remotePageSize?: number;
 };
 
-/**
- * A page the caller sees nothing in is not the end: the provider may return an empty one, or
- * `retain` may empty a full one. Each `next()` fetches at most this many, since they are sequential
- * round trips and the caller is waiting; a later call spends another window. A page still short of
- * `pageSize` is legal, so a port needing more than this per call should raise `remotePageSize`
- * rather than expect one call to fill.
- */
+// Bound sequential requests per `next()`; an empty visibility window returns `[]`, not exhaustion.
 const MAX_PROVIDER_PAGES_PER_CALL = 10;
 
-/** Provider page size when a cursor's options name none. */
 const DEFAULT_REMOTE_PAGE_SIZE = 100;
 
-/**
- * Symbol-named so it is not an RPC method: capnweb exposes every string-named method on an
- * `RpcTarget`'s prototype chain, `protected` is erased, and a direct call would skip the queue.
- */
+// Symbol naming keeps this implementation method out of the RPC surface.
 const loadMore = Symbol("loadMore");
 
-/** The buffered walk both provider cursors share. */
+// Shared buffered implementation for provider-backed cursors.
 abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T> {
   readonly #pageSize: number;
   readonly #queue = new SerialTaskQueue();
-  /** How many items each provider round trip asks for. */
   protected readonly remotePageSize: number;
   protected readonly buffer: T[] = [];
-  /** Set from the provider's own page, never from what survived `retain`. */
   protected remoteExhausted = false;
 
+  /**
+   * Creates a buffered provider cursor.
+   * @param options Local and provider page sizes.
+   */
   constructor(options: CursorShape) {
     super();
     this.#pageSize = requirePositiveInt("pageSize", options.pageSize);
@@ -65,14 +63,15 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T> {
       requirePositiveInt("remotePageSize", options.remotePageSize ?? DEFAULT_REMOTE_PAGE_SIZE);
   }
 
-  /** Buffers one provider page's visible items and sets `remoteExhausted`. */
+  /** Loads the next provider page into the buffer. */
   protected abstract [loadMore](): Promise<void>;
 
-  /** The next page, or null at the end. Concurrent callers are serialized rather than interleaved. */
+  /** @returns The next page, or `null` after exhaustion. Concurrent calls are serialized. */
   next(): Promise<T[] | null> {
     return this.#queue.run(() => this.#fill());
   }
 
+  /** @returns One local page, `[]` when the fetch window is spent, or `null` at exhaustion. */
   async #fill(): Promise<T[] | null> {
     let pages = 0;
     while (this.buffer.length < this.#pageSize
@@ -89,34 +88,52 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T> {
 /** Options for a provider that pages by page number. */
 export type PageNumberCursorOptions<T> = CursorShape & {
   /**
-   * One provider page, unfiltered. Its length is the only end-of-list signal a numeric walk has, so
-   * dropping rows here ends the walk on a page that merely held none the caller may see. Narrow the
-   * page in `retain` instead.
+   * Fetches one unfiltered provider page. Filter in `retain`, or a fully hidden page would end the
+   * walk.
+   * @param page One-based page number.
+   * @param perPage Requested provider page size.
+   * @returns Raw provider items. An empty result ends the walk.
    */
   fetchPage(page: number, perPage: number): Promise<readonly T[]>;
-  /** Narrows a page to what the caller may see, after its raw length has decided exhaustion. */
+  /**
+   * Narrows a page after its raw length determines exhaustion.
+   * @param items Raw provider items.
+   * @returns Items visible to the caller.
+   */
   retain?(items: readonly T[]): readonly T[];
 };
 
 /** Options for a provider that pages by numeric offset. */
 export type OffsetCursorOptions<T> = CursorShape & {
-  /** One provider page, unfiltered -- as `PageNumberCursor.fetchPage`. */
+  /**
+   * Fetches one unfiltered provider page. Filter in `retain`, or a fully hidden page would end the
+   * walk.
+   * @param offset Zero-based provider offset.
+   * @param limit Requested provider page size.
+   * @returns Raw provider items. An empty result ends the walk.
+   */
   fetchPage(offset: number, limit: number): Promise<readonly T[]>;
-  /** Narrows a page to what the caller may see, after its raw length has decided exhaustion. */
+  /**
+   * Narrows a page after its raw length determines exhaustion.
+   * @param items Raw provider items.
+   * @returns Items visible to the caller.
+   */
   retain?(items: readonly T[]): readonly T[];
 };
 
-/**
- * The numeric walk the page-number and offset cursors share; they differ only in where the position
- * starts and how a raw page advances it. `advance` is a constructor argument rather than an
- * overridable method for the reason `loadMore` is symbol-named.
- */
+// Shared numeric-position cursor for page-number and offset pagination.
 class PositionCursor<T> extends BufferedCursor<T> {
   readonly #fetchPage: (position: number, perPage: number) => Promise<readonly T[]>;
   readonly #retain?: (items: readonly T[]) => readonly T[];
   readonly #advance: (position: number, rawPage: readonly T[]) => number;
   #position: number;
 
+  /**
+   * Creates a numeric-position cursor.
+   * @param options Provider fetch and filtering policy.
+   * @param start Initial page number or offset.
+   * @param advance Computes the next provider position.
+   */
   constructor(
     options: PageNumberCursorOptions<T> | OffsetCursorOptions<T>,
     start: number,
@@ -129,6 +146,7 @@ class PositionCursor<T> extends BufferedCursor<T> {
     this.#position = start;
   }
 
+  /** Loads one numeric provider page. */
   protected override async [loadMore](): Promise<void> {
     const page = await this.#fetchPage(this.#position, this.remotePageSize);
     // Only an empty page ends the walk. Providers may cap a page below the requested size.
@@ -142,25 +160,28 @@ class PositionCursor<T> extends BufferedCursor<T> {
 }
 
 /**
- * Drives providers that page by an incrementing page number, which stays aligned under a provider
- * cap because the provider clamps `perPage` consistently. Never format one over a numeric offset:
- * `page * perPage` advances by the requested size while a capped page returns fewer, silently
- * skipping the rows between. Offsets are `OffsetCursor`'s.
+ * Pages by incrementing page number. Do not use for numeric offsets: provider page caps can skip
+ * rows when the requested and returned sizes differ.
  */
 export class PageNumberCursor<T> extends PositionCursor<T> {
+  /**
+   * Creates a page-number cursor.
+   * @param options Provider fetch and page-size settings.
+   */
   constructor(options: PageNumberCursorOptions<T>) {
     super(options, 1, page => page + 1);
   }
 }
 
 /**
- * Drives providers that page by numeric offset. The offset advances by the raw rows returned --
- * never by what survived `retain`, since the provider served those rows whatever the caller may
- * see -- so a provider capping a page below `limit` skips nothing. A provider whose short pages do
- * not reflect the rows it consumed -- a server-side-filtered search with its own next signal, like
- * Confluence v1 -- is a `TokenCursor` carrying that signal instead.
+ * Pages by numeric offset, advancing by the raw row count rather than filtered rows. Use
+ * `TokenCursor` when the provider supplies its own continuation signal.
  */
 export class OffsetCursor<T> extends PositionCursor<T> {
+  /**
+   * Creates an offset cursor.
+   * @param options Provider fetch and page-size settings.
+   */
   constructor(options: OffsetCursorOptions<T>) {
     super(options, 0, (offset, page) => offset + page.length);
   }
@@ -176,6 +197,12 @@ export type TokenPage<T> = {
 
 /** Options for a provider that pages by continuation token. */
 export type TokenCursorOptions<T> = CursorShape & {
+  /**
+   * Fetches one provider page.
+   * @param token Continuation token from the previous page.
+   * @param perPage Requested provider page size.
+   * @returns Provider items and the next token.
+   */
   fetchPage(token: string | undefined, perPage: number): Promise<TokenPage<T>>;
 };
 
@@ -184,11 +211,16 @@ export class TokenCursor<T> extends BufferedCursor<T> {
   readonly #fetchPage: (token: string | undefined, perPage: number) => Promise<TokenPage<T>>;
   #token?: string;
 
+  /**
+   * Creates a continuation-token cursor.
+   * @param options Provider fetch and page-size settings.
+   */
   constructor(options: TokenCursorOptions<T>) {
     super(options);
     this.#fetchPage = options.fetchPage;
   }
 
+  /** Loads one continuation-token provider page. */
   protected override async [loadMore](): Promise<void> {
     const asked = this.#token;
     const page = await this.#fetchPage(asked, this.remotePageSize);

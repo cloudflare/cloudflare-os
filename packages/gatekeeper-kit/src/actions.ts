@@ -1,8 +1,3 @@
-// Apply and reject are declarative here; revert is not. Reject's variance lives inside a handler
-// body, which dispatch absorbs; revert's variance lives in record lifecycle, which it cannot -- five
-// gatekeepers have five incompatible revert/retention behaviours today, so revert is a facet seam
-// whose body is ordinary consumer TypeScript.
-
 import { createLogger } from "@gadgets/backend-utils/logger";
 import type { RpcStub } from "cloudflare:workers";
 import type {
@@ -27,18 +22,16 @@ type ActionLogFields =
 
 const logger = createLogger<ActionLogFields>({ component: "gatekeeper.actions" });
 
-/**
- * One submission lane per journal: overlapping submissions each hold a staged record open across
- * `submitAction`, and the capacity prune deletes the oldest staged records first -- so an
- * unserialized concurrent stage could prune a record the overseer was about to accept, leaving an
- * approval whose journal entry is gone. Only a journal rebuilt per call escapes this keying.
- */
+// Serialize submissions per journal so pruning cannot remove an in-flight staged record.
 const submissions = new WeakMap<object, SerialTaskQueue>();
 
 /**
- * Queue an action for approval: stage it, submit it, and mark it pending. A failed submission is
- * rolled back, so a rejected submission leaves nothing behind for simulation to overlay.
- * Concurrent calls are serialized per journal, direct callers included.
+ * Stages and submits an action for approval.
+ * @param journal Durable action journal.
+ * @param queue Approval queue capability.
+ * @param action Action payload to store.
+ * @param description Approver-facing action description.
+ * @returns The allocated action ID.
  */
 export function stageAction<A>(
   journal: ActionJournal<A>,
@@ -66,17 +59,12 @@ export function stageAction<A>(
 }
 
 /**
- * Thrown from an `apply` handler to record a terminal, non-replayable failure. The message is
- * display-safe and becomes the stored answer every later resolution attempt sees, and the record
- * stops projecting into simulation; an ordinary throw leaves the action retryable instead.
- *
- * From a `reject` handler it carries no special meaning: reject handlers do no irreversible
- * provider writes, so they have nothing to declare terminal.
+ * Marks an apply failure as terminal and safe to show. Ordinary apply errors remain retryable; in a
+ * reject handler this class has no special meaning.
  */
 export class ActionApplyError extends Error {}
 
-/** The stored answer for a claim an activation died holding: the call went out, and nothing here
- *  can say whether the provider ran it. */
+/** Message stored when a dispatched action's outcome is unknown. */
 export const APPLY_OUTCOME_UNKNOWN_MESSAGE = "This action was interrupted after it was dispatched, "
   + "so it may or may not have taken effect. Check the provider before submitting it again.";
 
@@ -85,44 +73,56 @@ export type ActionPresentation =
   Pick<ActionDescription, "title" | "description" | "implementsRevert">;
 
 /**
- * What a handler knows besides its payload. `id` is durable, unique per resource and stable across
- * retries, so a provider accepting an idempotency key can derive one from it.
+ * Durable action ID available to handlers. It is stable across retries and can seed provider
+ * idempotency keys.
  */
 export type ActionContext = { readonly id: number };
 
 /** How one kind of action is described to the approver and carried out once approved. */
 export type ActionDefinition<Payload, Host> = {
   kind?: ActionKind;
-  /** Whether this kind may ever be auto-applied. The binding per-action verdict stays on each
-   *  submitted `ActionDescription`. */
+  /** Whether this kind may be auto-applied when the submitted action also allows it. */
   autoApprovable?: boolean;
-  /**
-   * Whether this kind's effects appear in later reads before the user decides. Declared, never
-   * inferred: it becomes `ActionDescription.awaitDecision`, and a gatekeeper that simulates its
-   * pending actions must let the agent keep working while one that does not must not. Independent
-   * of `autoApprovable`, `implementsRevert`, and `claimBeforeApply`.
-   */
+  /** Whether pending effects are simulated or the agent must await the decision. */
   delivery: "continue-with-simulation" | "await-decision";
   /**
-   * Claim the record durably before the handler runs; opt in for an irreversible provider call. A
-   * plain thrown error then means the handler classified the failure retryable and the claim is
-   * rolled back, an `ActionApplyError` means terminal, and a crash mid-handler leaves a claim a
-   * later activation converts into a terminal unknown-outcome failure rather than re-running it.
+   * Durably claims an irreversible provider call so a crash becomes a terminal unknown outcome. A
+   * plain handler error restores pending; `ActionApplyError` records a terminal failure.
    */
   claimBeforeApply?: boolean;
   /**
-   * Approval text, derived from the payload the journal stores rather than passed in beside it, so
-   * what the approver reads cannot drift from what `apply` sends. `host` is available for the
-   * enrichment reads a description often needs.
+   * Builds approver-facing text.
+   * @param payload Stored action payload.
+   * @param host Bound provider host.
+   * @returns The action presentation.
    */
   describe(payload: Payload, host: Host): ActionPresentation | Promise<ActionPresentation>;
-  /** Provisional references this payload creates, for actions a later one can depend on. An array,
-   *  not an `Iterable`: `string` satisfies that, so `p => p.ref` would cascade over characters. */
+  /**
+   * Lists provisional references created by a payload.
+   * @param payload Stored action payload.
+   * @returns Created provisional references.
+   */
   provides?(payload: Payload): readonly string[];
-  /** Provisional references this payload consumes; retired when their creator never applies. */
+  /**
+   * Lists provisional references consumed by a payload.
+   * @param payload Stored action payload.
+   * @returns Consumed provisional references.
+   */
   dependsOn?(payload: Payload): readonly string[];
-  /** Returns `{ action }` to persist apply-time artifacts (created entity ids and the like). */
+  /**
+   * Applies an approved action.
+   * @param payload Stored action payload.
+   * @param host Bound provider host.
+   * @param ctx Durable action context.
+   * @returns Optional payload updates to retain.
+   */
   apply(payload: Payload, host: Host, ctx: ActionContext): Promise<void | { action?: Payload }>;
+  /**
+   * Handles a rejected action.
+   * @param payload Stored action payload.
+   * @param host Bound provider host.
+   * @param ctx Durable action context.
+   */
   reject?(payload: Payload, host: Host, ctx: ActionContext): Promise<void>;
 };
 
@@ -131,12 +131,13 @@ export type ResolveOutcome = "applied" | "rejected" | "failed" | "reverted";
 
 /** Cross-cutting policy for a whole action set, as opposed to one kind's behavior. */
 export type ActionSetOptions<Host> = {
-  /** Keep the applied record so a revert can read it back. The facet derives this from its own
-   *  revert hook; set it explicitly only to retain without one. */
+  /** Keeps applied records for revert or consumer-managed retention. */
   retainApplied?: boolean;
   /**
-   * Fires once per resolution, so cache invalidation lives in one place instead of every branch.
-   * Advisory: a failure here is logged and dropped, never surfaced to the overseer.
+   * Handles a completed resolution. Failures are logged and do not change the action outcome.
+   * @param host Bound provider host.
+   * @param outcome Resolution outcome.
+   * @returns Completion, optionally asynchronous.
    */
   afterResolve?(host: Host, outcome: ResolveOutcome): void | Promise<void>;
   /** Vendor id for log attribution. */
@@ -148,60 +149,60 @@ export type TaggedAction<M> = { [K in keyof M]: { kind: K; payload: M[K] } }[key
 
 /** The action set bound to one resource's journal and host. */
 export type BoundActionSet<M extends Record<string, unknown>> = {
+  /**
+   * Submits an action for approval.
+   * @param queue Approval queue capability.
+   * @param kind Declared action kind.
+   * @param payload Action payload.
+   * @returns The allocated action ID.
+   */
   submit<K extends keyof M>(
     queue: RpcStub<ApprovalQueue>, kind: K, payload: M[K]): Promise<number>;
   /**
-   * Resolution is serialized: the overseer can deliver two callbacks for one id concurrently, since
-   * it validates that a record is still pending and then awaits before dispatching, with the Durable
-   * Object's input gate open across that await (`overseer.ts:9485-9495`, and its own comment on
-   * `applyPendingAction` says the caller is responsible for the check). Without this the journal
-   * check would be a time-of-check/time-of-use window around a provider call, i.e. a double effect.
-   *
-   * Resolves without effect for an already-applied id, across activations as well as within one:
-   * the journal remembers a retired id even where the set keeps no retained record.
+   * Applies an action, at-least-once across activations unless its definition sets
+   * `claimBeforeApply`; re-applying an applied ID is a no-op. Resolution is serialized with
+   * rejection to prevent a duplicate provider call.
+   * @param id Action ID to apply.
    */
   apply(id: number): Promise<void>;
+  /**
+   * Rejects an action.
+   * @param id Action ID to reject.
+   */
   reject(id: number): Promise<void>;
+  /** @returns Action kinds eligible for automatic approval. */
   autoApprovableKinds(): ActionKind[];
   /** The retention flag in force, which the facet base's revert-hook assert reads. */
   readonly retainsApplied: boolean;
-  /** Reports an outcome the facet resolved itself, so `afterResolve` still covers every site. */
+  /**
+   * Reports a resolution completed outside this action set.
+   * @param outcome Resolution outcome.
+   */
   resolved(outcome: ResolveOutcome): Promise<void>;
   /**
-   * Run `hook` exclusively against `apply` and `reject`, which share one queue: revert is a facet
-   * seam and retiring the retained tier is consumer policy, and both read back records those
-   * verbs rewrite. A second queue beside this one would serialize each pair but leave the
-   * cross-pairs interleaved.
-   *
-   * Never call `apply`/`reject` from inside the callback: they claim this same queue and would wait
-   * on their own predecessor.
+   * Runs work exclusively against apply and reject. Calling either from `hook` would deadlock on the
+   * same queue.
+   * @param hook Work to serialize.
+   * @returns The hook result.
    */
   runExclusive<T>(hook: () => T | Promise<T>): Promise<T>;
 };
 
-/**
- * A declared action set, still unbound: the declarations are module-scoped while the journal and
- * host belong to one resource facet, so `bind` is what a per-instance facet calls to get the
- * submission and resolution surface for its own storage.
- */
+/** Action declarations that can be bound to a resource journal and host. */
 export type ActionSet<Host, M extends Record<string, unknown>> = {
   /**
-   * The submission and resolution surface for one resource's journal and host. Idempotent per
-   * journal: the returned set owns the queues and the applied/claimed sets that make resolution
-   * exclusive, so a rebind returns the first bound set rather than a fresh queue and empty sets --
-   * the per-call shape a facet hook invites stays correct. A rebind with a different host throws.
+   * Binds this set once per journal. Rebinding returns the original set; changing the host throws.
+   * @param journal Resource action journal.
+   * @param host Provider host.
+   * @returns The bound action set.
    */
   bind(journal: ActionJournal<TaggedAction<M>>, host: Host): BoundActionSet<M>;
 };
 
-/** One pending action's provisional references, as its definition reports them. */
+// Pending action references used to find stranded dependents.
 type ActionRefs = { id: number; provides: readonly string[]; dependsOn: readonly string[] };
 
-/**
- * The ids that can never apply once `dead` goes unresolved, transitively: a stranded action's own
- * references are dead too. Derived from one journal scan per decision rather than a stored
- * dependents list, so there is nothing to keep in step, and it is bounded by the pending cap.
- */
+// Find actions transitively stranded by unresolved provisional references.
 function strandedBy(dead: readonly string[], pending: readonly ActionRefs[]): number[] {
   const dependents = new Map<string, number[]>();
   const provides = new Map<number, readonly string[]>();
@@ -228,13 +229,11 @@ function strandedBy(dead: readonly string[], pending: readonly ActionRefs[]): nu
 }
 
 /**
- * Declare a resource's actions once; the returned set owns submission and the overseer's
- * apply/reject callbacks, leaving each definition to describe only its own effect.
- *
- * Apply is at-least-once by default: the provider call can succeed and the process crash before the
- * journal write, and the overseer's retry then re-applies. `claimBeforeApply` makes that crash
- * at-most-once, but not a handler's own throw — a plain throw declares the failure retryable, so a
- * handler that cannot prove its request never left must throw `ActionApplyError`.
+ * Declares a resource's action handlers. Apply is at-least-once by default; irreversible calls use
+ * `claimBeforeApply`, and uncertain non-replayable failures use `ActionApplyError`.
+ * @param definitions Action handlers keyed by kind.
+ * @param options Set-wide retention and resolution policy.
+ * @returns An action set ready to bind.
  */
 export function defineActions<Host, M extends Record<string, unknown>>(
   definitions: { [K in keyof M]: ActionDefinition<M[K], Host> },
@@ -274,6 +273,12 @@ export function defineActions<Host, M extends Record<string, unknown>>(
   const bound = new WeakMap<object, { host: Host; set: BoundActionSet<M> }>();
 
   return {
+    /**
+     * Binds this set to a journal and host.
+     * @param journal Resource action journal.
+     * @param host Provider host.
+     * @returns The bound action set.
+     */
     bind(journal, host) {
       const prior = bound.get(journal);
       if (prior) {
@@ -283,31 +288,16 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         return prior.set;
       }
 
-      // A Map, not the declarations object: `kind` comes from storage, and a stale one naming an
-      // `Object.prototype` member would resolve to an inherited function whose `apply` succeeds
-      // without reaching a provider. Coerced, because `Object.entries` stringified these keys while
-      // a record round-trips whatever it stored.
+      // Use a Map so stale stored kinds cannot resolve inherited object members.
       const definitionFor = (entry: TaggedAction<M>) => byName.get(String(entry.kind));
 
-      /**
-       * Ids this activation claimed. A claimed record missing from here was orphaned by an
-       * activation that died mid-dispatch: the provider call went out and its outcome is unknowable,
-       * so no verb may run a handler over it. In memory because that is the whole distinction -- a
-       * durable set could not tell this activation's claims from a dead activation's.
-       */
+      // Claims missing here were orphaned by an earlier activation and have unknown outcomes.
       const claimedHere = new Set<number>();
 
-      // One queue per bound resource, covering every resolution of it -- and whatever the facet
-      // runs through `runExclusive`. `submit` stays off it: submission is not a resolution, and
-      // queueing it behind a slow apply would stall the agent for the length of a provider call.
-      // Submissions ride `stageAction`'s own per-journal lane instead.
+      // Serialize every resolution and facet operation. Submission has its own per-journal lane.
       const resolutionQueue = new SerialTaskQueue();
 
-      /**
-       * Fire the invalidation hook. Awaited, so a read after this resolution sees fresh caches --
-       * but its failure never escapes: the hook is advisory, and letting it throw would either
-       * replace a provider's display-safe error or report a completed action as failed.
-       */
+      // Invalidation is advisory: log failures without changing the action's outcome.
       const resolved = async (outcome: ResolveOutcome) => {
         try {
           await options.afterResolve?.(host, outcome);
@@ -320,21 +310,13 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         }
       };
 
-      /**
-       * Retire every queued action whose references this decision just made unresolvable. They fail
-       * with a reason rather than vanishing, so a later overseer callback for one reports it.
-       *
-       * Advisory like `afterResolve`: the parent's decision is already durable, and on the failure
-       * paths must be, so a throw here would lose the cascade with nothing to resume from.
-       */
+      // Retire dependents whose provisional references can no longer resolve.
       const strandDependents = (id: number, action: TaggedAction<M>): void => {
         try {
           const dead = definitionFor(action)?.provides?.(action.payload) ?? [];
           if (dead.length === 0) return;
 
-          // A dependent still staged mid-submission is missed and later turns pending with a dead
-          // reference -- the documented open race ("a submission racing its parent's rejection",
-          // plans/gatekeeper-kit.md); it fails at apply instead of being retired here.
+          // A staged dependent can race this scan; apply rejects its unresolved reference later.
           const stranded = strandedBy(dead, journal.listUndecided().map(record => {
             const definition = definitionFor(record.action);
             return {
@@ -363,10 +345,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         }
       };
 
-      /** Convert an orphaned claim into a terminal failure. Both verbs refuse it the same way: a
-       *  quiet remove would hide from the user that the effect may already have happened. No
-       *  cascade -- "was not applied" cannot be asserted over an unknown outcome, and the dispatch
-       *  may have created the very entity its dependents name. They stay decidable. */
+      // Preserve orphaned claims because the provider outcome is unknown.
       const failOrphanedClaim = async (id: number): Promise<never> => {
         journal.markFailed(id, APPLY_OUTCOME_UNKNOWN_MESSAGE);
         await resolved("failed");
@@ -412,10 +391,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             }
             result = await definition.apply(action.payload, host, { id });
           } catch (error) {
-            // Only the handler is caught. Caches are at their stalest here either way: the provider
-            // may have applied part of the effect. A terminal failure stores its own message;
-            // anything else is left retryable, and rolling the claim back is what lets a second
-            // dispatch reach the provider.
+            // Terminal handler failures stop retry; ordinary failures restore the pending claim.
             if (error instanceof ActionApplyError) {
               journal.markFailed(id, error.message);
               strandDependents(id, action);
@@ -424,10 +400,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             throw error;
           }
 
-          // One write: the artifacts the handler returned, merged with the state transition. A
-          // failure here is deliberately outside the catch above: the provider effect has landed,
-          // so restoring `pending` would offer the user a second irreversible apply. The claim
-          // stays, and the next attempt reports the unknown outcome.
+          // Persist apply artifacts outside the handler catch so a failed write cannot replay the effect.
           const applied = result?.action === undefined
             ? undefined
             : { kind: action.kind, payload: result.action } as TaggedAction<M>;

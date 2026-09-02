@@ -1,7 +1,3 @@
-// The pages every gatekeeper serves in a browser tab during connect: "you can close this window",
-// "that link expired", and "it didn't work, here's why". Anything a gatekeeper *asks* the user is
-// vendor-specific and keeps its own markup.
-
 const HTML_ESCAPES: Readonly<Record<string, string>> = {
   "&": "&amp;",
   "<": "&lt;",
@@ -10,20 +6,21 @@ const HTML_ESCAPES: Readonly<Record<string, string>> = {
   "'": "&#39;",
 };
 
-/** Escape a value for interpolation into HTML text or a quoted attribute. */
+/**
+ * Escapes a value for HTML text or a quoted attribute.
+ * @param value Untrusted text.
+ * @returns Escaped HTML text.
+ */
 export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, char => HTML_ESCAPES[char]!);
 }
 
 /**
- * Diverges deliberately from the module this was taken from: connect pages open in their own tab
- * and are never framed (the srcDoc-framed surfaces are gatekeeper app UIs, a different module), and
- * a connect URL carries a nonce that must not leak through `Referer`. `nosniff` joins them for the
- * same reason they are here rather than at each call site: a vendor form built on `PAGE_STYLE`
- * inherits all four without having to remember them, and a gatekeeper that interpolates provider
- * text into a page must never have that text content-sniffed into another type. The path segment is
- * the bearer capability and the page may echo account identifiers, so `no-store` prevents either
- * from landing in a shared cache -- a guard no shipped OAuth page carries.
+ * Builds an uncacheable, unframeable HTML response. Connect URLs carry bearer nonces, so responses
+ * never cache or send referrers.
+ * @param body HTML response body.
+ * @param status HTTP status.
+ * @returns A hardened HTML response.
  */
 export function htmlResponse(body: string, status = 200): Response {
   return new Response(body, {
@@ -38,7 +35,11 @@ export function htmlResponse(body: string, status = 200): Response {
   });
 }
 
-/** Refuse connect links not opened by the Workshop, with a localhost exception for Vite dev. */
+/**
+ * Checks that a connect link came from the Workshop.
+ * @param req Navigation request.
+ * @returns An error code, or `undefined` when trusted.
+ */
 export function connectNavigationError(req: Request): "untrusted-navigation" | undefined {
   const site = req.headers.get("sec-fetch-site");
   const trustedSite = site === "same-origin" ||
@@ -48,19 +49,20 @@ export function connectNavigationError(req: Request): "untrusted-navigation" | u
 }
 
 /**
- * The bare media type, parameters dropped and case folded. Substring matching is not good enough
- * here: `application/jsonp` contains `application/json`, and so does the *parameter* in
- * `text/plain; x=application/json`, while a real `multipart/form-data; boundary=…` has to pass.
+ * Normalizes a media type for exact comparison; substring checks would accept values such as
+ * `application/jsonp`.
+ * @param value Raw `Content-Type` header.
+ * @returns Lowercase media type without parameters.
  */
 function mediaType(value: string | null): string {
   return (value ?? "").split(";", 1)[0]!.trim().toLowerCase();
 }
 
 /**
- * Classifies a browser mutation on a capability URL. `undefined` means acceptable; otherwise the
- * caller renders its own refusal (Marketo answers JSON 403/415, a form-based flow answers HTML).
- * A missing Origin header is refused: browsers send it on POST, and a non-browser caller has no
- * business on a browser capability URL. `contentType` names a media type, compared exactly.
+ * Classifies a browser mutation request.
+ * @param req Mutation request.
+ * @param options Expected media type.
+ * @returns An error code, or `undefined` when accepted.
  */
 export function connectMutationError(
   req: Request,
@@ -74,13 +76,7 @@ export function connectMutationError(
 }
 
 /**
- * The palette and page frame every connect page shares.
- *
- * These pages open outside the Workshop, so they cannot reach Tailwind or Kumo. The tokens are
- * copied from `workshop-frontend/src/styles.css` (both palettes) so the tab still reads as the same
- * product. Only the base palette: a deployment's admin-chosen accent lives in AdminConfig, which a
- * gatekeeper has no business reading. CSS variables rather than literals, since a gatekeeper with a
- * form appends its own rules.
+ * Shared connect-page layout. Connect pages cannot load Workshop CSS, so this mirrors its palette.
  */
 export const PAGE_STYLE = `
   :root {
@@ -133,7 +129,12 @@ export const SELF_CLOSING_HTML = `<!DOCTYPE html>
 export const INVALID_LINK_HTML =
   errorPageHtml("This link has expired", "Start the connection again.");
 
-/** A minimal page reporting that connecting failed, with a reason the user can act on. */
+/**
+ * Renders a connect-flow error page.
+ * @param title Error heading.
+ * @param detail Error detail.
+ * @returns Escaped HTML.
+ */
 export function errorPageHtml(title: string, detail: string): string {
   const escapedTitle = escapeHtml(title);
   return `<!DOCTYPE html>
