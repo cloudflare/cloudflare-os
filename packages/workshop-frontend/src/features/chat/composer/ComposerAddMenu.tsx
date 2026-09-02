@@ -217,7 +217,10 @@ export default function ComposerAddMenu({
       return;
     }
     if (event.key === "Tab") {
-      close(false);
+      event.preventDefault();
+      const item = items[activeIndex];
+      if (item) activate(item);
+      else close();
       return;
     }
     if (event.key === "Enter") {

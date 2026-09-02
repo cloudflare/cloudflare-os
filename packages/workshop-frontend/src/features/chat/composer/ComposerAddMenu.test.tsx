@@ -154,7 +154,7 @@ describe("ComposerAddMenu", () => {
     expect(onAddConnection).toHaveBeenCalledOnce();
   });
 
-  it("uses Enter for activation, leaves Tab inert, and restores focus on Escape", async () => {
+  it("uses Enter and Tab for activation, and restores focus on Escape", async () => {
     const getOverseer = () => ({
       listSlashCommands: async () => [connectedSkill],
     } as unknown as RpcStub<Overseer>);
@@ -170,7 +170,7 @@ describe("ComposerAddMenu", () => {
     await act(async () => search.dispatchEvent(
       new KeyboardEvent("keydown", { key: "Tab", bubbles: true }),
     ));
-    expect(onUpload).not.toHaveBeenCalled();
+    expect(onUpload).toHaveBeenCalledOnce();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
 
     await act(async () => trigger.click());
