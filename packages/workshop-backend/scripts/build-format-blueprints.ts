@@ -16,134 +16,26 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildContent,
+  extractFiles,
   findInterruptedImportBackups,
+  parseArchive,
   readSourceFiles,
   serializeArchive,
+  validatePortablePaths,
 } from "./format-blueprint-files.ts";
+import type {
+  FormatBlueprintManifest,
+  FormatBlueprintPresentation,
+} from "./format-blueprint-manifest.ts";
+import {
+  parseFormatBlueprintManifest,
+  parseFormatBlueprintPresentation,
+} from "./format-blueprint-manifest.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
 const sourceDir = resolve(pkgRoot, process.env.FORMAT_BLUEPRINTS_DIR ?? "format-blueprints");
 const outFile = join(pkgRoot, "src", "generated", "format-blueprints.ts");
-
-// Icons a blueprint may declare. Duplicated from the shared API's OUTPUT_ICONS because this script
-// runs before (and without) a TypeScript build; the runtime validates against the real list, so
-// the cost of drift is a build that rejects an icon the Worker would have accepted.
-const OUTPUT_ICONS = ["fileText", "gridNine", "presentation", "appWindow", "flowArrow",
-    "kanban", "chartBar", "table", "notebook", "listChecks"];
-
-// Must match isReservedBlueprintKey() in src/blueprint-archive.ts. This build script runs without
-// loading TypeScript modules, so keep the tiny control-key list here as well.
-const RESERVED_BLUEPRINT_KEYS = new Set([".featured", ".adminConfig"]);
-
-// Validated here rather than at runtime so a typo fails the build of whoever made it, instead of
-// quietly presenting the wrong thing in production. Unknown keys are rejected too: silently
-// ignoring one looks exactly like the field not working.
-type FormatBlueprintManifest = {
-  blueprintId: string;
-  title: string;
-  description: string;
-  output: {id: string; noun: string; plural: string; icon: string};
-  author: {type: "user"; name: string; id: string};
-  revision: number;
-  created: string;
-  version: number;
-  lastUpdated: string;
-  bindings: Record<string, unknown>;
-};
-
-type FormatBlueprintPresentation = Omit<FormatBlueprintManifest,
-    "created" | "version" | "lastUpdated" | "bindings">;
-
-function parsePresentation(
-  label: string,
-  parsed: Record<string, unknown>,
-  allowedExtra: string[],
-): FormatBlueprintPresentation {
-  let bad = (message: string): never => { throw new Error(`${label}: ${message}`); };
-  let {
-    blueprintId, title, description, output, author, revision, $comment, ...rest
-  } = parsed;
-  let unknown = Object.keys(rest).filter(key => !allowedExtra.includes(key));
-  if (unknown.length > 0) bad(`unknown keys: ${unknown.join(", ")}`);
-
-  let string = (value: unknown, what: string): string => {
-    if (typeof value !== "string" || value.trim() === "") bad(`${what} must be a non-empty string`);
-    return value as string;
-  };
-
-  if (typeof blueprintId !== "string" || !/^[a-zA-Z0-9._-]+$/.test(blueprintId)) {
-    bad("blueprintId must be a non-empty [a-zA-Z0-9._-] string");
-  }
-  if (RESERVED_BLUEPRINT_KEYS.has(blueprintId as string)) {
-    bad(`blueprintId ${blueprintId} is reserved`);
-  }
-  if (typeof revision !== "number" || !Number.isInteger(revision) || revision < 1) {
-    bad("revision must be a positive integer");
-  }
-  if (typeof output !== "object" || output === null) bad("output is required");
-  let { id, noun, plural, icon, ...outputRest } = output as Record<string, unknown>;
-  if (Object.keys(outputRest).length > 0) {
-    bad(`unknown output keys: ${Object.keys(outputRest).join(", ")}`);
-  }
-  if (!OUTPUT_ICONS.includes(icon as string)) {
-    bad(`output.icon must be one of: ${OUTPUT_ICONS.join(", ")}`);
-  }
-  if (typeof author !== "object" || author === null) bad("author is required");
-  let {
-    type: authorType, name: authorName, id: authorId, ...authorRest
-  } = author as Record<string, unknown>;
-  if (Object.keys(authorRest).length > 0) {
-    bad(`unknown author keys: ${Object.keys(authorRest).join(", ")}`);
-  }
-  if (authorType !== undefined && authorType !== "user") bad(`author.type must be "user"`);
-
-  return {
-    blueprintId: blueprintId as string,
-    title: string(title, "title"),
-    description: string(description, "description"),
-    output: {
-      id: string(id, "output.id"),
-      noun: string(noun, "output.noun"),
-      plural: string(plural, "output.plural"),
-      icon: icon as string,
-    },
-    author: {
-      type: "user",
-      name: string(authorName, "author.name"),
-      id: string(authorId, "author.id"),
-    },
-    revision: revision as number,
-  };
-}
-
-function parseManifest(name: string, raw: string): FormatBlueprintManifest {
-  let label = `${name}/blueprint.json`;
-  let bad = (message: string): never => { throw new Error(`${label}: ${message}`); };
-  let parsed = JSON.parse(raw);
-  let presentation = parsePresentation(label, parsed,
-      ["created", "version", "lastUpdated", "bindings"]);
-  let {created, version, lastUpdated, bindings} = parsed;
-  if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
-    bad("version must be a positive integer");
-  }
-  for (let [key, value] of [["created", created], ["lastUpdated", lastUpdated]] as const) {
-    if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) {
-      bad(`${key} must be an ISO date string`);
-    }
-  }
-  if (typeof bindings !== "object" || bindings === null || Array.isArray(bindings)) {
-    bad("bindings must be an object");
-  }
-
-  return {
-    ...presentation,
-    created: created as string,
-    version: version as number,
-    lastUpdated: lastUpdated as string,
-    bindings: bindings as Record<string, unknown>,
-  };
-}
 
 // An empty directory is a supported way to ship no formats, so it is a warning rather than an
 // error. A mistyped FORMAT_BLUEPRINTS_DIR fails in readdir() above, which is the case worth
@@ -198,6 +90,7 @@ let sources = [
     kind: "extracted" as const})),
   ...legacyNames.map(name => ({name, kind: "legacy" as const})),
 ].toSorted((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+validatePortablePaths(sources.map(source => source.name), sourceDir);
 for (let source of sources) {
   let {name} = source;
   let raw: string;
@@ -211,7 +104,7 @@ for (let source of sources) {
       if (!isErrorCode(err, "ENOENT")) throw err;
       throw new Error(`${name}/ has no blueprint.json describing it.`, { cause: err });
     }
-    let manifest = parseManifest(name, raw);
+    let manifest = parseFormatBlueprintManifest(name, raw);
     let {created, version, lastUpdated, bindings, ...presentation} = manifest;
     entry = presentation;
     let sourceFiles = await readSourceFiles(join(sourceDir, directory, "files"), `${name}/files`);
@@ -228,8 +121,10 @@ for (let source of sources) {
     bytes = serializeArchive(metadata, content, name);
   } else {
     raw = await readFile(join(sourceDir, `${name}.json`), "utf8");
-    entry = parsePresentation(`${name}.json`, JSON.parse(raw), []);
+    entry = parseFormatBlueprintPresentation(`${name}.json`, raw);
     bytes = await readFile(join(sourceDir, `${name}.gadget`));
+    let archive = parseArchive(bytes, name);
+    extractFiles(archive.content, name);
   }
 
   // Two archives installing under one id would race, and only one would survive.

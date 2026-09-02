@@ -1,3 +1,6 @@
+// Gadgets are Git-backed, but blueprint archive version 1 intentionally retains its historical
+// gzip-compressed Yjs snapshot wire format. Instantiation decodes that snapshot into a Git commit.
+
 import { lstat, readdir, readFile } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { gzipSync, gunzipSync } from "node:zlib";
@@ -10,7 +13,7 @@ const PREFIX_BYTES = 24;
 const MAX_METADATA_BYTES = 64 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 32 * 1024 * 1024;
-const textDecoder = new TextDecoder("utf-8", { fatal: true });
+const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const textEncoder = new TextEncoder();
 
 export function findInterruptedImportBackups(
@@ -179,16 +182,44 @@ export async function readSourceFiles(
 }
 
 function validateFilePaths(paths: Iterable<string>, label: string): void {
+  const allPaths = [...paths];
+  if (allPaths.length === 0) invalid(label, "blueprint must contain at least one source file");
+  validatePortablePaths(allPaths, label);
+}
+
+export function validatePortablePaths(paths: Iterable<string>, label: string): void {
   const portablePaths = new Map<string, string>();
+  const portableDirectories = new Map<string, string>();
   for (const path of paths) {
     validateFilePath(path, label);
-    const portable = path.normalize("NFC").toLowerCase().toUpperCase().toLowerCase()
-        .normalize("NFC");
+    const portable = portablePath(path);
     const existing = portablePaths.get(portable);
     if (existing) {
       invalid(label, `${path} aliases ${existing} on case-insensitive filesystems`);
     }
+    const conflictingDirectory = portableDirectories.get(portable);
+    if (conflictingDirectory) {
+      invalid(label, `${path} conflicts with directory ${conflictingDirectory} on ` +
+          `case-insensitive filesystems`);
+    }
     portablePaths.set(portable, path);
+
+    const segments = path.split("/");
+    for (let i = 1; i < segments.length; i++) {
+      const directory = segments.slice(0, i).join("/");
+      const portableDirectory = portablePath(directory);
+      const existingDirectory = portableDirectories.get(portableDirectory);
+      if (existingDirectory && existingDirectory !== directory) {
+        invalid(label, `${directory} aliases directory ${existingDirectory} on ` +
+            `case-insensitive filesystems`);
+      }
+      const existingFile = portablePaths.get(portableDirectory);
+      if (existingFile) {
+        invalid(label, `${path} conflicts with file ${existingFile} on ` +
+            `case-insensitive filesystems`);
+      }
+      portableDirectories.set(portableDirectory, directory);
+    }
   }
 
   for (const [portable, path] of portablePaths) {
@@ -208,6 +239,19 @@ function validateFilePath(path: string, label: string): void {
       path.split("/").some(segment => segment === "" || segment === "." || segment === "..")) {
     invalid(label, `unsafe blueprint file path ${JSON.stringify(path)}`);
   }
+  for (const segment of path.split("/")) {
+    if ([...segment].some(char => char.codePointAt(0)! <= 0x1f) || /[<>:"|?*]/u.test(segment) ||
+        /[. ]$/u.test(segment) ||
+        /^(con|prn|aux|nul|com[1-9\u00b9\u00b2\u00b3]|lpt[1-9\u00b9\u00b2\u00b3])(?:\.|$)/iu
+            .test(segment) ||
+        /^\.git(?:ignore)?$/iu.test(segment)) {
+      invalid(label, `non-portable blueprint file path ${JSON.stringify(path)}`);
+    }
+  }
+}
+
+function portablePath(path: string): string {
+  return path.normalize("NFC").toLowerCase().toUpperCase().toLowerCase().normalize("NFC");
 }
 
 function compareNames(a: string, b: string): number {

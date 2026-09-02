@@ -19,5 +19,7 @@
     // The root sets allowJs; oxlint-plugin.mjs stays untyped.
     "checkJs": false
   },
+  // The backend's Node-only build/import tools are excluded from its Worker tsconfig and need the
+  // same Node runtime and erasable-syntax checks as the repo-level scripts.
   "include": ["**/*.ts", "../packages/workshop-backend/scripts/*.ts"]
 }

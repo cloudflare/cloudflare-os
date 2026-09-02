@@ -52,6 +52,7 @@ export default defineConfig({
       workspacePath("packages/workshop-backend/browser/**"),
       workspacePath("packages/workshop-backend/scripts/build-format-blueprints.ts"),
       workspacePath("packages/workshop-backend/scripts/format-blueprint-files.ts"),
+      workspacePath("packages/workshop-backend/scripts/format-blueprint-manifest.ts"),
       workspacePath("packages/workshop-backend/build-browser-runtime.mjs"),
       workspacePath("packages/workshop-backend/{package.json,wrangler.jsonc,vite.config.ts,tsconfig*.json}"),
       workspacePath("packages/workshop-shared/src/**"),

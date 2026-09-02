@@ -166,6 +166,134 @@ describe("format blueprint scripts", () => {
     assert.match(result.stderr, /name must start with an alphanumeric character/);
   });
 
+  it("rejects manifest fields that override the trusted directory name", async () => {
+    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    temporaryDirectories.push(directory);
+    await mkdir(join(directory, "example", "files"), {recursive: true});
+    await writeFile(join(directory, "example", "blueprint.json"),
+      `${JSON.stringify({...manifest, name: "../victim"}, null, 2)}\n`);
+    await writeFile(join(directory, "example", "files/client.js"), "// original\n");
+
+    let result = spawnSync(process.execPath,
+      [importScript, join(directory, "missing.gadget"), "format.example"], {
+        cwd: packageRoot,
+        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        encoding: "utf8",
+      });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /unknown keys: name/);
+    assert.equal(await readFile(join(directory, "example/files/client.js"), "utf8"),
+      "// original\n");
+  });
+
+  it("validates imported metadata before replacing existing source", async () => {
+    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    temporaryDirectories.push(directory);
+    await mkdir(join(directory, "example", "files"), {recursive: true});
+    await writeFile(join(directory, "example", "blueprint.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(join(directory, "example", "files/client.js"), "// original\n");
+    let archivePath = join(directory, ".invalid.gadget");
+    await writeFile(archivePath, serializeArchive({},
+      buildContent(new Map([["client.js", "// invalid\n"]]), archivePath), archivePath));
+
+    let result = spawnSync(process.execPath, [importScript, archivePath, "format.example"], {
+      cwd: packageRoot,
+      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /version must be a positive integer/);
+    assert.equal(await readFile(join(directory, "example/files/client.js"), "utf8"),
+      "// original\n");
+    let unchanged = JSON.parse(await readFile(join(directory, "example/blueprint.json"), "utf8"));
+    assert.equal(unchanged.revision, 1);
+  });
+
+  it("rejects extracted files ignored by Git", async () => {
+    let directory = await mkdtemp(join(packageRoot, "format-blueprints-test-"));
+    temporaryDirectories.push(directory);
+    let archivePath = join(directory, ".ignored.gadget");
+    await writeArchive(archivePath, 1, new Map([["dist/client.js", "// ignored\n"]]));
+
+    let result = spawnSync(process.execPath,
+      [importScript, archivePath, "--new", "example"], {
+        cwd: packageRoot,
+        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        encoding: "utf8",
+      });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr,
+      /imported blueprint paths are ignored by Git: example\/files\/dist\/client\.js/);
+    await assert.rejects(readFile(join(directory, "example/blueprint.json")), {code: "ENOENT"});
+  });
+
+  it("rejects a generated manifest ignored by Git", async () => {
+    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    temporaryDirectories.push(directory);
+    let initialized = spawnSync("git", ["init", "-q", directory], {encoding: "utf8"});
+    assert.equal(initialized.status, 0, initialized.stderr);
+    await writeFile(join(directory, ".gitignore"), "blueprint.json\n");
+    let archivePath = join(directory, ".ignored.gadget");
+    await writeArchive(archivePath, 1, new Map([["client.js", "// source\n"]]));
+
+    let result = spawnSync(process.execPath,
+      [importScript, archivePath, "--new", "example"], {
+        cwd: packageRoot,
+        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        encoding: "utf8",
+      });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr,
+      /imported blueprint paths are ignored by Git: example\/blueprint\.json/);
+    await assert.rejects(readFile(join(directory, "example/blueprint.json")), {code: "ENOENT"});
+  });
+
+  it("rejects non-portable blueprint directory names", async () => {
+    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    temporaryDirectories.push(directory);
+    await mkdir(join(directory, "CON", "files"), {recursive: true});
+    await writeFile(join(directory, "CON", "blueprint.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(join(directory, "CON", "files/client.js"), "// source\n");
+
+    let result = spawnSync(process.execPath, [buildScript], {
+      cwd: packageRoot,
+      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /non-portable blueprint file path "CON"/);
+  });
+
+  it("rejects duplicate blueprint IDs before adding new source", async () => {
+    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    temporaryDirectories.push(directory);
+    await mkdir(join(directory, "example", "files"), {recursive: true});
+    await writeFile(join(directory, "example", "blueprint.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(join(directory, "example", "files/client.js"), "// original\n");
+    let archivePath = join(directory, ".duplicate.gadget");
+    await writeArchive(archivePath, 1, new Map([["client.js", "// duplicate\n"]]));
+
+    let result = spawnSync(process.execPath,
+      [importScript, archivePath, "--new", "format.example"], {
+        cwd: packageRoot,
+        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        encoding: "utf8",
+      });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /blueprint ID format\.example is already used by example/);
+    await assert.rejects(readFile(join(directory, "format.example/blueprint.json")),
+      {code: "ENOENT"});
+  });
+
   it("builds legacy archives and migrates them on import", async () => {
     let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
     temporaryDirectories.push(directory);

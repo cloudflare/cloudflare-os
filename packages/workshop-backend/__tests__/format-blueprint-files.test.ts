@@ -84,6 +84,45 @@ describe("format blueprint source", () => {
       .toThrow("lib/util.js conflicts with file LIB");
   });
 
+  it("rejects filesystem-equivalent directory aliases", () => {
+    expect(() => buildContent(new Map([
+      ["Foo/first.js", "first"],
+      ["foo/second.js", "second"],
+    ]), "example")).toThrow("foo aliases directory Foo");
+  });
+
+  it("rejects portable file and directory conflicts", () => {
+    expect(() => buildContent(new Map([
+      ["Foo", "file"],
+      ["foo/child.js", "child"],
+    ]), "example")).toThrow("foo/child.js conflicts with file Foo");
+    expect(() => buildContent(new Map([
+      ["foo/child.js", "child"],
+      ["Foo", "file"],
+    ]), "example")).toThrow("Foo conflicts with directory foo");
+  });
+
+  it.each(["CON", "aux.js", "COM\u00b9.log", "a:b.js", "client.js.", "client.js ",
+    ".git/config", ".gitignore"])("rejects non-portable archive path %j", path => {
+    expect(() => buildContent(new Map([[path, "source"]]), "example"))
+      .toThrow("non-portable blueprint file path");
+  });
+
+  it("rejects empty blueprints", () => {
+    expect(() => buildContent(new Map(), "example"))
+      .toThrow("blueprint must contain at least one source file");
+  });
+
+  it("preserves a leading UTF-8 BOM", async () => {
+    let directory = await mkdtemp(join(tmpdir(), "format-blueprint-"));
+    temporaryDirectories.push(directory);
+    await writeFile(join(directory, "client.js"),
+      Uint8Array.of(0xef, 0xbb, 0xbf, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65));
+
+    expect((await readSourceFiles(directory, "example/files")).get("client.js"))
+      .toBe("\ufeffsource");
+  });
+
   it("rejects non-UTF-8 source", async () => {
     let directory = await mkdtemp(join(tmpdir(), "format-blueprint-"));
     temporaryDirectories.push(directory);

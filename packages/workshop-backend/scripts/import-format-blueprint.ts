@@ -2,7 +2,8 @@
 // format-blueprint source. See format-blueprints/README.md for the workflow this belongs to.
 
 import { access, readdir, readFile, rename, rm, writeFile, mkdir } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import {
@@ -10,27 +11,25 @@ import {
   findInterruptedImportBackups,
   parseArchive,
   readSourceFiles,
+  validatePortablePaths,
 } from "./format-blueprint-files.ts";
+import type {
+  FormatBlueprintManifest,
+  FormatBlueprintPresentation,
+} from "./format-blueprint-manifest.ts";
+import {
+  parseFormatBlueprintManifest,
+  parseFormatBlueprintPresentation,
+} from "./format-blueprint-manifest.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
 const sourceDir = resolve(pkgRoot, process.env.FORMAT_BLUEPRINTS_DIR ?? "format-blueprints");
-type BlueprintPresentation = {
+type BlueprintPresentation = FormatBlueprintPresentation & {
   name: string;
   source: string;
-  blueprintId: string;
-  title: string;
-  description: string;
-  output: {id: string; noun: string; plural: string; icon: string};
-  author: {type: "user"; name: string; id: string};
-  revision: number;
 };
-type BlueprintManifest = BlueprintPresentation & {
-  created: string;
-  version: number;
-  lastUpdated: string;
-  bindings: Record<string, unknown>;
-};
+type BlueprintManifest = FormatBlueprintManifest & {name: string; source: string};
 type BlueprintEntry = (BlueprintManifest & {layout: "extracted"}) |
     (BlueprintPresentation & {layout: "legacy"});
 
@@ -48,6 +47,24 @@ function errorMessage(err: unknown): string {
 
 function isErrorCode(err: unknown, code: string): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === code;
+}
+
+function rejectIgnoredBlueprintPaths(name: string, files: Iterable<string>): void {
+  const paths = [join(sourceDir, name, "blueprint.json"),
+    ...[...files].map(file => join(sourceDir, name, "files", file))];
+  const result = spawnSync("git", ["-C", sourceDir, "check-ignore", "-z", "--stdin"], {
+    input: `${paths.join("\0")}\0`,
+    encoding: "utf8",
+  });
+  if (result.status === 1) return;
+  if (result.status === 128 && result.stderr.includes("not a git repository")) return;
+  if (result.status !== 0) {
+    fail(`could not check whether extracted files are ignored by Git: ` +
+        `${result.error?.message ?? result.stderr.trim()}`);
+  }
+  const ignored = result.stdout.split("\0").filter(Boolean)
+      .map(path => relative(sourceDir, path));
+  fail(`imported blueprint paths are ignored by Git: ${ignored.join(", ")}`);
 }
 
 let directoryEntries = await readdir(sourceDir, {withFileTypes: true});
@@ -73,9 +90,8 @@ for (const dirent of directoryEntries
     if (isErrorCode(err, "ENOENT")) continue;
     throw err;
   }
-  manifests.push({
-    name: dirent.name, source, ...JSON.parse(source), layout: "extracted",
-  } as BlueprintManifest & {layout: "extracted"});
+  let manifest = parseFormatBlueprintManifest(dirent.name, source);
+  manifests.push({...manifest, name: dirent.name, source, layout: "extracted"});
 }
 for (const dirent of directoryEntries
     .filter(candidate => candidate.isFile() && candidate.name.endsWith(".json") &&
@@ -90,7 +106,8 @@ for (const dirent of directoryEntries
     throw err;
   }
   const source = await readFile(join(sourceDir, dirent.name), "utf8");
-  manifests.push({name, source, ...JSON.parse(source), layout: "legacy"} as BlueprintEntry);
+  let presentation = parseFormatBlueprintPresentation(`${name}.json`, source);
+  manifests.push({...presentation, name, source, layout: "legacy"});
 }
 
 const rawArgs = process.argv.slice(2);
@@ -129,6 +146,7 @@ if (!newName && !foundEntry) {
 const entry: BlueprintEntry | {name: string; scaffold: true} = newName
     ? {name: newName, scaffold: true}
     : foundEntry!;
+validatePortablePaths(new Set([...manifests.map(manifest => manifest.name), entry.name]), sourceDir);
 
 let incomingBytes: Uint8Array;
 try {
@@ -146,6 +164,7 @@ try {
 } catch (err) {
   fail(errorMessage(err));
 }
+rejectIgnoredBlueprintPaths(entry.name, files.keys());
 
 let oldFiles: Map<string, string>;
 let current: BlueprintManifest | undefined;
@@ -191,6 +210,12 @@ const manifest = scaffold ? {
   lastUpdated: String(incoming.metadata.lastUpdated),
   bindings: (incoming.metadata.bindings as Record<string, unknown> | undefined) ?? {},
 };
+parseFormatBlueprintManifest(entry.name, JSON.stringify(manifest));
+const duplicate = manifests.find(candidate => candidate.name !== entry.name &&
+    candidate.blueprintId === manifest.blueprintId);
+if (duplicate) {
+  fail(`blueprint ID ${manifest.blueprintId} is already used by ${duplicate.name}`);
+}
 
 const targetDir = join(sourceDir, entry.name);
 const stagedDir = join(sourceDir, `.${entry.name}.import-${process.pid}`);
