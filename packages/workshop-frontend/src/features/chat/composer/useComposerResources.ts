@@ -62,7 +62,6 @@ export const useComposerResources = ({
   }, []);
 
   const dismissUrl = () => {
-    operationRef.current++;
     activeUrlRef.current = null;
     setActiveUrl(null);
   };
@@ -92,7 +91,6 @@ export const useComposerResources = ({
           previous.snapshot.documentRevision === documentRevision) {
         return;
       }
-      operationRef.current++;
       const next = { text: match[0], start, end, snapshot };
       activeUrlRef.current = next;
       setActiveUrl(next);
@@ -120,7 +118,7 @@ export const useComposerResources = ({
           gatekeeper.getId(),
           gatekeeper.describe(),
         ]);
-        if (operationRef.current !== operation || activeUrlRef.current !== source) return;
+        if (operationRef.current !== operation) return;
         const result = commitDocumentEdit(source.snapshot, (document) =>
           replaceComposerUrlWithCapsule(
             document,
@@ -159,7 +157,6 @@ export const useComposerResources = ({
       dismissUrl();
       return;
     }
-    operationRef.current++;
     const next = {
       ...result.activeUrl,
       snapshot: getDocumentSnapshot(),

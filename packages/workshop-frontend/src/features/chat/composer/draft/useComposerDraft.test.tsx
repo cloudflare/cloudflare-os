@@ -102,6 +102,20 @@ describe("useComposerDraft", () => {
     expect(readComposerDraft("draft:user-a")?.text).toBe("local prompt");
   });
 
+  it("preserves the document revision when a late storage key is structurally identical", async () => {
+    container = document.createElement("div");
+    root = createRoot(container);
+    await act(async () => root!.render(<Harness />));
+    const snapshot = controls.getDocumentSnapshot();
+
+    await act(async () => root!.render(<Harness storageKey="draft:user-a" />));
+
+    expect(controls.getDocumentSnapshot().documentRevision).toBe(snapshot.documentRevision);
+    expect(controls.commitDocumentEdit(snapshot, () => ({
+      document: emptyDocument("resource"),
+    }))).not.toBeNull();
+  });
+
   it("does not apply late draft decoration after an edit", async () => {
     const storedDraft: StoredComposerDraft = {
       version: 1,

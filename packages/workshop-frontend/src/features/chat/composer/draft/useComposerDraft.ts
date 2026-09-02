@@ -79,6 +79,9 @@ const storedDraftsMatch = (
   second: StoredComposerDraft,
 ) => first !== undefined && JSON.stringify(first) === JSON.stringify(second);
 
+const composerDocumentsMatch = (first: ComposerDocument, second: ComposerDocument) =>
+  JSON.stringify(first) === JSON.stringify(second);
+
 export const useComposerDraft = ({
   storageKey,
   logoSlot,
@@ -167,10 +170,13 @@ export const useComposerDraft = ({
     }
 
     if (previousKey !== undefined) editedRef.current = false;
-    setCurrentDocument({
+    const nextDocument = {
       ...composerDocumentFromDraft(storedDraft),
       capsules: previousKey === undefined ? currentDocument.capsules : [],
-    });
+    };
+    if (!composerDocumentsMatch(currentDocument, nextDocument)) {
+      setCurrentDocument(nextDocument);
+    }
     if (storedDraft) restorePresentation(storedDraft, storageKey, generation);
     return () => {
       if (restoreGenerationRef.current === generation) restoreGenerationRef.current++;

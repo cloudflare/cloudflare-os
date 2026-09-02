@@ -141,6 +141,32 @@ describe("useComposerResources", () => {
     );
   });
 
+  it("commits an accepted resource after the caret leaves its URL", async () => {
+    let resolveDescription!: (value: typeof description) => void;
+    const gatekeeper = fakeGatekeeper(() => new Promise((resolve) => {
+      resolveDescription = resolve;
+    }));
+    const harness = await renderHarness(async () => gatekeeper.stub);
+    act(() => {
+      harness.controls.draft.recordEdit();
+      harness.controls.draft.replaceDocument(emptyDocument(`See ${description.url}`));
+    });
+    act(() => harness.controls.resources.scanAt(10));
+    const creation = harness.controls.resources.createCapsule(3, "vendor");
+    await act(async () => Promise.resolve());
+
+    act(() => harness.controls.resources.scanAt(0));
+    await act(async () => {
+      resolveDescription(description);
+      await creation;
+    });
+
+    expect(harness.controls.draft.document.text).toBe("See Plan ");
+    expect(harness.controls.draft.document.capsules).toHaveLength(1);
+    expect(gatekeeper.dispose).toHaveBeenCalledOnce();
+    expect(harness.onError).not.toHaveBeenCalled();
+  });
+
   it("suppresses a metadata failure after the attach modal is canceled", async () => {
     let rejectMetadata!: (reason: Error) => void;
     const dispose = vi.fn<() => void>();
