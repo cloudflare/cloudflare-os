@@ -57,17 +57,12 @@ async function withDriveApiEnabled<T>(
   }
 }
 
-// TODO: BigQuery and Calendar freeze one token for the configurator's lifetime, so their clients
-// cannot heal a 401. Give them `googleTokenProvider` too.
-
 async function bigQueryApi(target: object): Promise<BigQueryApi> {
-  let token = await googleToken(target);
-  return new BigQueryApi(() => Promise.resolve(token.token));
+  return new BigQueryApi(googleTokenProvider(target));
 }
 
 async function calendarApi(target: object): Promise<GoogleCalendarApi> {
-  let token = await googleToken(target);
-  return new GoogleCalendarApi(() => Promise.resolve(token.token));
+  return new GoogleCalendarApi(googleTokenProvider(target));
 }
 
 async function cachedBigQueryOptions(
