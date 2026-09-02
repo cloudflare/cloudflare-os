@@ -128,13 +128,14 @@ describe("Calendar configurator URLs", () => {
       listCalendars: vi.fn(),
     } as unknown as CalendarConfiguratorRpc;
 
-    const values = await calendarConfigurator.initialValuesFromResourceUrl!({
-      resourceUrl: "https://calendar.google.com/calendar/primary/",
+    const seeded = await calendarConfigurator.initialValuesFromResourceUrl!({
+      resourceUrl: "https://calendar.google.com/calendar/primary/?availability=allVisible",
       resourceUrlPattern: GOOGLE_CALENDAR_RESOURCE.urlPattern,
       ui,
     });
+    const values = { availabilityMode: "thisCalendar" as const, ...seeded };
     const resourceUrl = calendarConfigurator.resourceUrl!({
-      values: { availabilityMode: "thisCalendar", ...values }, ui,
+      values, ui,
     });
 
     expect(calendarConfigurator.isReady!({ values: { calendarId: "primary" } })).toBe(false);
@@ -143,7 +144,7 @@ describe("Calendar configurator URLs", () => {
     expect(parseResourceUrl(resourceUrl)).toEqual({
       kind: "calendar",
       calendarId: "person@example.com",
-      availabilityMode: "thisCalendar",
+      availabilityMode: "allVisible",
     });
   });
 });
