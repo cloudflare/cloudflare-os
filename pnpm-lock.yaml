@@ -37,6 +37,9 @@ importers:
 
   .:
     devDependencies:
+      '@gadgets/scripts':
+        specifier: workspace:*
+        version: link:scripts
       '@types/node':
         specifier: 26.1.0
         version: 26.1.0
