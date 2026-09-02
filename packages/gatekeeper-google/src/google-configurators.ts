@@ -128,6 +128,15 @@ export class CalendarConfiguratorUI extends RpcTarget implements CalendarConfigu
     googleTokenGetters.set(this, getToken);
   }
 
+  async getPrimaryCalendarId(): Promise<string> {
+    let api = await calendarApi(this);
+    let calendarId = (await api.getCalendar("primary")).id;
+    if (!calendarId || calendarId === "primary") {
+      throw new Error("Google Calendar did not return a stable primary calendar ID.");
+    }
+    return calendarId;
+  }
+
   async listCalendars(query: string): Promise<ConfiguratorOption[]> {
     let options = calendarConfiguratorCaches.get(this);
     if (!options) {

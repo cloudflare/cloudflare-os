@@ -10,7 +10,19 @@ const token = (value: string): GoogleAccessToken => ({
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("Google resource configurator authentication", () => {
+describe("Google resource configurators", () => {
+  it("resolves the primary Calendar alias to its stable ID", async () => {
+    let getToken = vi.fn(async () => token("access-token"));
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      id: "person@example.com",
+      summary: "Primary calendar",
+      primary: true,
+    })));
+
+    await expect(new CalendarConfiguratorUI(getToken).getPrimaryCalendarId())
+      .resolves.toBe("person@example.com");
+  });
+
   it("refreshes a rejected Calendar access token", async () => {
     let getToken = vi.fn(async (opts?: AccessTokenRequest) =>
       token(opts?.forceRefresh ? "fresh" : "stale"));
