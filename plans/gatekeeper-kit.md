@@ -5,14 +5,11 @@ gatekeeper be written as a TypeScript spec plus service-specific sessions, inste
 lines of hand-copied plumbing.
 
 **Status.** Layer 1 (§4, the leaf modules) has landed and has been through a review pass against
-both corpora, except that the browser-binding cookie and same-origin navigation fence were
-reverted: deployed Workshops may open gatekeepers on a different site, where that fence rejects
-legitimate connections. The §4 sections are reconciled against the remaining shipped signatures —
-where the two ever disagree, the code and its tests win. Layer 2 (§5, the assembly) and §7 steps
-8–16 are still proposal: nothing consumes the kit yet, so no gatekeeper has been ported and none of
-§5's ergonomics have met a real consumer. Its connect assembly is blocked on a cross-origin-safe
-handshake that binds completion to the initiating Workshop user. Findings that review raised and
-declined are recorded in the obligations table (§4.8), each with the trigger that would revive it.
+both corpora. The §4 sections are reconciled against the shipped signatures — where the two ever
+disagree, the code and its tests win. Layer 2 (§5, the assembly) and §7 steps 8–16 are still
+proposal: nothing consumes the kit yet, so no gatekeeper has been ported and none of §5's
+ergonomics have met a real consumer. Findings that review raised and declined are recorded in the
+obligations table (§4.8), each with the trigger that would revive it.
 
 ## 1. Introduction & high-level intent
 
@@ -186,11 +183,6 @@ property; the reserved keys (`value`, `expiresAt`, `stage`) are intersected onto
 runtime. The exclusion lives on the parameter rather than the `Extra` constraint: as a constraint
 it is a weak type, which defeats inference and collapses `StoredNonce<Extra>` to `never`.
 
-This module prevents nonce replay but deliberately does not claim to bind the flow to a browser or
-Workshop session. The previous cookie-secret experiment depended on a same-origin initiation fence
-and was reverted because real deployments may serve the Workshop and gatekeeper from different
-sites. A replacement belongs in the cross-origin handshake required before Layer 2 can ship.
-
 ### 4.3 `./connect-pages`
 
 The browser pages and request guards used during connect. Exports `escapeHtml`,
@@ -218,13 +210,6 @@ absence means a non-browser caller on a URL whose whole authority is that a brow
 link. This is the third copy of the same check — Marketo's `checkMutation`, and
 `workshop-backend/src/client-errors.ts:100-104` — and homeassistant, which accepts POSTs on its
 connect route, has none.
-
-No initiation-navigation guard is exported. The reverted `Sec-Fetch-Site: same-origin` check could
-distinguish a copied browser link only when the Workshop and gatekeeper shared an origin; it rejected
-legitimate navigation from deployments where they live on different sites. Allowing `cross-site`
-would admit the copied-link attack again, so Layer 2 needs an explicit cross-origin handshake rather
-than another Fetch Metadata classification. This continues to rely on the existing sandbox boundary:
-user-authored content must never execute at the Workshop origin.
 
 `contentType` names a media type and is compared **exactly**, parameters dropped and case folded.
 Substring matching looks equivalent and is not: `application/jsonp` contains `application/json`,
@@ -1642,11 +1627,6 @@ would have to expose knobs for exactly the policy it claims to centralize.
 
 ## 5. Layer 2: the assembly
 
-> **Security block:** The connect-completion protocol is not specified yet. Layer 2 must not ship an
-> auth assembly until a cross-origin-safe handshake binds the provider grant to the authenticated
-> Workshop user that initiated it. The reverted same-origin Fetch Metadata mechanism is not an
-> acceptable implementation.
-
 ### 5.1 `./spec`
 
 ```ts
@@ -1777,11 +1757,8 @@ export function oauth2<Creds, E extends KitEnv = KitEnv>(config: {
 Provider behavior remains compatible with the handlers it replaces (`supabase.ts:267-334`,
 `github.ts:931-1004`): `begin` builds the authorize URL carrying `client_id`,
 `redirect_uri = ${baseUrl}/oauth`, `state = ${accountId}:${stateNonce}`, scope/PKCE/extra params;
-`routes` handles exactly `GET /oauth`, parses state, and dispatches to the account DO. The nonce
-prevents replay but does not prove that the browser returning from the provider belongs to the
-Workshop user whose callback the account stores. The cross-origin validation step is intentionally
-unspecified and blocks this strategy from implementation until the handshake above is designed.
-Provider errors yield a 400 plain-text restart message; malformed or expired callbacks render
+`routes` handles exactly `GET /oauth`, parses state, and dispatches to the account DO. Provider
+errors yield a 400 plain-text restart message; malformed or expired callbacks render
 `INVALID_LINK_HTML`.
 `scopes.auth` is the sign-in-only subset used when
 `GatekeeperConnectOptions.scopes === "auth"`. The README instructs config
@@ -1817,11 +1794,6 @@ Routing order: base-path guard (throws on a mismatched prefix, preserving curren
 not-configured page or calls `accountForId(doId).beginAuth(nonce)`; then `spec.auth.routes`, then the
 consumer's `routes` escape hatch, then 404. The URL shape and Workshop API remain unchanged.
 
-This routing must not ship for credential-bearing auth until the security block above is resolved.
-Deployments may serve the Workshop and `/gatekeeper/*` from different registrable domains, so the
-design must make no same-origin or same-site assumption. Normal Vite development's port split is
-not a substitute for testing that production topology.
-
 ### 5.6 `./account` — `KitUserAccountBase<E, Creds, Public>`
 
 An abstract `DurableObject<E>` subclass. Configuration arrives through a symbol-keyed hook —
@@ -1846,13 +1818,11 @@ Public loopback-RPC methods and their sequencing:
   `putInitiation`, fresh `"attemptGeneration"`.
 - `beginAuth(nonce)` — `advanceToOAuth` with `{ connect }` metadata, then `strategy.begin`; after
   `begin`'s awaits, re-checks `"attemptGeneration"` and returns null on mismatch (rendered as an
-  invalid link). The final handoff to `strategy.begin` is part of the unresolved cross-origin
-  handshake and must carry whatever proof that design requires.
-- `completeAuth(payload, state)` — may proceed only after the future handshake proves that the
-  provider grant belongs to the authenticated Workshop user that initiated this attempt. Then
-  `strategy.obtain`, then re-checks `"attemptGeneration"` and returns false on mismatch. This closes
-  the revoke race: a `revoke()` that ran during the token exchange has already cleared the
-  generation, so the exchange result is discarded instead of resurrecting credentials after
+  invalid link).
+- `completeAuth(payload, state)` — `strategy.obtain`, then re-checks `"attemptGeneration"` and
+  returns false on mismatch. This closes the revoke race: a `revoke()` that ran during the token
+  exchange has already cleared the generation, so the exchange result is discarded instead of
+  resurrecting credentials after
   `deleteAll()`. On success: `coordinator.connect`, `clearCredentialExpiryLatch`, clear
   `"attemptGeneration"`; then `callback.credentialsRestored()` when reconnecting, else
   `callback.complete(mintUser())` — **and the credentials stay whatever that call does**; ephemeral
@@ -2252,8 +2222,7 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
    that is not exported from the effective types text (§5.10); default resolver precedence;
    `getBaseUrl` defaulting; authorize-URL construction (state format, scope join, PKCE challenge,
    extra params); handler routing against `Request` objects and a stubbed `accountForId`
-   (initiation-link shape and Fetch Metadata gates, localhost Vite exception, not-configured page,
-   redirect `Set-Cookie`, `/oauth` browser-cookie/error/missing-parameter branches, cookie cleanup,
+   (initiation-link shape, not-configured page, `/oauth` error/missing-parameter branches,
    fall-through to consumer routes, 404).
 9. **Assembly bases: `account`, `vendor`, `user`, `facet` (§5.6–5.9).** Exercised end to end in
    step 11.
@@ -2276,10 +2245,8 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
     capturing `complete`/`credentialsExpired`/`credentialsRestored`, and a fake `ApprovalQueue`
     recording calls. `vitest.worker.config.ts` runs `capnwebValidate()` plus `cloudflareTest`
     (compatibility date `2026-02-02`, flags `allow_irrevocable_stub_storage` + `nodejs_als`, the
-    three DOs). Tests: the full connect round trip (connectAccount URL → same-origin initiation fetch →
-    302 with state and browser cookie → `/oauth` callback carrying the cookie → mocked token exchange →
-    `complete()` delivering a working user stub); a cross-site initiation request never calls
-    `beginAuth`; a callback without the cookie never calls `completeAuth`; terminal callbacks clear it;
+    three DOs). Tests: the full connect round trip (connectAccount URL → initiation fetch → 302 with
+    state → `/oauth` callback → mocked token exchange → `complete()` delivering a working user stub);
     concurrent `beginAuth` advancing exactly once; the revoke-during-obtain race
     (`beginAuth` → `revoke()` → `/oauth` callback: `completeAuth` returns false and storage stays
     empty); ephemeral sign-in self-destruct via `runDurableObjectAlarm`; reconnect →
@@ -2408,17 +2375,14 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
 
 All commands from the repo root.
 
-1. `pnpm install`, then `pnpm --filter @gadgets/gatekeeper-kit test:run`. Both suites green. Before
-   Layer 2 auth can be considered complete, its cross-origin handshake needs an end-to-end browser
-   test proving that neither a copied initiation URL nor a copied provider URL can attach one
-   person's provider grant to another Workshop user. The remaining checks that define success: the
-   fixture OAuth round trip delivers a usable `GatekeeperUser` stub; concurrent `beginAuth` advances
-   exactly once; `completeAuth` after a concurrent `revoke` leaves the account empty; a mocked-500
-   refresh leaves stored credentials intact while a mocked-400 `invalid_grant` notifies expiry
-   exactly once and re-notifies after a failed callback; observation data is withheld until
-   `authorizeObservation` resolves; a staged action is absent after `submitAction`-failure rollback
-   — `journal.get(id)` is `undefined` and `listPending()` is empty; tracked-set exclusion lists
-   exactly the denied observer.
+1. `pnpm install`, then `pnpm --filter @gadgets/gatekeeper-kit test:run`. Both suites green. The
+   checks that define success: the fixture OAuth round trip delivers a usable `GatekeeperUser` stub;
+   concurrent `beginAuth` advances exactly once; `completeAuth` after a concurrent `revoke` leaves
+   the account empty; a mocked-500 refresh leaves stored credentials intact while a mocked-400
+   `invalid_grant` notifies expiry exactly once and re-notifies after a failed callback; observation
+   data is withheld until `authorizeObservation` resolves; a staged action is absent after
+   `submitAction`-failure rollback — `journal.get(id)` is `undefined` and `listPending()` is empty;
+   tracked-set exclusion lists exactly the denied observer.
 2. `pnpm --filter @gadgets/mcp-shared test:run` plus type-checking the two MCP connectors — the
    step-12 regression gate.
 3. `pnpm --filter <supabase package name> test:run` (the `name` field in
@@ -2497,11 +2461,6 @@ evidence, and the trigger.
   `claimed`, and the work is extending it past the tier boundary. *Trigger:* the first
   non-idempotent compensating write — today's are mostly restores of a previous value, which is why
   the gap has cost nothing yet.
-- **Cross-origin Workshop-session-bound initiation** behind the `connectAccount` → handshake seam.
-  The same-origin Fetch Metadata experiment was reverted because deployed Workshops may open a
-  gatekeeper on another site. Layer 2's auth assembly is blocked until a protocol binds completion
-  to the authenticated Workshop user without assuming a shared origin; a `postMessage` exchange or
-  a Workshop-mediated one-time handoff are candidate designs, not settled interfaces.
 - **Already realized** (orientation only, no work): the `ObserverStrategy` A–D wrappers behind one
   interface; `ArrayCursor`/`PageNumberCursor`/`OffsetCursor`/`TokenCursor` behind `Cursor<T>`; and
   Layer 2's `AuthStrategy` (`oauth2` / `tokenAuth` / CF Access) — the same doctrine at the auth seam.
