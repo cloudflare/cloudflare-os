@@ -490,22 +490,72 @@ describe("restarting sessions when verification scope widens", () => {
     expect(impl.storage.observers.get("alice").accountChoices).toEqual({ 1: 10 });
     expect(restarts).toEqual([]);
   }));
+
+  // A pre-creationSpec record, which observerVendorId() refuses to classify: sharing anything
+  // that reaches it requires the owner to reconnect it first.
+  function seedLegacyGatekeeper(impl: any, id: number): void {
+    impl.storage.gatekeepers.put({ id, resourceTitle: `Legacy ${id}`, class: {} as any });
+  }
+
+  it("an unrelated legacy connection does not block a use collaborator",
+      () => withImpl(async (impl) => {
+    seedLegacyGatekeeper(impl, 1);
+
+    // Nothing binds the legacy record and no hook feeds it, so a "use" collaborator's sessions
+    // can't reach it: the scope filter must drop it before the legacy check throws, or one stale
+    // record would block every use open in the workspace.
+    expect(impl.listObserverRequirements("use")).toEqual([]);
+    let fakeClientUser = { listProvidedAccounts: async () => [] } as any;
+    await expect(impl.ensureObserver("alice", fakeClientUser, "use")).resolves.toBeUndefined();
+  }));
+
+  it("...but a legacy connection still blocks a build collaborator",
+      () => withImpl(async (impl) => {
+    seedLegacyGatekeeper(impl, 1);
+
+    // "Build" scope is everything, so the record is in scope and the intended fail-closed error
+    // still fires: the owner must reconnect it before the workspace can be shared at that level.
+    expect(() => impl.listObserverRequirements("build")).toThrow(/reconnected/);
+  }));
+
+  it("...and still blocks a use collaborator once a gadget binds it",
+      () => withImpl(async (impl) => {
+    seedLegacyGatekeeper(impl, 1);
+    seedGadget(impl, 100);
+
+    // Bound, the record is genuinely in "use" scope, and verification can't proceed without
+    // knowing what to verify against -- same fail-closed refusal as "build".
+    impl.bindWorkpiece(100, "DB", 1);
+    expect(() => impl.listObserverRequirements("use")).toThrow(/reconnected/);
+  }));
 });
 
 // An enabled hook is a live write channel into the gadget it wakes, so its connection is in every
 // "use" collaborator's verification scope regardless of binding edges -- and enabling one is a
 // scope widening like binding one.
 describe("hooks widen use scope", () => {
-  function seedHook(impl: any, opts: { enabled?: boolean; controller?: object } = {}): void {
+  function seedHook(
+      impl: any,
+      opts: { enabled?: boolean; controller?: object; gadgetId?: number } = {}): void {
     impl.storage.boundHooks.put({
       id: 5,
       actionId: 999,
       gatekeeperId: 1,
+      ...(opts.gadgetId !== undefined ? { gadgetId: opts.gadgetId } : {}),
       vendorId: "testvendor",
       controller: (opts.controller ?? {}) as any,
       callback: {} as any,
       description: { title: "Hook", description: "Delivers events" },
       enabled: opts.enabled ?? false,
+    });
+  }
+
+  // A gadget still provisional to `chatId`: proposed in that chat, invisible to "use"
+  // collaborators until a merge promotes it.
+  function seedPendingGadget(impl: any, id: number, chatId: number): void {
+    impl.storage.gadgets.put({
+      id, title: "G", created: new Date(0), bindingName: "G", bindings: {},
+      pending: { chatId },
     });
   }
 
@@ -537,6 +587,53 @@ describe("hooks widen use scope", () => {
 
     expect(restarts).toEqual([]);
     expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
+  }));
+
+  it("enabling a hook on a still-provisional gadget widens nothing",
+      () => withImpl(async (impl, restarts) => {
+    joinSession(impl, "use");
+    seedGatekeeper(impl, 1);
+    seedPendingGadget(impl, 100, 7);
+    seedHook(impl, { gadgetId: 100 });
+
+    // The gadget this hook wakes is still a proposal within a chat: "use" collaborators can't
+    // open it (getGadget refuses pending gadgets), so the hook's connection isn't reachable
+    // from their sessions and enabling it must not sever them or quarantine the connection.
+    impl.enableHookRecord(impl.storage.boundHooks.get(5));
+
+    expect(impl.storage.boundHooks.get(5).enabled).toBe(true);
+    expect(restarts).toEqual([]);
+    expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
+  }));
+
+  it("promoting the hook's gadget at merge is the widening",
+      () => withImpl(async (impl, restarts) => {
+    joinSession(impl, "use");
+    seedGatekeeper(impl, 1);
+    seedPendingGadget(impl, 100, 1);
+    seedHook(impl, { gadgetId: 100 });
+    impl.storage.chatMeta.put(
+        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+
+    impl.enableHookRecord(impl.storage.boundHooks.get(5));
+    expect(restarts).toEqual([]);
+    // The creation lands on a "changes" message, stamping the pending record for merge coverage.
+    await impl.commitAgentStep(1, AGENT, [{ type: "message", message: "created a gadget" }], {
+      changes: [],
+      createdGadgets: [{ gadgetId: 100, title: "G", bindingName: "G" }],
+      addedBindings: [],
+    });
+    expect(restarts).toEqual([]);
+
+    expect(await impl.mergeChanges(1, USER_META, "owner-user-do"))
+        .toEqual({ outcome: "merged" });
+
+    // Accepting the creation is the moment the hook's write channel becomes state the "use"
+    // collaborator can open, so the merge's scope diff reports the widening: restart plus
+    // quarantine, exactly like promoting a pending binding edge.
+    expect(impl.storage.gadgets.get(100).pending).toBeUndefined();
+    expect(restarts).toHaveLength(1);
+    expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
   }));
 
   it("hook delivery is refused while the connection is blocked pending the restart",

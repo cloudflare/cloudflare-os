@@ -257,7 +257,8 @@ Logic:
 1. **Select in-scope gatekeepers** from `this.storage.gatekeepers.list()`:
    - `build`: all gatekeepers.
    - `use`: only those some gadget binds, an enabled hook feeds, or a bound agent spawner's env
-     names (`#useScopeGatekeeperIds`).
+     names (`#useScopeGatekeeperIds` — a hook waking a still-provisional gadget stays out of
+     `use` scope until promotion; the merge diff reports that widening).
    - A `creationSpec` with a `vendorId` requires an account; other specs need no verifier or account
      choice.
 
@@ -420,7 +421,7 @@ Four events trigger it:
 | `addGatekeeper()` with a vendor-backed `creationSpec` | **build** scope — a live `build` session can `getGatekeeperById()`/`openSession()` on it with no observer check |
 | `bindWorkpiece()` for a permanent (non-`chatId`) edge onto a vendor-backed connection | **use** scope — the gadget UI a `use` session drives can now invoke it |
 | A merge that promotes a pending gadget or a pending binding edge into `use` scope | **use** scope, same reason |
-| `enableHook` on a vendor-backed connection not already in `use` scope | **use** scope — the hook delivers the connection's data into a gadget a `use` session can open |
+| `enableHook` on a vendor-backed connection not already in `use` scope | **use** scope — the hook delivers the connection's data into a gadget a `use` session can open (a hook waking a still-provisional gadget stays out of `use` scope until promotion; the merge diff reports that widening) |
 
 The two roles widen independently, so each trigger passes the role it grew and the restart is
 skipped when no collaborator holds it: a new connection is in every `build` collaborator's scope

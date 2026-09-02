@@ -9160,7 +9160,15 @@ class OverseerImpl implements AgentHooks {
       }
     }
     for (let hook of this.storage.boundHooks.list()) {
-      if (hook.enabled) ids.add(hook.gatekeeperId);
+      if (!hook.enabled) continue;
+      // A hook wakes one gadget; while that gadget is still provisional to a chat, "use"
+      // collaborators can't open it (getGadget refuses pending gadgets), so the hook doesn't
+      // bring its connection into their scope. Promotion deletes `pending` inside
+      // mergeChanges' scope diff, which reports the widening then. An unresolvable target
+      // (no gadgetId and no default gadget, or a deleted record) stays in scope, fail-closed.
+      let gadgetId = hook.gadgetId ?? this.defaultGadgetId;
+      if (gadgetId !== undefined && this.storage.gadgets.get(gadgetId)?.pending) continue;
+      ids.add(hook.gatekeeperId);
     }
 
     // Close over agent-spawner envs. The closure roots at the reachable set above because an
@@ -9201,13 +9209,18 @@ class OverseerImpl implements AgentHooks {
   //   - "build" collaborators (full access): every account-requiring gatekeeper.
   //   - "use" collaborators (UI only): only account-requiring gatekeepers some gadget binds or an
   //     enabled hook feeds, since that is all their sessions can reach.
+  //
+  // The scope filter runs before observerVendorId(), which throws on a legacy record with no
+  // creationSpec: an unrelated legacy connection outside the caller's scope must not block their
+  // open, since nothing they can reach needs verification against it. An in-scope one still
+  // throws, fail-closed (and "build" scope is everything, so it always throws there).
   #inScopeGatekeepers(role: CollaboratorRole): GatekeeperRecord[] {
     let boundIds = role === "use" ? this.#useScopeGatekeeperIds() : undefined;
 
     let result: GatekeeperRecord[] = [];
     for (let gk of this.storage.gatekeepers.list()) {
-      if (!observerVendorId(gk)) continue;
       if (boundIds && !boundIds.has(gk.id)) continue;
+      if (!observerVendorId(gk)) continue;
       result.push(gk);
     }
     return result;
