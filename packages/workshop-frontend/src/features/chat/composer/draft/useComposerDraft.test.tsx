@@ -116,6 +116,22 @@ describe("useComposerDraft", () => {
     }))).not.toBeNull();
   });
 
+  it("invalidates document snapshots when switching between identical keyed scopes", async () => {
+    container = document.createElement("div");
+    root = createRoot(container);
+    await act(async () => root!.render(<Harness storageKey="draft:user-a" />));
+    const snapshot = controls.getDocumentSnapshot();
+
+    await act(async () => root!.render(<Harness storageKey="draft:user-b" />));
+
+    expect(controls.getDocumentSnapshot().documentRevision).toBeGreaterThan(
+      snapshot.documentRevision,
+    );
+    expect(controls.commitDocumentEdit(snapshot, () => ({
+      document: emptyDocument("stale resource"),
+    }))).toBeNull();
+  });
+
   it("does not apply late draft decoration after an edit", async () => {
     const storedDraft: StoredComposerDraft = {
       version: 1,

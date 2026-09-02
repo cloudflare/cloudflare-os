@@ -167,6 +167,32 @@ describe("useComposerResources", () => {
     expect(harness.onError).not.toHaveBeenCalled();
   });
 
+  it("rejects a resource result after explicit dismissal", async () => {
+    let resolveDescription!: (value: typeof description) => void;
+    const gatekeeper = fakeGatekeeper(() => new Promise((resolve) => {
+      resolveDescription = resolve;
+    }));
+    const harness = await renderHarness(async () => gatekeeper.stub);
+    act(() => {
+      harness.controls.draft.recordEdit();
+      harness.controls.draft.replaceDocument(emptyDocument(description.url));
+    });
+    act(() => harness.controls.resources.scanAt(10));
+    const creation = harness.controls.resources.createCapsule(3, "vendor");
+    await act(async () => Promise.resolve());
+
+    act(() => harness.controls.resources.dismissUrl());
+    await act(async () => {
+      resolveDescription(description);
+      await creation;
+    });
+
+    expect(harness.controls.draft.document).toEqual(emptyDocument(description.url));
+    expect(gatekeeper.dispose).toHaveBeenCalledOnce();
+    expect(harness.onSelectionRequest).not.toHaveBeenCalled();
+    expect(harness.onError).not.toHaveBeenCalled();
+  });
+
   it("suppresses a metadata failure after the attach modal is canceled", async () => {
     let rejectMetadata!: (reason: Error) => void;
     const dispose = vi.fn<() => void>();

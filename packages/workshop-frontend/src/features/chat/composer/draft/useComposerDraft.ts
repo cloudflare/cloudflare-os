@@ -174,7 +174,7 @@ export const useComposerDraft = ({
       ...composerDocumentFromDraft(storedDraft),
       capsules: previousKey === undefined ? currentDocument.capsules : [],
     };
-    if (!composerDocumentsMatch(currentDocument, nextDocument)) {
+    if (previousKey !== undefined || !composerDocumentsMatch(currentDocument, nextDocument)) {
       setCurrentDocument(nextDocument);
     }
     if (storedDraft) restorePresentation(storedDraft, storageKey, generation);

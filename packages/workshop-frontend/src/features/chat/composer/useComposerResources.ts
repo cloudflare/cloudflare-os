@@ -61,9 +61,14 @@ export const useComposerResources = ({
     attachSnapshotRef.current = undefined;
   }, []);
 
-  const dismissUrl = () => {
+  const hideUrl = () => {
     activeUrlRef.current = null;
     setActiveUrl(null);
+  };
+
+  const dismissUrl = () => {
+    operationRef.current++;
+    hideUrl();
   };
 
   const scanAt = (position: number) => {
@@ -96,7 +101,7 @@ export const useComposerResources = ({
       setActiveUrl(next);
       return;
     }
-    dismissUrl();
+    hideUrl();
   };
 
   const createCapsule = async (accountId: number, vendorId: string) => {
