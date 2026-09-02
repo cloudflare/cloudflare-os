@@ -222,7 +222,7 @@ describe("ChatComposer", () => {
     expect(listSlashCommands).toHaveBeenCalledTimes(1);
   });
 
-  it("requires explicit slash-picker confirmation before sending an exact skill", async () => {
+  it("sends unconfirmed slash text as plain text", async () => {
     const skill: SlashCommandChoice = {
       selection: { gatekeeperId: 42, commandId: "deploy" },
       name: "deploy",
@@ -255,23 +255,15 @@ describe("ChatComposer", () => {
         "/deploy production",
       );
       textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await act(async () => vi.waitFor(() => expect(
-      document.querySelectorAll('[role="option"]'),
-    ).toHaveLength(1)));
-
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
       await new Promise(requestAnimationFrame);
     });
-    expect(onSend).not.toHaveBeenCalled();
-
+    expect(textarea.getAttribute("aria-expanded")).toBe("false");
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
       await Promise.resolve();
     });
     expect(onSend).toHaveBeenCalledWith(
-      { id: skill.selection, args: "production" },
+      "/deploy production",
       "model-a",
       undefined,
       undefined,
