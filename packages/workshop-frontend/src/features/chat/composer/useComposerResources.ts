@@ -11,7 +11,10 @@ import {
   type ComposerSelection,
   type ComposerUrlRange,
 } from "./composerDocument";
-import type { ComposerDocumentSnapshot } from "./draft/useComposerDraft";
+import type {
+  CommitDocumentEditOptions,
+  ComposerDocumentSnapshot,
+} from "./draft/useComposerDraft";
 
 const URL_REGEX = /https?:\/\/[^\s)>\]]*/g;
 
@@ -31,10 +34,34 @@ type UseComposerResourcesOptions = {
   commitDocumentEdit: <T extends { document: ComposerDocument }>(
     snapshot: ComposerDocumentSnapshot,
     transition: (current: ComposerDocument) => T | null,
+    options?: CommitDocumentEditOptions,
   ) => CommittedTransition<T>;
   capsuleTokenText: (description: ResourceDescription, vendorId?: string) => string;
   onSelectionRequest: (selection: ComposerSelection, documentRevision: number) => void;
   onError: (message: string) => void;
+};
+
+const currentResourceUrl = (
+  source: ActiveResourceUrl,
+  document: ComposerDocument,
+): ComposerUrlRange | null => {
+  const originalUrls = [...source.snapshot.document.text.matchAll(new RegExp(URL_REGEX))];
+  const sourceIndex = originalUrls.findIndex((match) =>
+    match.index === source.start && match.index + match[0].length === source.end &&
+    match[0] === source.text);
+  if (sourceIndex < 0) return null;
+
+  const match = [...document.text.matchAll(new RegExp(URL_REGEX))][sourceIndex];
+  if (!match || match[0] !== source.text) return null;
+  return { text: match[0], start: match.index, end: match.index + match[0].length };
+};
+
+const removeUnusedGatekeeper = async (gatekeeper: RpcStub<GatekeeperClient<any>>) => {
+  try {
+    await gatekeeper.remove();
+  } catch (error) {
+    console.error("Failed to remove unused resource connection:", error);
+  }
 };
 
 export const useComposerResources = ({
@@ -47,6 +74,7 @@ export const useComposerResources = ({
 }: UseComposerResourcesOptions) => {
   const [activeUrl, setActiveUrl] = useState<ActiveResourceUrl | null>(null);
   const [attachModalOpen, setAttachModalOpen] = useState(false);
+  const [isCreatingResource, setIsCreatingResource] = useState(false);
   const activeUrlRef = useRef(activeUrl);
   const attachSnapshotRef = useRef<{
     snapshot: ComposerDocumentSnapshot;
@@ -68,6 +96,7 @@ export const useComposerResources = ({
 
   const dismissUrl = () => {
     operationRef.current++;
+    setIsCreatingResource(false);
     hideUrl();
   };
 
@@ -108,6 +137,7 @@ export const useComposerResources = ({
     const source = activeUrlRef.current;
     if (!source) return;
     const operation = ++operationRef.current;
+    setIsCreatingResource(true);
     try {
       const gatekeeper = await createCapsuleGatekeeper(
         accountId,
@@ -118,33 +148,40 @@ export const useComposerResources = ({
         onError("Failed to create resource connection");
         return;
       }
+      let inserted = false;
       try {
         const [gatekeeperId, description] = await Promise.all([
           gatekeeper.getId(),
           gatekeeper.describe(),
         ]);
         if (operationRef.current !== operation) return;
-        const result = commitDocumentEdit(source.snapshot, (document) =>
-          replaceComposerUrlWithCapsule(
+        const result = commitDocumentEdit(source.snapshot, (document) => {
+          const url = currentResourceUrl(source, document);
+          return url && replaceComposerUrlWithCapsule(
             document,
-            source,
+            url,
             { gatekeeperId, description, vendorId },
             capsuleTokenText(description, vendorId),
-          ));
+          );
+        }, { allowPresentationChanges: true });
         if (!result) {
           onError("The prompt changed before the resource could be added");
           dismissUrl();
           return;
         }
+        inserted = true;
         dismissUrl();
         onSelectionRequest({ start: result.caret, end: result.caret }, result.documentRevision);
       } finally {
+        if (!inserted) await removeUnusedGatekeeper(gatekeeper);
         gatekeeper[Symbol.dispose]();
       }
     } catch (error) {
       if (operationRef.current !== operation) return;
       console.error("Failed to create capsule:", error);
       onError("Failed to add resource");
+    } finally {
+      if (operationRef.current === operation) setIsCreatingResource(false);
     }
   };
 
@@ -187,7 +224,9 @@ export const useComposerResources = ({
 
   const attachCreated = async (gatekeeper: RpcStub<GatekeeperClient<any>>) => {
     const source = attachSnapshotRef.current;
+    let inserted = false;
     try {
+      if (!source || attachSnapshotRef.current !== source) return;
       const [gatekeeperId, description, creationSpec] = await Promise.all([
         gatekeeper.getId(),
         gatekeeper.describe(),
@@ -207,11 +246,13 @@ export const useComposerResources = ({
         onError("The prompt changed before the resource could be added");
         return;
       }
+      inserted = true;
       onSelectionRequest({ start: result.caret, end: result.caret }, result.documentRevision);
     } catch (error) {
       if (attachSnapshotRef.current !== source) return;
       throw error;
     } finally {
+      if (!inserted) await removeUnusedGatekeeper(gatekeeper);
       gatekeeper[Symbol.dispose]();
     }
   };
@@ -223,6 +264,7 @@ export const useComposerResources = ({
     closeAttachModal,
     createCapsule,
     dismissUrl,
+    isCreatingResource,
     openAttachModal,
     refineUrl,
     scanAt,

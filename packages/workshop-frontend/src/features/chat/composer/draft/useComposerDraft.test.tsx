@@ -19,6 +19,7 @@ vi.mock("../../../../components/format/formatIconImage", () => ({
 
 import { readComposerDraft, writeComposerDraft } from "./composerDraft";
 import {
+  type CommitDocumentEditOptions,
   type ComposerDocumentSnapshot,
   useComposerDraft,
 } from "./useComposerDraft";
@@ -39,6 +40,7 @@ type DraftControls = {
   commitDocumentEdit: (
     snapshot: ComposerDocumentSnapshot,
     transition: (document: ComposerDocument) => { document: ComposerDocument } | null,
+    options?: CommitDocumentEditOptions,
   ) => ({
     document: ComposerDocument;
     documentRevision: number;
@@ -264,5 +266,31 @@ describe("useComposerDraft", () => {
       document: emptyDocument("stale result"),
     }))).toBeNull();
     expect(controls.document.text).toBe("replacement");
+  });
+
+  it("allows a validated transition after presentation-only decoration", async () => {
+    const storedDraft: StoredComposerDraft = {
+      version: 1,
+      text: "Create a Document at https://example.com",
+      formats: [{ position: 9, length: 8, noun: "Document", icon: "fileText" }],
+    };
+    writeComposerDraft("draft:user-a", storedDraft);
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    container = document.createElement("div");
+    root = createRoot(container);
+    await act(async () => root!.render(<Harness storageKey="draft:user-a" />));
+    const snapshot = controls.getDocumentSnapshot();
+
+    await act(async () => {
+      iconState.resolve!("data:image/svg+xml,icon");
+      await Promise.resolve();
+    });
+
+    expect(controls.commitDocumentEdit(snapshot, (document) => ({ document }), {
+      allowPresentationChanges: true,
+    })).not.toBeNull();
   });
 });

@@ -7,6 +7,19 @@ import type { RpcStub } from "capnweb";
 import type { GatekeeperClient } from "@gadgets/workshop-shared/api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ComposerDocument, ComposerSelection } from "./composerDocument";
+import type { StoredComposerDraft } from "./draft/composerDraft";
+
+const iconState = vi.hoisted(() => ({
+  resolve: undefined as ((url: string) => void) | undefined,
+}));
+
+vi.mock("../../../components/format/formatIconImage", () => ({
+  formatIconDataUrl: () => new Promise<string>((resolve) => {
+    iconState.resolve = resolve;
+  }),
+}));
+
+import { writeComposerDraft } from "./draft/composerDraft";
 import { useComposerDraft } from "./draft/useComposerDraft";
 import { useComposerResources } from "./useComposerResources";
 
@@ -29,11 +42,14 @@ const emptyDocument = (text: string): ComposerDocument => ({
 
 const fakeGatekeeper = (describeResource = async () => description) => {
   const dispose = vi.fn<() => void>();
+  const remove = vi.fn(async () => {});
   return {
     dispose,
+    remove,
     stub: {
       getId: async () => 7,
       describe: describeResource,
+      remove,
       [Symbol.dispose]: dispose,
     } as unknown as RpcStub<GatekeeperClient<any>>,
   };
@@ -47,10 +63,13 @@ describe("useComposerResources", () => {
     await act(async () => root?.unmount());
     container?.remove();
     sessionStorage.clear();
+    iconState.resolve = undefined;
+    vi.unstubAllGlobals();
   });
 
   const renderHarness = async (
     createCapsuleGatekeeper: () => Promise<RpcStub<GatekeeperClient<any>> | null>,
+    draftOptions: { storageKey?: string; logoSlot?: string } = {},
   ) => {
     const onSelectionRequest = vi.fn<(
       selection: ComposerSelection,
@@ -62,7 +81,10 @@ describe("useComposerResources", () => {
       resources: ReturnType<typeof useComposerResources>;
     };
     const Harness = () => {
-      const draft = useComposerDraft({ storageKey: undefined, logoSlot: "" });
+      const draft = useComposerDraft({
+        storageKey: draftOptions.storageKey,
+        logoSlot: draftOptions.logoSlot ?? "",
+      });
       const resources = useComposerResources({
         createCapsuleGatekeeper,
         getDocumentSnapshot: draft.getDocumentSnapshot,
@@ -104,6 +126,7 @@ describe("useComposerResources", () => {
       command: null,
     });
     expect(gatekeeper.dispose).toHaveBeenCalledOnce();
+    expect(gatekeeper.remove).not.toHaveBeenCalled();
     expect(harness.onSelectionRequest).toHaveBeenCalledWith(
       { start: 5, end: 5 },
       expect.any(Number),
@@ -135,6 +158,7 @@ describe("useComposerResources", () => {
 
     expect(harness.controls.draft.document).toEqual(emptyDocument("new prompt"));
     expect(gatekeeper.dispose).toHaveBeenCalledOnce();
+    expect(gatekeeper.remove).toHaveBeenCalledOnce();
     expect(harness.onSelectionRequest).not.toHaveBeenCalled();
     expect(harness.onError).toHaveBeenCalledWith(
       "The prompt changed before the resource could be added",
@@ -164,6 +188,45 @@ describe("useComposerResources", () => {
     expect(harness.controls.draft.document.text).toBe("See Plan ");
     expect(harness.controls.draft.document.capsules).toHaveLength(1);
     expect(gatekeeper.dispose).toHaveBeenCalledOnce();
+    expect(gatekeeper.remove).not.toHaveBeenCalled();
+    expect(harness.onError).not.toHaveBeenCalled();
+  });
+
+  it("commits a resource after async decoration shifts its URL", async () => {
+    const storedDraft: StoredComposerDraft = {
+      version: 1,
+      text: `Document ${description.url}`,
+      formats: [{ position: 0, length: 8, noun: "Document", icon: "fileText" }],
+    };
+    writeComposerDraft("draft:user-a", storedDraft);
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    let resolveDescription!: (value: typeof description) => void;
+    const gatekeeper = fakeGatekeeper(() => new Promise((resolve) => {
+      resolveDescription = resolve;
+    }));
+    const harness = await renderHarness(
+      async () => gatekeeper.stub,
+      { storageKey: "draft:user-a", logoSlot: "[icon]" },
+    );
+    act(() => harness.controls.resources.scanAt(15));
+    const creation = harness.controls.resources.createCapsule(3, "vendor");
+    await act(async () => Promise.resolve());
+
+    await act(async () => {
+      iconState.resolve!("data:image/svg+xml,icon");
+      await Promise.resolve();
+    });
+    await act(async () => {
+      resolveDescription(description);
+      await creation;
+    });
+
+    expect(harness.controls.draft.document.text).toBe("[icon]Document Plan ");
+    expect(harness.controls.draft.document.capsules).toHaveLength(1);
+    expect(gatekeeper.remove).not.toHaveBeenCalled();
     expect(harness.onError).not.toHaveBeenCalled();
   });
 
@@ -180,8 +243,10 @@ describe("useComposerResources", () => {
     act(() => harness.controls.resources.scanAt(10));
     const creation = harness.controls.resources.createCapsule(3, "vendor");
     await act(async () => Promise.resolve());
+    expect(harness.controls.resources.isCreatingResource).toBe(true);
 
     act(() => harness.controls.resources.dismissUrl());
+    expect(harness.controls.resources.isCreatingResource).toBe(false);
     await act(async () => {
       resolveDescription(description);
       await creation;
@@ -189,6 +254,7 @@ describe("useComposerResources", () => {
 
     expect(harness.controls.draft.document).toEqual(emptyDocument(description.url));
     expect(gatekeeper.dispose).toHaveBeenCalledOnce();
+    expect(gatekeeper.remove).toHaveBeenCalledOnce();
     expect(harness.onSelectionRequest).not.toHaveBeenCalled();
     expect(harness.onError).not.toHaveBeenCalled();
   });
@@ -196,12 +262,14 @@ describe("useComposerResources", () => {
   it("suppresses a metadata failure after the attach modal is canceled", async () => {
     let rejectMetadata!: (reason: Error) => void;
     const dispose = vi.fn<() => void>();
+    const remove = vi.fn(async () => {});
     const gatekeeper = {
       getId: () => new Promise<number>((_resolve, reject) => {
         rejectMetadata = reject;
       }),
       describe: async () => description,
       getCreationSpec: async () => ({ type: "gatekeeper" as const, vendorId: "vendor" }),
+      remove,
       [Symbol.dispose]: dispose,
     } as unknown as RpcStub<GatekeeperClient<any>>;
     const harness = await renderHarness(async () => null);
@@ -215,6 +283,7 @@ describe("useComposerResources", () => {
     });
 
     expect(dispose).toHaveBeenCalledOnce();
+    expect(remove).toHaveBeenCalledOnce();
     expect(harness.onError).not.toHaveBeenCalled();
   });
 });

@@ -248,6 +248,7 @@ export const ChatComposer = ({
     closeAttachModal,
     createCapsule,
     dismissUrl,
+    isCreatingResource,
     openAttachModal,
     refineUrl,
     scanAt: scanForResourceUrl,
@@ -461,6 +462,10 @@ export const ChatComposer = ({
       toasts.add({ title: "Remove failed attachment uploads before sending", variant: "error" });
       return;
     }
+    if (isCreatingResource) {
+      toasts.add({ title: "Please wait for the resource connection to finish", variant: "error" });
+      return;
+    }
 
     sendInFlightRef.current = true;
     setIsSending(true);
@@ -663,7 +668,7 @@ export const ChatComposer = ({
   );
   const canSend = !isSending && !isAgentActive && !isBlocked &&
     (inputValue.trim().length > 0 || selectedSlashCommand !== null || hasReadyAttachment) &&
-    !hasUnreadyAttachment;
+    !hasUnreadyAttachment && !isCreatingResource;
   return (
     // isolation: isolate contains z-indexes used inside the composer (the
     // captured-log floating chip with z-10, the textarea/mirror with z-[1])

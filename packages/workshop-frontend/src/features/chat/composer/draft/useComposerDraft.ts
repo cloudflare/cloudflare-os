@@ -19,6 +19,11 @@ export type ComposerDocumentSnapshot = {
   document: ComposerDocument;
   documentRevision: number;
   editRevision: number;
+  presentationRevision: number;
+};
+
+export type CommitDocumentEditOptions = {
+  allowPresentationChanges?: boolean;
 };
 
 export const composerDocumentFromDraft = (
@@ -99,6 +104,7 @@ export const useComposerDraft = ({
   const editedRef = useRef(false);
   const editRevisionRef = useRef(0);
   const documentRevisionRef = useRef(0);
+  const presentationRevisionRef = useRef(0);
   const skipWriteRef = useRef(false);
   const restoreGenerationRef = useRef(0);
   const presentationIdRef = useRef(0);
@@ -108,6 +114,11 @@ export const useComposerDraft = ({
     documentRef.current = nextDocument;
     documentRevisionRef.current++;
     setDocument(nextDocument);
+  };
+
+  const setPresentationDocument = (nextDocument: ComposerDocument) => {
+    presentationRevisionRef.current++;
+    setCurrentDocument(nextDocument);
   };
 
   const requestPresentation = (text: string, key: string | undefined, generation: number) => {
@@ -130,7 +141,7 @@ export const useComposerDraft = ({
           return;
         }
         const restored = decorateComposerDraft(draft, logos, logoSlot);
-        setCurrentDocument({
+        setPresentationDocument({
           text: restored.text,
           capsules: [],
           formats: restored.formats,
@@ -229,13 +240,22 @@ export const useComposerDraft = ({
     document: documentRef.current,
     documentRevision: documentRevisionRef.current,
     editRevision: editRevisionRef.current,
+    presentationRevision: presentationRevisionRef.current,
   });
 
   const commitDocumentEdit = <T extends { document: ComposerDocument }>(
     snapshot: ComposerDocumentSnapshot,
     transition: (current: ComposerDocument) => T | null,
+    options?: CommitDocumentEditOptions,
   ): (T & { documentRevision: number; editRevision: number }) | null => {
-    if (documentRevisionRef.current !== snapshot.documentRevision) return null;
+    if (documentRevisionRef.current !== snapshot.documentRevision) {
+      const documentChanges = documentRevisionRef.current - snapshot.documentRevision;
+      const presentationChanges =
+        presentationRevisionRef.current - snapshot.presentationRevision;
+      if (!options?.allowPresentationChanges || documentChanges !== presentationChanges) {
+        return null;
+      }
+    }
     const result = transition(documentRef.current);
     if (!result) return null;
     recordEdit();
