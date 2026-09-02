@@ -5,14 +5,14 @@ gatekeeper be written as a TypeScript spec plus service-specific sessions, inste
 lines of hand-copied plumbing.
 
 **Status.** Layer 1 (§4, the leaf modules) has landed and has been through a review pass against
-both corpora; its §4 sections are reconciled against the shipped signatures — where the two ever
-disagree, the code and its tests win. Layer 2 (§5, the assembly) and §7 steps 8–16 are still
-proposal: nothing consumes the kit yet, so no gatekeeper has been ported and none of §5's
-ergonomics have met a real consumer. Two things to read before writing either: §4.8's key-layout
-tables and port-time obligations, before pointing the journal at any existing gatekeeper's keys;
-and §5.6's credential-projection requirement, which is a capability boundary the whole corpus
-holds and the assembly could quietly drop. Findings that review raised and *declined* are recorded
-in the obligations table (§4.8) rather than dropped, each with the trigger that would revive it.
+both corpora, except that the browser-binding cookie and same-origin navigation fence were
+reverted: deployed Workshops may open gatekeepers on a different site, where that fence rejects
+legitimate connections. The §4 sections are reconciled against the remaining shipped signatures —
+where the two ever disagree, the code and its tests win. Layer 2 (§5, the assembly) and §7 steps
+8–16 are still proposal: nothing consumes the kit yet, so no gatekeeper has been ported and none of
+§5's ergonomics have met a real consumer. Its connect assembly is blocked on a cross-origin-safe
+handshake that binds completion to the initiating Workshop user. Findings that review raised and
+declined are recorded in the obligations table (§4.8), each with the trigger that would revive it.
 
 ## 1. Introduction & high-level intent
 
@@ -167,67 +167,38 @@ The two-stage connect nonce machine that every OAuth gatekeeper currently re-imp
 export const NONCE_KEY = "nonce";               // unchanged from every current gatekeeper
 export type ConnectStage = "initiation" | "oauth";
 export type StoredNonce<Extra extends object = Record<never, never>> =
-  TimedNonce & { stage: ConnectStage; cookieSecret?: string } & Extra;
-export type OAuthAttempt = { oauthNonce: string; cookieSecret: string };
+  TimedNonce & { stage: ConnectStage } & Extra;
 export function putInitiation(kv, initiationNonce: string, now: number): void;
 export function advanceToOAuth<Extra extends object>(
-  kv, initiationNonce: string, now: number, extra?: Extra & NonceExtra): OAuthAttempt | null;
+  kv, initiationNonce: string, now: number, extra?: Extra & NonceExtra): string | null;
 export function claimOAuth<Extra extends object>(
-  kv, oauthNonce: string, cookieSecret: string, now: number): StoredNonce<Extra> | null;
-export function oauthBrowserCookie(oauthNonce: string, cookieSecret: string): string;
-export function readOAuthBrowserCookie(req: Request, oauthNonce: string): string | undefined;
-export function clearOAuthBrowserCookie(oauthNonce: string): string | undefined;
+  kv, oauthNonce: string, now: number): StoredNonce<Extra> | null;
 ```
 
-`advanceToOAuth` verifies the initiation nonce (constant time, TTL, stage) and mints the
-oauth-stage nonce in one synchronous step, so exactly one concurrent caller can advance a given
-attempt. `claimOAuth` is one-shot: it deletes the record on success and returns it so callers can
-read `Extra` fields (PKCE verifier, requested scopes). The stored shape is a superset of the
-`StoredNonce` every existing OAuth gatekeeper writes, so records from live accounts stay readable
-(`mcp-shared` is the exception: `account.ts:118` also carries a `"connecting"` stage, which step 12
-leaves in place) —
-which is why `Extra` stays flat rather than nested under a property: the reserved keys (`value`,
-`expiresAt`, `stage`, `cookieSecret`) are intersected onto `advanceToOAuth`'s `extra` parameter, which
-both excludes them statically and rejects them at runtime, instead of changing the shape. The
-exclusion lives on the parameter rather than the `Extra` constraint: as a constraint it is a weak
-type, which defeats inference and collapses `StoredNonce<Extra>` to `never`.
+`advanceToOAuth` verifies the initiation nonce (constant time, TTL, stage) and mints the OAuth-stage
+nonce in one synchronous step, so exactly one concurrent caller can advance a given attempt.
+`claimOAuth` is one-shot: it deletes the record on success and returns it so callers can read
+`Extra` fields (PKCE verifier, requested scopes). The stored shape matches the `StoredNonce` every
+existing OAuth gatekeeper writes (`mcp-shared` is the exception: `account.ts:118` also carries a
+`"connecting"` stage, which step 12 leaves in place). `Extra` stays flat rather than nested under a
+property; the reserved keys (`value`, `expiresAt`, `stage`) are intersected onto
+`advanceToOAuth`'s `extra` parameter, which both excludes them statically and rejects them at
+runtime. The exclusion lives on the parameter rather than the `Extra` constraint: as a constraint
+it is a weak type, which defeats inference and collapses `StoredNonce<Extra>` to `never`.
 
-The three cookie helpers bind the provider redirect to the browser that began it.
-`oauthBrowserCookie` emits a per-nonce `__Host-` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`,
-`Path=/`) whose lifetime matches the OAuth nonce; per-nonce names keep concurrent flows independent.
-`clearOAuthBrowserCookie` is added to every terminal response and returns `undefined` when the
-nonce names no cookie — degrading like `readOAuthBrowserCookie` rather than throwing, since the
-responses it is added to include the ones refusing a malformed `state`. Those cookies expire
-instead. `Lax` is sufficient because `oauth2` accepts only
-top-level GET callbacks; a future `form_post` strategy needs its own binding policy.
-
-**The cookie carries a secret the callback URL does not reveal.** `advanceToOAuth` mints a second
-nonce beside the OAuth one, in the record it already writes, and returns both. That secret is the
-cookie's value. A constant value — or any value derived from the nonce — would be computable by
-anyone holding the callback URL, because the nonce travels to the provider as `state`: they could
-then present the whole callback from `curl` and land their own provider identity in the initiating
-Workshop account. No gatekeeper in either corpus sets any cookie at all (no `Set-Cookie` anywhere in
-33 packages), so today holding that URL is sufficient on its own; the secret is what makes the
-binding hold against a client that is not a browser.
-
-**The check is split, and the equality half is inside the account DO.** `readOAuthBrowserCookie`
-returns the presented value, so a callback carrying no cookie is still refused before the account DO
-is touched. `claimOAuth` then compares the value against the record — **before** its delete, and
-returning `null` on mismatch exactly as a wrong nonce does. Consuming first would hand anyone
-holding the URL a way to burn the user's live attempt with a dummy cookie, which is the one thing
-the pre-DO filter cannot be allowed to enable. The secret is stripped from the returned record: it
-is the record's, and must not travel on to the token exchange. A record written before this existed
-has no secret and fails closed, costing that in-flight attempt a retry.
+This module prevents nonce replay but deliberately does not claim to bind the flow to a browser or
+Workshop session. The previous cookie-secret experiment depended on a same-origin initiation fence
+and was reverted because real deployments may serve the Workshop and gatekeeper from different
+sites. A replacement belongs in the cross-origin handshake required before Layer 2 can ship.
 
 ### 4.3 `./connect-pages`
 
 The browser pages and request guards used during connect. Exports `escapeHtml`,
-`htmlResponse(body, status = 200)`, `connectNavigationError(req)`, `connectMutationError(req,
-options)`, `SELF_CLOSING_HTML`, `INVALID_LINK_HTML`, `errorPageHtml(title, detail)`, and `PAGE_STYLE`.
+`htmlResponse(body, status = 200)`, `connectMutationError(req, options)`, `SELF_CLOSING_HTML`,
+`INVALID_LINK_HTML`, `errorPageHtml(title, detail)`, and `PAGE_STYLE`.
 
-**Deliberate divergence from the worktree module:** `htmlResponse` also sets
-`Cache-Control: no-store`, `Content-Security-Policy: form-action 'self'; frame-ancestors 'none';
-base-uri 'none'`, `Referrer-Policy: no-referrer`, and `X-Content-Type-Options: nosniff`.
+`htmlResponse` sets `Cache-Control: no-store`, `Content-Security-Policy: frame-ancestors 'none'`,
+`Referrer-Policy: no-referrer`, and `X-Content-Type-Options: nosniff`.
 Connect pages open in their own tab and are never framed (the srcDoc-framed surfaces are gatekeeper
 app UIs, a different module entirely), a connect URL carries a nonce that must not leak via
 `Referer`, and an error page
@@ -248,21 +219,12 @@ link. This is the third copy of the same check — Marketo's `checkMutation`, an
 `workshop-backend/src/client-errors.ts:100-104` — and homeassistant, which accepts POSTs on its
 connect route, has none.
 
-`connectNavigationError` accepts only a GET carrying `Sec-Fetch-Site: same-origin`, except that the
-normal Vite split (`localhost:3000` → `localhost:8787`) may carry `same-site`; that exception applies
-only when the target hostname is exactly `localhost`. Fetch Metadata is browser-controlled, so what
-this refuses is *browser-mediated* navigation of a copied link — one opened from email, another
-site, or the address bar is refused before the account DO advances, with the existing Workshop
-Connect / Continue button as the first-party consent step. The OAuth cookie above closes the other
-browser-shaped transfer path — opening the link legitimately and copying the resulting provider
-URL — because that cookie carries a secret the URL does not reveal, so the recipient cannot
-reconstruct it from `state` even outside a browser. What neither closes: a non-browser client
-holding a live initiation URL can forge `Sec-Fetch-Site`, advance the flow, and receive the cookie
-secret, so the initiation URL remains a 10-minute bearer capability against such a caller — exactly
-as in every shipped gatekeeper, none of which binds initiation at all. Binding it to the Workshop
-session needs a secret delivered on the authenticated `connectAccount` response, which is Layer 2's
-to design (§10). This relies on the existing sandbox boundary: user-authored content must never
-execute at the Workshop origin.
+No initiation-navigation guard is exported. The reverted `Sec-Fetch-Site: same-origin` check could
+distinguish a copied browser link only when the Workshop and gatekeeper shared an origin; it rejected
+legitimate navigation from deployments where they live on different sites. Allowing `cross-site`
+would admit the copied-link attack again, so Layer 2 needs an explicit cross-origin handshake rather
+than another Fetch Metadata classification. This continues to rely on the existing sandbox boundary:
+user-authored content must never execute at the Workshop origin.
 
 `contentType` names a media type and is compared **exactly**, parameters dropped and case folded.
 Substring matching looks equivalent and is not: `application/jsonp` contains `application/json`,
@@ -1680,6 +1642,11 @@ would have to expose knobs for exactly the policy it claims to centralize.
 
 ## 5. Layer 2: the assembly
 
+> **Security block:** The connect-completion protocol is not specified yet. Layer 2 must not ship an
+> auth assembly until a cross-origin-safe handshake binds the provider grant to the authenticated
+> Workshop user that initiated it. The reverted same-origin Fetch Metadata mechanism is not an
+> acceptable implementation.
+
 ### 5.1 `./spec`
 
 ```ts
@@ -1742,7 +1709,7 @@ title to `${vendor.displayName} Gatekeeper Not Configured`.
 ### 5.2 `./auth` — the strategy seam
 
 ```ts
-export type BeginResult = { redirectUrl: string; setCookie?: string } | { html: string };
+export type BeginResult = { redirectUrl: string } | { html: string };
 export type AttemptMetadata = { connect?: GatekeeperConnectOptions; [key: string]: unknown };
 // A fresh Durable Object stub per call, never a property-derived RpcStub the strategy would leak.
 export type StrategyAccountStub = { completeAuth(payload: unknown, state: string): Promise<boolean> };
@@ -1751,7 +1718,7 @@ export interface AuthStrategy<Creds, E extends KitEnv = KitEnv> {
   configured(env: E): boolean;
   routes(req: Request, ctx: { env: E; baseUrl: string; relPath: string; url: URL;
     accountForId(id: string): StrategyAccountStub }): Promise<Response | null>;
-  begin(ctx: { env: E; baseUrl: string; accountId: string; state: string; cookieSecret: string;
+  begin(ctx: { env: E; baseUrl: string; accountId: string; state: string;
     metadata: AttemptMetadata; kv;            // "auth:"-namespaced view of account storage
     deliver(creds: Creds): Promise<void>;
     waitUntil(p: Promise<unknown>): void }): Promise<BeginResult>;
@@ -1807,18 +1774,14 @@ export function oauth2<Creds, E extends KitEnv = KitEnv>(config: {
 }): AuthStrategy<Creds, E>;
 ```
 
-After the trusted Workshop navigation, provider behavior stays compatible with the handlers it
-replaces (`supabase.ts:267-334`, `github.ts:931-1004`): `begin` returns the authorize URL carrying
-`client_id`, `redirect_uri = ${baseUrl}/oauth`, `state = ${accountId}:${stateNonce}`,
-scope/PKCE/extra params, plus `setCookie: oauthBrowserCookie(stateNonce, cookieSecret)` — both
-values coming from the one `OAuthAttempt` that `beginAuth`'s `advanceToOAuth` returned. `routes`
-handles exactly
-`GET /oauth`; it parses state and refuses a callback carrying *no* browser cookie before touching the
-account DO, then calls `accountForId(doId).completeAuth({ code, cookieSecret }, nonce)` — the DO
-holds the record, so it is the only place the value can be compared. Every terminal response with a
-well-formed
-state clears the browser cookie; malformed state cannot name one and it expires naturally. Provider
-errors yield a 400 plain-text restart message; malformed, expired, or unbound callbacks render
+Provider behavior remains compatible with the handlers it replaces (`supabase.ts:267-334`,
+`github.ts:931-1004`): `begin` builds the authorize URL carrying `client_id`,
+`redirect_uri = ${baseUrl}/oauth`, `state = ${accountId}:${stateNonce}`, scope/PKCE/extra params;
+`routes` handles exactly `GET /oauth`, parses state, and dispatches to the account DO. The nonce
+prevents replay but does not prove that the browser returning from the provider belongs to the
+Workshop user whose callback the account stores. The cross-origin validation step is intentionally
+unspecified and blocks this strategy from implementation until the handshake above is designed.
+Provider errors yield a 400 plain-text restart message; malformed or expired callbacks render
 `INVALID_LINK_HTML`.
 `scopes.auth` is the sign-in-only subset used when
 `GatekeeperConnectOptions.scopes === "auth"`. The README instructs config
@@ -1850,18 +1813,14 @@ export function handleGatekeeperHttp<E extends KitEnv, Creds, Public>(req: Reque
 ```
 
 Routing order: base-path guard (throws on a mismatched prefix, preserving current behavior at
-`supabase.ts:270-273`); the initiation link `/<64-hex DO id>/<64-hex nonce>` — first reject
-`connectNavigationError`, then render the not-configured page or call
-`accountForId(doId).beginAuth(nonce)`. A redirect result carries its optional `setCookie`; an HTML
-result and null render directly or as `INVALID_LINK_HTML`. Then `spec.auth.routes`, then the
-consumer's `routes` escape hatch, then 404. Thus the URL shape and Workshop API remain unchanged,
-but the initiation link does not work in a different browser, and the provider URL does not work
-without the attempt secret its cookie carries — in any browser or outside one.
+`supabase.ts:270-273`); the initiation link `/<64-hex DO id>/<64-hex nonce>` renders the
+not-configured page or calls `accountForId(doId).beginAuth(nonce)`; then `spec.auth.routes`, then the
+consumer's `routes` escape hatch, then 404. The URL shape and Workshop API remain unchanged.
 
-Production and staged deployments serve the Workshop and `/gatekeeper/*` from one router origin.
-Normal Vite development serves the Workshop on `localhost:3000` and gatekeepers on
-`localhost:8787`; Fetch Metadata classifies the port split as `same-site`, so the guard permits that
-value only for an exact `localhost` target. Remote deployments never receive the exception.
+This routing must not ship for credential-bearing auth until the security block above is resolved.
+Deployments may serve the Workshop and `/gatekeeper/*` from different registrable domains, so the
+design must make no same-origin or same-site assumption. Normal Vite development's port split is
+not a substitute for testing that production topology.
 
 ### 5.6 `./account` — `KitUserAccountBase<E, Creds, Public>`
 
@@ -1885,21 +1844,19 @@ Public loopback-RPC methods and their sequencing:
   exist.
 - `prepareReconnect(nonce)` — sets `"reconnecting"`, `clearCredentialExpiryLatch`,
   `putInitiation`, fresh `"attemptGeneration"`.
-- `beginAuth(nonce)` — `advanceToOAuth` with `{ connect }` metadata, then `strategy.begin`, which
-  receives both halves of the returned `OAuthAttempt` so its `setCookie` carries the attempt secret;
-  after
+- `beginAuth(nonce)` — `advanceToOAuth` with `{ connect }` metadata, then `strategy.begin`; after
   `begin`'s awaits, re-checks `"attemptGeneration"` and returns null on mismatch (rendered as an
-  invalid link). Returns the `BeginResult` otherwise.
-- `completeAuth(payload, state)` — `claimOAuth` with the `cookieSecret` the payload carries, so a
-  forged cookie is refused here, before the record is consumed, and leaves the attempt claimable.
-  Then `strategy.obtain`, then re-checks
-  `"attemptGeneration"` and returns false on mismatch. This closes the revoke race: a `revoke()`
-  that ran during the token exchange has already cleared the generation, so the exchange result
-  is discarded instead of resurrecting credentials after `deleteAll()`. On success:
-  `coordinator.connect`, `clearCredentialExpiryLatch`, clear `"attemptGeneration"`; then
-  `callback.credentialsRestored()` when reconnecting, else `callback.complete(mintUser())` —
-  **and the credentials stay whatever that call does**; ephemeral sign-in accounts arm a 2-minute
-  self-destruct alarm, everything else `deleteAlarm()`s.
+  invalid link). The final handoff to `strategy.begin` is part of the unresolved cross-origin
+  handshake and must carry whatever proof that design requires.
+- `completeAuth(payload, state)` — may proceed only after the future handshake proves that the
+  provider grant belongs to the authenticated Workshop user that initiated this attempt. Then
+  `strategy.obtain`, then re-checks `"attemptGeneration"` and returns false on mismatch. This closes
+  the revoke race: a `revoke()` that ran during the token exchange has already cleared the
+  generation, so the exchange result is discarded instead of resurrecting credentials after
+  `deleteAll()`. On success: `coordinator.connect`, `clearCredentialExpiryLatch`, clear
+  `"attemptGeneration"`; then `callback.credentialsRestored()` when reconnecting, else
+  `callback.complete(mintUser())` — **and the credentials stay whatever that call does**; ephemeral
+  sign-in accounts arm a 2-minute self-destruct alarm, everything else `deleteAlarm()`s.
 
   Committing is the point of no return, deliberately against the corpus. Eleven shipped accounts
   delete their grant when `complete()` rejects (github `github.ts:1120-1127`, cloudflare
@@ -2190,15 +2147,10 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
    tests: nonce round-trip and TTL expiry; stage transitions; exactly one concurrent
    `advanceToOAuth` succeeds per attempt; a wrong initiation nonce does not consume the attempt;
    `claimOAuth` is one-shot and returns `Extra`; legacy records without metadata are accepted; a
-   forged cookie secret is refused *and* leaves the attempt claimable, and an OAuth record predating
-   the secret fails closed; the claimed record never carries the secret onward; the
-   browser cookie is per-nonce, host-only, carries the attempt secret rather than a constant,
-   is callback-readable, clearable, and fails closed for a malformed
-   nonce or secret. Node tests: `escapeHtml` and `errorPageHtml` escaping; `htmlResponse` carrying all security
-   headers; `connectNavigationError` accepting same-origin GETs plus only the localhost Vite split;
-   `connectMutationError` refusing
-   an absent or foreign `Origin` and an absent or wrong content type, and matching a content type
-   case-insensitively and past its parameters;
+   wrong OAuth claim leaves the attempt claimable and the right claim consumes it. Node tests:
+   `escapeHtml` and `errorPageHtml` escaping; `htmlResponse` carrying all shipped security headers;
+   `connectMutationError` refusing an absent or foreign `Origin` and an absent or wrong content
+   type, and matching a content type case-insensitively and past its parameters;
    `normalizeVendorEndpoint` returning origin plus normalized path for a URL carrying a query and
    fragment, refusing userinfo, refusing `http:` by default and accepting it under
    `requireHttps: false`, refusing a non-HTTP scheme either way, anchoring an unanchored pattern and
@@ -2456,17 +2408,17 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
 
 All commands from the repo root.
 
-1. `pnpm install`, then `pnpm --filter @gadgets/gatekeeper-kit test:run`. Both suites green. The
-   checks that define success: the fixture OAuth round trip delivers a usable `GatekeeperUser`
-   stub; a copied initiation URL is refused before `beginAuth`; an OAuth callback carrying no
-   browser cookie is refused before `completeAuth`, and one carrying a *forged* secret is refused by
-   `completeAuth` without consuming the attempt; a terminal callback clears that
-   cookie; concurrent `beginAuth` advances exactly once; `completeAuth` after a concurrent `revoke`
-   leaves the account empty; a mocked-500 refresh leaves stored credentials intact while a mocked-400
-   `invalid_grant` notifies expiry exactly once and re-notifies after a failed callback; observation
-   data is withheld until `authorizeObservation` resolves; a staged action is absent after
-   `submitAction`-failure rollback — `journal.get(id)` is `undefined` and `listPending()` is empty;
-   tracked-set exclusion lists exactly the denied observer.
+1. `pnpm install`, then `pnpm --filter @gadgets/gatekeeper-kit test:run`. Both suites green. Before
+   Layer 2 auth can be considered complete, its cross-origin handshake needs an end-to-end browser
+   test proving that neither a copied initiation URL nor a copied provider URL can attach one
+   person's provider grant to another Workshop user. The remaining checks that define success: the
+   fixture OAuth round trip delivers a usable `GatekeeperUser` stub; concurrent `beginAuth` advances
+   exactly once; `completeAuth` after a concurrent `revoke` leaves the account empty; a mocked-500
+   refresh leaves stored credentials intact while a mocked-400 `invalid_grant` notifies expiry
+   exactly once and re-notifies after a failed callback; observation data is withheld until
+   `authorizeObservation` resolves; a staged action is absent after `submitAction`-failure rollback
+   — `journal.get(id)` is `undefined` and `listPending()` is empty; tracked-set exclusion lists
+   exactly the denied observer.
 2. `pnpm --filter @gadgets/mcp-shared test:run` plus type-checking the two MCP connectors — the
    step-12 regression gate.
 3. `pnpm --filter <supabase package name> test:run` (the `name` field in
@@ -2480,9 +2432,9 @@ All commands from the repo root.
 6. Dev smoke, no provider credentials needed: `pnpm dev-server`, then
    - `curl -sS -i "http://localhost:8787/gatekeeper/supabase/oauth?error=denied"` → HTTP 400 with
      "authorization failed" in the body;
-   - `curl -sS -H 'Sec-Fetch-Site: same-origin' http://localhost:8787/gatekeeper/supabase/$(printf 'a%.0s' {1..64})/$(printf 'b%.0s' {1..64})`
-     → the not-configured page when dev has no `CLIENT_ID`, else the invalid-link page (either
-     proves initiation routing and DO dispatch);
+   - `curl -sS http://localhost:8787/gatekeeper/supabase/$(printf 'a%.0s' {1..64})/$(printf 'b%.0s' {1..64})`
+     → the not-configured page when dev has no `CLIENT_ID`, else the invalid-link page (this proves
+     initiation routing and DO dispatch, not browser-to-Workshop binding);
    - the Workshop UI lists Supabase in the connectors panel.
 
 ## 9. Assumptions & contingencies
@@ -2545,11 +2497,11 @@ evidence, and the trigger.
   `claimed`, and the work is extending it past the tier boundary. *Trigger:* the first
   non-idempotent compensating write — today's are mostly restores of a previous value, which is why
   the gap has cost nothing yet.
-- **Workshop-session-bound initiation** behind the `connectAccount` → handshake seam. §4.3's fetch
-  metadata check refuses browser-mediated navigation only: a non-browser caller can forge
-  `Sec-Fetch-Site`, so the initiation URL stays a 10-minute bearer capability against it. *Trigger:*
-  Layer 2's `connectAccount` contract — a `__Host-` cookie set by workshop-backend, its secret
-  passed into the account DO via RPC.
+- **Cross-origin Workshop-session-bound initiation** behind the `connectAccount` → handshake seam.
+  The same-origin Fetch Metadata experiment was reverted because deployed Workshops may open a
+  gatekeeper on another site. Layer 2's auth assembly is blocked until a protocol binds completion
+  to the authenticated Workshop user without assuming a shared origin; a `postMessage` exchange or
+  a Workshop-mediated one-time handoff are candidate designs, not settled interfaces.
 - **Already realized** (orientation only, no work): the `ObserverStrategy` A–D wrappers behind one
   interface; `ArrayCursor`/`PageNumberCursor`/`OffsetCursor`/`TokenCursor` behind `Cursor<T>`; and
   Layer 2's `AuthStrategy` (`oauth2` / `tokenAuth` / CF Access) — the same doctrine at the auth seam.

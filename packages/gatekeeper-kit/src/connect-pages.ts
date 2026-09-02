@@ -28,24 +28,11 @@ export function htmlResponse(body: string, status = 200): Response {
     headers: {
       "Cache-Control": "no-store",
       "Content-Type": "text/html; charset=utf-8",
-      "Content-Security-Policy": "form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+      "Content-Security-Policy": "frame-ancestors 'none'",
       "Referrer-Policy": "no-referrer",
       "X-Content-Type-Options": "nosniff",
     },
   });
-}
-
-/**
- * Checks that a connect link came from the Workshop.
- * @param req Navigation request.
- * @returns An error code, or `undefined` when trusted.
- */
-export function connectNavigationError(req: Request): "untrusted-navigation" | undefined {
-  const site = req.headers.get("sec-fetch-site");
-  const trustedSite = site === "same-origin" ||
-    (site === "same-site" && new URL(req.url).hostname === "localhost");
-  if (req.method !== "GET" || !trustedSite) return "untrusted-navigation";
-  return undefined;
 }
 
 /**
