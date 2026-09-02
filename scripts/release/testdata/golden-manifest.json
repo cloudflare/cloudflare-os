@@ -599,9 +599,9 @@
           "invocation_logs": false
         }
       },
-      "shortName": "mcp-portal",
+      "shortName": "mcpportal",
       "vars": {
-        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/mcp-portal",
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/mcpportal",
         "MCP_ALLOW_INSECURE": "false"
       }
     },

@@ -327,6 +327,41 @@ export function gatekeeperShortName(pkgName: string): string {
   return pkgName.slice(GATEKEEPER_PREFIX.length);
 }
 
+/**
+ * The install-slug charset, mirroring the deploy service's own rule (its `validateSlug`). It is
+ * the fixed point of every runtime transform a slug passes through — the router lowercases and
+ * maps _ -> -, and the backend's inverse GATEKEEPER_ + `toUpperCase()` breaks on anything else —
+ * so a slug outside it does not survive the round trip through binding names.
+ */
+const SLUG_RE = /^[a-z][a-z0-9]*$/;
+/** The deploy service's install-slug length cap. */
+const MAX_SLUG_LEN = 20;
+
+/**
+ * The release manifest's shortName. Deployed instances bind gatekeepers as GATEKEEPER_<SLUG> and
+ * the router recovers the path from that binding name, so a slug must survive `toUpperCase()` and
+ * back — the deploy wizard restricts it to SLUG_RE and sends the manifest shortName as the install
+ * slug verbatim. Package names are not so restricted (gatekeeper-mcp-portal), so fold here.
+ * Distinct from gatekeeperShortName(), which staging/preview use with GATEKEEPER_<PKG_NAME>
+ * bindings (underscores, router maps _ -> -) where a hyphen does round-trip.
+ *
+ * The fold only removes characters, so it can leave a remnant the charset still rejects: empty
+ * (gatekeeper---), digit-leading (gatekeeper-1password), or over the cap. Throw rather than emit
+ * one — the release build runs without this repo's test suite (the internal pipeline builds a
+ * pinned submodule), and a shortName that reaches the wizard illegal makes the gatekeeper
+ * uninstallable on every customer instance.
+ */
+export function releaseShortName(pkgName: string): string {
+  const shortName = gatekeeperShortName(pkgName).replace(/[^a-z0-9]/g, "");
+  if (!SLUG_RE.test(shortName) || shortName.length > MAX_SLUG_LEN) {
+    throw new Error(`${pkgName} folds to "${shortName}", which is not a legal install slug: ` +
+        `it must be 1-${MAX_SLUG_LEN} lowercase letters and digits starting with a letter ` +
+        `(it becomes a GATEKEEPER_<SLUG> binding and a /gatekeeper/<slug> route). Rename the ` +
+        `package so its name folds to one.`);
+  }
+  return shortName;
+}
+
 /** Read a package's `deploy-inputs.json`, or undefined if it declares none. */
 export function readDeployInputs(pkgDir: string): DeployInput[] | undefined {
   const path = join(pkgDir, "deploy-inputs.json");
@@ -439,7 +474,7 @@ export function buildWorkerEntry(
     // (default entrypoint — it forwards whole HTTP requests, not vendor RPC).
     gatekeeperBindingExpansion = { propsByPackage: {} };
   } else {
-    vars.BASE_URL = `$PUBLIC_BASE_URL/gatekeeper/${gatekeeperShortName(pkgName)}`;
+    vars.BASE_URL = `$PUBLIC_BASE_URL/gatekeeper/${releaseShortName(pkgName)}`;
     installable = !NOT_INSTALLABLE.has(pkgName);
     if (installable) {
       inputs = deployInputs ??
@@ -461,7 +496,7 @@ export function buildWorkerEntry(
 
   return {
     kind,
-    ...(kind === "gatekeeper" ? { shortName: gatekeeperShortName(pkgName) } : {}),
+    ...(kind === "gatekeeper" ? { shortName: releaseShortName(pkgName) } : {}),
     installable,
     ...(PREINSTALL.has(pkgName) ? { preinstall: true } : {}),
     ...(SINGLETON.has(pkgName) ? { singleton: true } : {}),
@@ -510,8 +545,24 @@ export function generateManifest({
   assetVariants?: Record<string, CollectedAssets>;
 }): ReleaseManifest {
   const workerEntries: Record<string, WorkerEntry> = {};
+  // releaseShortName() folds the package name into the install-slug charset, and that fold is
+  // lossy: gatekeeper-foo-bar and gatekeeper-foobar both emit `foobar`. Two gatekeepers sharing a
+  // slug would want the same GATEKEEPER_FOOBAR binding and the same /gatekeeper/foobar route, so
+  // one would silently shadow the other on every customer instance. Fail the release build here —
+  // the per-entry slug check can't see the collision, only the assembled set can.
+  const shortNameOwner = new Map<string, string>();
   for (const w of workers) {
-    workerEntries[w.pkgName] = buildWorkerEntry(w);
+    const entry = buildWorkerEntry(w);
+    if (entry.shortName !== undefined) {
+      const owner = shortNameOwner.get(entry.shortName);
+      if (owner !== undefined) {
+        throw new Error(`${owner} and ${w.pkgName} both emit shortName "${entry.shortName}"; ` +
+            `install slugs must be unique (each becomes a GATEKEEPER_<SLUG> binding and a ` +
+            `/gatekeeper/<slug> route). Rename one package so the slugs differ.`);
+      }
+      shortNameOwner.set(entry.shortName, w.pkgName);
+    }
+    workerEntries[w.pkgName] = entry;
   }
 
   const assets: ReleaseManifest["assets"] = {};
