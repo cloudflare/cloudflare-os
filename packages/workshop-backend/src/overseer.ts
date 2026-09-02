@@ -9160,15 +9160,13 @@ class OverseerImpl implements AgentHooks {
       }
     }
     for (let hook of this.storage.boundHooks.list()) {
-      if (!hook.enabled) continue;
-      // A hook wakes one gadget; while that gadget is still provisional to a chat, "use"
-      // collaborators can't open it (getGadget refuses pending gadgets), so the hook doesn't
-      // bring its connection into their scope. Promotion deletes `pending` inside
-      // mergeChanges' scope diff, which reports the widening then. An unresolvable target
-      // (no gadgetId and no default gadget, or a deleted record) stays in scope, fail-closed.
-      let gadgetId = hook.gadgetId ?? this.defaultGadgetId;
-      if (gadgetId !== undefined && this.storage.gadgets.get(gadgetId)?.pending) continue;
-      ids.add(hook.gatekeeperId);
+      // Every enabled hook widens, with no exemption for a hook attributed to a provisional
+      // gadget: `hook.gadgetId` is bookkeeping-only (see BoundHookRecord) and can diverge from
+      // the callback's real restore target (bindHook falls back to the sole forged stub or the
+      // lowest-id gadget -- including a provisional one -- and nothing validates the callback
+      // against it), so scope must not consume it. Fail closed until bindHook can introspect
+      // the callback's actual target (see the TODO there).
+      if (hook.enabled) ids.add(hook.gatekeeperId);
     }
 
     // Close over agent-spawner envs. The closure roots at the reachable set above because an
@@ -9197,10 +9195,16 @@ class OverseerImpl implements AgentHooks {
   // Uses the non-throwing gatekeeperVendorId() rather than #inScopeGatekeepers("use"), whose
   // observerVendorId() throws on a legacy record with no creationSpec: an unrelated legacy
   // connection must not turn a caller's ordinary bookkeeping into an error.
+  //
+  // A reachable legacy record (no creationSpec) joins the set even though it has no vendor to
+  // verify against: nobody CAN be verified against it, so it becoming reachable must restart
+  // and quarantine -- fresh use opens then fail closed via observerVendorId() -- rather than
+  // vanish from both sides of the widening diff and leave live sessions invoking it.
   #accountRequiringUseScope(): Set<WorkpieceId> {
     let ids = new Set<WorkpieceId>();
     for (let id of this.#useScopeGatekeeperIds()) {
-      if (gatekeeperVendorId(this.storage.gatekeepers.get(id))) ids.add(id);
+      let gk = this.storage.gatekeepers.get(id);
+      if (gk && (!gk.creationSpec || gatekeeperVendorId(gk))) ids.add(id);
     }
     return ids;
   }

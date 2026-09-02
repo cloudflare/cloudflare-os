@@ -257,8 +257,9 @@ Logic:
 1. **Select in-scope gatekeepers** from `this.storage.gatekeepers.list()`:
    - `build`: all gatekeepers.
    - `use`: only those some gadget binds, an enabled hook feeds, or a bound agent spawner's env
-     names (`#useScopeGatekeeperIds` — a hook waking a still-provisional gadget stays out of
-     `use` scope until promotion; the merge diff reports that widening).
+     names (`#useScopeGatekeeperIds` — every enabled hook counts: a hook record's `gadgetId` is
+     bookkeeping-only and can diverge from its callback's real target, so scope never consumes
+     it to exempt a hook, even one attributed to a still-provisional gadget).
    - A `creationSpec` with a `vendorId` requires an account; other specs need no verifier or account
      choice.
 
@@ -414,14 +415,26 @@ gadget-minted children alike:
   UI collaborator's replies land in the chat log behind re-verified opens, and gadget-callback
   turns have no external egress.
 
+  The same mechanism has a spawner variant: a `use` collaborator holding a bound spawner's
+  loopback can start a spawn during the window between a widening's restart being scheduled and
+  the reset landing (`spawnAgent` checks no quarantine, and the spawner itself is vendorless so
+  it is never the thing quarantined). The spawn persists an `ActiveAgentRecord` that the reset's
+  storage sync commits, and the resumed turn re-runs no authorization — so it completes with its
+  creator's authority against the pre-widening scope. Bounded, unlike the external-message case:
+  the resumed turn has no external egress, its output lands in workspace state, and every
+  `use`-role reader of that state re-verifies at their next open against the now-widened scope —
+  so the only unverified consumption is inside the restart's own delivery window, which the
+  design already tolerates for sessions the reset is about to sever. The per-turn-lease fix
+  above (re-run `authorizeCollaborator` on resume, cancel on denial) closes this variant too.
+
 Four events trigger it:
 
 | Event | What grows |
 |---|---|
 | `addGatekeeper()` with a vendor-backed `creationSpec` | **build** scope — a live `build` session can `getGatekeeperById()`/`openSession()` on it with no observer check |
-| `bindWorkpiece()` for a permanent (non-`chatId`) edge onto a vendor-backed connection | **use** scope — the gadget UI a `use` session drives can now invoke it |
+| `bindWorkpiece()` for a permanent (non-`chatId`) edge onto a vendor-backed connection — or onto a legacy (pre-`creationSpec`) one, which nobody *can* be verified against, so it restarts and quarantines and fresh `use` opens then fail closed on the reconnect-required error | **use** scope — the gadget UI a `use` session drives can now invoke it |
 | A merge that promotes a pending gadget or a pending binding edge into `use` scope | **use** scope, same reason |
-| `enableHook` on a vendor-backed connection not already in `use` scope | **use** scope — the hook delivers the connection's data into a gadget a `use` session can open (a hook waking a still-provisional gadget stays out of `use` scope until promotion; the merge diff reports that widening) |
+| `enableHook` on a vendor-backed connection not already in `use` scope | **use** scope — the hook delivers the connection's data into a gadget a `use` session can open. Every enabled hook widens: the record's `gadgetId` is bookkeeping-only and can diverge from the callback's real target, so no provisional-gadget exemption is derived from it |
 
 The two roles widen independently, so each trigger passes the role it grew and the restart is
 skipped when no collaborator holds it: a new connection is in every `build` collaborator's scope
