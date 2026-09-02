@@ -43,8 +43,8 @@ export type RunTasksConfig = {
 }
 
 /**
- * Paths vitest generates and reads back on the next run, excluded from both the fingerprint and the
- * archived outputs:
+ * Paths vitest itself generates and reads back on the next run, excluded from both the fingerprint
+ * and the archived outputs:
  *
  * - `node_modules/.vite/vitest/<project-hash>/results.json` -- per-file durations and pass/fail,
  *   read by vitest's `BaseSequencer` to order failed-first and slowest-first. Distinct from the
@@ -52,10 +52,6 @@ export type RunTasksConfig = {
  * - `node_modules/.vite-temp/*.config.ts.timestamp-*.mjs` -- vite's default `bundle` config loader
  *   compiles a TS config to a temp module here, imports it, then unlinks it. The name carries a
  *   timestamp, so every run writes a fresh path and no run could ever match a previous fingerprint.
- * - `.wrangler/validate/**` -- the capnweb-validate build tree, regenerated and then loaded by any
- *   suite that starts a worker under `@cloudflare/vitest-pool-workers`. It is derived from sources
- *   that are tracked, so dropping it from the fingerprint loses no invalidation. `build:app`
- *   excludes the same tree, for the same reason.
  *
  * These are tool-managed scratch paths that Vite+'s own cooperative tracking already excludes for
  * `vp build` (`guide/automatic-data-tracking.md` names `node_modules/.vite-temp` as a path that
@@ -69,10 +65,41 @@ export type RunTasksConfig = {
  * This list is unlikely to be closed. When a test task stops caching, `vp run --last-details` names
  * the path it read and wrote -- add it here if it is shared, or at the call site if it is one
  * package's own (as `workshop-frontend`'s `dist/**` is).
+ *
+ * Not named `VITE_...`: `scripts/env-passthrough.test.ts` discovers env reads by matching
+ * `.VITE_<NAME>` property access, and a spread of a constant with that prefix reads as one.
  */
-const VITEST_SCRATCH_EXCLUSIONS: GlobWithBase[] = [
+export const VITEST_TOOL_SCRATCH_EXCLUSIONS: GlobWithBase[] = [
   { pattern: '!**/node_modules/.vite/**', base: 'workspace' },
   { pattern: '!**/node_modules/.vite-temp/**', base: 'workspace' },
+]
+
+/**
+ * The randomly-named scratch trees wrangler writes while a worker runs: `tmp/` holds each boot's
+ * bundle, `state/` the local Durable Object and KV storage. Neither is derived from anything
+ * tracked and both differ on every run, so a suite that starts a worker cannot cache without them
+ * excluded. A survey of every package's `.wrangler` shows these and `validate/` are its only
+ * children.
+ */
+export const WRANGLER_RUNTIME_SCRATCH_EXCLUSIONS: GlobWithBase[] = [
+  { pattern: '!**/.wrangler/tmp/**', base: 'workspace' },
+  { pattern: '!**/.wrangler/state/**', base: 'workspace' },
+]
+
+/**
+ * The default set: the vitest scratch paths plus the whole of `.wrangler`.
+ *
+ * `.wrangler/validate/**` is the capnweb-validate build tree, regenerated and then loaded by any
+ * suite that starts a worker under `@cloudflare/vitest-pool-workers`. For these packages it is
+ * derived from sources the same task already tracks, so dropping it from the fingerprint loses no
+ * invalidation -- and it must be dropped, because a task that reads a path it also wrote never
+ * caches. `build:app` excludes the same tree, for the same reason.
+ *
+ * `integration-tests` is the one package where that reasoning does not hold -- it reads another
+ * package's tree and never writes one -- so it opts out via `vitestTaskWithExclusions`.
+ */
+const DEFAULT_SCRATCH_EXCLUSIONS: GlobWithBase[] = [
+  ...VITEST_TOOL_SCRATCH_EXCLUSIONS,
   { pattern: '!**/.wrangler/**', base: 'workspace' },
 ]
 
@@ -125,7 +152,21 @@ export function vitestTask(
   command: string | string[],
   extraExclusions: GlobWithBase[] = [],
 ): VitestTask {
-  const exclusions = [...VITEST_SCRATCH_EXCLUSIONS, ...extraExclusions]
+  return vitestTaskWithExclusions(command, [...DEFAULT_SCRATCH_EXCLUSIONS, ...extraExclusions])
+}
+
+/**
+ * Like `vitestTask`, but `exclusions` *replaces* the shared list instead of extending it, for a
+ * suite that needs a different `.wrangler` policy than the default above.
+ *
+ * Only `integration-tests` does: its worker is a prebuilt artifact under another package's
+ * `.wrangler/validate`, which is the only fingerprint that carries backend source into this suite.
+ * Excluding it would leave the task with no backend information at all.
+ */
+export function vitestTaskWithExclusions(
+  command: string | string[],
+  exclusions: GlobWithBase[],
+): VitestTask {
   return {
     command: Array.isArray(command) ? command.map(withTestTimeout) : withTestTimeout(command),
     input: [{ auto: true }, ...exclusions],
