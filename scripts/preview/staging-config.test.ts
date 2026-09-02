@@ -20,6 +20,7 @@ import {
   previewPullRequestNumber,
   resolveAccess,
   resolveAiGateway,
+  resolveGatekeeperSecrets,
   resolvePreviewName,
   resolveTarget,
   routerPreviewUrl,
@@ -50,6 +51,15 @@ const SECRETS = backendSecrets({
   access: ACCESS,
   aiGateway: resolveAiGateway(AI_GATEWAY),
 });
+const GITHUB_OAUTH = { githubClientId: "Iv1.preview0000000f", githubClientSecret: "9".repeat(40) };
+const GATEKEEPER_SECRETS = resolveGatekeeperSecrets(GITHUB_OAUTH);
+
+/** One gatekeeper's OAuth secrets, so a gatekeeper losing its entry fails here rather than silently. */
+function oauthFor(pkgName: string): Record<string, string> {
+  const secrets = GATEKEEPER_SECRETS.get(pkgName);
+  assert.ok(secrets, `resolveGatekeeperSecrets returned nothing for ${pkgName}`);
+  return secrets;
+}
 
 /**
  * Every resource binding declared anywhere in the generated configs, as `[where, resource]`.
@@ -334,8 +344,11 @@ test("no generated config declares a secret's variable", () => {
       ["baseline", config.vars],
       ["preview", config.previews?.vars],
     ];
+    // Every gatekeeper's pair is CLIENT_ID/CLIENT_SECRET, so one gatekeeper's names cover all of
+    // them — and no worker in the instance has any business declaring those as plain-text vars.
+    const secretNames = [...Object.keys(SECRETS), ...Object.keys(oauthFor("gatekeeper-github"))];
     for (const [half, vars] of halves) {
-      for (const key of Object.keys(SECRETS)) {
+      for (const key of secretNames) {
         assert.ok(!Object.hasOwn(vars ?? {}, key),
             `${name} ${half} vars declare ${key}; upload it as a secret from preview.ts instead`);
       }
@@ -357,6 +370,10 @@ test("no generated config carries a secret's value anywhere", () => {
   const sensitive = [
     ...Object.entries(SECRETS).filter(([key]) => !generic.has(key)),
     ["an admin's email", ADMIN],
+    // A gatekeeper's OAuth app travels the same way, and a client secret in a public log is an app
+    // anyone can impersonate until it is rotated.
+    ...Object.entries(oauthFor("gatekeeper-github"))
+        .map(([key, value]) => [`gatekeeper-github's ${key}`, value]),
   ];
   for (const [name, config] of buildAll().configs) {
     const serialized = JSON.stringify(config);
@@ -471,4 +488,37 @@ test("the Access application has no default, in either direction", () => {
       /CF_ACCESS_AUD and CF_ACCESS_ISS/);
   assert.throws(() => resolveAccess({ aud: ACCESS.aud, iss: "" }), /CF_ACCESS_ISS must be set/);
   assert.throws(() => resolveAccess({ aud: "", iss: ACCESS.iss }), /CF_ACCESS_AUD must be set/);
+});
+
+test("a gatekeeper's OAuth app is optional, but never half of one", () => {
+  // Unlike the Access pair, an unconfigured gatekeeper is a working preview with one dead
+  // connector, so the empty case is a warning rather than a throw. Half of one is neither: the
+  // gatekeeper deploys, and every attempt to connect it throws "not configured" instead.
+  assert.deepEqual(oauthFor("gatekeeper-github"), {
+    CLIENT_ID: GITHUB_OAUTH.githubClientId,
+    CLIENT_SECRET: GITHUB_OAUTH.githubClientSecret,
+  });
+  assert.equal(resolveGatekeeperSecrets({ githubClientId: "", githubClientSecret: "" }).size, 0);
+  for (const half of [
+    { githubClientId: GITHUB_OAUTH.githubClientId, githubClientSecret: "" },
+    { githubClientId: "", githubClientSecret: GITHUB_OAUTH.githubClientSecret },
+  ]) {
+    assert.throws(() => resolveGatekeeperSecrets(half),
+        /PREVIEW_GITHUB_CLIENT_ID and PREVIEW_GITHUB_CLIENT_SECRET must be set together/);
+  }
+});
+
+test("every gatekeeper handed an OAuth app is a package that exists, and reads that pair", () => {
+  // The map is keyed by package name, and preview.ts looks each gatekeeper up in it by that name —
+  // so a renamed or deleted package makes the upload silently stop happening rather than fail.
+  const names = new Set(readDeployablePackages(PACKAGES_DIR).map((pkg) => pkg.name));
+  for (const [pkgName, secrets] of GATEKEEPER_SECRETS) {
+    assert.ok(names.has(pkgName),
+        `resolveGatekeeperSecrets names ${pkgName}, which is not a deployable package`);
+    assert.ok(isGatekeeperPackage(pkgName),
+        `resolveGatekeeperSecrets names ${pkgName}, which is not a gatekeeper`);
+    // The variable names the worker reads (`env.CLIENT_ID` / `env.CLIENT_SECRET`), which is also
+    // what the deploy wizard's DEFAULT_CRED_INPUTS asks a real instance for.
+    assert.deepEqual(Object.keys(secrets).toSorted(), ["CLIENT_ID", "CLIENT_SECRET"]);
+  }
 });

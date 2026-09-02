@@ -129,6 +129,17 @@ jobs:
           # a gateway in a *different* account (which sets this secret to `false`), and the google
           # provider, whose SDK cannot take the binding's fetch. Both fail the deploy.
           CF_AI_GATEWAY_USE_BINDING: ${{ secrets.CF_AI_GATEWAY_USE_BINDING || 'true' }}
+          # The GitHub gatekeeper's OAuth app, uploaded to *that worker's* Previews settings the
+          # same way, and for the same reason, as the backend's three above. Optional: with both
+          # unset the preview still deploys and only the GitHub connector is dead in it.
+          #
+          # `PREVIEW_`-prefixed because GitHub refuses to store a repository secret whose name
+          # begins with `GITHUB_`. The app behind these must be one registered for previews alone,
+          # with the callback URL `https://<PREVIEW_WORKERS_DEV_HOST>/gatekeeper/github/oauth` and
+          # wildcard matching left on — every preview is a different subdomain of that host, so
+          # nothing narrower validates, and anything on that subdomain can receive its codes.
+          PREVIEW_GITHUB_CLIENT_ID: ${{ secrets.PREVIEW_GITHUB_CLIENT_ID }}
+          PREVIEW_GITHUB_CLIENT_SECRET: ${{ secrets.PREVIEW_GITHUB_CLIENT_SECRET }}
           # Together these are the preview name, which is the first label of its hostname: a preview
           # reads as `pr123-my-branch-router.<subdomain>.workers.dev`. The number is what keeps two
           # branches that slugify alike from sharing one instance, and is how the nightly sweep
