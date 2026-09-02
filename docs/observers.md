@@ -351,8 +351,13 @@ unbounded time after the change. The count is deliberately not derived from `#pr
 session joins only once its `fetchProfile()` resolves — fine for a roster, fail-open for an access
 decision.
 
-The count covers everything a collaborator holds a role's access *through*, not just the top-level
-interfaces — anything that escaped it would let a widening find no session to sever:
+The count covers everything the *overseer* mints into a collaborator session, not just the
+top-level interfaces — anything that escaped it would let a widening find no session to sever.
+Capabilities a *gadget* mints (an `RpcTarget` returned by a gadget method through the facet
+proxy's method wrapper, re-exported to the client as an independently owned stub the overseer
+never sees disposed) are structurally outside the count and are covered only by the facet abort
+`bumpVersion` performs, which destroys the facet actor and every stub into it — root and
+gadget-minted children alike:
 
 - **Capabilities minted into a session** (`GadgetClientImpl`, `UseGadgetClientInterface`,
   `GatekeeperClientImpl`) each count for their own lifetime, since a client can dispose the parent
@@ -363,6 +368,20 @@ interfaces — anything that escaped it would let a widening find no session to 
   enabled hook's data flows through, and unlike a bind — which aborts gadget facets via
   `bumpVersion` — enabling a hook leaves existing facets running, so an uncounted retained facet
   would let that widening find no session to sever.
+- **Known gap — `enableHook` neither counts nor aborts gadget-minted children.** The facet-stub
+  lease above covers only the stub the overseer minted; a gadget-minted child is independently
+  owned (see the preamble) and reachable only by the facet abort — which every binding mutation
+  performs and hook enable, alone among the widenings, does not. A client that disposes its
+  counted wrappers but retains a gadget-minted child therefore leaves `use` count 0 when a hook
+  is enabled: no restart, no quarantine mark, and the retained child keeps reading the gadget
+  state the now-live hook writes into, under stale verification. Reachable only when the gadget's
+  own code returns such a stub to its caller and the client deliberately drops its wrappers; the
+  required fix is an unconditional `bumpVersion([gadgetId])` in `enableHookRecord` — not gated on
+  whether a restart fired, since the uncounted-child case is exactly the one where none does. (A
+  retained `env.GADGET` loopback is the same shape via a route the abort cannot reach — it
+  re-resolves the facet per call — and would additionally need a per-gadget generation stamp or
+  per-call role authorization of facet access; the global `codeVersion` cannot serve, since
+  bumping it for one gadget invalidates every gadget's loopbacks.)
 - **Subscriptions** (`subscribeToMetadata`/`Presence`/`Workpieces`/`Actions`/`Chat`/`ConsoleLogs`,
   on both client interfaces, including the `use` interface's inert ones) are exports minted into
   the session like any other: a client can dispose the interface while a retained chat or action
@@ -450,8 +469,10 @@ be durable before it (or the change is lost with the restart) — so when a rest
 scheduled, every trigger additionally marks the widened connection ids in the in-memory
 `#gatekeepersPendingRestart` set: `addGatekeeper` marks the just-published id, and the three
 `use`-scope triggers mark each id their diff widened (marking gatekeeper ids suffices as
-quarantine because a severed `use` session's gadget facet reload mints its binding loopbacks
-through `openSession`). Every route to a marked connection refuses with a retryable error until
+quarantine because a binding loopback is not a session but a per-call route: its props name the
+target and every call re-resolves a session through `openSession`, where the mark is checked —
+so the quarantine holds even for a loopback retained across a facet abort or the reset itself,
+which is *not* merely "re-minted on facet reload"). Every route to a marked connection refuses with a retryable error until
 the reset destroys the mark along with the sessions: `getGatekeeperById` (the mint clients
 pipeline on), `GatekeeperClientImpl.openSession` (which binding loopbacks also pass through), the
 slash-command invoke in `#prepareChatMessage`, `GadgetClientImpl.bindWithSuggestedName`, and
@@ -510,6 +531,19 @@ For each id in `description.excludeObservers`:
      `use` collaborator's open never verifies (and so never re-registers or removes) a gatekeeper
      outside their scope, so an unbind leaves them named by a gatekeeper they can no longer reach.
      A rebind puts it back in scope and their next open registers them again.
+     **Known gap: "left their scope" does not yet imply "cannot reach".** This classification
+     derives reachability purely from stored graph state, but a binding loopback's props name the
+     gatekeeper id — never the (gadget, binding) edge — and every call re-resolves a session
+     without revalidating any edge, so a loopback retained across the unbind (returned by a
+     gadget method to a browser client, persisted in the gadget's own facet storage, or parked in
+     `agentCallbackArgs` and re-injected later) keeps opening sessions until `removeGatekeeper`.
+     Unreachability is currently assumed rather than enforced; the required fix is a per-call
+     edge check (`#assertBindingEdgeLive`, matching on binding *target* for gadget callers) in
+     `startGatekeeperSession`'s gatekeeper branch, beside `openSession`'s quarantine check. Until
+     it lands, this arm is fail-open twice over: the observation is admitted, and the
+     de-registration stops the gatekeeper naming that observer in `excludeObservers` at all, so
+     every later observation is admitted too — until a rebind plus a fresh open re-registers
+     them.
    - **No longer authorized → allow** for this observer, and **delete their observer record**
      (and best-effort `removeObserver(observerId)` on all gatekeepers). They are no longer set up
      to observe; if they ever regain access they reconfigure from scratch (Step 3).
