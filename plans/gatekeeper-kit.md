@@ -202,7 +202,7 @@ They belong on the helper rather than each call site for the same reason `PAGE_S
 vendor form inherits all four without remembering them. This flows on to mcp-shared's connect form
 at step 12.
 
-`connectMutationError(req, { contentType })` classifies a browser mutation on one of those
+`connectMutationError(req, { origin, contentType })` classifies a browser mutation on one of those
 capability URLs, answering `"cross-origin"`, `"unsupported-content-type"`, or `undefined`; the
 caller renders its own refusal, since Marketo answers JSON 403/415 while a form-based flow answers
 HTML. A **missing** `Origin` is refused, not waved through: browsers send it on every POST, so its
@@ -210,6 +210,15 @@ absence means a non-browser caller on a URL whose whole authority is that a brow
 link. This is the third copy of the same check — Marketo's `checkMutation`, and
 `workshop-backend/src/client-errors.ts:100-104` — and homeassistant, which accepts POSTs on its
 connect route, has none.
+
+The expected `origin` is **required and explicit** rather than derived from `req.url` (the shape
+client-errors uses): the form's action URL is built from the configured base URL, so the legitimate
+browser `Origin` is that URL's origin by construction, while the origin the Worker sees is whatever
+host the request arrived on — the shipped base-path guard (`supabase.ts:270-273`) deliberately
+compares only the path for the same reason. A deployment fronted by a host-rewriting proxy would
+403 every connect submission under the derived form, in production only. A full base URL is
+accepted; only its origin is compared. `handleGatekeeperHttp` (§5.5) computes `baseUrl` already, so
+Layer 2 passes it through.
 
 `contentType` names a media type and is compared **exactly**, parameters dropped and case folded.
 Substring matching looks equivalent and is not: `application/jsonp` contains `application/json`,
@@ -325,13 +334,25 @@ export class CredentialCoordinator<Creds> {                  // lives in the Use
 
 export class CredentialSource<Creds> {          // held by User entrypoint / facet / verifier
   constructor(opts: {
-    account: () => AccountCredentialStub<Creds>;   // { getCredentials(): Promise<{ creds, identity }>; noteCredentialsExpired(identity) }
+    account: () => AccountCredentialStub<Creds>;   // { getCredentials(): Promise<{ creds, identity, generation }>; noteCredentialsExpired(identity) }
     isAuthError(e: unknown): boolean;              // grant death only, never a per-resource denial
     expiredMessage: string;
     vendorId?: string;                             // log attribution
   });
   get(): Promise<Creds>;       // reads the account; concurrent reads coalesce onto one round trip
-  run<T>(fn: (creds: Creds) => Promise<T>): Promise<T>;   // hands the call its creds, captures their identity
+  run<T>(fn: (creds: Creds) => Promise<T>): Promise<T>;   // hands the call its creds, captures their
+                                 // identity; an auth failure under an identity a refetch has since
+                                 // superseded with a live successor is stale — rethrown as retry,
+                                 // not reported as expiry. No live successor, no retry: a mismatch
+                                 // alone can mean the read was fenced out, and its failure reports
+  authority(): string | undefined;  // the connection generation of the last fetch, synchronously —
+                                 // named for its facet-side cache-authority role, wired through
+                                 // KvTtlCache.partitionedBy (§4.10). undefined before the first
+                                 // fetch, and from a reported expiry until a fetch started after
+                                 // the report adopts an undead identity: partition unknown, so a
+                                 // cache keyed on it bypasses rather than serves. Last-seen and
+                                 // shared — never the action-fence capture, which rides the
+                                 // generation of its own fetch
 }
 ```
 
@@ -350,8 +371,12 @@ credential on a fixed wall clock, 21 fetch from the account on every provider re
 slack expiry−5m). The rest do not have the shape at all: three snapshot a bearer at session
 construction (homeassistant, http, gtmdata), two resolve once per MCP operation, and four have no
 connected-account credential path. So every operation reads the account's current
-`{ creds, identity }`, and the only
-sharing is coalescing the concurrent reads one operation makes onto a single in-flight round trip. A
+`{ creds, identity, generation }`, and the only
+sharing is coalescing the concurrent reads one operation makes onto a single in-flight round trip.
+The `generation` riding along is `connectionGeneration()`: the source records the last-seen value
+and surfaces it synchronously as its `authority()` — named for the role, in the cache's own
+vocabulary — which is what lets `KvTtlCache.partitionedBy(kv, source)` partition a facet-side cache
+by principal (§4.10) without an extra account round trip per cache read. A
 fixed TTL would instead keep a live facet serving a stale principal across a reconnect for the
 length of the window. An expiry-gated cache is the shape to add if measurement ever demands one, and
 it needs an `expiresAt` projection the stored/public credential split does not carry today (§10).
@@ -399,10 +424,24 @@ the commit persisting it can lose the new token. The README documents this; noth
 may promise otherwise.
 
 `CredentialSource.run` resolves the credentials, hands them to the operation, and captures their
-identity before awaiting it. When `isAuthError(e)` is true it calls
-`account().noteCredentialsExpired(identity)` with that captured value — reading it back after the
-failure would report whichever identity a concurrent refetch had since installed, expiring the
-grant that replaced the one the call used — and throws `new Error(expiredMessage, { cause: e })`.
+identity before awaiting it. When `isAuthError(e)` is true and that captured identity is still the
+last one a fetch adopted, it calls `account().noteCredentialsExpired(identity)` and throws
+`new Error(expiredMessage, { cause: e })`, adding that identity to a small dead set (bounded FIFO —
+account commits are monotone, so an identity evicted after several newer reports can never be
+served again): the account keeps the grant until reconnect, so a refetch returns the same identity,
+and re-adopting its generation would let cache hits mask the outage — while a fetch already in
+flight at the report is fenced out entirely, since a straggler can carry any old identity. A fetch
+started after the report, adopting an identity not in the dead set (successful refresh or
+reconnect), re-establishes the authority. Expiry also surfaces through the fetch itself — a failed
+refresh rejects `getCredentials()` with an error named `CredentialsExpiredError` — and the source
+drops the authority there too, under the same fence so a straggler's stale rejection cannot clear a
+revived partition. When a concurrent refetch has since adopted a **live successor** — a different
+identity not itself in the dead set — the failure is stale: reporting it would expire the grant
+that replaced the one the call used, and clearing the authority would drop the live grant's
+partition, so `run` reports nothing, clears nothing, and throws a fixed retry message instead. A
+bare identity mismatch is not enough: a fetch fenced out by the report still hands its credentials
+to its caller without adopting them, and when those fail too, nothing live succeeded them — the
+failure is fresh evidence and reports as expiry, or a later refetch would re-adopt the dead grant.
 The account hop is itself wrapped, so its failure cannot replace `expiredMessage`; everything else
 passes through.
 
@@ -446,7 +485,7 @@ export type ObserverTrackerOptions<V> = {
 export class ObserverTracker<V> {
   addObserver; removeObserver; prepareObservation; prepareWithheld; observerIds
 }
-export class ObservationGate implements Disposable { authorize; [Symbol.dispose] }  // owns the dup
+export class ObservationGate implements Disposable { authorize; actions; [Symbol.dispose] }  // owns the dup
 // Storage: `observer:<id>` admitted, `observer-attempt:<id>` + `observer-nonce:<id>` mid-admission,
 // `observer-withhold:<nonce>` per withheld read in flight, `observer-withheld` latched closed.
 // Modules: the tracker and its storage vocabulary live in `src/observer-tracker.ts`, the strategies
@@ -560,6 +599,9 @@ export type ObservationInput = Omit<ObservationDescription, "excludeObservers">;
 export class ObservationGate {
   constructor(queue: RpcStub<ApprovalQueue>, strategy: ObserverStrategy);
   authorize(input: ObservationInput, scope: ObservationScope): Promise<void>;
+  get actions(): Pick<RpcStub<ApprovalQueue>, "submitAction" | "bindHook">;   // borrowed for action
+                                         // staging; the gate keeps ownership. Narrowed so a raw
+                                         // authorizeObservation cannot skip the strategy's exclusions
 }
 ```
 
@@ -716,7 +758,9 @@ export class ActionJournal<A> {
   listPending(): JournalEntry<A>[];         // "pending" + "claimed", ascending id; feeds createSimulationView
   listUndecided(): JournalEntry<A>[];       // "pending" only — what a decision may still retire
 }
-export function stageAction<A>(journal, queue: RpcStub<ApprovalQueue>,
+export type ActionSubmitter =                           // the surface staging needs; `gate.actions`
+  Pick<RpcStub<ApprovalQueue>, "submitAction">;         // (§4.7) and a full stub both satisfy it
+export function stageAction<A>(journal, queue: ActionSubmitter,
   action: A, description: ActionDescription): Promise<number>;
 
 export type ActionPresentation =                        // the approver-facing text; policy fields
@@ -749,7 +793,8 @@ export function defineActions<H, M extends Record<string, unknown>>(defs: {
 }): ActionSet<H, M>;
 
 export type BoundActionSet<M> = {
-  submit(queue, kind, payload): Promise<number>;      // serialized against other submissions only
+  submit(queue: ActionSubmitter, kind, payload): Promise<number>;   // serialized against other
+                                            // submissions only
   apply(id: number): Promise<void>;         // both exclusive with each other and with
                                             // runExclusive; void for an already-applied id
   reject(id: number): Promise<void>;
@@ -999,11 +1044,11 @@ defect; each is either additive later or a fact about one provider that only bit
 | **Baseline re-checks on the exclusion path.** `verifyBaseline` runs at admission only, so an observer who later loses the binding-wide grant keeps observing. Google's batch result carries it per call — `{ baselineAllowed, allowed[] }` (`gatekeeper-google/src/observers.ts:48-49`) — and excludes on `!baselineAllowed` (`:206-215`). | google port first | Expressible today by folding the baseline into `hasSetAccess` (return all-`false`), so this is a documentation gap rather than a missing capability. Note google's baseline is a recorded *resource grant* (`resources.ts:203-205`), not org membership, and it *excludes* rather than removing the observer. |
 | **`maxTrackedSets` is a default, not a corpus constant.** 1000 comes from google's generic default, but its concrete Drive tracker overrides to **2000** (`drive-observers.ts:49-53`), sized against `ceil(N/100)` subrequests. | supabase, notion, linear ports, which had no cap at all | A port inherits a bound it never had; the number is per-provider and belongs in that port's options. |
 | **`maxObservers` is a platform bound the corpus does not have.** Every retained observer costs one verifier call per read, and Workers cap a request at **32 Worker invocations** — past that the call throws, so a binding with too many collaborators fails *every* read rather than degrading. No shipped tracker caps this: notion, confluence, context, linear and internal `gatekeeper-shared` fan out over all observers with unbounded `Promise.all`, and google throttles concurrency without bounding the total. | every strategy-C port | The kit refuses at admission instead, which is the legible half of the same failure. The default is **10**, not 20: an observer count prices only the kit's own hop, and every verifier in the corpus spends a second invocation calling its account DO (`notion.ts:615-635`), so 20 observers is 40 invocations before the read does anything. The real ceiling is per-deployment, so the number belongs in that port's options. `concurrency` is a throttle and never a bound. |
-| **Re-fetch after a reported expiry.** `run()` drops its in-flight fetch and then awaits `noteCredentialsExpired`; a concurrent `get()` in that window re-fetches the same dead grant from an account that has not been told yet. | all | Self-healing and bounded: the next use 401s and re-reports. Costs a redundant round of 401s, never a wrong authorization. A "known-dead identity" marker on the source would close it. |
+| **Re-fetch after a reported expiry.** The account keeps the dead grant until reconnect — `noteCredentialsExpired` notifies, it does not clear — so any later `get()` fetches the same credentials back and its callers 401 again. | all | Self-healing and bounded: each round costs a redundant 401 (the account notifies once), never a wrong authorization. The source keeps reported identities in a bounded dead set and refuses to re-adopt their generations, and fences out fetches already in flight at the report; without those, a cache hit under the restored partition never reaches the provider, so hit-only paths would mask the outage for the TTL and across the reconnect. A fetch started after the report, adopting an identity not in the set — successful refresh or reconnect — re-establishes the authority. |
 | **Corrupt-record blast radius.** A throwing `upgradeRecord` propagates out of `#coerce`, so one unreadable legacy record makes `listPending()` throw and blinds the whole simulation overlay rather than dropping that entry. | ports supplying `upgradeRecord` | Both behaviours lose something — a throw blinds everything, skipping hides one pending action from its user — so pick it with a real corpus of legacy records in view. |
 | **The retained tier is unbounded.** `#requireCapacity` scans only the pending prefix and skips `isRetained`, so `maxPending` bounds pending records and twice that many `staged`/`failed` ones, but never retained ones. A long-lived `retainApplied: true` binding accumulates one record per applied action indefinitely. | every retaining port | Retention is consumer policy and vendor caps differ; the binding must retire records through `runExclusive` under its own policy. |
 | **Past its bound, a pruned `failed` record takes the only account of what went wrong.** The Workshop keeps a thrown `applyPendingAction` pending and visible (`overseer.ts:9497-9500`, "the action stays pending and the turn stays suspended"), so the journal record is the sole holder of the reason. Once more than `2 × maxPending` prunable records accumulate, the oldest are dropped: a later approve degrades to `Unknown pending action` and a later reject succeeds silently, which can lose an `ActionApplyError` warning that a provider effect partly landed. | any port accumulating more than twice `maxPending` un-rejected failures on one resource | Storage must be bounded, so something must eventually go; the choice is only what and when. Counting failures against the cap instead — the obvious alternative — converts a lost diagnostic into a provider-triggered denial of service, blocking all staging until the user hand-clears them. Staged-first pruning and the doubled bound push this out; closing it entirely needs a tier that keeps reasons after their records, which is the same unbounded retention the row above defers. |
-| **A pending action is not fenced against the connection that staged it.** In-place reconnect keeps the same account DO and `userObjectId` and merely replaces the grant — `reconnectAccount()` is `record.account.reconnect()` (`user.ts:1541-1545`) and `markCredentialsRestored` re-describes on the assumption the user "may have re-authed with different info" (`user.ts:1655-1664`). Neither the overseer's approval record nor the facet's journal is touched, so an action staged under principal A can be approved and applied with principal B's credentials — and an object id that named one thing in A's tenant may name another in B's. No gatekeeper in either corpus fences this. | every port whose provider allows re-auth as a different principal | Not fixable with a nonce. A facet-side generation check followed by the handler's own `get()` is not atomic — a reconnect landing between them still yields B — so the fence has to be a credential read that takes the staged generation, `getCredentialsForGeneration(expected)` in the account DO, over the `connectionGeneration()` the coordinator already stores (§4.6; `identity()` cannot serve — every refresh supersedes it, invalidating every pending action). That reaches only handlers that resolve credentials through the kit; a handler holding its own client still calls the provider unfenced, which is the cost of the escape hatch. Land it with the first port whose provider permits principal-switching re-auth, so the handler ergonomics are designed against a real one. |
+| **A pending action is not fenced against the connection that staged it.** In-place reconnect keeps the same account DO and `userObjectId` and merely replaces the grant — `reconnectAccount()` is `record.account.reconnect()` (`user.ts:1541-1545`) and `markCredentialsRestored` re-describes on the assumption the user "may have re-authed with different info" (`user.ts:1655-1664`). Neither the overseer's approval record nor the facet's journal is touched, so an action staged under principal A can be approved and applied with principal B's credentials — and an object id that named one thing in A's tenant may name another in B's. No gatekeeper in either corpus fences this. | every port whose provider allows re-auth as a different principal | Not fixable with a nonce. A facet-side generation check followed by the handler's own `get()` is not atomic — a reconnect landing between them still yields B — so the fence has to be a credential read that takes the staged generation, `getCredentialsForGeneration(expected)` in the account DO, over the `connectionGeneration()` the coordinator already stores (§4.6; `identity()` cannot serve — every refresh supersedes it, invalidating every pending action). The stage-time half is delivered: the generation rides `getCredentials()`, so a staging call records the generation of its own credential read — never `CredentialSource.authority()`, a shared last-seen value (§4.10) that a concurrent fetch can move between the read and the record, stamping an action derived under A with B's generation. The apply-time fenced read remains open. That reaches only handlers that resolve credentials through the kit; a handler holding its own client still calls the provider unfenced, which is the cost of the escape hatch. Land it with the first port whose provider permits principal-switching re-auth, so the handler ergonomics are designed against a real one — supabase qualifies (reconnect may authorize a different org), so decide at that port whether to take the fence or explicitly re-scope this trigger. |
 | **The expiry latch re-arms with two writes.** `clearCredentialExpiryLatch` clears the boolean and writes a fresh arm. Were the second to fail alone, an in-flight notification for the replaced credentials would match the surviving arm and latch the new ones — the one *silencing* failure in a module whose every other window fails toward a harmless duplicate notification. | every port with a refresh flow | Both writes are adjacent, awaitless and constant-size, so one implicit transaction carries them and no trigger separates them; the function's doc comment states that adjacency as the invariant to preserve. Every candidate fix is worse than the window: swapping the order makes the silence deterministic, and one combined record breaks the plain-boolean compatibility the latch key promises. If a port ever needs it, the escape is a single record holding arm and notified together. |
 | **A crash mid-withheld-read closes admission for good.** The `observer-withhold:<nonce>` marker goes down before the overseer is asked and is stranded by an activation that dies before settling; `addObserver` refuses while any marker stands, and nothing reclaims one. A read the overseer would have refused still leaves the binding unshareable. | every strategy-C port using `withholdFromObservers` | A stranded marker cannot tell a lost reply from a lost request, and the overseer's record is durable before the reply — so reclaiming on any schedule risks disclosing a recorded owner-only description to the next collaborator admitted, while over-fencing costs sharing on a binding already handling owner-only data. The attempt record's fail-closed trade, without the TTL escape. *Trigger:* a binding observed stuck closed with no `observer-withheld` latch. |
 | **A lost `authorizeObservation` reply reopens admission over a standing withheld record.** `authorize` runs `discard()` on any throw, but a transport failure after the overseer's durable store is indistinguishable from a refusal — the marker comes down while the record stands, and the next collaborator admitted can read the owner-only description through `listActions()`. | every strategy-C port using `withholdFromObservers` | Keeping the marker on every throw inverts the earned-latch trade: refusal is the *ordinary* answer for a binding with observers (`overseer.ts:4590-4603`), and would permanently close admission for a read that disclosed nothing. Matching refusal message text was considered and rejected. The fix is a distinguishable refusal result in the `ApprovalQueue` contract, with `discard()` run only on it — batch with the next kernel contract change. *Trigger:* that change, or the first port shipping withheld reads. |
@@ -1296,8 +1341,10 @@ consumer colliding with itself.
 
 ### 4.10 `./cache`
 
-`KvTtlCache` — `cached<T>(key, ttlMs, load)` and `invalidateAll()`, constructed with
-`(kv, authority: () => string)`. There
+`KvTtlCache` — `cached<T>(key, ttlMs, load)` and `invalidateAll()`. Consumers construct it with
+`KvTtlCache.partitionedBy(kv, source)`, which wires the authority to the source's live
+`authority()`; the raw constructor `(kv, authority: () => string | undefined)` remains
+for static and composite authorities. There
 is no public `get`/`put` pair: a read-then-store cache whose two halves are separately callable puts
 the generation fence in the caller's hands, and the fence is the whole point. `cached()` reads the
 generation and the authority before `load()` and again after, and stores only if neither moved — so
@@ -1330,10 +1377,24 @@ principal's data with the old identity, an entry that inverts the guarantee belo
 going stale. `CredentialCoordinator.identity()` cannot serve: every successful refresh supersedes
 it, so keying on it silently discards the whole cache each time the grant renews. The account-side
 source is `connectionGeneration()` (§4.6) — a live storage read that survives refresh and rotates
-on `connect()`/`clear()`. A facet-side cache cannot read it synchronously across the RPC boundary;
-delivering it there is the same seam as the pending-action fence (§4.8 obligations), and until that
-lands a facet cache's authority comes from its own props — which an in-place principal-switching
-reconnect does not rotate, the residual risk that row already records.
+on `connect()`/`clear()`. A facet reaches it through
+`CredentialSource.authority()`: the generation rides every `getCredentials()` and
+the source surfaces the last-seen value synchronously, so the authority costs no round trip of its
+own. `KvTtlCache.partitionedBy(kv, source)` is that wiring, blessed: it takes the source itself
+(structurally — anything with `authority()`, so the cache module never names the credential
+domain), so a port never writes the authority
+closure a captured value, an `identity()`, or a static string would silently break. An authority
+with more dimensions (resource scope, policy) composes its own closure for the raw constructor;
+per-kind scoping stays in key segments (below). `undefined` — before the operation's first
+credential fetch, or from a reported expiry until a fetch started after the report adopts a
+different identity —
+means the partition is unknown, and the cache **bypasses** rather than hits or stores: an entry
+served or stamped without a partition is exactly the cross-principal leak the authority exists to
+prevent. The residual window is a last-seen value going stale between an in-place reconnect and the
+facet's next credential fetch — TTL-bounded, and closed at the next operation, since every
+operation reads the account afresh (§4.6). An async authority was considered and rejected: a DO
+round trip per cache read defeats the cache, and an RPC-fetched fence races the reconnect it
+fences.
 
 **The generation record is deliberately not partitioned.** It is a single shared counter, so a bump
 made under one authority also invalidates another's entries. That only ever over-invalidates, which
@@ -1771,12 +1832,16 @@ authors to wrap provider refresh calls so only 400/401/`invalid_grant`/`invalid_
 need): `begin` returns `{ html }` — a minimal form styled with `PAGE_STYLE`, fields from
 `config.fields: { name, label, secret?: boolean }[]`, a hidden `state`, posting to
 `${baseUrl}/connect/${accountId}`; `routes` handles that POST, first calls
-`connectMutationError(req, { contentType: "application/x-www-form-urlencoded" })` and renders any
+`connectMutationError(req, { origin: baseUrl, contentType: "application/x-www-form-urlencoded" })`
+(the expected origin is the base URL's, never `req.url`'s — §4.3) and renders any
 refusal, then reads the form and calls `completeAuth(formFields, state)`; `obtain` delegates to
 `config.validate(fields, env): Promise<Creds>`, and a validation throw renders `errorPageHtml`.
 `configured` is always true; no refresh or revoke by default. The shipped token-auth gatekeepers —
 homeassistant and internal sentry/http/clickhouse — accept these POSTs without this check; the kit
-closes that corpus-wide gap.
+closes that corpus-wide gap. **This is a parity break, not just a hardening**: a non-browser client
+scripting a connect POST (no `Origin` header) works against those gatekeepers today and 403s after
+the port. Each token-auth port PR restates this in its description rather than leaving it to a test
+assertion.
 
 ### 5.5 `./http`
 
@@ -1841,10 +1906,13 @@ Public loopback-RPC methods and their sequencing:
   (`user.ts:416-426`) and, for cloudflare login, revokes the grant it is about to keep
   (`user.ts:1567-1590`).
 - `getCredentials()` — `coordinator.fresh(strategy.refresh)`, projected through
-  `config.publicCredentials` and returned as `{ creds, identity }` (the coordinator's current
-  credential identity, reissued whenever credentials are written or cleared). A still-current
-  `CredentialsExpiredError` from refresh triggers `noteCredentialsExpired()` and rethrows as the
-  strategy's `expiredMessage`; any other refresh error rethrows with credentials intact. **The
+  `config.publicCredentials` and returned as `{ creds, identity, generation }` (the coordinator's
+  current credential identity, reissued whenever credentials are written or cleared, plus its
+  `connectionGeneration()`). A still-current
+  `CredentialsExpiredError` from refresh triggers `noteCredentialsExpired()` and rethrows as a
+  `CredentialsExpiredError` carrying the strategy's `expiredMessage` — the name must survive the
+  RPC (the transport strips the class), since the source drops its cache authority on it; verify
+  preservation at the first port. Any other refresh error rethrows with credentials intact. **The
   projection is not optional — see below.**
 - `noteCredentialsExpired(identity)` — no-ops unless `identity` matches the coordinator's
   current one (a stale notifier lost the race to a reconnect); otherwise delegates to
@@ -1967,7 +2035,9 @@ the hook can branch on `this.ctx.props` (supabase: project bindings return the p
 (`actions?.autoApprovableKinds() ?? []`), `applyAction`/`rejectAction` (dispatch straight to
 `actions`, which already serializes both on the queue it owns — §4.8 — and throwing when no actions
 are configured), `addObserver`/`removeObserver` (delegating to the strategy), a protected
-`observationGate(queue)` helper that `.dup()`s the queue and binds the strategy, and a protected
+`observationGate(queue)` helper that `.dup()`s the queue and binds the strategy — the session's
+**only** dup: action submission borrows the same stub through `gate.actions` (§4.7), matching the
+corpus's one-stub-per-session shape (`supabase.ts:814-819`) — and a protected
 `resourceDescription(dynamic: { url: string; title: string; snippet: string; hasSlashCommands?:
 boolean }): ResourceDescription` helper that merges the def's static `tsType`/`hookTsType`/
 `suggestedBindingName` with the live fields. `describe()` and `startSession(queue)` stay

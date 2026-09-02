@@ -653,6 +653,15 @@ describe("ObservationGate", () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
+  it("shares its stub so a session staging actions needs no second dup", () => {
+    const queue = { authorizeObservation: async () => {} } as unknown as RpcStub<ApprovalQueue>;
+    const gate = new ObservationGate(queue, openObservers());
+
+    // The same reference, not a dup: ownership (and release) stays with the gate. The type is
+    // narrowed to actions only, so observations cannot skip the strategy's exclusions.
+    expect(gate.actions).toBe(queue);
+  });
+
   it("discards rather than commits when the overseer refuses, keeping its error", async () => {
     const commit = vi.fn();
     const discard = vi.fn();

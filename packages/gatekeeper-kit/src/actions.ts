@@ -17,6 +17,9 @@ export {
   type JournalRecord,
 } from "./action-journal";
 
+/** The queue surface staging needs; `gate.actions` and a full stub both satisfy it. */
+export type ActionSubmitter = Pick<RpcStub<ApprovalQueue>, "submitAction">;
+
 type ActionLogFields =
   { outcome: ResolveOutcome; vendorId: string; action: number; stranded: number };
 
@@ -35,7 +38,7 @@ const submissions = new WeakMap<object, SerialTaskQueue>();
  */
 export function stageAction<A>(
   journal: ActionJournal<A>,
-  queue: RpcStub<ApprovalQueue>,
+  queue: ActionSubmitter,
   action: A,
   description: ActionDescription,
 ): Promise<number> {
@@ -156,8 +159,7 @@ export type BoundActionSet<M extends Record<string, unknown>> = {
    * @param payload Action payload.
    * @returns The allocated action ID.
    */
-  submit<K extends keyof M>(
-    queue: RpcStub<ApprovalQueue>, kind: K, payload: M[K]): Promise<number>;
+  submit<K extends keyof M>(queue: ActionSubmitter, kind: K, payload: M[K]): Promise<number>;
   /**
    * Applies an action, at-least-once across activations unless its definition sets
    * `claimBeforeApply`; re-applying an applied ID is a no-op. Resolution is serialized with

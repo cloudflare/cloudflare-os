@@ -25,6 +25,11 @@ export class CredentialsExpiredError extends Error {
   }
 }
 
+/** Matches confirmed expiry by name, which survives the RPC boundary where the class does not. */
+function isExpiredError(error: unknown): boolean {
+  return error instanceof Error && error.name === "CredentialsExpiredError";
+}
+
 // Shared storage layout for kit-managed credentials.
 const CREDENTIALS_KEY = "credentials";
 const IDENTITY_KEY = `${CREDENTIALS_KEY}:identity`;
@@ -258,12 +263,18 @@ export class CredentialCoordinator<Creds> {
   }
 }
 
-/** One fetch of credentials, tagged with the identity they belong to. */
-export type CredentialsWithIdentity<Creds> = { creds: Creds; identity: string };
+/** One fetch of credentials, tagged with their identity and connection generation. */
+export type CredentialsWithIdentity<Creds> =
+  { creds: Creds; identity: string; generation: string };
 
 /** Account-side RPC shape. See `CredentialSourceOptions.account` for stub ownership. */
 export type AccountCredentialStub<Creds> = {
-  /** @returns Current credentials and their identity fence. */
+  /**
+   * Reads current credentials, refreshing as needed.
+   * @returns Current credentials, their identity fence, and their connection generation.
+   * @throws On confirmed expiry, an error named `CredentialsExpiredError` — the transport may strip
+   * the class, so the name is the contract the source drops its cache authority on.
+   */
   getCredentials(): Promise<CredentialsWithIdentity<Creds>>;
   /**
    * Reports expiry when the credential identity is still current.
@@ -274,6 +285,10 @@ export type AccountCredentialStub<Creds> = {
 
 /** `CredentialSource` keeps one flight -- the account's current credentials -- so it needs one key. */
 const CREDENTIALS_FLIGHT = "credentials";
+
+// Monotone account commits: once this many newer grants were reported, an evicted identity can
+// never be served again, so bounding the dead set is safe.
+const DEAD_IDENTITIES_KEPT = 8;
 
 /** Configures credentials fetched across the account RPC boundary. */
 export type CredentialSourceOptions<Creds> = {
@@ -300,6 +315,10 @@ export class CredentialSource<Creds> {
   readonly #options: CredentialSourceOptions<Creds>;
   readonly #logger: typeof logger;
   readonly #fetches = new SingleFlight();
+  #generation: string | undefined;
+  #identity: string | undefined;
+  readonly #dead = new Set<string>();
+  #clearFence = 0;
 
   /**
    * Creates a consumer-side credential source.
@@ -316,6 +335,21 @@ export class CredentialSource<Creds> {
   }
 
   /**
+   * The cache authority for data fetched through this source (`KvTtlCache.partitionedBy`): mirrors
+   * the connection generation of the last successful fetch rather than reading the account live, so
+   * a reconnect repartitions at the next fetch and a token refresh never does. A shared last-seen
+   * value a concurrent fetch can move — action-fence capture must ride the `generation` of its own
+   * `getCredentials()` read, never this accessor. Direct callers compose custom authorities for the
+   * raw cache constructor.
+   * @returns The last-seen connection generation; `undefined` (principal unknown) until a fetch
+   * succeeds, and from a reported expiry until a fetch started after the report adopts an identity
+   * not reported dead.
+   */
+  authority(): string | undefined {
+    return this.#generation;
+  }
+
+  /**
    * Runs a provider operation and reports confirmed expiry.
    * @param operation Provider call using current credentials.
    * @returns The provider operation result.
@@ -326,9 +360,21 @@ export class CredentialSource<Creds> {
       return await operation(creds);
     } catch (error) {
       if (!this.#options.isAuthError(error)) throw error;
+      // A newer fetch adopted a live grant: this failure is stale, so that grant is neither
+      // reported dead nor its cache authority dropped. An adopted identity that is itself dead is
+      // no successor — then this failure is the freshest evidence, however old its read.
+      if (identity !== this.#identity
+        && this.#identity !== undefined && !this.#dead.has(this.#identity)) {
+        throw new Error("This account's credentials changed during the operation; retry it.",
+          { cause: error });
+      }
       // Drop the in-flight fetch: it was started against the credentials just reported dead, and
-      // leaving it would hand them to the next caller anyway.
+      // leaving it would hand them to the next caller anyway. The generation goes with it, or a
+      // cache hit under the dead grant's partition could serve the next principal stale data.
       this.#fetches.forget(CREDENTIALS_FLIGHT);
+      this.#generation = undefined;
+      this.#markDead(identity);
+      this.#clearFence++;
       await this.#note(identity);
       throw new Error(this.#options.expiredMessage, { cause: error });
     }
@@ -336,7 +382,32 @@ export class CredentialSource<Creds> {
 
   /** @returns One coalesced account credential read. */
   async #current(): Promise<CredentialsWithIdentity<Creds>> {
-    return this.#fetches.run(CREDENTIALS_FLIGHT, () => this.#options.account().getCredentials());
+    const fence = this.#clearFence;
+    let current: CredentialsWithIdentity<Creds>;
+    try {
+      current = await this.#fetches.run(
+        CREDENTIALS_FLIGHT, () => this.#options.account().getCredentials());
+    } catch (error) {
+      // A fetch rejecting with confirmed expiry (a failed refresh) reports the grant as dead as a
+      // 401 does. Fenced like adoption: a straggler's stale rejection must not clear a revival.
+      if (fence === this.#clearFence && isExpiredError(error)) this.#generation = undefined;
+      throw error;
+    }
+    // Dual guard, neither subsumes the other: the fence blocks fetches started before an expiry
+    // report (a straggler can carry any old identity, not just a marked one), the dead set blocks
+    // the grants the account keeps serving after their reports.
+    if (fence === this.#clearFence && !this.#dead.has(current.identity)) {
+      this.#generation = current.generation;
+      this.#identity = current.identity;
+    }
+    return current;
+  }
+
+  #markDead(identity: string): void {
+    this.#dead.add(identity);
+    if (this.#dead.size > DEAD_IDENTITIES_KEPT) {
+      this.#dead.delete(this.#dead.values().next().value!);
+    }
   }
 
   /**

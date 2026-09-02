@@ -44,7 +44,7 @@ describe("connect pages", () => {
 
 describe("connectMutationError", () => {
   const origin = "https://gatekeeper.example";
-  const json = { contentType: "application/json" };
+  const json = { origin, contentType: "application/json" };
   const mutation = (headers: Record<string, string>) =>
     new Request(`${origin}/connect/capability`, { method: "POST", headers });
 
@@ -71,13 +71,31 @@ describe("connectMutationError", () => {
       .toBe("unsupported-content-type");
   });
 
+  it("compares against the configured origin, not the request URL", () => {
+    // A fronting proxy may rewrite the host the Worker sees; Origin still names the base URL.
+    const rewritten = new Request("https://internal.host/connect/capability", {
+      method: "POST",
+      headers: { Origin: origin, "Content-Type": "application/json" },
+    });
+    expect(connectMutationError(rewritten, json)).toBeUndefined();
+    expect(connectMutationError(rewritten, { ...json, origin: "https://other.example" }))
+      .toBe("cross-origin");
+  });
+
+  it("accepts a full base URL as the expected origin", () => {
+    expect(connectMutationError(
+      mutation({ Origin: origin, "Content-Type": "application/json" }),
+      { origin: `${origin}/gatekeeper/acme`, contentType: "application/json" },
+    )).toBeUndefined();
+  });
+
   it("matches the content type case-insensitively and past its parameters", () => {
     expect(connectMutationError(
       mutation({ Origin: origin, "Content-Type": "APPLICATION/JSON" }), json,
     )).toBeUndefined();
     expect(connectMutationError(
       mutation({ Origin: origin, "Content-Type": "multipart/form-data; boundary=x" }),
-      { contentType: "multipart/form-data" },
+      { origin, contentType: "multipart/form-data" },
     )).toBeUndefined();
   });
 

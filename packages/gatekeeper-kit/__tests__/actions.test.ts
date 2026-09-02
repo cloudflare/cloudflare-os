@@ -10,9 +10,11 @@ import {
   type ActionDefinition,
   type ActionJournalKv,
   type ActionPresentation,
+  type ActionSubmitter,
   type ResolveOutcome,
   type TaggedAction,
 } from "../src/actions";
+import { ObservationGate, openObservers } from "../src/observers";
 import { fakeKv } from "./fake-kv";
 
 function makeKv() {
@@ -29,8 +31,8 @@ function submitSpy() {
   return vi.fn<ApprovalQueue["submitAction"]>(async () => {});
 }
 
-function fakeQueue(submitAction = submitSpy()) {
-  return { submitAction } as unknown as RpcStub<ApprovalQueue>;
+function fakeQueue(submitAction = submitSpy()): ActionSubmitter {
+  return { submitAction };
 }
 
 describe("ActionJournal", () => {
@@ -553,6 +555,21 @@ describe("defineActions", () => {
       actionKind: { tag: "sql", label: "Run SQL" },
       autoApprovable: true,
     });
+    expect(journal.listPending()).toEqual([
+      { id, action: { kind: "execute", payload: { sql: "one" } } },
+    ]);
+  });
+
+  it("stages through the gate's borrowed action surface", async () => {
+    // The one-dup session shape: `gate.actions` must satisfy `ActionSubmitter` without a cast.
+    const { actions, journal } = bind();
+    const submitAction = submitSpy();
+    const gate = new ObservationGate(
+      { submitAction } as unknown as RpcStub<ApprovalQueue>, openObservers());
+
+    const id = await actions.submit(gate.actions, "execute", { sql: "one" });
+
+    expect(submitAction).toHaveBeenCalledWith(id, expect.objectContaining(presentation));
     expect(journal.listPending()).toEqual([
       { id, action: { kind: "execute", payload: { sql: "one" } } },
     ]);
