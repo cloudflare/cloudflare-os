@@ -17,6 +17,7 @@ const connectedSkill: SlashCommandChoice = {
   name: "Review   writing",
   description: "Review and improve a draft.",
   providerLabel: "Writing tools",
+  resourceLabel: "Editorial account",
 };
 const builtinSkill: SlashCommandChoice = {
   selection: { builtin: true, commandId: "compact" },
@@ -108,6 +109,10 @@ describe("ComposerAddMenu", () => {
     await act(async () => host.querySelector<HTMLButtonElement>('[aria-haspopup="dialog"]')!.click());
     await waitFor(() => document.querySelectorAll('[role="option"]').length === 3);
     expect(document.body.textContent).not.toContain("Compact this chat");
+    const skillOption = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+      .find((option) => option.textContent?.includes("Review   writing"))!;
+    expect(skillOption.textContent).toContain("Writing tools · Editorial account");
+    expect(skillOption.title).toContain("Writing tools · Editorial account");
 
     const search = document.querySelector<HTMLInputElement>('[aria-label="Search skills"]')!;
     await act(async () => {

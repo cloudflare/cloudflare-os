@@ -37,6 +37,7 @@ type UseComposerResourcesOptions = {
     options?: CommitDocumentEditOptions,
   ) => CommittedTransition<T>;
   capsuleTokenText: (description: ResourceDescription, vendorId?: string) => string;
+  onConnectionCreated: () => void;
   onSelectionRequest: (selection: ComposerSelection, documentRevision: number) => void;
   onError: (message: string) => void;
 };
@@ -92,6 +93,7 @@ export const useComposerResources = ({
   getDocumentSnapshot,
   commitDocumentEdit,
   capsuleTokenText,
+  onConnectionCreated,
   onSelectionRequest,
   onError,
 }: UseComposerResourcesOptions) => {
@@ -195,6 +197,7 @@ export const useComposerResources = ({
         inserted = true;
         dismissUrl();
         onSelectionRequest({ start: result.caret, end: result.caret }, result.documentRevision);
+        onConnectionCreated();
       } finally {
         if (!inserted) await removeUnusedGatekeeper(gatekeeper);
         gatekeeper[Symbol.dispose]();
@@ -273,6 +276,7 @@ export const useComposerResources = ({
       }
       inserted = true;
       onSelectionRequest({ start: result.caret, end: result.caret }, result.documentRevision);
+      onConnectionCreated();
     } catch (error) {
       if (attachSnapshotRef.current !== source) return;
       throw error;

@@ -287,7 +287,11 @@ export default function ComposerAddMenu({
                 role="option"
                 aria-selected={active}
                 tabIndex={-1}
-                title={[choice.name, choice.description, choice.providerLabel].join("\n")}
+                title={[
+                  choice.name,
+                  choice.description,
+                  [choice.providerLabel, choice.resourceLabel].filter(Boolean).join(" · "),
+                ].join("\n")}
                 className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${active ? "bg-kumo-tint" : "hover:bg-kumo-tint/70"}`}
                 onPointerMove={() => setActiveIndex(index)}
                 onClick={() => activate(item)}
@@ -301,6 +305,9 @@ export default function ComposerAddMenu({
                   <span className="min-w-0 flex-1 truncate text-kumo-subtle">
                     {choice.description}
                   </span>
+                </span>
+                <span className="max-w-[30%] shrink-0 truncate text-[11.5px] text-kumo-inactive">
+                  {[choice.providerLabel, choice.resourceLabel].filter(Boolean).join(" · ")}
                 </span>
               </button>
             </Fragment>

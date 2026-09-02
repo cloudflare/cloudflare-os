@@ -16,10 +16,11 @@ const catalogs = new WeakMap<OverseerSource, Promise<SlashCommandChoice[]>>();
 export function loadSlashCommandCatalog(source: OverseerSource): Promise<SlashCommandChoice[]> {
   let cached = catalogs.get(source);
   if (cached) return cached;
-  let load = Promise.resolve(source())
+  let load: Promise<SlashCommandChoice[]>;
+  load = Promise.resolve(source())
     .then((overseer) => overseer.listSlashCommands())
     .catch((err) => {
-      catalogs.delete(source);
+      if (catalogs.get(source) === load) catalogs.delete(source);
       throw err;
     });
   catalogs.set(source, load);
