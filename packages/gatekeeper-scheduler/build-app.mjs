@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveBinEntry } from "../../scripts/bin-entry.ts";
-import { pnpmCommand } from "../../scripts/pnpm-command.ts";
+import { resolveBinEntry } from "@gadgets/scripts/bin-entry";
+import { pnpmCommand } from "@gadgets/scripts/pnpm-command";
 
 const packageDirectory = resolve(fileURLToPath(import.meta.url), "..");
 const watch = process.argv.includes("--watch");

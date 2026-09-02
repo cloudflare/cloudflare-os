@@ -17,6 +17,7 @@
     "capnweb-validate": "catalog:"
   },
   "devDependencies": {
+    "@gadgets/scripts": "workspace:*",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

@@ -34,6 +34,7 @@
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.8",
     "@emoji-mart/data": "^1.2.1",
+    "@gadgets/scripts": "workspace:*",
     "@lezer/highlight": "^1.2.3",
     "@phosphor-icons/react": "^2.1.10",
     "@tailwindcss/vite": "^4.3.3",

@@ -17,6 +17,7 @@
     "node-html-parser": "^7.1.0"
   },
   "devDependencies": {
+    "@gadgets/scripts": "workspace:*",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

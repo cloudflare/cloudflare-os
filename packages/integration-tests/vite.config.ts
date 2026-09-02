@@ -1,4 +1,4 @@
-import vitestTaskViteConfig, { withTestTimeout } from '../../scripts/vitest-task-vite-config.js'
+import vitestTaskViteConfig, { withTestTimeout } from '@gadgets/scripts/vitest-task'
 
 const config = vitestTaskViteConfig('vitest run')
 

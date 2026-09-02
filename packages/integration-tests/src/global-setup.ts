@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestProject } from "vitest/node";
-import { pnpmCommand } from "../../../scripts/pnpm-command.js";
+import { pnpmCommand } from "@gadgets/scripts/pnpm-command";
 
 const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const VALIDATED_ENTRIES = [

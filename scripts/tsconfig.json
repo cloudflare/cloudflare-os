@@ -1,6 +1,8 @@
 // Type-checks `scripts/` — the repo's build/release/dev tooling, which no package tsconfig
 // includes. Nothing here is compiled: every module runs directly under `node`, which strips the
-// types. `erasableSyntaxOnly` is what keeps that a guarantee.
+// types. `erasableSyntaxOnly` is what keeps that a guarantee. That is also why the `@gadgets/scripts`
+// `exports` map points straight at the `.ts` sources: there is no build output to point at, and
+// consumers (vite, and `node` for the task graph) both handle TS.
 //
 // Checked by `pnpm types:scripts` in CI's lint job, deliberately NOT by `pnpm build` (hot-path and no need)
 // `scripts/oxlint-plugin.mjs` stays JS because oxlint's plugin runtime loads it, not

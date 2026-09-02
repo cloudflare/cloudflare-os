@@ -1,5 +1,8 @@
 packages:
   - packages/*
+  # The shared build tooling as `@gadgets/scripts`, so packages reach it by name rather than by a
+  # relative path that breaks in forks vendoring this repo. Top level: it resolves from the root.
+  - scripts
 
 # The toolchain versions every package shares. Declared once here so a bump is one edit rather than
 # needing to hand edit a bunch of different package.json files.
@@ -10,8 +13,8 @@ catalog:
   capnweb-validate: 0.3.0
   # Exact: TypeScript 7 (tsgo). Type-checking runs on the native compiler. Build-time
   # transpilers that need the JS compiler API (scripts/build-gatekeeper-configurator.ts)
-  # use the root "typescript6" npm alias instead; capnweb-validate ships its own
-  # JS-based compiler dependency since 0.2.4.
+  # use the "typescript6" npm alias instead, declared by @gadgets/scripts; capnweb-validate
+  # ships its own JS-based compiler dependency since 0.2.4.
   typescript: 7.0.2
   # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).

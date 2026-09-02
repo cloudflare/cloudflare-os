@@ -32,6 +32,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
+    "@gadgets/scripts": "workspace:*",
     "dompurify": "^3.4.13",
     "esbuild": "^0.28.1",
     "typescript": "catalog:",

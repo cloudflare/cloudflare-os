@@ -5,11 +5,15 @@
  * `gatekeeper-configurator-vite-config.ts` takes that shape. The task types below are structural
  * copies of Vite+'s rather than imports of them, which is what keeps that true.
  *
- * TypeScript, unlike the `.mjs`/`.js` around it in this directory, because nothing here is ever run
- * by `node` -- both modules are imported only from `vite.config.ts` files, which vite bundles -- and
- * being TS means a malformed task or a mistyped `base` is a compile error rather than a glob that
- * silently never matches. Importers still write the `.js` extension in the specifier; TS and vite
- * both resolve it to the `.ts`.
+ * TypeScript, unlike the `.mjs` beside it in this directory, because being TS means a malformed task
+ * or a mistyped `base` is a compile error rather than a glob that silently never matches.
+ *
+ * Reached as `@gadgets/scripts/vitest-task`, an `exports` subpath of this directory's package, not
+ * as a relative path. A relative specifier only resolves for a consumer at `packages/<name>/` of
+ * this workspace, which is not true of the forks that vendor this repo as a submodule. Note that
+ * this module is loaded by `node` as well as by vite -- vp resolves it through the `exports` map
+ * when it loads a consumer's task graph -- so intra-directory imports must name the file on disk
+ * (`./vitest-task-vite-config.ts`); the `.js` specifier only vite remaps would not resolve.
  *
  * `test` is a task rather than a package.json script so the scratch paths every `vitest run` writes
  * and then reads back can be kept out of the fingerprint: vp declines to cache a task that reads a
@@ -87,17 +91,22 @@ const TOTAL_TIMEOUT_SECONDS = 600
  * that died, and Vite+ has no task timeout -- so a hung suite stalls the whole `vp run` until
  * something outside kills it
  *
- * The path must stay *relative*: the command string is part of the cache fingerprint, so an
- * absolute path derived from `import.meta.url` would differ per checkout and per CI runner and
- * destroy cache portability. Relative works because every consumer lives at `packages/<name>/`.
+ * The watchdog is reached by *bin name*, not by path. The command string is part of the cache
+ * fingerprint, so an absolute path derived from `import.meta.url` would differ per checkout and per
+ * CI runner and destroy cache portability. A relative `../../scripts/with-timeout.ts` is portable
+ * but assumes the consumer sits at `packages/<name>/` of *this* workspace -- untrue for a fork that
+ * vendors this repo as a submodule, where it silently resolves to a `scripts/` that holds none of
+ * these builders. A bin name is both: fingerprint-stable and position-independent. vp puts the
+ * consuming package's `node_modules/.bin` on the task's PATH, so it resolves wherever the package
+ * lives, and a rename fails loudly with "Failed to find executable" rather than silently.
  *
  * The thresholds are baked into the string rather than read from the environment for the same
- * reason: a cached `vp` run strips undeclared env vars, so an override would silently not apply
- * (and would owe `scripts/env-passthrough.test.ts` an entry). Here a policy change is a visible,
- * fingerprinted change.
+ * fingerprint reason: a cached `vp` run strips undeclared env vars, so an override would silently
+ * not apply (and would owe `scripts/env-passthrough.test.ts` an entry). Here a policy change is a
+ * visible, fingerprinted change.
  */
 export const withTestTimeout = (command: string): string =>
-  `node ../../scripts/with-timeout.ts` +
+  `gadgets-with-timeout` +
   ` --idle ${IDLE_TIMEOUT_SECONDS} --max ${TOTAL_TIMEOUT_SECONDS} -- ${command}`
 
 /**

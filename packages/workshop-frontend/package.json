@@ -46,6 +46,7 @@
     "vite-tsconfig-paths": "^6.1.1"
   },
   "devDependencies": {
+    "@gadgets/scripts": "workspace:*",
     "@tanstack/router-plugin": "^1.168.35",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
