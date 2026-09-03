@@ -1690,11 +1690,11 @@ class OverseerImpl implements AgentHooks {
     };
   }
 
-  // Whether some non-owner session of `role` (or of either role, when omitted) is live right now.
-  // The owner is never an observer, so their session is counted separately and never counts here.
+  // Whether some non-owner session of `role` (or of any role, when omitted) is live right now.
+  // The owner is never an observer, so their session never counts here.
   #hasCollaboratorSession(role?: CollaboratorRole): boolean {
-    if (role === undefined) return this.#liveSessions.build > 0 || this.#liveSessions.use > 0;
-    return this.#liveSessions[role] > 0;
+    if (role !== undefined) return this.#liveSessions[role] > 0;
+    return Object.entries(this.#liveSessions).some(([kind, n]) => kind !== "owner" && n > 0);
   }
 
   // Subscribe to roster changes. The current roster is delivered immediately via init().
