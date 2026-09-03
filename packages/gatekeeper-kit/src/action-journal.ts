@@ -1,3 +1,5 @@
+/** Durable action lifecycle storage for approval, simulation, retry, and retention. */
+
 import type { KvScannable } from "./kv";
 import { requirePositiveInt } from "./positive-int";
 
@@ -6,6 +8,7 @@ export type ActionJournalKv = KvScannable;
 
 /** Storage keys, overridable so a port keeps reading the records it already wrote. */
 export type JournalKeys = {
+  /** Stores the next unused ID, never the last issued ID. */
   nextIdKey?: string;
   /** Must not contain `nextIdKey`, which would then be scanned as a record. */
   recordPrefix?: string;
@@ -62,7 +65,17 @@ export type ActionJournalOptions<A> = JournalKeys & {
 
 /**
  * Durable record of a resource's queued actions. Pending and retained records use separate prefixes
- * so pending scans stay bounded. Retention policy belongs to the consumer.
+ * so pending scans stay bounded. Retained records are not capped; consumers own retirement.
+ *
+ * @example
+ * ```ts
+ * const journal = new ActionJournal<PendingAction>(ctx.storage.kv);
+ * const pending = createSimulationView(
+ *   journal.listPending(),
+ *   action => action.projectIds,
+ * );
+ * return pending.forTarget(projectId);
+ * ```
  */
 export class ActionJournal<A> {
   readonly #kv: ActionJournalKv;

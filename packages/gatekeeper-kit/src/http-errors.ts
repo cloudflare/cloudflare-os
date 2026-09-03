@@ -1,3 +1,5 @@
+/** HTTP access-error classification and ACL probe handling. */
+
 /** HTTP error with a numeric response status. */
 export class HttpError extends Error {
   /**
@@ -26,6 +28,12 @@ export function isNoAccessError(error: unknown): boolean {
  * for HTTP errors; every other failure is rethrown.
  * @param check Access check to run.
  * @returns `false` for access failures and `true` for success.
+ *
+ * @example
+ * ```ts
+ * const canRead = await probeAccess(() => api.getProject(projectId));
+ * if (!canRead) throw new Error("You no longer have access to this project.");
+ * ```
  */
 export async function probeAccess(check: () => Promise<unknown>): Promise<boolean> {
   let result: unknown;

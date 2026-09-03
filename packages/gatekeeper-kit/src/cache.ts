@@ -1,3 +1,5 @@
+/** Principal-partitioned Durable Object TTL caching. */
+
 import type { KvReadWrite } from "./kv";
 import { requirePositiveInt } from "./positive-int";
 import { SingleFlight } from "./single-flight";
@@ -7,7 +9,10 @@ export type CacheKv = KvReadWrite;
 
 /** What `KvTtlCache.partitionedBy` reads the cache authority from. */
 export type AuthoritySource = {
-  /** @returns The current opaque cache authority, or `undefined` when unknown. */
+  /**
+   * @returns The current opaque, non-secret authority covering the principal, resource scope, and
+   * policy, or `undefined` when unknown.
+   */
   authority(): string | undefined;
 };
 
@@ -23,6 +28,16 @@ const CACHE_PREFIX = "cache:";
 /**
  * Durable TTL cache partitioned by authority and generation. In-flight loads are stored only when
  * both still match, so reconnects and invalidations cannot restore stale values.
+ *
+ * @example
+ * ```ts
+ * #cache = KvTtlCache.partitionedBy(this.ctx.storage.kv, this.#creds);
+ *
+ * listProjects() {
+ *   return this.#cache.cached("projects", 60_000,
+ *     () => this.#creds.run(creds => this.#api.listProjects(creds)));
+ * }
+ * ```
  */
 export class KvTtlCache {
   readonly #kv: CacheKv;

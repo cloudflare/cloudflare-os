@@ -1,4 +1,23 @@
-/** Runs asynchronous operations sequentially. A failed operation never blocks later submissions. */
+/** FIFO asynchronous task serialization that survives operation failure. */
+
+/**
+ * Runs asynchronous operations sequentially.
+ *
+ * A failed operation never blocks later submissions. Awaiting a nested submission
+ * to the same queue deadlocks.
+ *
+ * @example
+ * ```ts
+ * #credentialMutations = new SerialTaskQueue();
+ *
+ * reconnect(next: VendorCreds) {
+ *   return this.#credentialMutations.run(async () => {
+ *     this.ctx.storage.kv.put("credentials", next);
+ *     await this.#notifyCredentialsRestored();
+ *   });
+ * }
+ * ```
+ */
 export class SerialTaskQueue {
   // The gate settles independently, so rejection cannot block later work.
   #gate: Promise<void> = Promise.resolve();

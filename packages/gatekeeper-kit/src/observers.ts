@@ -1,3 +1,5 @@
+/** Observer-policy strategies and per-read authorization. */
+
 import type { RpcStub } from "cloudflare:workers";
 import type {
   ApprovalQueue,
@@ -147,7 +149,23 @@ export type ObservationInput = Omit<ObservationDescription, "excludeObservers">;
 /** The queue surface a session stages actions through; observations go only through the gate. */
 export type ActionQueue = Pick<RpcStub<ApprovalQueue>, "submitAction" | "bindHook">;
 
-/** Authorizes observations after applying the selected observer strategy. */
+/**
+ * Authorizes observations after applying the selected observer strategy.
+ *
+ * @example
+ * ```ts
+ * #observations = new ObservationGate(queue.dup(), observerStrategy);
+ *
+ * async listProjects() {
+ *   const projects = await this.#api.listProjects();
+ *   await this.#observations.authorize(
+ *     describeProjects(projects),
+ *     { kind: "sets", ids: projects.map(project => project.id) },
+ *   );
+ *   return projects;
+ * }
+ * ```
+ */
 export class ObservationGate implements Disposable {
   readonly #queue: RpcStub<ApprovalQueue>;
   readonly #strategy: ObserverStrategy;

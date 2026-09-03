@@ -1,3 +1,5 @@
+/** In-memory and provider-backed implementations of the gatekeeper cursor RPC. */
+
 import { RpcTarget } from "cloudflare:workers";
 import type { Cursor } from "@gadgets/workshop-shared/gatekeeper";
 import { SerialTaskQueue } from "./serial-queue";
@@ -206,7 +208,23 @@ export type TokenCursorOptions<T> = CursorShape & {
   fetchPage(token: string | undefined, perPage: number): Promise<TokenPage<T>>;
 };
 
-/** A cursor that fetches provider pages lazily using an opaque continuation token. */
+/**
+ * Fetches provider pages lazily using an opaque continuation token. 
+ * 
+ * Only `undefined` ends the walk; an empty string is a valid token, 
+ * and an echoed token throws without advancing.
+ *
+ * @example
+ * ```ts
+ * return new TokenCursor<Project>({
+ *   pageSize: 50,
+ *   fetchPage: async (token, perPage) => {
+ *     const page = await api.listProjects({ cursor: token, limit: perPage });
+ *     return { items: page.projects, nextToken: page.nextCursor };
+ *   },
+ * });
+ * ```
+ */
 export class TokenCursor<T> extends BufferedCursor<T> {
   readonly #fetchPage: (token: string | undefined, perPage: number) => Promise<TokenPage<T>>;
   #token?: string;

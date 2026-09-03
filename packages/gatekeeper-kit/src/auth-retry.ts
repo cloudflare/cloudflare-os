@@ -1,3 +1,5 @@
+/** One-retry authentication recovery for replayable provider calls. */
+
 /** How `withAuthRetry` obtains tokens and classifies failures. */
 export type AuthRetryOptions<Token> = {
   /**
@@ -15,10 +17,19 @@ export type AuthRetryOptions<Token> = {
 };
 
 /**
- * Retries once after provider-confirmed credential rejection.
+ * Retries once after provider-confirmed credential rejection. This helper never reports expiry;
+ * wrap it in `CredentialSource.run()` when the grant itself should be expired.
  * @param options Token acquisition and error policy.
- * @param run Replayable provider operation.
+ * @param run Replayable provider operation, executed at most twice.
  * @returns The first successful result.
+ *
+ * @example
+ * ```ts
+ * return withAuthRetry({
+ *   getToken: options => this.#account.getToken(options),
+ *   isAuthError: error => error instanceof VendorApiError && error.status === 401,
+ * }, token => this.#api.listProjects(token));
+ * ```
  */
 export async function withAuthRetry<Token, T>(
   options: AuthRetryOptions<Token>,

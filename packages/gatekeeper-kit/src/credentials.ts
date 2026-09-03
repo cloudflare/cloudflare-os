@@ -1,3 +1,5 @@
+/** Account-side credential storage and consumer-side RPC access. */
+
 import { createLogger } from "@gadgets/backend-utils/logger";
 import { ACCESS_TOKEN_SAFETY_MS, generateNonce } from "./connect-nonce";
 import type { KvMutable } from "./kv";
@@ -310,6 +312,19 @@ export type CredentialSourceOptions<Creds> = {
 /**
  * Fetches current credentials for provider operations and reports confirmed expiry. Reads coalesce
  * while in flight but are not cached across operations.
+ *
+ * @example
+ * ```ts
+ * #creds = new CredentialSource<VendorCreds>({
+ *   account: () => this.env.ACCOUNT.get(this.accountId),
+ *   isAuthError: error => error instanceof VendorApiError && error.status === 401,
+ *   expiredMessage: "Reconnect the vendor account.",
+ * });
+ *
+ * listProjects() {
+ *   return this.#creds.run(creds => this.#api.listProjects(creds));
+ * }
+ * ```
  */
 export class CredentialSource<Creds> {
   readonly #options: CredentialSourceOptions<Creds>;

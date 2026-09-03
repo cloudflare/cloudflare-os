@@ -1,3 +1,5 @@
+/** Strict byte-capped response-body decoding. */
+
 import { requirePositiveInt } from "./positive-int";
 
 /** Default maximum response size: 1 MiB. */
@@ -10,8 +12,16 @@ export class ResponseTooLargeError extends Error {}
  * Reads a response body up to a byte limit. Oversized bodies are rejected rather than truncated and
  * cancelled immediately; `Content-Length` is only an early check, not the authority.
  * @param response Response to consume.
- * @param maxBytes Maximum decoded response bytes.
+ * @param maxBytes Maximum body bytes.
  * @returns The decoded response text.
+ *
+ * @example
+ * ```ts
+ * const response = await fetch(endpoint);
+ * const payload = parseVendorResponse(
+ *   await readTextCapped(response, 256 * 1024),
+ * );
+ * ```
  */
 export async function readTextCapped(
   response: Response, maxBytes: number = MAX_RESPONSE_BYTES,

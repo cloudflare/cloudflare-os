@@ -1,3 +1,5 @@
+/** Durable, deduplicated Workshop notification for expired credentials. */
+
 import { createLogger } from "@gadgets/backend-utils/logger";
 import type { GatekeeperConnectCallback } from "@gadgets/workshop-shared/gatekeeper";
 import { generateNonce } from "./connect-nonce";
@@ -31,11 +33,19 @@ function warnLatchFailure(vendorId: string, error: unknown): void {
 const notifications = perStorage(() => new SingleFlight());
 
 /**
- * Notifies the Workshop once per credential expiry. The latch is written after notification, so a
- * crash may duplicate a notice but cannot silence future expiry.
+ * Notifies the Workshop once per credential expiry. Concurrent calls share one flight per stable
+ * storage object and arm. The latch is written after notification, so a crash may duplicate a
+ * notice but cannot silence future expiry. Notification and storage failures are logged, not thrown.
  * @param kv Stable Durable Object expiry-latch storage.
  * @param callback Workshop callback, when connected.
  * @param vendorId Vendor ID for log attribution.
+ *
+ * @example
+ * ```ts
+ * const callback = this.ctx.storage.kv
+ *   .get<Fetcher<GatekeeperConnectCallback>>("callback");
+ * await notifyCredentialsExpiredOnce(this.ctx.storage.kv, callback, VENDOR_ID);
+ * ```
  */
 export async function notifyCredentialsExpiredOnce(
   kv: ExpiryLatchKv,

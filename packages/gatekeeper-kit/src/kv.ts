@@ -1,5 +1,7 @@
-// Minimal synchronous Durable Object KV surfaces used by the kit. Implementations must preserve
-// `ctx.storage.kv` write ordering and implicit transaction semantics.
+/**
+ * Minimal synchronous Durable Object KV surfaces. Implementations preserve `ctx.storage.kv` write
+ * order and implicit transactions.
+ */
 
 /** Typed reads and writes by key. */
 export type KvReadWrite = {
@@ -17,7 +19,17 @@ export type KvReadWrite = {
   put<T>(key: string, value: T): void;
 };
 
-/** Reads, writes, and removal. */
+/**
+ * Reads, writes, and removes values.
+ *
+ * @example
+ * ```ts
+ * function revoke(kv: KvMutable): void {
+ *   kv.delete("credentials");
+ *   kv.put("revokedAt", Date.now());
+ * }
+ * ```
+ */
 export type KvMutable = KvReadWrite & {
   /**
    * Deletes a value by key.

@@ -1,3 +1,5 @@
+/** The initiation-to-OAuth nonce handoff for gatekeeper connect flows. */
+
 import {
   generateNonce,
   INITIATION_NONCE_LIFETIME_MS,
@@ -58,6 +60,20 @@ export function putInitiation(kv: ConnectNonceKv, initiationNonce: string, now: 
  * @param now Current Unix time in milliseconds.
  * @param extra Provider metadata to retain through the callback.
  * @returns The OAuth nonce, or `null` when invalid.
+ *
+ * @example
+ * ```ts
+ * putInitiation(ctx.storage.kv, linkNonce, Date.now());
+ *
+ * // On form submission, rotate the link nonce and retain callback state in one write.
+ * const state = advanceToOAuth(
+ *   ctx.storage.kv, linkNonce, Date.now(), { codeVerifier, returnTo },
+ * );
+ * if (state === null) {
+ *   return htmlResponse(errorPageHtml("Connection expired", "Start again."), 400);
+ * }
+ * return Response.redirect(authorizationUrl({ state }));
+ * ```
  */
 export function advanceToOAuth<Extra extends object>(
   kv: ConnectNonceKv,

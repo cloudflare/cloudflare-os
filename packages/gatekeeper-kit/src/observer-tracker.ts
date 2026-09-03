@@ -1,3 +1,5 @@
+/** Durable collaborator admission and per-set observer exclusion. */
+
 import { createLogger } from "@gadgets/backend-utils/logger";
 import { generateNonce } from "./connect-nonce";
 import type { KvScannable } from "./kv";
@@ -118,7 +120,7 @@ export type ObserverTrackerOptions<V> = {
    * Checks access to canonical provider sets.
    * @param verifier Vendor-specific verifier capability.
    * @param setIds Canonical set IDs.
-   * @returns One ACL verdict per set ID.
+   * @returns Exactly one verdict per set ID; only literal `true` grants access.
    */
   hasSetAccess(verifier: V, setIds: readonly string[]): Promise<boolean[]>;
   /**
@@ -140,7 +142,19 @@ export type ObserverTrackerOptions<V> = {
 // Brands set IDs after canonicalization so internal helpers cannot accept raw IDs.
 type CanonicalSetId = string & { readonly __canonical: true };
 
-/** Tracks observer admission and forward exclusion across revealed data sets. */
+/**
+ * Tracks observer admission and forward exclusion across revealed data sets. Persisting verifier
+ * capabilities requires `allow_irrevocable_stub_storage` and a durable service stub.
+ *
+ * @example
+ * ```ts
+ * #observers = new ObserverTracker<VendorVerifier>({
+ *   kv: this.ctx.storage.kv,
+ *   setPrefix: "observedProject:",
+ *   hasSetAccess: (verifier, projectIds) => verifier.hasProjects(projectIds),
+ * });
+ * ```
+ */
 export class ObserverTracker<V> {
   readonly #options: ObserverTrackerOptions<V>;
   readonly #setPrefix: string;

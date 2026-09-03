@@ -1,3 +1,5 @@
+/** Hardened HTML and browser request guards for gatekeeper connect flows. */
+
 const HTML_ESCAPES: Readonly<Record<string, string>> = {
   "&": "&amp;",
   "<": "&lt;",
@@ -52,6 +54,15 @@ function mediaType(value: string | null): string {
  * @param req Mutation request.
  * @param options Expected origin (a base URL is accepted) and media type.
  * @returns An error code, or `undefined` when accepted.
+ *
+ * @example
+ * ```ts
+ * const error = connectMutationError(req, { origin: baseUrl, contentType: "application/json" });
+ * if (error) {
+ *   const status = error === "cross-origin" ? 403 : 415;
+ *   return htmlResponse(errorPageHtml("Connection failed", "Start again."), status);
+ * }
+ * ```
  */
 export function connectMutationError(
   req: Request,

@@ -1,3 +1,5 @@
+/** Pending-action indexing, pure replay, and provisional-ID mapping. */
+
 import type { KvReadWrite } from "./kv";
 
 /** One action journal entry visible to simulation. */
@@ -24,6 +26,15 @@ export type SimulationView<R extends SimulationRecord<unknown>, Target> = {
  * @param records Journal snapshot.
  * @param targets Extracts targets from an action.
  * @returns A frozen, indexed simulation view.
+ *
+ * @example
+ * ```ts
+ * const pending = createSimulationView(
+ *   journal.listPending(),
+ *   action => [action.projectId],
+ * ).forTarget(project.id);
+ * return replaySimulation(project, pending, applyPendingAction);
+ * ```
  */
 export function createSimulationView<R extends SimulationRecord<unknown>, Target>(
   records: readonly R[],
@@ -105,7 +116,11 @@ export function replaySimulation<State, R>(
 /** The synchronous Durable Object KV surface used by provisional IDs. */
 export type SimulationKv = KvReadWrite;
 
-/** Allocates durable provisional IDs and retains their provider-ID bindings. */
+/**
+ * Allocates durable provisional IDs and retains their provider-ID bindings.
+ *
+ * Namespaces sharing one KV object must be disjoint; this convention is not checked at runtime.
+ */
 export class ProvisionalIds<Id extends string> {
   readonly #kv: SimulationKv;
   readonly #namespace: string;

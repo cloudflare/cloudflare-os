@@ -1,3 +1,5 @@
+/** Validation and normalization for operator-supplied provider endpoints. */
+
 import { stripTrailingSlashes } from "@gadgets/workshop-shared/gatekeeper";
 
 /**
@@ -5,7 +7,16 @@ import { stripTrailingSlashes } from "@gadgets/workshop-shared/gatekeeper";
  * the raw input.
  * @param raw Endpoint URL.
  * @param options Host, label, and scheme policy.
- * @returns The normalized endpoint without trailing slashes.
+ * @returns The origin and normalized path, preserving an explicit port and dropping query and
+ * fragment.
+ *
+ * @example
+ * ```ts
+ * const endpoint = normalizeVendorEndpoint(String(form.get("endpoint") ?? ""), {
+ *   hostPattern: /^[a-z0-9-]+\.mktorest\.com$/,
+ *   label: "Marketo REST endpoint",
+ * });
+ * ```
  */
 export function normalizeVendorEndpoint(raw: string, options: {
   /** Neither global nor sticky -- both carry `lastIndex` between calls. */

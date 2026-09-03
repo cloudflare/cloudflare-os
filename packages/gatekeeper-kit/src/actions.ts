@@ -1,3 +1,5 @@
+/** Approval-backed resource action declaration, submission, and resolution. */
+
 import { createLogger } from "@gadgets/backend-utils/logger";
 import type { RpcStub } from "cloudflare:workers";
 import type {
@@ -154,6 +156,7 @@ export type TaggedAction<M> = { [K in keyof M]: { kind: K; payload: M[K] } }[key
 export type BoundActionSet<M extends Record<string, unknown>> = {
   /**
    * Submits an action for approval.
+   * The payload is cloned before presentation so approval text and apply use the same value.
    * @param queue Approval queue capability.
    * @param kind Declared action kind.
    * @param payload Action payload.
@@ -163,12 +166,13 @@ export type BoundActionSet<M extends Record<string, unknown>> = {
   /**
    * Applies an action, at-least-once across activations unless its definition sets
    * `claimBeforeApply`; re-applying an applied ID is a no-op. Resolution is serialized with
-   * rejection to prevent a duplicate provider call.
+   * rejection to prevent a duplicate provider call. A missing definition records a terminal
+   * failure so the action can still be rejected.
    * @param id Action ID to apply.
    */
   apply(id: number): Promise<void>;
   /**
-   * Rejects an action.
+   * Rejects an action, including one whose definition was removed after submission.
    * @param id Action ID to reject.
    */
   reject(id: number): Promise<void>;
@@ -236,6 +240,22 @@ function strandedBy(dead: readonly string[], pending: readonly ActionRefs[]): nu
  * @param definitions Action handlers keyed by kind.
  * @param options Set-wide retention and resolution policy.
  * @returns An action set ready to bind.
+ *
+ * @example
+ * ```ts
+ * const declared = defineActions<VendorApi, { createTask: CreateTask }>({
+ *   createTask: {
+ *     delivery: "continue-with-simulation",
+ *     claimBeforeApply: true,
+ *     describe: task => ({
+ *       title: `Create task "${task.title}"`,
+ *       description: `Creates the task in project ${task.projectId}.`,
+ *     }),
+ *     apply: (task, api) => api.createTask(task),
+ *   },
+ * });
+ * await declared.bind(journal, api).submit(gate.actions, "createTask", task);
+ * ```
  */
 export function defineActions<Host, M extends Record<string, unknown>>(
   definitions: { [K in keyof M]: ActionDefinition<M[K], Host> },

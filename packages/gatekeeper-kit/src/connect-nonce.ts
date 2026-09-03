@@ -1,3 +1,5 @@
+/** Nonce generation, comparison, and expiry for gatekeeper connect flows. */
+
 /** Number of random bytes in every gatekeeper connect nonce. */
 export const NONCE_BYTES = 32;
 
@@ -54,6 +56,15 @@ export type TimedNonce = { value: string; expiresAt: number };
  * @param presented Nonce supplied by the caller.
  * @param now Current Unix time in milliseconds.
  * @returns Whether the nonce is present, live, and equal.
+ *
+ * @example
+ * ```ts
+ * const stored = ctx.storage.kv.get<TimedNonce>("nonce");
+ * if (!isLiveNonce(stored, callbackState, Date.now())) {
+ *   return new Response("This connection has expired.", { status: 400 });
+ * }
+ * ctx.storage.kv.delete("nonce");
+ * ```
  */
 export function isLiveNonce(
   stored: TimedNonce | undefined,

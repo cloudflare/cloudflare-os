@@ -1,6 +1,17 @@
+/** Concurrent work coalescing by key without result caching. */
+
 /**
- * Coalesces concurrent work by key. Flights are installed synchronously and released after success or
- * rejection, so a later caller can retry.
+ * Coalesces concurrent work by key. Flights are installed synchronously and released after success
+ * or rejection, so a later caller can retry. `forget()` stops new joins but does not cancel work.
+ *
+ * @example
+ * ```ts
+ * #schemaLoads = new SingleFlight();
+ *
+ * schema(projectId: string) {
+ *   return this.#schemaLoads.run(projectId, () => this.#api.getSchema(projectId));
+ * }
+ * ```
  */
 export class SingleFlight {
   readonly #inFlight = new Map<string, Promise<unknown>>();
