@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_DOC_RESOURCE,
-  GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHARED_DRIVE_RESOURCE,
-  GOOGLE_SHEETS_RESOURCE, IDENTITY_SCOPES, LEGACY_GRANTED_RESOURCE_URL_PATTERNS, RESOURCE_BY_KIND,
-  RESOURCE_SCOPES, SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SUPPORTED_RESOURCES,
+  GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
+  GOOGLE_SHARED_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, IDENTITY_SCOPES,
+  LEGACY_GRANTED_RESOURCE_URL_PATTERNS, RESOURCE_BY_KIND, RESOURCE_SCOPES,
+  SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SUPPORTED_RESOURCES,
   grantedResourceUrlPatterns, hasDriveResourceGrant, parseResourceUrl,
   recordedResourceUrlPatterns, resourceUrlPatternsToOAuthScopes, resourcesCoveredByScopes,
   validateResourceUrlPatterns,
@@ -30,6 +31,7 @@ describe("resource declarations", () => {
       "https://calendar.google.com/calendar/:calendarId/*",
       "https://drive.google.com/drive/my-drive",
       "https://drive.google.com/drive/folders/:driveId",
+      "https://drive.google.com/_resource/folder/:folderId",
       "https://drive.google.com/file/d/:fileId/view",
       "https://bigquery.googleapis.com/:projectId/*",
     ]);
@@ -91,14 +93,30 @@ describe("resource declarations", () => {
     expect([
       GOOGLE_DRIVE_RESOURCE.description,
       GOOGLE_SHARED_DRIVE_RESOURCE.description,
+      GOOGLE_DRIVE_FOLDER_RESOURCE.description,
       GOOGLE_DRIVE_FILE_RESOURCE.description,
     ]).toEqual([
       "Find files and folders anywhere this Google account can read in Drive, including shared " +
       "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
       "results contain metadata only, while native Google Docs and Sheets can be opened read-only.",
       "Find files and folders, and read native Google Docs and Sheets, in one organization-owned shared drive.",
+      "Find files and folders, and read native Google Docs and Sheets, within one Drive folder " +
+      "and its descendants.",
       "Read metadata and, for a native Google Doc or Sheet, content from one Drive file.",
     ]);
+  });
+
+  // The shared drive's pattern leaves the query wildcard, so a folder identity built by qualifying
+  // `/drive/folders/:driveId` would match both and make resource selection order-dependent. These
+  // two must stay disjoint as *patterns*, not merely distinct strings.
+  it("keeps the folder selector off every other resource's pattern", () => {
+    let folderUrl = "https://drive.google.com/_resource/folder/FOLDER123";
+    for (let resource of SUPPORTED_RESOURCES) {
+      let matches = new URLPattern(resource.urlPattern).test(folderUrl);
+      expect(matches).toBe(resource === GOOGLE_DRIVE_FOLDER_RESOURCE);
+    }
+    expect(new URLPattern(GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern)
+      .test("https://drive.google.com/drive/folders/DRIVE123")).toBe(false);
   });
 });
 
@@ -120,9 +138,9 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
     ]);
   });
 
-  // Pins every permanent scope each Drive resource needs. Account and exact-file bindings require
-  // the metadata scope plus the native Docs and Sheets read scopes. The shared drive needs the wider
-  // `drive.readonly` scope because `drives.list`/`drives.get` accept nothing narrower.
+  // Pins every permanent scope each Drive resource needs. Account, folder and exact-file bindings
+  // require the metadata scope plus the native Docs and Sheets read scopes. The shared drive needs
+  // the wider `drive.readonly` scope because `drives.list`/`drives.get` accept nothing narrower.
   it.each([
     [GOOGLE_DRIVE_RESOURCE, [
       "https://www.googleapis.com/auth/drive.metadata.readonly",
@@ -130,6 +148,11 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
       "https://www.googleapis.com/auth/spreadsheets.readonly",
     ]],
     [GOOGLE_SHARED_DRIVE_RESOURCE, ["https://www.googleapis.com/auth/drive.readonly"]],
+    [GOOGLE_DRIVE_FOLDER_RESOURCE, [
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+    ]],
     [GOOGLE_DRIVE_FILE_RESOURCE, [
       "https://www.googleapis.com/auth/drive.metadata.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
@@ -233,7 +256,8 @@ describe("resourcesCoveredByScopes", () => {
 describe("hasDriveResourceGrant", () => {
   it("accepts each explicit Drive resource and rejects historical non-Drive grants", () => {
     for (let resource of [
-      GOOGLE_DRIVE_RESOURCE, GOOGLE_SHARED_DRIVE_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE,
+      GOOGLE_DRIVE_RESOURCE, GOOGLE_SHARED_DRIVE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
+      GOOGLE_DRIVE_FILE_RESOURCE,
     ]) {
       expect(hasDriveResourceGrant([resource.urlPattern])).toBe(true);
     }
@@ -422,10 +446,27 @@ describe("parseResourceUrl", () => {
       ["account", "https://drive.google.com/drive/my-drive", { kind: "driveAccount" }],
       ["shared drive", "https://drive.google.com/drive/folders/DRIVE123",
         { kind: "sharedDrive", driveId: "DRIVE123" }],
+      ["folder", "https://drive.google.com/_resource/folder/FOLDER123",
+        { kind: "driveFolder", folderId: "FOLDER123" }],
       ["file", "https://drive.google.com/file/d/FILE123/view",
         { kind: "driveFile", fileId: "FILE123" }],
     ] as const)("scopes to one %s", (_name, url, expected) => {
       expect(parseResourceUrl(url)).toEqual(expected);
+    });
+
+    // The two share a host and a noun. A folder URL resolving to a shared drive would mint a whole
+    // drive's authority from a folder's consent, and the reverse would orphan every shared-drive
+    // binding, so each grammar must stay deaf to the other's shape.
+    it("keeps the folder and shared-drive grammars from bleeding into each other", () => {
+      expect(parseResourceUrl("https://drive.google.com/drive/folders/DRIVE123?resource=folder"))
+        .toEqual({ kind: "sharedDrive", driveId: "DRIVE123" });
+      expect(() => parseResourceUrl("https://drive.google.com/_resource/folder/"))
+        .toThrow(/Unsupported Google Drive resource URL/);
+    });
+
+    it("decodes a folder ID that needed escaping", () => {
+      expect(parseResourceUrl("https://drive.google.com/_resource/folder/a%20b"))
+        .toEqual({ kind: "driveFolder", folderId: "a b" });
     });
 
     it("rejects paths outside the permanent Drive grammar", () => {

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccessTokenRequest } from "../../src/auth-retry";
-import { BigQueryConfiguratorUI, CalendarConfiguratorUI } from "../../src/google-configurators";
+import {
+  BigQueryConfiguratorUI, CalendarConfiguratorUI, DriveFolderConfiguratorUI,
+} from "../../src/google-configurators";
 import type { GoogleAccessToken } from "../../src/google-api";
 
 const token = (value: string): GoogleAccessToken => ({
@@ -21,6 +23,29 @@ describe("Google resource configurators", () => {
 
     await expect(new CalendarConfiguratorUI(getToken).getPrimaryCalendarId())
       .resolves.toBe("person@example.com");
+  });
+
+  it("omits folders whose children cannot be listed", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      files: [
+        {
+          id: "metadata-only", name: "Metadata only",
+          capabilities: { canListChildren: false },
+        },
+        {
+          id: "usable", name: "Usable",
+          capabilities: { canListChildren: true },
+        },
+      ],
+    })));
+
+    await expect(new DriveFolderConfiguratorUI(async () => token("access-token"))
+      .listDriveFolders(""))
+      .resolves.toEqual([{
+        value: "usable",
+        title: "Usable",
+        subtitle: "My Drive",
+      }]);
   });
 
   it("refreshes a rejected Calendar access token", async () => {
