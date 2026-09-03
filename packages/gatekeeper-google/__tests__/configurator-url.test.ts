@@ -128,12 +128,11 @@ describe("Calendar configurator URLs", () => {
       listCalendars: vi.fn(),
     } as unknown as CalendarConfiguratorRpc;
 
-    const seeded = await calendarConfigurator.initialValuesFromResourceUrl!({
+    const values = await calendarConfigurator.initialValuesFromResourceUrl!({
       resourceUrl: "https://calendar.google.com/calendar/primary/?availability=allVisible",
       resourceUrlPattern: GOOGLE_CALENDAR_RESOURCE.urlPattern,
       ui,
     });
-    const values = { availabilityMode: "thisCalendar" as const, ...seeded };
     const resourceUrl = calendarConfigurator.resourceUrl!({
       values, ui,
     });
