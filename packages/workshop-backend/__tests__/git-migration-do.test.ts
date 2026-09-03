@@ -95,8 +95,9 @@ describe("git-storage migration via the Overseer constructor", () => {
 
     await inOverseer("git-migration-single", async impl => {
       // The constructor's blockConcurrencyWhile completed before this event was delivered,
-      // running the whole migration ladder: git storage (2), then the action indexes (3).
-      expect(impl.storage.version.get()).toBe(3);
+      // running the whole migration ladder: git storage (2), the action indexes (3), then the
+      // chat-change indexes (4).
+      expect(impl.storage.version.get()).toBe(4);
       expect([...impl.storage.actions.pendingByGatekeeper.list()].map((r: any) => r.id))
           .toEqual([1]);
 
@@ -149,7 +150,7 @@ describe("git-storage migration via the Overseer constructor", () => {
     await abortAllDurableObjects();
 
     await inOverseer("git-migration-multi", async impl => {
-      expect(impl.storage.version.get()).toBe(3);
+      expect(impl.storage.version.get()).toBe(4);
 
       // Every gadget's head equals its own root's content in an independent replay of the log.
       await expectHeadsMatchDoc(impl.storage, impl.gitStore, ws.docAt("current"), 1);
@@ -177,7 +178,7 @@ describe("git-storage migration via the Overseer constructor", () => {
 });
 
 describe("action-index backfills via the Overseer constructor", () => {
-  it("backfills a version-2 workspace's indexes and stamps version 3", async () => {
+  it("backfills a version-2 workspace's indexes and stamps the current version", async () => {
     await inOverseer("pending-index-v2", async impl => {
       expect(impl.storage.version.get()).toBe(0);
       // Seed through an index-less view of the same real storage, simulating records written
@@ -194,7 +195,7 @@ describe("action-index backfills via the Overseer constructor", () => {
     await abortAllDurableObjects();
 
     await inOverseer("pending-index-v2", async impl => {
-      expect(impl.storage.version.get()).toBe(3);
+      expect(impl.storage.version.get()).toBe(4);
       // The pending index sees exactly the pendings (grouped by gatekeeper, so 1 before 3 here).
       expect([...impl.storage.actions.pendingByGatekeeper.list()].map((r: any) => r.id))
           .toEqual([1, 3]);

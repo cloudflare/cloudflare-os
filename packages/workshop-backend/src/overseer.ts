@@ -935,6 +935,15 @@ function actionLastChangedKey(record: ActionRecord): string {
 }
 
 /**
+ * Primary key of the chatChanges collection: a generation's rows list in revision order under one
+ * prefix. Takes the parts rather than a record so range bounds can be built from synthetic
+ * revisions (see listChatChangesSince). Exported for the migration-backfill test fixture.
+ */
+export function chatChangeKey(chatId: number, generation: number, revision: number): string {
+  return `${keyString(chatId)}.${keyString(generation)}.${keyString(revision)}`;
+}
+
+/**
  * One incremental update in the workspace-wide Yjs code log (the `code` and `snapshots`
  * collections). Formerly the public `CodeUpdate` wire type; the git-storage transition removed it
  * from the API along with `subscribeToCode()` (mainline code becomes commits; see git-store.ts),
@@ -984,6 +993,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       collections are dead stored data from this version on.
       //   3 = the actions collection's indexes (pendingByGatekeeper, byHistoryFilter,
       //       byLastChanged) exist and are backfilled.
+      //   4 = the chatChanges collection's indexes (liveByChat, retiredByTimestamp) exist and
+      //       are backfilled.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1201,9 +1212,22 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // revision order under one prefix.
       chatChanges: collection<ChatChangeRecord>()({
         primaryKey(record: ChatChangeRecord) {
-          return `${keyString(record.chatId)}.${keyString(record.generation)}.` +
-              keyString(record.revision);
-        }
+          return chatChangeKey(record.chatId, record.generation, record.revision);
+        },
+
+        // Both sparse; backfilled by the version-4 migration.
+        nonUniqueIndexes: {
+          // Live (unretired) rows keyed by chat, so subscribe-replay reads exactly the rows it
+          // delivers, in (generation, revision) order (the primary key's sort).
+          liveByChat(record: ChatChangeRecord) {
+            return record.retired ? null : record.chatId;
+          },
+
+          // Retired rows by row timestamp, so the TTL sweep is one ranged read.
+          retiredByTimestamp(record: ChatChangeRecord) {
+            return record.retired ? record.timestamp.valueOf() : null;
+          },
+        },
       }),
 
       // Per-(user, client session) submission dedupe records (see ChatChangeClientRecord). The
@@ -1324,6 +1348,20 @@ async function submissionDigest(submission: CodeChangeSubmission): Promise<strin
   return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)).toHex();
 }
 
+// Delete retired rows past the retention horizon (see CHAT_CHANGE_RETIRED_TTL_MS): one ranged
+// index read, not a scan. Runs at materialization, epoch close, and subscribeToChat entry, so
+// an idle chat's retired rows can't outlive the horizon by more than the gap to the next
+// subscribe.
+function sweepRetiredChatChanges(storage: OverseerStorage): void {
+  let cutoff = Date.now() - CHAT_CHANGE_RETIRED_TTL_MS;
+  // Drain the index to keys before deleting (deletes invalidate the open cursor) -- keys only,
+  // so a large backlog isn't buffered as full rows. Each delete is expendable on its own: a
+  // crash mid-sweep just leaves the rest for the next sweep.
+  let expired = Array.from(storage.chatChanges.retiredByTimestamp.list({end: cutoff}),
+      row => chatChangeKey(row.chatId, row.generation, row.revision));
+  for (let key of expired) storage.chatChanges.delete(key);
+}
+
 // Common internals that several interfaces implemented by the Overseer need to use. Can't just
 // declare private methods because some of the methods are needed by multiple classes.
 // Most format tokens one message may carry. Only formats picked from the composer menu become
@@ -1345,6 +1383,12 @@ export const ACTION_REPLAY_PAGE_SIZE = 256;
 
 /** listActions() entries returned per page. Exported for tests. */
 export const ACTION_HISTORY_PAGE_DEFAULT_LIMIT = 50;
+
+/**
+ * Change rows delivered per awaited page of subscribeToChat()'s replay. Small because each row
+ * can carry a change of up to MAX_CODE_CHANGE_SIZE. Exported for tests.
+ */
+export const CHAT_REPLAY_PAGE_SIZE = 16;
 
 /**
  * Keeps `commandPosition` only if it's a real index into `args`. Anything else becomes undefined,
@@ -1746,9 +1790,11 @@ class OverseerImpl implements AgentHooks {
       this.ctx.blockConcurrencyWhile(async () => {
         await this.#migrateToGitStorage();
         this.#migrateToActionIndexes();
+        this.#migrateToChatChangeIndexes();
       }).then(() => this.#resumeInterruptedAgents(), () => {});
     } else {
       this.#migrateToActionIndexes();
+      this.#migrateToChatChangeIndexes();
       this.#resumeInterruptedAgents();
     }
   }
@@ -1809,23 +1855,39 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  // Version 2 -> 3: backfill the actions indexes. Indexes are only maintained at write time, so
-  // over records that predate their declaration they start empty -- and updating a pre-existing
-  // action would then throw on the index update. Runs synchronously in the constructor (chained
-  // after the git-storage migration when that one is still pending), so nothing can observe
-  // pre-migration state; transactionSync makes rebuilds-plus-stamp atomic, so a crash
-  // mid-rebuild retries whole. The `!== 2` guard keeps never-initialized DOs write-free (they
-  // stamp the current version at first initialization).
-  #migrateToActionIndexes(): void {
-    if (this.storage.version.get() !== 2) return;
+  // Version-gated index backfill. Indexes are only maintained at write time, so over records
+  // that predate their declaration they start empty -- and updating a pre-existing record would
+  // then throw on the index update. Runs synchronously in the constructor (chained after the
+  // git-storage migration when that one is still pending), so nothing can observe pre-migration
+  // state; transactionSync makes rebuilds-plus-stamp atomic, so a crash mid-rebuild retries
+  // whole. The `!== fromVersion` guard keeps never-initialized DOs write-free (they stamp the
+  // current version at first initialization).
+  #backfillIndexes(fromVersion: number, message: string, event: string,
+                   rebuild: () => void): void {
+    if (this.storage.version.get() !== fromVersion) return;
     this.ctx.storage.transactionSync(() => {
+      rebuild();
+      this.storage.version.put(fromVersion + 1);
+    });
+    this.logger.info(message, {event});
+  }
+
+  // Version 2 -> 3: backfill the actions indexes.
+  #migrateToActionIndexes(): void {
+    this.#backfillIndexes(2, "backfilled the action-log indexes",
+        "storage.migration.action-indexes.completed", () => {
       this.storage.actions.pendingByGatekeeper.rebuild();
       this.storage.actions.byHistoryFilter.rebuild();
       this.storage.actions.byLastChanged.rebuild();
-      this.storage.version.put(3);
     });
-    this.logger.info("backfilled the action-log indexes", {
-      event: "storage.migration.action-indexes.completed",
+  }
+
+  // Version 3 -> 4: backfill the chatChanges indexes.
+  #migrateToChatChangeIndexes(): void {
+    this.#backfillIndexes(3, "backfilled the chat-change indexes",
+        "storage.migration.chat-change-indexes.completed", () => {
+      this.storage.chatChanges.liveByChat.rebuild();
+      this.storage.chatChanges.retiredByTimestamp.rebuild();
     });
   }
 
@@ -2563,8 +2625,8 @@ class OverseerImpl implements AgentHooks {
     if (afterRevision >= throughRevision) return [];
     let rows = [...this.storage.chatChanges.list({
       prefix: `${keyString(chatId)}.${keyString(generation)}.`,
-      startAfter: `${keyString(chatId)}.${keyString(generation)}.${keyString(afterRevision)}`,
-      end: `${keyString(chatId)}.${keyString(generation)}.${keyString(throughRevision + 1)}`,
+      startAfter: chatChangeKey(chatId, generation, afterRevision),
+      end: chatChangeKey(chatId, generation, throughRevision + 1),
     })];
     if (rows.length !== throughRevision - afterRevision ||
         rows[0].revision !== afterRevision + 1) {
@@ -2662,24 +2724,11 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  // Lazily expire retired rows past the retention horizon, and drop retired generations that
-  // are no longer bridgeable at all.
-  #pruneRetiredChatChanges(chatId: number): void {
-    let cutoff = Date.now() - CHAT_CHANGE_RETIRED_TTL_MS;
-    for (let row of Array.from(this.storage.chatChanges.list({prefix: `${keyString(chatId)}.`}))) {
-      if (row.retired && row.timestamp.getTime() < cutoff) {
-        this.storage.chatChanges.delete(
-            `${keyString(chatId)}.${keyString(row.generation)}.${keyString(row.revision)}`);
-      }
-    }
-  }
-
   // Erase every change row of the chat (a destructive bump, or chat deletion): retired rows too,
   // since a destructively-closed stream is not bridgeable.
   deleteAllChatChanges(chatId: number): void {
     for (let row of Array.from(this.storage.chatChanges.list({prefix: `${keyString(chatId)}.`}))) {
-      this.storage.chatChanges.delete(
-          `${keyString(chatId)}.${keyString(row.generation)}.${keyString(row.revision)}`);
+      this.storage.chatChanges.delete(chatChangeKey(chatId, row.generation, row.revision));
     }
     this.storage.chatChangeBoundaries.delete(chatId);
     this.#chatContentCache.delete(chatId);
@@ -2929,7 +2978,7 @@ class OverseerImpl implements AgentHooks {
     }]);
 
     this.#retireChatChanges(rows);
-    this.#pruneRetiredChatChanges(chatId);
+    sweepRetiredChatChanges(this.storage);
     return {sequence, meta: this.getChatMetaOrThrow(chatId)};
   }
 
@@ -3736,7 +3785,7 @@ class OverseerImpl implements AgentHooks {
     // meta so concurrent changes to other fields (e.g. a title rename during the awaits)
     // survive.
     this.#retireChatChanges(this.listLiveChatChanges(chatId, generationToken));
-    this.#pruneRetiredChatChanges(chatId);
+    sweepRetiredChatChanges(this.storage);
     this.storage.chatChangeBoundaries.put(
         {chatId, generation: generationToken, finalRevision: revisionToken, boundaries});
     this.#chatContentCache.delete(chatId);
@@ -8236,7 +8285,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
     // A workspace initialized by this version of the code is born at the current schema version;
     // there is nothing to migrate.
-    this.impl.storage.version.put(3);
+    this.impl.storage.version.put(4);
   }
 
   /**
@@ -9995,10 +10044,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async subscribeToChat(subscriber: RpcStub<AiChatSubscriber>, startAfter?: Date)
       : Promise<RpcStub<{}>> {
+    sweepRetiredChatChanges(this.impl.storage);
+
     let chats = this.impl.storage.chats;
     let chatMeta = this.impl.storage.chatMeta;
     let changedChatMetadata: AiChatMetadata[] = [];
     let replayCount = 0;
+    let disposed = false;
 
     subscriber = subscriber.dup();  // keep stub after return
     this.impl.addChatSubscriber(subscriber);
@@ -10041,11 +10093,21 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
 
     function unsubscribe() {
+      if (disposed) return;
+      disposed = true;
       chats.unsubscribe(msgSubscriber);
       chatMeta.unsubscribe(metaSubscriber);
       self.impl.removeChatSubscriber(subscriber);
       subscriber[Symbol.dispose]();
     };
+
+    // Live subscriptions attach before the catch-ups and replay: the replay below awaits, and a
+    // materialization landing mid-replay appends a "changes" message that must reach the client
+    // (its watermark absorbs the rows it retired). Anything delivered by both a catch-up and the
+    // live stream is idempotent client-side (messages are sequence-indexed, metadata
+    // last-write-wins, rows dedupe by (generation, revision)).
+    chatMeta.subscribe(metaSubscriber);
+    chats.subscribe(msgSubscriber);
 
     if (startAfter !== undefined) {
       // Catch up on metadata changes.
@@ -10067,26 +10129,48 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       }
     }
 
-    // Replay every currently retained (not-yet-materialized) change row so the subscriber can
-    // reconstruct uncommitted chat content without a separate fetch. Rows a "changes" message
-    // has absorbed are not replayed -- the message's watermark covers them -- and the rows are
-    // delivered after the message catch-up above, matching their position in the stream (rows
-    // are strictly newer than every materialized message of their generation). Delivered
-    // unconditionally (no startAfter filtering): the client dedupes by (generation, revision).
-    for (let row of this.impl.storage.chatChanges.list()) {
-      if (row.retired) continue;
-      subscriber.changeApplied(row.chatId, row.generation, row.revision, row.author, row.change,
-                               row.submission).catch(unsubscribe);
-      ++replayCount;
+    // Replay every live (not-yet-materialized) change row so the subscriber can reconstruct
+    // uncommitted chat content without a separate fetch: per chat via the sparse liveByChat
+    // index, in awaited pages, so a large window can't queue unbounded callbacks. Rows a
+    // "changes" message has absorbed are not replayed -- the message's watermark covers them --
+    // and the rows are delivered after the message catch-up above, matching their position in
+    // the stream (rows are strictly newer than every materialized message of their generation).
+    // Delivered unconditionally (no startAfter filtering): the client dedupes by
+    // (generation, revision), which also absorbs rows the live stream delivers mid-replay.
+    let chatChanges = this.impl.storage.chatChanges;
+    try {
+      // hasProposedChanges is set with every row append and cleared only when no live rows
+      // remain, so it's a strict superset of "has live rows".
+      let chatIds = [...chatMeta.list()].filter(m => m.hasProposedChanges).map(m => m.id);
+      outer: for (let chatId of chatIds) {
+        let from: ListOptions<string> = {};
+        for (;;) {
+          if (disposed) break outer;
+          // Materialize each page: a concurrent write invalidates open kv.list() cursors, so
+          // the iterator must not be held across the await.
+          let page = [...chatChanges.liveByChat.get(chatId,
+              {...from, limit: CHAT_REPLAY_PAGE_SIZE})];
+          await Promise.all(page.map(row => subscriber.changeApplied(row.chatId, row.generation,
+              row.revision, row.author, row.change, row.submission)));
+          replayCount += page.length;
+          if (page.length < CHAT_REPLAY_PAGE_SIZE) break;
+          let last = page.at(-1)!;
+          from = {startAfter: chatChangeKey(last.chatId, last.generation, last.revision)};
+        }
+      }
+    } catch (err) {
+      // Not rethrown: the frontend never awaits subscribeToChat, so a rejection would surface as
+      // an unhandled rejection rather than an error signal.
+      this.impl.logger.warn("chat subscriber failed during replay; unsubscribed", {
+        event: "chat.subscription.replay.failed", error: err,
+      });
+      unsubscribe();
     }
 
     this.impl.logger.debug("chat subscription replay completed", {
       event: "chat.subscription.replay.completed",
       size: replayCount,
     });
-
-    chatMeta.subscribe(metaSubscriber);
-    chats.subscribe(msgSubscriber);
 
     // @ts-expect-error Bugs in native RPC types make this not work currently.
     return new NativeRpcStub<{}>({
