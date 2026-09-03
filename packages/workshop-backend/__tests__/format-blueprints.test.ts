@@ -106,6 +106,7 @@ describe("bundled format blueprints", () => {
       "format.slides": [
         'id: "html", label: "HTML", mode: "browser", contentType: "text/html"',
         'id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf"',
+        'id: "pptx", label: "PowerPoint", mode: "server", contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation"',
       ],
       "format.spreadsheet": [
         'const CSV_FORMAT_PREFIX = "csv:"',

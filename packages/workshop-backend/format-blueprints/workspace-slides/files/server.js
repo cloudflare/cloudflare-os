@@ -1,4 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { deckToPptx } from "./pptx.js";
 
 /**
  * The Gadget stores a single "deck" document under the "deck" key:
@@ -525,6 +526,7 @@ function defaultDeck() {
 const SLIDES_EXPORT_FORMATS = [
   { id: "html", label: "HTML", mode: "browser", contentType: "text/html", fileExtension: ".html" },
   { id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf", fileExtension: ".pdf" },
+  { id: "pptx", label: "PowerPoint", mode: "server", contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", fileExtension: ".pptx" },
 ];
 
 export class ExportHandler extends WorkerEntrypoint {
@@ -532,7 +534,11 @@ export class ExportHandler extends WorkerEntrypoint {
     return SLIDES_EXPORT_FORMATS;
   }
 
-  async export(_gadget, id) {
+  async export(gadget, id) {
+    if (id === "pptx") {
+      const deck = await gadget.getDeck();
+      return deckToPptx(deck);
+    }
     throw new Error("Unsupported slides export format: " + id);
   }
 }
