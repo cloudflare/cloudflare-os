@@ -22,7 +22,7 @@ async function waitUntilGone(pid: number, timeoutMs = 10_000): Promise<boolean> 
   return true;
 }
 
-// Concurrent for the reason `with-timeout.test.ts` is: these cases spend their time waiting on
+// Concurrent for the reason `relay-termination.test.ts` is: these cases spend their time waiting on
 // signalled processes to go away, not doing work, so in sequence the file costs the sum of those
 // waits. Each spawns its own tree and addresses it by pid, so they cannot reach each other.
 describe("killProcessTree", { concurrency: true }, () => {

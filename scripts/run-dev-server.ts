@@ -174,11 +174,37 @@ async function stopDevWatchersDeep(): Promise<void> {
       .map(watcher => watcher.pid ? killProcessTree(watcher.pid).catch(() => {}) : null));
 }
 
+// The single in-flight teardown of each kind. Both shutdown paths join these promises rather than
+// starting their own walk: the escalation below runs *while* the first signal's walk is still
+// going, and two concurrent walks over the same pids would have the second find the tree already
+// reparented. `stopPreflightBuilds` is declared further down but hoisted; these two bindings are
+// deliberately up here, above the signal handlers that reach them, so that a signal arriving during
+// module evaluation cannot find them still in TDZ.
+let devWatchersStopped: Promise<void> | null = null;
+let preflightBuildsStopped: Promise<void> | null = null;
+
+function stopDevWatchersDeepOnce(): Promise<void> {
+  return (devWatchersStopped ??= stopDevWatchersDeep());
+}
+
+// The pre-flight builds have no equivalent of the watchers' `exit` handler, so abandoning this walk
+// leaks the whole `vp`/`vite` subtree under each one with nothing left to catch it -- and a signal
+// during the pre-flight phase is exactly when they are still running.
+function stopPreflightBuildsOnce(): Promise<void> {
+  return (preflightBuildsStopped ??= stopPreflightBuilds());
+}
+
 // Shutdown is driven by Wrangler's exit. Ctrl-C reaches the whole process group, so Wrangler is
 // already tearing down its workerd children and exiting first would orphan them. These handlers
 // disable Node's default exit-on-signal, so a wedged Wrangler would otherwise make Ctrl-C
 // ineffective and leave this process waiting forever -- a second signal or the grace deadline
 // escalates to SIGKILLing Wrangler's whole tree.
+//
+// The signal count is only an impatience shortcut on top of that grace deadline, and it is
+// deliberately left as a plain count rather than trying to tell a repeat interrupt from a fresh
+// one: nothing here can make that distinction (POSIX exposes no `siginfo.si_code` to Node), and
+// once the escalation reaps the watchers rather than abandoning them, it does not need to --
+// escalating early is then merely early, not lossy. See forceKillWrangler.
 const FORCE_KILL_GRACE_MS = 10_000;
 let receivedShutdownSignals = 0;
 let forcingShutdown = false;
@@ -187,6 +213,23 @@ let shutdownExitCode: number | null = null;
 async function forceKillWrangler(exitCode: number): Promise<void> {
   if (forcingShutdown) return;
   forcingShutdown = true;
+  // Both walks are joined, not skipped, and before the exit below. This is the force-kill path, so
+  // the temptation is to exit the moment Wrangler is dead -- but `process.exit()` here abandons
+  // whatever they still had to do, and all that runs afterwards is the `exit` handler's *shallow*
+  // stopDevWatchers(): the bare kill() whose surviving grandchild is the reason the deep walk
+  // exists at all (the pre-flight builds have no backstop even that weak). Two ordinary ways in,
+  // so the walks have to finish on this path too: a second Ctrl-C landing inside the first one's
+  // walk, and -- under a supervisor that forwards to the whole tree (relay-termination.ts) -- one
+  // interrupt arriving twice, since the tty's group broadcast and the relay's forward are
+  // indistinguishable from in here.
+  //
+  // Measured, with the walk widened to what a loaded machine costs: two interrupts 60ms apart left
+  // two orphaned `vite build --watch` processes and their esbuild children behind without this
+  // join, and nothing with it. Unwidened it happens to come out clean either way, because the
+  // SIGKILL walk below is itself slow enough for the abandoned walk to finish underneath it --
+  // which is a coincidence of two tree walks racing, not a guarantee.
+  await stopDevWatchersDeepOnce();
+  await stopPreflightBuildsOnce();
   if (wranglerChild?.exitCode === null && wranglerChild.signalCode === null && wranglerChild.pid) {
     await killProcessTree(wranglerChild.pid, "SIGKILL").catch(() => {});
   }
@@ -202,8 +245,8 @@ async function onShutdownSignal(signal: NodeJS.Signals, exitCode: number): Promi
   // (kill <pid>, IDE stop buttons) reaches only this process, so the pre-flight builds have to be
   // torn down here too and a live Wrangler has to be signalled explicitly -- on the Ctrl-C path
   // the forwarded signal lands during Wrangler's own teardown, which tolerates the repeat.
-  await stopDevWatchersDeep();
-  await stopPreflightBuilds();
+  await stopDevWatchersDeepOnce();
+  await stopPreflightBuildsOnce();
   if (wranglerChild?.exitCode === null) {
     wranglerChild.kill(signal);
     setTimeout(() => forceKillWrangler(exitCode), FORCE_KILL_GRACE_MS).unref();

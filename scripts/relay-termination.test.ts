@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -40,6 +40,12 @@ const IDLE = "setTimeout(() => {}, 60_000)";
 const IGNORES_SIGNALS =
     "process.on('SIGTERM', () => {}); process.on('SIGINT', () => {}); " + IDLE;
 
+// Counts the SIGINTs this process *acts on* and reports each one, so a test can tell how many
+// distinct arrivals a descendant saw. Stays alive afterwards: what matters is the count, and dying
+// on the first one would hide any second.
+const COUNTS_SIGINTS =
+    "let n = 0; process.on('SIGINT', () => process.stdout.write('sigint ' + ++n + '\\n')); " + IDLE;
+
 interface Wrapper {
   /** The process under test: it spawns `child`, which spawns `grandchild`, then relays. */
   wrapperPid: number;
@@ -47,6 +53,10 @@ interface Wrapper {
   grandchildPid: number;
   /** The wrapper's own termination, as the OS reported it. */
   exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  /** Everything the wrapper and child have written to stdout so far. */
+  output: () => string;
+  /** Resolves once `pattern` shows up in that output, or `false` if the stream ends first. */
+  waitForOutput: (pattern: RegExp, timeoutMs?: number) => Promise<boolean>;
   cleanUp: () => void;
 }
 
@@ -56,23 +66,36 @@ interface Wrapper {
  * come back over the wrapper's stdout, since that is the only handle a caller has on them.
  *
  * `childBody` is a `node -e` body evaluated in the child; `grandchildBody` in the grandchild.
+ *
+ * `detached` makes the wrapper a process group leader, so `process.kill(-wrapperPid, ...)` reaches
+ * the whole tree at once -- the only way to emulate what a tty does on Ctrl-C without one.
  */
 async function spawnWrapper(
-  { grandchildBody = IDLE, childBody = IDLE, graceMs }: {
+  { grandchildBody = IDLE, childBody = IDLE, graceMs, detached = false }: {
     grandchildBody?: string;
     childBody?: string;
     graceMs?: number;
+    detached?: boolean;
   } = {},
 ): Promise<Wrapper> {
   const dir = join(fixtureRoot, `case-${++caseCount}`);
   mkdirSync(dir, { recursive: true });
+
+  // Touched by the grandchild once its body has run, and waited on below before any case signals
+  // anything. Its stdio is "ignore", so a file is the only channel it has -- and a group-delivered
+  // signal is fast enough to beat `node -e` to installing its handlers, which made a grandchild
+  // that is supposed to ignore signals die of the default disposition instead. That race decided
+  // the outcome of the group-delivery cases, so readiness is a precondition, not a sleep.
+  const readyFile = join(dir, "grandchild-ready");
+  const grandchildProgram =
+      `${grandchildBody};require("node:fs").writeFileSync(${JSON.stringify(readyFile)}, "")`;
 
   // The child prints its grandchild's pid; the wrapper forwards that line on and adds its own pid,
   // so one stdout stream carries all three.
   const child = join(dir, "child.mjs");
   writeFileSync(child, `
     import { spawn } from "node:child_process";
-    const grandchild = spawn(process.execPath, ["-e", ${JSON.stringify(grandchildBody)}],
+    const grandchild = spawn(process.execPath, ["-e", ${JSON.stringify(grandchildProgram)}],
         { stdio: "ignore" });
     process.stdout.write("grandchild " + grandchild.pid + "\\n");
     ${childBody}
@@ -88,7 +111,7 @@ async function spawnWrapper(
     relayTermination(child${graceMs === undefined ? "" : `, { graceMs: ${graceMs} }`});
   `);
 
-  const proc = spawn(process.execPath, [wrapper], { stdio: ["ignore", "pipe", "inherit"] });
+  const proc = spawn(process.execPath, [wrapper], { stdio: ["ignore", "pipe", "inherit"], detached });
   const wrapperPid = proc.pid;
   assert.ok(wrapperPid, "the wrapper was not spawned");
 
@@ -108,20 +131,40 @@ async function spawnWrapper(
     proc.on("exit", (code, signal) => resolve({ code, signal }));
   });
 
-  try {
-    let output = "";
-    for await (const chunk of proc.stdout) {
-      output += String(chunk);
-      childPid = Number(/^child (\d+)$/m.exec(output)?.[1] ?? 0);
-      grandchildPid = Number(/^grandchild (\d+)$/m.exec(output)?.[1] ?? 0);
-      if (childPid && grandchildPid) break;
+  // Accumulated by a listener rather than consumed with `for await`, because the cases below read
+  // this stream *after* the pid handshake -- an async iterator abandoned mid-stream would leave
+  // whatever the child printed on being signalled unread.
+  let text = "";
+  let ended = false;
+  proc.stdout.on("data", (chunk: Buffer) => { text += chunk.toString(); });
+  proc.stdout.on("close", () => { ended = true; });
+
+  const output = () => text;
+  const waitForOutput = async (pattern: RegExp, timeoutMs = 10_000): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!pattern.test(text)) {
+      if (ended || Date.now() >= deadline) return pattern.test(text);
+      await new Promise(resolve => setTimeout(resolve, 25));
     }
+    return true;
+  };
+
+  try {
+    assert.ok(await waitForOutput(/^grandchild \d+$/m), "the wrapper never reported both pids");
+    childPid = Number(/^child (\d+)$/m.exec(text)?.[1] ?? 0);
+    grandchildPid = Number(/^grandchild (\d+)$/m.exec(text)?.[1] ?? 0);
     assert.ok(childPid && grandchildPid, "the wrapper never reported both pids");
+
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(readyFile)) {
+      assert.ok(Date.now() < deadline, "the grandchild never finished starting up");
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
   } catch (error) {
     cleanUp();
     throw error;
   }
-  return { wrapperPid, childPid, grandchildPid, exit, cleanUp };
+  return { wrapperPid, childPid, grandchildPid, exit, output, waitForOutput, cleanUp };
 }
 
 // Concurrent for the reason `kill-process-tree.test.ts` is: these cases spend their time waiting on
@@ -150,9 +193,59 @@ describe("relayTermination", { concurrency: true }, () => {
     try {
       process.kill(wrapperPid, "SIGTERM");
       // The wrapper must outlive the tree it is responsible for: by the time it exits, the SIGKILL
-      // the stubborn grandchild needed has been delivered.
-      assert.deepEqual(await exit, { code: null, signal: "SIGTERM" });
+      // the stubborn grandchild needed has been delivered. Asserted in this order because the
+      // fixture idles for 60s -- awaiting the exit first would also be satisfied by that timer
+      // simply running out, which is not the escalation doing its job.
       assert.ok(await waitUntilGone(grandchildPid), "the grandchild survived the escalation");
+      assert.deepEqual(await exit, { code: null, signal: "SIGTERM" });
+    } finally {
+      cleanUp();
+    }
+  });
+
+  // Ctrl-C at a tty is delivered by the OS to every process in the foreground group, so the relay
+  // is not the only deliverer -- `detached` plus a negative pid is that broadcast, minus the tty.
+  // What the broadcast does not cover is a descendant that ignores it, which still has to be
+  // reaped, and the wrapper still has to outlive the reaping.
+  //
+  // Both fixture processes hold on to model the real children: `vp run` and run-dev-server.ts each
+  // handle the interrupt and shut down over some hundreds of ms. That is load-bearing rather than
+  // incidental -- the relay reaches a grandchild only through `collectTree(child.pid)`, so a child
+  // that dies the instant the broadcast lands reparents its descendants to init before the walk
+  // runs, and no supervisor can find them afterwards (kill-process-tree.ts documents the same
+  // ordering hazard). On the tty path such a descendant has had the signal delivered to it directly
+  // anyway; the relay's job is the one that ignores it.
+  it("still reaps a stubborn grandchild when the signal is group-delivered", async () => {
+    const { wrapperPid, grandchildPid, exit, cleanUp } = await spawnWrapper(
+        { childBody: IGNORES_SIGNALS, grandchildBody: IGNORES_SIGNALS, graceMs: 250,
+          detached: true });
+    try {
+      process.kill(-wrapperPid, "SIGINT");
+      // Reaping is asserted before the exit, and the order is what makes this a regression test
+      // rather than a coincidence: these fixtures idle for 60s, so waiting on the wrapper first
+      // would let a relay that never reaped anything still pass once the idle timers ran out.
+      // It is also the real ordering -- the relay awaits its escalation before exiting.
+      assert.ok(await waitUntilGone(grandchildPid), "the grandchild survived the group broadcast");
+      assert.deepEqual(await exit, { code: null, signal: "SIGINT" });
+    } finally {
+      cleanUp();
+    }
+  });
+
+  // Characterises the delivery this relay cannot avoid, and which run-dev-server.ts's shutdown is
+  // written against: on the group-delivered path a descendant receives the *same* interrupt twice
+  // -- once from the broadcast, once forwarded by the relay -- and nothing in the tree can tell the
+  // repeat from a fresh Ctrl-C (POSIX exposes no `siginfo.si_code` to Node). A receiver must
+  // therefore stay correct when its signal count overstates how many times the user acted; the
+  // guarantees that matter are the deadline-based ones, never the count. If a future change makes
+  // the relay skip forwarding, this is the test that says the assumption moved.
+  it("delivers one group-broadcast interrupt to a descendant twice", async () => {
+    const { wrapperPid, waitForOutput, output, cleanUp } = await spawnWrapper(
+        { childBody: COUNTS_SIGINTS, graceMs: 5_000, detached: true });
+    try {
+      process.kill(-wrapperPid, "SIGINT");
+      assert.ok(await waitForOutput(/^sigint 2$/m),
+          `the child saw only one arrival, so the relay stopped forwarding: ${output()}`);
     } finally {
       cleanUp();
     }
