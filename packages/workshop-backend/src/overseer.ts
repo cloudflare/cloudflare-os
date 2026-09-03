@@ -5673,70 +5673,42 @@ class OverseerImpl implements AgentHooks {
   //   - If that profileId is no longer authorized, we allow the observation for them and delete
   //     their observer record (best-effort removeObserver on all gatekeepers). They are no longer
   //     set up to observe; if they regain access they reconfigure from scratch (Step 3).
-  // If no named observer can reach the observation, it is allowed. The teardown yields on every
-  // removal, so each observer is re-classified at the head of their own iteration, and a final
-  // synchronous pass covers the last removal's window -- an observer put back in scope anywhere
-  // mid-teardown blocks the observation instead of being committed against a stale classification.
+  // If no named observer can reach the observation, it is allowed. Every id is classified before
+  // anything is torn down, so a blocked observation leaves no teardown behind it; the removals are
+  // then all issued together and awaited at once.
   async #enforceExcludeObservers(gatekeeperId: number, observerIds: string[]): Promise<void> {
     let sharing = await this.getSharingManager();
 
-    // Classify one named observer against *current* state. All reads are synchronous, so a
-    // classification is atomic -- but only instantaneous: any await invalidates it.
-    let classify = (observerId: string) => {
+    let unauthorized: ObserverRecord[] = [];
+    let outOfScope: string[] = [];
+    for (let observerId of observerIds) {
       let observer = this.storage.observers.byObserverId.get(observerId);
-      if (!observer) return undefined;  // not an active observer -> ignore
+      if (!observer) continue;  // not an active observer -> ignore
       let role = sharing.getEffectiveRole(observer.profileId);
-      let kind = !role ? "unauthorized" as const
-          : this.#inRoleVerificationScope(gatekeeperId, role) ? "inScope" as const
-          : "outOfScope" as const;
-      return {kind, observer};
-    };
-    let blocked = () => new Error(
-        "This observation was blocked because it contains data that a current collaborator " +
-        "is not permitted to see.");
-
-    // Classify every named observer before acting: a blocked observation must leave no teardown
-    // behind it.
-    let teardown = observerIds.filter(observerId => {
-      let entry = classify(observerId);
-      if (entry?.kind === "inScope") throw blocked();
-      return entry !== undefined;
-    });
-
-    // Nobody named can reach the observation. Tear down those who have lost access entirely, since
-    // they are no longer set up to observe at all, and de-register the rest from this gatekeeper
-    // only. Each removal awaits, so re-classify at the head of each iteration and act on the
-    // *current* answer: a bind plus a fresh open in an earlier removal's window can put an
-    // observer back in scope holding a fresh registration, which the stale removal would then
-    // delete -- and de-registering is fail-open (the gatekeeper stops naming them in
-    // `excludeObservers`), so throw instead, exactly as if they had been in scope all along.
-    for (let observerId of teardown) {
-      let entry = classify(observerId);
-      if (!entry) continue;
-      if (entry.kind === "inScope") {
-        throw blocked();
-      } else if (entry.kind === "unauthorized") {
-        this.storage.observers.delete(entry.observer.profileId);
-        await this.#removeObserverFromGatekeepers(
-            observerId, [...this.storage.gatekeepers.list()].map(gk => gk.id));
+      if (!role) {
+        unauthorized.push(observer);
+      } else if (this.#inRoleVerificationScope(gatekeeperId, role)) {
+        throw new Error(
+            "This observation was blocked because it contains data that a current collaborator " +
+            "is not permitted to see.");
       } else {
-        await this.#removeObserverFromGatekeepers(observerId, [gatekeeperId]);
+        outOfScope.push(observerId);
       }
     }
 
-    // The loop-head re-checks leave one window uncovered: the final removal's, which no later
-    // iteration classifies behind. Re-classify every named observer once more, synchronously --
-    // only microtask continuations separate this pass from the actions.put that commits the
-    // observation (authorizeObservation is synchronous after this call), and no event is
-    // delivered inside a microtask drain, so what it sees is what the observation commits
-    // against. A throw here lands after some de-registrations already went out, which is benign:
-    // a blocked observation writes nothing, a registration only ever *admits* an open, and
-    // #withObserverGatekeeperLock orders a raced open's addObserver after the removal it raced,
-    // re-registering right behind it. The full list (not just `teardown`) cannot false-block: a
-    // torn-down observer who re-opens mints a fresh observerId, so a stale id stays unresolvable.
-    for (let observerId of observerIds) {
-      if (classify(observerId)?.kind === "inScope") throw blocked();
+    // Nobody named can reach the observation. Tear down those who have lost access entirely, since
+    // they are no longer set up to observe at all, and de-register the rest from this gatekeeper
+    // only. A fresh open racing one of these removals is ordered behind it by
+    // #withObserverGatekeeperLock, so its registration is never silently undone.
+    let allGatekeeperIds = [...this.storage.gatekeepers.list()].map(gk => gk.id);
+    let removals = unauthorized.map(observer => {
+      this.storage.observers.delete(observer.profileId);
+      return this.#removeObserverFromGatekeepers(observer.observerId, allGatekeeperIds);
+    });
+    for (let observerId of outOfScope) {
+      removals.push(this.#removeObserverFromGatekeepers(observerId, [gatekeeperId]));
     }
+    await Promise.all(removals);
   }
 
   // Whether `gatekeeperId` is in the verification scope of a collaborator holding `role`, i.e.
@@ -9211,8 +9183,7 @@ class OverseerImpl implements AgentHooks {
   // Serialize this DO's addObserver/removeObserver RPCs per (observer, gatekeeper) pair. The
   // overseer is the only caller of either, so ordering our own calls is enough to close the race
   // between an exclusion teardown's in-flight removeObserver and a fresh open's addObserver on
-  // the same pair: the add either lands first (and the teardown's adjacent re-classification then
-  // blocks the observation) or waits for the removal and re-registers cleanly.
+  // the same pair: the add either lands first or waits for the removal and re-registers cleanly.
   async #withObserverGatekeeperLock<T>(
       observerId: string, gatekeeperId: number, fn: () => Promise<T>): Promise<T> {
     let key = `${observerId}/${gatekeeperId}`;

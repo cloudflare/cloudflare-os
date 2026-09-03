@@ -128,9 +128,10 @@ describe("excludeObservers against the observer's verification scope", () => {
     expect(impl.storage.observers.get(CAROL)).toBeUndefined();
   }));
 
-  it("an observer put back in scope mid-teardown blocks instead of being de-registered",
+  it("every out-of-scope observer is de-registered, together",
       () => withImpl("use", async (impl, removals) => {
-    // A second "use" collaborator, Dave, named after Carol.
+    // A second "use" collaborator, Dave, also registered on the unbound connection. Both are out
+    // of scope, so the observation is allowed and both removals go out; neither record is touched.
     impl.storage.observers.put(
         { profileId: "dave", observerId: "obs-dave", accountChoices: { [GATEKEEPER_ID]: 11 } });
     impl.getSharingManager = async () => ({
@@ -138,24 +139,12 @@ describe("excludeObservers against the observer's verification scope", () => {
           profileId === CAROL || profileId === "dave" ? "use" : null,
       hasAnyShares: () => true,
     });
-    // Both start out of scope (nothing binds the connection), so both are due to be de-registered
-    // -- but each removal awaits, and during Carol's the owner binds the connection into a gadget,
-    // putting it back into everyone's "use" scope. Dave can now reach the observation, and his
-    // registration may be freshly re-asserted by an open racing this teardown, so his stale
-    // removal must not be issued: he is re-classified adjacent to it and blocks instead.
-    impl.getGatekeeperFacet = (id: number) => ({
-      removeObserver: async (observerId: string) => {
-        if (observerId === OBSERVER_ID) bindIntoGadget(impl);
-        removals.push(`${id}:${observerId}`);
-      },
-    });
 
-    await expect(impl.authorizeObservation(
-        GATEKEEPER_ID, { ...DESCRIPTION, excludeObservers: [OBSERVER_ID, "obs-dave"] }, CALLER))
-        .rejects.toThrow(/not permitted to see/);
+    await impl.authorizeObservation(
+        GATEKEEPER_ID, { ...DESCRIPTION, excludeObservers: [OBSERVER_ID, "obs-dave"] }, CALLER);
 
-    // Carol's removal was already in flight; Dave's never happened and his record is intact.
-    expect(removals).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`]);
+    expect(removals.sort()).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`, `${GATEKEEPER_ID}:obs-dave`]);
+    expect(impl.storage.observers.byObserverId.get(OBSERVER_ID)).toBeDefined();
     expect(impl.storage.observers.byObserverId.get("obs-dave")).toBeDefined();
   }));
 
@@ -176,9 +165,8 @@ describe("excludeObservers against the observer's verification scope", () => {
     // it with an addObserver for the same (observer, gatekeeper) pair. The overseer is the only
     // caller of either, so serializing its own calls per pair is what keeps the add from being
     // silently undone by the older removal: it runs only after the removal completes, and
-    // re-registers cleanly. The observation itself must then block: the bind put the connection
-    // back into Carol's scope while her own removal -- the teardown's last -- was in flight, and
-    // the final re-classification pass sees exactly that.
+    // re-registers cleanly. The observation itself was classified before the teardown began and
+    // is admitted; the bind landing mid-teardown is inside the window the design tolerates.
     let events: string[] = [];
     let releaseRemove!: () => void;
     let removeReached = new Promise<void>(resolve => {
@@ -207,32 +195,9 @@ describe("excludeObservers against the observer's verification scope", () => {
     expect(events).toEqual(["remove:start"]);
 
     releaseRemove();
-    await expect(observation).rejects.toThrow(/not permitted to see/);
+    await observation;
     await open;
     expect(events).toEqual(["remove:start", "remove:end", "add"]);
-  }));
-
-  it("a widening during the final removal blocks the observation",
-      () => withImpl("use", async (impl, removals) => {
-    // Carol is the only named observer and out of scope, so her de-registration is the teardown's
-    // last awaited removal -- the one window no later iteration's loop-head re-classification
-    // covers. The owner binds the connection into a gadget inside exactly that window: Carol is
-    // back in scope, possibly holding a fresh registration from an open racing this teardown, so
-    // the observation must block rather than commit against the stale classification.
-    impl.getGatekeeperFacet = (id: number) => ({
-      removeObserver: async (observerId: string) => {
-        bindIntoGadget(impl);
-        removals.push(`${id}:${observerId}`);
-      },
-    });
-
-    await expect(observe(impl)).rejects.toThrow(/not permitted to see/);
-
-    // The already-issued de-registration is benign partial teardown: a blocked observation writes
-    // nothing, and a registration only ever *admits* an open -- Carol's next open re-registers
-    // her. Her record survives, so her observerId stays resolvable.
-    expect(removals).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`]);
-    expect(impl.storage.observers.byObserverId.get(OBSERVER_ID)).toBeDefined();
   }));
 });
 

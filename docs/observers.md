@@ -562,21 +562,14 @@ For each id in `description.excludeObservers`:
      (and best-effort `removeObserver(observerId)` on all gatekeepers). They are no longer set up
      to observe; if they ever regain access they reconfigure from scratch (Step 3).
 3. If, after evaluating all excluded ids, none can reach the observation, allow it. Every id is
-   classified before anything is torn down, so a blocked observation leaves no teardown behind it.
-   The teardown then yields on every awaited `removeObserver`, so each observer is *re-classified
-   against current state adjacent to their own removal*: a bind plus a fresh open in an earlier
-   removal's window can put an observer back in scope holding a fresh registration, which the
-   stale removal would delete (fail-open). Such an observer blocks the observation instead,
-   exactly as if they had been in scope all along. The last interleaving — a fresh open's
-   `addObserver` landing while that observer's own `removeObserver` RPC is already in flight — is
-   closed by serializing the overseer's `addObserver`/`removeObserver` calls per
-   (observer, gatekeeper) pair (`#withObserverGatekeeperLock`; the overseer is the only caller of
-   either, so ordering its own calls is sufficient): the add either lands before the removal
-   starts (and the adjacent re-classification then blocks) or waits for it and re-registers
-   cleanly. The teardown's *last* removal has no later iteration to re-classify behind it, so a
-   final synchronous pass re-classifies every named observer once more before the observation
-   commits; a throw there can land after some de-registrations already went out, which is benign —
-   a blocked observation writes nothing, and a registration only ever admits an open.
+   classified before anything is torn down, so a blocked observation leaves no teardown behind it;
+   the removals are then all issued together and awaited with a single `Promise.all`. A fresh
+   open's `addObserver` racing one of those `removeObserver` RPCs on the same (observer,
+   gatekeeper) pair is ordered behind it (`#withObserverGatekeeperLock`; the overseer is the only
+   caller of either, so ordering its own calls is sufficient), so a fresh registration is never
+   silently undone. An observer put back in scope while the teardown is in flight — a bind plus a
+   fresh open landing inside a removal's window — is admitted for this one observation; that is
+   the same tolerance as the restart window (see "Restarting when verification scope widens").
 
 This is the runtime counterpart of `addObserver`: `addObserver` covers observers configured
 *after* data was read; `excludeObservers` covers data read *after* observers were configured.
