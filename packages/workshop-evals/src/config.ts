@@ -3,12 +3,22 @@ import {
   SUGGESTED_MODELS, type AiModelProvider, type SuggestedModelId,
 } from "@gadgets/workshop-shared/api";
 
-/** A model ID: catalog IDs autocomplete, but WORKSHOP_EVAL_MODELS may name any model. */
-export type EvalModelId = SuggestedModelId | (string & {});
-/** A model resolved to the provider that serves it. */
-export type EvalModel = { provider: AiModelProvider; model: string };
+/**
+ * Models evals may run that the picker does not offer, each with the provider that serves it. The
+ * eval catalog is SUGGESTED_MODELS plus this map: every picker model is an eval model, and a model
+ * that is in neither is rejected rather than assigned a guessed provider.
+ */
+const EVAL_ONLY_MODELS = {
+  // The backend's quick model: a cheap Workers AI model for smoke runs of the eval pipeline.
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast": "cloudflare",
+} satisfies Record<string, AiModelProvider>;
 
-// The default must be a Workers AI catalog model so it runs in both direct and gateway mode.
+/** A model ID from the eval catalog: SUGGESTED_MODELS or EVAL_ONLY_MODELS. */
+export type EvalModelId = SuggestedModelId | (keyof typeof EVAL_ONLY_MODELS & string);
+/** An eval catalog model resolved to the provider that serves it. */
+export type EvalModel = { provider: AiModelProvider; model: EvalModelId };
+
+// The default must be a Workers AI picker model so it runs in both direct and gateway mode.
 const DEFAULT_MODELS: readonly SuggestedModelId<"cloudflare">[] =
   ["@cf/deepseek-ai/deepseek-v4-pro-0813"];
 const GIT_SHA_PATTERN = /^[a-f0-9]{40}$/;
@@ -48,23 +58,26 @@ export function resolveEvalCommit(
   return commit;
 }
 
-/**
- * Resolve a model ID to the provider listed for it in SUGGESTED_MODELS. Unlisted IDs fall back
- * to Workers AI (every Workers AI ID is `@cf/...`, and cloudflare is the only provider the direct
- * transport serves), so an unknown model runs exactly as a catalog Workers AI model does.
- */
+/** Resolve a model ID to the provider the eval catalog lists for it. */
 export function resolveEvalModel(modelId: string): EvalModel {
   for (const [provider, models] of Object.entries(SUGGESTED_MODELS)) {
     if (Object.hasOwn(models, modelId)) {
-      return { provider: provider as AiModelProvider, model: modelId };
+      return { provider: provider as AiModelProvider, model: modelId as EvalModelId };
     }
   }
-  return { provider: "cloudflare", model: modelId };
+  if (Object.hasOwn(EVAL_ONLY_MODELS, modelId)) {
+    const provider = EVAL_ONLY_MODELS[modelId as keyof typeof EVAL_ONLY_MODELS];
+    return { provider, model: modelId as EvalModelId };
+  }
+  throw new Error(
+    `Unknown eval model ${JSON.stringify(modelId)}: eval models must be listed in ` +
+    "SUGGESTED_MODELS or EVAL_ONLY_MODELS");
 }
 
 /** Parse the model and repetition controls before a trial can spend inference. */
 export function evalMatrix(environment: NodeJS.ProcessEnv = process.env): EvalMatrix {
-  const models = commaList(environment.WORKSHOP_EVAL_MODELS ?? "");
+  const models = commaList(environment.WORKSHOP_EVAL_MODELS ?? "")
+      .map(modelId => resolveEvalModel(modelId).model);
   const rawTrials = environment.WORKSHOP_EVAL_TRIALS?.trim();
   const trials = rawTrials === undefined || rawTrials === "" ? 1 : Number(rawTrials);
   if (!Number.isInteger(trials) || trials < 1) {

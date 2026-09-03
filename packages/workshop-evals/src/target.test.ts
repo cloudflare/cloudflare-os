@@ -119,7 +119,7 @@ describe("assertModelAccess", () => {
     apiToken: "token",
   };
   const google = { provider: "google", model: "gemini-3.6-flash" } as const;
-  const cloudflare = { provider: "cloudflare", model: "@cf/model" } as const;
+  const cloudflare = { provider: "cloudflare", model: "@cf/zai-org/glm-5.2" } as const;
 
   it("limits direct Workers AI credentials to cloudflare models", () => {
     expect(() => assertModelAccess(direct, google)).toThrow("only run cloudflare models");

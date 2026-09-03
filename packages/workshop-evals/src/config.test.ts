@@ -19,9 +19,14 @@ it("uses DeepSeek V4 Pro and one trial by default", () => {
 
 it("accepts model and trial overrides", () => {
   expect(evalMatrix({
-    WORKSHOP_EVAL_MODELS: " model-a, model-b ",
+    WORKSHOP_EVAL_MODELS: " @cf/zai-org/glm-5.2, claude-sonnet-5 ",
     WORKSHOP_EVAL_TRIALS: "3",
-  })).toEqual({ models: ["model-a", "model-b"], trials: 3 });
+  })).toEqual({ models: ["@cf/zai-org/glm-5.2", "claude-sonnet-5"], trials: 3 });
+});
+
+it("rejects a model that is not in the catalog", () => {
+  expect(() => evalMatrix({ WORKSHOP_EVAL_MODELS: "@cf/zai-org/glm-5.2, model-b" }))
+    .toThrow('Unknown eval model "model-b"');
 });
 
 it("rejects an invalid trial count", () => {
@@ -37,9 +42,14 @@ it("resolves catalog models to their provider", () => {
     .toEqual({ provider: "cloudflare", model: "@cf/deepseek-ai/deepseek-v4-pro-0813" });
 });
 
-it("treats unlisted models as Workers AI models", () => {
-  expect(resolveEvalModel("@cf/vendor/not-in-catalog"))
-    .toEqual({ provider: "cloudflare", model: "@cf/vendor/not-in-catalog" });
+it("resolves eval-only models that the picker does not offer", () => {
+  expect(resolveEvalModel("@cf/meta/llama-3.3-70b-instruct-fp8-fast"))
+    .toEqual({ provider: "cloudflare", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" });
+});
+
+it("does not guess a provider for an unlisted model", () => {
+  expect(() => resolveEvalModel("@cf/vendor/not-in-catalog"))
+    .toThrow("must be listed in SUGGESTED_MODELS or EVAL_ONLY_MODELS");
 });
 
 const COMMIT = "a".repeat(40);

@@ -68,7 +68,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-const WORKERS_AI_MODEL: EvalModel = { provider: "cloudflare", model: "@cf/model" };
+const WORKERS_AI_MODEL: EvalModel = { provider: "cloudflare", model: "@cf/zai-org/glm-5.2" };
 const DIRECT: LocalModelAccess = { kind: "direct", accountId: "account-id", apiToken: "token" };
 const BINDING: LocalModelAccess = {
   kind: "gateway", gateway: "gateway", accountId: "account-id", transport: "binding",
