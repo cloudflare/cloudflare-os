@@ -49,7 +49,8 @@ const P_CLOSING_TAGS = new Set([
 ]);
 const HEADING_TAGS = new Set(["h1", "h2", "h3", "h4", "h5", "h6"]);
 const STORED_ATTRIBUTES = [
-  "style", "class", "href", "src", "alt", "width", "height", "face", "size", "color", "data-doc-indent",
+  "style", "class", "href", "src", "alt", "width", "height", "face", "size", "color", "start", "value",
+  "data-doc-indent",
 ];
 
 function cleanXml(value) {
@@ -564,6 +565,10 @@ function uint16le(bytes, offset) {
   return bytes[offset] | (bytes[offset + 1] << 8);
 }
 
+function uint24le(bytes, offset) {
+  return bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16);
+}
+
 function uint32le(bytes, offset) {
   return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) |
     (bytes[offset + 3] << 24)) >>> 0;
@@ -677,11 +682,38 @@ function jpegDimensions(bytes) {
   return null;
 }
 
+function webpFrameDimensions(bytes, offset, end) {
+  let dimensions = null;
+  while (offset + 8 <= end) {
+    const kind = ascii(bytes, offset, 4);
+    const length = uint32le(bytes, offset + 4);
+    const data = offset + 8;
+    if (length > end - data) return null;
+    if (kind === "VP8 " && length >= 10 && bytes[data + 3] === 0x9d &&
+        bytes[data + 4] === 0x01 && bytes[data + 5] === 0x2a) {
+      if (dimensions) return null;
+      dimensions = {width: uint16le(bytes, data + 6) & 0x3fff, height: uint16le(bytes, data + 8) & 0x3fff};
+    } else if (kind === "VP8L" && length >= 5 && bytes[data] === 0x2f) {
+      if (dimensions) return null;
+      dimensions = {
+        width: 1 + bytes[data + 1] + ((bytes[data + 2] & 0x3f) << 8),
+        height: 1 + (bytes[data + 2] >> 6) + (bytes[data + 3] << 2) + ((bytes[data + 4] & 0x0f) << 10),
+      };
+    }
+    offset = data + length + (length & 1);
+  }
+  return offset === end ? dimensions : null;
+}
+
 function webpDimensions(bytes) {
   if (bytes.length < 30 || ascii(bytes, 0, 4) !== "RIFF" || ascii(bytes, 8, 4) !== "WEBP" ||
       uint32le(bytes, 4) + 8 !== bytes.length) return null;
   let extendedDimensions = null;
   let seenImageData = false;
+  let maximumWidth = 0;
+  let maximumHeight = 0;
+  let framePixels = 0;
+  let frames = 0;
   for (let offset = 12; offset + 8 <= bytes.length;) {
     const kind = ascii(bytes, offset, 4);
     const length = uint32le(bytes, offset + 4);
@@ -708,10 +740,29 @@ function webpDimensions(bytes) {
         };
       }
     }
-    if (kind === "ANMF" && length >= 16) seenImageData = true;
+    if (kind === "ANMF" && length >= 16) {
+      const frameWidth = 1 + uint24le(bytes, data + 6);
+      const frameHeight = 1 + uint24le(bytes, data + 9);
+      const encoded = webpFrameDimensions(bytes, data + 16, data + length);
+      if (!encoded || encoded.width !== frameWidth || encoded.height !== frameHeight) return null;
+      maximumWidth = Math.max(maximumWidth, frameWidth);
+      maximumHeight = Math.max(maximumHeight, frameHeight);
+      framePixels = Math.min(Number.MAX_SAFE_INTEGER, framePixels + frameWidth * frameHeight);
+      if (++frames > DOCX_LIMITS.imageFrames) {
+        throw new Error(`DOCX animation frame count exceeds the ${DOCX_LIMITS.imageFrames}-frame per-image limit.`);
+      }
+      seenImageData = true;
+    }
     offset = data + length + (length & 1);
   }
-  return seenImageData ? extendedDimensions : null;
+  if (!seenImageData || !extendedDimensions) return null;
+  return {
+    ...extendedDimensions,
+    maximumWidth: Math.max(extendedDimensions.width, maximumWidth),
+    maximumHeight: Math.max(extendedDimensions.height, maximumHeight),
+    pixels: Math.max(extendedDimensions.width * extendedDimensions.height, framePixels),
+    frames,
+  };
 }
 
 function decodedImage(source, totals) {
@@ -765,7 +816,7 @@ function decodedImage(source, totals) {
   totals.pixels += pixels;
   const frames = dimensions.frames || 0;
   if (totals.frames + frames > DOCX_LIMITS.aggregateImageFrames) {
-    throw new Error(`DOCX GIF frame count exceeds the ${DOCX_LIMITS.aggregateImageFrames}-frame aggregate limit.`);
+    throw new Error(`DOCX animation frame count exceeds the ${DOCX_LIMITS.aggregateImageFrames}-frame aggregate limit.`);
   }
   totals.frames += frames;
   return {
@@ -868,9 +919,9 @@ class DocumentBuilder {
     paragraph.trailingSpace = false;
   }
 
-  list(kind) {
+  list(kind, level, start) {
     const id = this.numbering.length + 1;
-    this.numbering.push({id, kind});
+    this.numbering.push({id, kind, level, start});
     return id;
   }
 
@@ -971,15 +1022,15 @@ function tableRows(node, rows = []) {
   return rows;
 }
 
-function convertTable(builder, node, format, paragraphFormat) {
+function convertTable(builder, node, format, paragraphFormat, style) {
   const rows = tableRows(node);
   if (!rows.length) {
-    const paragraph = builder.paragraph(paragraphOptions("Normal", paragraphFormat));
+    const paragraph = builder.paragraph(paragraphOptions(style, paragraphFormat));
     appendChildren(builder, paragraph, node, format, paragraphFormat);
     return;
   }
   for (const row of rows) {
-    const paragraph = builder.paragraph(paragraphOptions("Normal", deriveParagraph(paragraphFormat, row, format)));
+    const paragraph = builder.paragraph(paragraphOptions(style, deriveParagraph(paragraphFormat, row, format)));
     const cells = row.children.filter((child) => typeof child !== "string" && ["td", "th"].includes(child.tag));
     for (let index = 0; index < cells.length; ++index) {
       if (index) builder.tab(paragraph);
@@ -990,7 +1041,7 @@ function convertTable(builder, node, format, paragraphFormat) {
   }
 }
 
-function convertList(builder, node, inheritedFormat, inheritedParagraph, depth) {
+function convertList(builder, node, inheritedFormat, inheritedParagraph, depth, style) {
   const format = deriveFormat(inheritedFormat, node);
   const paragraphFormat = deriveParagraph(inheritedParagraph, node, format);
   const listItems = node.children.filter((child) => typeof child !== "string" && child.tag === "li");
@@ -998,29 +1049,57 @@ function convertList(builder, node, inheritedFormat, inheritedParagraph, depth) 
   if (!listItems.length && !directText.length) {
     for (const child of node.children) {
       if (typeof child !== "string" && ["ul", "ol"].includes(child.tag)) {
-        convertList(builder, child, format, paragraphFormat, depth + 1);
+        convertList(builder, child, format, paragraphFormat, depth + 1, style);
       }
     }
     return;
   }
-  const numId = builder.list(node.tag === "ol" ? "decimal" : "bullet");
   const level = Math.min(8, Math.max(0, depth));
+  const kind = node.tag === "ol" ? "decimal" : "bullet";
+  const parseOrdinal = (value) => {
+    const source = String(value || "").trim();
+    if (!/^[+-]?\d+$/.test(source)) return null;
+    const ordinal = Number(source);
+    return Number.isSafeInteger(ordinal) && ordinal >= -0x80000000 && ordinal <= 0x7fffffff ? ordinal : null;
+  };
+  let numId = builder.list(kind, level, kind === "decimal" ? parseOrdinal(node.attrs.start) : null);
   if (directText.length) {
-    const paragraph = builder.paragraph({...paragraphOptions("Normal", paragraphFormat), list: {numId, level}});
+    const paragraph = builder.paragraph({...paragraphOptions(style, paragraphFormat), list: {numId, level}});
     for (const text of directText) builder.text(paragraph, text, format, null);
   }
   for (const item of listItems) {
+    const itemStart = kind === "decimal" ? parseOrdinal(item.attrs.value) : null;
+    if (itemStart != null) numId = builder.list(kind, level, itemStart);
     const itemFormat = deriveFormat(format, item);
     const itemParagraph = deriveParagraph(paragraphFormat, item, itemFormat);
-    let paragraph = builder.paragraph({...paragraphOptions("Normal", itemParagraph), list: {numId, level}});
+    let paragraph = builder.paragraph({...paragraphOptions(style, itemParagraph), list: {numId, level}});
     for (const child of item.children) {
       if (typeof child !== "string" && ["ul", "ol"].includes(child.tag)) {
-        convertList(builder, child, itemFormat, itemParagraph, depth + 1);
+        convertList(builder, child, itemFormat, itemParagraph, depth + 1, style);
         paragraph = null;
         continue;
       }
+      if (typeof child !== "string" && (BLOCK_TAGS.has(child.tag) || hasBlockChild(child))) {
+        const marker = paragraph;
+        const markerIndex = marker ? builder.paragraphs.length - 1 : -1;
+        const blockStart = builder.paragraphs.length;
+        convertBlock(builder, child, itemFormat, itemParagraph, style, depth + 1);
+        const added = builder.paragraphs.slice(blockStart);
+        if (added.length) {
+          const reuseMarker = marker && !marker.hasContent && !added[0].list;
+          if (reuseMarker) {
+            builder.paragraphs.splice(markerIndex, 1);
+            added[0].list = {numId, level};
+          }
+          for (const continuation of added.slice(reuseMarker ? 1 : 0)) {
+            if (!continuation.list && continuation.listContinuation == null) continuation.listContinuation = level;
+          }
+          paragraph = null;
+        }
+        continue;
+      }
       if (!paragraph && typeof child === "string" && !child.replace(/[\t\n\f\r ]/g, "")) continue;
-      paragraph ||= builder.paragraph({...paragraphOptions("Normal", itemParagraph), listContinuation: level});
+      paragraph ||= builder.paragraph({...paragraphOptions(style, itemParagraph), listContinuation: level});
       appendInline(builder, paragraph, child, itemFormat, itemParagraph, null, false);
     }
   }
@@ -1036,36 +1115,38 @@ function blockStyle(node) {
   return "Normal";
 }
 
-function convertBlock(builder, node, inheritedFormat, inheritedParagraph) {
+function convertBlock(builder, node, inheritedFormat, inheritedParagraph, inheritedStyle = "Normal", listDepth = 0) {
   if (IGNORED_CONTENT_TAGS.has(node.tag) || ["link", "meta"].includes(node.tag)) return;
   const format = deriveFormat(inheritedFormat, node);
   const paragraphFormat = deriveParagraph(inheritedParagraph, node, format);
   if (["ul", "ol"].includes(node.tag)) {
-    convertList(builder, node, inheritedFormat, inheritedParagraph, 0);
+    convertList(builder, node, inheritedFormat, inheritedParagraph, listDepth, inheritedStyle);
   } else if (node.tag === "table") {
-    convertTable(builder, node, format, paragraphFormat);
+    convertTable(builder, node, format, paragraphFormat, inheritedStyle);
   } else if (node.tag === "hr") {
-    builder.paragraph({...paragraphOptions("Normal", paragraphFormat), horizontalRule: true});
+    builder.paragraph({...paragraphOptions(inheritedStyle, paragraphFormat), horizontalRule: true});
   } else if (node.tag === "img") {
-    const paragraph = builder.paragraph(paragraphOptions("Normal", paragraphFormat));
+    const paragraph = builder.paragraph(paragraphOptions(inheritedStyle, paragraphFormat));
     builder.image(paragraph, node, format, null);
-  } else if ((node.tag === "div" || isEditorIndentation(node)) && hasBlockChild(node)) {
-    convertFlow(builder, node.children, format, paragraphFormat);
+  } else if (hasBlockChild(node)) {
+    const style = blockStyle(node);
+    convertFlow(builder, node.children, format, paragraphFormat, style === "Normal" ? inheritedStyle : style, listDepth);
   } else if (node.tag === "li") {
-    const paragraph = builder.paragraph(paragraphOptions("Normal", paragraphFormat));
+    const paragraph = builder.paragraph(paragraphOptions(inheritedStyle, paragraphFormat));
     appendChildren(builder, paragraph, node, format, paragraphFormat);
   } else {
-    const paragraph = builder.paragraph(paragraphOptions(blockStyle(node), paragraphFormat));
+    const style = blockStyle(node);
+    const paragraph = builder.paragraph(paragraphOptions(style === "Normal" ? inheritedStyle : style, paragraphFormat));
     appendChildren(builder, paragraph, node, format, paragraphFormat, node.tag === "pre");
   }
 }
 
-function convertFlow(builder, children, inheritedFormat = {}, inheritedParagraph = {}) {
+function convertFlow(builder, children, inheritedFormat = {}, inheritedParagraph = {}, inheritedStyle = "Normal", listDepth = 0) {
   let loose = null;
   for (const child of children) {
     if (typeof child === "string") {
       if (!child.replace(/[\t\n\f\r ]/g, "")) continue;
-      loose ||= builder.paragraph(paragraphOptions("Normal", inheritedParagraph));
+      loose ||= builder.paragraph(paragraphOptions(inheritedStyle, inheritedParagraph));
       builder.text(loose, child, inheritedFormat, null);
       continue;
     }
@@ -1076,14 +1157,14 @@ function convertFlow(builder, children, inheritedFormat = {}, inheritedParagraph
     if (IGNORED_CONTENT_TAGS.has(child.tag) || ["link", "meta"].includes(child.tag)) continue;
     if (BLOCK_TAGS.has(child.tag) || child.tag === "img") {
       loose = null;
-      convertBlock(builder, child, inheritedFormat, inheritedParagraph);
+      convertBlock(builder, child, inheritedFormat, inheritedParagraph, inheritedStyle, listDepth);
     } else if (hasBlockChild(child)) {
       loose = null;
       const format = deriveFormat(inheritedFormat, child);
       const paragraphFormat = deriveParagraph(inheritedParagraph, child, format);
-      convertFlow(builder, child.children, format, paragraphFormat);
+      convertFlow(builder, child.children, format, paragraphFormat, inheritedStyle, listDepth);
     } else {
-      loose ||= builder.paragraph(paragraphOptions("Normal", inheritedParagraph));
+      loose ||= builder.paragraph(paragraphOptions(inheritedStyle, inheritedParagraph));
       appendInline(builder, loose, child, inheritedFormat, inheritedParagraph, null, false);
     }
   }
@@ -1220,7 +1301,7 @@ function* numberingXml(numbering) {
   for (const [abstractId, kind] of [[0, "bullet"], [1, "decimal"]]) {
     yield `<w:abstractNum w:abstractNumId="${abstractId}"><w:multiLevelType w:val="multilevel"/>`;
     for (let level = 0; level < 9; ++level) {
-      const text = kind === "decimal" ? `%${level + 1}.` : ["&#x2022;", "o", "&#x25AA;"][level % 3];
+      const text = kind === "decimal" ? `%${level + 1}.` : ["&#x2022;", "&#x25E6;", "&#x25AA;"][level % 3];
       yield `<w:lvl w:ilvl="${level}"><w:start w:val="1"/><w:numFmt w:val="${kind}"/>` +
         `<w:lvlText w:val="${text}"/><w:lvlJc w:val="left"/><w:pPr><w:tabs><w:tab w:val="num" w:pos="${(level + 1) * 420}"/></w:tabs>` +
         `<w:ind w:left="${(level + 1) * 420}" w:hanging="240"/></w:pPr></w:lvl>`;
@@ -1228,7 +1309,11 @@ function* numberingXml(numbering) {
     yield "</w:abstractNum>";
   }
   for (const item of numbering) {
-    yield `<w:num w:numId="${item.id}"><w:abstractNumId w:val="${item.kind === "bullet" ? 0 : 1}"/></w:num>`;
+    yield `<w:num w:numId="${item.id}"><w:abstractNumId w:val="${item.kind === "bullet" ? 0 : 1}"/>`;
+    if (item.start != null) {
+      yield `<w:lvlOverride w:ilvl="${item.level}"><w:startOverride w:val="${item.start}"/></w:lvlOverride>`;
+    }
+    yield "</w:num>";
   }
   yield "</w:numbering>";
 }

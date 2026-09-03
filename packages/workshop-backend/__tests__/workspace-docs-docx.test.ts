@@ -183,6 +183,35 @@ function webp(width: number, height: number): Uint8Array {
   return bytes;
 }
 
+function animatedWebp(width: number, height: number, frames: number[][]): Uint8Array {
+  const bytes = new Uint8Array(44 + frames.length * 42);
+  bytes.set(encoder.encode("RIFF"), 0);
+  new DataView(bytes.buffer).setUint32(4, bytes.length - 8, true);
+  bytes.set(encoder.encode("WEBPVP8X"), 8);
+  new DataView(bytes.buffer).setUint32(16, 10, true);
+  bytes[20] = 0x02;
+  for (const [offset, value] of [[24, width - 1], [27, height - 1]]) {
+    bytes.set([value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff], offset);
+  }
+  bytes.set(encoder.encode("ANIM"), 30);
+  new DataView(bytes.buffer).setUint32(34, 6, true);
+  let offset = 44;
+  for (const [frameWidth, frameHeight, encodedWidth = frameWidth, encodedHeight = frameHeight] of frames) {
+    bytes.set(encoder.encode("ANMF"), offset);
+    new DataView(bytes.buffer).setUint32(offset + 4, 34, true);
+    const data = offset + 8;
+    for (const [field, value] of [[data + 6, frameWidth - 1], [data + 9, frameHeight - 1]]) {
+      bytes.set([value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff], field);
+    }
+    bytes.set(encoder.encode("VP8 "), data + 16);
+    new DataView(bytes.buffer).setUint32(data + 20, 10, true);
+    bytes.set([0, 0, 0, 0x9d, 0x01, 0x2a,
+      encodedWidth & 0xff, encodedWidth >> 8, encodedHeight & 0xff, encodedHeight >> 8], data + 24);
+    offset += 42;
+  }
+  return bytes;
+}
+
 function runContaining(xml: string, value: string): string {
   const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = new RegExp(
@@ -401,6 +430,31 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).toContain('<w:bottom w:val="single"');
   });
 
+  it("preserves paragraph structure inside semantic quotes", async () => {
+    const {entries} = await readZip(await documentToDocx({blocks: [block(
+        "<blockquote><p>first</p><p>second</p><ul><li>third</li></ul></blockquote>")]}));
+    const xml = text(entries, "word/document.xml");
+    expect(xml.match(/<w:p>/g)).toHaveLength(3);
+    expect(xml.match(/<w:pStyle w:val="Quote"\/>/g)).toHaveLength(3);
+    expect(xml).toContain('<w:ilvl w:val="0"/><w:numId w:val="1"/>');
+    expect(xml).not.toContain("<w:br/>");
+  });
+
+  it("preserves semantic quote paragraphs inside list items", async () => {
+    const {entries} = await readZip(await documentToDocx({blocks: [block(
+        "<ol><li><section><blockquote><p>first</p><p>second</p></blockquote></section></li>" +
+        "<li><div><ul><li><p>nested</p><p>continued</p></li></ul></div></li></ol>")]}));
+    const xml = text(entries, "word/document.xml");
+    expect(xml.match(/<w:p>/g)).toHaveLength(5);
+    expect(xml.match(/<w:pStyle w:val="Quote"\/>/g)).toHaveLength(2);
+    expect(xml.match(/<w:numPr>/g)).toHaveLength(3);
+    expect(xml.match(/<w:ilvl w:val="0"\/><w:numId w:val="1"\/>/g)).toHaveLength(2);
+    expect(xml).toContain('<w:ilvl w:val="1"/><w:numId w:val="2"/>');
+    expect(xml).toContain('<w:pStyle w:val="Quote"/><w:ind w:left="420"/>');
+    expect(xml).toContain('<w:pStyle w:val="Normal"/><w:ind w:left="840"/>');
+    expect(xml).not.toContain("<w:br/>");
+  });
+
   it("maps editor indentation blockquotes to indentation without quote styling", async () => {
     const html = '<blockquote style="margin: 0 0 0 40px; border: none; padding: 0px;">indented</blockquote>' +
       '<blockquote style="margin: 0 0 0 40px; border: none; padding: 0px;">outer' +
@@ -428,11 +482,26 @@ describe("Workspace Docs DOCX package", () => {
     expect(numbering).toContain('<w:num w:numId="1"><w:abstractNumId w:val="1"/>');
     expect(numbering).toContain('<w:num w:numId="2"><w:abstractNumId w:val="0"/>');
     expect(numbering).toContain('<w:num w:numId="4"><w:abstractNumId w:val="1"/>');
+    expect(numbering).toContain('<w:lvlText w:val="&#x25E6;"/>');
+    expect(numbering).not.toContain('<w:lvlText w:val="o"/>');
     expect(xml).toContain('<w:ilvl w:val="0"/><w:numId w:val="1"/>');
     expect(xml).toContain('<w:ilvl w:val="1"/><w:numId w:val="2"/>');
     expect(xml).toContain('<w:ilvl w:val="2"/><w:numId w:val="3"/>');
     expect(xml).toContain('<w:ilvl w:val="0"/><w:numId w:val="4"/>');
     expect(xml).not.toMatch(/<w:t[^>]*>[\u2022\u25aa]|<w:t[^>]*>\d+\. /);
+  });
+
+  it("preserves ordered-list start and item value overrides", async () => {
+    const {entries} = await readZip(await documentToDocx({blocks: [block(
+        '<ol start="4"><li>four</li><li value="7">seven</li><li>eight</li></ol>')]}));
+    const xml = text(entries, "word/document.xml");
+    const numbering = text(entries, "word/numbering.xml");
+    expect(numbering).toContain('<w:num w:numId="1"><w:abstractNumId w:val="1"/>' +
+      '<w:lvlOverride w:ilvl="0"><w:startOverride w:val="4"/></w:lvlOverride></w:num>');
+    expect(numbering).toContain('<w:num w:numId="2"><w:abstractNumId w:val="1"/>' +
+      '<w:lvlOverride w:ilvl="0"><w:startOverride w:val="7"/></w:lvlOverride></w:num>');
+    expect(xml.match(/<w:numId w:val="1"\/>/g)).toHaveLength(1);
+    expect(xml.match(/<w:numId w:val="2"\/>/g)).toHaveLength(2);
   });
 
   it("preserves inline content order around nested lists", async () => {
@@ -528,6 +597,21 @@ describe("Workspace Docs DOCX package", () => {
         Array.from({length: DOCX_LIMITS.imageFrames + 1}, () => [1, 1])));
     await expect(documentToDocx({blocks: [block(`<img src="${tooManyFrames}">`)]}))
       .rejects.toThrow("frame count exceeds");
+  });
+
+  it("rejects excessive or inconsistent WebP animation work", async () => {
+    const animated = dataUrl("image/webp", animatedWebp(5000, 5000, [[5000, 5000], [5000, 5000]]));
+    await expect(documentToDocx({blocks: [block(`<img src="${animated}">`)]}))
+      .rejects.toThrow("pixel count exceeds");
+
+    const tooManyFrames = dataUrl("image/webp", animatedWebp(1, 1,
+        Array.from({length: DOCX_LIMITS.imageFrames + 1}, () => [1, 1])));
+    await expect(documentToDocx({blocks: [block(`<img src="${tooManyFrames}">`)]}))
+      .rejects.toThrow("frame count exceeds");
+
+    const mismatched = dataUrl("image/webp", animatedWebp(5000, 5000, [[1, 1, 5000, 5000]]));
+    const {entries} = await readZip(await documentToDocx({blocks: [block(`<img src="${mismatched}">`)]}));
+    expect([...entries.keys()].some((name) => name.startsWith("word/media/"))).toBe(false);
   });
 
   it("keeps supported hyperlinks on embedded images", async () => {
