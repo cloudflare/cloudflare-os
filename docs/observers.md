@@ -339,7 +339,7 @@ Notes:
 Verification runs at `open()` and nowhere else, so a live session is only ever as verified as the
 scope that existed when it opened. When that scope **widens**, the overseer restarts the workspace
 rather than trying to re-verify sessions in place: `#restartIfSessionsAffected(reason,
-affectedRole?)` delegates to `scheduleAccessRestart(reason)` — the same DO reset used to revoke a
+affectedRole?)` delegates to `scheduleAccessRestart(reason)` — the same DO abort used to revoke a
 collaborator (see `docs/sharing.md`) — so every client's browser reconnects and re-runs
 `authorizeCollaborator`/`ensureObserver` against the new scope.
 
@@ -668,12 +668,8 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    the parked open holds an authorization lease that counts as a session of its role, so the
    widening schedules the reset, which takes the parked open with it, and the client retries
    against the new scope. The residual is the ~100 ms window itself — during which the new
-   connection is unreachable anyway (`#gatekeepersPendingRestart`), leaving only what live
-   sessions already held — and it is inside the revocation window the sharing model already
-   accepts: the tolerance for an access change taking effect is 5 s, and a widening that lands
-   early and a revocation that lands late are the same window measured from opposite ends. Closing
-   it outright would mean gating reads on a per-session snapshot of what the holder was verified
-   against, which is not proportionate to what it buys.
+   connection is unreachable anyway (`#gatekeepersPendingRestart`) — and it is inside the
+   revocation window the sharing model already accepts.
 6. **Performance** — `ensureObserver` does one `getVerifier` + one `addObserver` per in-scope
    gatekeeper per open. Parallelize with `Promise.all` and pipe the verifier promise straight into
    `addObserver`. Expensive gatekeepers cache on their side.
