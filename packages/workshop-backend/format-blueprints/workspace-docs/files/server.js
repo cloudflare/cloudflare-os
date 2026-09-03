@@ -1,4 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { documentToDocx } from "./docx.js";
 
 const DEFAULT_TITLE = "Untitled document";
 
@@ -299,6 +300,7 @@ function sanitizeBlocks(blocks) {
 
 const DOC_EXPORT_FORMATS = [
   { id: "markdown", label: "Markdown", mode: "server", contentType: "text/markdown", fileExtension: ".md" },
+  { id: "docx", label: "Word Document", mode: "server", contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", fileExtension: ".docx" },
   { id: "html", label: "HTML", mode: "browser", contentType: "text/html", fileExtension: ".html" },
   { id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf", fileExtension: ".pdf" },
 ];
@@ -309,8 +311,9 @@ export class ExportHandler extends WorkerEntrypoint {
   }
 
   async export(gadget, id) {
-    if (id !== "markdown") throw new Error("Unsupported document export format: " + id);
+    if (id !== "markdown" && id !== "docx") throw new Error("Unsupported document export format: " + id);
     const document = await gadget.getDocument();
+    if (id === "docx") return documentToDocx(document);
     const html = document.blocks
       ? document.blocks.map((block) => block.html).join("")
       : document.legacyContent || "";
