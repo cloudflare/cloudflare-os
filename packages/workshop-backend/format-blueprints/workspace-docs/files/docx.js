@@ -1,4 +1,5 @@
 import { createZip, crc32 } from "./zip.js";
+import { loadHtmlEntities } from "./html-entities.js";
 
 const encoder = new TextEncoder();
 const WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
@@ -7,6 +8,7 @@ const PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relations
 const CONTENT_WIDTH_PIXELS = 691.2;
 const CONTENT_HEIGHT_PIXELS = 931.2;
 const EMUS_PER_PIXEL = 9525;
+const IMAGE_MASK_THRESHOLD = 2 * 1024 * 1024;
 
 export const DOCX_LIMITS = Object.freeze({
   blocks: 50_000,
@@ -25,6 +27,8 @@ export const DOCX_LIMITS = Object.freeze({
   imageDimension: 16_384,
   imagePixels: 40_000_000,
   aggregateImagePixels: 100_000_000,
+  imageFrames: 1_000,
+  aggregateImageFrames: 4_000,
 });
 
 const VOID_TAGS = new Set([
@@ -44,7 +48,9 @@ const P_CLOSING_TAGS = new Set([
   "section", "table", "ul",
 ]);
 const HEADING_TAGS = new Set(["h1", "h2", "h3", "h4", "h5", "h6"]);
-const STORED_ATTRIBUTES = ["style", "class", "href", "src", "alt", "width", "height", "face", "size", "color"];
+const STORED_ATTRIBUTES = [
+  "style", "class", "href", "src", "alt", "width", "height", "face", "size", "color", "data-doc-indent",
+];
 
 function cleanXml(value) {
   const input = String(value ?? "");
@@ -79,21 +85,47 @@ function relationshipAttribute(value) {
   return xmlAttribute(value);
 }
 
-function decodeHtmlEntities(value) {
-  return String(value).replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (match, entity) => {
-    const lower = entity.toLowerCase();
-    if (lower === "amp") return "&";
-    if (lower === "lt") return "<";
-    if (lower === "gt") return ">";
-    if (lower === "quot") return "\"";
-    if (lower === "apos") return "'";
-    if (lower === "nbsp") return "\u00a0";
-    const codePoint = Number.parseInt(lower.startsWith("#x") ? lower.slice(2) : lower.slice(1),
-        lower.startsWith("#x") ? 16 : 10);
+function decodeHtmlEntities(value, namedEntities) {
+  return String(value).replace(/&(#(?:[xX][0-9a-fA-F]+|\d+)|[0-9A-Za-z]+);/g, (match, entity) => {
+    if (!entity.startsWith("#")) {
+      return Object.hasOwn(namedEntities, entity) ? namedEntities[entity] : match;
+    }
+    const hexadecimal = entity[1]?.toLowerCase() === "x";
+    const codePoint = Number.parseInt(entity.slice(hexadecimal ? 2 : 1), hexadecimal ? 16 : 10);
     if (!Number.isFinite(codePoint) || codePoint <= 0 || codePoint > 0x10ffff ||
         (codePoint >= 0xd800 && codePoint <= 0xdfff)) return "\ufffd";
     return String.fromCodePoint(codePoint);
   });
+}
+
+const DATA_IMAGE_PATTERN = /data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=]+/gi;
+
+function maskImageSources(source) {
+  let marker = null;
+  const images = [];
+  const html = source.replace(DATA_IMAGE_PATTERN, (image) => {
+    const payloadLength = image.length - image.indexOf(",") - 1;
+    if (payloadLength < IMAGE_MASK_THRESHOLD) return image;
+    if (!marker) {
+      for (let attempt = 0; attempt < 2; ++attempt) {
+        const candidate = `docx-masked-image-${crypto.randomUUID()}:`;
+        if (!source.includes(candidate)) {
+          marker = candidate;
+          break;
+        }
+      }
+      if (!marker) throw new Error("DOCX source could not reserve an image marker.");
+    }
+    const token = `${marker}${images.length}:`;
+    images.push(image);
+    return token;
+  });
+  return {html, images, pattern: marker && new RegExp(`${marker}(\\d+):`, "g")};
+}
+
+function restoreImageSources(value, masked) {
+  if (!masked.images.length) return value;
+  return value.replace(masked.pattern, (match, index) => masked.images[Number(index)] ?? match);
 }
 
 function textStream(iterable) {
@@ -137,11 +169,12 @@ function modifiedTimestamp(value) {
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
-function retainedAttribute(element, name) {
-  const value = element.getAttribute(name);
+function retainedAttribute(element, name, namedEntities, masked) {
+  let value = element.getAttribute(name);
   if (value == null) return null;
+  value = restoreImageSources(value, masked);
   const maximum = name === "src" ? DOCX_LIMITS.imageEncodedBytes + 128 : name === "style" ? 65_536 : 8192;
-  if (value.length <= maximum) return decodeHtmlEntities(value);
+  if (value.length <= maximum) return decodeHtmlEntities(value, namedEntities);
   if (name === "src" && /^data:/i.test(value)) {
     throw new Error(`DOCX image encoded data exceeds the ${DOCX_LIMITS.imageEncodedBytes}-byte per-image limit.`);
   }
@@ -175,7 +208,7 @@ function closeImpliedElements(stack, tag) {
   if (tag === "td" || tag === "th") closeWithin(new Set(["td", "th"]), new Set(["tr", "table"]));
 }
 
-async function parseHtml(fragments) {
+async function parseHtml(fragments, namedEntities) {
   const root = {tag: "#document", attrs: {}, children: []};
   let nodeCount = 0;
   let textCharacters = 0;
@@ -186,7 +219,9 @@ async function parseHtml(fragments) {
       throw new Error(`DOCX HTML node count exceeds the ${DOCX_LIMITS.nodes}-node export limit.`);
     }
   };
-  for (const html of fragments) {
+  for (const source of fragments) {
+    const masked = maskImageSources(source);
+    const html = masked.html;
     const stack = [root];
     let pendingText = "";
     let pendingParent = null;
@@ -202,17 +237,21 @@ async function parseHtml(fragments) {
           }
           const attrs = {};
           for (const name of STORED_ATTRIBUTES) {
-            const value = retainedAttribute(element, name);
+            const value = retainedAttribute(element, name, namedEntities, masked);
             if (value != null) attrs[name] = value;
           }
           const node = {tag, attrs, children: []};
           stack.at(-1).children.push(node);
           if (!VOID_TAGS.has(tag)) {
-            stack.push(node);
-            element.onEndTag(() => {
-              const index = stack.lastIndexOf(node);
-              if (index >= 0) stack.length = index;
-            });
+            try {
+              element.onEndTag(() => {
+                const index = stack.lastIndexOf(node);
+                if (index >= 0) stack.length = index;
+              });
+              stack.push(node);
+            } catch (error) {
+              if (element.namespaceURI === "http://www.w3.org/1999/xhtml") throw error;
+            }
           }
         } catch (error) {
           failure = error;
@@ -228,7 +267,7 @@ async function parseHtml(fragments) {
           }
           pendingText += text.text;
           if (!text.lastInTextNode || !pendingText) return;
-          const decoded = decodeHtmlEntities(pendingText);
+          const decoded = decodeHtmlEntities(restoreImageSources(pendingText, masked), namedEntities);
           textCharacters += decoded.length;
           if (textCharacters > DOCX_LIMITS.textCharacters) {
             throw new Error(`DOCX text exceeds the ${DOCX_LIMITS.textCharacters}-character export limit.`);
@@ -406,6 +445,38 @@ function cssLengthTwips(value) {
   return Number.isFinite(twips) ? Math.round(twips) : null;
 }
 
+function cssBoxLeft(value) {
+  const parts = value.trim().split(/\s+/);
+  if (!parts.length || parts.length > 4) return null;
+  return parts.length === 1 ? parts[0] : parts.length === 4 ? parts[3] : parts[1];
+}
+
+function isEditorIndentation(node) {
+  if (node.tag !== "blockquote") return false;
+  if (Object.hasOwn(node.attrs, "data-doc-indent")) return true;
+  let borderless = false;
+  let paddingless = false;
+  let left = null;
+  let marginSignature = false;
+  for (const [name, value] of cssDeclarations(node)) {
+    if (name === "border") borderless = value.trim().toLowerCase() === "none";
+    if (name === "border-left") borderless = false;
+    if (name === "padding") {
+      const parts = value.trim().split(/\s+/);
+      paddingless = parts.length >= 1 && parts.length <= 4 && parts.every((part) => cssLengthTwips(part) === 0);
+    }
+    if (name === "padding-left") paddingless = false;
+    if (name === "margin") {
+      const parts = value.trim().split(/\s+/);
+      marginSignature = parts.length === 4 && parts.slice(0, 3).every((part) => cssLengthTwips(part) === 0);
+      left = marginSignature ? parts[3] : null;
+    }
+    if (name === "margin-left") marginSignature = false;
+  }
+  const twips = left == null ? null : cssLengthTwips(left);
+  return borderless && paddingless && marginSignature && twips != null && twips > 0;
+}
+
 function lineSpacing(value, format) {
   const lower = value.trim().toLowerCase();
   if (/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(lower)) {
@@ -427,16 +498,22 @@ function lineSpacing(value, format) {
 
 function deriveParagraph(parent, node, format) {
   const paragraph = {...parent};
+  const relativeIndent = isEditorIndentation(node);
   for (const [name, value] of cssDeclarations(node)) {
     const lower = value.toLowerCase();
     if (name === "text-align") {
       if (["left", "start", "initial"].includes(lower)) paragraph.alignment = "left";
       else if (lower === "center" || lower === "right" || lower === "justify") paragraph.alignment = lower;
-    } else if (name === "margin-left") {
-      if (["initial", "unset"].includes(lower)) paragraph.left = 0;
-      else if (lower !== "inherit") {
-        const left = cssLengthTwips(value);
-        if (left != null) paragraph.left = Math.max(0, Math.min(14_400, left));
+    } else if (name === "margin" || name === "margin-left") {
+      const source = name === "margin" ? cssBoxLeft(value) : value;
+      const sourceLower = source?.toLowerCase();
+      if (["initial", "unset"].includes(sourceLower)) paragraph.left = 0;
+      else if (source && sourceLower !== "inherit") {
+        const left = cssLengthTwips(source);
+        if (left != null) {
+          const inherited = relativeIndent ? parent.left || 0 : 0;
+          paragraph.left = Math.max(0, Math.min(14_400, inherited + left));
+        }
       }
     } else if (name === "padding-left") {
       const padding = cssLengthTwips(value);
@@ -521,10 +598,59 @@ function pngDimensions(bytes) {
   return null;
 }
 
+function skipGifSubBlocks(bytes, offset) {
+  while (offset < bytes.length) {
+    const length = bytes[offset++];
+    if (!length) return offset;
+    if (length > bytes.length - offset) return -1;
+    offset += length;
+  }
+  return -1;
+}
+
 function gifDimensions(bytes) {
-  if (bytes.length < 22 || !["GIF87a", "GIF89a"].includes(ascii(bytes, 0, 6)) ||
-      bytes.at(-1) !== 0x3b || !bytes.subarray(10, -1).includes(0x2c)) return null;
-  return {width: uint16le(bytes, 6), height: uint16le(bytes, 8)};
+  if (bytes.length < 14 || !["GIF87a", "GIF89a"].includes(ascii(bytes, 0, 6))) return null;
+  const width = uint16le(bytes, 6);
+  const height = uint16le(bytes, 8);
+  let maximumWidth = width;
+  let maximumHeight = height;
+  let framePixels = 0;
+  let frames = 0;
+  let offset = 13;
+  if (bytes[10] & 0x80) offset += 3 * (2 << (bytes[10] & 0x07));
+  if (offset > bytes.length) return null;
+  while (offset < bytes.length) {
+    const marker = bytes[offset++];
+    if (marker === 0x3b) {
+      return frames && offset === bytes.length
+        ? {width, height, maximumWidth, maximumHeight, pixels: Math.max(width * height, framePixels), frames} : null;
+    }
+    if (marker === 0x21) {
+      if (offset >= bytes.length) return null;
+      ++offset;
+      offset = skipGifSubBlocks(bytes, offset);
+      if (offset < 0) return null;
+      continue;
+    }
+    if (marker !== 0x2c || offset + 9 > bytes.length) return null;
+    const frameWidth = uint16le(bytes, offset + 4);
+    const frameHeight = uint16le(bytes, offset + 6);
+    if (!frameWidth || !frameHeight) return null;
+    maximumWidth = Math.max(maximumWidth, frameWidth);
+    maximumHeight = Math.max(maximumHeight, frameHeight);
+    framePixels += frameWidth * frameHeight;
+    if (++frames > DOCX_LIMITS.imageFrames) {
+      throw new Error(`DOCX GIF frame count exceeds the ${DOCX_LIMITS.imageFrames}-frame per-image limit.`);
+    }
+    const packed = bytes[offset + 8];
+    offset += 9;
+    if (packed & 0x80) offset += 3 * (2 << (packed & 0x07));
+    if (offset >= bytes.length) return null;
+    ++offset;
+    offset = skipGifSubBlocks(bytes, offset);
+    if (offset < 0) return null;
+  }
+  return null;
 }
 
 function jpegDimensions(bytes) {
@@ -591,7 +717,7 @@ function webpDimensions(bytes) {
 function decodedImage(source, totals) {
   const comma = source.indexOf(",");
   if (comma < 0) return null;
-  const metadata = /^data:(image\/(?:png|jpeg|gif|webp));base64$/i.exec(source.slice(0, comma));
+  const metadata = /^data:(image\/(?:png|jpe?g|gif|webp));base64$/i.exec(source.slice(0, comma));
   if (!metadata) return null;
   const payload = source.slice(comma + 1);
   if (payload.length > DOCX_LIMITS.imageEncodedBytes) {
@@ -619,14 +745,17 @@ function decodedImage(source, totals) {
     return null;
   }
   if (bytes.byteLength !== decodedLength) return null;
-  const mime = metadata[1].toLowerCase();
+  const declaredMime = metadata[1].toLowerCase();
+  const mime = declaredMime === "image/jpg" ? "image/jpeg" : declaredMime;
   const dimensions = mime === "image/png" ? pngDimensions(bytes) : mime === "image/jpeg" ? jpegDimensions(bytes)
     : mime === "image/gif" ? gifDimensions(bytes) : webpDimensions(bytes);
   if (!dimensions || !dimensions.width || !dimensions.height) return null;
-  if (dimensions.width > DOCX_LIMITS.imageDimension || dimensions.height > DOCX_LIMITS.imageDimension) {
+  const maximumWidth = dimensions.maximumWidth || dimensions.width;
+  const maximumHeight = dimensions.maximumHeight || dimensions.height;
+  if (maximumWidth > DOCX_LIMITS.imageDimension || maximumHeight > DOCX_LIMITS.imageDimension) {
     throw new Error(`DOCX image dimensions exceed the ${DOCX_LIMITS.imageDimension}-pixel per-axis limit.`);
   }
-  const pixels = dimensions.width * dimensions.height;
+  const pixels = dimensions.pixels || dimensions.width * dimensions.height;
   if (pixels > DOCX_LIMITS.imagePixels) {
     throw new Error(`DOCX image pixel count exceeds the ${DOCX_LIMITS.imagePixels}-pixel per-image limit.`);
   }
@@ -634,6 +763,11 @@ function decodedImage(source, totals) {
     throw new Error(`DOCX image pixel count exceeds the ${DOCX_LIMITS.aggregateImagePixels}-pixel aggregate limit.`);
   }
   totals.pixels += pixels;
+  const frames = dimensions.frames || 0;
+  if (totals.frames + frames > DOCX_LIMITS.aggregateImageFrames) {
+    throw new Error(`DOCX GIF frame count exceeds the ${DOCX_LIMITS.aggregateImageFrames}-frame aggregate limit.`);
+  }
+  totals.frames += frames;
   return {
     bytes, mime, width: dimensions.width, height: dimensions.height,
     extension: mime === "image/jpeg" ? "jpg" : mime.slice("image/".length),
@@ -662,7 +796,7 @@ class DocumentBuilder {
     this.hyperlinks = new Map();
     this.imagesBySource = new Map();
     this.images = [];
-    this.imageTotals = {encoded: 0, decoded: 0, pixels: 0};
+    this.imageTotals = {encoded: 0, decoded: 0, pixels: 0, frames: 0};
     this.imageOccurrences = 0;
     this.drawingCount = 0;
     this.numbering = [];
@@ -878,15 +1012,16 @@ function convertList(builder, node, inheritedFormat, inheritedParagraph, depth) 
   for (const item of listItems) {
     const itemFormat = deriveFormat(format, item);
     const itemParagraph = deriveParagraph(paragraphFormat, item, itemFormat);
-    const paragraph = builder.paragraph({...paragraphOptions("Normal", itemParagraph), list: {numId, level}});
-    for (const child of item.children) {
-      if (typeof child !== "string" && ["ul", "ol"].includes(child.tag)) continue;
-      appendInline(builder, paragraph, child, itemFormat, itemParagraph, null, false);
-    }
+    let paragraph = builder.paragraph({...paragraphOptions("Normal", itemParagraph), list: {numId, level}});
     for (const child of item.children) {
       if (typeof child !== "string" && ["ul", "ol"].includes(child.tag)) {
         convertList(builder, child, itemFormat, itemParagraph, depth + 1);
+        paragraph = null;
+        continue;
       }
+      if (!paragraph && typeof child === "string" && !child.replace(/[\t\n\f\r ]/g, "")) continue;
+      paragraph ||= builder.paragraph({...paragraphOptions("Normal", itemParagraph), listContinuation: level});
+      appendInline(builder, paragraph, child, itemFormat, itemParagraph, null, false);
     }
   }
 }
@@ -896,7 +1031,7 @@ function blockStyle(node) {
   if (node.tag === "h1") return "Heading1";
   if (node.tag === "h2") return "Heading2";
   if (["h3", "h4", "h5", "h6"].includes(node.tag)) return "Heading3";
-  if (node.tag === "blockquote") return "Quote";
+  if (node.tag === "blockquote" && !isEditorIndentation(node)) return "Quote";
   if (node.tag === "pre") return "CodeBlock";
   return "Normal";
 }
@@ -914,7 +1049,7 @@ function convertBlock(builder, node, inheritedFormat, inheritedParagraph) {
   } else if (node.tag === "img") {
     const paragraph = builder.paragraph(paragraphOptions("Normal", paragraphFormat));
     builder.image(paragraph, node, format, null);
-  } else if (node.tag === "div" && hasBlockChild(node)) {
+  } else if ((node.tag === "div" || isEditorIndentation(node)) && hasBlockChild(node)) {
     convertFlow(builder, node.children, format, paragraphFormat);
   } else if (node.tag === "li") {
     const paragraph = builder.paragraph(paragraphOptions("Normal", paragraphFormat));
@@ -1032,6 +1167,7 @@ function paragraphProperties(paragraph) {
   }
   let left = paragraph.left;
   if (paragraph.list && left != null) left += (paragraph.list.level + 1) * 420;
+  if (paragraph.listContinuation != null) left = (left || 0) + (paragraph.listContinuation + 1) * 420;
   if (left != null || paragraph.firstLine != null) {
     const attributes = [];
     if (left != null) attributes.push(`w:left="${left}"`);
@@ -1151,7 +1287,8 @@ function appProperties() {
 
 export async function documentToDocx(document) {
   const snapshot = normalizeSnapshot(document);
-  const tree = await parseHtml(snapshot.fragments);
+  const namedEntities = await loadHtmlEntities();
+  const tree = await parseHtml(snapshot.fragments, namedEntities);
   snapshot.fragments = null;
   const model = new DocumentBuilder(snapshot);
   convertFlow(model, tree.children);

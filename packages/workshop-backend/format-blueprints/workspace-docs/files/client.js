@@ -485,6 +485,15 @@ const styleSel = customSelect({
   value: "P",
   onChange: (value) => {
     restoreRange();
+    const previousBlock = currentBlock();
+    const wasIndentation = previousBlock?.hasAttribute("data-doc-indent") || hasIndentationWrapperStyle(previousBlock);
+    if (previousBlock) previousBlock.removeAttribute("data-doc-indent");
+    if (value === "BLOCKQUOTE" && previousBlock?.tagName === "BLOCKQUOTE" && wasIndentation) {
+      for (const property of ["margin", "margin-left", "border", "border-left", "padding", "padding-left"]) {
+        previousBlock.style.removeProperty(property);
+      }
+      if (!previousBlock.getAttribute("style")) previousBlock.removeAttribute("style");
+    }
     if (value === "TITLE") {
       document.execCommand("formatBlock", false, "H1");
       const block = currentBlock();
@@ -541,12 +550,40 @@ function applyFontSize(px) {
 }
 
 // Simple command buttons
-function cmdBtn(name, title, command, value = null) {
+function cmdBtn(name, title, command, value = null, after = null) {
   return iconBtn(name, title, () => {
     document.execCommand(command, false, value);
+    after?.();
     editor.focus();
     refreshToolbarState();
     scheduleSave();
+  });
+}
+
+function hasIndentationWrapperStyle(node) {
+  if (node?.tagName !== "BLOCKQUOTE") return false;
+  const style = node.style;
+  const zero = (value) => value === "0px" || value === "0";
+  return style.borderStyle === "none" && zero(style.marginTop) && zero(style.marginRight) &&
+    zero(style.marginBottom) && Number.parseFloat(style.marginLeft) > 0 && zero(style.paddingTop) &&
+    zero(style.paddingRight) && zero(style.paddingBottom) && zero(style.paddingLeft);
+}
+
+function markIndentationWrapper() {
+  let node = window.getSelection()?.anchorNode;
+  if (node?.nodeType === 3) node = node.parentElement;
+  while (node && node !== editor) {
+    if (hasIndentationWrapperStyle(node)) {
+      node.setAttribute("data-doc-indent", "");
+      return;
+    }
+    node = node.parentElement;
+  }
+}
+
+function syncIndentationMarkers() {
+  editor.querySelectorAll("blockquote[data-doc-indent]").forEach((node) => {
+    if (!hasIndentationWrapperStyle(node)) node.removeAttribute("data-doc-indent");
   });
 }
 
@@ -599,8 +636,8 @@ const alignSegment = el("div", { class: "segment" }, [alignBtns.left, alignBtns.
 
 const ulBtn = cmdBtn("ul", "Bulleted list", "insertUnorderedList");
 const olBtn = cmdBtn("ol", "Numbered list", "insertOrderedList");
-const outdentBtn = cmdBtn("outdent", "Decrease indent", "outdent");
-const indentBtn = cmdBtn("indent", "Increase indent", "indent");
+const outdentBtn = cmdBtn("outdent", "Decrease indent", "outdent", null, syncIndentationMarkers);
+const indentBtn = cmdBtn("indent", "Increase indent", "indent", null, markIndentationWrapper);
 
 const linkBtn = iconBtn("link", "Insert link", () => insertLink());
 const imageInput = el("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", multiple: "true" });
@@ -1317,6 +1354,7 @@ function refreshToolbarState() {
   const block = currentBlock();
   if (block) {
     let tag = block.tagName;
+    if (tag === "BLOCKQUOTE" && (block.hasAttribute("data-doc-indent") || hasIndentationWrapperStyle(block))) tag = "P";
     if (tag === "LI" || tag === "DIV") tag = "P";
     if (tag === "H1" && block.classList.contains("doc-title")) tag = "TITLE";
     styleSel.setValue(["P", "TITLE", "H1", "H2", "H3", "BLOCKQUOTE", "PRE"].includes(tag) ? tag : "P");
