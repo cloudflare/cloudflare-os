@@ -33,8 +33,27 @@ export default {
         cwd: "..",
         // Workspace-wide, matching `cwd`: the suites read across `packages/` and the root manifests,
         // and a guard that stopped seeing a file it asserts about would cache-hit its way to a
-        // stale pass. `build-gatekeeper-configurator.test.ts` builds its fixtures under the OS temp
-        // directory, outside the workspace, so nothing here writes what it also reads.
+        // stale pass.
+        //
+        // That breadth means a suite that writes anywhere in the workspace is writing its own
+        // input, and racing whatever task owns that path. So the fixtures stay outside it:
+        // `build-gatekeeper-configurator.test.ts`, `bin-entry.test.ts` and `release/hash-lib.test.ts`
+        // build theirs under the OS temp directory; `build-format-blueprints.test.ts` passes `--out`
+        // so the blueprint generator writes there too, rather than the `workshop-backend` module
+        // that package compiles and its sibling tasks read. `release/manifest-lib.test.ts` writes
+        // its golden file only under `UPDATE_GOLDEN=1`, which CI never sets.
+        //
+        // Don't rely on the cache to catch a violation. vp compares the input set before and after,
+        // so it reports a write it can still see at the end -- but a suite that writes a path and
+        // puts the original bytes back is net-zero to the fingerprint and hits the cache normally.
+        // That is exactly how the blueprint generator's write hid here: it was restored in an
+        // `afterEach`, so neither vp nor `git status` (the module is gitignored) showed anything,
+        // and only a task reading it inside the window would see the corruption.
+        //
+        // One deliberate exception: `build-format-blueprints.test.ts`'s "rejects extracted files
+        // ignored by Git" case has to `mkdtemp` inside `packages/workshop-backend`, because what it
+        // asserts is that the import script consults *this* repo's ignore rules. It creates and
+        // removes one directory, leaving nothing behind for the comparison to find.
         input: [
           { auto: true },
           { pattern: "!**/node_modules/.vite/**", base: "workspace" },

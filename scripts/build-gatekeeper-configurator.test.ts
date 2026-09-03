@@ -516,6 +516,10 @@ async function configuratorPackages(): Promise<string[]> {
   return names;
 }
 
+// The module specifier every configurator gatekeeper re-exports the shared tasks from. Shared by
+// the routing guard and the SKELETON.md guard below so the docs cannot drift from the requirement.
+const SHARED_CONFIGURATOR_SPECIFIER = "@gadgets/scripts/gatekeeper-configurator";
+
 /**
  * The declaration above is worth nothing to a package that never reaches the task, and
  * `env-passthrough.test.ts` cannot see that: it discovers reads per directory, and these packages
@@ -552,12 +556,33 @@ describe("configurator task wiring", () => {
       const config =
         await readFile(join("packages", name, "vite.config.ts"), "utf8").catch(() => null);
       assert.ok(
-        config?.includes("@gadgets/scripts/gatekeeper-configurator"),
+        config?.includes(SHARED_CONFIGURATOR_SPECIFIER),
         `packages/${name} has configurator UI sources but no vite.config.ts re-exporting ` +
-          "@gadgets/scripts/gatekeeper-configurator, so it declares no `build:configurator` task " +
+          `${SHARED_CONFIGURATOR_SPECIFIER}, so it declares no \`build:configurator\` task ` +
           "and `pnpm build` would strip VITE_FRONTEND_ERROR_REPORTING from the builder. Re-export " +
           "the shared config (or declare the task with its own `env` and widen this assertion).");
     }
+  });
+
+  // Nothing reads SKELETON.md but a human copying out of it, which is how the specifier there went
+  // stale and stayed shippable: the pre-`@gadgets/scripts` relative path still resolves from a real
+  // `packages/<name>/` directory, and the `gadgets-*` bins are on PATH via the workspace root, so a
+  // generated gatekeeper would build -- on an undeclared dependency -- and then fail the routing
+  // guard above. Pinning the copy-paste blocks to the same constant is what makes that impossible.
+  it("hands out the shared task specifier the routing guard requires", async () => {
+    const skeleton = await readFile(".agents/skills/write-gatekeeper/SKELETON.md", "utf8");
+
+    assert.ok(
+      skeleton.includes(SHARED_CONFIGURATOR_SPECIFIER),
+      "SKELETON.md's vite.config.ts block must re-export " +
+        `${SHARED_CONFIGURATOR_SPECIFIER}, the specifier the routing guard looks for.`);
+    assert.doesNotMatch(
+      skeleton, /\.\.\/\.\.\/scripts\/gatekeeper-configurator-vite-config/,
+      "SKELETON.md still hands out the pre-@gadgets/scripts relative path to the shared config.");
+    assert.match(
+      skeleton, /"@gadgets\/scripts":\s*"workspace:\*"/,
+      "SKELETON.md must show @gadgets/scripts in the new package's devDependencies: its bins are " +
+        "on PATH from the workspace root, so leaving it undeclared works until it doesn't.");
   });
 
   // deploy-scripts.test.ts holds the two general deploy invariants. Both pass vacuously on a

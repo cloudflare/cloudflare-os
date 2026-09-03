@@ -112,6 +112,17 @@ for (const dirent of directoryEntries
 
 const rawArgs = process.argv.slice(2);
 const args = [...rawArgs];
+// `--out <path>` is not this script's flag: it belongs to build-format-blueprints.ts, which the
+// last line of this file loads in-process to regenerate the bundled module. Taken out of the
+// positional arguments here and deliberately left on `process.argv`, which is where that script
+// reads it from. Tests pass it so importing a fixture does not overwrite the module the package
+// actually compiles -- sibling `vp` tasks read it while this suite runs.
+const outAt = args.indexOf("--out");
+if (outAt !== -1) {
+  const outPath = args[outAt + 1];
+  if (outPath === undefined || outPath.startsWith("--")) fail("--out requires a path");
+  args.splice(outAt, 2);
+}
 const newAt = args.indexOf("--new");
 const newName = newAt === -1 ? undefined : args.splice(newAt, 2)[1];
 const [archivePath, blueprintId] = args;

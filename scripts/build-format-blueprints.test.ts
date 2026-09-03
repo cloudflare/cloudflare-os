@@ -14,7 +14,6 @@ const workspaceRoot = join(import.meta.dirname, "..");
 const packageRoot = join(workspaceRoot, "packages/workshop-backend");
 const buildScript = join(packageRoot, "scripts/build-format-blueprints.ts");
 const importScript = join(packageRoot, "scripts/import-format-blueprint.ts");
-const generatedModule = join(packageRoot, "src/generated/format-blueprints.ts");
 
 const presentation = {
   blueprintId: "format.example",
@@ -49,18 +48,33 @@ async function writeArchive(
   await writeFile(path, serializeArchive(metadata, buildContent(files, path), path));
 }
 
-async function restoreGeneratedModule(): Promise<void> {
-  let restore = spawnSync(process.execPath, [buildScript], {
-    cwd: packageRoot,
-    env: Object.fromEntries(Object.entries(process.env)
-      .filter(([key]) => key !== "FORMAT_BLUEPRINTS_DIR")),
-    encoding: "utf8",
-  });
-  assert.equal(restore.status, 0, restore.stderr);
+// Throwaway output for the generator. Its default is
+// `packages/workshop-backend/src/generated/format-blueprints.ts` -- the module that package
+// compiles, and which its `build:integration-worker` and `test` tasks read concurrently with this
+// suite under `vp run`. Writing there races them for a real blueprint set, and this suite's
+// fixtures are one fake blueprint or none.
+//
+// Nothing was catching that. The module is gitignored, so `git status` stays clean, and the
+// `afterEach` that used to regenerate it afterwards left the bytes as vp found them, so the task
+// cached normally too -- the corruption was visible only to whatever read the path inside the
+// window. `scripts/vite.config.ts` has the longer note.
+//
+// Two kinds of spawn need it: every `buildScript` spawn, and the `importScript` spawns that
+// succeed -- import-format-blueprint.ts regenerates the module in-process when it finishes, and
+// forwards `--out` to do it. The `importScript` spawns that assert `status === 1` exit before
+// reaching that point, so they need nothing; if one ever stopped failing, its own assertion is
+// what catches it.
+//
+// A directory of its own rather than the fixture directory the generator is reading: both scripts
+// reject unexpected files in a blueprint directory, so the output must not land in the set being
+// scanned.
+async function temporaryOutFile(): Promise<string> {
+  let directory = await mkdtemp(join(tmpdir(), "format-blueprints-out-"));
+  temporaryDirectories.push(directory);
+  return join(directory, "format-blueprints.ts");
 }
 
 afterEach(async () => {
-  await restoreGeneratedModule();
   await Promise.all(temporaryDirectories.splice(0).map(path =>
     rm(path, {recursive: true, force: true})));
 });
@@ -73,7 +87,7 @@ describe("format blueprint scripts", () => {
     await mkdir(join(directory, ".example.import-123", "files"), {recursive: true});
     await writeFile(join(directory, ".example.import-123", "blueprint.json"), "not JSON");
 
-    let result = spawnSync(process.execPath, [buildScript], {
+    let result = spawnSync(process.execPath, [buildScript, "--out", await temporaryOutFile()], {
       cwd: packageRoot,
       env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
       encoding: "utf8",
@@ -101,11 +115,12 @@ describe("format blueprint scripts", () => {
       ["lib/util.js", "// updated util\n"],
     ]));
 
-    let result = spawnSync(process.execPath, [importScript, archivePath, "format.example"], {
-      cwd: packageRoot,
-      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
-      encoding: "utf8",
-    });
+    let result = spawnSync(process.execPath,
+      [importScript, archivePath, "format.example", "--out", await temporaryOutFile()], {
+        cwd: packageRoot,
+        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        encoding: "utf8",
+      });
 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(await readFile(join(directory, "example/files/client.js"), "utf8"), "// updated\n");
@@ -128,7 +143,8 @@ describe("format blueprint scripts", () => {
     await writeFile(join(directory, name, "files/client.js"), "// old\n");
     await rename(join(directory, name), join(directory, `.${name}.backup-123`));
 
-    let build = spawnSync(process.execPath, [buildScript], {
+    let generatedModule = await temporaryOutFile();
+    let build = spawnSync(process.execPath, [buildScript, "--out", generatedModule], {
       cwd: packageRoot,
       env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
       encoding: "utf8",
@@ -138,11 +154,12 @@ describe("format blueprint scripts", () => {
 
     let archivePath = join(directory, ".update.gadget");
     await writeArchive(archivePath, 2, new Map([["client.js", "// recovered\n"]]));
-    let imported = spawnSync(process.execPath, [importScript, archivePath, "format.example"], {
-      cwd: packageRoot,
-      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
-      encoding: "utf8",
-    });
+    let imported = spawnSync(process.execPath,
+      [importScript, archivePath, "format.example", "--out", generatedModule], {
+        cwd: packageRoot,
+        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        encoding: "utf8",
+      });
 
     assert.equal(imported.status, 0, imported.stderr);
     assert.equal(await readFile(join(directory, name, "files/client.js"), "utf8"),
@@ -261,7 +278,7 @@ describe("format blueprint scripts", () => {
       `${JSON.stringify(manifest, null, 2)}\n`);
     await writeFile(join(directory, "CON", "files/client.js"), "// source\n");
 
-    let result = spawnSync(process.execPath, [buildScript], {
+    let result = spawnSync(process.execPath, [buildScript, "--out", await temporaryOutFile()], {
       cwd: packageRoot,
       env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
       encoding: "utf8",
@@ -301,7 +318,8 @@ describe("format blueprint scripts", () => {
     await writeArchive(join(directory, "example.gadget"), 1,
       new Map([["client.js", "// legacy\n"]]));
 
-    let build = spawnSync(process.execPath, [buildScript], {
+    let generatedModule = await temporaryOutFile();
+    let build = spawnSync(process.execPath, [buildScript, "--out", generatedModule], {
       cwd: packageRoot,
       env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
       encoding: "utf8",
@@ -314,11 +332,12 @@ describe("format blueprint scripts", () => {
       ["client.js", "// migrated\n"],
       ["lib/util.js", "// nested\n"],
     ]));
-    let imported = spawnSync(process.execPath, [importScript, incoming, "format.example"], {
-      cwd: packageRoot,
-      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
-      encoding: "utf8",
-    });
+    let imported = spawnSync(process.execPath,
+      [importScript, incoming, "format.example", "--out", generatedModule], {
+        cwd: packageRoot,
+        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        encoding: "utf8",
+      });
 
     assert.equal(imported.status, 0, imported.stderr);
     assert.equal(await readFile(join(directory, "example/files/client.js"), "utf8"),

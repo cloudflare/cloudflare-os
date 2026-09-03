@@ -9,6 +9,11 @@
 //
 // Each blueprint is a directory containing blueprint.json and a files/ directory. The reviewable
 // source is converted to the ordinary binary .gadget representation only in the generated module.
+//
+// `--out <path>` redirects the generated module, which is what lets a test run this generator
+// without clobbering the module the package actually compiles. That module is read concurrently by
+// sibling tasks (`build:integration-worker` and `test` both depend on `build:format-blueprints`),
+// so a test writing the default path races them.
 
 import { readdir, readFile, writeFile, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -35,7 +40,7 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
 const sourceDir = resolve(pkgRoot, process.env.FORMAT_BLUEPRINTS_DIR ?? "format-blueprints");
-const outFile = join(pkgRoot, "src", "generated", "format-blueprints.ts");
+const outFile = resolve(pkgRoot, parseOutFlag() ?? join("src", "generated", "format-blueprints.ts"));
 
 // An empty directory is a supported way to ship no formats, so it is a warning rather than an
 // error. A mistyped FORMAT_BLUEPRINTS_DIR fails in readdir() above, which is the case worth
@@ -191,4 +196,25 @@ if (unchanged) {
 
 function isErrorCode(err: unknown, code: string): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === code;
+}
+
+// A flag rather than an env var on purpose: a new build-time `process.env` read in this package
+// would be discovered by scripts/env-passthrough.test.ts, which would then require an `EXPECTED`
+// entry here and an `env:` declaration on every task that runs this generator -- a guard
+// interaction that buys nothing, since only tests ever pass it. Relative paths resolve against the
+// package root, the same rule the `FORMAT_BLUEPRINTS_DIR` line above uses.
+//
+// Arguments other than `--out` are ignored rather than rejected, because this module is not always
+// the entry point: import-format-blueprint.ts loads it in-process to regenerate the module after an
+// import, and that script's own positional arguments are still on `process.argv` when it does. It
+// forwards `--out` by leaving it there.
+function parseOutFlag(): string | undefined {
+  let args = process.argv.slice(2);
+  let index = args.indexOf("--out");
+  if (index === -1) return undefined;
+  let value = args[index + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new Error("--out requires a path");
+  }
+  return value;
 }
