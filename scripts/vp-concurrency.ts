@@ -28,9 +28,11 @@
 //
 // An explicit value always wins -- including a deliberately low one for an OOM-prone machine -- and
 // is never validated or rewritten here: vite-task's own parser reports a bad value. Precedence is
-// `process.env.VP_RUN_CONCURRENCY_LIMIT` > the repo-root `.env` > this formula, and the note says
-// which of the three the number came from, since a value that silently failed to apply is the whole
-// problem being avoided.
+// `--concurrency-limit` > `process.env.VP_RUN_CONCURRENCY_LIMIT` > the repo-root `.env` > this
+// formula, and the note says which of the sources the number came from, since a value that silently
+// failed to apply is the whole problem being avoided. That is also why a `--concurrency-limit` or
+// `--parallel` on the command line prints nothing at all (`overridesConcurrency`): vite-task gives
+// the flag priority over the variable, so a note naming our number would contradict the run.
 //
 // The `.env` step exists because that is where people reasonably expect to put a persistent
 // per-machine setting, and neither half of the stack looks there on its own: nothing loads a root
@@ -251,12 +253,40 @@ export function concurrencyEnv(
 }
 
 /**
+ * Whether `args` carry a `vp run` flag that overrides the environment, which would make our note
+ * wrong. vite-task gives `--concurrency-limit N` priority over `VP_RUN_CONCURRENCY_LIMIT`, and
+ * `--parallel` removes the limit altogether unless one is also given, so in either case the number
+ * we resolved is not the number that runs.
+ *
+ * Scans *all* of `args` rather than only what precedes the task specifier. Locating the specifier
+ * would mean reimplementing vp's own option parsing (`-F` takes a value, `--filter` may or may not
+ * be `=`-joined, ...), and the two failure directions are not symmetric: over-detecting suppresses
+ * a note, which costs nothing, while under-detecting prints a concurrency that is not what runs --
+ * exactly the silent mismatch this module exists to prevent. So it errs towards silence.
+ */
+export function overridesConcurrency(args: readonly string[]): boolean {
+  return args.some(arg =>
+      arg === "--concurrency-limit" || arg.startsWith("--concurrency-limit=") ||
+      arg === "--parallel");
+}
+
+/**
  * The environment to spawn `vp run` with: `process.env` plus the resolved concurrency limit, unless
  * one was already set there. Prints the note to stderr, so call it once per process rather than once
  * per spawn.
+ *
+ * `vpArgs` are the arguments being forwarded to `vp run`, and are inspected only to decide whether
+ * to print: a flag that beats the environment makes the note a lie. Defaults to none, because only
+ * vp-run.ts forwards user argv -- run-dev-server, run-local and the release build each construct a
+ * fixed `vp run` invocation, and their *own* argv must not be mistaken for vp flags.
+ *
+ * The variable is still set either way. The flag wins regardless, and leaving it set is what keeps
+ * behaviour unchanged if the flag turns out to be malformed -- vp reports that itself.
  */
-export function vpRunEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function vpRunEnv(
+  env: NodeJS.ProcessEnv = process.env, vpArgs: readonly string[] = [],
+): NodeJS.ProcessEnv {
   const result = concurrencyEnv(env, measureMachine(), envFileConcurrencyLimit());
-  if (result.note) console.error(result.note);
+  if (result.note && !overridesConcurrency(vpArgs)) console.error(result.note);
   return result.env;
 }

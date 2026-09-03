@@ -6,7 +6,7 @@ import { after, describe, it } from "node:test";
 import {
   BYTES_PER_TASK, ROOT_ENV_FILE, VP_DEFAULT_CONCURRENCY_LIMIT, VP_RUN_CONCURRENCY_LIMIT,
   cgroupMemoryLimitBytes, concurrencyEnv, defaultConcurrencyLimit, effectiveMemoryBytes,
-  envFileConcurrencyLimit,
+  envFileConcurrencyLimit, overridesConcurrency, vpRunEnv,
 } from "./vp-concurrency.ts";
 
 const GiB = 1024 ** 3;
@@ -267,5 +267,88 @@ describe("concurrencyEnv", () => {
     const { env } = concurrencyEnv(preset, machine);
     assert.notEqual(env, preset);
     assert.deepEqual(env, preset);
+  });
+});
+
+describe("overridesConcurrency", () => {
+  // True means "vp will use a number other than the one we resolved, so say nothing". The negatives
+  // matter as much as the positives: a false positive here silently drops the note for an ordinary
+  // run, which is how the machine-aware limit would go unnoticed again.
+  const table: [args: string[], expected: boolean][] = [
+    [["--concurrency-limit", "2"], true],
+    [["--concurrency-limit=2"], true],
+    [["--parallel"], true],
+    // Among other arguments, and after the task specifier -- where pnpm appends a forwarded flag.
+    [["--filter=!cloudflare-os", "--cache", "build", "--concurrency-limit", "2"], true],
+    [["--parallel", "--filter=@gadgets/typed-storage", "build"], true],
+    [["--concurrency-limit"], true],       // value omitted; vp reports that itself
+    [[], false],
+    [["build"], false],
+    [["--filter=!cloudflare-os", "--cache", "test"], false],
+    [["--concurrency-limitx", "2"], false],
+    [["--concurrency-limit-ish=2"], false],
+    [["--no-parallel"], false],
+    // A task argument that merely contains the flag's name is not the flag.
+    [["build", "--", "--concurrency-limit"], true],
+    [["--grep", "--parallel-ish"], false],
+  ];
+
+  for (const [args, expected] of table) {
+    it(`${expected ? "detects" : "ignores"} ${JSON.stringify(args)}`, () => {
+      assert.equal(overridesConcurrency(args), expected);
+    });
+  }
+});
+
+// The note goes to stderr through `console.error`, so this is how a case observes whether one was
+// printed. Restores the original in a `finally`, since leaving it swapped would silence every
+// later suite in the file.
+function captureStderr(run: () => NodeJS.ProcessEnv): { env: NodeJS.ProcessEnv; err: string } {
+  const original = console.error;
+  let err = "";
+  console.error = (...args: unknown[]) => { err += `${args.join(" ")}\n`; };
+  try {
+    return { env: run(), err };
+  } finally {
+    console.error = original;
+  }
+}
+
+// The bug: `node scripts/vp-run.ts --concurrency-limit 2 ... build` announced the machine's number
+// and then ran at 2, because the note printed unconditionally.
+describe("vpRunEnv", () => {
+  it("stays silent but still sets the variable when a flag overrides it", () => {
+    for (const args of [["--concurrency-limit", "2"], ["--concurrency-limit=2"], ["--parallel"]]) {
+      const { env, err } = captureStderr(() => vpRunEnv({}, args));
+      // Set regardless: the flag wins in vp either way, and leaving it set is what preserves
+      // behaviour if the flag turns out to be malformed.
+      assert.match(env[VP_RUN_CONCURRENCY_LIMIT] ?? "", /^\d+$/,
+          `expected a resolved limit for ${JSON.stringify(args)}`);
+      assert.equal(err, "", `expected no note for ${JSON.stringify(args)}`);
+    }
+  });
+
+  it("prints the note when no flag overrides it", () => {
+    const { env, err } = captureStderr(() => vpRunEnv({}, ["--filter=!cloudflare-os", "build"]));
+    assert.match(env[VP_RUN_CONCURRENCY_LIMIT] ?? "", /^\d+$/);
+    assert.match(err, /^vp run: concurrency \d+ /);
+  });
+
+  // The default: callers that build their own fixed `vp run` invocation pass no args, and their own
+  // argv must not be mistaken for vp flags.
+  it("prints the note when given no arguments at all", () => {
+    const { err } = captureStderr(() => vpRunEnv({}));
+    assert.match(err, /^vp run: concurrency \d+ /);
+  });
+
+  // An environment value is the user stating intent directly, so it is silent for its own reason --
+  // independent of any flag.
+  it("stays silent for an environment value, flag or no flag", () => {
+    for (const args of [[], ["--parallel"]]) {
+      const { env, err } = captureStderr(
+          () => vpRunEnv({ [VP_RUN_CONCURRENCY_LIMIT]: "3" }, args));
+      assert.equal(env[VP_RUN_CONCURRENCY_LIMIT], "3");
+      assert.equal(err, "");
+    }
   });
 });

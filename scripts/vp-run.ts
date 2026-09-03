@@ -8,8 +8,10 @@
 // `pnpm exec` startup the repo avoids elsewhere (bin-entry.ts). `resolveBinEntry` can't be used for
 // it because it keys the `bin` map on the package name, and `vite-plus`'s has no `vite-plus` entry.
 //
-// No argument parsing: `--concurrency-limit N` still works if passed, since vite-task gives the flag
-// priority over the env var.
+// Arguments are forwarded verbatim -- they are inspected only to decide whether to print the
+// concurrency note, never to alter what `vp run` receives. `--concurrency-limit N` and `--parallel`
+// still work if passed, since vite-task gives a flag priority over the env var; in that case the
+// note is suppressed, because it would announce a number the run is not using (vp-concurrency.ts).
 
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -20,7 +22,9 @@ import { vpRunEnv } from "./vp-concurrency.ts";
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const VP = join(ROOT, "node_modules", "vite-plus", "bin", "vp");
 
-const child = spawn(process.execPath, [VP, "run", ...process.argv.slice(2)],
-    { stdio: "inherit", env: vpRunEnv() });
+const vpArgs = process.argv.slice(2);
+
+const child = spawn(process.execPath, [VP, "run", ...vpArgs],
+    { stdio: "inherit", env: vpRunEnv(process.env, vpArgs) });
 
 relayTermination(child);
