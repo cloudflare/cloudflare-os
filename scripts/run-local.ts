@@ -17,8 +17,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getDevServerConfig } from "./dev-server-config.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
+import { vpRunEnv } from "./vp-concurrency.ts";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+
+// Machine-aware `vp run` concurrency (vp-concurrency.ts). Computed once, so the note prints once, and
+// handed to the dev server too, which then sees the variable already set and stays silent.
+const env = vpRunEnv();
 
 // Forward any extra flags (e.g. --use-workers-ai-binding) on to run-dev-server.ts.
 const passthroughArgs = process.argv.slice(2);
@@ -34,7 +39,7 @@ try {
 function runPnpm(args: string[]): void {
   console.log(`\n> pnpm ${args.join(" ")}`);
   const [command, argv] = pnpmCommand(args);
-  execFileSync(command, argv, { stdio: "inherit", cwd: ROOT });
+  execFileSync(command, argv, { stdio: "inherit", cwd: ROOT, env });
 }
 
 runPnpm(["install"]);
@@ -49,7 +54,7 @@ console.log(`\nStarting local server at http://${backendHost} ...`);
 const server = spawn(
     process.execPath,
     [join(ROOT, "scripts", "run-dev-server.ts"), "--serve-frontend-assets", ...passthroughArgs],
-    { stdio: "inherit", cwd: ROOT });
+    { stdio: "inherit", cwd: ROOT, env });
 
 server.on("exit", (code, signal) => {
   if (signal) process.kill(process.pid, signal);

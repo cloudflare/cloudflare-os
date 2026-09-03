@@ -25,6 +25,7 @@ import { getDevServerConfig } from "./dev-server-config.ts";
 import { killProcessTree } from "./kill-process-tree.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
 import type { ServiceBinding, WranglerBuild } from "./release/manifest-lib.ts";
+import { vpRunEnv } from "./vp-concurrency.ts";
 
 const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SCRIPTS_DIR, "..");
@@ -232,9 +233,11 @@ async function stopPreflightBuilds(): Promise<void> {
 
 // Run a one-shot build to completion. A promise rather than execFileSync so the pre-flight builds
 // can overlap.
-function runBuild(label: string, command: string, args: string[], cwd: string): Promise<void> {
+function runBuild(
+  label: string, command: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv,
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { stdio: "inherit", cwd });
+    const child = spawn(command, args, { stdio: "inherit", cwd, env });
     preflightBuilds.add(child);
     child.on("error", error => {
       preflightBuilds.delete(child);
@@ -262,6 +265,10 @@ function runBuild(label: string, command: string, args: string[], cwd: string): 
 // `build:app:dev` rather than `build:app`: the app watchers cannot skip their own initial build, so
 // this output is rebuilt regardless, and unless the bytes match Wrangler sees `src/generated/app.txt`
 // change and restarts the worker. Same build, unminified.
+//
+// Both `vp` runs get the machine-aware concurrency limit (vp-concurrency.ts); computed once here so
+// its note prints once, and after `loadDevVars()` so a `.dev.vars` override is honoured.
+const vpEnv = vpRunEnv();
 try {
   await Promise.all([
     runBuild(
@@ -271,9 +278,10 @@ try {
       WORKSHOP_BACKEND_DIR,
     ),
     runBuild("configurator UIs",
-        ...pnpmCommand(["exec", "vp", "run", "-r", "--cache", "build:configurator", "--dev"]), ROOT),
+        ...pnpmCommand(["exec", "vp", "run", "-r", "--cache", "build:configurator", "--dev"]), ROOT,
+        vpEnv),
     runBuild("gatekeeper app UIs",
-        ...pnpmCommand(["exec", "vp", "run", "-r", "--cache", "build:app:dev"]), ROOT),
+        ...pnpmCommand(["exec", "vp", "run", "-r", "--cache", "build:app:dev"]), ROOT, vpEnv),
   ]);
 } catch (err) {
   // The SIGTERM handler killing the builds also lands here, as the rejection of whichever build
