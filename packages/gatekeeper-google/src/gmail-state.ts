@@ -1,226 +1,34 @@
 import type {
   GmailAttachmentInfo, GmailCustomLabel, GmailDraftPatch, GmailMutableSystemLabel,
 } from "./types";
+import {
+  ACTION_FILE_CHUNK_BYTES, ActionFileStore, type ActionFileReference,
+} from "@gadgets/gatekeeper-kit/action-files";
 import {emailRecipientToAddress, MAX_GMAIL_FORWARD_SOURCE_BYTES} from "./google-api";
 import type {GmailLabelRaw, GmailNormalizedRecipients, GmailParsedDraft} from "./google-api";
 
 /** Bytes per stored forward-source chunk, leaving ample headroom below the 2 MiB value limit. */
-export const GMAIL_FORWARD_SNAPSHOT_CHUNK_BYTES = 1024 * 1024;
+export const GMAIL_FORWARD_SNAPSHOT_CHUNK_BYTES = ACTION_FILE_CHUNK_BYTES;
 
 /** Maximum aggregate raw forward-source bytes retained by one Gmail binding. */
 export const MAX_GMAIL_PENDING_FORWARD_SNAPSHOT_BYTES = 50 * 1024 * 1024;
 
 /** Integrity metadata persisted in an action instead of the forward source bytes themselves. */
-export type GmailForwardSnapshotReference = {
-  /** Opaque handle for private Durable Object storage. */
-  handle: string;
-  /** Exact decoded source size. */
-  size: number;
-  /** SHA-256 digest of the decoded source bytes. */
-  digest: string;
-};
-
-type GmailForwardSnapshotManifest = GmailForwardSnapshotReference & {
-  version: 1;
-  chunks: number;
-};
-
-type GmailForwardSnapshotAllocation = {
-  version: 1;
-  size: number;
-  chunks: number;
-  createdAt: number;
-};
+export type GmailForwardSnapshotReference = ActionFileReference;
 
 type GmailSnapshotStorage = Pick<DurableObjectStorage, "kv" | "transactionSync">;
 
 const FORWARD_SNAPSHOT_PREFIX = "gmail:forwardSnapshot:";
 const FORWARD_SNAPSHOT_ALLOCATION_PREFIX = "gmail:forwardSnapshotAllocation:";
-const FORWARD_SNAPSHOT_TOTAL_KEY = `${FORWARD_SNAPSHOT_ALLOCATION_PREFIX}totalBytes`;
-const SNAPSHOT_HANDLE_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function forwardSnapshotManifestKey(handle: string): string {
-  return `${FORWARD_SNAPSHOT_PREFIX}${handle}:manifest`;
-}
-
-function forwardSnapshotAllocationKey(handle: string): string {
-  return `${FORWARD_SNAPSHOT_ALLOCATION_PREFIX}${handle}`;
-}
-
-function forwardSnapshotChunkPrefix(handle: string): string {
-  return `${FORWARD_SNAPSHOT_PREFIX}${handle}:chunk:`;
-}
-
-function forwardSnapshotChunkKey(handle: string, index: number): string {
-  return `${forwardSnapshotChunkPrefix(handle)}${String(index).padStart(4, "0")}`;
-}
-
-function validSnapshotReference(value: unknown): value is GmailForwardSnapshotReference {
-  if (!value || typeof value !== "object") return false;
-  const snapshot = value as Record<string, unknown>;
-  return typeof snapshot.handle === "string" && SNAPSHOT_HANDLE_PATTERN.test(snapshot.handle) &&
-    Number.isSafeInteger(snapshot.size) && (snapshot.size as number) >= 0 &&
-    (snapshot.size as number) <= MAX_GMAIL_FORWARD_SOURCE_BYTES &&
-    typeof snapshot.digest === "string" && /^[0-9a-f]{64}$/.test(snapshot.digest);
-}
-
-function validSnapshotManifest(value: unknown): value is GmailForwardSnapshotManifest {
-  if (!validSnapshotReference(value)) return false;
-  const manifest = value as GmailForwardSnapshotManifest;
-  return manifest.version === 1 && Number.isSafeInteger(manifest.chunks) && manifest.chunks >= 0 &&
-    manifest.chunks === Math.ceil(manifest.size / GMAIL_FORWARD_SNAPSHOT_CHUNK_BYTES);
-}
-
-function validSnapshotAllocation(value: unknown): value is GmailForwardSnapshotAllocation {
-  if (!value || typeof value !== "object") return false;
-  const allocation = value as GmailForwardSnapshotAllocation;
-  return allocation.version === 1 && Number.isSafeInteger(allocation.size) &&
-    allocation.size >= 0 && allocation.size <= MAX_GMAIL_FORWARD_SOURCE_BYTES &&
-    Number.isSafeInteger(allocation.chunks) && allocation.chunks >= 0 &&
-    allocation.chunks === Math.ceil(allocation.size / GMAIL_FORWARD_SNAPSHOT_CHUNK_BYTES) &&
-    Number.isSafeInteger(allocation.createdAt) && allocation.createdAt >= 0;
-}
 
 /** Stores and verifies exact forward source bytes in bounded private Durable Object chunks. */
-export class GmailForwardSnapshotStore {
-  #storage: GmailSnapshotStorage;
-
+export class GmailForwardSnapshotStore extends ActionFileStore {
   constructor(storage: GmailSnapshotStorage) {
-    this.#storage = storage;
-  }
-
-  /** Capture exact decoded source bytes and return only bounded integrity metadata. */
-  async capture(bytes: Uint8Array): Promise<GmailForwardSnapshotReference> {
-    if (bytes.byteLength > MAX_GMAIL_FORWARD_SOURCE_BYTES) {
-      throw new Error(
-        `Cannot retain a forward source larger than ${MAX_GMAIL_FORWARD_SOURCE_BYTES} bytes.`);
-    }
-    const snapshot: GmailForwardSnapshotReference = {
-      handle: crypto.randomUUID(),
-      size: bytes.byteLength,
-      digest: await sha256(bytes),
-    };
-    const chunks = Math.ceil(bytes.byteLength / GMAIL_FORWARD_SNAPSHOT_CHUNK_BYTES);
-    this.#storage.transactionSync(() => {
-      const storedTotal = this.#storage.kv.get<unknown>(FORWARD_SNAPSHOT_TOTAL_KEY);
-      const total = storedTotal === undefined ? 0 : storedTotal;
-      if (!Number.isSafeInteger(total) || (total as number) < 0 ||
-          (total as number) > MAX_GMAIL_PENDING_FORWARD_SNAPSHOT_BYTES) {
-        throw new Error("Stored Gmail forward snapshot accounting is invalid.");
-      }
-      if ((total as number) + snapshot.size > MAX_GMAIL_PENDING_FORWARD_SNAPSHOT_BYTES) {
-        throw new Error(
-          "Pending Gmail forward snapshots exceed the safe aggregate storage limit. " +
-          "Resolve existing forward actions before adding another.");
-      }
-      this.#storage.kv.put<GmailForwardSnapshotAllocation>(
-        forwardSnapshotAllocationKey(snapshot.handle), {
-          version: 1, size: snapshot.size, chunks, createdAt: Date.now(),
-        });
-      this.#storage.kv.put<GmailForwardSnapshotManifest>(
-        forwardSnapshotManifestKey(snapshot.handle), {...snapshot, version: 1, chunks});
-      for (let index = 0; index < chunks; index++) {
-        const start = index * GMAIL_FORWARD_SNAPSHOT_CHUNK_BYTES;
-        this.#storage.kv.put(
-          forwardSnapshotChunkKey(snapshot.handle, index),
-          bytes.slice(start, start + GMAIL_FORWARD_SNAPSHOT_CHUNK_BYTES));
-      }
-      this.#storage.kv.put(FORWARD_SNAPSHOT_TOTAL_KEY, (total as number) + snapshot.size);
-    });
-    return snapshot;
-  }
-
-  /** Reassemble a captured source only after checking shape, completeness, size, and digest. */
-  async read(snapshot: GmailForwardSnapshotReference): Promise<Uint8Array> {
-    if (!validSnapshotReference(snapshot)) {
-      throw new Error(
-        "This pending forward uses an obsolete source snapshot. Reject and resubmit it.");
-    }
-    const manifest = this.#storage.kv.get<unknown>(forwardSnapshotManifestKey(snapshot.handle));
-    if (!validSnapshotManifest(manifest) || manifest.size !== snapshot.size ||
-        manifest.digest !== snapshot.digest || manifest.handle !== snapshot.handle) {
-      throw new Error("The stored forward snapshot is incomplete or corrupted.");
-    }
-    const entries = [...this.#storage.kv.list<unknown>({
-      prefix: forwardSnapshotChunkPrefix(snapshot.handle),
-    })].toSorted(([left], [right]) => left.localeCompare(right));
-    if (entries.length !== manifest.chunks) {
-      throw new Error("The stored forward snapshot is incomplete or corrupted.");
-    }
-    const bytes = new Uint8Array(manifest.size);
-    let offset = 0;
-    for (let index = 0; index < entries.length; index++) {
-      const [key, chunk] = entries[index];
-      const expectedKey = forwardSnapshotChunkKey(snapshot.handle, index);
-      const expectedSize = Math.min(
-        GMAIL_FORWARD_SNAPSHOT_CHUNK_BYTES, manifest.size - offset);
-      if (key !== expectedKey || !(chunk instanceof Uint8Array) ||
-          chunk.byteLength !== expectedSize) {
-        throw new Error("The stored forward snapshot is incomplete or corrupted.");
-      }
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    if (offset !== manifest.size || await sha256(bytes) !== manifest.digest) {
-      throw new Error("The stored forward snapshot is incomplete or corrupted.");
-    }
-    return bytes;
-  }
-
-  /** Delete all chunks for a snapshot and release its aggregate storage allocation. */
-  delete(snapshot: GmailForwardSnapshotReference | undefined): void {
-    if (!validSnapshotReference(snapshot)) return;
-    this.#delete(snapshot.handle);
-  }
-
-  /** Delete stale allocations that no pending action references. */
-  pruneUnreferenced(referencedHandles: ReadonlySet<string>, createdBefore: number): void {
-    const orphaned: string[] = [];
-    for (const [key, value] of this.#storage.kv.list<unknown>({
-      prefix: FORWARD_SNAPSHOT_ALLOCATION_PREFIX,
-    })) {
-      if (key === FORWARD_SNAPSHOT_TOTAL_KEY || !validSnapshotAllocation(value) ||
-          value.createdAt > createdBefore) continue;
-      const handle = key.slice(FORWARD_SNAPSHOT_ALLOCATION_PREFIX.length);
-      if (SNAPSHOT_HANDLE_PATTERN.test(handle) && !referencedHandles.has(handle)) orphaned.push(handle);
-    }
-    for (const handle of orphaned) this.#delete(handle);
-  }
-
-  #delete(handle: string): void {
-    this.#storage.transactionSync(() => {
-      const manifest = this.#storage.kv.get<unknown>(forwardSnapshotManifestKey(handle));
-      const allocation = this.#storage.kv.get<unknown>(forwardSnapshotAllocationKey(handle));
-      const chunks = validSnapshotAllocation(allocation)
-        ? allocation.chunks
-        : validSnapshotManifest(manifest)
-          ? manifest.chunks
-          : undefined;
-      if (chunks !== undefined) {
-        for (let index = 0; index < chunks; index++) {
-          this.#storage.kv.delete(forwardSnapshotChunkKey(handle, index));
-        }
-      } else {
-        // Corrupt metadata is exceptional; still make a best effort to remove private bytes.
-        for (const [key] of this.#storage.kv.list({
-          prefix: forwardSnapshotChunkPrefix(handle),
-        })) {
-          this.#storage.kv.delete(key);
-        }
-      }
-      this.#storage.kv.delete(forwardSnapshotManifestKey(handle));
-      this.#storage.kv.delete(forwardSnapshotAllocationKey(handle));
-      const total = this.#storage.kv.get<unknown>(FORWARD_SNAPSHOT_TOTAL_KEY);
-      const allocatedSize = validSnapshotAllocation(allocation)
-        ? allocation.size
-        : validSnapshotManifest(manifest)
-          ? manifest.size
-          : undefined;
-      if (allocatedSize !== undefined && typeof total === "number" &&
-          Number.isSafeInteger(total) && total >= 0) {
-        this.#storage.kv.put(FORWARD_SNAPSHOT_TOTAL_KEY, Math.max(0, total - allocatedSize));
-      }
+    super(storage, {
+      filePrefix: FORWARD_SNAPSHOT_PREFIX,
+      allocationPrefix: FORWARD_SNAPSHOT_ALLOCATION_PREFIX,
+      maxFileBytes: MAX_GMAIL_FORWARD_SOURCE_BYTES,
+      maxTotalBytes: MAX_GMAIL_PENDING_FORWARD_SNAPSHOT_BYTES,
     });
   }
 }

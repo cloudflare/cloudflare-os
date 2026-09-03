@@ -9,6 +9,7 @@
 // without it.
 
 import type { RpcStub } from "cloudflare:workers";
+import { ActionFileStore, type ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import type { ActionDescription, ApprovalQueue, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import {
   ConfluenceApi,
@@ -42,16 +43,23 @@ export type ConfluenceAction =
   | { type: "addComment"; contentId: string; text: string }
   | { type: "addLabel"; contentId: string; name: string }
   | { type: "removeLabel"; contentId: string; name: string }
-  | {
-      type: "uploadAttachment";
-      contentId: string;
-      filename: string;
-      mediaType: string;
-      data: Uint8Array;
-      comment?: string;
-    }
+  | UploadAttachmentAction
   | { type: "trash"; contentId: string }
   | { type: "restore"; contentId: string };
+
+/**
+ * The file bytes live in the chunk store until the action is applied or rejected, keeping the
+ * action record itself small. Records queued before that store existed carry them inline as `data`
+ * instead; `ConfluenceStore.readAttachment` still accepts those.
+ */
+export type UploadAttachmentAction = {
+  type: "uploadAttachment";
+  contentId: string;
+  filename: string;
+  mediaType: string;
+  file: ActionFileReference;
+  comment?: string;
+};
 
 export type StoredActionRecord = {
   id: number;
@@ -72,18 +80,30 @@ function actionContentId(action: ConfluenceAction): string | null {
 // ---------------------------------------------------------------------------------------------
 // Store: caching + pending-action storage (backed by the gatekeeper DO's KV storage)
 
-type Kv = DurableObjectStorage["kv"];
+type Storage = Pick<DurableObjectStorage, "kv" | "transactionSync">;
 const CONTENT_TTL_MS = 30_000;
+const MAX_ATTACHMENT_FILE_BYTES = 25 * 1024 * 1024;
+const MAX_ATTACHMENT_TOTAL_BYTES = 50 * 1024 * 1024;
+// How long an attachment file may go unreferenced by a pending action before it is swept: long
+// enough that no staging still in flight could be about to reference it.
+const ATTACHMENT_FILE_GRACE_MS = 60 * 60 * 1000;
 
 type ContentCache = { fetchedAt: number; content: ContentResponse };
 
 export class ConfluenceStore {
-  #kv: Kv;
+  #kv: Storage["kv"];
   #api: ConfluenceApi;
+  #files: ActionFileStore;
 
-  constructor(kv: Kv, api: ConfluenceApi) {
-    this.#kv = kv;
+  constructor(storage: Storage, api: ConfluenceApi) {
+    this.#kv = storage.kv;
     this.#api = api;
+    this.#files = new ActionFileStore(storage, {
+      filePrefix: "confluence:actionFile:",
+      allocationPrefix: "confluence:actionFileAllocation:",
+      maxFileBytes: MAX_ATTACHMENT_FILE_BYTES,
+      maxTotalBytes: MAX_ATTACHMENT_TOTAL_BYTES,
+    });
   }
 
   get api(): ConfluenceApi {
@@ -115,7 +135,9 @@ export class ConfluenceStore {
   }
 
   deleteAction(id: number): void {
+    const action = this.getAction(id)?.action;
     this.#kv.delete(`action:${id}`);
+    if (action?.type === "uploadAttachment") this.releaseAttachment(action);
   }
 
   allActions(): StoredActionRecord[] {
@@ -135,6 +157,32 @@ export class ConfluenceStore {
       const t = actionContentId(r.action);
       return t !== null && this.resolveId(t) === target;
     });
+  }
+
+  // --- attachment files ---
+
+  /**
+   * Retains upload bytes for a pending action. Files no pending action references (a staging that
+   * failed after capture, or an apply cut short before releasing them) are swept first, once old
+   * enough that no in-flight staging could still be about to reference them.
+   */
+  captureAttachment(data: Uint8Array): Promise<ActionFileReference> {
+    const referenced = new Set<string>();
+    for (const { action } of this.pendingActions()) {
+      // Legacy inline records have no `file`; nothing of theirs lives in the chunk store.
+      if (action.type === "uploadAttachment" && action.file) referenced.add(action.file.handle);
+    }
+    this.#files.pruneUnreferenced(referenced, Date.now() - ATTACHMENT_FILE_GRACE_MS);
+    return this.#files.capture(data);
+  }
+
+  readAttachment(action: UploadAttachmentAction): Promise<Uint8Array> {
+    const inline = (action as { data?: unknown }).data;
+    return inline instanceof Uint8Array ? Promise.resolve(inline) : this.#files.read(action.file);
+  }
+
+  releaseAttachment(action: UploadAttachmentAction): void {
+    this.#files.delete(action.file);
   }
 
   // --- provisional ID resolution ---
@@ -389,7 +437,7 @@ function describeAction(action: ConfluenceAction): ActionDescription {
     case "uploadAttachment":
       return {
         title: "Upload attachment to Confluence",
-        description: `Upload **${action.filename}** (${action.mediaType}, ${action.data.byteLength} bytes).`,
+        description: `Upload **${action.filename}** (${action.mediaType}, ${action.file.size} bytes).`,
         implementsRevert: true,
         actionKind: kind("uploadAttachment", "Upload attachment"),
       };
@@ -539,7 +587,9 @@ async function applyAction(store: ConfluenceStore, record: StoredActionRecord): 
       break;
     case "uploadAttachment": {
       const id = requireResolved(store, action.contentId);
-      const created = await api.uploadAttachment(id, action);
+      const created = await api.uploadAttachment(id, {
+        ...action, data: await store.readAttachment(action),
+      });
       record.createdAttachmentId = created.id;
       store.putAction(record);
       break;
@@ -560,11 +610,15 @@ async function applyAction(store: ConfluenceStore, record: StoredActionRecord): 
   // overlaying it on top of the (refetched) real state.
   record.state = "applied";
   store.putAction(record);
+  if (action.type === "uploadAttachment") store.releaseAttachment(action);
 }
 
 export async function applyStoredAction(store: ConfluenceStore, id: number): Promise<void> {
   const record = store.getAction(id);
   if (!record) throw new Error(`Unknown action: ${id}`);
+  // The Workshop marks its side approved only after this RPC returns, so a restart in between
+  // re-applies an action whose work (and attachment file) is already done and gone.
+  if (record.state === "applied") return;
   await applyAction(store, record);
 }
 

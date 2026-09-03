@@ -141,6 +141,9 @@ importers:
       '@gadgets/configurator-ui':
         specifier: workspace:*
         version: link:../configurator-ui
+      '@gadgets/gatekeeper-kit':
+        specifier: workspace:*
+        version: link:../gatekeeper-kit
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
