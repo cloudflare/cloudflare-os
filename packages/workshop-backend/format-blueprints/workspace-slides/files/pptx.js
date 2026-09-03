@@ -11,6 +11,7 @@ const SLIDE_WIDTH = 12192000;
 const SLIDE_HEIGHT = 6858000;
 const PX_TO_EMU = 10160;
 const PX_TO_LINE_EMU = PX_TO_EMU;
+const PX_TO_POINT = PX_TO_EMU / 12700;
 const MAX_DRAWING_COORDINATE = 2147483647;
 
 const MAX_SLIDES = 500;
@@ -257,16 +258,21 @@ function* linesOf(text) {
 }
 
 function fontSizeHundredths(pixels) {
-  return Math.max(100, Math.min(400000, Math.round(cssNumber(pixels, 12, 1, 1000) * 75)));
+  return Math.max(100, Math.min(400000,
+    Math.round(cssNumber(pixels, 12, 1, 1000) * PX_TO_POINT * 100)));
 }
 
 function letterSpacingHundredths(value, fontPixels) {
-  if (typeof value === "number") return Math.round(numberOr(value, 0, -50, 50) * 75);
+  if (typeof value === "number") {
+    return Math.round(numberOr(value, 0, -50, 50) * PX_TO_POINT * 100);
+  }
   if (typeof value !== "string") return 0;
   const match = /^\s*(-?(?:\d+(?:\.\d*)?|\.\d+))\s*(em|px)\s*$/i.exec(value);
   if (!match) return 0;
   const amount = Number(match[1]);
-  const points = match[2].toLowerCase() === "em" ? amount * fontPixels * 0.75 : amount * 0.75;
+  const points = match[2].toLowerCase() === "em"
+    ? amount * fontPixels * PX_TO_POINT
+    : amount * PX_TO_POINT;
   return Math.round(Math.max(-40, Math.min(40, points)) * 100);
 }
 
@@ -277,7 +283,7 @@ function runProperties(style, colorOverride) {
   const spacing = letterSpacingHundredths(style.letterSpacing, style.fontSize);
   const spacingXml = spacing ? ` spc="${spacing}"` : "";
   return `lang="en-US" sz="${size}"${bold}${spacingXml} dirty="0"` +
-    `>${solidFill(color)}<a:latin typeface="Inter"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/>`;
+    `>${solidFill(color)}<a:latin typeface="Arial"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/>`;
 }
 
 function highlightedSegments(line, terms, normalColor) {
@@ -312,11 +318,11 @@ function* paragraphXml(text, style, options = {}) {
   if (options.bullet) properties += ` marL="${Math.round(18 * PX_TO_EMU)}" indent="-${Math.round(18 * PX_TO_EMU)}"`;
   properties += `><a:lnSpc><a:spcPct val="${lineHeight}"/></a:lnSpc>`;
   if (options.spacingAfter) {
-    properties += `<a:spcAft><a:spcPts val="${Math.round(options.spacingAfter * 75)}"/></a:spcAft>`;
+    properties += `<a:spcAft><a:spcPts val="${Math.round(options.spacingAfter * PX_TO_POINT * 100)}"/></a:spcAft>`;
   }
   if (options.bullet) {
     properties += `<a:buClr><a:srgbClr val="${COLORS.tangerine}"/></a:buClr>` +
-      '<a:buSzPts val="450"/><a:buFont typeface="Arial"/><a:buChar char="&#x25CF;"/>';
+      '<a:buSzPts val="480"/><a:buFont typeface="Arial"/><a:buChar char="&#x25CF;"/>';
   } else {
     properties += "<a:buNone/>";
   }
@@ -345,11 +351,12 @@ function* textShapeXml(state, name, box, style, source, options = {}) {
   const line = options.line || "<a:ln><a:noFill/></a:ln>";
   const insets = options.insets || {};
   const anchor = options.anchor === "middle" ? "ctr" : options.anchor === "bottom" ? "b" : "t";
+  const wrap = options.wrap === false ? "none" : "square";
   yield `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${xmlAttribute(name)}"${descr}/>` +
     '<p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr>' + transformXml(box) +
     presetGeometry(preset, options.radius || 0, box.width / PX_TO_EMU, box.height / PX_TO_EMU) +
     fill + line + '</p:spPr><p:txBody>' +
-    `<a:bodyPr wrap="square" anchor="${anchor}" lIns="${emuLength(insets.left || 0)}" ` +
+    `<a:bodyPr wrap="${wrap}" anchor="${anchor}" lIns="${emuLength(insets.left || 0)}" ` +
     `rIns="${emuLength(insets.right || 0)}" tIns="${emuLength(insets.top || 0)}" ` +
     `bIns="${emuLength(insets.bottom || 0)}"><a:noAutofit/></a:bodyPr><a:lstStyle/>`;
   if (source.items) {
@@ -798,7 +805,7 @@ function codePointLength(value) {
 }
 
 function estimateTextHeight(text, width, fontSize, lineHeight) {
-  const charactersPerLine = Math.max(1, Math.floor(Math.max(1, width) / Math.max(1, fontSize * 0.54)));
+  const charactersPerLine = Math.max(1, Math.floor(Math.max(1, width) / Math.max(1, fontSize * 0.52)));
   let lines = 0;
   for (const line of linesOf(text)) {
     lines += Math.max(1, Math.ceil(codePointLength(line) / charactersPerLine));
@@ -811,20 +818,6 @@ function naturalTextWidth(text, fontSize, letterSpacing = 0) {
     codePointLength(text.replace(/\n/g, "")) * fontSize * 0.56 + Math.max(0, codePointLength(text) - 1) * letterSpacing);
 }
 
-function freeformShapeXml(state, name, path, fill, line) {
-  const id = nextShapeId(state);
-  const fullSlide = {x: 0, y: 0, width: SLIDE_WIDTH, height: SLIDE_HEIGHT};
-  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${xmlAttribute(name)}"/>` +
-    '<p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>' + transformXml(fullSlide) +
-    '<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/>' +
-    `<a:rect l="0" t="0" r="${SLIDE_WIDTH}" b="${SLIDE_HEIGHT}"/><a:pathLst>${path}</a:pathLst></a:custGeom>` +
-    fill + line + "</p:spPr></p:sp>";
-}
-
-function pt(x, y) {
-  return `<a:pt x="${Math.round(x * PX_TO_EMU)}" y="${Math.round(y * PX_TO_EMU)}"/>`;
-}
-
 function* coverArtworkXml(state) {
   const fullSlide = {x: 0, y: 0, width: SLIDE_WIDTH, height: SLIDE_HEIGHT};
   yield shapeXml(state, "Cover gradient", fullSlide, {
@@ -834,26 +827,6 @@ function* coverArtworkXml(state) {
       {position: 100000, color: "#FFC02C"},
     ], 2700000),
   });
-  const upperPath = `<a:path w="${SLIDE_WIDTH}" h="${SLIDE_HEIGHT}" stroke="0">` +
-    `<a:moveTo>${pt(-42, -50)}</a:moveTo><a:cubicBezTo>${pt(374, -81)}${pt(699, -4)}${pt(886, 185)}</a:cubicBezTo>` +
-    `<a:cubicBezTo>${pt(1057, 357)}${pt(1043, 584)}${pt(873, 675)}</a:cubicBezTo>` +
-    `${"<a:lnTo>" + pt(0, 675) + "</a:lnTo><a:lnTo>" + pt(0, 0) + "</a:lnTo><a:close/>"}</a:path>`;
-  yield freeformShapeXml(state, "Cover upper sweep", upperPath,
-    solidFill(parseColor("#FF5A17"), 0.64), "<a:ln><a:noFill/></a:ln>");
-  const lowerPath = `<a:path w="${SLIDE_WIDTH}" h="${SLIDE_HEIGHT}" stroke="0">` +
-    `<a:moveTo>${pt(7, 675)}</a:moveTo><a:cubicBezTo>${pt(126, 389)}${pt(380, 208)}${pt(694, 198)}</a:cubicBezTo>` +
-    `<a:cubicBezTo>${pt(950, 190)}${pt(1121, 288)}${pt(1200, 367)}</a:cubicBezTo>` +
-    `<a:lnTo>${pt(1200, 675)}</a:lnTo><a:close/></a:path>`;
-  yield freeformShapeXml(state, "Cover lower sweep", lowerPath,
-    gradientFill([
-      {position: 0, color: "#FF5A16"},
-      {position: 100000, color: "#FFAD25"},
-    ], 2400000, 0.66), "<a:ln><a:noFill/></a:ln>");
-  const arcPath = `<a:path w="${SLIDE_WIDTH}" h="${SLIDE_HEIGHT}" fill="none">` +
-    `<a:moveTo>${pt(1199, 98)}</a:moveTo><a:cubicBezTo>${pt(1170, 380)}${pt(962, 592)}${pt(681, 656)}</a:cubicBezTo>` +
-    `<a:cubicBezTo>${pt(489, 700)}${pt(268, 693)}${pt(6, 675)}</a:cubicBezTo></a:path>`;
-  yield freeformShapeXml(state, "Cover accent curve", arcPath, "<a:noFill/>",
-    lineXml(parseColor("#FFBE20"), 2.2, false, 0.92));
 }
 
 function* renderSectionLabel(state, block, name) {
@@ -864,7 +837,7 @@ function* renderSectionLabel(state, block, name) {
     fontSize: 10, weight: 600, letterSpacing: "0.05em", lineHeight: 1,
     color: parseColor("#FF6633"), align: "left",
   };
-  yield* textShapeXml(state, name, box, style, {text: props.text});
+  yield* textShapeXml(state, name, box, style, {text: props.text}, {wrap: false});
 }
 
 function* renderLogo(state, block, name) {
@@ -872,13 +845,13 @@ function* renderLogo(state, block, name) {
   const scale = cssNumber(props.scale, 1, 0.01, 20);
   const text = props.text;
   const fontSize = 24 * scale;
-  const textWidth = naturalTextWidth(text, fontSize, -0.02 * fontSize) + 3 * scale;
+  const textWidth = naturalTextWidth(text, fontSize, -0.02 * fontSize) + 8 * scale;
   const textBox = boxFromPixels(positionPixels(block.x), positionPixels(block.y), textWidth, 29 * scale);
   const color = props.variant === "dark" ? parseColor("#000000") : parseColor("#FFFFFF");
   yield* textShapeXml(state, `${name} wordmark`, textBox, {
     fontSize, weight: 700, letterSpacing: "-0.02em", lineHeight: 1,
     color, align: "left",
-  }, {text});
+  }, {text}, {wrap: false});
   if (props.accentDot !== false) {
     const dot = boxFromPixels(
       positionPixels(block.x) + textWidth,
@@ -911,7 +884,7 @@ function* renderGadgetsMark(state, block, name) {
       naturalTextWidth(wordmark, fontSize, -0.055 * fontSize) + 8, fontSize + 5), {
       fontSize, weight: 500, letterSpacing: "-0.055em", lineHeight: 1,
       color: parseColor("#140400"), align: "left",
-    }, {text: wordmark});
+    }, {text: wordmark}, {wrap: false});
 }
 
 function* renderTitle(state, block, name) {
@@ -1059,6 +1032,7 @@ function* renderTonePill(state, block, name) {
     fill: solidFill(parseColor(tone), 0.12),
     anchor: "middle",
     insets: {left: 12, right: 12, top: 5, bottom: 5},
+    wrap: false,
   });
 }
 
@@ -1350,7 +1324,7 @@ function presentationXml(slideCount) {
   }
   return xml + `</p:sldIdLst><p:sldSz cx="${SLIDE_WIDTH}" cy="${SLIDE_HEIGHT}" type="screen16x9"/>` +
     '<p:notesSz cx="6858000" cy="9144000"/><p:defaultTextStyle><a:defPPr>' +
-    '<a:defRPr lang="en-US" sz="1800"><a:latin typeface="Inter"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/></a:defRPr>' +
+    '<a:defRPr lang="en-US" sz="1800"><a:latin typeface="Arial"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/></a:defRPr>' +
     '</a:defPPr></p:defaultTextStyle></p:presentation>';
 }
 
@@ -1386,7 +1360,7 @@ function tableStyles() {
 function masterTextStyle(size, bold, color) {
   return `<a:lvl1pPr algn="l"><a:defRPr lang="en-US" sz="${size}" b="${bold ? 1 : 0}">` +
     `<a:solidFill><a:srgbClr val="${color}"/></a:solidFill>` +
-    '<a:latin typeface="Inter"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/></a:defRPr></a:lvl1pPr>';
+    '<a:latin typeface="Arial"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/></a:defRPr></a:lvl1pPr>';
 }
 
 function slideMaster() {
@@ -1428,11 +1402,11 @@ function themeXml() {
     '<a:accent3><a:srgbClr val="FBAD41"/></a:accent3><a:accent4><a:srgbClr val="747474"/></a:accent4>' +
     '<a:accent5><a:srgbClr val="0A95FF"/></a:accent5><a:accent6><a:srgbClr val="9B3FF6"/></a:accent6>' +
     '<a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink>' +
-    '</a:clrScheme><a:fontScheme name="Inter with Arial fallback">' +
-    '<a:majorFont><a:latin typeface="Inter"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/>' +
+    '</a:clrScheme><a:fontScheme name="Arial">' +
+    '<a:majorFont><a:latin typeface="Arial"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/>' +
     '<a:font script="Jpan" typeface="Arial"/><a:font script="Hang" typeface="Arial"/>' +
     '<a:font script="Hans" typeface="Arial"/><a:font script="Hant" typeface="Arial"/></a:majorFont>' +
-    '<a:minorFont><a:latin typeface="Inter"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/>' +
+    '<a:minorFont><a:latin typeface="Arial"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/>' +
     '<a:font script="Jpan" typeface="Arial"/><a:font script="Hang" typeface="Arial"/>' +
     '<a:font script="Hans" typeface="Arial"/><a:font script="Hant" typeface="Arial"/></a:minorFont>' +
     '</a:fontScheme><a:fmtScheme name="Workspace">' +

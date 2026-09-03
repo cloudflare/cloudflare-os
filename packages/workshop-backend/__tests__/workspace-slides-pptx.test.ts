@@ -464,8 +464,10 @@ describe("Workspace Slides PPTX rendering", () => {
     );
     const title = shapeByName(xml, "Block 2 title");
     expect(title).toContain('<a:off x="50800" y="60960"/><a:ext cx="1016000" cy="304800"/>');
-    expect(title).toContain('sz="1500"');
-    expect(title).toContain('spc="150"');
+    expect(title).toContain('sz="1600"');
+    expect(title).toContain('spc="160"');
+    expect(title).toContain('<a:latin typeface="Arial"/>');
+    expect(title).not.toContain('typeface="Inter"');
     expect(title).toContain('<a:spcPct val="125000"/>');
 
     const shapes = [...xml.matchAll(/<p:cNvPr id="(\d+)" name="([^"]*)"/g)]
@@ -481,6 +483,22 @@ describe("Workspace Slides PPTX rendering", () => {
       {id: 8, name: "Block 4 shape"},
     ]);
     expect(new Set(shapes.map(shape => shape.id)).size).toBe(shapes.length);
+  });
+
+  it("keeps intrinsic labels on one line without changing authored positions", async () => {
+    const zip = await readZip(deckToPptx(oneSlide([
+      block("logo", {text: "Workspace", variant: "dark", scale: 0.62}, {x: 1013, y: 40}),
+      block("sectionLabel", {text: "A LONG SECTION LABEL"}, {x: 36, y: 35}),
+      block("text", {text: "x ".repeat(60), fontSize: 19, lineHeight: 1.6}, {x: 36, y: 204, w: 760}),
+      block("text", {text: "Next block", fontSize: 19, lineHeight: 1.6}, {x: 36, y: 252, w: 760}),
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+
+    expect(shapeByName(xml, "Block 1 logo wordmark")).toContain('<a:bodyPr wrap="none"');
+    expect(shapeByName(xml, "Block 2 sectionLabel")).toContain('<a:bodyPr wrap="none"');
+    expect(shapeByName(xml, "Block 3 text")).toContain('<a:bodyPr wrap="square"');
+    expect(shapeByName(xml, "Block 3 text")).toContain('<a:off x="365760" y="2072640"/>');
+    expect(shapeByName(xml, "Block 4 text")).toContain('<a:off x="365760" y="2560320"/>');
   });
 
   it("renders every block type and its typography, fills, strokes, dashes, and radius", async () => {
@@ -523,12 +541,12 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(occurrences(title, '<a:srgbClr val="FF5F2E">')).toBe(2);
     expect(title).toContain("HOT");
     expect(title).toContain("&amp; cold");
-    expect(title).toContain('sz="1500" b="1" spc="150"');
+    expect(title).toContain('sz="1600" b="1" spc="160"');
     expect(title).toContain('<a:spcPct val="125000"/>');
     const aligned = shapeByName(xml, "Block 6 text");
     expect(aligned).toContain('<a:pPr algn="r"');
     expect(aligned).toContain('<a:spcPct val="200000"/>');
-    expect(aligned).toContain('sz="1200"');
+    expect(aligned).toContain('sz="1280"');
 
     const bullets = shapeByName(xml, "Block 7 bulletList");
     for (const item of ["one", "two", "three", "four", "five", "six"]) {
@@ -598,9 +616,8 @@ describe("Workspace Slides PPTX rendering", () => {
 
     expect(inset).toContain('<p:bg><p:bgPr><a:solidFill><a:srgbClr val="ABCDEF">');
     expect(inset).toContain('name="Inset surface"');
-    for (const name of ["Cover gradient", "Cover upper sweep", "Cover lower sweep", "Cover accent curve"]) {
-      expect(cover).toContain(`name="${name}"`);
-    }
+    expect(cover).toContain('name="Cover gradient"');
+    expect(cover).not.toContain("<a:custGeom>");
   });
 
   it("embeds structural PNG/JPEG data, deduplicates media, and applies contain/cover/fill geometry", async () => {

@@ -345,15 +345,15 @@ PowerPoint export runs on the server and creates a conventional OPC /
 PresentationML package. Text, cards, boxes, pills, basic shapes, dividers,
 arrows, and the two brand marks become editable native PowerPoint objects
 rather than a screenshot. Source block order remains the shape z-order. The
-known bottom brand bar and orange cover treatment are native gradients and
-geometry. Dot-grid backgrounds are omitted.
+known bottom brand bar and orange cover treatment are native gradients.
+Dot-grid backgrounds are omitted.
 
 The 1200 x 675 canvas maps to standard widescreen PowerPoint at 12,192,000 x
-6,858,000 EMU. Positions and dimensions use 10,160 EMU per source pixel; CSS
-font sizes use 0.75 points per pixel. PowerPoint and browsers use different
-font metrics, so wrapping and intrinsic text height can differ. The package
-requests Inter with an Arial-compatible theme fallback but does not embed
-fonts.
+6,858,000 EMU. Positions, dimensions, and CSS font sizes all use the canvas's
+0.8-point-per-pixel scale. PowerPoint and browsers use different font metrics,
+so wrapping and intrinsic text height can differ. The package requests Arial,
+which is available in PowerPoint and Google previews, but does not embed fonts.
+Every block retains its authored position, including when its text wraps.
 
 PNG and JPEG data URLs are embedded after signature, dimension, and resource
 limit checks. Identical image data is stored once. `fill`, `contain`, and
