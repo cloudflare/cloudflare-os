@@ -835,4 +835,44 @@ describe("CredentialSource", () => {
     expect(await refetch).toEqual(live);
     expect(instance.authority()).toBeUndefined();
   });
+
+  it("keeps a dead grant refused however many stale failures report after it", async () => {
+    const fetches: Array<(fetched: CredentialsWithIdentity<Creds>) => void> = [];
+    const getCredentials = vi.fn(() => new Promise<CredentialsWithIdentity<Creds>>(resolve => {
+      fetches.push(resolve);
+    }));
+    const instance = new CredentialSource<Creds>({
+      account: () => ({ getCredentials, noteCredentialsExpired: async () => {} }),
+      isAuthError: error => error instanceof Error && error.message === "401",
+      expiredMessage: "Reconnect the account.",
+    });
+
+    // Nine operations park holding distinct stale identities, read one at a time so nothing
+    // coalesces.
+    const gates = Array.from({ length: 9 }, () => Promise.withResolvers<void>());
+    const stale: Promise<unknown>[] = [];
+    for (const [index, gate] of gates.entries()) {
+      const reading = Promise.withResolvers<void>();
+      stale.push(instance.run(async () => {
+        reading.resolve();
+        await gate.promise;
+        throw new Error("401");
+      }));
+      fetches[index]?.({ creds: live, identity: `id-stale-${index}`, generation: "gen-a" });
+      await reading.promise;
+    }
+
+    // Grant B is adopted and dies, then every stale operation reports its own identity dead.
+    const callB = instance.run(async () => { throw new Error("401"); });
+    fetches[9]?.({ creds: live, identity: "id-b", generation: "gen-b" });
+    await expect(callB).rejects.toThrow("Reconnect the account.");
+    for (const gate of gates) gate.resolve();
+    for (const failure of stale) await expect(failure).rejects.toThrow("Reconnect the account.");
+
+    // The stale reports land after B's in mark order; none may push B back into adoption.
+    const refetch = instance.get();
+    fetches[10]?.({ creds: live, identity: "id-b", generation: "gen-b" });
+    expect(await refetch).toEqual(live);
+    expect(instance.authority()).toBeUndefined();
+  });
 });

@@ -288,10 +288,6 @@ export type AccountCredentialStub<Creds> = {
 /** `CredentialSource` keeps one flight -- the account's current credentials -- so it needs one key. */
 const CREDENTIALS_FLIGHT = "credentials";
 
-// Monotone account commits: once this many newer grants were reported, an evicted identity can
-// never be served again, so bounding the dead set is safe.
-const DEAD_IDENTITIES_KEPT = 8;
-
 /** Configures credentials fetched across the account RPC boundary. */
 export type CredentialSourceOptions<Creds> = {
   /** @returns A fresh or caller-owned account credential stub. */
@@ -332,6 +328,7 @@ export class CredentialSource<Creds> {
   readonly #fetches = new SingleFlight();
   #generation: string | undefined;
   #identity: string | undefined;
+  // Bounded by account commits per activation; eviction is unsafe against out-of-order stale reports.
   readonly #dead = new Set<string>();
   #clearFence = 0;
 
@@ -388,7 +385,7 @@ export class CredentialSource<Creds> {
       // cache hit under the dead grant's partition could serve the next principal stale data.
       this.#fetches.forget(CREDENTIALS_FLIGHT);
       this.#generation = undefined;
-      this.#markDead(identity);
+      this.#dead.add(identity);
       this.#clearFence++;
       await this.#note(identity);
       throw new Error(this.#options.expiredMessage, { cause: error });
@@ -416,13 +413,6 @@ export class CredentialSource<Creds> {
       this.#identity = current.identity;
     }
     return current;
-  }
-
-  #markDead(identity: string): void {
-    this.#dead.add(identity);
-    if (this.#dead.size > DEAD_IDENTITIES_KEPT) {
-      this.#dead.delete(this.#dead.values().next().value!);
-    }
   }
 
   /**
