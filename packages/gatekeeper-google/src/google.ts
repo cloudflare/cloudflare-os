@@ -1,6 +1,11 @@
 import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind } from '@gadgets/workshop-shared/gatekeeper';
+import {
+  PreviewOAuth,
+  PreviewOAuthConfigurationError,
+  type PreviewOAuthState,
+} from "@gadgets/gatekeeper-kit/preview-oauth";
 import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
 import { GoogleDocSession, DocMetadata, type GoogleDocReadSession } from "./docs-types";
 import { GoogleDocsApi, type GoogleDocsDocument } from "./docs-api";
@@ -73,21 +78,10 @@ import {
 import { type ObserverBatchResult, type ObserverCheck, ObserverTracker } from "./observers";
 import type {Pager} from "./cursor";
 import {
-  decodeGoogleOAuthState,
-  decodeLegacyGoogleOAuthState,
-  encodeGoogleOAuthState,
-  encodeLegacyGoogleOAuthState,
   getBasePath,
   getBaseUrl,
-  getDynamicGoogleOAuthReturnUrl,
-  getRegisteredGoogleOAuthRedirectUri,
-  isCurrentGoogleOAuthCallback,
-  isGoogleOAuthPreviewRedirectEnabled,
-  isSignedGoogleOAuthState,
-  redirectToGoogleOAuthReturnUrl,
-  validateGoogleOAuthReturnUrl,
+  getGoogleOAuthCallbackUri,
   type GoogleOAuthEnv,
-  type GoogleOAuthState,
 } from "./oauth";
 import {
   DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
@@ -222,21 +216,19 @@ export default {
       let doId = path[0];
       let initiationNonce = path[1];
       let stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(doId));
-      let oauthRedirectUri: string;
-      let returnUrl: string | undefined;
+      let previewOAuth: PreviewOAuth;
       try {
-        oauthRedirectUri = getRegisteredGoogleOAuthRedirectUri(env);
-        returnUrl = getDynamicGoogleOAuthReturnUrl(env);
-        if (returnUrl && !env.OAUTH_STATE_SIGNING_SECRET) {
-          throw new Error("Google OAuth state signing secret is not configured.");
-        }
+        previewOAuth = new PreviewOAuth({
+          callbackUri: getGoogleOAuthCallbackUri(env),
+          env,
+        });
       } catch (error) {
         return new Response(
           error instanceof Error ? error.message : "Google OAuth callback is not configured.",
           { status: 503 },
         );
       }
-      const begun = await stub.beginOAuthFlow(initiationNonce, oauthRedirectUri);
+      const begun = await stub.beginOAuthFlow(initiationNonce, previewOAuth.redirectUri);
       if (begun === null) {
         return new Response(INVALID_LINK_HTML, {
           headers: { "Content-Type": "text/html; charset=utf-8" }
@@ -245,24 +237,17 @@ export default {
 
       let newUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
       newUrl.searchParams.set("client_id", env.CLIENT_ID);
-      newUrl.searchParams.set("redirect_uri", oauthRedirectUri);
+      newUrl.searchParams.set("redirect_uri", previewOAuth.redirectUri);
       newUrl.searchParams.set("response_type", "code");
       newUrl.searchParams.set("scope", begun.scopes.join(" "));
       newUrl.searchParams.set("access_type", "offline");
       newUrl.searchParams.set("prompt", "consent");
       // Add newly-requested scopes to any the user already granted, rather than replacing them.
       newUrl.searchParams.set("include_granted_scopes", "true");
-      let oauthState: GoogleOAuthState = {
+      const encodedState = await previewOAuth.createAuthorizationState({
         userObjectId: doId,
         oauthNonce: begun.oauthNonce,
-        ...(returnUrl ? { returnUrl } : {}),
-      };
-      let encodedState = encodeLegacyGoogleOAuthState(oauthState);
-      if (returnUrl) {
-        let signingSecret = env.OAUTH_STATE_SIGNING_SECRET;
-        if (!signingSecret) throw new Error("Google OAuth state signing secret is not configured.");
-        encodedState = await encodeGoogleOAuthState(oauthState, signingSecret);
-      }
+      });
       newUrl.searchParams.set("state", encodedState);
 
       return Response.redirect(newUrl.toString(), 302);
@@ -272,38 +257,22 @@ export default {
       let state = url.searchParams.get("state");
       if (!state) return new Response("Error: no 'state' provided", { status: 400 });
 
-      let oauthState: GoogleOAuthState;
+      let oauthState: PreviewOAuthState;
       try {
-        if (isSignedGoogleOAuthState(state)) {
-          if (!env.OAUTH_STATE_SIGNING_SECRET) {
-            return new Response("Google OAuth state signing secret is not configured.", { status: 500 });
-          }
-          oauthState = await decodeGoogleOAuthState(state, env.OAUTH_STATE_SIGNING_SECRET);
-        } else {
-          oauthState = decodeLegacyGoogleOAuthState(state);
-        }
-      } catch (error) {
-        return new Response(error instanceof Error ? error.message : "Invalid Google OAuth state", {
-          status: 400,
+        const previewOAuth = new PreviewOAuth({
+          callbackUri: getGoogleOAuthCallbackUri(env),
+          env,
         });
-      }
-
-      if (oauthState.returnUrl) {
-        if (!isGoogleOAuthPreviewRedirectEnabled(env)) {
-          return new Response("Google OAuth return URLs are not allowed.", { status: 400 });
+        const result = await previewOAuth.handleCallback(url);
+        if (result.kind === "relay") {
+          return result.response;
         }
-        let returnUrl: URL;
-        try {
-          returnUrl = validateGoogleOAuthReturnUrl(oauthState.returnUrl, env);
-        } catch (error) {
-          return new Response(
-            error instanceof Error ? error.message : "Invalid Google OAuth return URL",
-            { status: 400 },
-          );
-        }
-        if (!isCurrentGoogleOAuthCallback(returnUrl, env)) {
-          return redirectToGoogleOAuthReturnUrl(returnUrl, url, state);
-        }
+        oauthState = result.state;
+      } catch (error) {
+        const configurationError = error instanceof PreviewOAuthConfigurationError;
+        return new Response(error instanceof Error ? error.message : "Invalid Google OAuth state", {
+          status: configurationError ? 500 : 400,
+        });
       }
 
       let userObjectId;

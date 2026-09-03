@@ -17,6 +17,7 @@
     "./endpoint": "./src/endpoint.ts",
     "./http-errors": "./src/http-errors.ts",
     "./observers": "./src/observers.ts",
+    "./preview-oauth": "./src/preview-oauth.ts",
     "./response-body": "./src/response-body.ts",
     "./simulation": "./src/simulation.ts"
   },
@@ -27,7 +28,8 @@
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
-    "@gadgets/workshop-shared": "workspace:*"
+    "@gadgets/workshop-shared": "workspace:*",
+    "jose": "^6.2.8"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",

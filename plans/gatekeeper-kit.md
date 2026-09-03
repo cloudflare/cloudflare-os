@@ -6,10 +6,10 @@ lines of hand-copied plumbing.
 
 **Status.** Layer 1 (§4, the leaf modules) has landed and has been through a review pass against
 both corpora. The §4 sections are reconciled against the shipped signatures — where the two ever
-disagree, the code and its tests win. Layer 2 (§5, the assembly) and §7 steps 8–16 are still
-proposal: nothing consumes the kit yet, so no gatekeeper has been ported and none of §5's
-ergonomics have met a real consumer. Findings that review raised and declined are recorded in the
-obligations table (§4.8), each with the trigger that would revive it.
+disagree, the code and its tests win. Google consumes the preview OAuth leaf; Layer 2 (§5, the
+assembly) and §7 steps 8–16 are still proposal, so no gatekeeper has been ported to the assembly and
+none of §5's ergonomics have met a real consumer. Findings that review raised and declined are
+recorded in the obligations table (§4.8), each with the trigger that would revive it.
 
 ## 1. Introduction & high-level intent
 
@@ -27,10 +27,10 @@ The kit is one new workspace package, `packages/gatekeeper-kit`, with **two stri
 layers**:
 
 - **Layer 1 — leaf modules.** Small, standalone primitives behind per-file subpath exports:
-  connect nonces and the two-stage handshake, browser status pages, a credential-expiry latch,
-  HTTP error classification, credential storage with refresh coalescing, observer strategies, a
-  durable action journal, pure simulation helpers, a TTL cache, and RPC cursors. Each is usable on
-  its own; none requires the assembly layer.
+  connect nonces and the two-stage handshake, preview OAuth callback relaying, browser status pages,
+  a credential-expiry latch, HTTP error classification, credential storage with refresh
+  coalescing, observer strategies, a durable action journal, pure simulation helpers, a TTL cache,
+  and RPC cursors. Each is usable on its own; none requires the assembly layer.
 - **Layer 2 — the assembly.** A `gatekeeperKit<Env, Grant, Exports, Public>()` factory producing a
   typed spec (`define`, `resource`), pluggable auth strategies (`oauth2`, `tokenAuth`, or a
   hand-written `AuthStrategy`), an HTTP handler, and four abstract base classes (`KitVendorBase`,
@@ -1624,6 +1624,29 @@ origin-scoped headers when one crosses origins (`fetch.ts:142-209`), the factory
 refuses any redirect leaving its declared origin, and `normalizeVendorEndpoint` (§4.14) admits an
 operator-pasted vendor host. Those are three different trust boundaries, and a helper spanning them
 would have to expose knobs for exactly the policy it claims to centralize.
+
+### 4.16 `./preview-oauth`
+
+```ts
+export type PreviewOAuthEnv = {
+  OAUTH_ALLOW_PREVIEW_REDIRECTS?: boolean | string;
+  OAUTH_REDIRECT_URI?: string;
+  OAUTH_STATE_SIGNING_SECRET?: string;
+};
+export type PreviewOAuthState = { userObjectId: string; oauthNonce: string };
+export class PreviewOAuth {
+  constructor(options: { callbackUri: string; env: PreviewOAuthEnv });
+}
+```
+
+This is Google's preview callback relay generalized without changing its wire format: direct flows
+retain the `64hex:64hex` state, while preview flows use a ten-minute HS256 JWT carrying the same two
+identifiers and the preview return URL. The factory returns the exact redirect URI to persist through
+the code exchange, creates provider-facing state, and handles callbacks atomically — callers receive
+either verified local state or an already-filtered relay `Response`. Return URLs are limited to the
+stable callback's exact path and Worker Preview host suffixes; only `code`, `error`, and unchanged
+state cross the relay. Google is the first consumer. Other gatekeepers can adopt the leaf without
+porting to the assembly.
 
 ## 5. Layer 2: the assembly
 

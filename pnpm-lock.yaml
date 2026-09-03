@@ -352,6 +352,9 @@ importers:
       '@gadgets/configurator-ui':
         specifier: workspace:*
         version: link:../configurator-ui
+      '@gadgets/gatekeeper-kit':
+        specifier: workspace:*
+        version: link:../gatekeeper-kit
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
@@ -361,9 +364,6 @@ importers:
       capnweb-validate:
         specifier: 'catalog:'
         version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
-      jose:
-        specifier: ^6.2.8
-        version: 6.2.8
       mimetext:
         specifier: ^3.0.28
         version: 3.0.28
@@ -420,6 +420,9 @@ importers:
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
+      jose:
+        specifier: ^6.2.8
+        version: 6.2.8
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: 'catalog:'
