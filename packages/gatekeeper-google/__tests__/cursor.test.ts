@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CursorPager, DEFAULT_MAX_EMPTY_PAGES } from "../src/cursor";
+import { CursorPager, DEFAULT_MAX_PROVIDER_PAGES_PER_CALL } from "../src/cursor";
 import type { CursorPage, CursorPagerOptions } from "../src/cursor";
 
 /** Serves a fixed script of pages, keyed by the token used to ask for them. */
@@ -110,26 +110,36 @@ describe("pages with no usable results", () => {
     expect(await pager.next()).toBeNull();
   });
 
-  it("gives up after the configured number of fruitless pages", async () => {
+  it("hands back an empty page once the configured budget runs out", async () => {
     let empty = Array.from({ length: 10 }, () => [] as string[]);
-    let { pager } = makePager([...empty, ["a"]], {
-      maxEmptyPages: 3,
+    let { pager, authorized } = makePager([...empty, ["a"]], {
+      maxProviderPagesPerCall: 3,
     });
-    await expect(pager.next()).rejects.toThrow(
-      "TestProvider returned 3 pages with no usable results.");
+
+    // Not the end of the results: the caller drains, and the next call resumes where this stopped.
+    expect(await pager.next()).toEqual([]);
+    expect(authorized).toEqual([[]]);
+    expect(await pager.next()).toEqual([]);
   });
 
-  it("defaults the budget to DEFAULT_MAX_EMPTY_PAGES", async () => {
-    let pages = Array.from({ length: DEFAULT_MAX_EMPTY_PAGES + 1 }, () => [] as string[]);
+  it("defaults the budget to DEFAULT_MAX_PROVIDER_PAGES_PER_CALL", async () => {
+    let pages = Array.from({ length: DEFAULT_MAX_PROVIDER_PAGES_PER_CALL + 1 }, () => [] as string[]);
     let { pager, requested } = makePager(pages.concat([["a"]]));
-    await expect(pager.next()).rejects.toThrow(`returned ${DEFAULT_MAX_EMPTY_PAGES} pages`);
-    expect(requested).toHaveLength(DEFAULT_MAX_EMPTY_PAGES);
+    expect(await pager.next()).toEqual([]);
+    expect(requested).toHaveLength(DEFAULT_MAX_PROVIDER_PAGES_PER_CALL);
   });
 
   it("counts the budget per call, not for the cursor's lifetime", async () => {
-    let { pager } = makePager([[], ["a"], [], ["b"]], { maxEmptyPages: 2 });
+    let { pager } = makePager([[], ["a"], [], ["b"]], { maxProviderPagesPerCall: 2 });
     expect(await pager.next()).toEqual(["a"]);
     expect(await pager.next()).toEqual(["b"]);
+  });
+
+  // The budget bounds work, never the result. A caller that stops at `[]` would silently lose the
+  // pages behind it, so draining has to reach every entry however many empty slices it takes.
+  it("still yields every entry when the budget slices the walk", async () => {
+    let { pager } = makePager([[], [], ["a"], [], ["b"]], { maxProviderPagesPerCall: 1 });
+    expect(await drain(pager)).toEqual(["a", "b"]);
   });
 });
 
@@ -171,6 +181,20 @@ describe("authorization", () => {
     let { pager, authorized } = makePager([["a", "b"], ["c"]]);
     await drain(pager);
     expect(authorized).toEqual([["a", "b"], ["c"]]);
+  });
+
+  // Only `exhausted` distinguishes "there is nothing" from "this call found nothing yet", and a
+  // caller that treats the second as the first audits a negative answer nobody established.
+  it("reports exhaustion only when the provider offered no continuation token", async () => {
+    let seen: [string[], boolean][] = [];
+    let { pager } = makePager([[], ["a"]], {
+      maxProviderPagesPerCall: 1,
+      authorize: async (entries, exhausted) => { seen.push([entries, exhausted]); },
+    });
+
+    expect(await pager.next()).toEqual([]);
+    expect(await pager.next()).toEqual(["a"]);
+    expect(seen).toEqual([[[], false], [["a"], true]]);
   });
 
   it("authorizes the surviving entries, not the raw page", async () => {
