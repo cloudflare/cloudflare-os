@@ -143,7 +143,7 @@ describe("excludeObservers against the observer's verification scope", () => {
     await impl.authorizeObservation(
         GATEKEEPER_ID, { ...DESCRIPTION, excludeObservers: [OBSERVER_ID, "obs-dave"] }, CALLER);
 
-    expect(removals.sort()).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`, `${GATEKEEPER_ID}:obs-dave`]);
+    expect(removals.toSorted()).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`, `${GATEKEEPER_ID}:obs-dave`]);
     expect(impl.storage.observers.byObserverId.get(OBSERVER_ID)).toBeDefined();
     expect(impl.storage.observers.byObserverId.get("obs-dave")).toBeDefined();
   }));
