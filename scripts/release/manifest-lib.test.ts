@@ -178,6 +178,12 @@ test("worker entries carry the deploy contract", () => {
     }
   }
 
+  // The MCP connectors are install-once for SINGLETON's second reason: they take no inputs, so a
+  // second install could not differ from the first — it would only mint a second vendor id.
+  assert.equal(workers["gatekeeper-mcp"].singleton, true);
+  assert.equal(workers["gatekeeper-mcp-portal"].singleton, true);
+  assert.equal(workers["gatekeeper-homeassistant"].singleton, true);
+
   // Module blobs are content-addressed.
   for (const [name, entry] of Object.entries(workers)) {
     assert.ok(entry.modules.some((m) => m.name === entry.mainModule),
@@ -211,6 +217,22 @@ test("every gatekeeper shortName is a legal deploy slug", () => {
         `${name}: shortName ${entry.shortName} exceeds ${MAX_SLUG_LEN} chars`);
     assert.equal(entry.vars.BASE_URL, `$PUBLIC_BASE_URL/gatekeeper/${entry.shortName}`,
         `${name}: BASE_URL path must match shortName`);
+  }
+});
+
+// SINGLETON's second reason, as an invariant rather than a list: an installable gatekeeper that
+// collects nothing from the wizard is configured identically on every install, so a second one
+// adds no capability while splitting the vendor id its connections are recorded under
+// (GATEKEEPER_<SLUG> -> `mcp2`). A new zero-input gatekeeper that genuinely wants two installs is
+// a deliberate decision — make it here and in SINGLETON, not by accident.
+test("installable gatekeepers that take no inputs are install-once", () => {
+  for (const [name, entry] of Object.entries(buildTestManifest().workers)) {
+    if (entry.kind !== "gatekeeper" || !entry.installable) continue;
+    if ((entry.inputs ?? []).length > 0) continue;
+    assert.equal(entry.singleton, true,
+        `${name}: takes no deploy inputs, so a second install would be identical to the first ` +
+        `except for its slug — add it to SINGLETON, or give it an input that distinguishes ` +
+        `installs`);
   }
 });
 

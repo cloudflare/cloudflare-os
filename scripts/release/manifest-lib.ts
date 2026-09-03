@@ -275,13 +275,30 @@ const NOT_INSTALLABLE = new Set(["gatekeeper-email"]);
 const PREINSTALL = new Set(["gatekeeper-context", "gatekeeper-scheduler"]);
 
 // Gatekeepers that may be installed at most once per instance; the deploy service enforces this
-// at install time. The giveaway is the account declaring an agent singleton
-// (`AccountDescription.singleton` — context's `ContextLibrary`, scheduler's `ScheduleSession`):
-// the Workshop auto-provisions those accounts and folds the singleton into every workspace as an
-// ambient gatekeeper, so a second install would hand every user a duplicate ambient capsule.
-// Independent of PREINSTALL in principle; the two sets coincide today only because every ambient
-// gatekeeper we ship is also preinstalled.
-const SINGLETON = new Set(["gatekeeper-context", "gatekeeper-scheduler"]);
+// at install time. Two independent reasons to be here:
+//
+//  1. The account declares an agent singleton (`AccountDescription.singleton` — context's
+//     `ContextLibrary`, scheduler's `ScheduleSession`). The Workshop auto-provisions those
+//     accounts and folds the singleton into every workspace as an ambient gatekeeper, so a second
+//     install would hand every user a duplicate ambient capsule.
+//  2. Nothing could distinguish two installs. A gatekeeper taking no inputs (see
+//     NO_DEFAULT_CRED_INPUTS and the absence of a deploy-inputs.json) is configured identically on
+//     every install, so a second one is a byte-identical worker — it adds no capability, and it
+//     costs: the install slug is what the GATEKEEPER_<SLUG> binding, and hence the Workshop's
+//     vendor id, is derived from, so a duplicate installs as `mcp2` and its connections stop
+//     matching blueprints written against `mcp`.
+//
+// Reason 2 turns on inputs, not on the vendor: google/github/slack take per-install
+// CLIENT_ID/CLIENT_SECRET, so two installs can front two different OAuth apps and must stay
+// multi-install. Independent of PREINSTALL in principle; the ambient two coincide with it today
+// only because every ambient gatekeeper we ship is also preinstalled.
+const SINGLETON = new Set([
+  "gatekeeper-context",       // (1) ambient ContextLibrary
+  "gatekeeper-scheduler",     // (1) ambient ScheduleSession
+  "gatekeeper-homeassistant", // (2) no inputs; users connect their own URL + token in-app
+  "gatekeeper-mcp",           // (2) no inputs; users paste their own endpoints in-app
+  "gatekeeper-mcp-portal",    // (2) no inputs; the one portal comes from the deployment's vars
+]);
 
 /** Default wizard inputs for an installable gatekeeper that fronts a third-party OAuth app. */
 export const DEFAULT_CRED_INPUTS: DeployInput[] = [
