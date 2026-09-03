@@ -298,8 +298,24 @@ consumer side respectively:
 
 ```ts
 export class CredentialsExpiredError extends Error {
+  readonly code = "CredentialsExpiredError";           // transport-stable mark; name mirrors it
   constructor(message: string, opts?: { cause?: unknown });
 }
+export class CredentialsChangedError extends Error {   // credentials replaced mid-operation: the
+  readonly code = "CredentialsChangedError";           // failure was stale and the caller re-enters.
+  constructor(opts?: { cause?: unknown });             // Fixed display-safe message
+}
+export function isCredentialsExpired(e: unknown): boolean;  // matched by name or code: the RPC
+export function isCredentialsChanged(e: unknown): boolean;  // transport strips classes, and capnweb
+                                                            // rebuilds errors keeping enumerable own
+                                                            // props but not the name — code survives
+
+export type RejectionVerdict = "expired" | "superseded" | "unavailable";
+  // expired     — grant gone: provider-confirmed death (the account owns announcing it; delivery
+  //               never adjudicated) or a disconnect discovered during adjudication (never notifies)
+  // superseded  — a live successor replaced the rejected identity: refresh, heal, or reconnect
+  // unavailable — the heal failed for non-credential reasons; nothing adjudicated, and the source
+  //               rethrows the caller's original provider error
 
 export class CredentialCoordinator<Creds> {                  // lives in the UserAccount DO
   constructor(kv, opts: {                // keys are fixed: "credentials", plus ":identity" and
@@ -312,6 +328,7 @@ export class CredentialCoordinator<Creds> {                  // lives in the Use
       Creds | undefined;                 // reassembles the grant those keys hold. Retired by
                                          // clear(), so a clear() (or a restart after one) cannot
                                          // resurrect a grant since replaced or revoked
+    vendorId?: string;                   // log attribution for the heal-failure/overtaken logs
   });
   stored(): Creds | undefined;   // mints an identity for a record that predates them, so credentials
                                  // and a fence are always surfaced together
@@ -330,29 +347,77 @@ export class CredentialCoordinator<Creds> {                  // lives in the Use
   rotate(refresh: (current: Creds) => Promise<Creds>): Promise<Creds>;   // refreshes now, whatever
                                  // the recorded expiry says: the provider rejected an unexpired
                                  // credential, and it is the only authority that matters
+  snapshot(refresh, opts?: { notify?: () => Promise<void> }):
+    Promise<CredentialsWithIdentity<Creds>>;   // the account's getCredentials half: fresh(), then a
+                                 // SYNCHRONOUS re-read of record + identity + generation, so the
+                                 // triple is atomic against a connect() landing at the await
+                                 // boundary — the reason the helper lives here. A confirmed expiry
+                                 // of the still-stored grant awaits notify (§4.4's latch) before
+                                 // rethrowing — a reconnect landing mid-notify replaces the death
+                                 // and the fresh triple is served, while a disconnect landing
+                                 // there reads as not connected with the death as its cause; a
+                                 // disconnect is a user action and never notifies
+  adjudicateRejection(identity, opts: { refresh?; notify }): Promise<RejectionVerdict>;
+                                 // the account's reportCredentialsRejected half. "" (never-
+                                 // connected) answers "superseded"; every other moved fence
+                                 // resolves by successor — "superseded" when one is stored,
+                                 // "expired" when a disconnect left none (never notifying for the
+                                 // disconnect itself). No refresh means a grant-death provider:
+                                 // notify, "expired". Otherwise heal via rotate() — fence-keyed,
+                                 // so concurrent heals share one mint: success → "superseded";
+                                 // confirmed death → notify, "expired" (the fence re-checked
+                                 // after the notify await resolves a mid-notification reconnect
+                                 // or disconnect by successor again); any other mint failure →
+                                 // logged account-side, "unavailable" (credentials intact),
+                                 // unless the fence moved meanwhile. No durable
+                                 // dead-grant mint latch: a repeat report costs one doomed provider
+                                 // call answering invalid_grant again, and notification is deduped
+                                 // by notifyCredentialsExpiredOnce's own latch — a port that
+                                 // measures mint spam adds a cooldown inside its refresh callback
 }
 
 export class CredentialSource<Creds> {          // held by User entrypoint / facet / verifier
   constructor(opts: {
-    account: () => AccountCredentialStub<Creds>;   // { getCredentials(): Promise<{ creds, identity, generation }>; noteCredentialsExpired(identity) }
-    isAuthError(e: unknown): boolean;              // grant death only, never a per-resource denial
+    account: () => AccountCredentialStub<Creds>;   // { getCredentials(): Promise<CredentialsWithIdentity<Creds>>;
+                                 //   reportCredentialsRejected(identity): Promise<RejectionVerdict> —
+                                 //   an adjudication of identity, never of notification delivery
+                                 //   (that is the latch's, §4.4); a malformed or lost answer reads
+                                 //   "expired" — never dead-marking, only the account's word
+                                 //   retires an identity — so a broken transport cannot mask a
+                                 //   dead grant as retryable. A structural two-method type: the
+                                 //   coordinator helpers are the reference implementation, and a
+                                 //   hand-written stub owns their invariants — atomic triple
+                                 //   under a non-"" identity (the source refuses a "" read),
+                                 //   moved-past gate, heal fenced on the rejected identity,
+                                 //   honest verdicts }
+    isAuthError(e: unknown): boolean;              // credential rejection — the provider refusing
+                                 // the presented credentials — never a per-resource denial; the
+                                 // account's heal inside the adjudication, not the classifier,
+                                 // tells a stale derived bearer from a dead grant
     expiredMessage: string;
     vendorId?: string;                             // log attribution
   });
   get(): Promise<Creds>;       // reads the account; concurrent reads coalesce onto one round trip
-  run<T>(fn: (creds: Creds) => Promise<T>): Promise<T>;   // hands the call its creds, captures their
-                                 // identity; an auth failure under an identity a refetch has since
-                                 // superseded with a live successor is stale — rethrown as retry,
-                                 // not reported as expiry. No live successor, no retry: a mismatch
-                                 // alone can mean the read was fenced out, and its failure reports
+  run<T>(fn: (creds: Creds, read: CredentialRead) => Promise<T>,
+    opts?: { replayable?: boolean }): Promise<T>;  // hands the call its creds plus a fresh
+                                 // { identity, generation } read object — the action-fence capture,
+                                 // since authority() can move mid-operation — and resolves a
+                                 // confirmed rejection through the account's verdict: "expired" →
+                                 // CredentialsExpiredError(expiredMessage); "superseded" → retry
+                                 // once when `replayable`, else CredentialsChangedError;
+                                 // "unavailable" → the original provider error. At most two
+                                 // executions; an auth failure under an identity a refetch has
+                                 // since superseded with a live successor is stale and re-enters
+                                 // without an ask (§4.13)
   authority(): string | undefined;  // the connection generation of the last fetch, synchronously —
                                  // named for its facet-side cache-authority role, wired through
                                  // KvTtlCache.partitionedBy (§4.10). undefined before the first
-                                 // fetch, and from a reported expiry until a fetch started after
+                                 // fetch, and from a reported — or superseded-answered — rejection
+                                 // until a fetch started after
                                  // the report adopts an undead identity: partition unknown, so a
                                  // cache keyed on it bypasses rather than serves. Last-seen and
                                  // shared — never the action-fence capture, which rides the
-                                 // generation of its own fetch
+                                 // CredentialRead of its own run attempt
 }
 ```
 
@@ -423,10 +488,13 @@ transactional against provider-side rotation: a crash between the provider rotat
 the commit persisting it can lose the new token. The README documents this; nothing in the API
 may promise otherwise.
 
-`CredentialSource.run` resolves the credentials, hands them to the operation, and captures their
-identity before awaiting it. When `isAuthError(e)` is true and that captured identity is still the
-last one a fetch adopted, it calls `account().noteCredentialsExpired(identity)` and throws
-`new Error(expiredMessage, { cause: e })`, adding that identity to a dead set (per-activation and
+`CredentialSource.run` resolves the credentials, hands them to the operation together with a fresh
+`CredentialRead` — `{ identity, generation }`, constructed per attempt, never the source's internal
+triple — and captures the read before awaiting. When `isAuthError(e)` is true, `run` resolves the
+rejection through `account().reportCredentialsRejected(identity)` — the account's authoritative
+verdict, with any healing done *inside* that ask (§4.13). `"expired"` throws
+`CredentialsExpiredError(expiredMessage, { cause: e })`, adding that identity to a dead set
+(per-activation and
 never evicted: growth is bounded by account commits, and stale failures mark identities out of
 commit order, so no eviction order is safe): the account keeps the grant until reconnect, so a
 refetch returns the same identity,
@@ -434,19 +502,43 @@ and re-adopting its generation would let cache hits mask the outage — while a 
 flight at the report is fenced out entirely, since a straggler can carry any old identity. A fetch
 started after the report, adopting an identity not in the dead set (successful refresh or
 reconnect), re-establishes the authority. Expiry also surfaces through the fetch itself — a failed
-refresh rejects `getCredentials()` with an error named `CredentialsExpiredError` — and the source
+refresh rejects `getCredentials()` with an error marked `CredentialsExpiredError` — and the source
 drops the authority there too, under the same fence so a straggler's stale rejection cannot clear a
-revived partition. When a concurrent refetch has since adopted a **live successor** — a different
+revived partition. `"superseded"` — a live successor already replaced the rejected identity, or
+the account just healed past it — resolves as `CredentialsChangedError` with the authority left
+unknown, or,
+under `replayable`, as one internal retry: a fresh account read (the ask's fence bump forgot the
+pre-ask flight, and the single-threaded account answers after the heal's commit), refused as
+"changed" when its generation moved (a reconnect — never run under a principal the caller didn't
+start with), resolved as expiry without a provider call when it re-serves a dead-set successor
+the source last stood behind, refused as "changed" when the refetch was not itself adopted (a
+fenced-out response is stale evidence that can postdate a reconnect the source already adopted,
+with no adoption of its own to act on), refused as "changed" when its identity did not move (a
+lazy account re-served the rejected credentials, whose refetch's own adoption is dropped again so
+cache-first re-entries bypass rather than serve the partition it failed to defend), and otherwise
+a second execution whose own rejection is adjudicated but never retried — at most two executions.
+`"unavailable"` rethrows the caller's original provider error: nothing was adjudicated, and the
+heal's own failure lives in the account's logs. When a concurrent refetch has since adopted a
+**live successor** — a different
 identity not itself in the dead set — the failure is stale: reporting it would expire the grant
 that replaced the one the call used, and clearing the authority would drop the live grant's
-partition, so `run` reports nothing, clears nothing, and throws a fixed retry message instead. A
+partition, so `run` reports nothing and clears nothing. A replayable operation whose successor
+shares the read's generation — a heal of the caller's own principal — retries once under it, no
+ask spent; otherwise (non-replayable, or a moved generation marking a reconnect) `run` throws
+`CredentialsChangedError` instead. A
 bare identity mismatch is not enough: a fetch fenced out by the report still hands its credentials
 to its caller without adopting them, and when those fail too, nothing live succeeded them — the
 failure is fresh evidence and reports as expiry, or a later refetch would re-adopt the dead grant.
-The account hop is itself wrapped, so its failure cannot replace `expiredMessage`; everything else
-passes through.
+The account hop is itself wrapped, so its failure — or a malformed verdict — reads as `"expired"`
+and cannot mask a dead grant as retryable; everything else passes through. Callers wanting their
+own retry policy skip `replayable` and match `CredentialsChangedError`/`CredentialsExpiredError`
+(`isCredentialsChanged`/`isCredentialsExpired` — matching `name`, or the `code` that survives the
+transports that strip it) in a plain loop; the source itself is optional, and a port that only wants coordinated storage uses
+`get()` or the stub directly.
 
-**`isAuthError` is the one classifier the agent can aim.** It decides that a *grant* is dead, and
+**`isAuthError` is the one classifier the agent can aim.** It decides that the provider *rejected
+the credentials* — and the account's heal inside the rejection adjudication then tells a stale
+derived bearer from a dead grant — while
 the agent chooses which operations run — so a classifier matching bare 401/403 lets it retire a
 healthy connection by requesting one resource the grant does not cover, and the user is prompted to
 reconnect something that never broke. Per-resource denials are `isNoAccessError`'s job (§4.5); this
@@ -1041,11 +1133,13 @@ defect; each is either additive later or a fact about one provider that only bit
 
 | Obligation | Who it affects | Why it is deferred |
 | --- | --- | --- |
-| **Ordering credential mutations against `revoke`.** A refresh in flight when `revoke()` wipes storage mints a token the identity fence correctly discards — leaving live provider-side authority nobody stored. Google serializes its four credential paths on one FIFO chain (`google.ts:405-427`), and even it leaks one error-path `kv.delete("refreshToken")` outside the chain (`:524-530`). | every port with a refresh flow | `revoke()` is not in the kit — the account base owns it (§5.6): it drains the refresh in flight and best-effort revokes its result as well as the captured grant. `coordinator.fresh()` already coalesces concurrent refreshes; the coordinator needs no queue of its own. |
+| **Ordering credential mutations against `revoke`.** A refresh in flight when `revoke()` wipes storage mints a token the identity fence correctly discards — leaving live provider-side authority nobody stored. Google serializes its four credential paths on one FIFO chain (`google.ts:405-427`), and even it leaks one error-path `kv.delete("refreshToken")` outside the chain (`:524-530`). | every port with a refresh flow | `revoke()` is not in the kit — the account base owns it (§5.6): it drains the mint in flight — proactive refresh and rejection heal through one tracker — and best-effort revokes its result as well as the captured grant. `coordinator.fresh()` already coalesces concurrent refreshes; the coordinator needs no queue of its own. |
 | **Baseline re-checks on the exclusion path.** `verifyBaseline` runs at admission only, so an observer who later loses the binding-wide grant keeps observing. Google's batch result carries it per call — `{ baselineAllowed, allowed[] }` (`gatekeeper-google/src/observers.ts:48-49`) — and excludes on `!baselineAllowed` (`:206-215`). | google port first | Expressible today by folding the baseline into `hasSetAccess` (return all-`false`), so this is a documentation gap rather than a missing capability. Note google's baseline is a recorded *resource grant* (`resources.ts:203-205`), not org membership, and it *excludes* rather than removing the observer. |
 | **`maxTrackedSets` is a default, not a corpus constant.** 1000 comes from google's generic default, but its concrete Drive tracker overrides to **2000** (`drive-observers.ts:49-53`), sized against `ceil(N/100)` subrequests. | supabase, notion, linear ports, which had no cap at all | A port inherits a bound it never had; the number is per-provider and belongs in that port's options. |
 | **`maxObservers` is a platform bound the corpus does not have.** Every retained observer costs one verifier call per read, and Workers cap a request at **32 Worker invocations** — past that the call throws, so a binding with too many collaborators fails *every* read rather than degrading. No shipped tracker caps this: notion, confluence, context, linear and internal `gatekeeper-shared` fan out over all observers with unbounded `Promise.all`, and google throttles concurrency without bounding the total. | every strategy-C port | The kit refuses at admission instead, which is the legible half of the same failure. The default is **10**, not 20: an observer count prices only the kit's own hop, and every verifier in the corpus spends a second invocation calling its account DO (`notion.ts:615-635`), so 20 observers is 40 invocations before the read does anything. The real ceiling is per-deployment, so the number belongs in that port's options. `concurrency` is a throttle and never a bound. |
-| **Re-fetch after a reported expiry.** The account keeps the dead grant until reconnect — `noteCredentialsExpired` notifies, it does not clear — so any later `get()` fetches the same credentials back and its callers 401 again. | all | Self-healing and bounded: each round costs a redundant 401 (the account notifies once), never a wrong authorization. The source keeps reported identities in a per-activation dead set and refuses to re-adopt their generations, and fences out fetches already in flight at the report; without those, a cache hit under the restored partition never reaches the provider, so hit-only paths would mask the outage for the TTL and across the reconnect. A fetch started after the report, adopting an identity not in the set — successful refresh or reconnect — re-establishes the authority. |
+| **Re-fetch after a reported expiry.** The account keeps the dead grant until reconnect — `reportCredentialsRejected` notifies, it does not clear — so any later `get()` fetches the same credentials back and its callers 401 again. | all | Self-healing and bounded: each round costs a redundant 401 (the account notifies once), never a wrong authorization. The source keeps reported identities in a per-activation dead set and refuses to re-adopt their generations, and fences out fetches already in flight at the report; without those, a cache hit under the restored partition never reaches the provider, so hit-only paths would mask the outage for the TTL and across the reconnect. A fetch started after the report, adopting an identity not in the set — successful refresh or reconnect — re-establishes the authority. |
+| **Warm-path credential memo.** Every `run` and `get` opens an account round trip even when the same operation read credentials moments ago; the kit deliberately ships no consumer-side cache (§4.6), so a facet fanning out N provider calls pays N same-colo hops. | high-read-volume ports | The corpus survey behind §4.6 stands — 21 of 33 gatekeepers fetch per provider request, and the three that memoize gate on the *provider-issued expiry*, a projection the stored/public credential split does not carry today. An expiry-gated memo is additive (an `expiresAt` on the public projection plus a source option) and wants a port with measured hop cost in view, not a speculative default that would hold a stale principal for its window. |
+| **403 scope-regrant healing.** The rejection adjudication heals *credentials* — a stale bearer minted from a live grant. A 403 whose cause is a missing scope is a different failure: the grant is alive, no mint fixes it, and the recovery is a reconnect flow with incremental consent. Classifying it as an auth error would retire a healthy connection; classifying it as no-access hides the regrant path from the user. | google port first (incremental-consent scopes) | Needs surface the kit does not have: a per-operation scope requirement, a reconnect prompt distinct from expiry, and provider-specific insufficient-scope detection (google's `403 insufficientPermissions` vs. its resource-level 403s). Land it with the first port whose provider does incremental consent, so the classification is designed against real error bodies. |
 | **Corrupt-record blast radius.** A throwing `upgradeRecord` propagates out of `#coerce`, so one unreadable legacy record makes `listPending()` throw and blinds the whole simulation overlay rather than dropping that entry. | ports supplying `upgradeRecord` | Both behaviours lose something — a throw blinds everything, skipping hides one pending action from its user — so pick it with a real corpus of legacy records in view. |
 | **The retained tier is unbounded.** `#requireCapacity` scans only the pending prefix and skips `isRetained`, so `maxPending` bounds pending records and twice that many `staged`/`failed` ones, but never retained ones. A long-lived `retainApplied: true` binding accumulates one record per applied action indefinitely. | every retaining port | Retention is consumer policy and vendor caps differ; the binding must retire records through `runExclusive` under its own policy. |
 | **Past its bound, a pruned `failed` record takes the only account of what went wrong.** The Workshop keeps a thrown `applyPendingAction` pending and visible (`overseer.ts:9497-9500`, "the action stays pending and the turn stays suspended"), so the journal record is the sole holder of the reason. Once more than `2 × maxPending` prunable records accumulate, the oldest are dropped: a later approve degrades to `Unknown pending action` and a later reject succeeds silently, which can lose an `ActionApplyError` warning that a provider effect partly landed. | any port accumulating more than twice `maxPending` un-rejected failures on one resource | Storage must be bounded, so something must eventually go; the choice is only what and when. Counting failures against the cap instead — the obvious alternative — converts a lost diagnostic into a provider-triggered denial of service, blocking all staging until the user hand-clears them. Staged-first pruning and the doubled bound push this out; closing it entirely needs a tier that keeps reasons after their records, which is the same unbounded retention the row above defers. |
@@ -1560,10 +1654,13 @@ export function withAuthRetry<Token, T>(options: AuthRetryOptions<Token>,
   run: (token: Token) => Promise<T>): Promise<T>;
 ```
 
-`CredentialSource.run()` has exactly two outcomes: pass the call through, or report the account
-expired. That is right for the five gatekeepers whose 401 means the grant is gone (supabase,
-github, linear, spotify, homeassistant), and wrong for the four that mint a short-lived derived
-bearer from a longer-lived grant, where a 401 usually means *that bearer* is stale. All four
+`CredentialSource.run()` resolves every credential rejection through the account's verdict, heal
+included (§4.6); what `replayable` adds is the retry on a `"superseded"` answer. For the five
+gatekeepers whose 401 means the grant is gone (supabase,
+github, linear, spotify, homeassistant), the verdict alone is the whole story. The four that mint
+a short-lived derived
+bearer from a longer-lived grant, where a 401 usually means *that bearer* is stale, want the
+rejection healed and the call retried. All four
 hand-roll the same single retry: marketo (`marketo-api.ts:462-477`), google
 (`auth-retry.ts:100-141`, which additionally force-refreshes with the rejected token's identity),
 notion (`notion-api.ts:1022-1052`) and confluence (`confluence-api.ts:527-550`).
@@ -1576,32 +1673,103 @@ the refresh so a shared cache can skip a redundant mint when another caller alre
 (google's shape). A non-auth error at either attempt propagates immediately: transport failures and
 5xx are not credential problems, and retrying them here would double every provider outage.
 
-**This module reports nothing, because it holds no credential identity to fence a report on.** An
-expiry notification racing a reconnect is exactly what the identity fence exists to reject, and a
-stale notifier that stepped on one would mark a healthy grant dead — so neither a failing `getToken`
-nor a twice-rejected credential is reported from here. Both belong to the caller's
-`CredentialSource.run(creds => withAuthRetry(...))`: `withAuthRetry` swallows the first 401 and
-rethrows only a persistent one, so `run`'s catch fires exactly once, against the identity it
-captured *before* the attempt (§5.6).
+**This module reports nothing, and a `CredentialSource.run()` wrapped around it cannot reliably
+report either** *(revised 2026-09-03; this section previously blessed that composition)*: a
+report is fenced on the identity the source observed, and `withAuthRetry`'s refresh happens where
+no source sees it. For a grant that rotates on refresh — confluence persists a rotated refresh
+token on every redemption (`confluence.ts:372`) — the mint supersedes the identity mid-operation,
+so a persistent 401's report names the superseded grant and the account's fence gates it out: the
+dead grant stays accepted and the Workshop is never told to reconnect. The retry a source user
+needs therefore lives *behind the reporter* *(rewritten 2026-09-04 — the in-source replay this
+section previously specified collapsed into the verdict protocol; the dated inversion below
+records why)*: the account heals past a rejected-but-current credential *inside*
+`reportCredentialsRejected`, and `run(operation, { replayable: true })` retries once on its
+`"superseded"` answer. The whole protocol is three verdicts and one refetch. `"expired"` is
+provider-confirmed grant death, already notified account-side — or a disconnect discovered during
+the adjudication, which leaves no successor to retry into and never notifies: `run` throws
+`CredentialsExpiredError(expiredMessage)` and marks the identity dead. `"superseded"` means a live
+successor replaced the rejected identity — already replaced, or just healed past
+by `adjudicateRejection`'s fence-keyed `rotate()` (§4.6): a non-replayable `run` throws
+`CredentialsChangedError` and the caller re-enters; a replayable one refetches and retries. The
+refetch is ordering, not hope: the ask's fence bump forgot the pre-ask flight, so the retry opens
+a fresh account read, and the single-threaded account answers it after the heal's commit. Three
+local guards keep the retry single-shot and honest — a moved generation rethrows as "changed" (a
+reconnect: never run under a principal the caller didn't start with), an unmoved identity
+rethrows likewise (a lazy hand-written stub re-served the rejected credentials; the source cannot
+verify freshness for it, but it can refuse to burn the retry proving nothing), and an identity
+already in the dead set resolves as expiry without a provider call. The retry's own rejection is
+adjudicated but never retried — at most two executions, same doctrine as this module.
+`"unavailable"` is the heal failing for non-credential reasons: nothing was adjudicated, the
+caller gets the provider rejection it actually saw, and the token endpoint's error lives in the
+account's logs. A read superseded before any ask — a live successor adopted mid-operation — still
+skips the report entirely: its failure has nothing to tell a caller who only needs to re-enter.
+Identity succession is the account's to adjudicate: the moved-past gate resolves any identity
+that is not its current one by successor — `"superseded"` when a live one is stored, `"expired"`
+after a disconnect ("" — a never-connected read — never matches, always `"superseded"`) — and
+the verdict adjudicates identity, never notification delivery, whose latch deliberately stays
+unset on a failed callback so a later expiry re-notifies. The rejected
+authority drops at the ask: the rejection already proves the snapshot cannot vouch whichever way
+the answer goes — dead, its partition could serve the next principal stale data on a hit;
+superseded, it no longer vouches for the current principal (§4.10) — so cache-first readers
+bypass during the round trip instead of serving the rejected partition. A read landing mid-ask is
+served to its caller but never adopted — the pending ask blocks handing the rejected identity's
+partition back before the verdict, so the bypass holds for the whole round trip — and the
+authority drops again with the fences at the verdict, while the death mark itself waits for an
+`"expired"` answer. Asks coalesce per identity: the verdict adjudicates the
+identity, not the report, so concurrent reporters of one grant share the account round trip —
+and the account's fence-keyed mint flight collapses their heals onto one provider call; each
+reporter still takes its own drops around the shared answer.
+`withAuthRetry` remains for token flows that hold no source, where nothing reports; a configurator
+holds one (`AccountHandle.creds`, §5.1) wired through the same account stub, keeping refresh
+material account-side (§5.6).
 
-**Where `getToken` comes from is the port's, and today it is a vendor RPC.** For the five providers
-whose 401 means the grant is gone, there is nothing to wire: `CredentialSource.run` alone is the
-whole story. For the four that mint a derived bearer, `getToken({ forceRefresh: true })` has to
-reach the account, because §5.6 forbids refresh material crossing to a facet — so the mint is
-account-side by construction, and the channel is per-vendor: google passes
-`getAccessToken({ forceRefresh, staleToken })`, notion calls a separate `refreshCredentials()`
-(doc'd at §5.6's projection rule). The kit does not name that channel yet; the §5.6 work item below
-records the shape it should take, and until it lands a port supplies its own.
+**Inverted 2026-09-04, superseding the 2026-09-03 adjudication that kept the replay
+source-side.** That adjudication weighed the account-side alternative — the account minting
+inside the report and answering `"superseded"` — and rejected it on four costs. Re-weighed with
+the branch built and pressure-tested against its consumers (of which there are zero), each fell.
+*Caller-visible retry:* it isn't — `run` retries internally on the `"superseded"` answer, so the
+routine stale-bearer 401 recovers exactly as invisibly as the in-source replay did, and the heal
+now also covers **non-replayable** operations, closing the footgun where a stale derived bearer
+on one falsely retired a healthy account (the old protocol could only report it as expiry).
+*A third account round trip:* one to two extra same-colo RPCs on an error path only, priced
+against a token mint and a provider 401 already being spent. *The healthy account takes authority
+drops:* the ask-time drop is a cache-bypass window until the next read, `undefined` means bypass
+— never a wrong answer — and zero cache consumers exist today. *One-retry determinism migrates
+into cross-request account state:* the account DO is the *better* home for it — single-threaded,
+with the fence-keyed mint flight collapsing concurrent heals and `notifyCredentialsExpiredOnce`'s
+durable latch deduplicating notification — where the source-side version needed a per-read replay
+flight plus `#crossed`/`#seen` generation bookkeeping, machinery that existed in no real
+implementation, arrived in three post-feature fix commits defending the feature against its own
+authority-clears, and second-guessed ordering questions the account answers authoritatively for
+one same-colo RPC. The deciding evidence: every observed real implementation (mcp-shared's
+`noteCredentialsExpired`, google's account-side mint with its `staleToken` gate) already puts
+mint/verdict ordering account-side; the kit had armored the consumer and left the account
+bring-your-own. Deliberately not carried over: a durable dead-grant mint latch — a repeat report
+against a dead grant costs one provider call answering `invalid_grant` again, same verdict, and a
+port that measures mint spam adds a cooldown inside its `refresh` callback (google's
+`#mintFailure` shape), which is the escape hatch's job, not the kit's. The residual costs,
+accepted: heal-infrastructure errors reach the caller as the original 401 with the token
+endpoint's error in account logs; a double fault — the 401 plus a lost RPC reply after a
+successful heal — reads as one spurious `expiredMessage` to that caller (fail closed: no false
+Workshop notify, and the next fetch recovers); and a hand-rolled account carries the ordering
+contract the coordinator helpers otherwise own, mitigated by `adjudicateRejection` being the
+reference implementation and by the source's same-identity retry guard.
 
-`CredentialSource` cannot serve as that channel: `getCredentials()` is `coordinator.fresh(...)`,
-which refreshes on expiry only, so a grant killed by `invalid_grant` while its access token is
-still unexpired is re-served unchanged. `coordinator.rotate()` is the account-side half that
-forces one; whatever RPC a port puts in front of it owes the same dead-grant treatment
-`getCredentials()` gives — a still-current `CredentialsExpiredError` becomes
-`noteCredentialsExpired()`, fenced on the identity.
+**Where the refresh comes from is still the port's, and it is account-side by construction.** For
+the five providers whose 401 means the grant is gone, there is nothing to wire: the account
+passes no `refresh` to `adjudicateRejection`, so a current-identity rejection notifies and
+answers `"expired"` before any retry (a grant-death port passing `replayable` is harmless). For
+the four that mint a derived bearer, the mint is the `refresh` callback handed to
+`adjudicateRejection` — bare by design, so provider-specific mint logic (cooldowns, `staleToken`
+skips, scope handling) lives inside the port's callback, not in kit options.
+`getCredentials()` alone cannot serve: it is `coordinator.fresh(...)`, which
+refreshes on expiry only, so a grant killed by `invalid_grant` while its access token is still
+unexpired would be re-served unchanged — `adjudicateRejection`'s `rotate()` is what forces the
+mint past it.
 
-This closes the "401 retry" *logic* the §4.8 table recorded as deferred. The refresh channel the
-retry depends on stays per-vendor until the work item lands.
+This closes the "401 retry" logic the §4.8 table recorded as deferred and names its refresh
+channel (the `refresh` callback of `CredentialCoordinator.adjudicateRejection`), superseding the
+§5.6 deferral below.
 
 ### 4.14 `./endpoint`
 
@@ -1790,6 +1958,8 @@ export interface AuthStrategy<Creds, E extends KitEnv = KitEnv> {
   obtain(ctx: { env: E; baseUrl: string; payload: unknown; metadata: AttemptMetadata;
     kv }): Promise<Creds>;
   refresh?(creds: Creds, ctx: { env: E }): Promise<Creds>;   // CredentialsExpiredError on grant death only
+  heal?(creds: Creds, ctx: { env: E }): Promise<Creds>;  // mints past a rejected-but-current
+                                             // bearer (adjudicateRejection's refresh, §5.6); absent = grant death
   revoke?(creds: Creds, ctx: { env: E }): Promise<void>;
   isAuthError(error: unknown): boolean;      // runtime API classification (CredentialSource.run)
   expiredMessage: string;
@@ -1833,7 +2003,7 @@ export function oauth2<Creds, E extends KitEnv = KitEnv>(config: {
   pkce?: boolean;                                        // S256; verifier lives in the strategy's kv view, keyed by state
   exchange(ctx: { code: string; redirectUri: string; client: { id: string; secret: string };
     env: E; codeVerifier?: string; requestedScopes?: string[] }): Promise<Creds>;
-  refresh?; revoke?; isAuthError; expiredMessage; expiresAt?; refreshSkewMs?;
+  refresh?; heal?; revoke?; isAuthError; expiredMessage; expiresAt?; refreshSkewMs?;
   legacyKeys?: readonly string[];
   upgradeStoredCredentials?;
 }): AuthStrategy<Creds, E>;
@@ -1929,26 +2099,42 @@ Public loopback-RPC methods and their sequencing:
   does not have and could not safely enable: sign-in replay mints a second session
   (`user.ts:416-426`) and, for cloudflare login, revokes the grant it is about to keep
   (`user.ts:1567-1590`).
-- `getCredentials()` — `coordinator.fresh(strategy.refresh)`, projected through
+- `getCredentials()` — `coordinator.snapshot(strategy.refresh, { notify })` with
+  `notify = () => notifyCredentialsExpiredOnce(kv, callback, spec.id)`, projected through
   `config.publicCredentials` and returned as `{ creds, identity, generation }` (the coordinator's
   current credential identity, reissued whenever credentials are written or cleared, plus its
-  `connectionGeneration()`). A still-current
-  `CredentialsExpiredError` from refresh triggers `noteCredentialsExpired()` and rethrows as a
-  `CredentialsExpiredError` carrying the strategy's `expiredMessage` — the name must survive the
+  `connectionGeneration()` — read synchronously together, which is `snapshot`'s whole job). A
+  still-current
+  `CredentialsExpiredError` from refresh awaits `notify` inside the helper and rethrows — the name
+  must survive the
   RPC (the transport strips the class), since the source drops its cache authority on it; verify
   preservation at the first port. Any other refresh error rethrows with credentials intact. **The
   projection is not optional — see below.**
-- `noteCredentialsExpired(identity)` — no-ops unless `identity` matches the coordinator's
-  current one (a stale notifier lost the race to a reconnect); otherwise delegates to
-  `notifyCredentialsExpiredOnce` with `vendorId = spec.id`.
+- `reportCredentialsRejected(identity)` — delegates to
+  `coordinator.adjudicateRejection(identity, { refresh, notify })` with the same `notify` and
+  `refresh = strategy.heal` (§5.2), the *explicit* rejection-heal callback. Presence of
+  `strategy.refresh` must not be the discriminator: it is the proactive expiry refresh, and a
+  provider can define it while a 401 on a current, unexpired bearer still means grant death
+  (supabase) — inferring would spend a doomed mint to answer what the grant-death path answers
+  directly. A derived-bearer strategy whose heal *is* its refresh wires `heal: refresh`
+  deliberately; grant-death providers leave it unset. The
+  moved-past gate answers `"superseded"` without notifying (a stale reporter lost the race to a
+  reconnect or a sibling's heal); a current identity heals through the fence-keyed `rotate()` or,
+  on confirmed death, notifies via `notifyCredentialsExpiredOnce` with `vendorId = spec.id` and
+  answers `"expired"`. The verdict adjudicates identity only:
+  the latch deliberately stays unset on a failed callback so a later expiry re-notifies, and
+  returning that failure would make the source resolve a dead grant as superseded — an endless
+  retry the user is never told about.
 - `revoke()` — clears `"attemptGeneration"`, `deleteAlarm()` and `deleteAll()` **before** the first
   await, then best-effort `strategy.revoke` on the grant it captured (failures log `error` with
   event `oauth.grant.revoke.failed`). Destroying local state after awaiting the provider would let
   a connection begun during that await be erased by the revoke that preceded it. It also owns the
-  refresh in flight when it runs: the base hands the coordinator `strategy.refresh` wrapped so the
-  latest refresh promise is observable, and after `deleteAll()` it awaits that promise and
-  best-effort revokes its result too — a refresh that loses the identity fence otherwise mints
-  rotated provider-side authority nobody stored and nobody would ever revoke (§4.6 obligations).
+  mint in flight when it runs: the base hands the coordinator `strategy.refresh` *and*
+  `strategy.heal` wrapped through one tracker so the latest mint promise is observable, and after
+  `deleteAll()` it awaits that promise and best-effort revokes its result too — a refresh or
+  rejection heal that loses the identity fence otherwise mints rotated provider-side authority
+  nobody stored and nobody would ever revoke (§4.6 obligations). Draining only the refresh would
+  leave the heal's mint as exactly that leak.
 - `alarm()` — `deleteAll()` when no credentials exist or the account is ephemeral.
 
 Storage keys owned by the base: `"callback"`, `"nonce"`, `"reconnecting"`, `"expiredNotified"`,
@@ -1993,30 +2179,34 @@ here, by wiring the two to one type — which is precisely why this is written d
 built. `KitUserAccountBase<E, Creds, Public>` gains the third parameter; where a gatekeeper has no
 refresh flow (github), `Public = Creds` is a legitimate instantiation, not a default to fall into.
 
-**Deferred: the force-refresh channel (§4.13).** `getCredentials()` is `coordinator.fresh(...)`,
-which refreshes on expiry only, so nothing in the base's RPC list reaches `coordinator.rotate()`.
-A derived-bearer port therefore supplies `withAuthRetry`'s `getToken({ forceRefresh: true })` from
-its own vendor RPC — google's `getAccessToken({ forceRefresh, staleToken })`, notion's
-`refreshCredentials()`. Naming that channel here is what stops each port inventing one. Design
-notes for whoever lands it:
+**Landed 2026-09-03, superseded 2026-09-04**: this block shipped the force-refresh channel as
+`CredentialSourceOptions.refreshCredentials`, a consumer-side option triggered by
+`run(operation, { replayable: true })`. The 2026-09-04 inversion (§4.13) collapsed that channel
+into the verdict protocol — the option and `ExpiryVerdict` no longer exist; the mint is the
+`refresh` callback of `coordinator.adjudicateRejection`, and `reportCredentialsRejected` answers
+`"expired" | "superseded" | "unavailable"`. The block is kept for the design-note resolutions
+that still stand (the presence-check argument now applies to the account-side callback; the
+staleness contract moved to `adjudicateRejection`'s doc):
 
-- **A required method, not an optional parameter.** TypeScript accepts a zero-argument
-  implementation as satisfying `getCredentials(options?: …)`, and jsrpc drops the argument at
-  runtime, so an account that ignores `forceRefresh` compiles and silently re-serves the rejected
-  token; `withAuthRetry` then replays it, `run`'s catch fires, and a healthy grant is retired. A
-  required `rotateBearer()` fails with TS2741 at the mistake, and has no option to ignore.
-- **`staleBearer`, not `staleIdentity`.** `run` hands its callback `creds` only — `identity` stays
-  private — so an identity is unobtainable where this is wired. The rejected bearer is in scope by
-  construction, and comparing bearer values is what google already does (`google.ts:556`) to skip a
-  redundant mint. Required, since `withAuthRetry` always supplies it on the forced call.
-- **Expiry gates first.** Google refuses any cached token inside the safety window whatever the
-  request asks for (`google.ts:555`); a forced rotate must not be answered with one either.
-- **Do not widen `AccountCredentialStub`.** It would be dead surface for the five grant-death
-  providers. A free-standing type plus a small adapter over the bearer `run` already fetched keeps
-  the unforced path free of a second account round trip, which is the common case.
-- **Interaction with the fencing row (§4.8).** `getCredentialsForGeneration(expected)` extends this
-  same seam on a *different* trigger (the first principal-switching port), and generation overlaps
-  with `staleBearer` semantically. Whichever lands first should leave room for the other.
+The composition the original deferral assumed —
+`run(creds => withAuthRetry(...))` — routed the refresh around the reporter, so a rotating grant's
+expiry was unreportable (§4.13). The kernels of its design notes that survive the collapse, in
+the protocol's current vocabulary:
+
+- **Presence over required surface.** An optional method on an RPC stub cannot be
+  presence-checked (stubs are proxies that answer every property), and a required one is dead
+  surface for the five grant-death providers — which is why the heal is a local callback on
+  `adjudicateRejection`, never a stub method. The old safety throw (`replayable` without a wired
+  channel) is gone with the channel: an unwired heal now answers a current-identity rejection
+  `"expired"` honestly, so a grant-death port passing `replayable` is harmless (§4.13).
+- **The port's mint logic stays the port's.** Redundant-mint skipping (`google.ts:556`) and the
+  expiry gate (`google.ts:555`) live inside the port's `refresh` callback; the identity the old
+  channel had to be handed is the report's own argument, adjudicated account-side.
+- **Interaction with the fencing row (§4.8).** Still open. One constraint discovered here narrows
+  it, restated in the protocol's current form: the source refuses a retry whose refetch crossed a
+  connection generation (a reconnect — possibly a different principal) and rethrows as
+  `CredentialsChangedError`, so an operation never runs under a principal the caller didn't start
+  with — the same invariant the apply-time fenced read wants.
 
 ### 5.7 `./vendor` — `KitVendorBase<E>`
 
@@ -2029,8 +2219,12 @@ DurableObjectNamespace<…> }`. Implements `describe()` (returns `spec.vendor` a
 ### 5.8 `./user` — `KitUserBase<E, Creds, X>`
 
 Abstract `WorkerEntrypoint<E, KitAccountProps>` with hook `[kitUserConfig](): { spec; exports():
-X; account(): AccountStub<Creds> }`. The typed `exports()` closure is what lets the default
-resolver call `def.facet(exports(), props)` without a cast. Implements:
+X; account(): AccountStub<Creds> }`. The typed `exports()`
+closure is what lets the default resolver call `def.facet(exports(), props)` without a cast.
+The consumer side carries no mint wiring *(2026-09-04: the `refreshCredentials` option this hook
+previously threaded through is gone — the derived-bearer mint lives account-side behind
+`coordinator.adjudicateRejection` (§4.13), inside the same stub the source already holds)*.
+Implements:
 
 - `describe` / `getAuthenticatedEmail` via `spec.account.*` with a lazily built `AccountHandle`
   (a `CredentialSource` over `account()`).
@@ -2255,9 +2449,36 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
    credentials already reported expired. For
    `withAuthRetry` (§4.13): the success path asks for a token once with `forceRefresh: false`; a
    non-auth error at either attempt propagates with no refresh and no report; an auth error
-   refreshes with `{ forceRefresh: true, staleToken }` and returns the replay's result; two auth
-   errors surface the second one; and when composed under `CredentialSource.run`, the outer source
-   reports it exactly once.
+   refreshes with `{ forceRefresh: true, staleToken }` and returns the replay's result; and two
+   auth errors surface the second one. For the verdict protocol (§4.13): a rejection is reported
+   against the identity the failed attempt used, and the verdict decides — `"expired"` throws
+   `CredentialsExpiredError(expiredMessage)` with the identity marked dead, `"superseded"` throws
+   `CredentialsChangedError` or, under `replayable`, refetches and retries once, `"unavailable"`
+   (or a malformed or lost answer, which reads `"expired"` without the dead-mark — only the
+   account's word retires an identity) never masks a dead grant as retryable;
+   the retry is refused as "changed" when its refetch crosses a generation, re-serves the
+   rejected identity, or was not itself adopted (a fenced-out refetch triggers neither the
+   re-serve's authority drop nor the dead successor's expiry — both act only on the read the
+   source last stood behind), resolved as expiry without a provider call when the successor the
+   source stands behind is already dead, and its own rejection is adjudicated but never retried
+   (at most two executions); a live
+   successor adopted mid-operation resolves the failure as "changed" with no ask spent and the
+   live authority kept — before the first ask and at the retry's rejection alike; the rejected
+   authority drops at the ask (cache-first readers bypass during the round trip instead of
+   serving the rejected partition) and a read landing mid-ask is served but never adopted —
+   the pending ask blocks re-adopting the identity whose verdict is out — then drops again at
+   the verdict, with the death mark waiting for an `"expired"` answer; asks coalesce per identity, so a burst of rejections of one grant spends one report
+   and one refetch; and the coordinator halves hold their own contracts — `snapshot`'s triple is
+   atomic against a connect landing at the await boundary and notifies only a still-stored
+   grant's confirmed death, `adjudicateRejection` gates moved-past identities ("" never matches)
+   before healing through the fence-keyed rotate (concurrent heals share one mint), answers
+   `"superseded"` when a reconnect overtakes the mint, notifies before `"expired"`, and answers
+   `"unavailable"` with credentials intact when the mint fails for non-credential reasons —
+   proven composed by an integration suite (real coordinator over `fakeKv` behind a real source):
+   an invisible heal spending one mint and no notification, a dead grant under concurrent runs
+   spending one mint and one notification, a non-replayable stale bearer re-entering with no
+   second mint, a mid-operation reconnect resolving as "changed" with no mint, and one mint
+   however many facets report their stale bearers.
 6. **`actions` (§4.8).** Node tests: sequential IDs; staged→pending transitions; the default
    keys landing records at `pending:action:<id>` with counter `pending:nextActionId` (a
    live-storage contract for the supabase/google-family ports, so those literals are
@@ -2354,7 +2575,10 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
     dispatched through the queue (interleaving asserted against a concurrent apply), bound with
     `retainApplied: true` so its record survives apply, and firing `afterResolve("reverted")`;
     the facet-base assert rejects (named config error) a revert hook whose actions don't retain;
-    a stale-identity `noteCredentialsExpired` after a reconnect no-ops; with the
+    a stale-identity `reportCredentialsRejected` after a reconnect answers `"superseded"` without
+    notifying, and a current-identity one answers `"expired"` even when the Workshop callback
+    fails (the latch stays unset for a later re-notify; the verdict adjudicates identity only) —
+    both through the real account RPC; with the
     hook absent, `revertAction` throws not-implemented; strategy-B observer denial. This suite is
     also the proof that decorated subclasses of the kit's generic bases survive the
     `capnweb-validate` transform.

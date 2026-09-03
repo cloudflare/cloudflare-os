@@ -3,6 +3,7 @@
 /**
  * Coalesces concurrent work by key. Flights are installed synchronously and released after success
  * or rejection, so a later caller can retry. `forget()` stops new joins but does not cancel work.
+ * Keys compare with `Map` semantics, so an object key coalesces exactly the callers holding it.
  *
  * @example
  * ```ts
@@ -13,8 +14,8 @@
  * }
  * ```
  */
-export class SingleFlight {
-  readonly #inFlight = new Map<string, Promise<unknown>>();
+export class SingleFlight<K = string> {
+  readonly #inFlight = new Map<K, Promise<unknown>>();
 
   /**
    * Joins the existing flight for a key or starts one.
@@ -22,7 +23,7 @@ export class SingleFlight {
    * @param start Work to start when no flight exists.
    * @returns The shared in-flight result.
    */
-  run<T>(key: string, start: () => Promise<T>): Promise<T> {
+  run<T>(key: K, start: () => Promise<T>): Promise<T> {
     const joined = this.#inFlight.get(key) as Promise<T> | undefined;
     const flight = joined ?? start();
     if (joined === undefined) this.#inFlight.set(key, flight);
@@ -30,10 +31,19 @@ export class SingleFlight {
   }
 
   /**
+   * @param key Flight key.
+   * @returns Whether a joinable flight is installed for the key — false during `start`'s
+   * synchronous prologue and after `forget`, even while forgotten work still runs.
+   */
+  pending(key: K): boolean {
+    return this.#inFlight.has(key);
+  }
+
+  /**
    * Stops offering a flight to later callers.
    * @param key Flight key to forget.
    */
-  forget(key: string): void {
+  forget(key: K): void {
     this.#inFlight.delete(key);
   }
 
@@ -43,7 +53,7 @@ export class SingleFlight {
    * @param flight Flight being returned.
    * @returns The flight result.
    */
-  async #release<T>(key: string, flight: Promise<T>): Promise<T> {
+  async #release<T>(key: K, flight: Promise<T>): Promise<T> {
     try {
       return await flight;
     } finally {

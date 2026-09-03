@@ -52,7 +52,9 @@ describe("withAuthRetry", () => {
       throw token === "stale" ? firstError : secondError;
     });
 
-    // Reporting it belongs to `CredentialSource.run`, which holds the identity to fence on.
+    // Reporting is out of scope here: `CredentialSource.run(operation, { replayable: true })`
+    // owns the retry-then-report flow, with the account healing inside the rejection
+    // adjudication.
     await expect(withAuthRetry({
       getToken,
       isAuthError: error => error === firstError || error === secondError,
