@@ -17,6 +17,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getDevServerConfig } from "./dev-server-config.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
+import { relayTermination } from "./relay-termination.ts";
 import { vpRunEnv } from "./vp-concurrency.ts";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -56,7 +57,8 @@ const server = spawn(
     [join(ROOT, "scripts", "run-dev-server.ts"), "--serve-frontend-assets", ...passthroughArgs],
     { stdio: "inherit", cwd: ROOT, env });
 
-server.on("exit", (code, signal) => {
-  if (signal) process.kill(process.pid, signal);
-  else process.exit(code ?? 0);
-});
+// Signals reach the whole server tree, not just run-dev-server itself (relay-termination.ts).
+// Known limitation, not worth the restructuring to fix: the pre-flight steps above are
+// `execFileSync`, which blocks the event loop, so a signal arriving during `pnpm install` is not
+// forwarded until that call returns.
+relayTermination(server);
