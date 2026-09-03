@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import {
-  BYTES_PER_TASK, VP_DEFAULT_CONCURRENCY_LIMIT, VP_RUN_CONCURRENCY_LIMIT, cgroupMemoryLimitBytes,
-  concurrencyEnv, defaultConcurrencyLimit, effectiveMemoryBytes,
+  BYTES_PER_TASK, ROOT_ENV_FILE, VP_DEFAULT_CONCURRENCY_LIMIT, VP_RUN_CONCURRENCY_LIMIT,
+  cgroupMemoryLimitBytes, concurrencyEnv, defaultConcurrencyLimit, effectiveMemoryBytes,
+  envFileConcurrencyLimit,
 } from "./vp-concurrency.ts";
 
 const GiB = 1024 ** 3;
@@ -148,6 +149,55 @@ describe("cgroupMemoryLimitBytes", () => {
   });
 });
 
+// A `.env` fixture, again under the OS temp directory rather than the workspace -- and here that
+// matters twice over, since the real path this reads is the repo root's own `.env`.
+function envFileWith(contents: string): string {
+  const dir = join(fixtureRoot, `env-${++caseCount}`);
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, ".env");
+  writeFileSync(file, contents);
+  return file;
+}
+
+describe("envFileConcurrencyLimit", () => {
+  // Every spelling someone might reasonably use, including the shell `export` that is inert in the
+  // file itself but which people write anyway.
+  const spellings: [label: string, contents: string][] = [
+    ["bare", "VP_RUN_CONCURRENCY_LIMIT=2\n"],
+    ["export prefix", "export VP_RUN_CONCURRENCY_LIMIT=2\n"],
+    ["double quoted", `VP_RUN_CONCURRENCY_LIMIT="2"\n`],
+    ["single quoted", "VP_RUN_CONCURRENCY_LIMIT='2'\n"],
+    ["padded", "VP_RUN_CONCURRENCY_LIMIT = 2\n"],
+    ["after a comment", "# tuning\nVP_RUN_CONCURRENCY_LIMIT=2\n"],
+    ["among other vars", "FOO=bar\nVP_RUN_CONCURRENCY_LIMIT=2\nBAZ=qux\n"],
+  ];
+  for (const [label, contents] of spellings) {
+    it(`reads a ${label} value`, () => {
+      assert.equal(envFileConcurrencyLimit(envFileWith(contents)), "2");
+    });
+  }
+
+  it("reports nothing when the file is absent", () => {
+    assert.equal(envFileConcurrencyLimit(join(fixtureRoot, "nope", ".env")), null);
+  });
+
+  it("reports nothing when the file sets other variables only", () => {
+    assert.equal(envFileConcurrencyLimit(envFileWith("FOO=bar\n")), null);
+  });
+
+  // Unvalidated on purpose: vite-task reports a bad value against the name the user set, and this
+  // suite pins that so nobody "helpfully" adds a parse here that swallows it instead.
+  it("passes a non-numeric value through untouched", () => {
+    assert.equal(envFileConcurrencyLimit(envFileWith("VP_RUN_CONCURRENCY_LIMIT=garbage\n")),
+        "garbage");
+  });
+
+  it("defaults to the repo-root .env, not the current directory", () => {
+    // Resolved from the module's own location, so it is stable wherever the command was typed.
+    assert.equal(ROOT_ENV_FILE, join(dirname(import.meta.dirname), ".env"));
+  });
+});
+
 describe("concurrencyEnv", () => {
   const machine = { cpus: 10, memoryBytes: 32 * GiB };
 
@@ -156,7 +206,10 @@ describe("concurrencyEnv", () => {
     const { env, note } = concurrencyEnv(input, machine);
     assert.equal(env[VP_RUN_CONCURRENCY_LIMIT], "10");
     assert.equal(env.PATH, "/usr/bin");
-    assert.equal(note, "vp run: concurrency 10 (10 cpus, 32.0 GiB) -- set VP_RUN_CONCURRENCY_LIMIT to override");
+    assert.equal(
+        note,
+        "vp run: concurrency 10 (10 cpus, 32.0 GiB) -- " +
+          "set VP_RUN_CONCURRENCY_LIMIT in the environment or the repo-root .env to override");
   });
 
   // Saying *why* the number is small is the whole point of the flag: a container user otherwise
@@ -166,7 +219,30 @@ describe("concurrencyEnv", () => {
     assert.equal(
         note,
         "vp run: concurrency 4 (16 cpus, 4.0 GiB cgroup limit) -- " +
-          "set VP_RUN_CONCURRENCY_LIMIT to override");
+          "set VP_RUN_CONCURRENCY_LIMIT in the environment or the repo-root .env to override");
+  });
+
+  // The `.env` step, and the note that makes it verifiable: the failure it replaces was a value
+  // that looked set and silently was not.
+  it("takes a .env value over the formula and says where it came from", () => {
+    const { env, note } = concurrencyEnv({ PATH: "/usr/bin" }, machine, "2");
+    assert.equal(env[VP_RUN_CONCURRENCY_LIMIT], "2");
+    assert.equal(env.PATH, "/usr/bin");
+    assert.equal(note, "vp run: concurrency 2 (from .env)");
+  });
+
+  // Precedence: the environment is the more specific, more immediate statement of intent, so
+  // `VP_RUN_CONCURRENCY_LIMIT=2 pnpm test` still works on a machine whose `.env` says otherwise.
+  it("lets a real environment value beat .env, silently", () => {
+    const { env, note } = concurrencyEnv({ [VP_RUN_CONCURRENCY_LIMIT]: "3" }, machine, "8");
+    assert.equal(env[VP_RUN_CONCURRENCY_LIMIT], "3");
+    assert.equal(note, null);
+  });
+
+  it("passes an unparseable .env value through for vp to report", () => {
+    const { env, note } = concurrencyEnv({}, machine, "garbage");
+    assert.equal(env[VP_RUN_CONCURRENCY_LIMIT], "garbage");
+    assert.equal(note, "vp run: concurrency garbage (from .env)");
   });
 
   // An explicit value always wins, and validating it is vite-task's job, not ours: a deliberately

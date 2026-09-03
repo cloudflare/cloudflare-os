@@ -26,14 +26,29 @@
 //   - The floor is Vite+'s own default, so no machine gets slower than today. CI (`ubuntu-latest`,
 //     4 vCPU / 16 GiB) lands on exactly 4, so CI behaviour is unchanged.
 //
-// An explicit `process.env.VP_RUN_CONCURRENCY_LIMIT` always wins -- including a deliberately low
-// one for an OOM-prone machine -- and is never validated or rewritten here: vite-task's own parser
-// reports a bad value. The note printed when *we* chose the value is the discoverability fix; it
-// stays silent when the user set the variable.
+// An explicit value always wins -- including a deliberately low one for an OOM-prone machine -- and
+// is never validated or rewritten here: vite-task's own parser reports a bad value. Precedence is
+// `process.env.VP_RUN_CONCURRENCY_LIMIT` > the repo-root `.env` > this formula, and the note says
+// which of the three the number came from, since a value that silently failed to apply is the whole
+// problem being avoided.
+//
+// The `.env` step exists because that is where people reasonably expect to put a persistent
+// per-machine setting, and neither half of the stack looks there on its own: nothing loads a root
+// `.env` into `process.env` (no `--env-file`, no dotenv), and `vp` does not read one either, so the
+// variable was silently ignored while this wrapper printed a note inviting the user to set the very
+// variable they had just set. Note that a shell `export` in that file is inert unless the file is
+// `source`d -- `parseEnv` tolerates the prefix, so the line works here either way.
+//
+// Only this one variable is read out of `.env`, deliberately: this is not a general environment
+// bridge. A cached `vp` run strips the environment down to a built-in set and folds only declared
+// vars into task fingerprints (see AGENTS.md), so forwarding arbitrary `.env` entries would change
+// what tasks see without changing what they cache against.
 
 import { readFileSync } from "node:fs";
 import { availableParallelism, totalmem } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseEnv } from "node:util";
 
 /** vite-task's `DEFAULT_CONCURRENCY_LIMIT`: what `vp run` uses when nothing overrides it. */
 export const VP_DEFAULT_CONCURRENCY_LIMIT = 4;
@@ -43,6 +58,32 @@ export const BYTES_PER_TASK = 2 * 1024 ** 3;
 
 /** The environment variable vite-task reads its concurrency limit from. */
 export const VP_RUN_CONCURRENCY_LIMIT = "VP_RUN_CONCURRENCY_LIMIT";
+
+/**
+ * The repo-root `.env`. Derived from this module's own location rather than `cwd`, because the
+ * callers run from different directories (`run-dev-server` and the release build among them) and a
+ * setting meant for the workspace should not depend on where the command was typed.
+ */
+export const ROOT_ENV_FILE = join(dirname(dirname(fileURLToPath(import.meta.url))), ".env");
+
+/**
+ * `VP_RUN_CONCURRENCY_LIMIT` as spelled in `envFile`, or `null` when the file is absent or does not
+ * set it. Returned as the raw string: validating it is vite-task's job, exactly as for a value that
+ * arrived through the real environment.
+ */
+export function envFileConcurrencyLimit(envFile: string = ROOT_ENV_FILE): string | null {
+  let text: string;
+  try {
+    text = readFileSync(envFile, "utf8");
+  } catch {
+    // No `.env` at all is the normal case, not a problem to report.
+    return null;
+  }
+  // `node:util`'s parser, so there is no dependency to add and no hand-rolled parsing to get wrong:
+  // it already handles quotes, comments, blank lines and a leading `export `.
+  const value = parseEnv(text)[VP_RUN_CONCURRENCY_LIMIT];
+  return typeof value === "string" ? value : null;
+}
 
 /** The two machine facts the formula depends on, separated out so it can be tested. */
 export interface Machine {
@@ -116,7 +157,7 @@ function selfCgroupPaths(procSelfCgroup: string): { v2: string; v1: string } {
 function withAncestors(path: string): string[] {
   const paths = ["/"];
   let current = "";
-  for (const segment of path.split("/").filter(segment => segment.length > 0)) {
+  for (const segment of path.split("/").filter(part => part.length > 0)) {
     current += `/${segment}`;
     paths.push(current);
   }
@@ -157,11 +198,15 @@ export function cgroupMemoryLimitBytes(probe: CgroupProbe = {}): number | null {
   return limit;
 }
 
+// A real ceiling: present, finite and positive. `0`, a negative and v2's `NaN` are none of those,
+// and must not win the `min` and shrink the budget to nothing.
+function isCeiling(value: number | null): value is number {
+  return value !== null && Number.isFinite(value) && value > 0;
+}
+
 /** The smaller of the two finite ceilings; `hostBytes` alone when there is no cgroup limit. */
 export function effectiveMemoryBytes(hostBytes: number, cgroupLimitBytes: number | null): number {
-  const usable = (value: number | null): value is number =>
-      value !== null && Number.isFinite(value) && value > 0;
-  return usable(hostBytes) && usable(cgroupLimitBytes)
+  return isCeiling(hostBytes) && isCeiling(cgroupLimitBytes)
       ? Math.min(hostBytes, cgroupLimitBytes)
       : hostBytes;
 }
@@ -174,31 +219,44 @@ export function measureMachine(): Machine {
 }
 
 /**
- * A copy of `env` with `VP_RUN_CONCURRENCY_LIMIT` set from `machine` unless it is already present
- * (in which case the copy is byte-identical), plus the one-line note to print when this call chose
- * the value. `null` note means the caller set it and nothing should be printed.
+ * A copy of `env` with `VP_RUN_CONCURRENCY_LIMIT` resolved, plus the one-line note to print.
+ *
+ * Precedence is `env` > `envFileValue` > `machine`. A value already in `env` leaves the copy
+ * byte-identical and prints nothing: the caller set it in the environment and needs no telling. The
+ * other two both print, naming their source -- for `.env` that confirmation *is* the feature, since
+ * the failure it replaces was a value that looked set and silently was not.
  */
 export function concurrencyEnv(
-  env: NodeJS.ProcessEnv, machine: Machine,
+  env: NodeJS.ProcessEnv, machine: Machine, envFileValue: string | null = null,
 ): { env: NodeJS.ProcessEnv; note: string | null } {
   if (env[VP_RUN_CONCURRENCY_LIMIT] !== undefined) return { env: { ...env }, note: null };
+
+  // Passed through exactly as written, unvalidated, for the same reason an environment value is:
+  // vite-task's parser reports a bad one against the name the user actually set.
+  if (envFileValue !== null) {
+    return {
+      env: { ...env, [VP_RUN_CONCURRENCY_LIMIT]: envFileValue },
+      note: `vp run: concurrency ${envFileValue} (from .env)`,
+    };
+  }
+
   const limit = defaultConcurrencyLimit(machine.cpus, machine.memoryBytes);
   const gib = (machine.memoryBytes / 1024 ** 3).toFixed(1);
   const memory = machine.cgroupLimited ? `${gib} GiB cgroup limit` : `${gib} GiB`;
   return {
     env: { ...env, [VP_RUN_CONCURRENCY_LIMIT]: String(limit) },
     note: `vp run: concurrency ${limit} (${machine.cpus} cpus, ${memory}) -- ` +
-      `set ${VP_RUN_CONCURRENCY_LIMIT} to override`,
+      `set ${VP_RUN_CONCURRENCY_LIMIT} in the environment or the repo-root .env to override`,
   };
 }
 
 /**
- * The environment to spawn `vp run` with: `process.env` plus the computed concurrency limit, unless
- * one was set. Prints the note to stderr when it decided, so call it once per process rather than
- * once per spawn.
+ * The environment to spawn `vp run` with: `process.env` plus the resolved concurrency limit, unless
+ * one was already set there. Prints the note to stderr, so call it once per process rather than once
+ * per spawn.
  */
 export function vpRunEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const result = concurrencyEnv(env, measureMachine());
+  const result = concurrencyEnv(env, measureMachine(), envFileConcurrencyLimit());
   if (result.note) console.error(result.note);
   return result.env;
 }
