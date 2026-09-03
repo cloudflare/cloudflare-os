@@ -52,7 +52,11 @@ export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
 export const GOOGLE_CALENDAR_RESOURCE: SupportedResource = {
   urlPattern: "https://calendar.google.com/calendar/:calendarId/*",
   title: "Google Calendar",
-  description: "Read and manage a Google Calendar.",
+  description:
+      "Read and manage one selected calendar. For scheduling across people, request one connection " +
+      "using https://calendar.google.com/calendar/primary/?availability=allVisible, then call " +
+      "checkAvailability once with up to 50 attendee email addresses. Do not request each " +
+      "attendee's calendar.",
   grantable: true,
 };
 

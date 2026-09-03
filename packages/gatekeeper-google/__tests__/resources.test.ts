@@ -43,6 +43,15 @@ describe("resource declarations", () => {
     );
   });
 
+  it("advertises one batched Calendar connection for scheduling", () => {
+    expect(GOOGLE_CALENDAR_RESOURCE.description).toBe(
+      "Read and manage one selected calendar. For scheduling across people, request one connection " +
+      "using https://calendar.google.com/calendar/primary/?availability=allVisible, then call " +
+      "checkAvailability once with up to 50 attendee email addresses. Do not request each " +
+      "attendee's calendar.",
+    );
+  });
+
   it("has a distinct pattern per resource", () => {
     let patterns = SUPPORTED_RESOURCES.map(r => r.urlPattern);
     expect(new Set(patterns).size).toBe(patterns.length);
