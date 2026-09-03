@@ -35,7 +35,7 @@ const CACHE_PREFIX = "cache:";
  *
  * listProjects() {
  *   return this.#cache.cached("projects", 60_000,
- *     () => this.#creds.run(creds => this.#api.listProjects(creds)));
+ *     () => this.#creds.run(creds => this.#api.listProjects(creds), { replayable: true }));
  * }
  * ```
  */

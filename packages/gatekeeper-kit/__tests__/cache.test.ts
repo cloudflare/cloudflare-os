@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { KvTtlCache, type AuthoritySource, type CacheKv } from "../src/cache";
-import { CredentialSource } from "../src/credentials";
+import { CredentialsExpiredError, CredentialSource } from "../src/credentials";
 import { fakeKv } from "./fake-kv";
 
 function makeKv(): CacheKv {
@@ -197,10 +197,10 @@ describe("KvTtlCache.partitionedBy", () => {
       account: () => ({
         getCredentials: async () =>
           ({ creds: { token: "live" }, identity: account.identity, generation: account.generation }),
-        noteCredentialsExpired: async () => {},
+        reportCredentialsRejected: async () => "expired" as const,
       }),
       isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage: "Reconnect the account.",
+      expiredMessage: "Reconnect.",
     });
     return { source, account };
   }
@@ -218,7 +218,7 @@ describe("KvTtlCache.partitionedBy", () => {
 
     // A reported expiry drops the partition: the cache bypasses rather than serves the dead grant.
     await expect(source.run(async () => { throw new Error("401"); }))
-      .rejects.toThrow("Reconnect the account.");
+      .rejects.toThrow(CredentialsExpiredError);
     expect(await cache.cached("project", 60_000, async () => "unpartitioned"))
       .toBe("unpartitioned");
 
@@ -237,7 +237,7 @@ describe("KvTtlCache.partitionedBy", () => {
     await source.get();
     expect(await cache.cached("project", 60_000, async () => "from a")).toBe("from a");
     await expect(source.run(async () => { throw new Error("401"); }))
-      .rejects.toThrow("Reconnect the account.");
+      .rejects.toThrow(CredentialsExpiredError);
 
     // The account keeps the grant until reconnect, so the refetch returns the same identity;
     // adopting its generation would let hit-only paths serve the dead partition unchecked.
