@@ -269,6 +269,9 @@ function runBuild(
 // Both `vp` runs get the machine-aware concurrency limit (vp-concurrency.ts); computed once here so
 // its note prints once, and after `loadDevVars()` so a `.dev.vars` override is honoured.
 const vpEnv = vpRunEnv();
+const [pnpm, configuratorArgs] =
+    pnpmCommand(["exec", "vp", "run", "-r", "--cache", "build:configurator", "--dev"]);
+const [, appArgs] = pnpmCommand(["exec", "vp", "run", "-r", "--cache", "build:app:dev"]);
 try {
   await Promise.all([
     runBuild(
@@ -277,11 +280,8 @@ try {
       [join(WORKSHOP_BACKEND_DIR, "scripts", "build-format-blueprints.ts")],
       WORKSHOP_BACKEND_DIR,
     ),
-    runBuild("configurator UIs",
-        ...pnpmCommand(["exec", "vp", "run", "-r", "--cache", "build:configurator", "--dev"]), ROOT,
-        vpEnv),
-    runBuild("gatekeeper app UIs",
-        ...pnpmCommand(["exec", "vp", "run", "-r", "--cache", "build:app:dev"]), ROOT, vpEnv),
+    runBuild("configurator UIs", pnpm, configuratorArgs, ROOT, vpEnv),
+    runBuild("gatekeeper app UIs", pnpm, appArgs, ROOT, vpEnv),
   ]);
 } catch (err) {
   // The SIGTERM handler killing the builds also lands here, as the rejection of whichever build
