@@ -9119,6 +9119,12 @@ class OverseerImpl implements AgentHooks {
     // (bindWorkpiece, mergeChatChanges, enableHookRecord), with no dedicated trigger.
     // Spawner-to-spawner env edges are legal, hence the worklist; an env target that is a gadget
     // is skipped -- env gadgets are non-pending, so their bindings are covered by the first loop.
+    //
+    // The env is also the ceiling, not just the seed: a spawned chat's agent has no
+    // requestConnection tool (agent.ts restricts spawned agents to describeBinding/executeCode),
+    // and connection requests are created only by that tool, so no accepted request can ever add
+    // a connection to a spawned chat beyond `config.env`. If spawned agents ever gain that tool,
+    // this closure must learn about accepted requests too.
     let pending = [...ids];
     while (pending.length > 0) {
       let spec = this.storage.gatekeepers.get(pending.pop()!)?.creationSpec;
@@ -12887,6 +12893,11 @@ function requireLiveHook(impl: OverseerImpl, hookId: number): BoundHookRecord {
 // leaves the DO again: it is a persistent stub (it survives row deletion and DO resets), so once
 // issued it could never be revoked, and a holder would keep a live write channel into the gadget
 // after a disable/delete shrank every collaborator's verification scope.
+//
+// The wrapper covers the root callback only. Capabilities a callback method *returns* reach the
+// firing as independent stubs (the bindHook contract permits hooks to pass and return them) and
+// are not re-checked per call. That is deliberate: the holder is a gatekeeper bound by the session
+// contract, and this is a guard against a stale firing by mistake, not a revocable membrane.
 function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcStub<RpcTarget> {
   // The proxy target must be callable for the `apply` trap to ever fire (a Proxy over a
   // non-callable target is itself non-callable), and the bindHook contract allows the bound
