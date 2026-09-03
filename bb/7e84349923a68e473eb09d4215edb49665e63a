@@ -1,0 +1,19 @@
+scripts/run-dev-server.ts
+  s_d8168e28e90524::t_302dcd03bde354 272-274,283-284
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bb7e84349923a68e473eb09d4215edb49665e63a",
+  "prompts": {},
+  "sessions": {
+    "s_d8168e28e90524": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "78bf0016-ebc7-4405-83df-b9b826484738",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
