@@ -257,9 +257,8 @@ Logic:
 1. **Select in-scope gatekeepers** from `this.storage.gatekeepers.list()`:
    - `build`: all gatekeepers.
    - `use`: only those some gadget binds, an enabled hook feeds, or a bound agent spawner's env
-     names (`#useScopeGatekeeperIds` — every enabled hook counts: a hook record's `gadgetId` is
-     bookkeeping-only and can diverge from its callback's real target, so scope never consumes
-     it to exempt a hook, even one attributed to a still-provisional gadget).
+     names (`#useScopeGatekeeperIds` — a hook waking a still-provisional gadget stays out of
+     `use` scope until promotion; the merge diff reports that widening).
    - A `creationSpec` with a `vendorId` requires an account; other specs need no verifier or account
      choice.
 
@@ -434,7 +433,7 @@ Four events trigger it:
 | `addGatekeeper()` with a vendor-backed `creationSpec` | **build** scope — a live `build` session can `getGatekeeperById()`/`openSession()` on it with no observer check |
 | `bindWorkpiece()` for a permanent (non-`chatId`) edge onto a vendor-backed connection — or onto a legacy (pre-`creationSpec`) one, which nobody *can* be verified against, so it restarts and quarantines and fresh `use` opens then fail closed on the reconnect-required error | **use** scope — the gadget UI a `use` session drives can now invoke it |
 | A merge that promotes a pending gadget or a pending binding edge into `use` scope | **use** scope, same reason |
-| `enableHook` on a vendor-backed connection not already in `use` scope | **use** scope — the hook delivers the connection's data into a gadget a `use` session can open. Every enabled hook widens: the record's `gadgetId` is bookkeeping-only and can diverge from the callback's real target, so no provisional-gadget exemption is derived from it |
+| `enableHook` on a vendor-backed connection not already in `use` scope | **use** scope — the hook delivers the connection's data into a gadget a `use` session can open (a hook waking a still-provisional gadget stays out of `use` scope until promotion; the merge diff reports that widening) |
 
 The two roles widen independently, so each trigger passes the role it grew and the restart is
 skipped when no collaborator holds it: a new connection is in every `build` collaborator's scope

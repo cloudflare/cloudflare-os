@@ -605,21 +605,49 @@ describe("hooks widen use scope", () => {
     expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
   }));
 
-  it("enabling a hook attributed to a still-provisional gadget still widens use scope " +
-      "(attribution is bookkeeping-only)",
+  it("enabling a hook on a still-provisional gadget widens nothing",
       () => withImpl(async (impl, restarts) => {
     joinSession(impl, "use");
     seedGatekeeper(impl, 1);
     seedPendingGadget(impl, 100, 7);
     seedHook(impl, { gadgetId: 100 });
 
-    // hook.gadgetId can diverge from the callback's real restore target (bindHook falls back to
-    // the sole forged stub or the lowest-id gadget, and nothing validates the callback against
-    // it), so scope must not consume it: even a hook attributed to a pending gadget widens,
-    // fail-closed, until bindHook can introspect the callback's actual target.
+    // The gadget this hook wakes is still a proposal within a chat: "use" collaborators can't
+    // open it (getGadget refuses pending gadgets), so the hook's connection isn't reachable
+    // from their sessions and enabling it must not sever them or quarantine the connection.
     impl.enableHookRecord(impl.storage.boundHooks.get(5));
 
     expect(impl.storage.boundHooks.get(5).enabled).toBe(true);
+    expect(restarts).toEqual([]);
+    expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
+  }));
+
+  it("promoting the hook's gadget at merge is the widening",
+      () => withImpl(async (impl, restarts) => {
+    joinSession(impl, "use");
+    seedGatekeeper(impl, 1);
+    seedPendingGadget(impl, 100, 1);
+    seedHook(impl, { gadgetId: 100 });
+    impl.storage.chatMeta.put(
+        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+
+    impl.enableHookRecord(impl.storage.boundHooks.get(5));
+    expect(restarts).toEqual([]);
+    // The creation lands on a "changes" message, stamping the pending record for merge coverage.
+    await impl.commitAgentStep(1, AGENT, [{ type: "message", message: "created a gadget" }], {
+      changes: [],
+      createdGadgets: [{ gadgetId: 100, title: "G", bindingName: "G" }],
+      addedBindings: [],
+    });
+    expect(restarts).toEqual([]);
+
+    expect(await impl.mergeChanges(1, USER_META, "owner-user-do"))
+        .toEqual({ outcome: "merged" });
+
+    // Accepting the creation is the moment the hook's write channel becomes state the "use"
+    // collaborator can open, so the merge's scope diff reports the widening: restart plus
+    // quarantine, exactly like promoting a pending binding edge.
+    expect(impl.storage.gadgets.get(100).pending).toBeUndefined();
     expect(restarts).toHaveLength(1);
     expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
   }));
