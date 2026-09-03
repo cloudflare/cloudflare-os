@@ -25,6 +25,9 @@ overrides:
   # catalog so this and the manifests can't disagree: a catalog only covers what a workspace
   # manifest declares itself, and the override is what reaches vite as somebody else's peer.
   vite: "catalog:"
+  # diff3@0.0.4 drops the local `ed` declaration but still assigns it, which throws when
+  # Wrangler bundles the CommonJS package into strict ESM (axosoft/diff3#2).
+  diff3: 0.0.3
   # minimumReleaseAge gates direct deps but not these two, so pin them to the last
   # mature release (CI verifies every lockfile entry against the release-age policy):
   # - @types/node arrives as an optional vite/vitest peer resolved to `latest`.
