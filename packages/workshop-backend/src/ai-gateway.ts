@@ -1,4 +1,6 @@
-import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS } from "@gadgets/workshop-shared/api";
+import {
+  AiChatAuthorInfo, AiModelConfig, HTTPS_ONLY_PROVIDERS, SUGGESTED_MODELS,
+} from "@gadgets/workshop-shared/api";
 import { UserAiModelRecord } from "./user.js";
 
 // The model used for quick tasks like title generation when AI Gateway mode is active.
@@ -6,21 +8,6 @@ import { UserAiModelRecord } from "./user.js";
 // This 70B model is quite fast and cheap and produces pretty good titles. The cost is insignificant
 // compared to the actual coding model so there's not much reason to use a smaller model.
 const QUICK_MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
-
-/**
- * Providers whose pi API adapter refuses a custom fetch, so their inference cannot ride the
- * Workers AI binding and needs CF_AI_GATEWAY_API_TOKEN over HTTPS. pi's Google adapter throws
- * "Custom fetch is not supported by the Google Generative AI adapter" whenever the fetch it is
- * given is not globalThis.fetch, and the client it builds on offers no hook to route around that:
- * @google/genai's `GoogleGenAI` takes only `httpOptions`, whose knobs are
- * baseUrl/apiVersion/headers/timeout/extraBody/retryOptions.
- * https://github.com/earendil-works/pi/blob/v0.84.2/packages/ai/src/api/google-generative-ai.ts#L80
- *
- * pi's Vertex adapter throws the same way, so a google-vertex provider would belong here too; it
- * is absent only because this deployment has no such provider.
- * https://github.com/earendil-works/pi/blob/v0.84.2/packages/ai/src/api/google-vertex.ts#L98
- */
-const HTTPS_ONLY_PROVIDERS = new Set(["google"]);
 
 export class AiGatewayConfig {
   readonly gateway: string;

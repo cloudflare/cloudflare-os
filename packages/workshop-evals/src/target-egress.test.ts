@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { EvalModel } from "./config.js";
 import type { LocalModelAccess } from "./target.js";
 
 type CapturedConfig = {
@@ -67,8 +68,24 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-async function run(access: LocalModelAccess): Promise<void> {
-  const opened = await openLocalEvalTarget(access, "@cf/model", 25);
+const WORKERS_AI_MODEL: EvalModel = { provider: "cloudflare", model: "@cf/model" };
+const DIRECT: LocalModelAccess = { kind: "direct", accountId: "account-id", apiToken: "token" };
+const BINDING: LocalModelAccess = {
+  kind: "gateway", gateway: "gateway", accountId: "account-id", transport: "binding",
+};
+const BINDING_WITH_TOKEN: LocalModelAccess = { ...BINDING, apiToken: "token" };
+const HTTPS: LocalModelAccess = {
+  kind: "gateway", gateway: "gateway", accountId: "account-id", transport: "https",
+  apiToken: "token",
+};
+
+const WORKERS_AI_INFERENCE_URL =
+    "https://gateway.ai.cloudflare.com/v1/account-id/gateway/workers-ai/v1/chat/completions";
+const COST_LOG_URL =
+    "https://api.cloudflare.com/client/v4/accounts/account-id/ai-gateway/gateways/gateway/logs/log-id";
+
+async function run(access: LocalModelAccess, model: EvalModel = WORKERS_AI_MODEL): Promise<void> {
+  const opened = await openLocalEvalTarget(access, model, 25);
   await opened[Symbol.asyncDispose]();
 }
 
@@ -76,24 +93,16 @@ it("allows the direct Workers AI route", async () => {
   fakes.requestUrls.push(
       "https://api.cloudflare.com/client/v4/accounts/account-id/ai/v1/chat/completions");
 
-  await run({ kind: "direct", accountId: "account-id", apiToken: "token" });
+  await run(DIRECT);
 
   expect(globalThis.fetch).toHaveBeenCalledOnce();
   expect(fakes.responseStatuses).toEqual([204]);
 });
 
-it("allows AI Gateway inference and cost-log routes", async () => {
-  fakes.requestUrls.push(
-    "https://gateway.ai.cloudflare.com/v1/account-id/gateway/workers-ai/v1/chat/completions",
-    "https://api.cloudflare.com/client/v4/accounts/account-id/ai-gateway/gateways/gateway/logs/log-id",
-  );
+it("allows AI Gateway inference and cost-log routes over HTTPS", async () => {
+  fakes.requestUrls.push(WORKERS_AI_INFERENCE_URL, COST_LOG_URL);
 
-  await run({
-    kind: "gateway",
-    gateway: "gateway",
-    accountId: "account-id",
-    apiToken: "token",
-  });
+  await run(HTTPS);
 
   expect(globalThis.fetch).toHaveBeenCalledTimes(2);
   expect(fakes.configs).toEqual([{
@@ -109,16 +118,9 @@ it("allows AI Gateway inference and cost-log routes", async () => {
 });
 
 it("keeps HTTPS model routes closed in binding mode", async () => {
-  fakes.requestUrls.push(
-    "https://gateway.ai.cloudflare.com/v1/account-id/gateway/workers-ai/v1/chat/completions",
-    "https://api.cloudflare.com/client/v4/accounts/account-id/ai-gateway/gateways/gateway/logs/log-id",
-  );
+  fakes.requestUrls.push(WORKERS_AI_INFERENCE_URL, COST_LOG_URL);
 
-  await run({
-    kind: "gateway",
-    gateway: "gateway",
-    accountId: "account-id",
-  });
+  await run(BINDING);
 
   expect(globalThis.fetch).not.toHaveBeenCalled();
   expect(fakes.configs).toEqual([{
@@ -134,6 +136,63 @@ it("keeps HTTPS model routes closed in binding mode", async () => {
   expect(fakes.responseStatuses).toEqual([403, 403]);
 });
 
+it("keeps HTTPS model routes closed in binding mode even when a token is available", async () => {
+  fakes.requestUrls.push(WORKERS_AI_INFERENCE_URL, COST_LOG_URL);
+
+  await run(BINDING_WITH_TOKEN);
+
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+  expect(fakes.configs).toEqual([{
+    account_id: "account-id",
+    ai: { binding: "WORKERS_AI", remote: true },
+    vars: {
+      CF_AI_GATEWAY: "gateway",
+      CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
+      CF_AI_GATEWAY_API_TOKEN: "token",
+      CF_AI_GATEWAY_PROVIDERS: "cloudflare",
+      CF_AI_GATEWAY_USE_BINDING: "true",
+    },
+  }]);
+  expect(fakes.responseStatuses).toEqual([403, 403]);
+});
+
+it("opens only the HTTPS inference route for an HTTPS-only provider in binding mode", async () => {
+  fakes.requestUrls.push(
+    "https://gateway.ai.cloudflare.com/v1/account-id/gateway/google-ai-studio/v1beta/models/gemini-3.6-flash:streamGenerateContent",
+    WORKERS_AI_INFERENCE_URL,
+    COST_LOG_URL,
+  );
+
+  await run(BINDING_WITH_TOKEN, { provider: "google", model: "gemini-3.6-flash" });
+
+  expect(globalThis.fetch).toHaveBeenCalledOnce();
+  expect(fakes.configs).toEqual([{
+    account_id: "account-id",
+    ai: { binding: "WORKERS_AI", remote: true },
+    vars: {
+      CF_AI_GATEWAY: "gateway",
+      CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
+      CF_AI_GATEWAY_API_TOKEN: "token",
+      CF_AI_GATEWAY_PROVIDERS: "google",
+      CF_AI_GATEWAY_USE_BINDING: "true",
+    },
+  }]);
+  expect(fakes.responseStatuses).toEqual([204, 403, 403]);
+});
+
+it("scopes HTTPS inference to the model's own gateway route", async () => {
+  fakes.requestUrls.push(
+    "https://gateway.ai.cloudflare.com/v1/account-id/gateway/anthropic/v1/messages",
+    WORKERS_AI_INFERENCE_URL,
+  );
+
+  await run(HTTPS, { provider: "anthropic", model: "claude-sonnet-5" });
+
+  expect(globalThis.fetch).toHaveBeenCalledOnce();
+  expect(fakes.configs[0]?.vars?.CF_AI_GATEWAY_PROVIDERS).toBe("anthropic");
+  expect(fakes.responseStatuses).toEqual([204, 403]);
+});
+
 it("returns a deterministic denial for every other route", async () => {
   fakes.requestUrls.push(
     "https://example.com/collect",
@@ -141,7 +200,7 @@ it("returns a deterministic denial for every other route", async () => {
     "http://127.0.0.1:9999/admin",
   );
 
-  await run({ kind: "direct", accountId: "account-id", apiToken: "token" });
+  await run(DIRECT);
 
   expect(globalThis.fetch).not.toHaveBeenCalled();
   expect(fakes.responseStatuses).toEqual([403, 403, 403]);
@@ -152,7 +211,7 @@ it("keeps the deny filter installed when runtime shutdown fails", async () => {
       () => Promise.reject(new Error("workerd failed to terminate")));
 
   const opened = await openLocalEvalTarget(
-      { kind: "direct", accountId: "account-id", apiToken: "token" }, "@cf/model", 25);
+      DIRECT, WORKERS_AI_MODEL, 25);
   const fetchDuringCleanup = globalThis.fetch;
   await expect(opened[Symbol.asyncDispose]())
       .rejects.toThrow("workerd failed to terminate");
@@ -175,7 +234,7 @@ it("preserves session and runtime cleanup failures", async () => {
       () => Promise.reject(new Error("workerd failed to terminate")));
 
   const opened = await openLocalEvalTarget(
-      { kind: "direct", accountId: "account-id", apiToken: "token" }, "@cf/model", 25);
+      DIRECT, WORKERS_AI_MODEL, 25);
   const fetchDuringCleanup = globalThis.fetch;
   const failure = await opened[Symbol.asyncDispose]().then(() => undefined, error => error);
 
@@ -192,7 +251,7 @@ it("keeps the deny filter installed when setup cleanup cannot stop workerd", asy
   const unrestrictedFetch = globalThis.fetch;
 
   await expect(openLocalEvalTarget(
-      { kind: "direct", accountId: "account-id", apiToken: "token" }, "@cf/model", 25))
+      DIRECT, WORKERS_AI_MODEL, 25))
     .rejects.toThrow("Eval session setup and cleanup failed");
   expect(globalThis.fetch).not.toBe(unrestrictedFetch);
   expect((await fetch("https://example.com/collect", { method: "POST" })).status).toBe(403);

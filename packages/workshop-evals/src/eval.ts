@@ -1,9 +1,9 @@
 import { createJudge, describeEval } from "vitest-evals";
 import { expect } from "vitest";
-import { evalMatrix, resolveEvalCommit } from "./config.js";
+import { evalMatrix, resolveEvalCommit, resolveEvalModel } from "./config.js";
 import { createWorkshopHarness } from "./harness.js";
 import { taskVersion, type EvalRunInput, type EvalRunOutput, type EvalTask } from "./task.js";
-import { resolveModelAccess } from "./target.js";
+import { assertModelAccess, resolveModelAccess } from "./target.js";
 
 const gitCommit = resolveEvalCommit();
 const modelAccess = resolveModelAccess();
@@ -32,6 +32,8 @@ const FunctionalJudge = createJudge<EvalRunInput, EvalRunOutput>(
 /** Register one task as model-by-trial Vitest cases. */
 export function defineTaskEval(task: EvalTask): void {
   const matrix = evalMatrix();
+  // Fail at collection, before any inference, if the access cannot serve a model in the matrix.
+  matrix.models.map(resolveEvalModel).forEach(model => assertModelAccess(modelAccess, model));
   const cases = matrix.models.flatMap(model =>
     Array.from({ length: matrix.trials }, (_unused, trial) => ({
       name: `${model} | trial ${trial + 1}`,

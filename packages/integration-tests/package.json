@@ -7,7 +7,8 @@
     "./harness": "./src/harness.ts",
     "./agent-session": "./src/agent-session.ts",
     "./network-interceptor": "./src/network-interceptor.ts",
-    "./rpc-client": "./src/rpc-client.ts"
+    "./rpc-client": "./src/rpc-client.ts",
+    "./mock-model": "./src/mock-model.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

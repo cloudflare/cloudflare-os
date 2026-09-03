@@ -5,7 +5,7 @@ import {
   type TranscriptEvent,
 } from "vitest-evals";
 import {
-  EVAL_AGENT_BUDGET_MS, EVAL_VERIFICATION_BUDGET_MS, type EvalIdentity,
+  EVAL_AGENT_BUDGET_MS, EVAL_VERIFICATION_BUDGET_MS, resolveEvalModel, type EvalIdentity,
 } from "./config.js";
 import type { EvalCheck, EvalRunInput, EvalRunOutput, EvalTask, EvalTurnResult } from "./task.js";
 import { measureHistory, toTranscriptEvents } from "./transcript.js";
@@ -41,11 +41,12 @@ export function createWorkshopHarness(
       let runError: Error | undefined;
       let cleanupError: Error | undefined;
       let unrecordedPrompt: string | undefined;
+      const model = resolveEvalModel(input.model);
 
       try {
         const agentTurnBudget = Math.floor(EVAL_AGENT_BUDGET_MS / task.turns.length);
         const verificationBudget = Math.floor(EVAL_VERIFICATION_BUDGET_MS / task.turns.length);
-        opened = await openLocalEvalTarget(access, input.model, agentTurnBudget);
+        opened = await openLocalEvalTarget(access, model, agentTurnBudget);
 
         for (const turn of task.turns) {
           const turnStartedAt = Date.now();
@@ -153,7 +154,7 @@ export function createWorkshopHarness(
         output: { success, turns, metrics },
         events,
         usage: {
-          provider: "cloudflare",
+          provider: model.provider,
           model: input.model,
           toolCalls: metrics.toolCalls,
           metadata: usageMetadata,

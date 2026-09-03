@@ -1,13 +1,23 @@
 import { execFileSync } from "node:child_process";
+import {
+  SUGGESTED_MODELS, type AiModelProvider, type SuggestedModelId,
+} from "@gadgets/workshop-shared/api";
 
-const DEFAULT_MODELS = ["@cf/deepseek-ai/deepseek-v4-pro-0813"];
+/** A model ID: catalog IDs autocomplete, but WORKSHOP_EVAL_MODELS may name any model. */
+export type EvalModelId = SuggestedModelId | (string & {});
+/** A model resolved to the provider that serves it. */
+export type EvalModel = { provider: AiModelProvider; model: string };
+
+// The default must be a Workers AI catalog model so it runs in both direct and gateway mode.
+const DEFAULT_MODELS: readonly SuggestedModelId<"cloudflare">[] =
+  ["@cf/deepseek-ai/deepseek-v4-pro-0813"];
 const GIT_SHA_PATTERN = /^[a-f0-9]{40}$/;
 
 export const EVAL_AGENT_BUDGET_MS = 28 * 60_000;
 export const EVAL_VERIFICATION_BUDGET_MS = 2 * 60_000;
 export const EVAL_TEST_TIMEOUT_MS = 40 * 60_000;
 export type EvalIdentity = { gitCommit: string; taskVersion: string };
-export type EvalMatrix = { models: string[]; trials: number };
+export type EvalMatrix = { models: EvalModelId[]; trials: number };
 
 function commaList(value: string): string[] {
   return value.split(",").map(item => item.trim()).filter(Boolean);
@@ -36,6 +46,20 @@ export function resolveEvalCommit(
     throw new Error("WORKSHOP_EVAL_COMMIT must be a full 40-character Git SHA");
   }
   return commit;
+}
+
+/**
+ * Resolve a model ID to the provider listed for it in SUGGESTED_MODELS. Unlisted IDs fall back
+ * to Workers AI (every Workers AI ID is `@cf/...`, and cloudflare is the only provider the direct
+ * transport serves), so an unknown model runs exactly as a catalog Workers AI model does.
+ */
+export function resolveEvalModel(modelId: string): EvalModel {
+  for (const [provider, models] of Object.entries(SUGGESTED_MODELS)) {
+    if (Object.hasOwn(models, modelId)) {
+      return { provider: provider as AiModelProvider, model: modelId };
+    }
+  }
+  return { provider: "cloudflare", model: modelId };
 }
 
 /** Parse the model and repetition controls before a trial can spend inference. */

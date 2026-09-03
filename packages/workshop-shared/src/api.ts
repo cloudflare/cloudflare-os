@@ -1183,10 +1183,7 @@ export const WORKERS_AI_OUTPUT_LIMIT = 32768;
  * `outputLimit`, when present, is both the requested response cap and the space reserved for it,
  * leaving the remainder as the prompt budget context compaction sizes against.
  */
-export const SUGGESTED_MODELS: Record<
-  AiModelProvider,
-  Record<string, {name: string, contextWindow: number, outputLimit?: number}>
-> = {
+const SUGGESTED_MODEL_CATALOG = {
   "cloudflare": {
     "@cf/moonshotai/kimi-k2.7-code": {
       name: "Kimi K2.7 Code (Workers AI)", contextWindow: 262144,
@@ -1221,7 +1218,34 @@ export const SUGGESTED_MODELS: Record<
   },
   "ollama": {
   },
-};
+} satisfies Record<
+  AiModelProvider,
+  Record<string, {name: string, contextWindow: number, outputLimit?: number}>
+>;
+
+export const SUGGESTED_MODELS: Record<
+  AiModelProvider,
+  Record<string, {name: string, contextWindow: number, outputLimit?: number}>
+> = SUGGESTED_MODEL_CATALOG;
+
+/** A model ID listed in SUGGESTED_MODELS, optionally narrowed to one provider's catalog. */
+export type SuggestedModelId<P extends AiModelProvider = AiModelProvider> =
+  { [K in P]: keyof (typeof SUGGESTED_MODEL_CATALOG)[K] & string }[P];
+
+/**
+ * Providers whose pi API adapter refuses a custom fetch, so their inference cannot ride the
+ * Workers AI binding and needs CF_AI_GATEWAY_API_TOKEN over HTTPS. pi's Google adapter throws
+ * "Custom fetch is not supported by the Google Generative AI adapter" whenever the fetch it is
+ * given is not globalThis.fetch, and the client it builds on offers no hook to route around that:
+ * @google/genai's `GoogleGenAI` takes only `httpOptions`, whose knobs are
+ * baseUrl/apiVersion/headers/timeout/extraBody/retryOptions.
+ * https://github.com/earendil-works/pi/blob/v0.84.2/packages/ai/src/api/google-generative-ai.ts#L80
+ *
+ * pi's Vertex adapter throws the same way, so a google-vertex provider would belong here too; it
+ * is absent only because this deployment has no such provider.
+ * https://github.com/earendil-works/pi/blob/v0.84.2/packages/ai/src/api/google-vertex.ts#L98
+ */
+export const HTTPS_ONLY_PROVIDERS: ReadonlySet<string> = new Set<AiModelProvider>(["google"]);
 
 /**
  * Metadata about a workspace (one Overseer DO and everything in it). Includes everything needed

@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import {
   EVAL_AGENT_BUDGET_MS, EVAL_TEST_TIMEOUT_MS, EVAL_VERIFICATION_BUDGET_MS, evalMatrix,
-  resolveEvalCommit,
+  resolveEvalCommit, resolveEvalModel,
 } from "./config.js";
 import { taskVersion, type EvalTask } from "./task.js";
 
@@ -26,6 +26,20 @@ it("accepts model and trial overrides", () => {
 
 it("rejects an invalid trial count", () => {
   expect(() => evalMatrix({ WORKSHOP_EVAL_TRIALS: "0" })).toThrow("positive integer");
+});
+
+it("resolves catalog models to their provider", () => {
+  expect(resolveEvalModel("gemini-3.6-flash"))
+    .toEqual({ provider: "google", model: "gemini-3.6-flash" });
+  expect(resolveEvalModel("claude-sonnet-5"))
+    .toEqual({ provider: "anthropic", model: "claude-sonnet-5" });
+  expect(resolveEvalModel("@cf/deepseek-ai/deepseek-v4-pro-0813"))
+    .toEqual({ provider: "cloudflare", model: "@cf/deepseek-ai/deepseek-v4-pro-0813" });
+});
+
+it("treats unlisted models as Workers AI models", () => {
+  expect(resolveEvalModel("@cf/vendor/not-in-catalog"))
+    .toEqual({ provider: "cloudflare", model: "@cf/vendor/not-in-catalog" });
 });
 
 const COMMIT = "a".repeat(40);
