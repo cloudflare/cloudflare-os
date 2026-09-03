@@ -23,6 +23,11 @@ import { describe, it } from "node:test";
  *   uncached  — the task that reads it is `cache: false`, so it runs with the full ambient
  *               environment. Used where `env` would be unsound: `FORMAT_BLUEPRINTS_DIR` names a
  *               directory outside the workspace, and `env` fingerprints the value, not the contents.
+ *   watch     — read only to build a watch-mode file list. A cached task loads the same module and
+ *               sees `undefined`, which is correct: the value decides which paths a long-lived
+ *               `vitest` watch process rebuilds and reruns on, and watch mode is a package.json
+ *               script run directly, with the full ambient environment. Nothing about the artifact
+ *               a cached run produces depends on it.
  *   injected  — set explicitly by the build setup, never inherited. Stripping is correct here:
  *               `build-app.mjs` always passes `GATEKEEPER_APP_UNMINIFIED`, and the frontend build
  *               task sets `NODE_ENV` before importing Vite.
@@ -34,6 +39,8 @@ interface ExpectedArea {
   forwarded?: string[];
   /** Read by a `cache: false` task, which runs with the full ambient environment. */
   uncached?: string[];
+  /** Read only on the watch-mode path, which is a script rather than a task. */
+  watch?: string[];
   /** Set explicitly by the spawning process, never inherited. */
   injected?: string[];
   /** Read outside any vp task. */
@@ -49,9 +56,12 @@ const EXPECTED: Record<string, ExpectedArea> = {
     forwarded: ["VITE_FRONTEND_ERROR_REPORTING"],
     injected: ["GATEKEEPER_APP_UNMINIFIED"],
   },
+  // `src/worker-inputs.ts` resolves FORMAT_BLUEPRINTS_DIR only to name a directory for the watcher
+  // and `forceRerunTriggers`. The `test` task is cached and strips it; `vitest run` never reads
+  // those exports, and `pnpm test:watch` is a script, so it keeps the ambient value.
   "packages/integration-tests": {
     injected: ["WORKSHOP_INTEGRATION_PREBUILT"],
-    uncached: ["FORMAT_BLUEPRINTS_DIR"],
+    watch: ["FORMAT_BLUEPRINTS_DIR"],
   },
   // `env: ['VITE_*']` — vite's `define` inlines any VITE_-prefixed variable, so the set this
   // package can depend on is open-ended and the wildcard is the only honest declaration.
@@ -78,8 +88,9 @@ const EXPECTED: Record<string, ExpectedArea> = {
       "CF_ACCESS_AUD", "CF_ACCESS_ISS", "CF_AI_GATEWAY", "CF_AI_GATEWAY_ACCOUNT_ID",
       "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_PROVIDERS", "CF_AI_GATEWAY_USE_BINDING",
       "CI_COMMIT_SHA", "CI_PIPELINE_IID", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
-      "GITHUB_REPOSITORY", "GITHUB_TOKEN", "PREVIEW_ADMINS", "PREVIEW_NAME",
-      "PREVIEW_PR_NUMBER", "PREVIEW_WORKERS_DEV_HOST", "PREVIEW_WRANGLER", "VITE_BACKEND_HOST",
+      "GITHUB_REPOSITORY", "GITHUB_TOKEN", "PREVIEW_ADMINS", "PREVIEW_GITHUB_CLIENT_ID",
+      "PREVIEW_GITHUB_CLIENT_SECRET", "PREVIEW_NAME", "PREVIEW_PR_NUMBER",
+      "PREVIEW_WORKERS_DEV_HOST", "PREVIEW_WRANGLER", "VITE_BACKEND_HOST",
     ],
   },
 };
@@ -93,7 +104,7 @@ const EXPECTED: Record<string, ExpectedArea> = {
  * exempting those variables from the check that their task declares them. Verified: before this
  * guard existed, that typo left all three assertions green.
  */
-const CATEGORIES = new Set(["forwarded", "uncached", "injected", "external"]);
+const CATEGORIES = new Set(["forwarded", "uncached", "injected", "external", "watch"]);
 
 const SKIP = /node_modules|__tests__|\.test\.|\.wrangler|[/\\](dist|dist-app|generated)[/\\]/;
 // Vite's own compile-time constants, not process environment.
@@ -212,8 +223,11 @@ describe("build-time env passthrough", () => {
 
   it("declares every forwarded variable on the task that reads it", () => {
     for (const [area, groups] of Object.entries(EXPECTED)) {
-      // `scripts/` holds no package config; its one forwarded read is pinned by
-      // build-gatekeeper-configurator.test.ts against the shared task's `env`.
+      // `scripts/` has a `vite.config.ts`, but its only task is `test`. The forwarded read here is
+      // `build-gatekeeper-configurator.ts`'s, and the task that runs *that* is the gatekeepers'
+      // `build:configurator` -- which is the only place the `env` declaration would do anything. So
+      // there is nothing for `declarationsIn` to find on this side, and the declaration is pinned by
+      // build-gatekeeper-configurator.test.ts against the shared task's `env` instead.
       if (area === "scripts") continue;
       const { patterns } = declarationsIn(area);
       for (const name of groups.forwarded ?? []) {

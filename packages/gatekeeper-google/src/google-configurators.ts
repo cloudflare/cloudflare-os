@@ -57,17 +57,12 @@ async function withDriveApiEnabled<T>(
   }
 }
 
-// TODO: BigQuery and Calendar freeze one token for the configurator's lifetime, so their clients
-// cannot heal a 401. Give them `googleTokenProvider` too.
-
 async function bigQueryApi(target: object): Promise<BigQueryApi> {
-  let token = await googleToken(target);
-  return new BigQueryApi(() => Promise.resolve(token.token));
+  return new BigQueryApi(googleTokenProvider(target));
 }
 
 async function calendarApi(target: object): Promise<GoogleCalendarApi> {
-  let token = await googleToken(target);
-  return new GoogleCalendarApi(() => Promise.resolve(token.token));
+  return new GoogleCalendarApi(googleTokenProvider(target));
 }
 
 async function cachedBigQueryOptions(
@@ -131,6 +126,15 @@ export class CalendarConfiguratorUI extends RpcTarget implements CalendarConfigu
   constructor(getToken: () => Promise<GoogleAccessToken>) {
     super();
     googleTokenGetters.set(this, getToken);
+  }
+
+  async getPrimaryCalendarId(): Promise<string> {
+    let api = await calendarApi(this);
+    let calendarId = (await api.getCalendar("primary")).id;
+    if (!calendarId || calendarId === "primary") {
+      throw new Error("Google Calendar did not return a stable primary calendar ID.");
+    }
+    return calendarId;
   }
 
   async listCalendars(query: string): Promise<ConfiguratorOption[]> {

@@ -120,13 +120,13 @@ A **format** is an ordinary blueprint the deployment has promoted, so that "New 
 
 What a blueprint may declare is `BlueprintMetadata.output`: a grouping `id`, a `noun` and `plural` ("Doc"/"Docs"), and an `icon` from the closed `OUTPUT_ICONS` set. A gadget instantiated from the blueprint inherits it, and that is what the workspace tab, chat cards and the Outputs page draw. Declaring it is presentation only and grants nothing -- any user can publish a blueprint calling itself a Document. Being *offered* as one of the deployment's standard formats is the separate, admin-curated decision. An admin can override any of these fields (`FormatCuration.overrides`), and the override is applied on every instantiation path, so a rename reaches gadgets the agent builds as well as ones made from the menu.
 
-A deployment can also ship blueprints as data. `packages/workshop-backend/format-blueprints/` holds a `<name>.gadget` archive plus a `<name>.json` sidecar for each, and `scripts/build-format-blueprints.mjs` bundles that directory (overridable with `FORMAT_BLUEPRINTS_DIR`, so a fork can ship its own set) into a generated module. These differ from published blueprints in three ways:
+A deployment can also ship blueprints as data. `packages/workshop-backend/format-blueprints/` holds a directory for each blueprint with a `blueprint.json` manifest and reviewable files under `files/`. `scripts/build-format-blueprints.ts` reconstructs their ordinary archive representation and bundles it into a generated module (overridable with `FORMAT_BLUEPRINTS_DIR`, so a fork can ship its own set). These differ from published blueprints in three ways:
 
 - Their IDs are **stable and readable** (`format.document`, not a random hex ID), because both installation and promotion are keyed on them. Renaming one after deploy orphans the old entry rather than moving it.
 - They have **no owning User DO**. `AdminSettings` writes them straight into the featured mirror, because there is no publishing user whose `featured` bit could be authoritative.
-- Their `output` lives in the sidecar rather than the archive, so the deployment's presentation has a single source of truth.
+- Their `output` lives in `blueprint.json`, so the deployment's presentation has a single source of truth.
 
-The first `/api` request a deployment serves installs any whose manifest fingerprint has changed. The fingerprint covers its title, description, author, revision, and output presentation; `revision` represents changes to the archive bytes. Each bundled blueprint is promoted only once ever -- an upgrade never undoes an admin's later removal or overrides.
+The first `/api` request a deployment serves installs any whose manifest fingerprint has changed. The fingerprint covers its title, description, author, revision, output presentation, and generated archive content hash. Each bundled blueprint is promoted only once ever -- an upgrade never undoes an admin's later removal or overrides.
 
 ## Creating and Managing Blueprints
 

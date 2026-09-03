@@ -13,7 +13,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectAssets, collectModules, stableStringify } from "./hash-lib.ts";
 import {
-  generateManifest, readDeployablePackages, readDeployInputs,
+  generateManifest, readDeployablePackages, readDeployInputs, releaseShortName,
 } from "./manifest-lib.ts";
 
 const RELEASE = dirname(fileURLToPath(import.meta.url));
@@ -25,8 +25,8 @@ const GOLDEN_PATH = join(TESTDATA, "golden-manifest.json");
 const PLACEHOLDER_RE =
     /^\$(ACCOUNT_ID|PUBLIC_BASE_URL|KV_[A-Z0-9_]+_ID|R2_[A-Z0-9_]+_NAME|WORKER_NAME\([a-z0-9-]+\)|SECRET\([A-Z0-9_]+\))/;
 
-function buildTestManifest() {
-  const workers = readDeployablePackages(join(ROOT, "packages")).map((pkg) => {
+function readTestWorkerBuilds() {
+  return readDeployablePackages(join(ROOT, "packages")).map((pkg) => {
     const bundleDir = join(TESTDATA, "fixture-bundles", pkg.name);
     assert.ok(existsSync(bundleDir),
         `missing fixture bundle for new deployable package: add scripts/release/testdata/` +
@@ -40,7 +40,9 @@ function buildTestManifest() {
       deployInputs: readDeployInputs(pkg.dir),
     };
   });
+}
 
+function buildTestManifest(workers = readTestWorkerBuilds()) {
   return generateManifest({
     releaseId: "r000000-fixture",
     commit: "0000000000000000000000000000000000000000",
@@ -176,6 +178,12 @@ test("worker entries carry the deploy contract", () => {
     }
   }
 
+  // The MCP connectors are install-once for SINGLETON's second reason: they take no inputs, so a
+  // second install could not differ from the first — it would only mint a second vendor id.
+  assert.equal(workers["gatekeeper-mcp"].singleton, true);
+  assert.equal(workers["gatekeeper-mcp-portal"].singleton, true);
+  assert.equal(workers["gatekeeper-homeassistant"].singleton, true);
+
   // Module blobs are content-addressed.
   for (const [name, entry] of Object.entries(workers)) {
     assert.ok(entry.modules.some((m) => m.name === entry.mainModule),
@@ -184,6 +192,95 @@ test("worker entries carry the deploy contract", () => {
       assert.equal(mod.r2Key, `blobs/modules/${mod.sha256}`);
     }
   }
+});
+
+// The deploy wizard sends a gatekeeper's manifest shortName as the install slug verbatim, and
+// the slug becomes a GATEKEEPER_<SLUG> binding name, so the deploy service rejects anything
+// outside this charset (packages/deploy/src/naming.ts). A shortName that fails here reaches
+// customers as a redacted 500 on install with no workflow logs — fail the release build instead.
+//
+// releaseShortName() now throws on the same rule, so a bad package name fails inside
+// generateManifest before it reaches these assertions. Deliberately restated rather than
+// imported: this copy is the independent oracle that catches the constants there drifting from
+// the deploy service's, which is the failure the generator's own check cannot see.
+const SLUG_RE = /^[a-z][a-z0-9]*$/;
+const MAX_SLUG_LEN = 20;
+
+test("every gatekeeper shortName is a legal deploy slug", () => {
+  const { workers } = buildTestManifest();
+  for (const [name, entry] of Object.entries(workers)) {
+    if (entry.kind !== "gatekeeper") continue;
+    assert.match(entry.shortName ?? "", SLUG_RE,
+        `${name}: shortName ${entry.shortName} is not a legal install slug; it must be ` +
+        `lowercase letters and digits starting with a letter (it becomes GATEKEEPER_<SLUG>)`);
+    assert.ok((entry.shortName ?? "").length <= MAX_SLUG_LEN,
+        `${name}: shortName ${entry.shortName} exceeds ${MAX_SLUG_LEN} chars`);
+    assert.equal(entry.vars.BASE_URL, `$PUBLIC_BASE_URL/gatekeeper/${entry.shortName}`,
+        `${name}: BASE_URL path must match shortName`);
+  }
+});
+
+// SINGLETON's second reason, as an invariant rather than a list: an installable gatekeeper that
+// collects nothing from the wizard is configured identically on every install, so a second one
+// adds no capability while splitting the vendor id its connections are recorded under
+// (GATEKEEPER_<SLUG> -> `mcp2`). A new zero-input gatekeeper that genuinely wants two installs is
+// a deliberate decision — make it here and in SINGLETON, not by accident.
+test("installable gatekeepers that take no inputs are install-once", () => {
+  for (const [name, entry] of Object.entries(buildTestManifest().workers)) {
+    if (entry.kind !== "gatekeeper" || !entry.installable) continue;
+    if ((entry.inputs ?? []).length > 0) continue;
+    assert.equal(entry.singleton, true,
+        `${name}: takes no deploy inputs, so a second install would be identical to the first ` +
+        `except for its slug — add it to SINGLETON, or give it an input that distinguishes ` +
+        `installs`);
+  }
+});
+
+test("releaseShortName folds package names into the slug charset", () => {
+  assert.equal(releaseShortName("gatekeeper-mcp-portal"), "mcpportal");
+  // No-op for names that already conform.
+  assert.equal(releaseShortName("gatekeeper-google"), "google");
+});
+
+// The fold only removes characters, so a name can fold to a remnant the charset still rejects.
+// The deploy service would reject the install; the release build has to reject it first.
+test("releaseShortName rejects names that don't fold to a legal slug", () => {
+  for (const pkgName of [
+    "gatekeeper-",                        // nothing left
+    "gatekeeper---",                      // nothing left after the fold
+    "gatekeeper-1password",               // digit-leading
+    `gatekeeper-${"a".repeat(21)}`,       // over the 20-char cap
+  ]) {
+    assert.throws(() => releaseShortName(pkgName), /is not a legal install slug/,
+        `expected ${pkgName} to be rejected`);
+  }
+  // The cap itself is inclusive.
+  assert.equal(releaseShortName(`gatekeeper-${"a".repeat(20)}`), "a".repeat(20));
+});
+
+test("every gatekeeper shortName is unique", () => {
+  const owners = new Map<string, string>();
+  for (const [name, entry] of Object.entries(buildTestManifest().workers)) {
+    if (entry.shortName === undefined) continue;
+    const owner = owners.get(entry.shortName);
+    assert.equal(owner, undefined,
+        `${owner} and ${name} both emit shortName ${entry.shortName}`);
+    owners.set(entry.shortName, name);
+  }
+});
+
+// The fold is lossy — gatekeeper-foo-bar and gatekeeper-foobar both emit `foobar` — and two
+// gatekeepers with the same slug would contend for one GATEKEEPER_<SLUG> binding and one
+// /gatekeeper/<slug> route on every customer instance. Per-entry validity can't catch that.
+test("generateManifest rejects gatekeepers whose folded shortNames collide", () => {
+  const builds = readTestWorkerBuilds();
+  const google = builds.find((w) => w.pkgName === "gatekeeper-google");
+  assert.ok(google, "expected gatekeeper-google among the deployable packages");
+  // Folds to "google" too, so it collides with gatekeeper-google.
+  const collider = { ...google, pkgName: "gatekeeper-goo-gle" };
+
+  assert.throws(() => buildTestManifest([...builds, collider]),
+      /gatekeeper-google and gatekeeper-goo-gle both emit shortName "google"/);
 });
 
 test("per-package deploy-inputs.json files are well-formed when present", () => {
@@ -208,4 +305,15 @@ test("per-package deploy-inputs.json files are well-formed when present", () => 
       }
     }
   }
+});
+
+// The `gatekeeper-` prefix means "gatekeeper", not "deployable": discovery keys on wrangler.jsonc
+// alone, so a library may share it (`gatekeeper-kit` here, `gatekeeper-shared` internally). Pinned
+// because the failure is otherwise indirect and puzzling — a stray wrangler.jsonc would make the
+// kit a deployable, `workerKind` would type it a gatekeeper from its name, and the deploy wizard
+// would demand CLIENT_ID/CLIENT_SECRET for a library before letting anyone install it.
+test("a gatekeeper-prefixed library is not a deployable worker", () => {
+  const deployable = readDeployablePackages(join(ROOT, "packages")).map((pkg) => pkg.name);
+  assert.ok(!deployable.includes("gatekeeper-kit"),
+      "gatekeeper-kit is a library; adding a wrangler.jsonc would publish it as a connector");
 });

@@ -5,7 +5,18 @@ export default {
   initial: { availabilityMode: "thisCalendar" },
 
   isReady({ values }) {
-    return typeof values.calendarId === "string" && values.calendarId.length > 0;
+    return typeof values.calendarId === "string" &&
+      values.calendarId.length > 0 && values.calendarId !== "primary";
+  },
+
+  async initialValuesFromResourceUrl({ resourceUrl, ui }) {
+    const parsed = new URL(resourceUrl);
+    const calendarId = decodeURIComponent(parsed.pathname.split("/")[2] ?? "");
+    return {
+      calendarId: calendarId === "primary" ? await ui.getPrimaryCalendarId() : calendarId,
+      availabilityMode: parsed.searchParams.get("availability") === "allVisible"
+        ? "allVisible" : "thisCalendar",
+    };
   },
 
   resourceUrl({ values }) {

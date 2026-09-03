@@ -20,6 +20,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "^5.20260825.1",
+    "@gadgets/scripts": "workspace:*",
     "vitest": "catalog:"
   }
 }

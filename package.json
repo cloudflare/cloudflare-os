@@ -7,7 +7,7 @@
   "scripts": {
     "build": "vp run -r --cache build",
     "run-local": "node scripts/run-local.ts",
-    "test": "node --test 'scripts/**/*.test.ts' && vp run --filter '!cloudflare-os' --cache test",
+    "test": "vp run --filter '!cloudflare-os' --cache test",
     "preview:config": "node scripts/preview/preview.ts config",
     "preview:deploy": "node scripts/preview/preview.ts deploy",
     "preview:delete": "node scripts/preview/preview.ts delete",
@@ -23,12 +23,9 @@
     "types:generate": "node scripts/generate-worker-types.ts"
   },
   "devDependencies": {
+    "@gadgets/scripts": "workspace:*",
     "@types/node": "26.1.0",
-    "aws4fetch": "^1.0.20",
-    "jsdom": "^26.1.0",
-    "jsonc-parser": "^3.3.1",
     "typescript": "catalog:",
-    "typescript6": "npm:typescript@6.0.3",
     "vite": "catalog:",
     "vite-plus": "catalog:",
     "wrangler": "catalog:"

@@ -26,6 +26,6 @@ export default defineConfig({
       "__tests__/workerd/google-doc-actions.test.ts",
       "__tests__/workerd/native-sessions.test.ts",
     ],
-    setupFiles: ["../../scripts/assert-workerd.ts"],
+    setupFiles: ["@gadgets/scripts/assert-workerd"],
   },
 });

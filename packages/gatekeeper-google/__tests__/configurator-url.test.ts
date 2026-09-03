@@ -20,11 +20,13 @@ vi.mock("@gadgets/configurator-ui", () => ({
 }));
 import driveAccountConfigurator from "../src/configurator/drive-account-configurator-ui";
 import driveFileConfigurator from "../src/configurator/drive-file-configurator-ui";
+import calendarConfigurator from "../src/configurator/calendar-configurator-ui";
+import type { CalendarConfiguratorRpc } from "../src/configurator/calendar-configurator-types";
 import gmailConfigurator from "../src/configurator/gmail-configurator-ui";
 import sharedDriveConfigurator from "../src/configurator/shared-drive-configurator-ui";
 import {
-  GMAIL_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHARED_DRIVE_RESOURCE,
-  parseResourceUrl,
+  GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_RESOURCE,
+  GOOGLE_SHARED_DRIVE_RESOURCE, parseResourceUrl,
 } from "../src/resources";
 
 // The configurators never call `ui` from these two methods; it is present only to satisfy the
@@ -116,6 +118,33 @@ describe("Gmail configurator URLs", () => {
 
     expect(gmailValues(inbox)).toEqual({ mode: "all" });
     expect(parseResourceUrl(inbox)).toEqual({ kind: "gmail" });
+  });
+});
+
+describe("Calendar configurator URLs", () => {
+  it("resolves an account-relative primary prefill to a stable calendar ID", async () => {
+    const ui = {
+      getPrimaryCalendarId: vi.fn(async () => "person@example.com"),
+      listCalendars: vi.fn(),
+    } as unknown as CalendarConfiguratorRpc;
+
+    const values = await calendarConfigurator.initialValuesFromResourceUrl!({
+      resourceUrl: "https://calendar.google.com/calendar/primary/?availability=allVisible",
+      resourceUrlPattern: GOOGLE_CALENDAR_RESOURCE.urlPattern,
+      ui,
+    });
+    const resourceUrl = calendarConfigurator.resourceUrl!({
+      values, ui,
+    });
+
+    expect(calendarConfigurator.isReady!({ values: { calendarId: "primary" } })).toBe(false);
+    expect(calendarConfigurator.isReady!({ values })).toBe(true);
+    expect(ui.getPrimaryCalendarId).toHaveBeenCalledOnce();
+    expect(parseResourceUrl(resourceUrl)).toEqual({
+      kind: "calendar",
+      calendarId: "person@example.com",
+      availabilityMode: "allVisible",
+    });
   });
 });
 

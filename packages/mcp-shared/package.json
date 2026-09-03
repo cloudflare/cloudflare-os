@@ -35,6 +35,7 @@
     "@modelcontextprotocol/client": "2.0.0"
   },
   "devDependencies": {
+    "@gadgets/scripts": "workspace:*",
     "@types/node": "^26.1.0",
     "typescript": "catalog:",
     "typescript6": "npm:typescript@6.0.3",

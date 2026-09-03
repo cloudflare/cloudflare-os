@@ -26,10 +26,11 @@
 // other seventeen set `preview_urls: false` and are reached over service bindings alone; the
 // deploy asserts that, since a URL appearing on one of them is a way around the router.
 //
-// The backend's secrets — its admins and the Cloudflare Access application that authenticates the
-// instance — are uploaded to the worker's Previews settings between tiers 1 and 2 and are never
-// written into a config, because Wrangler prints config values and this workflow's logs are public.
-// See uploadSecrets, and backendSecrets in staging-config.ts.
+// Secrets — the backend's admins and the Cloudflare Access application that authenticates the
+// instance, and each gatekeeper's OAuth app credentials where one is configured for previews — are
+// uploaded to the owning worker's Previews settings just before that worker's own tier, and are
+// never written into a config, because Wrangler prints config values and this workflow's logs are
+// public. See uploadSecrets, and backendSecrets / resolveGatekeeperSecrets in staging-config.ts.
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,6 +46,7 @@ import {
   generatePreviewConfigs,
   previewPullRequestNumber,
   previewUrlFor,
+  resolveGatekeeperSecrets,
   resolvePreviewName,
   writePreviewConfig,
   type StagingConfig,
@@ -322,9 +324,10 @@ async function deployBaselineWorker(
 
 /**
  * Give a worker its secrets — the backend's admins and Cloudflare Access pair (see
- * backendSecrets). None of them is in the generated config, because Wrangler prints the values it
- * finds there and this workflow's logs are public; `secret bulk` prints only names and `********`,
- * and the values arrive on stdin rather than in argv.
+ * backendSecrets), or a gatekeeper's OAuth app credentials (see resolveGatekeeperSecrets). None of
+ * them is in the generated config, because Wrangler prints the values it finds there and this
+ * workflow's logs are public; `secret bulk` prints only names and `********`, and the values arrive
+ * on stdin rather than in argv.
  *
  * `preview secret bulk` writes the *Worker's Previews settings*, which every preview of that worker
  * inherits, so one upload covers every preview and each run refreshes them. The plain `secret bulk`
@@ -346,32 +349,38 @@ async function uploadSecrets(
 }
 
 /**
- * Upload the backend's secrets, creating its baseline worker first if it does not exist yet.
+ * Upload one worker's secrets, creating its baseline worker first if it does not exist yet.
  *
- * This runs before the backend's own preview rather than relying on deployPreview's self-heal,
+ * This runs before that worker's own preview rather than relying on deployPreview's self-heal,
  * because a worker has no Previews settings to write to until it exists — and a preview created
- * before the settings existed would come up with no admins and, worse, no Access application, so it
- * would fall back to password signup on a public URL.
+ * before the settings existed would inherit none of them. For the backend that means no admins and,
+ * worse, no Access application, so it would fall back to password signup on a public URL; for a
+ * gatekeeper it means a connector that is live but throws on the first click.
+ *
+ * The settings belong to the *worker*, so every preview of it shares them and each run overwrites
+ * what the last one wrote. That is only sound because these values are the same for every preview —
+ * one set of deployment admins, one Access application, one OAuth app per gatekeeper — and a
+ * concurrent deploy of another pull request writes the identical bytes.
  */
-async function uploadBackendSecrets(
-  backend: DeployablePackage,
+async function uploadPreviewSecrets(
+  pkg: DeployablePackage,
   wranglerCommand: string,
   secrets: Record<string, string>,
 ): Promise<void> {
-  let result = await uploadSecrets(backend, wranglerCommand, secrets, { previews: true });
+  let result = await uploadSecrets(pkg, wranglerCommand, secrets, { previews: true });
   if (result.status !== 0 && isMissingWorkerError(`${result.stdout}\n${result.stderr}`)) {
-    await deployBaselineWorker(backend, wranglerCommand);
+    await deployBaselineWorker(pkg, wranglerCommand);
     // The baseline is briefly live without these, but it is only reachable through the *baseline*
     // router — which is deployed after it, in tier 3, on the same first run.
-    const baseline = await uploadSecrets(backend, wranglerCommand, secrets, { previews: false });
+    const baseline = await uploadSecrets(pkg, wranglerCommand, secrets, { previews: false });
     if (baseline.status !== 0) {
-      throw new Error(`wrangler secret bulk failed for baseline worker ${backend.name} with exit ` +
+      throw new Error(`wrangler secret bulk failed for baseline worker ${pkg.name} with exit ` +
           `code ${baseline.status}`);
     }
-    result = await uploadSecrets(backend, wranglerCommand, secrets, { previews: true });
+    result = await uploadSecrets(pkg, wranglerCommand, secrets, { previews: true });
   }
   if (result.status !== 0) {
-    throw new Error(`wrangler preview secret bulk failed for ${backend.name} with exit code ` +
+    throw new Error(`wrangler preview secret bulk failed for ${pkg.name} with exit code ` +
         `${result.status}`);
   }
 }
@@ -570,8 +579,11 @@ function tiers(packages: readonly DeployablePackage[]): {
 
 async function deploy({ dryRun }: { dryRun: boolean }): Promise<void> {
   // First, before a single config is written: a missing CF_ACCESS_AUD/CF_ACCESS_ISS has to fail
-  // here rather than after eighteen previews are live with whatever auth they defaulted to.
+  // here rather than after eighteen previews are live with whatever auth they defaulted to, and a
+  // gatekeeper's OAuth app split across a renamed secret rather than after that gatekeeper is live
+  // holding half of one.
   const secrets = backendSecrets();
+  const oauthApps = resolveGatekeeperSecrets();
   const { previewName, workersDevHost, baseUrl, packages } = generatePreviewConfigs();
   const { gatekeepers, backend, router } = tiers(packages);
 
@@ -579,8 +591,10 @@ async function deploy({ dryRun }: { dryRun: boolean }): Promise<void> {
     console.log(`\ndry-run plan for preview "${previewName}" at ${baseUrl}:`);
     console.log(`  tier 1 (${gatekeepers.length} gatekeepers, concurrently):`);
     for (const pkg of gatekeepers) {
+      const oauth = oauthApps.get(pkg.name);
       console.log(`    ${pkg.name} ` +
-          `(no hostname; served at ${baseUrl}/gatekeeper/${gatekeeperShortName(pkg.name)})`);
+          `(no hostname; served at ${baseUrl}/gatekeeper/${gatekeeperShortName(pkg.name)})` +
+          (oauth ? `, holding the ${Object.keys(oauth).join(", ")} secrets` : ""));
     }
     console.log(`  tier 2: ${backend.name} (no hostname; served at ` +
         `${baseUrl}/api), bound to the tier 1 previews, holding the ` +
@@ -597,6 +611,10 @@ async function deploy({ dryRun }: { dryRun: boolean }): Promise<void> {
     // Keyed by worker name, because that is what a service binding names.
     const gatekeeperPreviews = await mapWithConcurrency(gatekeepers, GATEKEEPER_CONCURRENCY,
         async (pkg) => {
+          // Before this gatekeeper's preview, not after, and for the same reason the backend's go
+          // before its own: a preview inherits the Previews settings that exist when it is created.
+          const oauth = oauthApps.get(pkg.name);
+          if (oauth) await uploadPreviewSecrets(pkg, wrangler.command, oauth);
           const preview = await deployPreview(pkg, previewName, wrangler.command);
           assertNoPreviewUrl(pkg, preview.url);
           return [pkg.name, preview.id];
@@ -607,7 +625,7 @@ async function deploy({ dryRun }: { dryRun: boolean }): Promise<void> {
     patchPreviewServiceBindings(router, gatekeeperIds);
     // Before the backend's preview, not after: a preview inherits the Previews settings that exist
     // when it is created.
-    await uploadBackendSecrets(backend, wrangler.command, secrets);
+    await uploadPreviewSecrets(backend, wrangler.command, secrets);
     const backendPreview = await deployPreview(backend, previewName, wrangler.command);
     assertNoPreviewUrl(backend, backendPreview.url);
 

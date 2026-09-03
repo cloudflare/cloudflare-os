@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Run a command under two watchdogs -- an idle timer on its output and a total wall-clock cap --
 // and kill its whole process tree when either fires.
 //

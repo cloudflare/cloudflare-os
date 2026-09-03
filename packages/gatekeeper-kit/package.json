@@ -1,0 +1,41 @@
+{
+  "name": "@gadgets/gatekeeper-kit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Building blocks for gatekeepers: connect-flow, credential, action, observation, and simulation primitives. Not a deployable Worker.",
+  "type": "module",
+  "exports": {
+    "./actions": "./src/actions.ts",
+    "./auth-retry": "./src/auth-retry.ts",
+    "./cache": "./src/cache.ts",
+    "./connect-handshake": "./src/connect-handshake.ts",
+    "./connect-nonce": "./src/connect-nonce.ts",
+    "./connect-pages": "./src/connect-pages.ts",
+    "./credential-expiry": "./src/credential-expiry.ts",
+    "./credentials": "./src/credentials.ts",
+    "./cursors": "./src/cursors.ts",
+    "./endpoint": "./src/endpoint.ts",
+    "./http-errors": "./src/http-errors.ts",
+    "./observers": "./src/observers.ts",
+    "./preview-oauth": "./src/preview-oauth.ts",
+    "./response-body": "./src/response-body.ts",
+    "./simulation": "./src/simulation.ts"
+  },
+  "scripts": {
+    "test:run": "vitest run && vitest run -c vitest.worker.config.ts",
+    "test:watch:node": "vitest",
+    "test:watch:workerd": "vitest -c vitest.worker.config.ts"
+  },
+  "dependencies": {
+    "@gadgets/backend-utils": "workspace:*",
+    "@gadgets/workshop-shared": "workspace:*",
+    "jose": "^6.2.8"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/workers-types": "^5.20260825.1",
+    "@gadgets/scripts": "workspace:*",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

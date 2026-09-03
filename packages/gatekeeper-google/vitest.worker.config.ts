@@ -2,7 +2,7 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import capnwebValidate from "capnweb-validate/vite";
 import { defineConfig } from "vitest/config";
 
-/** Workerd coverage for Gmail sessions and the Gmail Durable Object. */
+/** Workerd coverage for Google resource configurators, Gmail sessions, and the Gmail Durable Object. */
 export default defineConfig({
   plugins: [
     capnwebValidate(),
@@ -22,9 +22,10 @@ export default defineConfig({
   ],
   test: {
     include: [
+      "__tests__/workerd/configurators.test.ts",
       "__tests__/workerd/gmail-actions.test.ts",
       "__tests__/workerd/gmail-state.test.ts",
     ],
-    setupFiles: ["../../scripts/assert-workerd.ts"],
+    setupFiles: ["@gadgets/scripts/assert-workerd"],
   },
 });

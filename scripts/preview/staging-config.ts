@@ -19,8 +19,10 @@
 //     namespace / R2 bucket per preview, and where service bindings get patched to point at
 //     sibling previews rather than the baselines.
 //
-// Gatekeeper OAuth app credentials (CLIENT_ID/CLIENT_SECRET) are deliberately absent: previews
-// exercise routing, auth and the agent, not third-party connector flows.
+// Gatekeeper OAuth app credentials (CLIENT_ID/CLIENT_SECRET) are absent from the generated configs
+// for the same reason the backend's secrets are — Wrangler prints what it finds in one, and this
+// workflow's logs are public. Where an OAuth app is configured for previews, preview.ts uploads the
+// pair to that gatekeeper's Previews settings instead; see resolveGatekeeperSecrets.
 
 import { writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -608,6 +610,71 @@ export function resolveAiGateway({
     ...(providers ? { CF_AI_GATEWAY_PROVIDERS: providers } : {}),
     ...(useBinding ? { CF_AI_GATEWAY_USE_BINDING: useBinding } : {}),
   };
+}
+
+/**
+ * Record one gatekeeper's OAuth app credentials under the variable names the worker reads them as.
+ *
+ * The pair moves together: a gatekeeper holding one half is not half-connectable, it throws "The
+ * GitHub gatekeeper is not configured." on the first click, so a typo in one secret's name fails
+ * the deploy rather than surfacing in a preview nobody is reading the logs of.
+ */
+function addOAuthApp(
+  into: Map<string, Record<string, string>>,
+  pkgName: string,
+  envPrefix: string,
+  clientId: string | undefined,
+  clientSecret: string | undefined,
+): void {
+  if (clientId && clientSecret) {
+    into.set(pkgName, { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret });
+    return;
+  }
+  if (clientId || clientSecret) {
+    throw new Error(`${envPrefix}_CLIENT_ID and ${envPrefix}_CLIENT_SECRET must be set together: ` +
+        `they are one OAuth app, and ${pkgName} refuses to start a flow with half of it`);
+  }
+  console.warn(`${envPrefix}_CLIENT_ID is unset: ${pkgName} is deployed unconfigured, and ` +
+      "connecting it in this preview will fail.");
+}
+
+/**
+ * The OAuth app credentials a gatekeeper's previews are given, as `package name -> secrets`.
+ *
+ * Optional, per gatekeeper: an unconfigured one still deploys, and only that connector is dead in
+ * the preview — unlike {@link resolveAccess}, whose absence changes how the whole instance
+ * authenticates. Most gatekeepers have no preview OAuth app at all, which is why previews are for
+ * routing, auth and the agent first and third-party flows only where someone registered one.
+ *
+ * Registering one is not just a pair of secrets. A preview's redirect URI is
+ * `https://<preview>-router.<workers.dev subdomain>/gatekeeper/<short>/oauth`, and the host changes
+ * with every pull request — so the app's callback URL has to be
+ * `https://<workers.dev subdomain>/gatekeeper/<short>/oauth` with GitHub's wildcard matching left
+ * on, which is what lets each preview's subdomain validate against it. That also means any worker
+ * on that subdomain can receive an authorization code for this app, so the app it belongs to should
+ * be a throwaway registered for previews and never the one a real deployment uses.
+ *
+ * `PREVIEW_`-prefixed rather than the `GITHUB_CLIENT_ID` run-dev-server.ts reads from a developer's
+ * shell: GitHub refuses to store a repository secret whose name begins with `GITHUB_`, and the
+ * distinct name keeps the preview app and a maintainer's local app from being confused for one
+ * another.
+ *
+ * Adding a second gatekeeper is a parameter pair here, one `addOAuthApp` line, the matching pair in
+ * .github/workflows/preview.yml, and an entry in env-passthrough.test.ts.
+ *
+ * The environment is read in the parameter defaults rather than the body so that
+ * env-passthrough.test.ts, whose discovery is textual, can see every name.
+ */
+export function resolveGatekeeperSecrets({
+  githubClientId = process.env.PREVIEW_GITHUB_CLIENT_ID,
+  githubClientSecret = process.env.PREVIEW_GITHUB_CLIENT_SECRET,
+}: {
+  githubClientId?: string;
+  githubClientSecret?: string;
+} = {}): Map<string, Record<string, string>> {
+  const configured = new Map<string, Record<string, string>>();
+  addOAuthApp(configured, "gatekeeper-github", "PREVIEW_GITHUB", githubClientId, githubClientSecret);
+  return configured;
 }
 
 /**

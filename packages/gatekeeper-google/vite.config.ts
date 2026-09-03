@@ -1,5 +1,5 @@
-import gatekeeperConfiguratorConfig from "../../scripts/gatekeeper-configurator-vite-config.js";
-import { vitestTask } from "../../scripts/vitest-task-vite-config.js";
+import gatekeeperConfiguratorConfig from "@gadgets/scripts/gatekeeper-configurator";
+import { vitestTask } from "@gadgets/scripts/vitest-task";
 
 /** Configurator tasks plus separate Node and workerd test passes. */
 export default {

@@ -90,6 +90,9 @@ export default defineConfig({
     ignorePatterns: [
       '**/dist/**',
       '**/generated/**',
+      // Bundled blueprint files are user-authored gadget source extracted verbatim for review. They
+      // do not follow the host repository's lint rules and must round-trip without code changes.
+      '**/format-blueprints/*/files/**',
       '**/*.gen.ts',
       '**/node_modules/**',
       '**/.wrangler/**',

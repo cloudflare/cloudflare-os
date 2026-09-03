@@ -12,15 +12,16 @@
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
     "@gadgets/configurator-ui": "workspace:*",
+    "@gadgets/gatekeeper-kit": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
-    "jose": "^6.2.8",
     "mimetext": "^3.0.28",
     "postal-mime": "^2.7.6"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
+    "@gadgets/scripts": "workspace:*",
     "miniflare": "5.20260801.0-alpha",
     "typescript": "catalog:",
     "typescript6": "npm:typescript@6.0.3",
