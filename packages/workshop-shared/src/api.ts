@@ -1479,7 +1479,7 @@ export type CommitInfo = {
  * Specifies the state of an action in the action log:
  * * pending: Action has not been applied yet. It is waiting for approval.
  * * approved: Action was approved and applied.
- * * rejected: Action was rejected by the user.
+ * * rejected: Action was rejected by the user or invalidated by another rejected action.
  */
 export type ActionState = "pending" | "approved" | "rejected";
 
@@ -1516,6 +1516,19 @@ export type ActionLogEntry = {
    * clicking Approve. Only ever set alongside state "approved" (there is no automatic rejection).
    */
   autoApproved?: boolean;
+
+  /**
+   * Workspace action ID whose rejection invalidated this action. Only set when `state` is
+   * "rejected" and the action was rejected as part of a dependency cascade.
+   */
+  cascadedFrom?: number;
+
+  /**
+   * Display-safe reason the most recent application attempt stopped at this action. Set while the
+   * action is pending, and retained on an action the user rejected after such an attempt, whose
+   * outcome the gatekeeper never confirmed. Cleared when the action applies.
+   */
+  failure?: string;
 } | {
   type: "observation";
   description: ObservationDescription;
@@ -1784,8 +1797,8 @@ export interface Overseer extends RpcTarget {
       : Promise<ActionHistoryPage>;
 
   /**
-   * Approve an action that is currently in the "pending" state. The action will be performed on
-   * approval.
+   * Approve an action that is currently in the "pending" state. This performs the action and may
+   * also perform earlier pending actions from the same Gatekeeper connection.
    */
   approveAction(id: number): Promise<void>;
 

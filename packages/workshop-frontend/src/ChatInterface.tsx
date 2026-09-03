@@ -89,6 +89,7 @@ import {
   useSlashCommandChoice, type OverseerSource,
 } from "./components/chat/slash-command-catalog";
 import GatekeeperModal from "./GatekeeperModal";
+import { ActionFailureNote } from "./components/ActionFailureNote";
 import { GatekeeperIcon } from "./components/GatekeeperIcon";
 import { formatOf, FORMAT_ICONS } from "./components/format/formats";
 import { FormatMiniature } from "./components/format/FormatVisuals";
@@ -4256,7 +4257,7 @@ function ChatInterface({
   >(null);
 
   // Enable auto-approval of an action tag on its connection (gated by the confirm dialog). The
-  // server applies the now-eligible pending action(s) via its drain, and the action state flips to
+  // server applies the now-eligible pending action(s) in an apply pass, and the state flips to
   // "approved" through the actions subscription -- so we don't optimistically mutate it here.
   const { alwaysApproveTag, isTagAutoApproved } =
     useAlwaysApproveTag(overseer, setProcessingActions, onAutoApproveChange);
@@ -4930,6 +4931,7 @@ function ChatInterface({
                 <div className={`chat-panel mt-1 max-h-[200px] overflow-y-auto pr-1 text-[13px] leading-[18px] text-kumo-subtle ${styles.markdownContent}`}>
                   <MarkdownMessage message={log.description.description} />
                 </div>
+                {log.failure && <ActionFailureNote failure={log.failure} />}
               </div>
               <div className="ml-3 flex flex-shrink-0 items-center gap-1 self-center">
                 {actionControls}
@@ -4990,6 +4992,7 @@ function ChatInterface({
             <div className={`chat-panel max-h-[200px] overflow-y-auto pr-1 ${styles.markdownContent}`}>
               <MarkdownMessage message={log.description.description} />
             </div>
+            {log.failure && <ActionFailureNote failure={log.failure} />}
             {resourceMeta}
           </div>
         )}

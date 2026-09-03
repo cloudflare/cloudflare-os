@@ -7,13 +7,13 @@ import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type { Collection, Singleton } from "@gadgets/typed-storage";
 import type { Overseer } from "@gadgets/workshop-shared/api";
 import { OverseerDurableObject, makeOverseerStorage } from "../src/overseer.js";
+import { createWorkshopLogger } from "../src/observability.js";
 import type { ActionRecord } from "../src/overseer.js";
 import { makeMockStorage } from "./mock-storage.js";
 
 /**
- * The production schema over mock storage, so the action suites (auto-approval drain, pending
- * history query) exercise the shipped actions collection and pendingByGatekeeper index rather
- * than a copy.
+ * The production schema over mock storage, so action-sync and history-query tests exercise the
+ * shipped actions collection and its indexes rather than a copy.
  */
 export function makeActionStorage(mockStorage = makeMockStorage()) {
   return makeOverseerStorage(mockStorage);
@@ -68,11 +68,11 @@ export function putAction(
 /**
  * Forges a client interface over the given storage via open(). `role` picks the returned
  * interface class ("build" opens as the owner); `exports` supplies any ctx.exports entries the
- * exercised paths dereference.
+ * exercised paths dereference; `impl` overrides any forged impl member.
  */
 export async function openFakeOverseer(
     storage: object,
-    opts: { role?: "build" | "use", exports?: object } = {}): Promise<Overseer> {
+    opts: { role?: "build" | "use", exports?: object, impl?: object } = {}): Promise<Overseer> {
   let role = opts.role ?? "build";
   let ownerId = "owner-id";
   let userId = role === "build" ? ownerId : "viewer-id";
@@ -80,6 +80,7 @@ export async function openFakeOverseer(
     open: OverseerDurableObject.prototype.open,
     impl: {
       ownerId,
+      logger: createWorkshopLogger("test"),
       ensureAmbientCapsules: async () => {},
       markOutputsDirty: () => {},
       joinPresence: () => () => {},
@@ -87,7 +88,11 @@ export async function openFakeOverseer(
       ensureObserver: async () => {},
       syncOutputsTo: async () => {},
       getSharingManager: async () => ({ getEffectiveRole: () => role }),
-      ctx: { id: { toString: () => "workspace-id" }, exports: opts.exports ?? {} },
+      ctx: {
+        id: { toString: () => "workspace-id" },
+        exports: opts.exports ?? {},
+        waitUntil: () => {},
+      },
       users: {
         idFromString: (id: string) => id,
         get: () => ({
@@ -95,10 +100,13 @@ export async function openFakeOverseer(
           recordSharedGadgetOpen: async () => {},
         }),
       },
+      applyDecidedActions: async () => [] as number[],
+      withActionsSettled: async (_gatekeeperId: number, transition: () => void) => transition(),
       storage: Object.assign(storage, {
         prohibitAllSharing: { get: () => false },
         title: { get: () => "Test Workspace" },
       }),
+      ...opts.impl,
     },
   } satisfies Pick<OverseerDurableObject, "open"> & { impl: object };
   return overseer.open(userId, `${userId}-profile`, new NativeRpcStub<() => void>(() => {}));

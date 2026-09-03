@@ -10,6 +10,9 @@ vi.stubGlobal('ResizeObserver', class {
   observe() {}
   disconnect() {}
 })
+// jsdom implements neither, and the thread view scrolls itself to the newest message on render.
+Element.prototype.scrollTo = () => {}
+Element.prototype.scrollIntoView = () => {}
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => {
   const actual = await importOriginal() as typeof import('@cloudflare/kumo')
@@ -58,6 +61,7 @@ function withChatApi(
   let subscriber: AiChatSubscriber | undefined
   Object.assign(server.overseer as object, {
     getChatMessage,
+    getChatHistory: async () => ({ messages: [] }),
     listChats: async () => [],
     listModels: async () => [],
     onRpcBroken: () => {},
@@ -74,12 +78,12 @@ function withChatApi(
   }
 }
 
-function renderChat(overseer: RpcStub<Overseer>) {
+function renderChat(overseer: RpcStub<Overseer>, selectedChatId: number | null = null) {
   return testRoot.render(
     <ChatInterface
       workspaceId="workspace"
       overseer={overseer}
-      selectedChatId={null}
+      selectedChatId={selectedChatId}
       onNavigateToChat={() => {}}
       pendingConsoleLogCount={0}
       consoleLogPreview=""
@@ -137,5 +141,19 @@ describe('ChatInterface action refresh', () => {
     await second.resolveSubscription()
     await second.resolvePendingQuery({ entries: [entry(1)] })
     expect(secondChat.getChatMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe('ChatInterface action failure note', () => {
+  it("shows the gatekeeper's reason on a pending action card", async () => {
+    const failed = entry(1, { failure: 'page was deleted upstream' })
+    const server = makeOverseer()
+    const chat = withChatApi(server)
+    await renderChat(server.overseer, 1)
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [failed] })
+    chat.emitMessage({ ...actionMessage, actionLog: failed } as AiChatMessage)
+
+    expect(document.body.textContent).toContain('page was deleted upstream')
   })
 })
