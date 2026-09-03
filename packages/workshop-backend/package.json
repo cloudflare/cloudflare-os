@@ -23,7 +23,7 @@
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
-    "diff": "^8.0.4",
+    "diff": "^9.0.0",
     "diff3": "^0.0.3",
     "isomorphic-git": "^1.40.0",
     "jose": "^6.2.8",
