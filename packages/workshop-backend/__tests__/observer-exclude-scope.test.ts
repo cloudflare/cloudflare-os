@@ -68,7 +68,7 @@ async function withImpl(
 // A gadget holding a permanent edge onto the connection, which is what puts it in "use" scope.
 function bindIntoGadget(impl: any): void {
   impl.storage.gadgets.put(
-      { id: 100, title: "G", created: new Date(0), bindingName: "G", bindings: {} });
+      { type: "gadget", id: 100, title: "G", created: new Date(0), bindingName: "G", bindings: {} });
   impl.bindWorkpiece(100, "DB", GATEKEEPER_ID);
 }
 
@@ -271,7 +271,7 @@ describe("a bound agent spawner's env keeps its targets in use scope", () => {
       },
     });
     impl.storage.gadgets.put(
-        { id: 100, title: "G", created: new Date(0), bindingName: "G", bindings: {} });
+        { type: "gadget", id: 100, title: "G", created: new Date(0), bindingName: "G", bindings: {} });
     impl.bindWorkpiece(100, "SPAWN", 200);
   }
 

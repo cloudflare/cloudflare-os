@@ -75,7 +75,7 @@ function seedVendorlessGatekeeper(impl: any, id: number): void {
 
 function seedGadget(impl: any, id: number): void {
   impl.storage.gadgets.put(
-      { id, title: "G", created: new Date(0), bindingName: "G", bindings: {} });
+      { type: "gadget", id, title: "G", created: new Date(0), bindingName: "G", bindings: {} });
 }
 
 // A facet that lets addGatekeeper's describe() succeed.
@@ -251,6 +251,8 @@ describe("restarting sessions when verification scope widens", () => {
       changes: [],
       createdGadgets: [],
       addedBindings: [{ gadgetId: 100, name: "DB", target: 1 }],
+      createdWorktrees: [],
+      worktreeCommits: [],
     });
     expect(restarts).toEqual([]);
 
@@ -277,6 +279,8 @@ describe("restarting sessions when verification scope widens", () => {
       changes: [],
       createdGadgets: [],
       addedBindings: [{ gadgetId: 100, name: "MODEL", target: 1 }],
+      createdWorktrees: [],
+      worktreeCommits: [],
     });
 
     expect(await impl.mergeChanges(1, USER_META, "owner-user-do"))
@@ -570,7 +574,7 @@ describe("hooks widen use scope", () => {
   // collaborators until a merge promotes it.
   function seedPendingGadget(impl: any, id: number, chatId: number): void {
     impl.storage.gadgets.put({
-      id, title: "G", created: new Date(0), bindingName: "G", bindings: {},
+      type: "gadget", id, title: "G", created: new Date(0), bindingName: "G", bindings: {},
       pending: { chatId },
     });
   }
@@ -638,6 +642,8 @@ describe("hooks widen use scope", () => {
       changes: [],
       createdGadgets: [{ gadgetId: 100, title: "G", bindingName: "G" }],
       addedBindings: [],
+      createdWorktrees: [],
+      worktreeCommits: [],
     });
     expect(restarts).toEqual([]);
 
