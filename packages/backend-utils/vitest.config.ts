@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       miniflare: {
-        compatibilityDate: "2026-02-02",
+        compatibilityDate: "2026-09-04",
         // nodejs_als enables observability context; experimental enables the Reporter stub below
         // and the streaming_tail_worker flag (which workerd refuses without experimental mode).
         compatibilityFlags: ["experimental", "nodejs_als", "streaming_tail_worker"],
@@ -18,7 +18,7 @@ export default defineConfig({
         workers: [{
           name: "span-sink",
           modules: true,
-          compatibilityDate: "2026-02-02",
+          compatibilityDate: "2026-09-04",
           compatibilityFlags: ["streaming_tail_worker"],
           // The no-op tail() silences workerd's legacy tail delivery, which it attempts alongside
           // the streaming path.

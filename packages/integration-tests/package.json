@@ -23,7 +23,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260825.1",
+    "@cloudflare/workers-types": "catalog:",
     "@gadgets/scripts": "workspace:*",
     "@types/node": "^26.1.0",
     "capnweb-validate": "catalog:",

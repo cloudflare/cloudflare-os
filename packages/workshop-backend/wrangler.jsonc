@@ -6,7 +6,7 @@
     "command": "pnpm run build:worker",
     "watch_dir": "src"
   },
-  "compatibility_date": "2026-02-02",
+  "compatibility_date": "2026-09-04",
 
   // `global_fetch_strictly_public` makes the global fetch() function strictly fetch from
   // the public internet in production, rather than the legacy behavior in which same-zone
@@ -23,7 +23,6 @@
   // tradeoff for dev.
   "compatibility_flags": [
     "allow_irrevocable_stub_storage",
-    "enhanced_error_serialization",
     "global_fetch_strictly_public",
 
     // The pi-ai inference layer wraps the official provider SDKs (@anthropic-ai/sdk, openai,

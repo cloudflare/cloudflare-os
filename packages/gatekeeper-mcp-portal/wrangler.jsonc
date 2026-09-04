@@ -5,7 +5,7 @@
     "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
     "watch_dir": "src"
   },
-  "compatibility_date": "2026-02-02",
+  "compatibility_date": "2026-09-04",
 
   // See `gatekeeper-mcp`'s wrangler.jsonc. The portal URL is administrator-supplied rather than user
   // input, but the endpoints reached from it are not: OAuth discovery follows a `WWW-Authenticate`

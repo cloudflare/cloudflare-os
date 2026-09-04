@@ -10,7 +10,7 @@ export default defineConfig({
       main: "./__tests__/worker.ts",
       miniflare: {
         // Kept in step with wrangler.jsonc; drift here tests a runtime we do not deploy.
-        compatibilityDate: "2026-02-02",
+        compatibilityDate: "2026-09-04",
         compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
         // Facets and loopback namespaces need test-only registrations in this test pool.
         durableObjects: {

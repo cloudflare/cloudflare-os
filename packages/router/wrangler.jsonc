@@ -2,7 +2,7 @@
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "router",
   "main": "src/index.ts",
-  "compatibility_date": "2026-02-02",
+  "compatibility_date": "2026-09-04",
 
   // Gatekeeper service bindings (GATEKEEPER_*) are added dynamically at deploy time — by the
   // deploy service for customer instances, from the release manifest's binding templates. Only

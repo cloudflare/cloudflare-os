@@ -5,7 +5,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   plugins: [capnwebValidate(), cloudflareTest({
     miniflare: {
-      compatibilityDate: "2026-02-02",
+      compatibilityDate: "2026-09-04",
       compatibilityFlags: ["nodejs_compat", "allow_irrevocable_stub_storage"],
     },
   })],

@@ -1,5 +1,9 @@
-import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
-import { exports } from "cloudflare:workers";
+import {
+  abortAllDurableObjects,
+  createExecutionContext,
+  runInDurableObject,
+} from "cloudflare:test";
+import { env, exports } from "cloudflare:workers";
 import { newWebSocketRpcSession, type RpcStub } from "capnweb";
 import {
   createOpenGadgetError,
@@ -9,6 +13,7 @@ import {
   type OpenGadgetErrorCode,
   type PublicApi,
 } from "@gadgets/workshop-shared/api";
+import server from "../src/server";
 import { describe, expect, it } from "vitest";
 
 type CodedError = Error & { code?: unknown };
@@ -46,9 +51,11 @@ function expectRpcCode(error: CodedError, code: OpenGadgetErrorCode): void {
 }
 
 async function connect(): Promise<RpcStub<PublicApi>> {
-  const response = await exports.default.fetch(new Request("https://workshop.invalid/api", {
+  // A service-binding fetch context ends with the upgrade response, before the socket callbacks.
+  // Invoke the handler directly so the WebSocket session shares the test's execution context.
+  const response = await server.fetch(new Request("https://workshop.invalid/api", {
     headers: { Upgrade: "websocket" },
-  }));
+  }), env, createExecutionContext());
 
   expect(response.status).toBe(101);
   const socket = response.webSocket;

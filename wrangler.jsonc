@@ -4,7 +4,7 @@
   // forwards frontend requests to the backend (see packages/router/src/index.ts), which serves
   // them from its own assets binding in `run-local` mode.
   "main": "packages/router/src/index.ts",
-  "compatibility_date": "2025-11-01",
+  "compatibility_date": "2026-09-04",
   "compatibility_flags": ["enable_ctx_exports"],
 
   // Gatekeeper service bindings are dynamically added by run-dev-server.ts.

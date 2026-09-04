@@ -8,6 +8,7 @@ packages:
 # needing to hand edit a bunch of different package.json files.
 catalog:
   '@cloudflare/vitest-pool-workers': ^0.22.0
+  '@cloudflare/workers-types': ^5.20260903.1
   capnweb: ^0.12.0
   # jsdiff: line diffs in workshop-backend (formatUnifiedDiff) and gatekeeper-github (the
   # simulated PR diff's hunks). One catalog entry so the two can't drift apart.
@@ -24,9 +25,12 @@ catalog:
   vite: 7.3.6
   vite-plus: ^0.2.8
   vitest: ^4.1.10
-  wrangler: ^4.125.0
+  wrangler: ^4.128.0
 
 overrides:
+  # Keep the test pool's Wrangler/Miniflare/workerd stack aligned with the workspace toolchain.
+  '@cloudflare/vitest-pool-workers>miniflare': 5.20260831.0-alpha
+  '@cloudflare/vitest-pool-workers>wrangler': "catalog:"
   # Vitest peers can resolve vite@latest, so the version is pinned rather than ranged. Points at the
   # catalog so this and the manifests can't disagree: a catalog only covers what a workspace
   # manifest declares itself, and the override is what reaches vite as somebody else's peer.

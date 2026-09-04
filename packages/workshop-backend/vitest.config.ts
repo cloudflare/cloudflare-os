@@ -40,7 +40,7 @@ export default defineConfig({
     cloudflareTest({
       main: './src/server.ts',
       miniflare: {
-        compatibilityDate: '2026-02-02',
+        compatibilityDate: '2026-09-04',
         compatibilityFlags: ['experimental', 'nodejs_compat'],
         durableObjects: {
           TEST_OVERSEER: { className: 'OverseerDurableObject', useSQLite: true },

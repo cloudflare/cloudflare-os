@@ -9,7 +9,7 @@ export default defineConfig({
     cloudflareTest({
       main: "./__tests__/workerd/worker.ts",
       miniflare: {
-        compatibilityDate: "2026-02-02",
+        compatibilityDate: "2026-09-04",
         compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
         bindings: {CLIENT_ID: "test-client", CLIENT_SECRET: "test-secret"},
         durableObjects: {

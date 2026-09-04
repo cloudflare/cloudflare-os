@@ -31,7 +31,7 @@
           "type": "secret_text"
         }
       ],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage",
         "nodejs_als"
@@ -99,7 +99,7 @@
           "type": "secret_text"
         }
       ],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage"
       ],
@@ -158,7 +158,7 @@
           "type": "kv_namespace"
         }
       ],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "nodejs_compat",
         "allow_irrevocable_stub_storage"
@@ -203,7 +203,7 @@
     },
     "gatekeeper-email": {
       "bindings": [],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage",
         "nodejs_als"
@@ -256,7 +256,7 @@
           "type": "secret_text"
         }
       ],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage",
         "nodejs_als"
@@ -327,7 +327,7 @@
           "type": "secret_text"
         }
       ],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage",
         "nodejs_als"
@@ -420,7 +420,7 @@
     },
     "gatekeeper-homeassistant": {
       "bindings": [],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage"
       ],
@@ -472,7 +472,7 @@
           "type": "secret_text"
         }
       ],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage",
         "nodejs_als"
@@ -524,7 +524,7 @@
     },
     "gatekeeper-mcp": {
       "bindings": [],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage",
         "global_fetch_strictly_public"
@@ -567,7 +567,7 @@
     },
     "gatekeeper-mcp-portal": {
       "bindings": [],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage",
         "global_fetch_strictly_public"
@@ -621,7 +621,7 @@
           "type": "secret_text"
         }
       ],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage"
       ],
@@ -681,7 +681,7 @@
     },
     "gatekeeper-scheduler": {
       "bindings": [],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage",
         "nodejs_als"
@@ -735,7 +735,7 @@
           "type": "secret_text"
         }
       ],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage"
       ],
@@ -803,7 +803,7 @@
           "type": "secret_text"
         }
       ],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage"
       ],
@@ -865,7 +865,7 @@
           "type": "secret_text"
         }
       ],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage",
         "nodejs_als"
@@ -928,7 +928,7 @@
           "type": "secret_text"
         }
       ],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage"
       ],
@@ -1021,7 +1021,7 @@
           "type": "assets"
         }
       ],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [],
       "gatekeeperBindingExpansion": {
         "propsByPackage": {}
@@ -1078,10 +1078,9 @@
           "type": "ai"
         }
       ],
-      "compatibilityDate": "2026-02-02",
+      "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage",
-        "enhanced_error_serialization",
         "global_fetch_strictly_public",
         "nodejs_compat"
       ],

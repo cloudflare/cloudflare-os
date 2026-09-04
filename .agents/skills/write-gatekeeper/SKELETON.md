@@ -549,7 +549,7 @@ class MySessionImpl extends RpcTarget implements MySession {
 {
   "name": "gatekeeper-<name>",
   "main": "src/<name>.ts",
-  "compatibility_date": "2026-02-02",
+  "compatibility_date": "2026-09-04",
   "compatibility_flags": ["allow_irrevocable_stub_storage"],
   "migrations": [
     {

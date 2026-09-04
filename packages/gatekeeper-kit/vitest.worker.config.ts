@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [cloudflareTest({
     main: "./__tests__/workerd/worker.ts",
     miniflare: {
-      compatibilityDate: "2026-02-02",
+      compatibilityDate: "2026-09-04",
       compatibilityFlags: ["allow_irrevocable_stub_storage"],
       durableObjects: { TRACKER_HOST: { className: "TrackerHost", useSQLite: true } },
     },

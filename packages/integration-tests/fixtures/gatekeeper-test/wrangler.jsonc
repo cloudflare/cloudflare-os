@@ -5,7 +5,7 @@
   // `build:test-gatekeeper` applies the same RPC validation used by production gatekeepers.
   "main": ".wrangler/validate/src/test-gatekeeper.ts",
 
-  "compatibility_date": "2026-02-02",
+  "compatibility_date": "2026-09-04",
   "compatibility_flags": ["experimental", "allow_irrevocable_stub_storage"],
 
   // Lets the control surface submit external chat messages through the Workshop's gateway
