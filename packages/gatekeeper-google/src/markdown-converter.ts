@@ -2,32 +2,34 @@
 // with source mapping to allow Markdown-level edits to be translated back
 // to Google Docs batchUpdate operations.
 
-import type { GoogleDocsDocument, Paragraph } from "./docs-api";
+import type { GoogleDocsTab, Paragraph } from "./docs-api";
 
 // ---------------------------------------------------------------------------
 // Source map types
 // ---------------------------------------------------------------------------
 
-/** A complete snapshot of a document, cached in the gatekeeper's DO storage. */
-export type DocSnapshot = {
-  /** Document title. */
+/**
+ * The Markdown rendering of one document tab, with the map back to that tab's indices.
+ *
+ * Every tab body has its own index space, so a snapshot is only ever valid for the tab it was
+ * built from — Markdown, source map and end index all restart per tab.
+ */
+export type DocTabSnapshot = {
+  /** The tab this rendering came from; every write derived from it must carry this ID. */
+  tabId: string;
+  /** Tab name, as shown in the Docs tab list. */
   title: string;
-  /** The revisionId at the time the document was fetched. */
-  revisionId: string;
-  /** The Markdown rendering of the document content. */
+  /** The containing tab, absent for a top-level tab. */
+  parentTabId?: string;
+  /** Position among the tabs sharing this parent. */
+  index: number;
+  /** Depth in the tab tree; 0 for a top-level tab. */
+  nestingLevel: number;
+  /** The Markdown rendering of this tab's content. */
   markdown: string;
-  /** Maps Markdown positions back to Google Docs character indices. */
+  /** Maps Markdown positions back to this tab's Google Docs character indices. */
   sourceMap: SourceMap;
-  /** `Date.now()` at the time of fetch, used for TTL checks. */
-  fetchedAt: number;
-  /**
-   * Write IDs whose marked batch is already present in this snapshot's document.
-   *
-   * Filled in by the gatekeeper, which owns the write-marker convention; absent on snapshots
-   * persisted before it existed, which self-correct on the next fetch.
-   */
-  committedWriteIds?: string[];
-  /** The endIndex of the last structural element in the document body. */
+  /** The endIndex of the last structural element in this tab's body. */
   bodyEndIndex: number;
 }
 
@@ -61,13 +63,13 @@ export type Segment =
 // Google Docs → Markdown
 // ---------------------------------------------------------------------------
 
-/** Convert a Google Docs document to Markdown with source map. */
-export function docToMarkdown(document: GoogleDocsDocument): DocSnapshot {
+/** Convert one document tab to Markdown with a source map into that tab's index space. */
+export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
   let md = "";
   let blocks: BlockMapping[] = [];
   let lastWasListItem = false;
 
-  let elements = document.body.content;
+  let elements = tab.body.content;
   let bodyEndIndex = elements.length > 0 ? elements[elements.length - 1].endIndex : 0;
 
   for (let elem of elements) {
@@ -89,7 +91,7 @@ export function docToMarkdown(document: GoogleDocsDocument): DocSnapshot {
 
     if (para.bullet) {
       nestingLevel = para.bullet.nestingLevel;
-      let list = document.lists[para.bullet.listId];
+      let list = tab.lists[para.bullet.listId];
       if (list) {
         let level = list.listProperties.nestingLevels[nestingLevel];
         if (level) {
@@ -137,11 +139,13 @@ export function docToMarkdown(document: GoogleDocsDocument): DocSnapshot {
   }
 
   return {
-    title: document.title,
-    revisionId: document.revisionId,
+    tabId: tab.tabId,
+    title: tab.title,
+    ...tab.parentTabId === undefined ? {} : { parentTabId: tab.parentTabId },
+    index: tab.index,
+    nestingLevel: tab.nestingLevel,
     markdown: md,
     sourceMap: { blocks },
-    fetchedAt: Date.now(),
     bodyEndIndex,
   };
 }
@@ -562,12 +566,19 @@ function parseInlineFormatting(text: string): { plainText: string; spans: Format
 }
 
 /**
- * Convert a Markdown string into Google Docs batchUpdate request objects
- * that insert the content at the given document index.
+ * Convert a Markdown string into Google Docs batchUpdate request objects that insert the content
+ * at the given index inside tab `tabId`.
+ *
+ * Every emitted coordinate names that tab: tab bodies have independent index spaces, so an
+ * unqualified index lands in whichever tab Google picks.
  *
  * Returns requests in the order they should appear in the batchUpdate array.
  */
-export function markdownToDocRequests(markdown: string, insertAt: number): any[] {
+export function markdownToDocRequests(
+  markdown: string,
+  insertAt: number,
+  tabId: string,
+): any[] {
   let blocks = parseMarkdown(markdown);
   if (blocks.length === 0) return [];
 
@@ -580,14 +591,14 @@ export function markdownToDocRequests(markdown: string, insertAt: number): any[]
   if (fullText.length === 0) {
     // `parseMarkdown()` treats whitespace-only input as blank Markdown blocks, but replacements
     // can legitimately insert whitespace inside existing text, e.g. splitting a word in two.
-    return [{ insertText: { location: { index: insertAt }, text: markdown } }];
+    return [{ insertText: { location: { index: insertAt, tabId }, text: markdown } }];
   }
 
   // Insert the full text in one go. This is more efficient and avoids
   // index-shifting complexity from multiple insertions.
   requests.push({
     insertText: {
-      location: { index: insertAt },
+      location: { index: insertAt, tabId },
       text: fullText,
     },
   });
@@ -603,7 +614,7 @@ export function markdownToDocRequests(markdown: string, insertAt: number): any[]
       let styleType = `HEADING_${block.headingLevel}`;
       requests.push({
         updateParagraphStyle: {
-          range: { startIndex: blockStart, endIndex: blockEnd + 1 },
+          range: { startIndex: blockStart, endIndex: blockEnd + 1, tabId },
           paragraphStyle: { namedStyleType: styleType },
           fields: "namedStyleType",
         },
@@ -617,7 +628,7 @@ export function markdownToDocRequests(markdown: string, insertAt: number): any[]
         : "BULLET_DISC_CIRCLE_SQUARE";
       requests.push({
         createParagraphBullets: {
-          range: { startIndex: blockStart, endIndex: blockEnd + 1 },
+          range: { startIndex: blockStart, endIndex: blockEnd + 1, tabId },
           bulletPreset: preset,
         },
       });
@@ -637,7 +648,7 @@ export function markdownToDocRequests(markdown: string, insertAt: number): any[]
         if (span.strikethrough) { textStyle.strikethrough = true; fields.push("strikethrough"); }
         requests.push({
           updateTextStyle: {
-            range: { startIndex: spanStart, endIndex: spanEnd },
+            range: { startIndex: spanStart, endIndex: spanEnd, tabId },
             textStyle,
             fields: fields.join(","),
           },
@@ -647,7 +658,7 @@ export function markdownToDocRequests(markdown: string, insertAt: number): any[]
       if (span.link) {
         requests.push({
           updateTextStyle: {
-            range: { startIndex: spanStart, endIndex: spanEnd },
+            range: { startIndex: spanStart, endIndex: spanEnd, tabId },
             textStyle: { link: { url: span.link } },
             fields: "link",
           },
@@ -667,8 +678,8 @@ export function markdownToDocRequests(markdown: string, insertAt: number): any[]
 // ---------------------------------------------------------------------------
 
 /**
- * Given a match range in the Markdown snapshot, compute the batchUpdate
- * operations to replace that range with new Markdown content.
+ * Given a match range in one tab's Markdown snapshot, compute the batchUpdate operations to
+ * replace that range with new Markdown content inside tab `tabId`.
  *
  * Automatically trims unchanged leading/trailing text to minimize the edit.
  */
@@ -678,6 +689,7 @@ export function computeReplaceOperations(
   matchStart: number,
   matchEnd: number,
   newMarkdown: string,
+  tabId: string,
 ): { requests: any[]; trimmedOld: string; trimmedNew: string } {
   let oldText = markdown.slice(matchStart, matchEnd);
 
@@ -721,14 +733,14 @@ export function computeReplaceOperations(
   if (docRange.start < docRange.end) {
     requests.push({
       deleteContentRange: {
-        range: { startIndex: docRange.start, endIndex: docRange.end },
+        range: { startIndex: docRange.start, endIndex: docRange.end, tabId },
       },
     });
   }
 
   // Insert the new content (if any).
   if (trimmedNew.length > 0) {
-    let insertRequests = markdownToDocRequests(trimmedNew, docRange.start);
+    let insertRequests = markdownToDocRequests(trimmedNew, docRange.start, tabId);
     requests.push(...insertRequests);
   }
 

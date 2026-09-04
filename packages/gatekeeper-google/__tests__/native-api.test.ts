@@ -1,27 +1,41 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GoogleDocsApi } from "../src/docs-api";
+import { GoogleDocsApi, type GoogleDocsTab } from "../src/docs-api";
 import { GoogleSheetsApi } from "../src/sheets-api";
 import { readGoogleJson } from "../src/google-response";
 
 const token = async () => "access-token";
 
-function docBody() {
+type RawTab = {
+  tabProperties: { tabId: string; title: string };
+  documentTab?: Pick<GoogleDocsTab, "body"> & Partial<Pick<GoogleDocsTab, "lists" | "namedRanges">>;
+  childTabs?: RawTab[];
+};
+
+/** The section break every real document body opens with. */
+const EMPTY_BODY = { content: [{ startIndex: 0, endIndex: 1, sectionBreak: {} }] };
+
+/** One provider tab, with the body and collections a fresh tab really returns. */
+function rawTab(tabId: string, title: string, childTabs?: RawTab[]): RawTab {
   return {
-    documentId: "doc-1",
-    title: "Quarterly plan",
-    revisionId: "revision-1",
-    body: { content: [] },
-    lists: {},
-    namedRanges: {},
+    tabProperties: { tabId, title },
+    documentTab: { body: EMPTY_BODY, lists: {}, namedRanges: {} },
+    ...childTabs ? { childTabs } : {},
   };
 }
 
-function docResponse(tabCount = 1) {
-  const { body, lists, namedRanges, ...document } = docBody();
-  const documentTab = { body, lists, namedRanges };
+function docResponse(tabs: RawTab[] = [rawTab("tab-1", "Main")]) {
+  return { documentId: "doc-1", title: "Quarterly plan", revisionId: "revision-1", tabs };
+}
+
+/** The normalized counterpart of `rawTab`, with ancestry the caller states explicitly. */
+function normalizedTab(
+  tabId: string,
+  title: string,
+  position: Partial<Pick<GoogleDocsTab, "parentTabId" | "index" | "nestingLevel">> = {},
+): GoogleDocsTab {
   return {
-    ...document,
-    tabs: Array.from({ length: tabCount }, () => ({ documentTab, childTabs: [] })),
+    tabId, title, index: 0, nestingLevel: 0, ...position,
+    body: EMPTY_BODY, lists: {}, namedRanges: {},
   };
 }
 
@@ -62,14 +76,19 @@ afterEach(() => {
 });
 
 describe("native Google content API safety", () => {
-  it("requests tabs and normalizes a single-tab document", async () => {
+  it("requests tab content and normalizes a single-tab document", async () => {
     let requestedUrl: string | undefined;
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
       requestedUrl = input instanceof Request ? input.url : input.toString();
       return Response.json(docResponse());
     }));
 
-    await expect(new GoogleDocsApi(token).getDocument("doc-1")).resolves.toEqual(docBody());
+    await expect(new GoogleDocsApi(token).getDocument("doc-1")).resolves.toEqual({
+      documentId: "doc-1",
+      title: "Quarterly plan",
+      revisionId: "revision-1",
+      tabs: [normalizedTab("tab-1", "Main")],
+    });
     expect(requestedUrl).toBe(
       "https://docs.googleapis.com/v1/documents/doc-1?includeTabsContent=true",
     );
@@ -112,11 +131,82 @@ describe("native Google content API safety", () => {
       .rejects.toThrow("Google Docs returned a different document");
   });
 
-  it("rejects multi-tab documents instead of silently reading the first tab", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json(docResponse(2))));
+  it("flattens the tab tree in preorder with derived ancestry", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(docResponse([
+      rawTab("overview", "Overview", [rawTab("details", "Details", [
+        rawTab("metrics", "Metrics"),
+      ])]),
+      rawTab("appendix", "Appendix"),
+    ]))));
 
-    await expect(new GoogleDocsApi(token).getDocument("doc-1"))
-      .rejects.toThrow("Multi-tab Google Docs are not supported");
+    await expect(new GoogleDocsApi(token).getDocument("doc-1")).resolves.toMatchObject({
+      tabs: [
+        normalizedTab("overview", "Overview"),
+        normalizedTab("details", "Details", { parentTabId: "overview", nestingLevel: 1 }),
+        normalizedTab("metrics", "Metrics", { parentTabId: "details", nestingLevel: 2 }),
+        normalizedTab("appendix", "Appendix", { index: 1 }),
+      ],
+    });
+  });
+
+  it("keeps each tab's body, lists and named ranges to itself", async () => {
+    const documentTab = {
+      body: { content: [{ startIndex: 0, endIndex: 1, sectionBreak: {} }] },
+      lists: { L1: { listProperties: { nestingLevels: [{ glyphSymbol: "\u25cf" }] } } },
+      namedRanges: { mark: { namedRanges: [{ namedRangeId: "range-1", name: "mark" }] } },
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(docResponse([
+      { ...rawTab("overview", "Overview"), documentTab },
+      rawTab("appendix", "Appendix"),
+    ]))));
+
+    const { tabs } = await new GoogleDocsApi(token).getDocument("doc-1");
+
+    expect(tabs[0]).toMatchObject(documentTab);
+    expect(tabs[1]).toMatchObject({ body: EMPTY_BODY, lists: {}, namedRanges: {} });
+  });
+
+  it("defaults absent tab collections to empty", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(docResponse([{
+      tabProperties: { tabId: "solo", title: "Solo" },
+      documentTab: { body: EMPTY_BODY },
+    }]))));
+
+    await expect(new GoogleDocsApi(token).getDocument("doc-1")).resolves.toMatchObject({
+      tabs: [normalizedTab("solo", "Solo")],
+    });
+  });
+
+  it.each([
+    ["no tabs", [], "Google Docs returned no document tab"],
+    ["a duplicate tab ID", [rawTab("dup", "One"), rawTab("dup", "Two")],
+      "Google Docs returned a duplicate tab ID"],
+    ["an empty tab ID", [rawTab("", "Nameless")], "Google Docs returned an invalid tab"],
+    ["a missing title", [{ tabProperties: { tabId: "solo" } }],
+      "Google Docs returned an invalid tab"],
+    ["a tab without content", [{ tabProperties: { tabId: "solo", title: "Solo" } }],
+      "Google Docs returned an invalid tab"],
+    ["a malformed body", [{
+      tabProperties: { tabId: "solo", title: "Solo" },
+      documentTab: { body: { content: "text" } },
+    }], "Google Docs returned an invalid tab"],
+    ["malformed child tabs", [{
+      ...rawTab("solo", "Solo"), childTabs: {},
+    }], "Google Docs returned an invalid tab"],
+    ["an empty body", [{
+      tabProperties: { tabId: "solo", title: "Solo" },
+      documentTab: { body: { content: [] } },
+    }], "Google Docs returned an invalid tab"],
+    ["malformed named ranges", [{
+      tabProperties: { tabId: "solo", title: "Solo" },
+      documentTab: { body: EMPTY_BODY, namedRanges: [] },
+    }], "Google Docs returned an invalid tab"],
+  ] as const)("rejects a response with %s", async (_case, tabs, message) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(
+      docResponse(tabs as unknown as RawTab[]),
+    )));
+
+    await expect(new GoogleDocsApi(token).getDocument("doc-1")).rejects.toThrow(message);
   });
 
   it("revision-locks marked writes and returns the created range ID", async () => {
@@ -130,10 +220,11 @@ describe("native Google content API safety", () => {
         writeControl: { requiredRevisionId: "revision-2" },
       });
     }));
-    const request = { insertText: { text: "hello", location: { index: 1 } } };
+    const request = { insertText: { text: "hello", location: { index: 1, tabId: "metrics" } } };
 
     const result = await new GoogleDocsApi(token).batchUpdate(
-      "doc-1", [request], "revision-1", { name: "gadgets-write-1", rangeStart: 1 },
+      "doc-1", [request], "revision-1",
+      { name: "gadgets-write-1", rangeStart: 1, tabId: "metrics" },
     );
 
     expect(result).toEqual({ revisionId: "revision-2", writeMarkerId: "range-1" });
@@ -142,7 +233,7 @@ describe("native Google content API safety", () => {
         {
           createNamedRange: {
             name: "gadgets-write-1",
-            range: { startIndex: 1, endIndex: 2 },
+            range: { startIndex: 1, endIndex: 2, tabId: "metrics" },
           },
         },
         request,

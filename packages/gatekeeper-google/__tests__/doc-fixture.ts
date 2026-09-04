@@ -1,5 +1,5 @@
 import type {
-  GoogleDocsDocument, ParagraphElement, StructuralElement, TextStyle,
+  GoogleDocsTab, ParagraphElement, StructuralElement, TextStyle,
 } from "../src/docs-api";
 
 /** A styled span of text within a paragraph. */
@@ -12,15 +12,15 @@ type ParagraphSpec = {
 };
 
 /**
- * Builds a `GoogleDocsDocument` with the index bookkeeping the real API applies: a section break
- * occupies index 0, and every paragraph's runs are laid out contiguously from index 1.
+ * Builds a normalized `GoogleDocsTab` with the index bookkeeping the real API applies: a section
+ * break occupies index 0, and every paragraph's runs are laid out contiguously from index 1.
  *
  * Every paragraph's last run must end in "\n", as Google's own responses do.
  */
-export function buildDoc(
+export function buildTab(
   paragraphs: ParagraphSpec[],
-  lists: GoogleDocsDocument["lists"] = {},
-): GoogleDocsDocument {
+  lists: GoogleDocsTab["lists"] = {},
+): GoogleDocsTab {
   let index = 1;
   let content: StructuralElement[] = [{ startIndex: 0, endIndex: 1, sectionBreak: {} }];
 
@@ -48,9 +48,10 @@ export function buildDoc(
   }
 
   return {
-    documentId: "doc-1",
+    tabId: "tab-1",
     title: "Fixture",
-    revisionId: "rev-1",
+    index: 0,
+    nestingLevel: 0,
     body: { content },
     lists,
     namedRanges: {},
@@ -58,6 +59,6 @@ export function buildDoc(
 }
 
 /** A single-level bullet list definition, for paragraphs carrying a matching `bullet`. */
-export const BULLET_LIST: GoogleDocsDocument["lists"] = {
+export const BULLET_LIST: GoogleDocsTab["lists"] = {
   L1: { listProperties: { nestingLevels: [{ glyphSymbol: "\u25cf" }] } },
 };

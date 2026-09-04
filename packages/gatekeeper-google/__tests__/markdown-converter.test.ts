@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { computeReplaceOperations, docToMarkdown } from "../src/markdown-converter";
+import {
+  computeReplaceOperations, docTabToMarkdown, markdownToDocRequests,
+} from "../src/markdown-converter";
 import type { Segment } from "../src/markdown-converter";
-import { BULLET_LIST, buildDoc } from "./doc-fixture";
+import { BULLET_LIST, buildTab } from "./doc-fixture";
 
 /** A segment with a document counterpart, as opposed to a Markdown-syntax-only one. */
 type ContentSegment = Exclude<Segment, { syntaxOnly: true }>;
 
 const isContent = (seg: Segment): seg is ContentSegment => !("syntaxOnly" in seg);
+
+const TAB_ID = "tab-1";
 
 /**
  * The document text as Google stores it, aligned so that a string index equals a doc index: index
@@ -16,9 +20,23 @@ function docText(runs: string[]): string {
   return "\u0000" + runs.join("");
 }
 
-describe("docToMarkdown", () => {
+/** Every `Location`/`Range` object nested anywhere inside a batchUpdate request. */
+function coordinates(requests: unknown[]): Record<string, unknown>[] {
+  let found: Record<string, unknown>[] = [];
+  let visit = (value: unknown) => {
+    if (!value || typeof value !== "object") return;
+    for (const [key, nested] of Object.entries(value)) {
+      if (key === "location" || key === "range") found.push(nested as Record<string, unknown>);
+      visit(nested);
+    }
+  };
+  visit(requests);
+  return found;
+}
+
+describe("docTabToMarkdown", () => {
   it("renders headings, inline styles, links and bullets", () => {
-    let snapshot = docToMarkdown(buildDoc([
+    let snapshot = docTabToMarkdown(buildTab([
       { runs: ["Title\n"], namedStyleType: "HEADING_1" },
       { runs: ["Sub\n"], namedStyleType: "HEADING_2" },
       { runs: [
@@ -38,10 +56,18 @@ describe("docToMarkdown", () => {
       "# Title\n\n## Sub\n\nHello **bold** and *it* and [link](https://e.com).\n\n- one\n- two\n");
   });
 
-  it("carries the title, revision and body end index through", () => {
-    let snapshot = docToMarkdown(buildDoc([{ runs: ["abc\n"] }]));
-    expect(snapshot.title).toBe("Fixture");
-    expect(snapshot.revisionId).toBe("rev-1");
+  it("carries the tab's identity, position and body end index through", () => {
+    let snapshot = docTabToMarkdown({
+      ...buildTab([{ runs: ["abc\n"] }]),
+      tabId: "metrics",
+      title: "Metrics",
+      parentTabId: "details",
+      index: 1,
+      nestingLevel: 2,
+    });
+    expect(snapshot).toMatchObject({
+      tabId: "metrics", title: "Metrics", parentTabId: "details", index: 1, nestingLevel: 2,
+    });
     // Section break (1) + "abc\n" (4).
     expect(snapshot.bodyEndIndex).toBe(5);
   });
@@ -50,7 +76,7 @@ describe("docToMarkdown", () => {
 // These are what keeps an edit from landing on the wrong characters. A content segment claims a
 // 1:1 mapping between Markdown and document indices, and computeReplaceOperations trusts it.
 describe("source map invariants", () => {
-  let snapshot = docToMarkdown(buildDoc([
+  let snapshot = docTabToMarkdown(buildTab([
     { runs: ["Title\n"], namedStyleType: "HEADING_1" },
     { runs: [
       "Hello ",
@@ -104,8 +130,25 @@ describe("source map invariants", () => {
   });
 });
 
+// Tab bodies have independent index spaces, so a coordinate without the selected tab's ID would
+// land in whichever tab Google picks by default.
+describe("selected-tab write coordinates", () => {
+  it("stamps the tab ID on every inserted location and styled range", () => {
+    let requests = markdownToDocRequests(
+      "# Head\n\n- one\n\n**bold** and [link](https://e.com)\n", 7, "metrics");
+
+    expect(requests.map(request => Object.keys(request)[0])).toEqual([
+      "insertText", "updateParagraphStyle", "createParagraphBullets", "updateTextStyle",
+      "updateTextStyle",
+    ]);
+    let found = coordinates(requests);
+    expect(found).toHaveLength(requests.length);
+    for (const coordinate of found) expect(coordinate.tabId).toBe("metrics");
+  });
+});
+
 describe("computeReplaceOperations", () => {
-  let snapshot = docToMarkdown(buildDoc([
+  let snapshot = docTabToMarkdown(buildTab([
     { runs: ["Title\n"], namedStyleType: "HEADING_1" },
     { runs: ["Hello ", { text: "bold", style: { bold: true } }, " world.\n"] },
   ]));
@@ -114,7 +157,7 @@ describe("computeReplaceOperations", () => {
     let start = md.indexOf(oldText);
     expect(start).toBeGreaterThanOrEqual(0);
     return computeReplaceOperations(
-      snapshot.sourceMap, md, start, start + oldText.length, newText);
+      snapshot.sourceMap, md, start, start + oldText.length, newText, TAB_ID);
   };
 
   it("renders the fixture as expected", () => {
@@ -130,8 +173,8 @@ describe("computeReplaceOperations", () => {
       trimmedOld: "world",
       trimmedNew: "there",
       requests: [
-        { deleteContentRange: { range: { startIndex: 18, endIndex: 23 } } },
-        { insertText: { location: { index: 18 }, text: "there" } },
+        { deleteContentRange: { range: { startIndex: 18, endIndex: 23, tabId: TAB_ID } } },
+        { insertText: { location: { index: 18, tabId: TAB_ID }, text: "there" } },
       ],
     });
   });
@@ -140,7 +183,7 @@ describe("computeReplaceOperations", () => {
     expect(replace("world", "worlds")).toEqual({
       trimmedOld: "",
       trimmedNew: "s",
-      requests: [{ insertText: { location: { index: 23 }, text: "s" } }],
+      requests: [{ insertText: { location: { index: 23, tabId: TAB_ID }, text: "s" } }],
     });
   });
 
@@ -148,7 +191,7 @@ describe("computeReplaceOperations", () => {
     expect(replace("world", "")).toEqual({
       trimmedOld: "world",
       trimmedNew: "",
-      requests: [{ deleteContentRange: { range: { startIndex: 18, endIndex: 23 } } }],
+      requests: [{ deleteContentRange: { range: { startIndex: 18, endIndex: 23, tabId: TAB_ID } } }],
     });
   });
 
@@ -165,7 +208,7 @@ describe("computeReplaceOperations", () => {
     let inserted = result.requests[1].insertText.text;
     // The delete covers "Hello bold world.\n" (doc 7..25), so the insert must restore all of it.
     expect({ deleted, inserted }).toEqual({
-      deleted: { startIndex: 7, endIndex: 25 },
+      deleted: { startIndex: 7, endIndex: 25, tabId: TAB_ID },
       inserted: "Hello plain world.\n",
     });
   });
@@ -173,8 +216,8 @@ describe("computeReplaceOperations", () => {
   it("currently truncates the paragraph in that case", () => {
     let result = replace("**bold**", "plain");
     expect(result.requests).toEqual([
-      { deleteContentRange: { range: { startIndex: 7, endIndex: 25 } } },
-      { insertText: { location: { index: 7 }, text: "plain" } },
+      { deleteContentRange: { range: { startIndex: 7, endIndex: 25, tabId: TAB_ID } } },
+      { insertText: { location: { index: 7, tabId: TAB_ID }, text: "plain" } },
     ]);
   });
 });
