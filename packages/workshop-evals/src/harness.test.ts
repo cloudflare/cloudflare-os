@@ -3,7 +3,7 @@ import type {
   AgentTurnOutcome, AgentTurnResult, WorkshopAgentSession,
 } from "@gadgets/integration-tests/agent-session";
 import type { AiChatMessage, WorkpieceSummary } from "@gadgets/workshop-shared/api";
-import { EVAL_VERIFICATION_BUDGET_MS } from "./config.js";
+import { EVAL_VERIFICATION_BUDGET_MS } from "./budgets.js";
 import { createWorkshopHarness } from "./harness.js";
 import type { LocalEvalTarget, LocalModelAccess } from "./target.js";
 import type { EvalTask } from "./task.js";

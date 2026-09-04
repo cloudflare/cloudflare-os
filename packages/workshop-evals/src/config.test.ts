@@ -1,8 +1,8 @@
 import { expect, it } from "vitest";
 import {
-  EVAL_AGENT_BUDGET_MS, EVAL_TEST_TIMEOUT_MS, EVAL_VERIFICATION_BUDGET_MS, evalMatrix,
-  resolveEvalCommit, resolveEvalModel,
-} from "./config.js";
+  EVAL_AGENT_BUDGET_MS, EVAL_TEST_TIMEOUT_MS, EVAL_VERIFICATION_BUDGET_MS,
+} from "./budgets.js";
+import { evalMatrix, resolveEvalCommit, resolveEvalModel } from "./config.js";
 import { taskVersion, type EvalTask } from "./task.js";
 
 it("leaves an outer margin for setup and cleanup", () => {

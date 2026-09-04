@@ -23,9 +23,6 @@ const DEFAULT_MODELS: readonly SuggestedModelId<"cloudflare">[] =
   ["@cf/deepseek-ai/deepseek-v4-pro-0813"];
 const GIT_SHA_PATTERN = /^[a-f0-9]{40}$/;
 
-export const EVAL_AGENT_BUDGET_MS = 28 * 60_000;
-export const EVAL_VERIFICATION_BUDGET_MS = 2 * 60_000;
-export const EVAL_TEST_TIMEOUT_MS = 40 * 60_000;
 export type EvalIdentity = { gitCommit: string; taskVersion: string };
 export type EvalMatrix = { models: EvalModelId[]; trials: number };
 

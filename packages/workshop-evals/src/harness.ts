@@ -4,9 +4,8 @@ import {
   attachHarnessRunToError, createHarness, normalizeHarnessRun, type JsonValue,
   type TranscriptEvent,
 } from "vitest-evals";
-import {
-  EVAL_AGENT_BUDGET_MS, EVAL_VERIFICATION_BUDGET_MS, resolveEvalModel, type EvalIdentity,
-} from "./config.js";
+import { EVAL_AGENT_BUDGET_MS, EVAL_VERIFICATION_BUDGET_MS } from "./budgets.js";
+import { resolveEvalModel, type EvalIdentity } from "./config.js";
 import type { EvalCheck, EvalRunInput, EvalRunOutput, EvalTask, EvalTurnResult } from "./task.js";
 import { measureHistory, toTranscriptEvents } from "./transcript.js";
 import {

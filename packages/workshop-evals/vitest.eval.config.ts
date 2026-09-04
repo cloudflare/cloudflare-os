@@ -1,5 +1,5 @@
 import { defineConfig } from "vitest/config";
-import { EVAL_TEST_TIMEOUT_MS } from "./src/config.js";
+import { EVAL_TEST_TIMEOUT_MS } from "./src/budgets.js";
 
 export default defineConfig({
   test: {
