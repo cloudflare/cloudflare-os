@@ -5431,9 +5431,11 @@ class OverseerImpl implements AgentHooks {
 
   // `joinAs` counts the returned client toward #hasCollaboratorSession for its lifetime; passed by
   // the collaborator-facing mints, omitted for the owner's and for internal callers (see
-  // GadgetClientImpl).
+  // GadgetClientImpl). `deferRestart` is for the one mid-turn mint (createExternalResource):
+  // quarantine instead of aborting, and restart at the step barrier -- see the restart block below.
   async addGatekeeper(
-      cls: GatekeeperClass, creationSpec?: GatekeeperCreationSpec, joinAs?: SessionKind)
+      cls: GatekeeperClass, creationSpec?: GatekeeperCreationSpec, joinAs?: SessionKind,
+      options?: {deferRestart?: boolean})
       : Promise<GatekeeperClient<any>> {
     let id = this.allocateWorkpieceId();
     let gatekeeperRecord: GatekeeperRecord = {
@@ -5478,7 +5480,16 @@ class OverseerImpl implements AgentHooks {
     // window. Publish, restart-check, and mark share one synchronous block, so no request can
     // interleave between the record appearing and the block taking effect.
     if (creationSpec && "vendorId" in creationSpec) {
-      if (this.#restartIfSessionsAffected(
+      if (options?.deferRestart) {
+        // Deferred: an immediate abort would kill the minting turn before its barrier records
+        // the tool call, and the resumed replay would re-issue the mint -- an abort/resume loop
+        // for as long as the collaborator keeps reconnecting. Quarantine in the same synchronous
+        // block instead (unverified sessions can't reach the id, see assertGatekeeperUsable) and
+        // restart once the log backs the creation (addChatMessages' unstamp branch).
+        if (this.#hasCollaboratorSession("build")) {
+          this.#gatekeepersPendingRestart.add(id);
+        }
+      } else if (this.#restartIfSessionsAffected(
           "Gadget restarted because a new connection was added.", "build")) {
         this.#gatekeepersPendingRestart.add(id);
       }
@@ -6307,9 +6318,11 @@ class OverseerImpl implements AgentHooks {
   // session can even guess a brand-new one; a "use" session's gadget reload mints fresh binding
   // loopbacks). Every client-reachable route to the connection checks this set
   // (assertGatekeeperUsable/gatekeeperUsable). In-memory and never cleared: the scheduled reset
-  // is what clears it, by destroying this object. Only ever populated when a restart really was
-  // scheduled -- marking without one would brick the connection until some unrelated restart came
-  // along.
+  // is what clears it, by destroying this object. Populated only when a restart was scheduled --
+  // or, for a deferred creation mint (addGatekeeper), committed to fire at the step barrier;
+  // marking with no restart coming would brick the connection until some unrelated restart came
+  // along. A deferred mark whose creation never reaches the log stays behind on a reaped,
+  // never-reused id -- inert until the next restart.
   #gatekeepersPendingRestart = new Set<number>();
 
   // Whether `id` is NOT blocked pending a scheduled restart (see #gatekeepersPendingRestart).
@@ -8633,6 +8646,12 @@ class OverseerImpl implements AgentHooks {
             if (gatekeeper?.pending?.chatId === chatId) {
               delete gatekeeper.pending;
               this.storage.gatekeepers.put(gatekeeper);
+              // A deferred mint-time restart (see addGatekeeper) fires now that the log backs
+              // the creation: the resumed turn replays this call instead of re-issuing it.
+              if (this.#gatekeepersPendingRestart.has(gatekeeper.id)) {
+                this.scheduleAccessRestart(
+                    "Gadget restarted because a new connection was added.");
+              }
               // A decision made before this barrier deferred its nudge (see
               // nudgeCreationDecision); deliver it now that the call is in the log.
               let creation = gatekeeper.creation?.actionId !== undefined
@@ -9085,7 +9104,7 @@ class OverseerImpl implements AgentHooks {
       vendorId: minted.vendorId,
       resourceUrl: minted.resourceUrl,
       typeUrlPattern: minted.typeUrlPattern,
-    });
+    }, undefined, {deferRestart: true});
     let gatekeeperId = await client.getId();
 
     // Mark the record provisional so the post-apply describe refresh (applyPendingAction) knows
