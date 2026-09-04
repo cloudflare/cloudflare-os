@@ -16,6 +16,7 @@ const choices: SlashCommandChoice[] = [{
   name: "deploy",
   description: "Deploy the current project.",
   providerLabel: "Context",
+  resourceLabel: "Production",
 }, {
   selection: { gatekeeperId: 1, commandId: "debug" },
   name: "debug",
@@ -107,6 +108,8 @@ describe("SlashCommandPicker", () => {
     expect(popup.textContent).not.toContain("Commands");
     expect(document.querySelector('[role="option"]')?.textContent)
       .toContain("deployDeploy the current project.");
+    expect(document.querySelector('[role="option"]')?.textContent)
+      .toContain("Context · Production");
     expect(popup.style.bottom).not.toBe("");
 
     await act(async () => root!.render(

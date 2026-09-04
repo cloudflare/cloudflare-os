@@ -249,7 +249,7 @@ export function useSlashCommandPicker({
                 choice.description,
                 [choice.providerLabel, choice.resourceLabel].filter(Boolean).join(" · "),
               ].join("\n")}
-              className={`grid w-full cursor-pointer grid-cols-[auto_fit-content(35%)_auto_minmax(0,1fr)_auto] items-center gap-x-2 rounded-lg px-3 py-2.5 text-left transition-colors disabled:cursor-wait disabled:opacity-60 ${optionIndex === index ? "bg-kumo-tint text-kumo-strong" : "text-kumo-default hover:bg-kumo-tint/70"}`}
+              className={`grid w-full cursor-pointer grid-cols-[auto_fit-content(35%)_auto_minmax(0,1fr)_fit-content(30%)_auto] items-center gap-x-2 rounded-lg px-3 py-2.5 text-left transition-colors disabled:cursor-wait disabled:opacity-60 ${optionIndex === index ? "bg-kumo-tint text-kumo-strong" : "text-kumo-default hover:bg-kumo-tint/70"}`}
               onMouseMove={() => setIndex(optionIndex)}
               onClick={() => select(choice)}
             >
@@ -259,6 +259,9 @@ export function useSlashCommandPicker({
               <span className="min-w-0 truncate">{choice.name}</span>
               <CaretRightIcon size={11} aria-hidden="true" className="shrink-0 text-kumo-inactive" />
               <span className="min-w-0 truncate text-kumo-subtle">{choice.description}</span>
+              <span className="min-w-0 truncate text-[11.5px] text-kumo-inactive">
+                {[choice.providerLabel, choice.resourceLabel].filter(Boolean).join(" · ")}
+              </span>
               {optionIndex === index && selectable && (
                 <span className="ml-1">
                   <TabHint />
