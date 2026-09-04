@@ -8,12 +8,16 @@ neutral sidebars so the slide canvas remains the visual focus.
 
 ## Files
 
-- `server.js` — Durable Object that owns the deck document and broadcasts
-  every mutation to connected viewers. The server is a generic store; it
-  doesn't know what any component does.
+- `server.js` — Durable Object that owns the deck document, broadcasts every
+  mutation to connected viewers, and delegates PowerPoint export.
 - `client.js` — Design tokens, the component registry, slide renderer,
   block interactions (drag, resize, inline text edit), and the builder
   shell (slide list, inspector, palette, control bar, present mode).
+- `pptx.js` — dependency-free PresentationML renderer for server-side
+  PowerPoint export.
+- `zip.js` — streaming ZIP32 writer shared verbatim with the Workspace Sheets
+  blueprint implementation. Each blueprint keeps its own copy because a
+  dynamic Gadget receives only its own JavaScript files.
 
 ## Slide formats
 
@@ -332,5 +336,38 @@ need to touch styles when adding a new field type.
 
 ## Export formats
 
-The deck supports **HTML** and **PDF** exports. Both use the same print renderer, which emits every
-slide at its fixed 1200 x 675 aspect ratio without the editor sidebars or presentation controls.
+The deck supports **HTML**, **PDF**, and **PowerPoint (`.pptx`)** exports. HTML
+and PDF remain browser-mode formats and use the same print renderer, which
+emits every slide at its fixed 1200 x 675 aspect ratio without the editor
+sidebars or presentation controls.
+
+PowerPoint export runs on the server and creates a conventional OPC /
+PresentationML package. Text, cards, boxes, pills, basic shapes, dividers,
+arrows, and the two brand marks become editable native PowerPoint objects
+rather than a screenshot. Source block order remains the shape z-order. The
+known bottom brand bar and orange cover treatment are native gradients.
+Dot-grid backgrounds are omitted.
+
+The 1200 x 675 canvas maps to standard widescreen PowerPoint at 12,192,000 x
+6,858,000 EMU. Positions, dimensions, and CSS font sizes all use the canvas's
+0.8-point-per-pixel scale. PowerPoint and browsers use different font metrics,
+so wrapping and intrinsic text height can differ. The package requests Arial,
+which is available in PowerPoint and Google previews, but does not embed fonts.
+Every block retains its authored position, including when its text wraps.
+
+PNG and JPEG data URLs are embedded after signature, dimension, and resource
+limit checks. Identical image data is stored once. `fill`, `contain`, and
+`cover` are supported, including source cropping for `cover`. Remote URLs are
+never fetched or emitted as external relationships; they receive a visible
+placeholder instead.
+
+Arbitrary user-authored SVG is not embedded or rasterized. The exporter
+replaces the known bottom brand-bar SVG natively and displays a visible
+"SVG not included in PowerPoint export" placeholder for every other SVG.
+SVG-based charts and icons therefore are not faithfully represented in v1.
+
+The following are intentionally deferred: arbitrary SVG and SVG
+rasterization, pixel-perfect browser layout, embedded fonts, remote images,
+native charts and tables, animations and transitions, speaker notes and
+comments, audio and video, hyperlinks, rounded-image clipping beyond a safe
+approximation, and PPTX import or edited-PPTX round trips.
