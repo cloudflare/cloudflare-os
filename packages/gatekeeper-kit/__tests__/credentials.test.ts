@@ -1373,6 +1373,55 @@ describe("CredentialSource", () => {
     expect(reportCredentialsRejected).toHaveBeenCalledOnce();
   });
 
+  it("re-enters instead of replaying when the adopted successor reaches a non-replayable call", async () => {
+    const gate = Promise.withResolvers<void>();
+    const { instance, reportCredentialsRejected } = healingSource();
+    const operation = vi.fn(async (creds: Creds) => {
+      if (creds.token !== "live") return creds.token;
+      await gate.promise;
+      throw new Error("401");
+    });
+
+    const slow = instance.run(operation);
+    // A sibling call heals and adopts the successor before the slow call's 401 lands.
+    expect(await instance.run(async creds => {
+      if (creds.token === "live") throw new Error("401");
+      return creds.token;
+    }, { replayable: true })).toBe("fresh");
+
+    // The successor answers what an ask would, but a second execution is not this caller's to
+    // spend: the operation runs once and the caller re-enters.
+    gate.resolve();
+    await expect(slow).rejects.toThrow(CredentialsChangedError);
+    expect(operation).toHaveBeenCalledOnce();
+    expect(reportCredentialsRejected).toHaveBeenCalledOnce();
+  });
+
+  it("adjudicates a repeat report afresh instead of caching the verdict", async () => {
+    let current = { creds: live, identity: "id-a", generation: "gen-a" };
+    const reportCredentialsRejected = vi.fn(async (identity: string) =>
+      identity === current.identity ? "expired" as const : "superseded" as const);
+    const instance = new CredentialSource<Creds>({
+      account: () => ({ getCredentials: async () => ({ ...current }), reportCredentialsRejected }),
+      isAuthError: error => error instanceof Error && error.message === "401",
+      expiredMessage,
+    });
+
+    await expect(instance.run(async () => { throw new Error("401"); }, { replayable: true }))
+      .rejects.toThrow(CredentialsExpiredError);
+
+    // A straggler reads the dead grant the account still serves, then the user reconnects.
+    const stalled = await stalledRun(instance, { replayable: true });
+    current = { creds: fresh, identity: "id-b", generation: "gen-b" };
+    stalled.release();
+
+    // The account re-adjudicates and answers moved-past; a cached verdict would expire the
+    // reconnect the caller only needs to re-enter into.
+    await expect(stalled.run).rejects.toThrow(CredentialsChangedError);
+    expect(reportCredentialsRejected).toHaveBeenCalledTimes(2);
+    expect(await instance.run(async creds => creds.token)).toBe("fresh");
+  });
+
   it("skips the ask when a reconnect was adopted before the rejection resolved", async () => {
     const reads = [
       { creds: live, identity: "id-a", generation: "gen-a" },
