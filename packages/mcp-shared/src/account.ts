@@ -13,8 +13,13 @@
 // Every nonce is single-use, time-bounded, and compared in constant time; see `connect-nonce.ts`.
 
 import { DurableObject } from "cloudflare:workers";
-import type { GatekeeperConnectCallback, GatekeeperUser }
+import type { ConnectHandoff, GatekeeperConnectCallback, GatekeeperUser }
   from "@gadgets/workshop-shared/gatekeeper";
+import {
+  commitStagedCredentials,
+  peekStagedCredentials,
+  stageCredentials,
+} from "@gadgets/gatekeeper-kit/credential-stage";
 import {
   auth,
   refreshAuthorization,
@@ -105,11 +110,15 @@ export function resolveConnectTarget(
   return target ?? existing ?? null;
 }
 
-/** What `beginConnect` tells the HTTP handler to do next. */
+/** What `beginConnect` tells the HTTP handler to do next; `done` carries the page's handoff. */
 export type ConnectOutcome =
-  | { kind: "done" }
+  | { kind: "done"; handoff: ConnectHandoff }
   | { kind: "redirect"; url: string }
   | { kind: "invalid" };
+
+// What a reconnect leaves in escrow until the Workshop confirms it (see `commitReconnect`): the new
+// tokens, or nothing for a public / preissued-token server that has no credential of its own.
+type StagedReconnect = { tokens: OAuthTokens | null };
 
 // A single-use secret in the connect flow, and the stage it belongs to.
 type StoredNonce = {
@@ -357,9 +366,9 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       const connected: ConnectedServer =
         server.auth === "token" ? server : { ...server, auth: "none" };
       this.ctx.storage.kv.put("server", connected);
-      await this.complete(connected, info, generation);
+      const handoff = await this.complete(connected, info, generation);
       log.info("connected without authorization", { event: "connect.completed" });
-      return { kind: "done" };
+      return { kind: "done", handoff };
     } catch (err) {
       if (!(err instanceof McpAuthRequiredError)) {
         this.restoreSelection(initiationNonce);
@@ -453,14 +462,22 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       },
       saveTokens: (tokens, context) => {
         current();
-        this.ctx.storage.kv.put<OAuthTokens>("tokens", {
+        const stored: OAuthTokens = {
           ...tokens,
           issuer: context?.issuer,
           // An absent `expires_in` is optional per RFC 6749 and means unknown, not eternal. Left
           // undefined the token is never refreshed, and a refresh token sitting right here goes
           // unused while every call fails on the server's own 401.
           expiresAt: Date.now() + (tokens.expires_in ?? DEFAULT_TOKEN_LIFETIME_S) * 1000,
-        });
+        };
+        // A reconnect's tokens stay in escrow until the Workshop has confirmed the browser that
+        // finished the flow belongs to the account's owner (`commitReconnect`); the live tokens,
+        // which bound facets read directly, are untouched until then.
+        if (this.ctx.storage.kv.get<boolean>("reconnecting")) {
+          stageCredentials<StagedReconnect>(this.ctx.storage.kv, { tokens: stored }, Date.now());
+          return;
+        }
+        this.ctx.storage.kv.put<OAuthTokens>("tokens", stored);
         this.ctx.storage.kv.put("expiredNotified", false);
       },
       redirectToAuthorization: url => {
@@ -545,11 +562,11 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         return { kind: "redirect", url: redirectUrl.toString() };
       }
       if (result === "AUTHORIZED") {
-        const tokens = this.ctx.storage.kv.get<OAuthTokens>("tokens");
+        const tokens = this.freshTokens();
         if (!tokens) throw new Error("The authorization server returned no access token.");
         const info = await this.probe(server, tokens.access_token, generation);
-        await this.complete(server, info, generation);
-        return { kind: "done" };
+        const handoff = await this.complete(server, info, generation);
+        return { kind: "done", handoff };
       }
       throw new Error("The authorization server returned no redirect.");
     } catch (err) {
@@ -567,21 +584,26 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     }
   }
 
-  /** Completes the OAuth code exchange. Returns false when the callback's nonce doesn't match. */
-  async acceptAuthCode(code: string, oauthNonce: string, issuer?: string): Promise<boolean> {
+  /**
+   * Completes the OAuth code exchange, returning the handoff for the page the browser lands on.
+   * Returns null when the callback's nonce doesn't match.
+   */
+  async acceptAuthCode(
+    code: string, oauthNonce: string, issuer?: string,
+  ): Promise<ConnectHandoff | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "oauth" || Date.now() >= stored.expiresAt ||
         !constantTimeEqual(stored.value, oauthNonce)) {
-      return false;
+      return null;
     }
     const pending = this.ctx.storage.kv.get<PendingAuthorization>("pendingAuth");
-    if (!pending) return false;
+    if (!pending) return null;
     const server = this.requireServer();
     // Single-use: consumed before the exchange, so a replayed callback cannot reach the token endpoint.
     this.ctx.storage.kv.delete("nonce");
     this.ctx.storage.kv.delete("pendingAuth");
 
-    if (!this.isCurrentConnection(server, pending.generation)) return false;
+    if (!this.isCurrentConnection(server, pending.generation)) return null;
     let result: Awaited<ReturnType<typeof auth>>;
     try {
       result = await auth(this.oauthProvider(server, pending.generation), {
@@ -601,21 +623,42 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         this.ctx.storage.kv.get<StoredOAuthClientInformation>("oauthClient"));
     }
     if (result !== "AUTHORIZED") throw new Error("The authorization server requested another redirect.");
-    if (!this.isCurrentConnection(server, pending.generation)) return false;
-    const tokens = this.ctx.storage.kv.get<OAuthTokens>("tokens");
+    if (!this.isCurrentConnection(server, pending.generation)) return null;
+    const tokens = this.freshTokens();
     if (!tokens) throw new Error("The authorization server returned no access token.");
     this.ctx.storage.kv.delete("oauthVerifier");
 
     const info = await this.probe(server, tokens.access_token, pending.generation);
-    if (!this.isCurrentConnection(server, pending.generation)) return false;
-    await this.complete(server, info, pending.generation);
-    return true;
+    if (!this.isCurrentConnection(server, pending.generation)) return null;
+    return await this.complete(server, info, pending.generation);
   }
 
-  // Hands the freshly-minted account back to the Workshop (or, on reconnect, just says so).
+  // The tokens `saveTokens` just stored: live ones for a first connect, staged ones for a reconnect.
+  private freshTokens(): OAuthTokens | undefined {
+    if (this.ctx.storage.kv.get<boolean>("reconnecting")) {
+      return peekStagedCredentials<StagedReconnect>(this.ctx.storage.kv, Date.now())?.tokens
+        ?? undefined;
+    }
+    return this.ctx.storage.kv.get<OAuthTokens>("tokens");
+  }
+
+  /**
+   * Makes the credentials staged by the last reconnect live (see `GatekeeperUser.commitReconnect`).
+   * Throws when no reconnect awaits confirmation or its stage has expired.
+   */
+  async commitReconnect(): Promise<void> {
+    const staged = commitStagedCredentials<StagedReconnect>(this.ctx.storage.kv, Date.now());
+    if (!staged) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+    if (staged.tokens) this.ctx.storage.kv.put<OAuthTokens>("tokens", staged.tokens);
+    this.ctx.storage.kv.put("expiredNotified", false);
+    this.ctx.storage.kv.delete("reconnecting");
+  }
+
+  // Hands the freshly-minted account back to the Workshop (or, on reconnect, just says so), and
+  // returns the handoff for the page the browser lands on.
   private async complete(
     server: ConnectedServer, info: McpServerInfo, generation: number,
-  ): Promise<void> {
+  ): Promise<ConnectHandoff> {
     if (!this.isCurrentConnection(server, generation)) {
       throw new Error("This connection attempt was replaced by a newer one.");
     }
@@ -640,14 +683,23 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     // connection the user can see and cannot use.
     this.ctx.storage.kv.put("connected", true);
 
+    let handoff: ConnectHandoff;
     if (this.ctx.storage.kv.get<boolean>("reconnecting")) {
-      this.ctx.storage.kv.delete("reconnecting");
-      const expiresAt = this.ctx.storage.kv.get<OAuthTokens>("tokens")?.expiresAt;
-      await callback.credentialsRestored(expiresAt ? new Date(expiresAt) : undefined);
+      // `reconnecting` stays set until `commitReconnect`: the new tokens (if the server issues any)
+      // are only staged so far. A server with no credential of its own stages an empty record so the
+      // commit still has something to confirm.
+      let staged = peekStagedCredentials<StagedReconnect>(this.ctx.storage.kv, Date.now());
+      if (!staged) {
+        staged = { tokens: null };
+        stageCredentials<StagedReconnect>(this.ctx.storage.kv, staged, Date.now());
+      }
+      const expiresAt = staged.tokens?.expiresAt;
+      handoff = await callback.reconnectComplete(expiresAt ? new Date(expiresAt) : undefined);
     } else {
-      await callback.complete(this.mintAccount());
+      handoff = await callback.complete(this.mintAccount());
     }
     await this.ctx.storage.deleteAlarm();
+    return handoff;
   }
 
 

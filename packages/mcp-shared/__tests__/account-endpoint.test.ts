@@ -118,6 +118,48 @@ class OAuthFlowAccount extends McpAccountBase<AccountEnv> {
 
 afterEach(() => vi.unstubAllGlobals());
 
+// An authorization server that registers any client and exchanges any code.
+function stubOAuthServer() {
+  vi.stubGlobal("fetch", async (input: string) => {
+    const url = String(input);
+    if (url.includes("oauth-protected-resource")) {
+      return Response.json({
+        resource: "https://mcp.example/mcp",
+        authorization_servers: ["https://auth.example"],
+      });
+    }
+    if (url.includes("oauth-authorization-server")) {
+      return Response.json({
+        issuer: "https://auth.example",
+        authorization_endpoint: "https://auth.example/authorize",
+        token_endpoint: "https://auth.example/token",
+        registration_endpoint: "https://auth.example/register",
+        response_types_supported: ["code"],
+      });
+    }
+    if (url === "https://auth.example/register") {
+      return Response.json({
+        client_id: "client-id",
+        redirect_uris: ["https://gatekeeper.example/oauth"],
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        token_endpoint_auth_method: "none",
+      });
+    }
+    if (url === "https://auth.example/token") {
+      return Response.json({
+        access_token: "access-token",
+        refresh_token: "refresh-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+      });
+    }
+    return new Response("", { status: 404 });
+  });
+}
+
+const HANDOFF = { targetOrigin: "https://workshop.example", ticket: "c".repeat(64) };
+
 const server = (endpoint: string): ConnectedServer => ({
   endpoint,
   serverId: "acme",
@@ -416,43 +458,8 @@ describe("connect initiation nonce", () => {
 
   it("completes OAuth after a new account instance resumes the redirect", async () => {
     const context = fakeContext();
-    const complete = vi.fn(async () => undefined);
-    vi.stubGlobal("fetch", async (input: string) => {
-      const url = String(input);
-      if (url.includes("oauth-protected-resource")) {
-        return Response.json({
-          resource: "https://mcp.example/mcp",
-          authorization_servers: ["https://auth.example"],
-        });
-      }
-      if (url.includes("oauth-authorization-server")) {
-        return Response.json({
-          issuer: "https://auth.example",
-          authorization_endpoint: "https://auth.example/authorize",
-          token_endpoint: "https://auth.example/token",
-          registration_endpoint: "https://auth.example/register",
-          response_types_supported: ["code"],
-        });
-      }
-      if (url === "https://auth.example/register") {
-        return Response.json({
-          client_id: "client-id",
-          redirect_uris: ["https://gatekeeper.example/oauth"],
-          grant_types: ["authorization_code", "refresh_token"],
-          response_types: ["code"],
-          token_endpoint_auth_method: "none",
-        });
-      }
-      if (url === "https://auth.example/token") {
-        return Response.json({
-          access_token: "access-token",
-          refresh_token: "refresh-token",
-          token_type: "Bearer",
-          expires_in: 3600,
-        });
-      }
-      return new Response("", { status: 404 });
-    });
+    const complete = vi.fn(async () => HANDOFF);
+    stubOAuthServer();
 
     const nonce = "9".repeat(64);
     const account = new OAuthFlowAccount(context as never, {});
@@ -463,11 +470,45 @@ describe("connect initiation nonce", () => {
     const oauthNonce = state.slice(state.indexOf(":") + 1);
 
     const resumed = new OAuthFlowAccount(context as never, {});
-    expect(await resumed.acceptAuthCode("authorization-code", oauthNonce)).toBe(true);
+    expect(await resumed.acceptAuthCode("authorization-code", oauthNonce)).toEqual(HANDOFF);
     expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token)
       .toBe("access-token");
     expect(complete).toHaveBeenCalledOnce();
-    expect(await resumed.acceptAuthCode("authorization-code", oauthNonce)).toBe(false);
+    expect(await resumed.acceptAuthCode("authorization-code", oauthNonce)).toBeNull();
+  });
+
+  it("stages a reconnect's tokens until the Workshop commits them", async () => {
+    // The reconnect URL is a bearer capability, so the tokens it yields must not go live before the
+    // Workshop has confirmed the finishing browser is the owner's: facets read the live key directly.
+    const context = fakeContext();
+    stubOAuthServer();
+    const reconnectComplete = vi.fn(async () => HANDOFF);
+    const complete = vi.fn(async () => HANDOFF);
+    context.storage.kv.put("server", server("https://mcp.example/mcp"));
+    context.storage.kv.put("callback", { complete, reconnectComplete });
+    context.storage.kv.put("tokens", { access_token: "old-token", token_type: "Bearer", expiresAt: 1 });
+    const account = new OAuthFlowAccount(context as never, {});
+    const nonce = "7".repeat(64);
+    await account.prepareReconnect(nonce);
+
+    const outcome = await account.beginConnect(nonce, null);
+    expect(outcome.kind).toBe("redirect");
+    const state = new URL((outcome as { url: string }).url).searchParams.get("state")!;
+    expect(await account.acceptAuthCode("code", state.slice(state.indexOf(":") + 1)))
+      .toEqual(HANDOFF);
+
+    expect(reconnectComplete).toHaveBeenCalledOnce();
+    expect(complete).not.toHaveBeenCalled();
+    expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token)
+      .toBe("old-token");
+    expect(context.storage.kv.get("reconnecting")).toBe(true);
+
+    await account.commitReconnect();
+    expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token)
+      .toBe("access-token");
+    expect(context.storage.kv.get("reconnecting")).toBeUndefined();
+    expect(context.storage.kv.get("stagedCredentials")).toBeUndefined();
+    await expect(account.commitReconnect()).rejects.toThrow(/No reconnect is awaiting/);
   });
 });
 

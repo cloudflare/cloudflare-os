@@ -13,6 +13,7 @@
     "./connect-nonce": "./src/connect-nonce.ts",
     "./connect-pages": "./src/connect-pages.ts",
     "./credential-expiry": "./src/credential-expiry.ts",
+    "./credential-stage": "./src/credential-stage.ts",
     "./credentials": "./src/credentials.ts",
     "./cursors": "./src/cursors.ts",
     "./endpoint": "./src/endpoint.ts",

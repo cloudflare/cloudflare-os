@@ -1,5 +1,10 @@
 /** Hardened HTML and browser request guards for gatekeeper connect flows. */
 
+import {
+  CONNECT_HANDOFF_MESSAGE_TYPE,
+  type ConnectHandoff,
+} from "@gadgets/workshop-shared/gatekeeper";
+
 const HTML_ESCAPES: Readonly<Record<string, string>> = {
   "&": "&amp;",
   "<": "&lt;",
@@ -119,11 +124,68 @@ export const PAGE_STYLE = `
   p.err { color: var(--danger); font-size: 13px; margin: 0 0 16px; }
 `;
 
-/** The page a popup-based connect flow lands on: reports success and closes its own tab. */
-export const SELF_CLOSING_HTML = `<!DOCTYPE html>
+/**
+ * Serializes a value for a `<script>` body. `<`, `>` and `&` become `\uXXXX` escapes so no value —
+ * not even one containing `</script>` — can end the script early; the two line terminators JSON
+ * allows but JavaScript did not are escaped for older parsers.
+ * @param value JSON-serializable value.
+ * @returns A JavaScript expression evaluating to the value.
+ */
+function scriptLiteral(value: unknown): string {
+  return JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, char =>
+    `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
+/**
+ * The page a connect flow lands on when it has finished. It posts the handoff ticket to the window
+ * that opened it — and *only* to `handoff.targetOrigin`, the Workshop's origin, so a browser drops
+ * the message if the opener is anyone else — then closes itself. Without an opener it can reach no
+ * Workshop, so it tells the user to go back and start again; a flow opened from a phished link ends
+ * here with its ticket unredeemed. The connection itself is inert until the Workshop redeems the
+ * ticket on the initiating user's session (see `GatekeeperVendor.connectAccount`).
+ * @param handoff The handoff returned by `GatekeeperConnectCallback.complete()` /
+ *   `reconnectComplete()`. Its `targetOrigin` must be exactly an origin.
+ * @returns Escaped HTML; serve it with `htmlResponse()`.
+ *
+ * @example
+ * ```ts
+ * const handoff = await callback.complete(account);
+ * return htmlResponse(connectHandoffPageHtml(handoff));
+ * ```
+ */
+export function connectHandoffPageHtml(handoff: ConnectHandoff): string {
+  let origin: string;
+  try {
+    origin = new URL(handoff.targetOrigin).origin;
+  } catch {
+    origin = "";
+  }
+  if (origin === "" || origin === "null" || origin !== handoff.targetOrigin) {
+    throw new Error("The connect handoff's targetOrigin is not an origin.");
+  }
+  const envelope = { type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: handoff.ticket };
+  return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Connected</title></head>
-<body><p>Connected. You can close this window.</p><script>window.close();</script></body></html>`;
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Connected</title><style>${PAGE_STYLE}</style></head>
+<body><main><h1 id="title">Connected</h1>
+<p class="sub" id="detail">Returning to the Workshop…</p></main>
+<script>
+(function () {
+  var opener = window.opener;
+  if (opener && !opener.closed) {
+    opener.postMessage(${scriptLiteral(envelope)}, ${scriptLiteral(origin)});
+    // The Workshop closes this window once it has redeemed the ticket; this is the fallback.
+    setTimeout(function () { window.close(); }, 2000);
+  } else {
+    document.getElementById("title").textContent = "This window couldn't reach the Workshop";
+    document.getElementById("detail").textContent =
+      "Go back to the Workshop tab and start the connection again.";
+  }
+})();
+</script></body></html>`;
+}
 
 /** The page a connect link that has expired or been used already lands on. */
 export const INVALID_LINK_HTML =

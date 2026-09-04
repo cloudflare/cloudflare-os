@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { CONNECT_HANDOFF_MESSAGE_TYPE } from "@gadgets/workshop-shared/gatekeeper";
 import {
+  connectHandoffPageHtml,
   connectMutationError,
   errorPageHtml,
   escapeHtml,
   htmlResponse,
   INVALID_LINK_HTML,
-  SELF_CLOSING_HTML,
 } from "../src/connect-pages";
+
+const HANDOFF = { targetOrigin: "https://workshop.example", ticket: "a".repeat(64) };
 
 describe("connect pages", () => {
   it("escapes every character that could break out of markup", () => {
@@ -23,7 +26,9 @@ describe("connect pages", () => {
   });
 
   it("declares a language and viewport on every page it serves", () => {
-    for (const html of [SELF_CLOSING_HTML, INVALID_LINK_HTML, errorPageHtml("Failed", "Retry")]) {
+    for (const html of [
+      connectHandoffPageHtml(HANDOFF), INVALID_LINK_HTML, errorPageHtml("Failed", "Retry"),
+    ]) {
       expect(html).toContain(`<html lang="en">`);
       expect(html).toContain(`name="viewport"`);
     }
@@ -39,6 +44,57 @@ describe("connect pages", () => {
     expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(await response.text()).toBe("<p>hi</p>");
+  });
+});
+
+describe("connectHandoffPageHtml", () => {
+  // Pulls the two postMessage arguments out of the page's script.
+  function postMessageArgs(html: string): [unknown, string] {
+    const match = /opener\.postMessage\((.*), (".*?")\);/.exec(html);
+    expect(match).not.toBeNull();
+    // The literals are JSON with `<`, `>` and `&` written as \uXXXX escapes, which JSON accepts.
+    return [JSON.parse(match![1]), JSON.parse(match![2])];
+  }
+
+  it("posts the versioned envelope to exactly the Workshop origin", () => {
+    const [envelope, target] = postMessageArgs(connectHandoffPageHtml(HANDOFF));
+
+    expect(envelope).toEqual({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: HANDOFF.ticket });
+    expect(target).toBe("https://workshop.example");
+  });
+
+  it("cannot be broken out of by the ticket or origin it embeds", () => {
+    const hostile = { targetOrigin: "https://workshop.example", ticket: `</script><img src=x onerror=alert(1)>&'"` };
+    const html = connectHandoffPageHtml(hostile);
+
+    expect(html).not.toContain("</script><img");
+    expect(html.split("<script>")).toHaveLength(2);
+    expect(html.split("</script>")).toHaveLength(2);
+    expect(postMessageArgs(html)[0]).toEqual({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: hostile.ticket });
+  });
+
+  it("refuses a targetOrigin that is not exactly an origin", () => {
+    // A path or trailing slash would make the browser drop the message; an unparsable value or an
+    // opaque origin would be far worse — `postMessage(…, "*")` style delivery to anyone.
+    for (const targetOrigin of [
+      "https://workshop.example/", "https://workshop.example/app", "*", "null", "workshop.example",
+      "", "javascript:alert(1)",
+    ]) {
+      expect(() => connectHandoffPageHtml({ ...HANDOFF, targetOrigin }))
+        .toThrow("targetOrigin is not an origin");
+    }
+    expect(() => connectHandoffPageHtml({ ...HANDOFF, targetOrigin: "http://localhost:3000" }))
+      .not.toThrow();
+  });
+
+  it("only posts when it has an opener, telling the user otherwise", () => {
+    const html = connectHandoffPageHtml(HANDOFF);
+
+    expect(html).toContain("if (opener && !opener.closed)");
+    expect(html).toContain("window.close()");
+    expect(html).toContain("couldn't reach the Workshop");
+    expect(html).toContain("start the connection again");
+    expect(html).toContain(`<meta name="referrer" content="strict-origin-when-cross-origin">`);
   });
 });
 

@@ -15,6 +15,7 @@ const server = {
 
 class TestUser extends McpGatekeeperUserBase<object> {
   revoked = false;
+  committed = false;
   reconnectNonce: string | undefined;
 
   protected [mcpGatekeeperUserContext]() {
@@ -25,6 +26,7 @@ class TestUser extends McpGatekeeperUserBase<object> {
         getServer: async () => server,
         revoke: async () => { this.revoked = true; },
         prepareReconnect: async (nonce: string) => { this.reconnectNonce = nonce; },
+        commitReconnect: async () => { this.committed = true; },
       },
     };
   }

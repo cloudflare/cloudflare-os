@@ -1,5 +1,6 @@
-// The pages every MCP gatekeeper serves in a browser tab during connect: "you can close this
-// window", "that link expired", and "it didn't work, here's why".
+// The pages every MCP gatekeeper serves in a browser tab during connect: "connected" (the kit's
+// handoff page, re-exported so both connectors take it from one place), "that link expired", and
+// "it didn't work, here's why".
 //
 // Anything a gatekeeper asks the user is *not* here. Only `gatekeeper-mcp` has a question to ask (see
 // its `connect-form.ts`); the gateway's endpoint is a deployment setting, so it has no form and would
@@ -66,9 +67,7 @@ export const PAGE_STYLE = `
   p.err { color: var(--danger); font-size: 13px; margin: 0 0 16px; }
 `;
 
-export const SELF_CLOSING_HTML = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Connected</title></head>
-<body><p>Connected. You can close this window.</p><script>window.close();</script></body></html>`;
+export { connectHandoffPageHtml } from "@gadgets/gatekeeper-kit/connect-pages";
 
 export const INVALID_LINK_HTML = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Link expired</title><style>${PAGE_STYLE}</style></head>
