@@ -270,6 +270,10 @@ export class TestAccount
     throw new Error("The test gatekeeper has no resource configurator; bind a URL directly.");
   }
 
+  commitReconnect(): Promise<void> {
+    throw new Error("The test gatekeeper has no credentials to reconnect.");
+  }
+
   reconnect(): Promise<{ url: string }> {
     throw new Error("The test gatekeeper has no credentials to reconnect.");
   }

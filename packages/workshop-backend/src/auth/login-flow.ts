@@ -20,10 +20,11 @@
 // gatekeeper, which requests the full scopes and persists the connection.
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { GatekeeperConnectCallback, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
+import { ConnectHandoff, GatekeeperConnectCallback, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
 import { createWorkshopLogger } from "../observability";
 import { CLOUDFLARE_VENDOR_ID } from "../user.js";
 import { readAdminConfig } from "../admin-config.js";
+import { handoffTargetOrigin, newSecretToken } from "../connect-handoff.js";
 
 const logger = createWorkshopLogger("workshop.auth");
 
@@ -89,7 +90,25 @@ export class LoginConnectCallbackImpl
     return this.ctx.exports.PendingLogin.get(id);
   }
 
-  async complete(account: Fetcher<GatekeeperUser>, expiresAt?: Date): Promise<void> {
+  /**
+   * Delivers the session to the waiting `attempt` and returns a handoff for the popup to post.
+   *
+   * TODO(follow-up): the ticket is minted but not yet enforced, so this flow is still
+   * bound to whoever holds `attempt.wait()` rather than to the browser that finished OAuth — the same
+   * bearer-URL takeover the connect flow now closes. The fix is `LoginAttempt.claim(ticket)`: the
+   * PendingLogin DO stores the token under the ticket's hash across the deliver→claim gap and only
+   * a claim carrying the ticket (relayed from the popup via its opener) releases it.
+   */
+  async complete(account: Fetcher<GatekeeperUser>, expiresAt?: Date): Promise<ConnectHandoff> {
+    const handoff = {
+      targetOrigin: handoffTargetOrigin(this.env),
+      ticket: (await newSecretToken()).secret.toHex(),
+    };
+    await this.#deliver(account, expiresAt);
+    return handoff;
+  }
+
+  async #deliver(account: Fetcher<GatekeeperUser>, expiresAt?: Date): Promise<void> {
     const loginLogger = logger.with({
       operation: "gatekeeper.login",
       vendorId: this.ctx.props.vendorId,
@@ -152,4 +171,9 @@ export class LoginConnectCallbackImpl
    */
   async credentialsExpired(): Promise<void> {}
   async credentialsRestored(_expiresAt?: Date): Promise<void> {}
+
+  /** Sign-in grants are never reconnected: there is no persisted account to restore. */
+  async reconnectComplete(_expiresAt?: Date): Promise<ConnectHandoff> {
+    throw new Error("Sign-in flows cannot be reconnected.");
+  }
 }

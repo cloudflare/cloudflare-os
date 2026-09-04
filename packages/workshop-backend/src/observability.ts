@@ -18,6 +18,7 @@ export type WorkshopObservabilityFields = {
   failureCount: number;
   gadgetId: string;
   gatekeeperId: number | string;
+  handoffKind: "connect" | "restore";
   hookId: number;
   logBytes: number;
   modelId: string;

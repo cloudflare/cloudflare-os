@@ -318,6 +318,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#user.connectAccount(vendorId, resourceUrlPatterns);
   }
 
+  completeConnectHandoff(ticket: string): Promise<void> {
+    return this.#user.completeConnectHandoff(ticket);
+  }
+
   ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<{url?: string}> {
     return this.#user.ensureAccountResources(accountId, resourceUrlPatterns);
   }

@@ -527,9 +527,10 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Connect this account to a specific account on a third-party service. Returns the URL which
-   * should be opened in a new tab in the user's browser to complete the authorization. When the
-   * authorization flow completes, the account will be added to the list, which can be observed
-   * through subscribeConnectedAccounts().
+   * should be opened as a popup in the user's browser, with the opener retained (no `noopener`),
+   * to complete the authorization. The flow's final page posts a handoff ticket to its opener,
+   * which the client redeems with completeConnectHandoff(); only then is the account added to the
+   * list, which can be observed through subscribeConnectedAccounts().
    *
    * `resourceUrlPatterns`, if given, limits the connection to the authorization needed for those
    * grantable resource types (those with `grantable`; see `SupportedResource`). If omitted,
@@ -541,9 +542,19 @@ export interface AuthenticatedApi extends RpcTarget {
   connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<{url: string}>;
 
   /**
+   * Redeem the handoff ticket a connect popup posted to this window (the `ticket` of a
+   * `CONNECT_HANDOFF_MESSAGE_TYPE` message). Activates the pending connect / reconnect /
+   * ensure-resources grant if it was started by this user, after which the account (or its
+   * restored credentials) appears via subscribeConnectedAccounts(). Throws if the ticket is
+   * unknown to this user, already redeemed, or expired.
+   */
+  completeConnectHandoff(ticket: string): Promise<void>;
+
+  /**
    * Ensure the authorization for the listed grantable resource types (by `urlPattern`) is granted
-   * on a connected account, expanding if needed. Returns a URL to open in a new tab to authorize
-   * them, or no url if nothing was needed. The updated grant is observable via
+   * on a connected account, expanding if needed. Returns a URL to open as a popup (opener retained,
+   * as for connectAccount()) to authorize them, or no url if nothing was needed. Completion is
+   * confirmed via completeConnectHandoff(); the updated grant is then observable via
    * subscribeConnectedAccounts().
    */
   ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<{url?: string}>;
@@ -674,8 +685,9 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Re-authenticate a connected account whose credentials have expired (or may be about to
-   * expire). Returns the URL to open in a new tab. When the OAuth flow completes, the account
-   * is updated and subscribers are notified with credentialsValid: true.
+   * expire). Returns the URL to open as a popup (opener retained, as for connectAccount()). Once
+   * the OAuth flow completes and the client redeems the handoff via completeConnectHandoff(), the
+   * account is updated and subscribers are notified with credentialsValid: true.
    */
   reconnectAccount(accountId: number): Promise<{url: string}>;
 

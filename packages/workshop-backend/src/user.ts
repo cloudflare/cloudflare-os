@@ -1,6 +1,6 @@
 import { RpcStub } from "capnweb";
 import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, AUTH_ERROR_CODES, createAuthError } from '@gadgets/workshop-shared/api';
-import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
+import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -12,6 +12,7 @@ import type { AdminSettings } from "./admin-settings.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./blueprint-archive.js";
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
+import { handoffTargetOrigin, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
 
 const logger = createWorkshopLogger("workshop.user");
 
@@ -30,6 +31,19 @@ type ConnectedAccountRecord = {
   // (no OAuth flow), rather than the user connecting it. Such accounts are protected from manual
   // disconnect, since deleting one permanently destroys the user's data in that gatekeeper.
   autoProvisioned?: boolean;
+};
+
+// A connect ("connect") or reconnect/ensureResources ("restore") flow that a gatekeeper has finished
+// but the user's browser has not yet confirmed (see connect-handoff.ts). Keyed by the SHA-256 of the
+// ticket; single-use, and swept by alarm() once `expiresAt` passes.
+type PendingHandoffRecord = {
+  ticketHash: string;
+  kind: "connect" | "restore";
+  accountId: number;
+  expiresAt: Date;
+  credentialExpiresAt?: Date;
+  // The staged account, present for `kind: "connect"` only; becomes the ConnectedAccountRecord.
+  connect?: Pick<ConnectedAccountRecord, "account" | "description" | "vendorId">;
 };
 
 /**
@@ -168,6 +182,9 @@ function makeUserStorage(storage: DurableObjectStorage) {
       }),
       sessions: collection<LoginSessionRecord>()({
         primaryKey: "tokenId",
+      }),
+      pendingHandoffs: collection<PendingHandoffRecord>()({
+        primaryKey: "ticketHash",
       }),
       blueprints: collection<BlueprintUserRecord>()({
         primaryKey: "id",
@@ -342,13 +359,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async #newSessionToken(): Promise<string> {
-    let sessionToken = new Uint8Array(32);
-    crypto.getRandomValues(sessionToken);
-
-    let tokenId = new Uint8Array(await crypto.subtle.digest('SHA-256', sessionToken)).toHex();
+    let { secret, hash: tokenId } = await newSecretToken();
     this.storage.sessions.put({ tokenId, created: new Date() });
-
-    return sessionToken.toBase64();
+    return secret.toBase64();
   }
 
   async login(passwordHash: Uint8Array): Promise<string | null> {
@@ -1663,6 +1676,123 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.connectedAccounts.put(record);
   }
 
+  // --- Connect handoff (see connect-handoff.ts) ---
+
+  // Store a finished-but-unconfirmed flow and hand back the ticket its page must post to the
+  // Workshop window. Only the ticket's hash is kept, and only in this user's DO, so the ticket is
+  // redeemable by nobody else (completeConnectHandoff looks it up in the caller's own DO).
+  async #stagePendingHandoff(
+      record: Omit<PendingHandoffRecord, "ticketHash" | "expiresAt">): Promise<ConnectHandoff> {
+    let targetOrigin = handoffTargetOrigin(this.env);
+    let { secret, hash: ticketHash } = await newSecretToken();
+    let expiresAt = new Date(Date.now() + PENDING_HANDOFF_LIFETIME_MS);
+    this.storage.pendingHandoffs.put({ ...record, ticketHash, expiresAt });
+    await this.#armHandoffSweep();
+    return { targetOrigin, ticket: secret.toHex() };
+  }
+
+  /** A gatekeeper finished a connect flow for a reserved account id; stage it until confirmed. */
+  async stagePendingConnect(accountId: number, account: Fetcher<GatekeeperUser>, vendorId: string,
+                            credentialExpiresAt?: Date): Promise<ConnectHandoff> {
+    let description = await account.describe();
+    return this.#stagePendingHandoff({
+      kind: "connect", accountId, credentialExpiresAt, connect: { account, description, vendorId },
+    });
+  }
+
+  /** A gatekeeper finished a reconnect/ensureResources flow; its credentials stay staged there. */
+  stagePendingRestore(accountId: number, credentialExpiresAt?: Date): Promise<ConnectHandoff> {
+    return this.#stagePendingHandoff({ kind: "restore", accountId, credentialExpiresAt });
+  }
+
+  /**
+   * Redeem a ticket posted to this user's browser. The record is deleted before anything else, so a
+   * ticket is single-use however the rest goes (DO input gates serialize the read and delete).
+   */
+  async completeConnectHandoff(ticket: string): Promise<void> {
+    let record: PendingHandoffRecord | undefined;
+    if (/^[0-9a-f]{64}$/.test(ticket)) {
+      let ticketHash = await hashSecret(Uint8Array.fromHex(ticket));
+      record = this.storage.pendingHandoffs.get(ticketHash);
+      if (record) this.storage.pendingHandoffs.delete(ticketHash);
+    }
+    if (!record || record.expiresAt.getTime() <= Date.now()) {
+      throw new Error("This connection attempt has expired. Please try again.");
+    }
+
+    if (record.kind === "connect") {
+      if (!record.connect) throw new Error("Corrupt pending connection.");
+      await this.putConnectedAccount({
+        id: record.accountId, ...record.connect, credentialExpiresAt: record.credentialExpiresAt,
+      });
+      logger.info("account connected", {
+        event: "account.connect.completed", vendorId: record.connect.vendorId,
+        accountId: record.accountId,
+      });
+    } else {
+      let account = this.storage.connectedAccounts.get(record.accountId);
+      if (!account) throw new Error("No such account.");
+      await account.account.commitReconnect();
+      await this.markCredentialsRestored(record.accountId, record.credentialExpiresAt);
+      logger.info("account credentials restored", {
+        event: "account.reconnect.completed", vendorId: account.vendorId,
+        accountId: record.accountId,
+      });
+    }
+  }
+
+  // Arm the alarm for the soonest pending expiry (the alarm is used for nothing else).
+  async #armHandoffSweep(): Promise<void> {
+    let next: number | undefined;
+    for (let pending of this.storage.pendingHandoffs.list()) {
+      let at = pending.expiresAt.getTime();
+      if (next === undefined || at < next) next = at;
+    }
+    if (next === undefined) {
+      await this.ctx.storage.deleteAlarm();
+    } else {
+      await this.ctx.storage.setAlarm(next);
+    }
+  }
+
+  /**
+   * Drop pending handoffs whose ticket never came back. A staged connect holds a victim's (or just an
+   * abandoned) grant in a reachable gatekeeper DO, so it is revoked, best-effort. A staged restore
+   * left nothing live: the gatekeeper's staged credentials expire on their own.
+   */
+  async alarm(): Promise<void> {
+    let now = Date.now();
+    let expired: PendingHandoffRecord[] = [];
+    try {
+      for (let pending of this.storage.pendingHandoffs.list()) {
+        if (pending.expiresAt.getTime() <= now) expired.push(pending);
+      }
+    } catch (err) {
+      // Same failure mode as #connectedAccountRecords: a stub for a Worker that is no longer bound
+      // fails to deserialize. Leave the sweep for next time rather than failing every alarm.
+      logger.warn("failed to list pending handoffs", {
+        event: "connect.handoff.sweep.failed", error: err,
+      });
+    }
+    for (let pending of expired) {
+      this.storage.pendingHandoffs.delete(pending.ticketHash);
+      if (pending.kind === "connect" && pending.connect) {
+        try {
+          await pending.connect.account.revoke();
+        } catch (err) {
+          logger.warn("failed to revoke unconfirmed connection", {
+            event: "connect.handoff.revoke.failed", vendorId: pending.connect.vendorId,
+            accountId: pending.accountId, error: err,
+          });
+        }
+      }
+      logger.info("unconfirmed connection dropped", {
+        event: "connect.handoff.expired", handoffKind: pending.kind, accountId: pending.accountId,
+      });
+    }
+    await this.#armHandoffSweep();
+  }
+
   async getGatekeeperClassFor(accountId: number, url: string)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, vendorId: string,
                   typeUrlPattern: string}> {
@@ -1739,16 +1869,13 @@ export class GatekeeperConnectCallbackImpl
     return this.ctx.exports.UserDurableObject.get(userId);
   }
 
-  async complete(account: Fetcher<GatekeeperUser>, expiresAt?: Date): Promise<void> {
-    let userStub = this.#getUserStub();
+  complete(account: Fetcher<GatekeeperUser>, expiresAt?: Date): Promise<ConnectHandoff> {
+    let {accountId, vendorId} = this.ctx.props;
+    return this.#getUserStub().stagePendingConnect(accountId, account, vendorId, expiresAt);
+  }
 
-    await userStub.putConnectedAccount({
-      id: this.ctx.props.accountId,
-      account,
-      description: await account.describe(),
-      vendorId: this.ctx.props.vendorId,
-      credentialExpiresAt: expiresAt,
-    });
+  reconnectComplete(expiresAt?: Date): Promise<ConnectHandoff> {
+    return this.#getUserStub().stagePendingRestore(this.ctx.props.accountId, expiresAt);
   }
 
   async credentialsExpired(): Promise<void> {

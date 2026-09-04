@@ -38,12 +38,16 @@ export default defineConfig({
     textModules,
     capnwebValidate(),
     cloudflareTest({
-      main: './src/server.ts',
+      // The production Worker plus test-only entrypoints (see __tests__/test-worker.ts).
+      main: './__tests__/test-worker.ts',
       miniflare: {
         compatibilityDate: '2026-09-04',
-        compatibilityFlags: ['experimental', 'nodejs_compat'],
+        // `allow_irrevocable_stub_storage` as in wrangler.jsonc: the user DO persists account stubs.
+        compatibilityFlags: ['experimental', 'nodejs_compat', 'allow_irrevocable_stub_storage'],
+        bindings: { PUBLIC_BASE_URL: 'https://workshop.example/' },
         durableObjects: {
           TEST_OVERSEER: { className: 'OverseerDurableObject', useSQLite: true },
+          TEST_USER: { className: 'UserDurableObject', useSQLite: true },
         },
       },
     }),
