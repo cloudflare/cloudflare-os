@@ -4,17 +4,6 @@ import { workbookToXlsx } from "./xlsx.js";
 const DEFAULT_TITLE = "Untitled spreadsheet";
 const DEFAULT_ROWS = 100;
 const DEFAULT_COLS = 26;
-const SUBSCRIBER_CALLBACK_TIMEOUT_MS = 10000;
-
-function subscriberCall(callback) {
-  let timeout;
-  return Promise.race([
-    Promise.resolve().then(callback),
-    new Promise((_, reject) => {
-      timeout = setTimeout(() => reject(new Error("Subscriber callback timed out.")), SUBSCRIBER_CALLBACK_TIMEOUT_MS);
-    }),
-  ]).finally(() => clearTimeout(timeout));
-}
 
 // ---------------------------------------------------------------------------
 // Sheets — authoritative collaboration coordinator.
@@ -33,9 +22,9 @@ export class Gadget extends DurableObject {
     this.ctx = ctx;
     this.subscribers = new Map();
     // Overlapping RPC calls are serialized so each observes/commits one
-    // authoritative state in strict order.
+    // authoritative state in strict order. Callbacks to subscribers run
+    // outside the queue, so a callback may itself read or write the document.
     this.mutationQueue = Promise.resolve();
-    this.broadcastQueue = Promise.resolve();
   }
 
   enqueueMutation(fn) {
@@ -83,26 +72,16 @@ export class Gadget extends DurableObject {
     };
   }
 
-  async getDocument() {
-    return this.enqueueMutation(async () =>
-      this.assembleDocument(await this.loadMeta()));
+  getDocument() {
+    return this.enqueueMutation(async () => this.assembleDocument(await this.loadMeta()));
   }
 
   async applyOperation(operation) {
-    let recipients = [];
-    const result = await this.enqueueMutation(async () => {
-      const applied = await this.applyOperationLocked(operation);
-      if (applied.type === "operation") recipients = Array.from(this.subscribers.keys());
-      return applied;
-    });
-    if (result.type === "operation") {
-      const event = {...result};
-      delete event.status;
-      delete event.conflicts;
-      const broadcast = this.broadcastQueue.then(() => this.broadcast(event, recipients));
-      this.broadcastQueue = broadcast.catch(() => {});
-      this.ctx.waitUntil(this.broadcastQueue);
-    }
+    const { result, event } = await this.enqueueMutation(() => this.applyOperationLocked(operation));
+    // Delivered outside the queue so callbacks may re-enter. The calls are
+    // issued synchronously here, before the next queued mutation can reach
+    // storage, so subscribers still receive events in revision order.
+    if (event) await this.broadcast(event);
     return result;
   }
 
@@ -196,7 +175,7 @@ export class Gadget extends DurableObject {
     if (upserts.length || deletes.length) changed = true;
 
     if (!changed) {
-      return { status: conflicts.length ? "conflict" : "unchanged", revision: meta.revision, conflicts };
+      return { result: { status: conflicts.length ? "conflict" : "unchanged", revision: meta.revision, conflicts } };
     }
 
     meta.revision += 1;
@@ -221,51 +200,38 @@ export class Gadget extends DurableObject {
       event.replacedCells = {};
       for (const id of event.replacedSheets) event.replacedCells[id] = await this.loadCells(id);
     }
-    return { status: conflicts.length ? "conflict" : "applied", ...event, conflicts };
+    return { result: { status: conflicts.length ? "conflict" : "applied", ...event, conflicts }, event };
   }
 
   // --- Presence & subscription ------------------------------------------
-  removeSubscriber(stub) {
-    const info = this.subscribers.get(stub);
-    if (!info) return;
-    this.subscribers.delete(stub);
-    if (typeof stub[Symbol.dispose] === "function") stub[Symbol.dispose]();
-    this.ctx.waitUntil(this.broadcastPresence({ type: "leave", clientId: info.clientId, at: Date.now() }));
-  }
-
   async subscribe(callback, client = {}) {
     const dup = callback.dup();
-    try {
-      return await this.enqueueMutation(async () => {
-        const document = await this.assembleDocument(await this.loadMeta());
-        const existing = Array.from(this.subscribers.values());
-        const info = {
-          callback: dup,
-          clientId: String(client.clientId || ""),
-          name: String(client.name || "Guest").slice(0, 40),
-          color: String(client.color || "#e1632e"),
-        };
-        this.subscribers.set(dup, info);
-        dup.onRpcBroken(() => this.removeSubscriber(dup));
-        queueMicrotask(async () => {
-          for (const person of existing) {
-            try {
-              await subscriberCall(() => dup.presence({ type: "join", clientId: person.clientId, name: person.name, color: person.color }));
-            } catch (e) {
-              this.removeSubscriber(dup);
-              return;
-            }
-          }
-          if (!this.subscribers.has(dup)) return;
-          await this.broadcastPresence({ type: "join", clientId: info.clientId, name: info.name, color: info.color });
-        });
-        return document;
+    const info = {
+      callback: dup,
+      clientId: String(client.clientId || ""),
+      name: String(client.name || "Guest").slice(0, 40),
+      color: String(client.color || "#e1632e"),
+    };
+    // Registering and snapshotting inside the queue means the subscriber sees
+    // every operation committed after its snapshot, and none before it.
+    return this.enqueueMutation(async () => {
+      const document = await this.assembleDocument(await this.loadMeta());
+      const existing = Array.from(this.subscribers.values());
+      this.subscribers.set(dup, info);
+      dup.onRpcBroken(() => {
+        this.subscribers.delete(dup);
+        this.broadcastPresence({ type: "leave", clientId: info.clientId });
       });
-    } catch (error) {
-      if (this.subscribers.has(dup)) this.removeSubscriber(dup);
-      else if (typeof dup[Symbol.dispose] === "function") dup[Symbol.dispose]();
-      throw error;
-    }
+      queueMicrotask(async () => {
+        for (const person of existing) {
+          try {
+            await dup.presence({ type: "join", clientId: person.clientId, name: person.name, color: person.color });
+          } catch (e) { break; }
+        }
+        await this.broadcastPresence({ type: "join", clientId: info.clientId, name: info.name, color: info.color });
+      });
+      return document;
+    });
   }
 
   async updatePresence(presence) {
@@ -285,11 +251,10 @@ export class Gadget extends DurableObject {
     await this.broadcastPresence({ type: "leave", clientId: String(clientId || ""), at: Date.now() });
   }
 
-  async broadcast(event, recipients = this.subscribers.keys()) {
+  async broadcast(event) {
     const calls = [];
-    for (const stub of recipients) {
-      if (!this.subscribers.has(stub)) continue;
-      calls.push(subscriberCall(() => stub.operation(event)).catch(() => this.removeSubscriber(stub)));
+    for (const [stub] of this.subscribers) {
+      calls.push(Promise.resolve(stub.operation(event)).catch(() => this.subscribers.delete(stub)));
     }
     await Promise.all(calls);
   }
@@ -297,7 +262,7 @@ export class Gadget extends DurableObject {
   async broadcastPresence(event) {
     const calls = [];
     for (const [stub] of this.subscribers) {
-      calls.push(subscriberCall(() => stub.presence(event)).catch(() => this.removeSubscriber(stub)));
+      calls.push(Promise.resolve(stub.presence(event)).catch(() => this.subscribers.delete(stub)));
     }
     await Promise.all(calls);
   }
@@ -367,9 +332,8 @@ function sanitizeCellMap(map) {
   return out;
 }
 
-
 const CSV_FORMAT_PREFIX = "csv:";
-const MAX_CSV_SHEETS = 31;
+const MAX_CSV_SHEETS = 31; // The platform allows 32 formats; one is the workbook.
 const MAX_EXPORT_ID_LENGTH = 128;
 const XLSX_FORMAT = {
   id: "xlsx",
@@ -379,30 +343,20 @@ const XLSX_FORMAT = {
   fileExtension: ".xlsx",
 };
 
-function eligibleCsvSheetIds(document) {
-  const result = [];
-  const seen = new Set();
-  const order = Array.isArray(document?.sheetOrder) ? document.sheetOrder : [];
-  const sheets = document?.sheets && typeof document.sheets === "object" ? document.sheets : {};
-  for (const rawId of order) {
-    const sheetId = String(rawId);
-    if (seen.has(sheetId)) continue;
-    seen.add(sheetId);
-    if (!Object.hasOwn(sheets, sheetId) || !sheets[sheetId] || typeof sheets[sheetId] !== "object") continue;
-    if ((CSV_FORMAT_PREFIX + sheetId).length > MAX_EXPORT_ID_LENGTH) continue;
-    result.push(sheetId);
-    if (result.length === MAX_CSV_SHEETS) break;
-  }
-  return result;
+// Sheet ids are client-chosen, so duplicates and over-long ids are possible in
+// stored structure. Either would fail format validation and disable every export.
+function csvSheetIds(document) {
+  const ids = document.sheetOrder.filter((id) => (CSV_FORMAT_PREFIX + id).length <= MAX_EXPORT_ID_LENGTH);
+  return Array.from(new Set(ids)).slice(0, MAX_CSV_SHEETS);
 }
 
 export class ExportHandler extends WorkerEntrypoint {
   async getExportFormats(gadget) {
     const document = await gadget.getDocument();
-    const sheetIds = eligibleCsvSheetIds(document);
+    const sheetIds = csvSheetIds(document);
     return [XLSX_FORMAT, ...sheetIds.map((sheetId) => ({
       id: CSV_FORMAT_PREFIX + sheetId,
-      label: sheetIds.length === 1 ? "CSV" : "CSV (" + String(document.sheets[sheetId].name || "Sheet").slice(0, 122) + ")",
+      label: sheetIds.length === 1 ? "CSV" : "CSV (" + document.sheets[sheetId].name + ")",
       mode: "server",
       contentType: "text/csv",
       fileExtension: ".csv",
@@ -419,7 +373,7 @@ export class ExportHandler extends WorkerEntrypoint {
     }
     const document = await gadget.getDocument();
     const sheetId = id.slice(CSV_FORMAT_PREFIX.length);
-    if (!eligibleCsvSheetIds(document).includes(sheetId)) {
+    if (!csvSheetIds(document).includes(sheetId)) {
       throw new Error("The selected worksheet is unavailable for CSV export.");
     }
     return new Response(workbookSheetToCsv(document, sheetId)).body;

@@ -71,14 +71,16 @@ function xmlAttribute(value) {
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
-function textStream(iterable) {
-  const iterator = iterable[Symbol.iterator]();
+// Encodes a string generator into ~64 KiB byte chunks. Cell-sized chunks would make the ZIP's
+// CompressionStream the bottleneck. `highWaterMark: 0` keeps generation lazy until the archive
+// reaches this part.
+function textStream(generator) {
   return new ReadableStream({
     pull(controller) {
       const parts = [];
       let length = 0;
       while (length < TEXT_CHUNK_SIZE) {
-        const result = iterator.next();
+        const result = generator.next();
         if (result.done) {
           if (parts.length) controller.enqueue(encoder.encode(parts.join("")));
           controller.close();
@@ -90,9 +92,9 @@ function textStream(iterable) {
       controller.enqueue(encoder.encode(parts.join("")));
     },
     cancel(reason) {
-      if (iterator.return) iterator.return(reason);
+      generator.return(reason);
     },
-  });
+  }, {highWaterMark: 0});
 }
 
 function count(value, fallback, maximum) {
@@ -138,6 +140,8 @@ function safeSheetName(value) {
 
 function assignSheetNames(sheets) {
   const used = new Set();
+  // Next unused suffix per truncated stem (keyed with the suffix's digit count, since the stem
+  // shrinks to make room), so N same-named sheets take O(N) probes rather than O(N²).
   const nextSuffixes = new Map();
   for (const sheet of sheets) {
     const base = safeSheetName(sheet.sourceName);
@@ -147,15 +151,13 @@ function assignSheetNames(sheets) {
       const digits = String(suffix).length;
       const stem = truncateSheetName(base, 28 - digits);
       const key = `${stem.toLowerCase()}|${digits}`;
-      const next = nextSuffixes.get(key);
-      if (next != null && next > suffix) {
+      const next = nextSuffixes.get(key) ?? suffix;
+      if (next > suffix) {
         suffix = next;
         continue;
       }
-      const ending = ` (${suffix})`;
-      name = stem + ending;
-      nextSuffixes.set(key, suffix + 1);
-      ++suffix;
+      name = `${stem} (${suffix})`;
+      nextSuffixes.set(key, ++suffix);
     }
     used.add(name.toLowerCase());
     sheet.name = name;
@@ -249,8 +251,9 @@ class Styles {
 
   font(fmt) {
     const color = xlsxColor(fmt?.c);
-    const sizeValue = Math.round(Number(fmt?.fs));
-    const size = Number.isFinite(sizeValue) && sizeValue >= 6 && sizeValue <= 96 ? sizeValue : null;
+    const pixels = Math.round(Number(fmt?.fs));
+    // The grid renders `fs` in CSS pixels; Excel font sizes are points.
+    const size = Number.isFinite(pixels) && pixels >= 6 && pixels <= 96 ? pixels * 0.75 : null;
     const font = {
       bold: Boolean(fmt?.b), italic: Boolean(fmt?.i), underline: Boolean(fmt?.u),
       strike: Boolean(fmt?.s), color, size,
@@ -390,11 +393,10 @@ function prepareWorkbook(document) {
     for (const [reference, sourceCell] of Object.entries(sheet.sourceCells)) {
       const position = parseCellReference(reference);
       if (!position || !sourceCell || typeof sourceCell !== "object") continue;
-      const fmt = sourceCell.fmt && typeof sourceCell.fmt === "object" ? sourceCell.fmt : null;
-      const style = styles.style(fmt);
-      const hasValue = sourceCell.value != null && String(sourceCell.value) !== "";
-      if (!hasValue && !style) continue;
-      sheet.cells.push({reference, ...position, value: sourceCell.value == null ? "" : String(sourceCell.value), fmt, style});
+      const style = styles.style(sourceCell.fmt);
+      const value = sourceCell.value == null ? "" : String(sourceCell.value);
+      if (value === "" && !style) continue;
+      sheet.cells.push({reference, ...position, value, style});
     }
     delete sheet.sourceCells;
     sheet.cells.sort((a, b) => a.row - b.row || a.column - b.column);
@@ -465,17 +467,20 @@ function isThreeDimensionalReference(formula, offset) {
   return !/^\$?[A-Za-z]{1,3}\$?[1-9]\d*$/.test(preceding);
 }
 
+// Recognizes a function call at `offset`. The grid's tokenizer discards whitespace, so it accepts
+// `SUM (1)`; in Excel that space is the intersection operator, so the gap is dropped here.
 function formulaFunctionAt(formula, offset) {
   if (!/[A-Za-z_]/.test(formula[offset]) ||
       (offset > 0 && /[A-Za-z0-9_.$!]/.test(formula[offset - 1]))) return null;
   let end = offset + 1;
   while (end < formula.length && /[A-Za-z0-9_.]/.test(formula[end])) ++end;
-  const name = formula.slice(offset, end).toUpperCase();
   let parenthesis = end;
-  while (/\s/.test(formula[parenthesis])) ++parenthesis;
+  while (parenthesis < formula.length && /\s/.test(formula[parenthesis])) ++parenthesis;
   if (formula[parenthesis] !== "(") return null;
-  if (FUTURE_FUNCTIONS.has(name)) return {end, text: "_xlfn." + name};
-  return name === "ERRORTYPE" ? {end, text: "ERROR.TYPE"} : null;
+  const name = formula.slice(offset, end).toUpperCase();
+  if (FUTURE_FUNCTIONS.has(name)) return {end: parenthesis, text: "_xlfn." + name};
+  if (name === "ERRORTYPE") return {end: parenthesis, text: "ERROR.TYPE"};
+  return parenthesis > end ? {end: parenthesis, text: formula.slice(offset, end)} : null;
 }
 
 function rewriteFormula(formula, names) {
@@ -522,7 +527,8 @@ function parsedCellValue(value, formulaNames) {
   if (value[0] === "'") return {type: "text", value: value.slice(1)};
   if (value[0] === "=") {
     const formula = rewriteFormula(value.slice(1), formulaNames);
-    return formula.length + 1 <= MAX_FORMULA_CHARACTERS
+    // Excel rejects empty formulas and those over its length limit; keep the stored text instead.
+    return formula.trim() !== "" && formula.length + 1 <= MAX_FORMULA_CHARACTERS
       ? {type: "formula", value: formula}
       : {type: "text", value};
   }
@@ -670,7 +676,8 @@ function workbookXml(sheets) {
   for (let i = 0; i < sheets.length; ++i) {
     xml += `<sheet name="${spreadsheetXml(sheets[i].name, true)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`;
   }
-  return xml + '</sheets><calcPr calcId="0" calcMode="auto" fullCalcOnLoad="1" forceFullCalc="1"/></workbook>';
+  // Formulas are written without cached results, so ask for one full recalculation on open.
+  return xml + '</sheets><calcPr calcId="0" fullCalcOnLoad="1"/></workbook>';
 }
 
 function workbookRelationships(sheetCount) {
@@ -681,21 +688,19 @@ function workbookRelationships(sheetCount) {
   return xml + `<Relationship Id="rId${sheetCount + 1}" Type="${REL_NS}/styles" Target="styles.xml"/></Relationships>`;
 }
 
+/** Streams `document` (a complete `Gadget.getDocument()` snapshot) as an XLSX workbook. */
 export function workbookToXlsx(document) {
-  const workbook = prepareWorkbook(document);
+  const {sheets, styles, formulaNames} = prepareWorkbook(document);
   const entries = [
-    {name: "[Content_Types].xml", data: contentTypes(workbook.sheets.length)},
+    {name: "[Content_Types].xml", data: contentTypes(sheets.length)},
     {name: "_rels/.rels", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${PACKAGE_REL_NS}"><Relationship Id="rId1" Type="${REL_NS}/officeDocument" Target="xl/workbook.xml"/></Relationships>`},
-    {name: "xl/workbook.xml", data: workbookXml(workbook.sheets)},
-    {name: "xl/_rels/workbook.xml.rels", data: workbookRelationships(workbook.sheets.length)},
-    {name: "xl/styles.xml", data: () => textStream(stylesXml(workbook.styles))},
-  ];
-  for (let i = 0; i < workbook.sheets.length; ++i) {
-    const sheet = workbook.sheets[i];
-    entries.push({
+    {name: "xl/workbook.xml", data: workbookXml(sheets)},
+    {name: "xl/_rels/workbook.xml.rels", data: workbookRelationships(sheets.length)},
+    {name: "xl/styles.xml", data: textStream(stylesXml(styles))},
+    ...sheets.map((sheet, i) => ({
       name: `xl/worksheets/sheet${i + 1}.xml`,
-      data: () => textStream(worksheetXml(sheet, workbook.formulaNames)),
-    });
-  }
+      data: textStream(worksheetXml(sheet, formulaNames)),
+    })),
+  ];
   return createZip(entries);
 }

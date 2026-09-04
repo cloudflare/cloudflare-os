@@ -128,6 +128,29 @@ function handler(): ExportHandler {
   return Object.create(ExportHandler.prototype) as ExportHandler;
 }
 
+// A Gadget over in-memory storage, for exercising the mutation queue without a Durable Object.
+function inMemoryGadget(subscribers: Map<unknown, unknown> = new Map()) {
+  const stored = new Map<string, unknown>([
+    ["meta", {revision: 0, title: "Test", sheetOrder: ["sheet"], sheets: {sheet: sheet("Sheet")}, lastModified: 0}],
+    ["cells:sheet", {}],
+  ]);
+  return Object.assign(Object.create(Gadget.prototype), {
+    ctx: {
+      storage: {
+        get: async (key: string) => stored.get(key),
+        put: async (key: string, value: unknown) => { stored.set(key, value); },
+        delete: async (key: string) => stored.delete(key),
+      },
+    },
+    mutationQueue: Promise.resolve(),
+    subscribers,
+  }) as Gadget;
+}
+
+function setCell(ref: string, value: string, baseVersion = 0) {
+  return {senderId: "test", cellOps: [{sheetId: "sheet", ref, value, fmt: null, baseVersion}]};
+}
+
 describe("streaming ZIP32", () => {
   it("calculates CRC32 and emits valid descriptor-based deflate entries", async () => {
     expect(crc32(encoder.encode("123456789"))).toBe(0xcbf43926);
@@ -228,7 +251,7 @@ describe("Workspace Sheets XLSX", () => {
     expect(cellXml(worksheet, "A2")).toContain(
         "<f>'_Book.xlsx_Data'!A1+[Other.xlsx]'Sales/Data'!A1+'Q_1_'!A1+" +
         "'Sales/Data':'History'!A1+'Missing'!A1+'Sales/Data'!NOPE+foo'Sales/Data'!A1</f>");
-    expect(workbook).toContain('<calcPr calcId="0" calcMode="auto" fullCalcOnLoad="1" forceFullCalc="1"/>');
+    expect(workbook).toContain('<calcPr calcId="0" fullCalcOnLoad="1"/>');
   });
 
   it("preserves many maximum-length formulas with unmatched apostrophes", async () => {
@@ -291,12 +314,21 @@ describe("Workspace Sheets XLSX", () => {
     const {entries} = await readZip(workbookToXlsx({
       sheetOrder: ["concat", "formulas"],
       sheets: {concat: sheet("CONCAT"), formulas: sheet("Formulas")},
-      cells: {concat: {A1: cell("value")}, formulas: {A1: cell("=" + calls.join("+") + suffix)}},
+      cells: {concat: {A1: cell("value")}, formulas: {
+        A1: cell("=" + calls.join("+") + suffix),
+        A2: cell("=SUM (1,2)+ifs\t(TRUE,1)+\"SUM (\"+A1 +1"),
+        A3: cell("="),
+        A4: cell("=  "),
+      }},
     }));
     const expected = calls.map(call => "_xlfn." + call).join("+") + suffix;
+    const worksheet = text(entries, "xl/worksheets/sheet2.xml");
 
-    expect(cellXml(text(entries, "xl/worksheets/sheet2.xml"), "A1"))
-      .toContain(`<f>${expected}</f>`);
+    expect(cellXml(worksheet, "A1")).toContain(`<f>${expected}</f>`);
+    // The grid tokenizer ignores whitespace, but in Excel `SUM (` is an intersection.
+    expect(cellXml(worksheet, "A2")).toContain('<f>SUM(1,2)+_xlfn.IFS(TRUE,1)+"SUM ("+A1 +1</f>');
+    expect(cellXml(worksheet, "A3")).toContain('t="inlineStr"><is><t xml:space="preserve">=</t>');
+    expect(cellXml(worksheet, "A4")).toContain('t="inlineStr"><is><t xml:space="preserve">=  </t>');
   });
 
   it("translates ERRORTYPE function tokens to Excel's ERROR.TYPE name", async () => {
@@ -490,7 +522,7 @@ describe("Workspace Sheets XLSX", () => {
     expect(styles).toContain('horizontal="center"');
     expect(styles).toContain('horizontal="right"');
     expect(styles).toContain('wrapText="1"');
-    expect(styles).toContain('<sz val="18"/>');
+    expect(styles).toContain('<sz val="13.5"/>');
     for (const code of [
       "#,##0.000", "#,##0", '&quot;$&quot;#,##0.00;-&quot;$&quot;#,##0.00',
       "#,##0.00%", "0.00E+00", "mm/dd/yyyy", "h:mm:ss AM/PM",
@@ -584,7 +616,7 @@ describe("Workspace Sheets document snapshots", () => {
       applyOperationLocked: vi.fn(async () => {
         order.push("write started");
         order.push("write completed");
-        return {status: "applied"};
+        return {result: {status: "applied"}};
       }),
     });
 
@@ -600,262 +632,64 @@ describe("Workspace Sheets document snapshots", () => {
     expect(order).toEqual(["read started", "read completed", "write started", "write completed"]);
   });
 
-  it("allows subscriber callbacks to read the committed document without deadlocking", async () => {
-    const backgroundTasks: Promise<unknown>[] = [];
-    const stored = new Map<string, unknown>([
-      ["meta", {
-        revision: 0,
-        title: "Test",
-        sheetOrder: ["sheet"],
-        sheets: {sheet: sheet("Sheet")},
-        lastModified: 0,
-      }],
-      ["cells:sheet", {}],
-    ]);
-    const fixture = Object.assign(Object.create(Gadget.prototype), {
-      ctx: {
-        waitUntil: (task: Promise<unknown>) => { backgroundTasks.push(task); },
-        storage: {
-          get: async (key: string) => stored.get(key),
-          put: async (key: string, value: unknown) => { stored.set(key, value); },
-          delete: async (key: string) => stored.delete(key),
-        },
-      },
-      mutationQueue: Promise.resolve(),
-      broadcastQueue: Promise.resolve(),
-      subscribers: new Map(),
-    });
-    let callbackDocument: any;
-    const subscriber = {
-      operation: vi.fn(async () => { callbackDocument = await fixture.getDocument(); }),
-    };
-    fixture.subscribers.set(subscriber, {});
+  it("lets a subscriber callback read and write the document without deadlocking", async () => {
+    const subscribers = new Map();
+    const fixture = inMemoryGadget(subscribers);
+    const events: {revision: number}[] = [];
+    const documents: {revision: number; cells: Record<string, Record<string, {value: string}>>}[] = [];
+    subscribers.set({
+      operation: vi.fn(async (event: {revision: number}) => {
+        events.push(event);
+        documents.push(await fixture.getDocument());
+        if (event.revision === 1) await fixture.applyOperation(setCell("B1", "from callback"));
+      }),
+    }, {});
 
-    const result = await fixture.applyOperation({
-      senderId: "test",
-      cellOps: [{sheetId: "sheet", ref: "A1", value: "committed", fmt: null, baseVersion: 0}],
-    });
-    await Promise.all(backgroundTasks);
+    const result = await fixture.applyOperation(setCell("A1", "committed"));
 
     expect(result.status).toBe("applied");
+    expect(result).not.toHaveProperty("result");
+    expect(events.map(event => event.revision)).toEqual([1, 2]);
+    expect(events[0]).not.toHaveProperty("status");
+    expect(events[0]).not.toHaveProperty("conflicts");
+    expect(documents[0].revision).toBe(1);
+    expect(documents[0].cells.sheet.A1.value).toBe("committed");
+    expect(documents[1].cells.sheet.B1.value).toBe("from callback");
+  });
+
+  it("does not broadcast unchanged or conflicting-only operations", async () => {
+    const subscriber = {operation: vi.fn()};
+    const fixture = inMemoryGadget(new Map([[subscriber, {}]]));
+    await fixture.applyOperation(setCell("A1", "first"));
+    const conflict = await fixture.applyOperation(setCell("A1", "stale", 0));
+    const unchanged = await fixture.applyOperation({senderId: "test", cellOps: []});
+
+    expect(conflict.status).toBe("conflict");
+    expect(conflict.conflicts).toHaveLength(1);
+    expect(unchanged.status).toBe("unchanged");
     expect(subscriber.operation).toHaveBeenCalledOnce();
-    expect(callbackDocument.revision).toBe(1);
-    expect(callbackDocument.cells.sheet.A1.value).toBe("committed");
   });
 
-  it("serializes broadcasts without holding operation responses", async () => {
-    let releaseFirst!: () => void;
-    let markFirstStarted!: () => void;
-    const firstReleased = new Promise<void>(resolve => { releaseFirst = resolve; });
-    const firstStarted = new Promise<void>(resolve => { markFirstStarted = resolve; });
-    const order: string[] = [];
-    const backgroundTasks: Promise<unknown>[] = [];
-    let revision = 0;
-    const fixture = Object.assign(Object.create(Gadget.prototype), {
-      ctx: {waitUntil: vi.fn((task: Promise<unknown>) => { backgroundTasks.push(task); })},
-      mutationQueue: Promise.resolve(),
-      broadcastQueue: Promise.resolve(),
-      subscribers: new Map(),
-      applyOperationLocked: vi.fn(async () => ({
-        status: "applied",
-        type: "operation",
-        revision: ++revision,
-        conflicts: [],
-      })),
-      broadcast: vi.fn(async (event: {revision: number}) => {
-        order.push(`broadcast ${event.revision} started`);
-        if (event.revision === 1) {
-          markFirstStarted();
-          await firstReleased;
-        }
-        order.push(`broadcast ${event.revision} completed`);
-      }),
-    });
+  it("registers a subscriber and takes its snapshot inside the mutation queue", async () => {
+    const fixture = inMemoryGadget();
+    const newcomer = {presence: vi.fn(), operation: vi.fn(), onRpcBroken: vi.fn()};
+    let releaseWrite!: () => void;
+    const writeReleased = new Promise<void>(resolve => { releaseWrite = resolve; });
+    const original = fixture.applyOperationLocked.bind(fixture);
+    fixture.applyOperationLocked = async (operation: unknown) => { await writeReleased; return original(operation); };
 
-    const first = fixture.applyOperation({});
-    await firstStarted;
-    const second = fixture.applyOperation({});
-    await Promise.all([first, second]);
-    expect(order).toEqual(["broadcast 1 started"]);
-
-    releaseFirst();
-    await Promise.all(backgroundTasks);
-    expect(order).toEqual([
-      "broadcast 1 started",
-      "broadcast 1 completed",
-      "broadcast 2 started",
-      "broadcast 2 completed",
-    ]);
-    expect(fixture.ctx.waitUntil).toHaveBeenCalledTimes(2);
-    for (const [event] of fixture.broadcast.mock.calls) {
-      expect(event).not.toHaveProperty("status");
-      expect(event).not.toHaveProperty("conflicts");
-    }
-  });
-
-  it("allows subscriber callbacks to apply another operation without deadlocking", async () => {
-    let markNestedBroadcast!: () => void;
-    const nestedBroadcast = new Promise<void>(resolve => { markNestedBroadcast = resolve; });
-    let revision = 0;
-    const fixture = Object.assign(Object.create(Gadget.prototype), {
-      ctx: {waitUntil: vi.fn()},
-      mutationQueue: Promise.resolve(),
-      broadcastQueue: Promise.resolve(),
-      subscribers: new Map(),
-      applyOperationLocked: vi.fn(async () => ({
-        status: "applied",
-        type: "operation",
-        revision: ++revision,
-        conflicts: [],
-      })),
-      broadcast: vi.fn(async (event: {revision: number}) => {
-        if (event.revision === 1) await fixture.applyOperation({nested: true});
-        else markNestedBroadcast();
-      }),
-    });
-
-    await fixture.applyOperation({});
-    await nestedBroadcast;
-    expect(fixture.ctx.waitUntil).toHaveBeenCalledTimes(2);
-    expect(fixture.broadcast.mock.calls.map(([event]: [{revision: number}]) => event.revision))
-      .toEqual([1, 2]);
-  });
-
-  it("captures broadcast recipients before later subscriptions", async () => {
-    let releaseBroadcasts!: () => void;
-    const broadcastsReleased = new Promise<void>(resolve => { releaseBroadcasts = resolve; });
-    const originalSubscriber = {operation: vi.fn()};
-    const laterSubscriber = {operation: vi.fn()};
-    const fixture = Object.assign(Object.create(Gadget.prototype), {
-      ctx: {waitUntil: vi.fn()},
-      mutationQueue: Promise.resolve(),
-      broadcastQueue: broadcastsReleased,
-      subscribers: new Map([[originalSubscriber, {}]]),
-      applyOperationLocked: vi.fn(async () => ({
-        status: "applied",
-        type: "operation",
-        revision: 1,
-        conflicts: [],
-      })),
-      broadcast: vi.fn(),
-    });
-
-    await fixture.applyOperation({});
-    fixture.subscribers.set(laterSubscriber, {});
-    releaseBroadcasts();
-    await fixture.broadcastQueue;
-
-    expect(fixture.broadcast).toHaveBeenCalledWith(expect.objectContaining({revision: 1}), [originalSubscriber]);
-  });
-
-  it("evicts a stalled subscriber once across queued broadcasts", async () => {
-    vi.useFakeTimers();
-    try {
-      const dispose = vi.fn();
-      const stalled = {
-        operation: vi.fn(() => new Promise(() => {})),
-        presence: vi.fn(),
-        [Symbol.dispose]: dispose,
-      };
-      const healthy = {operation: vi.fn(), presence: vi.fn()};
-      let revision = 0;
-      const fixture = Object.assign(Object.create(Gadget.prototype), {
-        ctx: {waitUntil: vi.fn()},
-        mutationQueue: Promise.resolve(),
-        broadcastQueue: Promise.resolve(),
-        subscribers: new Map([[stalled, {clientId: "stalled"}], [healthy, {clientId: "healthy"}]]),
-        applyOperationLocked: vi.fn(async () => ({
-          status: "applied",
-          type: "operation",
-          revision: ++revision,
-          conflicts: [],
-        })),
-      });
-
-      await Promise.all([
-        fixture.applyOperation({}),
-        fixture.applyOperation({}),
-        fixture.applyOperation({}),
-      ]);
-      await vi.advanceTimersByTimeAsync(10000);
-      await fixture.broadcastQueue;
-
-      expect(fixture.subscribers.has(stalled)).toBe(false);
-      expect(stalled.operation).toHaveBeenCalledOnce();
-      expect(healthy.operation).toHaveBeenCalledTimes(3);
-      expect(healthy.presence).toHaveBeenCalledWith(expect.objectContaining({type: "leave", clientId: "stalled"}));
-      expect(dispose).toHaveBeenCalledOnce();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("evicts a subscriber stalled during presence replay without announcing a join", async () => {
-    vi.useFakeTimers();
-    try {
-      const backgroundTasks: Promise<unknown>[] = [];
-      const existing = {operation: vi.fn(), presence: vi.fn()};
-      const dispose = vi.fn();
-      const newcomer = {
-        operation: vi.fn(),
-        presence: vi.fn(() => new Promise(() => {})),
-        onRpcBroken: vi.fn(),
-        [Symbol.dispose]: dispose,
-      };
-      const fixture = Object.assign(Object.create(Gadget.prototype), {
-        ctx: {waitUntil: (task: Promise<unknown>) => { backgroundTasks.push(task); }},
-        mutationQueue: Promise.resolve(),
-        subscribers: new Map([[existing, {clientId: "existing", name: "Existing", color: "blue"}]]),
-        loadMeta: vi.fn(async () => ({revision: 1})),
-        assembleDocument: vi.fn(async () => ({revision: 1})),
-      });
-
-      await fixture.subscribe({dup: () => newcomer}, {clientId: "newcomer"});
-      await vi.advanceTimersByTimeAsync(10000);
-      await Promise.all(backgroundTasks);
-
-      expect(fixture.subscribers.has(newcomer)).toBe(false);
-      expect(dispose).toHaveBeenCalledOnce();
-      expect(existing.presence).toHaveBeenCalledWith(expect.objectContaining({type: "leave", clientId: "newcomer"}));
-      expect(existing.presence).not.toHaveBeenCalledWith(expect.objectContaining({type: "join", clientId: "newcomer"}));
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("disposes a subscriber when its initial snapshot fails", async () => {
-    const dispose = vi.fn();
-    const newcomer = {
-      presence: vi.fn(),
-      onRpcBroken: vi.fn(),
-      [Symbol.dispose]: dispose,
-    };
-    const fixture = Object.assign(Object.create(Gadget.prototype), {
-      mutationQueue: Promise.resolve(),
-      subscribers: new Map(),
-      loadMeta: vi.fn(async () => ({revision: 1})),
-      assembleDocument: vi.fn(async () => { throw new Error("storage failed"); }),
-    });
-
-    await expect(fixture.subscribe({dup: () => newcomer}, {clientId: "newcomer"}))
-      .rejects.toThrow("storage failed");
+    const writing = fixture.applyOperation(setCell("A1", "before subscribe"));
+    const subscribing = fixture.subscribe({dup: () => newcomer} as never, {clientId: "newcomer"});
+    await Promise.resolve();
     expect(fixture.subscribers.has(newcomer)).toBe(false);
-    expect(newcomer.onRpcBroken).not.toHaveBeenCalled();
-    expect(newcomer.presence).not.toHaveBeenCalled();
-    expect(dispose).toHaveBeenCalledOnce();
-  });
 
-  it("continues broadcasting after a subscriber throws synchronously", async () => {
-    const failed = {operation: vi.fn(() => { throw new Error("broken"); })};
-    const healthy = {operation: vi.fn(), presence: vi.fn()};
-    const fixture = Object.assign(Object.create(Gadget.prototype), {
-      ctx: {waitUntil: vi.fn()},
-      subscribers: new Map([[failed, {clientId: "failed"}], [healthy, {clientId: "healthy"}]]),
-    });
-
-    await fixture.broadcast({revision: 1});
-    expect(fixture.subscribers.has(failed)).toBe(false);
-    expect(healthy.operation).toHaveBeenCalledWith({revision: 1});
+    releaseWrite();
+    await writing;
+    const document = await subscribing;
+    expect(document.revision).toBe(1);
+    expect(document.cells.sheet.A1.value).toBe("before subscribe");
+    expect(fixture.subscribers.has(newcomer)).toBe(true);
+    expect(newcomer.operation).not.toHaveBeenCalled();
   });
 });
 
@@ -863,9 +697,9 @@ describe("Workspace Sheets export formats", () => {
   it("reserves one of 32 slots for XLSX and applies the same CSV eligibility rules at export", async () => {
     const ids = Array.from({length: 40}, (_, index) => `sheet-${index}`);
     const longId = "x".repeat(125);
-    const sheetOrder = [ids[0], ids[0], "missing", longId, ...ids.slice(1)];
-    const sheets = Object.fromEntries(ids.map(id => [id, sheet(id)]));
-    const document = {sheetOrder, sheets, cells: Object.fromEntries(ids.map(id => [id, {}]))};
+    const sheetOrder = [ids[0], ids[0], longId, ...ids.slice(1)];
+    const sheets = Object.fromEntries([...ids, longId].map(id => [id, sheet(id)]));
+    const document = {sheetOrder, sheets, cells: Object.fromEntries(Object.keys(sheets).map(id => [id, {}]))};
     const gadget = {getDocument: vi.fn(async () => document)};
 
     const formats = await handler().getExportFormats(gadget as never);
@@ -878,8 +712,10 @@ describe("Workspace Sheets export formats", () => {
       fileExtension: ".xlsx",
     });
     expect(new Set(formats.map(format => format.id)).size).toBe(32);
-    expect(formats.some(format => format.id === "csv:missing" || format.id === `csv:${longId}`)).toBe(false);
-    await expect(handler().export(gadget as never, "csv:missing")).rejects.toThrow("unavailable");
+    expect(formats.some(format => format.id === `csv:${longId}`)).toBe(false);
+    expect(formats.some(format => format.id === "csv:sheet-39")).toBe(false);
+    await expect(handler().export(gadget as never, "csv:sheet-39")).rejects.toThrow("unavailable");
+    await expect(handler().export(gadget as never, "pdf")).rejects.toThrow("Unsupported");
   });
 
   it("retains raw-value CSV behavior and materializes state before returning an XLSX stream", async () => {
