@@ -89,7 +89,10 @@ export default function ComposerAddMenu({
 }: ComposerAddMenuProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [catalog, setCatalog] = useState<SlashCommandChoice[]>([]);
+  const [loadedCatalog, setLoadedCatalog] = useState<{
+    source: OverseerSource;
+    choices: SlashCommandChoice[];
+  } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -102,6 +105,7 @@ export default function ComposerAddMenu({
   const listboxId = useId();
   const skillsAvailable = !skillSelected;
   const hasQuery = query.trim().length > 0;
+  const catalog = loadedCatalog?.source === getOverseer ? loadedCatalog.choices : [];
 
   const skills = useMemo(() => {
     if (!skillsAvailable) return [];
@@ -143,7 +147,7 @@ export default function ComposerAddMenu({
   useEffect(() => {
     if (catalogVersionRef.current === catalogVersion) return;
     catalogVersionRef.current = catalogVersion;
-    setCatalog([]);
+    setLoadedCatalog(null);
   }, [catalogVersion]);
 
   useEffect(() => {
@@ -153,7 +157,7 @@ export default function ComposerAddMenu({
     setError(false);
     loadSlashCommandCatalog(getOverseer)
       .then((choices) => {
-        if (!cancelled) setCatalog(choices);
+        if (!cancelled) setLoadedCatalog({ source: getOverseer, choices });
       })
       .catch((loadError) => {
         if (cancelled) return;
@@ -242,7 +246,7 @@ export default function ComposerAddMenu({
 
   const search = skillsAvailable ? (
     <div className={`shrink-0 bg-kumo-base px-4 ${
-      layout?.top !== undefined ? "pb-0 pt-3" : "pb-3 pt-2"
+      layout?.top !== undefined ? "order-first pb-0 pt-3" : "order-last pb-3 pt-2"
     }`}>
       <input
         ref={searchRef}
@@ -272,7 +276,7 @@ export default function ComposerAddMenu({
       role="dialog"
       aria-label="Add to conversation"
     >
-      {layout.top !== undefined && search}
+      {search}
       <div
         ref={listRef}
         id={listboxId}
@@ -359,7 +363,6 @@ export default function ComposerAddMenu({
           <p className="m-0 px-3 py-8 text-center text-[13px] text-kumo-inactive">Loading skills…</p>
         )}
       </div>
-      {layout.bottom !== undefined && search}
     </div>,
     document.body,
   ) : null;

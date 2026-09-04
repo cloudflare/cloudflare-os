@@ -205,4 +205,27 @@ describe("SlashCommandPicker", () => {
     expect(document.body.textContent).toContain("Debug an issue.");
     expect(document.body.textContent).not.toContain("Deploy the current project.");
   });
+
+  it("shows a replacement-load error instead of stale commands", async () => {
+    let fail = false;
+    const listSlashCommands = vi.fn<() => Promise<SlashCommandChoice[]>>(async () => {
+      if (fail) throw new Error("disconnected");
+      return choices;
+    });
+    const overseer = { listSlashCommands } as unknown as RpcStub<Overseer>;
+    const getOverseer = () => overseer;
+    await render(<Harness inputValue="/" getOverseer={getOverseer} onSelect={() => {}} />);
+    await act(async () => vi.waitFor(() => expect(
+      document.querySelectorAll('[role="option"]'),
+    ).toHaveLength(2)));
+
+    fail = true;
+    await act(async () => {
+      container!.querySelector<HTMLButtonElement>('[data-testid="invalidate-catalog"]')!.click();
+    });
+    await act(async () => vi.waitFor(() => expect(document.body.textContent)
+      .toContain("Couldn’t load commands. disconnected")));
+
+    expect(document.querySelectorAll('[role="option"]')).toHaveLength(0);
+  });
 });

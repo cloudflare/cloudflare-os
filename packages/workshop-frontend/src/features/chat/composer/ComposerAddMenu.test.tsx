@@ -129,11 +129,11 @@ describe("ComposerAddMenu", () => {
   });
 
   it.each([
-    { anchorTop: 100, position: "first" },
-    { anchorTop: 500, position: "last" },
+    { anchorTop: 100, position: "first", orderClass: "order-first" },
+    { anchorTop: 500, position: "last", orderClass: "order-last" },
   ])("renders search $position when the menu placement requires it", async ({
     anchorTop,
-    position,
+    orderClass,
   }) => {
     const getOverseer = () => ({
       listSlashCommands: async () => [connectedSkill],
@@ -149,8 +149,54 @@ describe("ComposerAddMenu", () => {
 
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
     const search = dialog.querySelector<HTMLInputElement>('[aria-label="Search skills"]')!;
-    const edge = position === "first" ? dialog.firstElementChild : dialog.lastElementChild;
-    expect(edge?.contains(search)).toBe(true);
+    expect(search.parentElement?.classList).toContain(orderClass);
+  });
+
+  it("keeps the focused search mounted when placement flips", async () => {
+    const getOverseer = () => ({
+      listSlashCommands: async () => [connectedSkill],
+    } as unknown as RpcStub<Overseer>);
+    const host = await mount(
+      <Harness anchorTop={100} getOverseer={getOverseer} onSelectSkill={() => {}} />,
+    );
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-haspopup="dialog"]')!.click());
+    const search = document.querySelector<HTMLInputElement>('[aria-label="Search skills"]')!;
+    search.focus();
+
+    await act(async () => root!.render(
+      <Harness anchorTop={500} getOverseer={getOverseer} onSelectSkill={() => {}} />,
+    ));
+    await act(async () => window.dispatchEvent(new Event("resize")));
+
+    const movedSearch = document.querySelector<HTMLInputElement>('[aria-label="Search skills"]')!;
+    expect(movedSearch).toBe(search);
+    expect(document.activeElement).toBe(search);
+    expect(movedSearch.parentElement?.classList).toContain("order-last");
+  });
+
+  it("does not offer catalog entries loaded by a previous Overseer source", async () => {
+    const firstSource = () => ({
+      listSlashCommands: async () => [connectedSkill],
+    } as unknown as RpcStub<Overseer>);
+    const secondLoad = vi.fn<() => Promise<SlashCommandChoice[]>>(async () => {
+      throw new Error("disconnected");
+    });
+    const secondSource = () => ({ listSlashCommands: secondLoad } as unknown as RpcStub<Overseer>);
+    const host = await mount(
+      <Harness getOverseer={firstSource} onSelectSkill={() => {}} />,
+    );
+    const trigger = host.querySelector<HTMLButtonElement>('[aria-haspopup="dialog"]')!;
+    await act(async () => trigger.click());
+    await waitFor(() => document.body.textContent?.includes("Review   writing") === true);
+    await act(async () => trigger.click());
+
+    await act(async () => root!.render(
+      <Harness getOverseer={secondSource} onSelectSkill={() => {}} />,
+    ));
+    await act(async () => trigger.click());
+    await waitFor(() => secondLoad.mock.calls.length === 1);
+
+    expect(document.body.textContent).not.toContain("Review   writing");
   });
 
   it("hides selected skills without loading them or disabling other actions", async () => {

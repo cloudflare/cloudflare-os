@@ -232,7 +232,9 @@ export function useSlashCommandPicker({
         aria-busy={loading}
         className="sidebar-scroll min-h-0 flex-1 overflow-y-auto p-2"
       >
-        {loading && choices.length === 0 ? (
+        {error ? (
+          <p className={PICKER_EMPTY}>{`Couldn’t load commands. ${error}`}</p>
+        ) : loading && choices.length === 0 ? (
           <p className={PICKER_EMPTY}>Loading commands…</p>
         ) : choices.length > 0 ? (
           choices.map((choice, optionIndex) => (
@@ -271,11 +273,7 @@ export function useSlashCommandPicker({
           ))
         ) : (
           <p className={PICKER_EMPTY}>
-            {error
-              ? `Couldn’t load commands. ${error}`
-              : query
-                ? "No commands match your search."
-                : "No commands are available."}
+            {query ? "No commands match your search." : "No commands are available."}
           </p>
         )}
       </div>
