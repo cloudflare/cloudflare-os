@@ -133,7 +133,10 @@ export default function ComposerAddMenu({
     if (!item) return;
     close(false);
     if (item.kind === "upload") onUpload();
-    else if (item.kind === "connection") onAddConnection();
+    else if (item.kind === "connection") {
+      triggerRef.current?.focus();
+      onAddConnection();
+    }
     else onSelectSkill(item.choice);
   };
 
@@ -214,6 +217,7 @@ export default function ComposerAddMenu({
     if (isImeComposing(event)) return;
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       close();
       return;
     }

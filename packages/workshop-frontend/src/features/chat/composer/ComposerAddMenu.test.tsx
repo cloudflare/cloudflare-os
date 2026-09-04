@@ -179,6 +179,7 @@ describe("ComposerAddMenu", () => {
       .find((option) => option.textContent?.includes("Add a new connection"))!;
     await act(async () => connection.click());
     expect(onAddConnection).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("uses Enter and Tab for activation, and restores focus on Escape", async () => {
@@ -214,10 +215,14 @@ describe("ComposerAddMenu", () => {
     await act(async () => trigger.click());
     await waitFor(() => document.querySelector('[role="dialog"]') !== null);
     const finalSearch = document.querySelector<HTMLInputElement>('[aria-label="Search skills"]')!;
+    const escapedMenu = vi.fn<(event: globalThis.KeyboardEvent) => void>();
+    document.addEventListener("keydown", escapedMenu);
     await act(async () => {
       finalSearch.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       await new Promise(requestAnimationFrame);
     });
+    document.removeEventListener("keydown", escapedMenu);
+    expect(escapedMenu).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(trigger);
   });
 
