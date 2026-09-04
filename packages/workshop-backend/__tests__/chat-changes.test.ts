@@ -1276,6 +1276,68 @@ describe("reconcilePendingGadgets", () => {
     await impl.reconcilePendingGadgets(1);
     expect(impl.storage.gadgets.get(created.id)).toBeUndefined();
   }));
+
+  // Simulates a createExternalResource mint whose step crashed before the barrier: the
+  // gatekeeper record and its queued creation action are durable, but no tool call backs them.
+  it("reaps a crash-orphaned provisional gatekeeper and settles its creation action",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    impl.storage.gatekeepers.put({
+      id: 500, class: { type: "vendor", vendorId: "test", accountId: 1 },
+      provisional: true, pending: { chatId: 1 }, creation: { bindingName: "THING", actionId: 7 },
+    });
+    impl.storage.actions.put({
+      id: 7, gatekeeperId: 500, caller: { from: "agent", chatId: 1 }, action: 1,
+      createdAt: new Date(), state: "pending", type: "action",
+      description: { title: "Create thing" },
+    });
+
+    await impl.reconcilePendingGadgets(1);
+    expect(impl.storage.gatekeepers.get(500)).toBeUndefined();
+    expect(impl.storage.actions.get(7)!.state).toBe("rejected");
+  }));
+
+  it("keeps a pending-marked gatekeeper whose creation action was approved",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    impl.storage.gatekeepers.put({
+      id: 501, class: { type: "vendor", vendorId: "test", accountId: 1 },
+      provisional: true, pending: { chatId: 1 }, creation: { bindingName: "THING", actionId: 8 },
+    });
+    impl.storage.actions.put({
+      id: 8, gatekeeperId: 501, caller: { from: "agent", chatId: 1 }, action: 1,
+      createdAt: new Date(), state: "approved", appliedAt: new Date(), type: "action",
+      description: { title: "Create thing" },
+    });
+
+    // The approved creation is proof the resource may exist at the provider: keep the
+    // gatekeeper, clear only the crash marker.
+    await impl.reconcilePendingGadgets(1);
+    let record = impl.storage.gatekeepers.get(501)!;
+    expect(record.pending).toBeUndefined();
+    expect(impl.storage.actions.get(8)!.state).toBe("approved");
+  }));
+
+  it("delivers the deferred approval nudge when keeping an approved creation",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    impl.storage.gatekeepers.put({
+      id: 502, class: { type: "vendor", vendorId: "test", accountId: 1 },
+      provisional: true, pending: { chatId: 1 }, creation: { bindingName: "THING", actionId: 9 },
+    });
+    impl.storage.actions.put({
+      id: 9, gatekeeperId: 502, caller: { from: "agent", chatId: 1 }, action: 1,
+      createdAt: new Date(), state: "approved", appliedAt: new Date(), type: "action",
+      resolvedBy: { type: "user", id: "u", name: "User" },
+      description: { title: "Create thing" },
+    });
+
+    await impl.reconcilePendingGadgets(1);
+    expect(impl.storage.gatekeepers.get(502)!.pending).toBeUndefined();
+    let nudges = chatMessages(impl, 1).filter(m => m.type === "agentNudge");
+    expect(nudges).toHaveLength(1);
+    expect(nudges[0].text).toContain("The user approved the creation of env.THING");
+  }));
 });
 
 describe("chat content reconstruction", () => {
