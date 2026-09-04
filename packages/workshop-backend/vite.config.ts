@@ -1,6 +1,8 @@
 // Vite+ per-package settings. The `test` task definition is shared by every package whose tests run
 // under vitest and ships as `@gadgets/scripts/vitest-task`.
-import { vitestTask, withTestTimeout } from '@gadgets/scripts/vitest-task'
+import {
+  TESTS_WITH_TIMEOUT_ENV, vitestTask, withTestTimeout,
+} from '@gadgets/scripts/vitest-task'
 
 /**
  * Codegen steps stay separate commands rather than one `&&` string so each caches on its own.
@@ -45,10 +47,11 @@ export default {
        *
        * Caching means this now runs with a stripped environment. `scripts/env-passthrough.test.ts`
        * is the guard: if capnweb-validate ever starts reading an ambient var, it fails there rather
-       * than replaying a stale tree.
+       * than replaying a stale tree. The watchdog's own off switch is the one variable declared.
        */
       'build:integration-worker': {
         command: withTestTimeout('capnweb-validate build --out .wrangler/validate'),
+        env: TESTS_WITH_TIMEOUT_ENV,
         dependsOn: [
           '@gadgets/typed-storage#build', 'build:format-blueprints', 'build:browser-runtime',
         ],

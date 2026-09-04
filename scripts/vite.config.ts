@@ -23,13 +23,14 @@
  * submodule, `..` is that fork's `public/`, which is the correct root for these assertions there.
  */
 
-import { withTestTimeout } from "./vitest-task-vite-config.ts";
+import { TESTS_WITH_TIMEOUT_ENV, withTestTimeout } from "./vitest-task-vite-config.ts";
 
 export default {
   run: {
     tasks: {
       test: {
         command: withTestTimeout("node --test 'scripts/**/*.test.ts'"),
+        env: TESTS_WITH_TIMEOUT_ENV,
         cwd: "..",
         // Workspace-wide, matching `cwd`: the suites read across `packages/` and the root manifests,
         // and a guard that stopped seeing a file it asserts about would cache-hit its way to a

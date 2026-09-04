@@ -19,6 +19,12 @@
 //
 // Exit codes: 124 when a threshold fired (GNU `timeout`'s, and distinct from any vitest code), the
 // child's own code otherwise, or `128 + signal` when the child or this wrapper was signalled.
+//
+// `TESTS_WITH_TIMEOUT_DISABLE=<anything>` switches both watchdogs off, leaving only the stdio piping
+// and signal relay: for a CI whose job-level timeout already bounds a wedge, or a deliberately
+// unsupervised local run. A wedge is then killed anonymously by whatever is outside, with no
+// surviving-tree listing to name the culprit. Under vp the variable reaches a cached task only
+// through the task's `env` declaration (see vitest-task-vite-config.ts), which also fingerprints it.
 
 import { execFile, spawn } from "node:child_process";
 import { constants } from "node:os";
@@ -122,6 +128,8 @@ function exitCodeForSignal(signal: NodeJS.Signals): number {
 }
 
 const { idleMs, maxMs, argv } = parseArgs(process.argv.slice(2));
+// After `parseArgs`, so a malformed invocation fails with the usage error even when disabled.
+const watchdogsDisabled = Boolean(process.env.TESTS_WITH_TIMEOUT_DISABLE);
 const [command, commandArgs] = resolveCommand(argv);
 const startedAt = Date.now();
 
@@ -143,9 +151,11 @@ function clearTimers(): void {
   clearTimeout(maxTimer);
 }
 
+// Also the reset on every output chunk (see `forward`), so the disabled check lives here rather
+// than only at the initial arm.
 function armIdleTimer(): void {
   clearTimeout(idleTimer);
-  if (terminating) return;
+  if (terminating || watchdogsDisabled) return;
   idleTimer = setTimeout(() => { void onThreshold("no output", idleMs); }, idleMs);
 }
 
@@ -220,5 +230,7 @@ child.on("close", (code, signal) => {
 
 if (child.stdout) forward(child.stdout, process.stdout);
 if (child.stderr) forward(child.stderr, process.stderr);
-armIdleTimer();
-maxTimer = setTimeout(() => { void onThreshold("still running", maxMs); }, maxMs);
+if (!watchdogsDisabled) {
+  armIdleTimer();
+  maxTimer = setTimeout(() => { void onThreshold("still running", maxMs); }, maxMs);
+}

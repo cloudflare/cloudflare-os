@@ -33,6 +33,7 @@ export type VitestTask = {
   command: string | string[]
   input: (GlobWithBase | { auto: boolean })[]
   output: (GlobWithBase | { auto: boolean })[]
+  env: string[]
 }
 
 /** A Vite+ config carrying a `run.tasks` map. */
@@ -149,12 +150,27 @@ const TOTAL_TIMEOUT_SECONDS = 600
  *
  * Only the idle threshold is overridable: `TOTAL_TIMEOUT_SECONDS` is the backstop against a real
  * hang, and a command able to opt out of it would be unbounded again.
+ *
+ * The off switch, `TESTS_WITH_TIMEOUT_ENV`, is the one variable read, and it is declared in `env` so
+ * that it is fingerprinted too.
  */
 export const withTestTimeout = (command: TestCommand): string => {
   const { command: argv, idleSeconds } =
     typeof command === 'string' ? { command, idleSeconds: IDLE_TIMEOUT_SECONDS } : command
   return `gadgets-with-timeout --idle ${idleSeconds} --max ${TOTAL_TIMEOUT_SECONDS} -- ${argv}`
 }
+
+/**
+ * The `env` every task wrapping `withTestTimeout` must declare, if it is cached.
+ *
+ * `TESTS_WITH_TIMEOUT_DISABLE`, set to anything non-empty, turns the watchdog off (see the header of
+ * `with-timeout.ts`). A cached `vp` task sees none of the ambient environment unless the task
+ * declares a variable; `env` both passes it through and fingerprints it, so a supervised run never
+ * replays an unsupervised one. The builders below add it to every vitest `test` task; a
+ * hand-declared task that wraps `withTestTimeout` spreads it itself, and `scripts/vitest-task.test.ts`
+ * checks that each one either does so or is `cache: false`.
+ */
+export const TESTS_WITH_TIMEOUT_ENV: string[] = ['TESTS_WITH_TIMEOUT_DISABLE']
 
 /**
  * The `test` task for a package, given the vitest invocation its `test` script used to hold.
@@ -191,6 +207,7 @@ export function vitestTaskWithExclusions(
     command: Array.isArray(command) ? command.map(withTestTimeout) : withTestTimeout(command),
     input: [{ auto: true }, ...exclusions],
     output: [{ auto: true }, ...exclusions],
+    env: TESTS_WITH_TIMEOUT_ENV,
   }
 }
 
