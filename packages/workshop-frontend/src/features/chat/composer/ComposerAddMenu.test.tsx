@@ -27,6 +27,7 @@ const builtinSkill: SlashCommandChoice = {
 };
 
 const Harness = ({
+  anchorTop = 500,
   catalogVersion = 0,
   chatExists = true,
   getOverseer,
@@ -35,6 +36,7 @@ const Harness = ({
   onUpload = () => {},
   skillSelected = false,
 }: {
+  anchorTop?: number;
   catalogVersion?: number;
   chatExists?: boolean;
   getOverseer: () => RpcStub<Overseer>;
@@ -50,8 +52,8 @@ const Harness = ({
         ref={(element) => {
           anchorRef.current = element;
           if (element) element.getBoundingClientRect = () => ({
-            top: 500,
-            bottom: 600,
+            top: anchorTop,
+            bottom: anchorTop + 100,
             left: 100,
             right: 600,
             width: 500,
@@ -124,6 +126,31 @@ describe("ComposerAddMenu", () => {
     });
     await waitFor(() => document.querySelectorAll('[role="option"]').length === 1);
     expect(document.body.textContent).toContain("Review   writing");
+  });
+
+  it.each([
+    { anchorTop: 100, position: "first" },
+    { anchorTop: 500, position: "last" },
+  ])("renders search $position when the menu placement requires it", async ({
+    anchorTop,
+    position,
+  }) => {
+    const getOverseer = () => ({
+      listSlashCommands: async () => [connectedSkill],
+    } as unknown as RpcStub<Overseer>);
+    const host = await mount(
+      <Harness
+        anchorTop={anchorTop}
+        getOverseer={getOverseer}
+        onSelectSkill={() => {}}
+      />,
+    );
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-haspopup="dialog"]')!.click());
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    const search = dialog.querySelector<HTMLInputElement>('[aria-label="Search skills"]')!;
+    const edge = position === "first" ? dialog.firstElementChild : dialog.lastElementChild;
+    expect(edge?.contains(search)).toBe(true);
   });
 
   it("hides selected skills without loading them or disabling other actions", async () => {

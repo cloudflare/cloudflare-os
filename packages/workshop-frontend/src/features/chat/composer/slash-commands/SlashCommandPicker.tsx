@@ -5,7 +5,7 @@ import {
   type RefObject, type SetStateAction,
 } from "react";
 import type { Overseer, SlashCommandChoice } from "@gadgets/workshop-shared/api";
-import { CaretRightIcon, ScrollIcon } from "@phosphor-icons/react";
+import { ArrowsInIcon, CaretRightIcon, ScrollIcon } from "@phosphor-icons/react";
 import { PICKER_EMPTY, TabHint } from "../../../../components/pickerRows";
 import {
   exactSlashCommandMatches, filterSlashCommandCatalog, parseSlashCommandInput,
@@ -249,17 +249,21 @@ export function useSlashCommandPicker({
                 choice.description,
                 [choice.providerLabel, choice.resourceLabel].filter(Boolean).join(" · "),
               ].join("\n")}
-              className={`flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors disabled:cursor-wait disabled:opacity-60 ${optionIndex === index ? "bg-kumo-tint text-kumo-strong" : "text-kumo-default hover:bg-kumo-tint/70"}`}
+              className={`grid w-full cursor-pointer grid-cols-[auto_fit-content(35%)_auto_minmax(0,1fr)_auto] items-center gap-x-2 rounded-lg px-3 py-2.5 text-left transition-colors disabled:cursor-wait disabled:opacity-60 ${optionIndex === index ? "bg-kumo-tint text-kumo-strong" : "text-kumo-default hover:bg-kumo-tint/70"}`}
               onMouseMove={() => setIndex(optionIndex)}
               onClick={() => select(choice)}
             >
-              <ScrollIcon size={16} className="shrink-0" />
-              <span className="flex min-w-0 flex-1 items-center gap-2">
-                <span className="max-w-[35%] shrink-0 truncate">{choice.name}</span>
-                <CaretRightIcon size={11} aria-hidden="true" className="shrink-0 text-kumo-inactive" />
-                <span className="min-w-0 flex-1 truncate text-kumo-subtle">{choice.description}</span>
-              </span>
-              {optionIndex === index && selectable && <TabHint />}
+              {choice.selection.builtin === true && choice.selection.commandId === "compact"
+                ? <ArrowsInIcon size={16} className="mr-1 shrink-0" />
+                : <ScrollIcon size={16} className="mr-1 shrink-0" />}
+              <span className="min-w-0 truncate">{choice.name}</span>
+              <CaretRightIcon size={11} aria-hidden="true" className="shrink-0 text-kumo-inactive" />
+              <span className="min-w-0 truncate text-kumo-subtle">{choice.description}</span>
+              {optionIndex === index && selectable && (
+                <span className="ml-1">
+                  <TabHint />
+                </span>
+              )}
             </button>
           ))
         ) : (

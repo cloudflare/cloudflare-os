@@ -11,6 +11,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
+  ArrowsInIcon,
   CaretRightIcon,
   PaperclipIcon,
   PlugIcon,
@@ -235,6 +236,30 @@ export default function ComposerAddMenu({
     }
   };
 
+  const search = skillsAvailable ? (
+    <div className={`shrink-0 bg-kumo-base px-4 ${
+      layout?.top !== undefined ? "pb-0 pt-3" : "pb-3 pt-2"
+    }`}>
+      <input
+        ref={searchRef}
+        value={query}
+        type="text"
+        role="combobox"
+        aria-label="Search skills"
+        aria-autocomplete="list"
+        aria-expanded="true"
+        aria-controls={listboxId}
+        aria-activedescendant={items[activeIndex]
+          ? `${listboxId}-option-${activeIndex}`
+          : undefined}
+        placeholder="Search skills…"
+        className="w-full border-0 bg-transparent p-0 text-[14px] leading-6 text-kumo-default outline-none placeholder:text-kumo-inactive"
+        onChange={(event) => setQuery(event.target.value)}
+        onKeyDown={handleKeyDown}
+      />
+    </div>
+  ) : null;
+
   const popup = open && layout ? createPortal(
     <div
       ref={popupRef}
@@ -243,6 +268,7 @@ export default function ComposerAddMenu({
       role="dialog"
       aria-label="Add to conversation"
     >
+      {layout.top !== undefined && search}
       <div
         ref={listRef}
         id={listboxId}
@@ -251,7 +277,9 @@ export default function ComposerAddMenu({
         aria-busy={loading}
         tabIndex={skillsAvailable ? undefined : -1}
         onKeyDown={skillsAvailable ? undefined : handleKeyDown}
-        className={`sidebar-scroll min-h-0 flex-1 overflow-y-auto p-2 outline-none ${skillsAvailable ? "pb-0" : ""}`}
+        className={`sidebar-scroll min-h-0 flex-1 overflow-y-auto p-2 outline-none ${
+          skillsAvailable && layout.bottom !== undefined ? "pb-0" : ""
+        }`}
       >
         {items.map((item, index) => {
           const active = index === activeIndex;
@@ -299,7 +327,9 @@ export default function ComposerAddMenu({
                 onPointerMove={() => setActiveIndex(index)}
                 onClick={() => activate(item)}
               >
-                <ScrollIcon size={16} className="shrink-0" />
+                {choice.selection.builtin === true && choice.selection.commandId === "compact"
+                  ? <ArrowsInIcon size={16} className="shrink-0" />
+                  : <ScrollIcon size={16} className="shrink-0" />}
                 <span className="flex min-w-0 flex-1 items-center gap-2">
                   <span className="min-w-0 shrink-0 truncate text-kumo-default sm:max-w-[35%]">
                     {choice.name}
@@ -325,27 +355,7 @@ export default function ComposerAddMenu({
           <p className="m-0 px-3 py-8 text-center text-[13px] text-kumo-inactive">Loading skills…</p>
         )}
       </div>
-      {skillsAvailable && (
-        <div className="shrink-0 bg-kumo-base px-4 pb-3 pt-2">
-          <input
-            ref={searchRef}
-            value={query}
-            type="search"
-            role="combobox"
-            aria-label="Search skills"
-            aria-autocomplete="list"
-            aria-expanded="true"
-            aria-controls={listboxId}
-            aria-activedescendant={items[activeIndex]
-              ? `${listboxId}-option-${activeIndex}`
-              : undefined}
-            placeholder="Search skills…"
-            className="w-full border-0 bg-transparent p-0 text-[13px] leading-6 text-kumo-default outline-none placeholder:text-kumo-inactive"
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={handleKeyDown}
-          />
-        </div>
-      )}
+      {layout.bottom !== undefined && search}
     </div>,
     document.body,
   ) : null;
