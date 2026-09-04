@@ -16,6 +16,9 @@ export type CredentialsKv = KvMutable;
 
 /** Provider-confirmed grant expiry. Transport and service failures must use their original errors. */
 export class CredentialsExpiredError extends Error {
+  /** Transport-stable discriminator — survives hops that rebuild the error and strip `name`. */
+  readonly code = "CredentialsExpiredError";
+
   /**
    * Creates a confirmed-expiry error.
    * @param message Display-safe expiry message.
@@ -23,7 +26,7 @@ export class CredentialsExpiredError extends Error {
    */
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
-    this.name = "CredentialsExpiredError";
+    this.name = this.code;
   }
 }
 
@@ -32,33 +35,44 @@ export class CredentialsExpiredError extends Error {
  * stale, nothing was adjudicated against the account, and the caller retries by re-entering.
  */
 export class CredentialsChangedError extends Error {
+  /** Transport-stable discriminator — survives hops that rebuild the error and strip `name`. */
+  readonly code = "CredentialsChangedError";
+
   /**
    * Creates a retryable mid-operation replacement error.
    * @param options Optional error cause — typically the stale provider rejection.
    */
   constructor(options?: { cause?: unknown }) {
     super("This account's credentials changed during the operation; retry it.", options);
-    this.name = "CredentialsChangedError";
+    this.name = this.code;
   }
 }
 
+/** @returns Whether the error carries the mark as its `name` or its transport-surviving `code`. */
+function marked(error: unknown, mark: string): boolean {
+  return error instanceof Error
+    && (error.name === mark || (error as { code?: unknown }).code === mark);
+}
+
 /**
- * Matches confirmed expiry by name, which survives the RPC boundary where the class does not.
+ * Matches confirmed expiry by `name` or `code`: the class never survives RPC, and a transport that
+ * rebuilds errors (capnweb) keeps enumerable own props but not the name.
  * @param error Caught error.
  * @returns Whether the error is a confirmed credential expiry.
  */
 export function isCredentialsExpired(error: unknown): boolean {
-  return error instanceof Error && error.name === "CredentialsExpiredError";
+  return marked(error, "CredentialsExpiredError");
 }
 
 /**
- * Matches a retryable mid-operation credential replacement by name, which survives the RPC
- * boundary where the class does not.
+ * Matches a retryable mid-operation credential replacement by `name` or `code`: the class never
+ * survives RPC, and a transport that rebuilds errors (capnweb) keeps enumerable own props but not
+ * the name.
  * @param error Caught error.
  * @returns Whether the error marks the operation retryable.
  */
 export function isCredentialsChanged(error: unknown): boolean {
-  return error instanceof Error && error.name === "CredentialsChangedError";
+  return marked(error, "CredentialsChangedError");
 }
 
 /**
@@ -454,8 +468,9 @@ export type AccountCredentialStub<Creds> = {
    * identity is never `""` — that value is reserved for a never-connected read and always
    * adjudicates `"superseded"`, so serving live credentials under it wedges every rejection
    * as retryable.
-   * @throws On confirmed expiry, an error named `CredentialsExpiredError` — the transport may strip
-   * the class, so the name is the contract the source drops its cache authority on.
+   * @throws On confirmed expiry, an error carrying `CredentialsExpiredError` as its `name` or
+   * `code` — the transport may strip the class or rebuild the name away, so those marks are the
+   * contract the source drops its cache authority on.
    */
   getCredentials(): Promise<CredentialsWithIdentity<Creds>>;
   /**
@@ -581,7 +596,8 @@ export class CredentialSource<Creds> {
    * account's own message instead; `CredentialsChangedError` when the rejection was stale and re-entering
    * will read live credentials; the original provider error when the failure was not a credential
    * rejection or the account could not adjudicate it (`"unavailable"`). Both named errors match
-   * by name (`isCredentialsExpired` / `isCredentialsChanged`) across RPC boundaries.
+   * (`isCredentialsExpired` / `isCredentialsChanged`) across RPC boundaries — their `code`
+   * survives the transports that strip `name`.
    */
   async run<T>(
     operation: (credentials: Creds, read: CredentialRead) => Promise<T>,

@@ -298,14 +298,17 @@ consumer side respectively:
 
 ```ts
 export class CredentialsExpiredError extends Error {
+  readonly code = "CredentialsExpiredError";           // transport-stable mark; name mirrors it
   constructor(message: string, opts?: { cause?: unknown });
 }
 export class CredentialsChangedError extends Error {   // credentials replaced mid-operation: the
-  constructor(opts?: { cause?: unknown });             // failure was stale and the caller re-enters.
-}                                                      // Fixed display-safe message
-export function isCredentialsExpired(e: unknown): boolean;  // name-matched: the RPC transport
-export function isCredentialsChanged(e: unknown): boolean;  // strips classes, so the name is the
-                                                            // contract callers match on
+  readonly code = "CredentialsChangedError";           // failure was stale and the caller re-enters.
+  constructor(opts?: { cause?: unknown });             // Fixed display-safe message
+}
+export function isCredentialsExpired(e: unknown): boolean;  // matched by name or code: the RPC
+export function isCredentialsChanged(e: unknown): boolean;  // transport strips classes, and capnweb
+                                                            // rebuilds errors keeping enumerable own
+                                                            // props but not the name — code survives
 
 export type RejectionVerdict = "expired" | "superseded" | "unavailable";
   // expired     — grant dead; the account owns announcing it (delivery never adjudicated)
@@ -491,7 +494,7 @@ and re-adopting its generation would let cache hits mask the outage — while a 
 flight at the report is fenced out entirely, since a straggler can carry any old identity. A fetch
 started after the report, adopting an identity not in the dead set (successful refresh or
 reconnect), re-establishes the authority. Expiry also surfaces through the fetch itself — a failed
-refresh rejects `getCredentials()` with an error named `CredentialsExpiredError` — and the source
+refresh rejects `getCredentials()` with an error marked `CredentialsExpiredError` — and the source
 drops the authority there too, under the same fence so a straggler's stale rejection cannot clear a
 revived partition. `"superseded"` — the rejected identity was already replaced, or the account
 just healed past it — resolves as `CredentialsChangedError` with the authority left unknown, or,
@@ -520,8 +523,8 @@ failure is fresh evidence and reports as expiry, or a later refetch would re-ado
 The account hop is itself wrapped, so its failure — or a malformed verdict — reads as `"expired"`
 and cannot mask a dead grant as retryable; everything else passes through. Callers wanting their
 own retry policy skip `replayable` and match `CredentialsChangedError`/`CredentialsExpiredError`
-by name (`isCredentialsChanged`/`isCredentialsExpired` — the RPC transport strips classes) in a
-plain loop; the source itself is optional, and a port that only wants coordinated storage uses
+(`isCredentialsChanged`/`isCredentialsExpired` — matching `name`, or the `code` that survives the
+transports that strip it) in a plain loop; the source itself is optional, and a port that only wants coordinated storage uses
 `get()` or the stub directly.
 
 **`isAuthError` is the one classifier the agent can aim.** It decides that the provider *rejected

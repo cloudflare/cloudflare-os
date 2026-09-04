@@ -776,29 +776,42 @@ describe("CredentialCoordinator", () => {
 });
 
 describe("credential errors", () => {
+  /** Mirrors capnweb's error round trip: rebuilt as a plain `Error`, own enumerable props kept. */
+  function overCapnweb(error: Error): Error {
+    const kept = Object.entries(error)
+      .filter(([key]) => key !== "name" && key !== "message" && key !== "stack");
+    return Object.assign(new Error(error.message), Object.fromEntries(kept));
+  }
+
   it("pins the fixed retryable message", () => {
     // The one place the message is asserted: it is display-safe wording, not the contract — the
-    // contract is the name, matched below.
+    // contract is the name/code, matched below.
     expect(new CredentialsChangedError().message)
       .toBe("This account's credentials changed during the operation; retry it.");
   });
 
-  it("matches a mid-operation replacement by name, surviving an RPC-stripped class", () => {
+  it("matches a mid-operation replacement by name or transport-surviving code", () => {
     expect(isCredentialsChanged(new CredentialsChangedError({ cause: new Error("401") })))
       .toBe(true);
     expect(isCredentialsChanged(
       Object.assign(new Error("stripped by transport"), { name: "CredentialsChangedError" })))
       .toBe(true);
+    const wire = overCapnweb(new CredentialsChangedError());
+    expect(wire.name).toBe("Error");
+    expect(isCredentialsChanged(wire)).toBe(true);
     expect(isCredentialsChanged(new Error("some other failure"))).toBe(false);
     expect(isCredentialsChanged(new CredentialsExpiredError("expired"))).toBe(false);
     expect(isCredentialsChanged("not an error")).toBe(false);
   });
 
-  it("matches confirmed expiry by name, surviving an RPC-stripped class", () => {
+  it("matches confirmed expiry by name or transport-surviving code", () => {
     expect(isCredentialsExpired(new CredentialsExpiredError("expired"))).toBe(true);
     expect(isCredentialsExpired(
       Object.assign(new Error("stripped by transport"), { name: "CredentialsExpiredError" })))
       .toBe(true);
+    const wire = overCapnweb(new CredentialsExpiredError("expired"));
+    expect(wire.name).toBe("Error");
+    expect(isCredentialsExpired(wire)).toBe(true);
     expect(isCredentialsExpired(new Error("some other failure"))).toBe(false);
     expect(isCredentialsExpired(new CredentialsChangedError())).toBe(false);
     expect(isCredentialsExpired(undefined)).toBe(false);
