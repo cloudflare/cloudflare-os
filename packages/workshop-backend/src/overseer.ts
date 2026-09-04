@@ -2501,15 +2501,15 @@ class OverseerImpl implements AgentHooks {
         let creationId = record.creation?.actionId;
         let creation = creationId !== undefined
             ? this.storage.actions.get(creationId) : undefined;
-        let approvedBy = creation?.type === "action" && creation.state === "approved"
-            ? creation.resolvedBy : undefined;
-        if (!record.provisional || approvedBy !== undefined) {
+        let approval = creation?.type === "action" && creation.state === "approved"
+            ? creation : undefined;
+        if (!record.provisional || approval !== undefined) {
           delete record.pending;
           this.storage.gatekeepers.put(record);
           // The crashed step's barrier would have delivered the deferred decision nudge (see
           // addChatMessages); emit it here so the resumed turn learns the resource is real.
-          if (approvedBy !== undefined) {
-            this.nudgeCreationDecision(chatId, record, "approved", approvedBy);
+          if (approval?.resolvedBy !== undefined) {
+            this.nudgeCreationDecision(chatId, record, "approved", approval.resolvedBy);
           }
           continue;
         }
@@ -5958,17 +5958,23 @@ class OverseerImpl implements AgentHooks {
       this.gitCache.verifyPushAncestry(gatekeeperId, description.pushedCommits);
     }
 
+    // A pending action against a removed gatekeeper would be permanently undecidable (approve
+    // and reject both need the facet), so a submit racing removal -- deleteChat's reap can pull
+    // the record while the facet's call is in flight -- fails here instead.
+    let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
+    if (!gatekeeper) {
+      throw new Error("The connection this action targets has been removed.");
+    }
+
     let actionId = this.storage.nextActionId.get();
     this.storage.nextActionId.put(actionId + 1);
-
-    let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
 
     let record: ActionRecord = {
       id: actionId,
       gatekeeperId,
       caller,
-      resourceTitle: gatekeeper?.resourceTitle,
-      resourceUrl: gatekeeper?.resourceUrl,
+      resourceTitle: gatekeeper.resourceTitle,
+      resourceUrl: gatekeeper.resourceUrl,
       action,
       createdAt: new Date(),
       state: "pending",
@@ -5985,7 +5991,7 @@ class OverseerImpl implements AgentHooks {
       }
       // The first action queued against a createExternalResource mint IS the creation; stamp
       // its identity in the same durable step as the action itself.
-      if (gatekeeper?.creation !== undefined && gatekeeper.creation.actionId === undefined) {
+      if (gatekeeper.creation !== undefined && gatekeeper.creation.actionId === undefined) {
         gatekeeper.creation.actionId = actionId;
         this.storage.gatekeepers.put(gatekeeper);
       }
