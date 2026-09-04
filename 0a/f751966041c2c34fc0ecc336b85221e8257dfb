@@ -1,0 +1,39 @@
+scripts/vitest-task.test.ts
+  s_006940b98259c8::t_102730836522fd 1-104
+AGENTS.md
+  s_006940b98259c8::t_9ae01e1a84a3df 67
+scripts/vite.config.ts
+  s_f7e4d422bdb5cf::t_855d91f7b63c8a 26,33
+scripts/with-timeout.ts
+  s_f7e4d422bdb5cf::t_e95910b9050d46 22-27,131-132,154-155,158,233-236
+packages/workshop-backend/vite.config.ts
+  s_006940b98259c8::t_6aad11763144a8 3-5,50,54
+scripts/vitest-task-vite-config.ts
+  s_f7e4d422bdb5cf::t_8a841045c26323 36,153-155,163-174,210
+scripts/env-passthrough.test.ts
+  s_006940b98259c8::t_c1b19d06b1ef62 85-86,88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0af751966041c2c34fc0ecc336b85221e8257dfb",
+  "prompts": {},
+  "sessions": {
+    "s_006940b98259c8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2d922cbb-5244-4d7b-8360-411a14d5a340",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f7e4d422bdb5cf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c663f110-c43d-460c-804d-e2d64594b524",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
