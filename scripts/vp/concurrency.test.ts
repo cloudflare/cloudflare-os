@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import {
   BYTES_PER_TASK, ROOT_ENV_FILE, VP_DEFAULT_CONCURRENCY_LIMIT, VP_RUN_CONCURRENCY_LIMIT,
   cgroupMemoryLimitBytes, cgroupMounts, concurrencyEnv, defaultConcurrencyLimit,
   effectiveMemoryBytes, envFileConcurrencyLimit, overridesConcurrency, vpRunEnv,
-} from "./vp-concurrency.ts";
+} from "./concurrency.ts";
 
 const GiB = 1024 ** 3;
 
@@ -299,8 +299,13 @@ describe("envFileConcurrencyLimit", () => {
   });
 
   it("defaults to the repo-root .env, not the current directory", () => {
-    // Resolved from the module's own location, so it is stable wherever the command was typed.
-    assert.equal(ROOT_ENV_FILE, join(dirname(import.meta.dirname), ".env"));
+    // Resolved from the module's own location, so it is stable wherever the command was typed --
+    // and pinned against a file that exists only at the workspace root rather than by counting
+    // `..` hops from here, which would mirror whatever the implementation does and go green with it.
+    assert.equal(basename(ROOT_ENV_FILE), ".env");
+    const root = dirname(ROOT_ENV_FILE);
+    assert.ok(existsSync(join(root, "pnpm-workspace.yaml")),
+        `${root} is not the workspace root`);
   });
 });
 
@@ -420,7 +425,7 @@ function captureStderr(run: () => NodeJS.ProcessEnv): { env: NodeJS.ProcessEnv; 
   }
 }
 
-// The bug: `node scripts/vp-run.ts --concurrency-limit 2 ... build` announced the machine's number
+// The bug: `node scripts/vp/run.ts --concurrency-limit 2 ... build` announced the machine's number
 // and then ran at 2, because the note printed unconditionally.
 describe("vpRunEnv", () => {
   it("stays silent but still sets the variable when a flag overrides it", () => {

@@ -1,4 +1,4 @@
-// Termination relay for the thin wrappers that exist only to spawn one child (`vp-run.ts`,
+// Termination relay for the thin wrappers that exist only to spawn one child (`vp/run.ts`,
 // `run-local.ts`).
 //
 // Mirroring the child's exit is the easy half, and on its own it leaves a hole: a wrapper with no

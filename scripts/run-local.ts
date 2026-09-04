@@ -18,11 +18,11 @@ import { fileURLToPath } from "node:url";
 import { getDevServerConfig } from "./dev-server-config.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
 import { relayTermination } from "./relay-termination.ts";
-import { vpRunEnv } from "./vp-concurrency.ts";
+import { vpRunEnv } from "./vp/concurrency.ts";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
-// Machine-aware `vp run` concurrency (vp-concurrency.ts). Computed once, so the note prints once, and
+// Machine-aware `vp run` concurrency (vp/concurrency.ts). Computed once, so the note prints once, and
 // handed to the dev server too, which then sees the variable already set and stays silent.
 const env = vpRunEnv();
 

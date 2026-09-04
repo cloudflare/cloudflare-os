@@ -27,7 +27,7 @@ import { mkdtempSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { killProcessTree, killProcessTreeEscalating } from "../kill-process-tree.ts";
 import { mapConcurrent } from "../map-concurrent.ts";
-import { vpRunEnv } from "../vp-concurrency.ts";
+import { vpRunEnv } from "../vp/concurrency.ts";
 import {
   collectAssets, collectModules, stableStringify, type CollectedAssets,
 } from "./hash-lib.ts";
@@ -222,7 +222,7 @@ function pinnedWranglerVersion(): string {
 // Through vp rather than a package script: `build` is a task, so there is no script to run, and the
 // task declares VITE_* as fingerprinted env — a release built at a different flag value is a cache
 // miss rather than a stale replay. Based on `vpRunEnv()` so the run gets the machine-aware
-// concurrency limit (vp-concurrency.ts); the limit is not a task input, so it never affects the hash.
+// concurrency limit (vp/concurrency.ts); the limit is not a task input, so it never affects the hash.
 async function buildFrontend(signal: AbortSignal): Promise<CollectedAssets> {
   const env = { ...vpRunEnv(), VITE_CF_ACCESS_MODE: "true" };
   await run("frontend (access mode)", "pnpm",

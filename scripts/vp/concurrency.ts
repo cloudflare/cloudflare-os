@@ -7,7 +7,7 @@
 // `defineConfig`'s `run` block has no setting for it, so a `vite.config.ts` cannot change it either.
 // Almost nobody knows the env var exists, so on a 10-core / 32 GiB laptop `pnpm build` and
 // `pnpm test` leave most of the machine idle. The flag and the env var are the only levers, which is
-// why this is a wrapper around the repo's own invocations (root scripts via `vp-run.ts`; the dev
+// why this is a wrapper around the repo's own invocations (root scripts via `run.ts`; the dev
 // server, run-local and the release build set `env` on their spawns) rather than configuration. A
 // bare `vp run -F <pkg> …` typed by hand still gets Vite+'s default.
 //
@@ -64,9 +64,11 @@ export const VP_RUN_CONCURRENCY_LIMIT = "VP_RUN_CONCURRENCY_LIMIT";
 /**
  * The repo-root `.env`. Derived from this module's own location rather than `cwd`, because the
  * callers run from different directories (`run-dev-server` and the release build among them) and a
- * setting meant for the workspace should not depend on where the command was typed.
+ * setting meant for the workspace should not depend on where the command was typed. Three hops:
+ * scripts/vp → scripts → repo root.
  */
-export const ROOT_ENV_FILE = join(dirname(dirname(fileURLToPath(import.meta.url))), ".env");
+export const ROOT_ENV_FILE =
+    join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), ".env");
 
 /**
  * `VP_RUN_CONCURRENCY_LIMIT` as spelled in `envFile`, or `null` when the file is absent or does not
@@ -360,7 +362,7 @@ export function overridesConcurrency(args: readonly string[]): boolean {
  *
  * `vpArgs` are the arguments being forwarded to `vp run`, and are inspected only to decide whether
  * to print: a flag that beats the environment makes the note a lie. Defaults to none, because only
- * vp-run.ts forwards user argv -- run-dev-server, run-local and the release build each construct a
+ * run.ts forwards user argv -- run-dev-server, run-local and the release build each construct a
  * fixed `vp run` invocation, and their *own* argv must not be mistaken for vp flags.
  *
  * The variable is still set either way. The flag wins regardless, and leaving it set is what keeps

@@ -25,7 +25,7 @@ import { getDevServerConfig } from "./dev-server-config.ts";
 import { killProcessTree } from "./kill-process-tree.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
 import type { ServiceBinding, WranglerBuild } from "./release/manifest-lib.ts";
-import { vpRunEnv } from "./vp-concurrency.ts";
+import { vpRunEnv } from "./vp/concurrency.ts";
 
 const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SCRIPTS_DIR, "..");
@@ -309,7 +309,7 @@ function runBuild(
 // this output is rebuilt regardless, and unless the bytes match Wrangler sees `src/generated/app.txt`
 // change and restarts the worker. Same build, unminified.
 //
-// Both `vp` runs get the machine-aware concurrency limit (vp-concurrency.ts); computed once here so
+// Both `vp` runs get the machine-aware concurrency limit (vp/concurrency.ts); computed once here so
 // its note prints once, and after `loadDevVars()` so a `.dev.vars` override is honoured.
 const vpEnv = vpRunEnv();
 const [pnpm, configuratorArgs] =
