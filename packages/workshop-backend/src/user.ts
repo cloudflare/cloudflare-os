@@ -53,6 +53,7 @@ export type ProvidedAccountInfo = {
 // usable directly, the way the runtime stub actually behaves.
 type AccountCreatorStub = Required<Pick<GatekeeperVendor, "createAccount">>;
 type SingletonAccountStub = Required<Pick<GatekeeperUser, "getSingletonGatekeeperClass" | "startAppUi">>;
+type ResourceCreatorStub = Required<Pick<GatekeeperUser, "createResource">>;
 
 function areCredentialsValid(record: ConnectedAccountRecord): boolean {
   if (record.credentialsExpired) return false;
@@ -1688,6 +1689,79 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     return {class: cls, vendorId: account.vendorId, typeUrlPattern: resource.urlPattern};
+  }
+
+  /**
+   * Mint a gatekeeper for a NEW resource of type `resourceUrlPattern` via
+   * GatekeeperUser.createResource() — the urlPattern→capability chokepoint for creations, applying
+   * the same admin disable-set checks as getGatekeeperClassFor(). When `accountId` is omitted and
+   * exactly one usable account is connected for the vendor, that account is used; otherwise the
+   * error enumerates the candidates so the agent can retry with an accountId or ask the user.
+   * Every thrown message here is agent-readable: the overseer surfaces it as a fixable tool result.
+   */
+  async createResourceGatekeeper(
+      vendorId: string, accountId: number | undefined, resourceUrlPattern: string,
+      options: {title: string})
+      : Promise<{class: DurableObjectClass<Gatekeeper<any>>, vendorId: string,
+                  typeUrlPattern: string, resourceUrl: string}> {
+    let account: ConnectedAccountRecord;
+    if (accountId !== undefined) {
+      let record = this.storage.connectedAccounts.get(accountId);
+      if (!record || record.vendorId !== vendorId) {
+        throw new Error(`There is no connected "${vendorId}" account with id ${accountId}.`);
+      }
+      if (!areCredentialsValid(record)) {
+        throw new Error(`The connected "${vendorId}" account ${accountId} has expired ` +
+            `credentials. Ask the user to reconnect it, then retry.`);
+      }
+      account = record;
+    } else {
+      let candidates = [...this.#connectedAccountRecords()]
+          .filter(rec => rec.vendorId === vendorId && areCredentialsValid(rec));
+      if (candidates.length === 0) {
+        throw new Error(
+            `No connected "${vendorId}" account is available. Use requestConnection to ask the ` +
+            `user to connect one first.`);
+      }
+      if (candidates.length > 1) {
+        let names = candidates.map(rec =>
+            `${rec.id} (${rec.description.uniqueName ?? rec.description.displayName ?? "unnamed"})`);
+        throw new Error(
+            `Multiple "${vendorId}" accounts are connected: ${names.join(", ")}. Retry with the ` +
+            `accountId of the one to use, or ask the user which they prefer.`);
+      }
+      account = candidates[0];
+    }
+
+    // No stub-side probe for the optional method: RPC stubs cannot reliably report whether an
+    // optional method exists (see the note on GatekeeperUser's singleton section), so we view the
+    // stub through the Required<Pick<...>> shape. The caller gates on SupportedResource.creatable;
+    // a vendor that advertised it without implementing createResource() surfaces here as an RPC
+    // error, which the overseer relays to the agent.
+    let {class: cls, resource, resourceUrl} =
+        await (account.account as unknown as ResourceCreatorStub)
+            .createResource(resourceUrlPattern, options);
+
+    // Check the admin disable-set against the pattern the vendor actually resolved, after the
+    // RPC, exactly like getGatekeeperClassFor -- the vendor is the authority on which resource
+    // type a request maps to. (createResource mints only the class and a provisional URL; the
+    // provider-side creation is a separate pending action, so nothing external happened yet.)
+    // A dormant auto-provisioning vendor (ambient mode "disabled") blocks here too: existing
+    // accounts stay unusable, matching startHook's use-time check.
+    let config = await readAdminConfig(this.env);
+    let vendorIdLower = account.vendorId.toLowerCase();
+    if (config.disabledGatekeepers.includes(vendorIdLower) ||
+        ambientGatekeeperMode(config, vendorIdLower) === "disabled") {
+      throw new Error(
+          `The "${account.vendorId}" gatekeeper is disabled on this deployment by an administrator.`);
+    }
+    if (isResourceDisabled(config, vendorIdLower, resource.urlPattern)) {
+      throw new Error(
+          `The "${resource.title}" resource is disabled on this deployment by an administrator.`);
+    }
+
+    return {class: cls, vendorId: account.vendorId, typeUrlPattern: resource.urlPattern,
+            resourceUrl};
   }
 
   /**

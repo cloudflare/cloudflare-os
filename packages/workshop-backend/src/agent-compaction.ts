@@ -1,4 +1,5 @@
-import {SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT, type AiChatMessage, type AiModelConfig}
+import {SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT, isCreatedResourceSuccess, type AiChatMessage,
+        type AiModelConfig}
   from "@gadgets/workshop-shared/api";
 import {composeCodeChange, type CodeChange} from "@gadgets/workshop-shared/code-change";
 import type {Api, Message, Model} from "@earendil-works/pi-ai";
@@ -201,7 +202,8 @@ export function legacyChatBaseVersion(
  * Earliest turn a checkpoint cannot absorb, or undefined if none. A pending connection request
  * carries live accept/deny state that only its own message can answer, so the boundary stays behind
  * it. Provisional gadget creations and binding additions need no such protection: the checkpoint
- * records them, and the registry rows they name are untouched by compaction.
+ * records them, and the registry rows they name are untouched by compaction. (Nor do pending
+ * creation actions: their decision arrives as a durable agentNudge, an ordinary message.)
  */
 export function findProtectedFromSequence(messages: AiChatMessage[]): number | undefined {
   let protectedIndex = messages.findIndex(
@@ -393,6 +395,11 @@ export function buildCompactionState(
         } else if (call.toolName === "createWorktree" && call.output !== undefined) {
           chatBindings.set(call.input.bindingName,
               {type: "workpiece", id: call.output.worktreeId});
+        } else if (call.toolName === "createExternalResource" &&
+                   isCreatedResourceSuccess(call.output)) {
+          // Mirrors replay's re-establishment of the binding from the recorded output.
+          chatBindings.set(call.input.bindingName,
+              {type: "workpiece", id: call.output.gatekeeperId});
         }
       }
     } else if (message.type === "agentCallback") {
