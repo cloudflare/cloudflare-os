@@ -32,7 +32,8 @@ export class SingleFlight<K = string> {
 
   /**
    * @param key Flight key.
-   * @returns Whether a flight for the key is in progress.
+   * @returns Whether a joinable flight is installed for the key — false during `start`'s
+   * synchronous prologue and after `forget`, even while forgotten work still runs.
    */
   pending(key: K): boolean {
     return this.#inFlight.has(key);
