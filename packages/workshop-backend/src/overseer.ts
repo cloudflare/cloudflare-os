@@ -2499,11 +2499,18 @@ class OverseerImpl implements AgentHooks {
         // approved creation action as proof too -- reaping on `provisional` alone could sever a
         // real provider resource.
         let creationId = record.creation?.actionId;
-        let created = !record.provisional || (creationId !== undefined &&
-            this.storage.actions.get(creationId)?.state === "approved");
-        if (created) {
+        let creation = creationId !== undefined
+            ? this.storage.actions.get(creationId) : undefined;
+        let approvedBy = creation?.type === "action" && creation.state === "approved"
+            ? creation.resolvedBy : undefined;
+        if (!record.provisional || approvedBy !== undefined) {
           delete record.pending;
           this.storage.gatekeepers.put(record);
+          // The crashed step's barrier would have delivered the deferred decision nudge (see
+          // addChatMessages); emit it here so the resumed turn learns the resource is real.
+          if (approvedBy !== undefined) {
+            this.nudgeCreationDecision(chatId, record, "approved", approvedBy);
+          }
           continue;
         }
 
@@ -11518,17 +11525,21 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     // Rejecting a creation dooms the gatekeeper's other queued actions (in-order application
     // means they could only ever apply after a creation that now never will), so settle them too
-    // rather than stranding cards the user would have to reject one by one. The nudge goes out
-    // first: the creation's rejection is already durable, and a sibling's facet call failing
-    // must not cost the model the verdict -- those notifies are best-effort for the same reason.
+    // rather than stranding cards the user would have to reject one by one. The marks and the
+    // nudge land in one synchronous step -- a crash mid-cascade must not strand half of it --
+    // ahead of the best-effort gatekeeper notifies. The record itself survives: replay
+    // re-establishes the chat binding from the recorded tool call (see agent.ts), and the
+    // vendor's dead-session error explains the rejection better than a missing binding would.
     let record = this.impl.storage.gatekeepers.get(action.gatekeeperId);
     if (record?.creation?.actionId === id) {
+      let siblings = Array.from(
+          this.impl.storage.actions.pendingByGatekeeper.get(action.gatekeeperId))
+          .filter(sibling => sibling.type === "action");
+      for (let sibling of siblings) this.#markActionRejected(sibling, profile);
       if (action.caller.from === "agent") {
         this.impl.nudgeCreationDecision(action.caller.chatId, record, "rejected", profile);
       }
-      for (let sibling of Array.from(
-          this.impl.storage.actions.pendingByGatekeeper.get(action.gatekeeperId))) {
-        if (sibling.type !== "action") continue;
+      for (let sibling of siblings) {
         try {
           await gatekeeper.rejectAction(sibling.action);
         } catch (error) {
@@ -11536,7 +11547,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
             event: "gatekeeper.creation.cascade.reject.failed", actionId: sibling.id, error,
           });
         }
-        this.#markActionRejected(sibling, profile);
       }
     }
 
