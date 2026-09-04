@@ -24,7 +24,10 @@ let disposedApprovalQueues = 0;
 let disposedCallbacks = 0;
 let blockPoint: BlockPoint | null = null;
 let blockedPoint: BlockPoint | null = null;
-// Relative-ms timeline of hook lifecycle events, reported when a disposal wait times out.
+// Bumped by reset(). A capability minted under an earlier generation belongs to a previous test, so
+// its disposer, which runs asynchronously and may land after the reset, is not counted.
+let generation = 0;
+// Relative-ms timeline of hook lifecycle events, reported when a disposal wait fails.
 let timelineStart = Date.now();
 let timeline: string[] = [];
 function mark(label: string): void {
@@ -35,6 +38,17 @@ type DisposalCounts = { approvalQueues: number; callbacks: number };
 
 function disposalsReached(target: DisposalCounts): boolean {
   return disposedApprovalQueues >= target.approvalQueues && disposedCallbacks >= target.callbacks;
+}
+
+function disposalsExact(target: DisposalCounts): boolean {
+  return disposedApprovalQueues === target.approvalQueues && disposedCallbacks === target.callbacks;
+}
+
+function describeDisposals(target: DisposalCounts): string {
+  return (
+    `approvalQueues=${disposedApprovalQueues}/${target.approvalQueues} ` +
+    `callbacks=${disposedCallbacks}/${target.callbacks}; timeline: ${timeline.join(" ")}`
+  );
 }
 
 /** Longest a hook session is held open waiting for the driver to release its capabilities. */
@@ -68,6 +82,7 @@ async function pauseIfBlocked(point: BlockPoint): Promise<void> {
 }
 
 class TestApprovalQueue extends RpcTarget {
+  readonly #generation = generation;
   #markDisposed!: () => void;
   readonly disposed = new Promise<void>((resolve) => {
     this.#markDisposed = resolve;
@@ -80,13 +95,16 @@ class TestApprovalQueue extends RpcTarget {
   }
 
   [Symbol.dispose](): void {
-    disposedApprovalQueues++;
-    mark("dispose-aq");
+    if (this.#generation === generation) {
+      disposedApprovalQueues++;
+      mark("dispose-aq");
+    }
     this.#markDisposed();
   }
 }
 
 class TestCallback extends RpcTarget {
+  readonly #generation = generation;
   #markDisposed!: () => void;
   readonly disposed = new Promise<void>((resolve) => {
     this.#markDisposed = resolve;
@@ -108,8 +126,10 @@ class TestCallback extends RpcTarget {
   }
 
   [Symbol.dispose](): void {
-    disposedCallbacks++;
-    mark("dispose-cb");
+    if (this.#generation === generation) {
+      disposedCallbacks++;
+      mark("dispose-cb");
+    }
     this.#markDisposed();
   }
 }
@@ -146,21 +166,23 @@ export class TestHooks extends WorkerEntrypoint {
   }
 
   /**
-   * Resolves once at least `target` hook capabilities have run their server-side disposers, or
-   * rejects after `budgetMs` naming the counts reached and the hook timeline. Polled in-Worker
-   * like `waitUntilBlocked`, so the test awaits one RPC instead of racing a 50ms `vi.waitFor`.
+   * Resolves once exactly `target` hook capabilities from this generation have run their
+   * server-side disposers; rejects after `budgetMs` without them, or as soon as the counts overshoot,
+   * naming the counts reached and the hook timeline either way. Polled in-Worker like
+   * `waitUntilBlocked`, so the test awaits one RPC instead of racing a 50ms `vi.waitFor`.
    */
   async waitForDisposals(target: DisposalCounts, budgetMs: number): Promise<void> {
     const deadline = Date.now() + budgetMs;
     while (!disposalsReached(target)) {
       if (Date.now() >= deadline) {
         throw new Error(
-          `hook capabilities not disposed within ${budgetMs}ms: ` +
-            `approvalQueues=${disposedApprovalQueues}/${target.approvalQueues} ` +
-            `callbacks=${disposedCallbacks}/${target.callbacks}; timeline: ${timeline.join(" ")}`,
+          `hook capabilities not disposed within ${budgetMs}ms: ${describeDisposals(target)}`,
         );
       }
       await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    if (!disposalsExact(target)) {
+      throw new Error(`hook capabilities disposed more than once: ${describeDisposals(target)}`);
     }
   }
 
@@ -176,6 +198,7 @@ export class TestHooks extends WorkerEntrypoint {
 
   reset(): void {
     this.release();
+    generation++;
     timelineStart = Date.now();
     timeline = [];
     mode = "success";
