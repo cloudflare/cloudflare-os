@@ -4,8 +4,10 @@ import {
   GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, GatekeeperUserVerifier, VendorDescription,
   GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription,
   SupportedResource, ResourceConfiguratorFrame, ResourceDescription, ApprovalQueue, ActionKind,
-  GitCache, stripTrailingSlashes,
+  GitCache, stripTrailingSlashes, type ConnectHandoff,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import {
   getOAuthConfig, buildAuthorizeUrl, generatePkce, exchangeCode, refreshTokens,
@@ -50,6 +52,8 @@ type StoredNonce = {
 
 // A cached access token plus its absolute expiry (unix ms).
 type StoredAccessToken = { token: string; expires: number };
+/** The live keys a completed OAuth exchange writes, as one value so a reconnect can stage it. */
+type StoredGrant = { refreshToken: string; accessToken: StoredAccessToken; grantedScopes: string[] };
 
 const NONCE_BYTES = 32;
 const INITIATION_NONCE_LIFETIME_MS = 10 * 60 * 1000;
@@ -96,12 +100,6 @@ function getBasePath(env: Env) {
   const path = new URL(getBaseUrl(env)).pathname;
   return path === "/" ? "" : path;
 }
-
-const SELF_CLOSING_HTML = `<!DOCTYPE html>
-<html lang="en"><body>
-<script type="text/javascript">window.close();</script>
-<p>Authorization complete. You may close this tab and return to Cloudflare OS.
-</body></html>`;
 
 const INVALID_LINK_HTML = `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Authorization Link Expired</title></head>
@@ -157,10 +155,11 @@ export default {
       if (!code) return new Response("Error: no 'code' provided");
 
       const stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(doId));
-      if (!await stub.acceptAuthCode(code, oauthNonce)) {
+      const handoff = await stub.acceptAuthCode(code, oauthNonce);
+      if (!handoff) {
         return new Response(INVALID_LINK_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
-      return new Response(SELF_CLOSING_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      return htmlResponse(connectHandoffPageHtml(handoff));
     }
     return new Response("Not Found", { status: 404 });
   },
@@ -270,11 +269,15 @@ export class UserAccount extends DurableObject<Env> {
     return { oauthNonce, challenge, scopes };
   }
 
-  async acceptAuthCode(code: string, oauthNonce: string): Promise<boolean> {
+  /**
+   * Finishes the OAuth code exchange and returns the handoff for the page the browser lands on, or
+   * null when the callback's nonce doesn't match.
+   */
+  async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "oauth" || !stored.verifier ||
         Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, oauthNonce)) {
-      return false;
+      return null;
     }
     this.ctx.storage.kv.delete("nonce");
 
@@ -288,26 +291,26 @@ export class UserAccount extends DurableObject<Env> {
       throw new Error("Cloudflare OAuth exchange failed or returned no refresh token.");
     }
 
-    this.ctx.storage.kv.put<string>("refreshToken", tokens.refreshToken);
-    this.ctx.storage.kv.put<StoredAccessToken>("accessToken", {
-      token: tokens.accessToken,
-      expires: Date.now() + tokens.expiresIn * 1000,
-    });
     // Fail closed for the same reason as `beginOAuthFlow`: recording the full scope list here when
     // the provider omitted `scope` would advertise an observability grant that was never made, and
     // `ensureResources` would then short-circuit into a binding that 403s with no way to fix it.
-    this.ctx.storage.kv.put<string[]>(
-      "grantedScopes",
-      tokens.scopes ?? this.ctx.storage.kv.get<string[]>("scopes") ?? [...BILLING_SCOPES],
-    );
+    const grant: StoredGrant = {
+      refreshToken: tokens.refreshToken,
+      accessToken: { token: tokens.accessToken, expires: Date.now() + tokens.expiresIn * 1000 },
+      grantedScopes: tokens.scopes ?? this.ctx.storage.kv.get<string[]>("scopes") ?? [...BILLING_SCOPES],
+    };
 
-    const reconnecting = this.ctx.storage.kv.get<boolean>("reconnecting");
-    if (reconnecting) {
-      this.ctx.storage.kv.delete("reconnecting");
-      await callback.credentialsRestored();
+    let handoff: ConnectHandoff;
+    if (this.ctx.storage.kv.get<boolean>("reconnecting")) {
+      // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
+      // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
+      // gadgets keep reading the current token meanwhile.
+      stageCredentials(this.ctx.storage.kv, grant, Date.now());
+      handoff = await callback.reconnectComplete();
     } else {
+      this.#writeGrant(grant);
       try {
-        await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props: { userObjectId: this.ctx.id.toString() } }));
+        handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props: { userObjectId: this.ctx.id.toString() } }));
       } catch (err) {
         this.ctx.storage.kv.delete("refreshToken");
         throw err;
@@ -319,7 +322,21 @@ export class UserAccount extends DurableObject<Env> {
         this.ctx.storage.setAlarm(Date.now() + 2 * 60 * 1000);
       }
     }
-    return true;
+    return handoff;
+  }
+
+  /** Makes the grant staged by the last reconnect live; see GatekeeperUser.commitReconnect. */
+  async commitReconnect(): Promise<void> {
+    const grant = commitStagedCredentials<StoredGrant>(this.ctx.storage.kv, Date.now());
+    if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+    this.#writeGrant(grant);
+    this.ctx.storage.kv.delete("reconnecting");
+  }
+
+  #writeGrant(grant: StoredGrant) {
+    this.ctx.storage.kv.put<string>("refreshToken", grant.refreshToken);
+    this.ctx.storage.kv.put<StoredAccessToken>("accessToken", grant.accessToken);
+    this.ctx.storage.kv.put<string[]>("grantedScopes", grant.grantedScopes);
   }
 
   hasRefreshToken() {
@@ -467,6 +484,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     const scopes = await this.#account().getGrantedScopes();
     await this.#account().prepareReconnect(initiationNonce, scopes);
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
+  }
+
+  async commitReconnect(): Promise<void> {
+    await this.#account().commitReconnect();
   }
 
   @skipRpcValidation()

@@ -5,11 +5,13 @@ import {
   ApprovalQueue, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions,
   AccountDescription, SupportedResource, ResourceConfiguratorFrame, ActionKind, Cursor,
   GatekeeperUserVerifier, ObservationDescription,
-  stripTrailingSlashes,
+  stripTrailingSlashes, type ConnectHandoff,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import {
-  SlackApi, SlackApiError, SlackAccessToken, SlackConversationTypeFilter, exchangeAuthCode,
-  refreshAccessToken, revokeToken,
+  SlackApi, SlackApiError, SlackAccessToken, SlackConversationTypeFilter, SlackOAuthGrant,
+  exchangeAuthCode, refreshAccessToken, revokeToken,
 } from "./slack-api";
 import {
   SlackConversation, SlackConversationEntry, SlackConversationInfo, SlackMessage,
@@ -183,14 +185,6 @@ const SLACK_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(SLACK_LOGO_SVG)}
 
 // ── HTML shown in the OAuth popup ───────────────────────────────────
 
-const SELF_CLOSING_HTML = `<!DOCTYPE html>
-<html lang="en">
-  <body>
-    <script type="text/javascript">window.close();</script>
-    <p>Authorization complete. You may close this tab and return to Cloudflare OS.
-  </body>
-</html>`;
-
 const INVALID_LINK_HTML = `<!DOCTYPE html>
 <html lang="en">
   <head><meta charset="UTF-8"><title>Authorization Link Expired</title></head>
@@ -263,12 +257,12 @@ export default {
       if (!code) return new Response("Error: no 'code' provided");
 
       let stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(doId));
-      if (!await stub.acceptAuthCode(code, oauthNonce)) {
+      let handoff = await stub.acceptAuthCode(code, oauthNonce);
+      if (!handoff) {
         return new Response(INVALID_LINK_HTML,
             { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
-      return new Response(SELF_CLOSING_HTML,
-          { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      return htmlResponse(connectHandoffPageHtml(handoff));
     } else {
       return new Response("Not Found", { status: 404 });
     }
@@ -347,8 +341,8 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   /**
-   * Prepare for a reconnect/expansion flow: the next acceptAuthCode() replaces credentials and
-   * notifies via credentialsRestored() instead of complete().
+   * Prepare for a reconnect/expansion flow: the next acceptAuthCode() stages the new credentials
+   * and notifies via reconnectComplete() instead of complete(); commitReconnect() makes them live.
    */
   async prepareReconnect(initiationNonce: string, requestedScopes: string[]) {
     this.ctx.storage.kv.put<boolean>("reconnecting", true);
@@ -383,11 +377,15 @@ export class UserAccount extends DurableObject<Env> {
     return { oauthNonce, scopes };
   }
 
-  async acceptAuthCode(code: string, oauthNonce: string): Promise<boolean> {
+  /**
+   * Finishes the OAuth code exchange and returns the handoff for the page the browser lands on, or
+   * null when the callback's nonce doesn't match.
+   */
+  async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
     let stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "oauth" ||
         Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, oauthNonce)) {
-      return false;
+      return null;
     }
     // Consume OAuth state before the network exchange to prevent callback replay.
     this.ctx.storage.kv.delete("nonce");
@@ -405,27 +403,26 @@ export class UserAccount extends DurableObject<Env> {
       let grant = await exchangeAuthCode(
           code, this.env.CLIENT_ID, this.env.CLIENT_SECRET, getBaseUrl(this.env) + "/oauth");
 
-      this.ctx.storage.kv.put<SlackAccessToken>("accessToken", grant.accessToken);
-      if (grant.refreshToken) this.ctx.storage.kv.put<string>("refreshToken", grant.refreshToken);
-      this.ctx.storage.kv.put<string[]>("grantedScopes", grant.grantedScopes);
-      this.ctx.storage.kv.put<string>("userId", grant.userId);
-      this.ctx.storage.kv.put<string>("teamId", grant.teamId);
-      if (grant.teamName) this.ctx.storage.kv.put<string>("teamName", grant.teamName);
-      this.ctx.storage.kv.delete("requestedScopes");
-
-      let reconnecting = this.ctx.storage.kv.get<boolean>("reconnecting");
+      let reconnecting = !!this.ctx.storage.kv.get<boolean>("reconnecting");
       if (reconnecting) {
-        this.ctx.storage.kv.delete("reconnecting");
+        // The reconnect URL is a bearer capability, so the new grant is only staged until the
+        // Workshop has confirmed the browser that finished the flow is the owner's (see
+        // commitReconnect). Bound gadgets keep reading the current token meanwhile.
+        stageCredentials(this.ctx.storage.kv, grant, Date.now());
+      } else {
+        this.#writeGrant(grant);
       }
-      return { callback, grant, reconnecting: !!reconnecting };
+      this.ctx.storage.kv.delete("requestedScopes");
+      return { callback, grant, reconnecting };
     });
 
+    let handoff: ConnectHandoff;
     if (completion.reconnecting) {
-      await completion.callback.credentialsRestored(completion.grant.accessToken.expires);
+      handoff = await completion.callback.reconnectComplete(completion.grant.accessToken.expires);
     } else {
       try {
         let props: SlackUserImplProps = { userObjectId: this.ctx.id.toString() };
-        await completion.callback.complete(
+        handoff = await completion.callback.complete(
             this.ctx.exports.SlackUserImpl({ props }), completion.grant.accessToken.expires);
       } catch (err) {
         await this.#updateCredentials(async () => {
@@ -438,7 +435,26 @@ export class UserAccount extends DurableObject<Env> {
         throw err;
       }
     }
-    return true;
+    return handoff;
+  }
+
+  /** Makes the grant staged by the last reconnect live; see GatekeeperUser.commitReconnect. */
+  async commitReconnect(): Promise<void> {
+    await this.#updateCredentials(async () => {
+      let grant = commitStagedCredentials<SlackOAuthGrant>(this.ctx.storage.kv, Date.now());
+      if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+      this.#writeGrant(grant);
+      this.ctx.storage.kv.delete("reconnecting");
+    });
+  }
+
+  #writeGrant(grant: SlackOAuthGrant) {
+    this.ctx.storage.kv.put<SlackAccessToken>("accessToken", grant.accessToken);
+    if (grant.refreshToken) this.ctx.storage.kv.put<string>("refreshToken", grant.refreshToken);
+    this.ctx.storage.kv.put<string[]>("grantedScopes", grant.grantedScopes);
+    this.ctx.storage.kv.put<string>("userId", grant.userId);
+    this.ctx.storage.kv.put<string>("teamId", grant.teamId);
+    if (grant.teamName) this.ctx.storage.kv.put<string>("teamName", grant.teamName);
   }
 
   async getUserId(): Promise<string> {
@@ -634,6 +650,10 @@ export class SlackUserImpl extends WorkerEntrypoint<Env, SlackUserImplProps>
     let requestedScopes = resourceUrlPatternsToScopes(await account.getGrantedResourceUrlPatterns());
     await account.prepareReconnect(initiationNonce, requestedScopes);
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
+  }
+
+  async commitReconnect(): Promise<void> {
+    await this.#account().commitReconnect();
   }
 
   async ensureResources(resourceUrlPatterns: string[]): Promise<{ url?: string }> {

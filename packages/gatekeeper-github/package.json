@@ -12,6 +12,7 @@
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
     "@gadgets/configurator-ui": "workspace:*",
+    "@gadgets/gatekeeper-kit": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",

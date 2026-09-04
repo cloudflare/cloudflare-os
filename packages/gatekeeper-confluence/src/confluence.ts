@@ -19,6 +19,7 @@ import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   type AccountDescription,
   type ApprovalQueue,
+  type ConnectHandoff,
   type Gatekeeper,
   type GatekeeperConnectCallback,
   type GatekeeperConnectOptions,
@@ -31,6 +32,8 @@ import {
   type SupportedResource,
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import {
   CONFLUENCE_SCOPES,
   ConfluenceApi,
@@ -165,13 +168,6 @@ const PAGE_RESOURCE: SupportedResource = {
 };
 const SUPPORTED_RESOURCES = [SITE_RESOURCE, SPACE_RESOURCE, PAGE_RESOURCE];
 
-const htmlResponse = (body: string): Response =>
-  new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8" } });
-
-const SELF_CLOSING_HTML = `<!DOCTYPE html>
-<html lang="en"><body><script>window.close();</script>
-<p>Authorization complete. You may close this tab and return to Cloudflare OS.</p></body></html>`;
-
 const page = (title: string, color: string, message: string): string => `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>${title}</title></head>
 <body style="font-family: system-ui, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5;">
@@ -225,8 +221,9 @@ export default {
       if (colonIdx < 0) return new Response("Error: malformed state",
         { headers: { "content-type": "text/plain; charset=utf-8" } });
       const stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(state.slice(0, colonIdx)));
-      if (!await stub.acceptAuthCode(code, state.slice(colonIdx + 1))) return htmlResponse(INVALID_LINK_HTML);
-      return htmlResponse(SELF_CLOSING_HTML);
+      const handoff = await stub.acceptAuthCode(code, state.slice(colonIdx + 1));
+      if (!handoff) return htmlResponse(INVALID_LINK_HTML);
+      return htmlResponse(connectHandoffPageHtml(handoff));
     }
     return new Response("Not Found", { status: 404 });
   },
@@ -303,11 +300,15 @@ export class UserAccount extends DurableObject<Env> {
     return { oauthNonce };
   }
 
-  async acceptAuthCode(code: string, oauthNonce: string): Promise<boolean> {
+  /**
+   * Finishes the OAuth code exchange and returns the handoff for the page the browser lands on, or
+   * null when the callback's nonce doesn't match.
+   */
+  async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "oauth" || Date.now() >= stored.expiresAt ||
         !constantTimeEqual(stored.value, oauthNonce)) {
-      return false;
+      return null;
     }
     this.ctx.storage.kv.delete("nonce");
 
@@ -319,22 +320,35 @@ export class UserAccount extends DurableObject<Env> {
 
     const grant = await exchangeAuthCode(
       code, this.env.CLIENT_ID, this.env.CLIENT_SECRET, getBaseUrl(this.env) + "/oauth");
-    this.#storeGrant(grant);
-    await this.#refreshSitesAndIdentity(grant.accessToken);
 
+    let handoff: ConnectHandoff;
     if (this.ctx.storage.kv.get<boolean>("reconnecting")) {
-      this.ctx.storage.kv.delete("reconnecting");
-      await callback.credentialsRestored(new Date(grant.expiresAt));
+      // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
+      // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
+      // gadgets keep reading the current token meanwhile.
+      stageCredentials(this.ctx.storage.kv, grant, Date.now());
+      handoff = await callback.reconnectComplete(new Date(grant.expiresAt));
     } else {
+      this.#storeGrant(grant);
+      await this.#refreshSitesAndIdentity(grant.accessToken);
       try {
         const props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
-        await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }), new Date(grant.expiresAt));
+        handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }), new Date(grant.expiresAt));
       } catch (err) {
         this.ctx.storage.kv.delete("grant");
         throw err;
       }
     }
-    return true;
+    return handoff;
+  }
+
+  /** Makes the grant staged by the last reconnect live; see GatekeeperUser.commitReconnect. */
+  async commitReconnect(): Promise<void> {
+    const grant = commitStagedCredentials<StoredGrant>(this.ctx.storage.kv, Date.now());
+    if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+    this.#storeGrant(grant);
+    this.ctx.storage.kv.delete("reconnecting");
+    await this.#refreshSitesAndIdentity(grant.accessToken);
   }
 
   #storeGrant(grant: StoredGrant) {
@@ -498,6 +512,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     const initiationNonce = generateNonce();
     await this.#userAccount().prepareReconnect(initiationNonce);
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
+  }
+
+  async commitReconnect(): Promise<void> {
+    await this.#userAccount().commitReconnect();
   }
 
   @skipRpcValidation()

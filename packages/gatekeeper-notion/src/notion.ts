@@ -19,6 +19,7 @@ import {
   stripTrailingSlashes,
   type AccountDescription,
   type ApprovalQueue,
+  type ConnectHandoff,
   type Gatekeeper,
   type GatekeeperConnectCallback,
   type GatekeeperUser,
@@ -30,6 +31,8 @@ import {
   type SupportedResource,
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import {
   NotionApi,
   NotionApiError,
@@ -164,14 +167,6 @@ const ITEM_RESOURCE: SupportedResource = {
 
 const SUPPORTED_RESOURCES: SupportedResource[] = [WORKSPACE_RESOURCE, ITEM_RESOURCE];
 
-const SELF_CLOSING_HTML = `<!DOCTYPE html>
-<html lang="en">
-  <body>
-    <script type="text/javascript">window.close();</script>
-    <p>Authorization complete. You may close this tab and return to Cloudflare OS.</p>
-  </body>
-</html>`;
-
 const INVALID_LINK_HTML = `<!DOCTYPE html>
 <html lang="en">
   <head><meta charset="UTF-8"><title>Authorization Link Expired</title></head>
@@ -269,14 +264,13 @@ export default {
       if (!code) return new Response("Error: no 'code' provided");
 
       const stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(doId));
-      if (!await stub.acceptAuthCode(code, oauthNonce)) {
+      const handoff = await stub.acceptAuthCode(code, oauthNonce);
+      if (!handoff) {
         return new Response(INVALID_LINK_HTML, {
           headers: { "Content-Type": "text/html; charset=utf-8" },
         });
       }
-      return new Response(SELF_CLOSING_HTML, {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      });
+      return htmlResponse(connectHandoffPageHtml(handoff));
     } else {
       return new Response("Not Found", { status: 404 });
     }
@@ -335,8 +329,8 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   /**
-   * Prepare this account for a reconnect: the next acceptAuthCode() replaces credentials and
-   * notifies via credentialsRestored() instead of complete().
+   * Prepare this account for a reconnect: the next acceptAuthCode() stages the new credentials and
+   * notifies via reconnectComplete() instead of complete().
    */
   async prepareReconnect(initiationNonce: string) {
     this.ctx.storage.kv.put<boolean>("reconnecting", true);
@@ -363,12 +357,15 @@ export class UserAccount extends DurableObject<Env> {
     return { oauthNonce };
   }
 
-  /** Exchange the auth code for tokens. Returns false if the OAuth nonce is invalid/expired. */
-  async acceptAuthCode(code: string, oauthNonce: string): Promise<boolean> {
+  /**
+   * Exchange the auth code for tokens and return the handoff for the page the browser lands on, or
+   * null if the OAuth nonce is invalid/expired.
+   */
+  async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "oauth" ||
         Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, oauthNonce)) {
-      return false;
+      return null;
     }
     this.ctx.storage.kv.delete("nonce");
 
@@ -384,23 +381,33 @@ export class UserAccount extends DurableObject<Env> {
     const grant = await exchangeAuthCode(
         code, this.env.CLIENT_ID, this.env.CLIENT_SECRET, getBaseUrl(this.env) + "/oauth");
 
-    this.#storeGrant(grant);
-
-    const reconnecting = this.ctx.storage.kv.get<boolean>("reconnecting");
-    if (reconnecting) {
-      this.ctx.storage.kv.delete("reconnecting");
-      await callback.credentialsRestored();
+    let handoff: ConnectHandoff;
+    if (this.ctx.storage.kv.get<boolean>("reconnecting")) {
+      // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
+      // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
+      // gadgets keep reading the current token meanwhile.
+      stageCredentials(this.ctx.storage.kv, grant, Date.now());
+      handoff = await callback.reconnectComplete();
     } else {
+      this.#storeGrant(grant);
       try {
         const props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
-        await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
+        handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
       } catch (err) {
         this.ctx.storage.kv.delete("accessToken");
         this.ctx.storage.kv.delete("refreshToken");
         throw err;
       }
     }
-    return true;
+    return handoff;
+  }
+
+  /** Makes the grant staged by the last reconnect live; see GatekeeperUser.commitReconnect. */
+  async commitReconnect(): Promise<void> {
+    const grant = commitStagedCredentials<NotionOAuthGrant>(this.ctx.storage.kv, Date.now());
+    if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+    this.#storeGrant(grant);
+    this.ctx.storage.kv.delete("reconnecting");
   }
 
   #storeGrant(grant: NotionOAuthGrant) {
@@ -563,6 +570,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     const initiationNonce = generateNonce();
     await this.#userAccount().prepareReconnect(initiationNonce);
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
+  }
+
+  async commitReconnect(): Promise<void> {
+    await this.#userAccount().commitReconnect();
   }
 
   /**
