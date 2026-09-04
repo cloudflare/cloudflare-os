@@ -6,6 +6,7 @@ A single-document, Google-Docs-style rich-text editor with Durable Object persis
 
 - **server.js** is the authoritative collaboration coordinator. It stores one atomic `document:v2` snapshot containing the title, global revision, ordered blocks, per-block versions, and modification time.
 - **client.js** builds the entire UI around a `contenteditable` surface. Every top-level document element has a stable `data-block-id`. Local typing is optimistic and changed blocks are sent after a short ~220 ms debounce.
+- **docx.js** parses a plain document snapshot into a bounded export-only semantic model and streams a deterministic WordprocessingML package through the blueprint-local **zip.js** writer.
 - Clients subscribe with a Cap'n Web `RpcTarget`. The server broadcasts accepted block operations and ephemeral presence events to every connected client.
 
 ## Real-time data model
@@ -76,3 +77,28 @@ Pasted Google Docs/Word HTML is rebuilt into clean semantic markup. Images from 
 - **Markdown** exports the persisted rich-text blocks as Markdown, preserving headings, emphasis,
   links, images, lists, block quotes, code, and horizontal rules.
 - **HTML** and **PDF** use the editor's print layout and omit editing chrome and presence UI.
+- **Word Document (DOCX)** is a one-way semantic export intended for continued editing in Word or
+  another compatible office application. It converts the persisted HTML blocks directly rather than
+  going through Markdown, so it can retain underline, fonts, sizes, colors, highlights, alignment,
+  indentation, links, image dimensions, and nested inline formatting.
+
+DOCX uses US Letter pages with 0.65-inch margins, 11-point Normal text, approximately 1.5 line
+spacing, and paragraph/heading styles based on the editor's renderer. It emits editable native lists,
+external hyperlinks, inline images, quotes, code blocks, and horizontal rules. PNG, JPEG, GIF, and
+WebP data-URL images are embedded after signature and dimension validation; animated GIF and WebP
+rendering depends on the Word version. External and blob images are not fetched and become visible
+alt text or an unavailable-image placeholder.
+
+Only absolute `http:`, `https:`, `mailto:`, and `tel:` hyperlink targets become external DOCX
+relationships. Relative links, fragment-only links, malformed URLs, and unsupported or active
+schemes remain visible text without a relationship.
+
+Tables are not a first-class editor feature. Incidental table HTML is flattened to one paragraph per
+row with tab-separated cells rather than exported as native Word tables.
+
+DOCX is not a lossless round-trip or visual-pagination format. HTML and PDF remain the
+visual-fidelity exports; Word pagination, font availability, and application-specific rendering can
+differ from the browser. DOCX import, native tables, multiple sections, explicit page/section breaks,
+headers and footers, page numbers, footnotes/endnotes, citations, comments/tracked changes,
+bookmarks/cross-references, equations, captions, floating images/text wrapping, custom themes,
+embedded fonts, arbitrary CSS, and pixel-perfect browser pagination are intentionally deferred.
