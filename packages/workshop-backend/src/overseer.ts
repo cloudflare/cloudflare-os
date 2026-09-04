@@ -2499,11 +2499,18 @@ class OverseerImpl implements AgentHooks {
         // approved creation action as proof too -- reaping on `provisional` alone could sever a
         // real provider resource.
         let creationId = record.creation?.actionId;
-        let created = !record.provisional || (creationId !== undefined &&
-            this.storage.actions.get(creationId)?.state === "approved");
-        if (created) {
+        let creation = creationId !== undefined
+            ? this.storage.actions.get(creationId) : undefined;
+        let approvedBy = creation?.type === "action" && creation.state === "approved"
+            ? creation.resolvedBy : undefined;
+        if (!record.provisional || approvedBy !== undefined) {
           delete record.pending;
           this.storage.gatekeepers.put(record);
+          // The crashed step's barrier would have delivered the deferred decision nudge (see
+          // addChatMessages); emit it here so the resumed turn learns the resource is real.
+          if (approvedBy !== undefined) {
+            this.nudgeCreationDecision(chatId, record, "approved", approvedBy);
+          }
           continue;
         }
 
@@ -5321,14 +5328,15 @@ class OverseerImpl implements AgentHooks {
     // its creation action is approved (this action, or an earlier one whose refresh failed),
     // describe() reports the real resource, so refresh the denormalized copy and retire the
     // marker. The point read keeps an invalidated edit that applies before the creation from
-    // clearing the marker early. Best-effort: on failure the marker stays set and the next
-    // applied action retries.
+    // clearing the marker early. Best-effort with one retry (a lone approved creation has no
+    // later apply to retry on): on failure the marker stays set and the next applied action,
+    // if any, retries.
     let gatekeeperRecord = this.storage.gatekeepers.get(record.gatekeeperId);
     let creationId = gatekeeperRecord?.creation?.actionId;
     if (gatekeeperRecord?.provisional && creationId !== undefined &&
         this.storage.actions.get(creationId)?.state === "approved") {
       try {
-        let description = await gatekeeper.describe();
+        let description = await gatekeeper.describe().catch(() => gatekeeper.describe());
         // Re-read after the await: a concurrent removeGatekeeper during the describe() would
         // otherwise be resurrected by putting the stale record back.
         gatekeeperRecord = this.storage.gatekeepers.get(record.gatekeeperId);
@@ -5364,6 +5372,10 @@ class OverseerImpl implements AgentHooks {
   nudgeCreationDecision(chatId: number, gatekeeper: GatekeeperRecord,
                         decision: "approved" | "rejected", author: AiChatAuthorInfo) {
     if (gatekeeper.creation === undefined) return;
+    // A mid-step decision precedes the mint's own tool call in the log, so a nudge now would
+    // replay before the call it answers; the step barrier re-emits it once the call is recorded
+    // (see addChatMessages' unstamp branch).
+    if (gatekeeper.pending !== undefined) return;
     if (this.storage.chatMeta.get(chatId) === undefined) return;  // Chat since deleted.
     let name = `env.${gatekeeper.creation.bindingName}`;
     let text = decision === "approved"
@@ -5480,8 +5492,9 @@ class OverseerImpl implements AgentHooks {
   // the missing facet). appliedAt is required (the byLastChanged resume-replay index keys on it);
   // clearPushMarks matches rejectAction (a no-op for pushless actions). Rejecting first empties
   // the queue, so removeGatekeeper's own push-mark loop is a no-op. No gatekeeper-side
-  // rejectAction RPC: the facet is deleted outright and nothing observes its internal pending
-  // state after removal.
+  // rejectAction RPC: on these paths the facet just failed or its step vanished, and removal
+  // destroys its storage -- vendor state staged elsewhere must tolerate orphaned entries (a
+  // documented submitCreationAction contract clause).
   #rejectPendingActionsAndRemoveGatekeeper(id: number) {
     this.storage.transaction(() => {
       for (let action of Array.from(this.storage.actions.pendingByGatekeeper.get(id))) {
@@ -8541,6 +8554,11 @@ class OverseerImpl implements AgentHooks {
       return;
     }
 
+    // Creation decisions deferred by nudgeCreationDecision while the mint was un-barriered;
+    // emitted after the loop so their nudges sequence after the tool calls they answer.
+    let decidedCreations: {gatekeeper: GatekeeperRecord, decision: "approved" | "rejected",
+                           author: AiChatAuthorInfo}[] = [];
+
     for (let {modelData, ...msg} of msgs) {
       if (msg.type === "changes") {
         // (A message's `pins` need no validation or mirroring here: pins are validated and
@@ -8615,6 +8633,15 @@ class OverseerImpl implements AgentHooks {
             if (gatekeeper?.pending?.chatId === chatId) {
               delete gatekeeper.pending;
               this.storage.gatekeepers.put(gatekeeper);
+              // A decision made before this barrier deferred its nudge (see
+              // nudgeCreationDecision); deliver it now that the call is in the log.
+              let creation = gatekeeper.creation?.actionId !== undefined
+                  ? this.storage.actions.get(gatekeeper.creation.actionId) : undefined;
+              if (creation?.type === "action" && creation.resolvedBy !== undefined &&
+                  (creation.state === "approved" || creation.state === "rejected")) {
+                decidedCreations.push(
+                    {gatekeeper, decision: creation.state, author: creation.resolvedBy});
+              }
             }
           }
         }
@@ -8642,6 +8669,10 @@ class OverseerImpl implements AgentHooks {
 
     meta.lastActive = this.getChatTimestamp();
     this.storage.chatMeta.put(meta);
+
+    for (let {gatekeeper, decision, author} of decidedCreations) {
+      this.nudgeCreationDecision(chatId, gatekeeper, decision, author);
+    }
 
     if (aiGatewayLogId && aiGatewayLogRoute) {
       // Best-effort UI accounting only. The log ID is not persisted, so a DO restart can lose
@@ -11489,37 +11520,50 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // can't leave the action rejected with the gatekeeper but still "pending" in storage.
     let profile = await this.#getClientProfile();
 
+    await gatekeeper.rejectAction(action.action);
+    this.#markActionRejected(action, profile);
+
     // Rejecting a creation dooms the gatekeeper's other queued actions (in-order application
     // means they could only ever apply after a creation that now never will), so settle them too
-    // rather than stranding cards the user would have to reject one by one.
+    // rather than stranding cards the user would have to reject one by one. The marks and the
+    // nudge land in one synchronous step -- a crash mid-cascade must not strand half of it --
+    // ahead of the best-effort gatekeeper notifies. The record itself survives: replay
+    // re-establishes the chat binding from the recorded tool call (see agent.ts), and the
+    // vendor's dead-session error explains the rejection better than a missing binding would.
     let record = this.impl.storage.gatekeepers.get(action.gatekeeperId);
-    let rejectsCreation = record?.creation?.actionId === id;
-    let doomed = rejectsCreation
-        ? Array.from(this.impl.storage.actions.pendingByGatekeeper.get(action.gatekeeperId))
-            .filter((a): a is ActionRecord & {type: "action"} =>
-                a.type === "action" && a.id !== id)
-        : [];
-
-    for (let target of [action, ...doomed]) {
-      await gatekeeper.rejectAction(target.action);
-
-      target.state = "rejected";
-      target.appliedAt = new Date();
-      target.resolvedBy = profile;
-      // A rejected push's pending-push marks are removed in the same durable step as the state
-      // change (nothing was transmitted, so nothing became proven). No-op for pushless actions.
-      this.impl.storage.transaction(() => {
-        this.impl.gitCache.clearPushMarks(target.id);
-        this.impl.storage.actions.put(target);
-      });
-    }
-
-    if (rejectsCreation && action.caller.from === "agent") {
-      this.impl.nudgeCreationDecision(action.caller.chatId, record!, "rejected", profile);
+    if (record?.creation?.actionId === id) {
+      let siblings = Array.from(
+          this.impl.storage.actions.pendingByGatekeeper.get(action.gatekeeperId))
+          .filter(sibling => sibling.type === "action");
+      for (let sibling of siblings) this.#markActionRejected(sibling, profile);
+      if (action.caller.from === "agent") {
+        this.impl.nudgeCreationDecision(action.caller.chatId, record, "rejected", profile);
+      }
+      for (let sibling of siblings) {
+        try {
+          await gatekeeper.rejectAction(sibling.action);
+        } catch (error) {
+          this.impl.logger.warn("failed to notify gatekeeper of cascaded rejection", {
+            event: "gatekeeper.creation.cascade.reject.failed", actionId: sibling.id, error,
+          });
+        }
+      }
     }
 
     // Deny leaves the turn ended, like denyConnectionRequest. The rejected record also prevents a
     // sibling approval from resuming this turn.
+  }
+
+  // A rejected push's pending-push marks are removed in the same durable step as the state
+  // change (nothing was transmitted, so nothing became proven). No-op for pushless actions.
+  #markActionRejected(action: ActionRecord & {type: "action"}, resolvedBy: AiChatAuthorInfo) {
+    action.state = "rejected";
+    action.appliedAt = new Date();
+    action.resolvedBy = resolvedBy;
+    this.impl.storage.transaction(() => {
+      this.impl.gitCache.clearPushMarks(action.id);
+      this.impl.storage.actions.put(action);
+    });
   }
 
   // Enable auto-approval of actions carrying `actionKind` on the given gatekeeper. Stores the

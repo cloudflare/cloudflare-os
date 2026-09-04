@@ -782,6 +782,10 @@ export interface Gatekeeper<Session> extends DurableObject {
    * but a manual approval can target any pending action, so the gatekeeper must itself reject
    * applyAction() of any action that depends on the resource existing until the creation has
    * been applied. Only gatekeepers reachable via createResource() need implement this.
+   *
+   * If this call fails, or a crash orphans the mint, the platform settles the queued actions
+   * and removes the gatekeeper WITHOUT delivering rejectAction(): the facet's storage is
+   * destroyed with it, and any state staged outside the facet must tolerate orphaned entries.
    */
   submitCreationAction?(approvalQueue: RpcStub<ApprovalQueue>): Promise<void>;
 
