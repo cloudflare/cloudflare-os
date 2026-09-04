@@ -16,6 +16,7 @@ A lightweight, persistent spreadsheet Gadget with a familiar grid interface, for
 - Range sorting, AutoSum, copy/paste via TSV, and local undo/redo for cell edits
 - Automatic persistent saving with optimistic per-cell conflict detection
 - Real-time operation and presence synchronization in the server architecture
+- Excel workbook and per-sheet CSV export
 
 ## Using the spreadsheet
 
@@ -173,11 +174,18 @@ Formula evaluation happens in the browser. The engine caches computed cells, det
 Exports the Durable Object class `Gadget`, which is the authoritative persistence and synchronization layer. It:
 
 - Stores spreadsheet metadata and each sheet's cells in Durable Object storage
-- Serializes mutations through an in-memory queue
+- Serializes mutations and document snapshots through an in-memory queue
 - Applies per-cell optimistic concurrency using cell versions
 - Uses last-writer-wins semantics for document structure
-- Broadcasts operations and presence events to subscribed clients
+- Broadcasts operations and presence events to subscribed clients after the queue releases, best-effort and without awaiting them, so a callback may itself read or write the document and a hung subscriber holds up only its own client
 - Sanitizes titles, dimensions, cell contents, references, and formatting
+- Advertises and produces the server-side workbook and CSV exports
+
+### `xlsx.js` and `zip.js`
+
+`xlsx.js` converts a complete document snapshot into a streaming XLSX workbook: sparse worksheet XML
+with inline strings, deduplicated styles, and frozen panes. `zip.js` is a dependency-free streaming
+ZIP writer (raw DEFLATE via `CompressionStream`, incremental CRC32, data descriptors).
 
 ## Storage model
 
@@ -202,7 +210,36 @@ The server and client synchronization code support multiple connected clients an
 
 ## CSV export
 
-Each worksheet is exposed as its own **CSV** export option. CSV files contain the stored cell values
-through the worksheet's used range. Formula cells are exported as their raw formulas (for example,
-`=SUM(A1:A10)`), not as browser-computed display values. Fields use standard CSV quoting and CRLF
-line endings.
+Up to 31 worksheets are exposed as individual **CSV** export options, leaving one of the platform's
+32 format slots for XLSX. CSV files contain the stored cell values through the worksheet's used
+range. Formula cells are exported as their raw formulas (for example, `=SUM(A1:A10)`), not as
+browser-computed display values. Fields use standard CSV quoting and CRLF line endings.
+
+## XLSX export
+
+**Excel Workbook** exports one XLSX file with the worksheets in workbook order. Cells keep their
+font, color, fill, alignment, number format, decimal places and wrapping; sheets keep column widths,
+row heights and frozen panes. Pixel sizes are converted to points (rows, fonts) or approximate
+character widths (columns), so layout is close but not pixel-identical.
+
+Cell values follow the grid's own literal rules: a leading apostrophe forces text, a leading `=` is
+a formula (whatever the number format), `TRUE`/`FALSE` are booleans, and numbers may carry a sign,
+commas, a leading `$` or a trailing `%`. Everything else is text; date-looking text is not parsed.
+
+Formulas are written without cached results and the workbook requests a full recalculation on open,
+so Excel evaluates them itself. To keep them valid there, the exporter rewrites cross-sheet
+references to the exported worksheet names, prefixes OOXML "future functions" (`IFS`, `CONCAT`, ...)
+with `_xlfn.`, renames `ERRORTYPE()` to `ERROR.TYPE()`, and drops whitespace between a function
+name and its `(`. A formula that is empty, structurally unbalanced (unterminated string or quoted
+name, mismatched parentheses or brackets — the grid's parser tolerates these) or that would exceed
+Excel's 8,192-character limit after rewriting is exported as text, since one such formula makes
+Excel report the whole workbook as damaged. Formula semantics are otherwise not translated (for
+example `^` associativity differs, and a reference outside the grid such as `XFE1` is empty here
+but `#NAME?` in Excel), and compatibility with Excel is not claimed beyond this.
+
+Worksheet names are made Excel-safe: invalid characters become `_`, blank names become `Sheet`,
+names are cut to 31 characters, and case-insensitive collisions get ` (2)`, ` (3)`, ... suffixes.
+References resolve to the first worksheet with a matching source name, as in the grid.
+
+Filters, charts, comments and pivot tables are not exported; cells already materialized from them
+export as ordinary values.

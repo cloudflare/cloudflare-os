@@ -1,4 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { workbookToXlsx } from "./xlsx.js";
 
 const DEFAULT_TITLE = "Untitled spreadsheet";
 const DEFAULT_ROWS = 100;
@@ -21,7 +22,8 @@ export class Gadget extends DurableObject {
     this.ctx = ctx;
     this.subscribers = new Map();
     // Overlapping RPC calls are serialized so each observes/commits one
-    // authoritative state in strict order.
+    // authoritative state in strict order. Callbacks to subscribers run
+    // outside the queue, so a callback may itself read or write the document.
     this.mutationQueue = Promise.resolve();
   }
 
@@ -70,12 +72,17 @@ export class Gadget extends DurableObject {
     };
   }
 
-  async getDocument() {
-    return this.assembleDocument(await this.loadMeta());
+  getDocument() {
+    return this.enqueueMutation(async () => this.assembleDocument(await this.loadMeta()));
   }
 
-  applyOperation(operation) {
-    return this.enqueueMutation(() => this.applyOperationLocked(operation));
+  async applyOperation(operation) {
+    const { result, event } = await this.enqueueMutation(() => this.applyOperationLocked(operation));
+    // Issued after the queue releases, so callbacks may re-enter it, but
+    // synchronously here, before the next queued mutation can reach storage,
+    // so each subscriber still receives events in revision order.
+    if (event) this.broadcast(event);
+    return result;
   }
 
   async applyOperationLocked(operation) {
@@ -168,7 +175,7 @@ export class Gadget extends DurableObject {
     if (upserts.length || deletes.length) changed = true;
 
     if (!changed) {
-      return { status: conflicts.length ? "conflict" : "unchanged", revision: meta.revision, conflicts };
+      return { result: { status: conflicts.length ? "conflict" : "unchanged", revision: meta.revision, conflicts } };
     }
 
     meta.revision += 1;
@@ -193,39 +200,42 @@ export class Gadget extends DurableObject {
       event.replacedCells = {};
       for (const id of event.replacedSheets) event.replacedCells[id] = await this.loadCells(id);
     }
-    await this.broadcast(event);
-
-    return { status: conflicts.length ? "conflict" : "applied", ...event, conflicts };
+    return { result: { status: conflicts.length ? "conflict" : "applied", ...event, conflicts }, event };
   }
 
   // --- Presence & subscription ------------------------------------------
   async subscribe(callback, client = {}) {
     const dup = callback.dup();
-    const existing = Array.from(this.subscribers.values());
     const info = {
       callback: dup,
       clientId: String(client.clientId || ""),
       name: String(client.name || "Guest").slice(0, 40),
       color: String(client.color || "#e1632e"),
     };
-    this.subscribers.set(dup, info);
-    dup.onRpcBroken(() => {
-      this.subscribers.delete(dup);
-      this.broadcastPresence({ type: "leave", clientId: info.clientId });
+    // Registering and snapshotting inside the queue means the subscriber sees
+    // every operation committed after its snapshot, and none before it.
+    return this.enqueueMutation(async () => {
+      const document = await this.assembleDocument(await this.loadMeta());
+      const existing = Array.from(this.subscribers.values());
+      this.subscribers.set(dup, info);
+      dup.onRpcBroken(() => {
+        this.dropSubscriber(dup);
+        this.broadcastPresence({ type: "leave", clientId: info.clientId });
+      });
+      queueMicrotask(async () => {
+        for (const person of existing) {
+          try {
+            await dup.presence({ type: "join", clientId: person.clientId, name: person.name, color: person.color });
+          } catch (e) { break; }
+        }
+        this.broadcastPresence({ type: "join", clientId: info.clientId, name: info.name, color: info.color });
+      });
+      return document;
     });
-    queueMicrotask(async () => {
-      for (const person of existing) {
-        try {
-          await dup.presence({ type: "join", clientId: person.clientId, name: person.name, color: person.color });
-        } catch (e) { break; }
-      }
-      await this.broadcastPresence({ type: "join", clientId: info.clientId, name: info.name, color: info.color });
-    });
-    return this.assembleDocument(await this.loadMeta());
   }
 
-  async updatePresence(presence) {
-    await this.broadcastPresence({
+  updatePresence(presence) {
+    this.broadcastPresence({
       type: "cursor",
       clientId: String(presence.clientId || ""),
       name: String(presence.name || "Guest").slice(0, 40),
@@ -237,24 +247,26 @@ export class Gadget extends DurableObject {
     });
   }
 
-  async leavePresence(clientId) {
-    await this.broadcastPresence({ type: "leave", clientId: String(clientId || ""), at: Date.now() });
+  leavePresence(clientId) {
+    this.broadcastPresence({ type: "leave", clientId: String(clientId || ""), at: Date.now() });
   }
 
-  async broadcast(event) {
-    const calls = [];
-    for (const [stub] of this.subscribers) {
-      calls.push(Promise.resolve(stub.operation(event)).catch(() => this.subscribers.delete(stub)));
-    }
-    await Promise.all(calls);
+  dropSubscriber(stub) {
+    if (this.subscribers.delete(stub)) stub[Symbol.dispose]();
   }
 
-  async broadcastPresence(event) {
-    const calls = [];
+  // Delivery is best-effort and not awaited: a callback that fails is dropped,
+  // and one that never settles holds up nothing but its own client.
+  broadcast(event) {
     for (const [stub] of this.subscribers) {
-      calls.push(Promise.resolve(stub.presence(event)).catch(() => this.subscribers.delete(stub)));
+      Promise.resolve(stub.operation(event)).catch(() => this.dropSubscriber(stub));
     }
-    await Promise.all(calls);
+  }
+
+  broadcastPresence(event) {
+    for (const [stub] of this.subscribers) {
+      Promise.resolve(stub.presence(event)).catch(() => this.dropSubscriber(stub));
+    }
   }
 }
 
@@ -322,30 +334,48 @@ function sanitizeCellMap(map) {
   return out;
 }
 
-
 const CSV_FORMAT_PREFIX = "csv:";
-const MAX_CSV_SHEETS = 32;
+const MAX_CSV_SHEETS = 31; // The platform allows 32 formats; one is the workbook.
+const MAX_EXPORT_ID_LENGTH = 128;
+const XLSX_FORMAT = {
+  id: "xlsx",
+  label: "Excel Workbook",
+  mode: "server",
+  contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  fileExtension: ".xlsx",
+};
+
+// Sheet ids are client-chosen, so duplicates and over-long ids are possible in
+// stored structure. Either would fail format validation and disable every export.
+function csvSheetIds(document) {
+  const ids = document.sheetOrder.filter((id) => (CSV_FORMAT_PREFIX + id).length <= MAX_EXPORT_ID_LENGTH);
+  return Array.from(new Set(ids)).slice(0, MAX_CSV_SHEETS);
+}
 
 export class ExportHandler extends WorkerEntrypoint {
   async getExportFormats(gadget) {
     const document = await gadget.getDocument();
-    const sheetIds = document.sheetOrder.slice(0, MAX_CSV_SHEETS);
-    return sheetIds.map((sheetId) => ({
+    const sheetIds = csvSheetIds(document);
+    return [XLSX_FORMAT, ...sheetIds.map((sheetId) => ({
       id: CSV_FORMAT_PREFIX + sheetId,
       label: sheetIds.length === 1 ? "CSV" : "CSV (" + document.sheets[sheetId].name + ")",
       mode: "server",
       contentType: "text/csv",
       fileExtension: ".csv",
-    }));
+    }))];
   }
 
   async export(gadget, id) {
+    if (id === XLSX_FORMAT.id) {
+      const document = await gadget.getDocument();
+      return workbookToXlsx(document);
+    }
     if (!id.startsWith(CSV_FORMAT_PREFIX)) {
       throw new Error("Unsupported spreadsheet export format: " + id);
     }
     const document = await gadget.getDocument();
     const sheetId = id.slice(CSV_FORMAT_PREFIX.length);
-    if (!document.sheetOrder.slice(0, MAX_CSV_SHEETS).includes(sheetId)) {
+    if (!csvSheetIds(document).includes(sheetId)) {
       throw new Error("The selected worksheet is unavailable for CSV export.");
     }
     return new Response(workbookSheetToCsv(document, sheetId)).body;
@@ -353,7 +383,7 @@ export class ExportHandler extends WorkerEntrypoint {
 }
 
 function workbookSheetToCsv(document, sheetId) {
-  const cells = document.cells[sheetId] || {};
+  const cells = document.cells?.[sheetId] || {};
   let maxRow = -1;
   let maxColumn = -1;
   for (const [ref, cell] of Object.entries(cells)) {

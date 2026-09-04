@@ -109,6 +109,9 @@ describe("bundled format blueprints", () => {
       ],
       "format.spreadsheet": [
         'const CSV_FORMAT_PREFIX = "csv:"',
+        'id: "xlsx"',
+        'label: "Excel Workbook"',
+        'contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"',
         'mode: "server"',
         'contentType: "text/csv"',
       ],
