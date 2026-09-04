@@ -255,6 +255,18 @@ export type SupportedResource = {
    * If omitted/false, the resource type is not separately grantable.
    */
   grantable?: boolean;
+
+  /**
+   * Present when an agent may create a brand-new resource of this type via the
+   * createExternalResource tool, without user pre-approval. The vendor's GatekeeperUser must
+   * implement createResource() for this urlPattern, and the gatekeeper class it returns must
+   * implement submitCreationAction(). The gatekeeper simulates the new resource locally until
+   * the user approves the creation action.
+   */
+  creatable?: {
+    /** What creation does, e.g. "Creates a new, empty Google Doc with the given title." */
+    description: string;
+  };
 }
 
 /** Removes every trailing slash from a string in linear time. */
@@ -594,6 +606,27 @@ export interface GatekeeperUser extends WorkerEntrypoint {
   }>;
 
   /**
+   * Create a NEW resource of the type identified by `resourceUrlPattern` (a urlPattern from
+   * getSupportedResources() whose `creatable` is set). Mints a provisional identity for the
+   * resource — no provider API call, no user interaction — and returns a gatekeeper class imbued
+   * with it (via `ctx.props`), exactly as getGatekeeperClassFor() does for existing resources,
+   * plus the provisional `resourceUrl` that names the resource until it really exists.
+   *
+   * The returned class MUST implement Gatekeeper.submitCreationAction(). The provider-side
+   * creation happens only when the user approves that action; until then the gatekeeper simulates
+   * the resource locally, and describe() must not call the provider.
+   *
+   * Throws with an agent-readable message when the account cannot create this resource type
+   * (e.g. its authorization does not cover the needed scopes); callers surface the message.
+   */
+  createResource?(resourceUrlPattern: string, options: {title: string}): Promise<{
+    class: DurableObjectClass<Gatekeeper<any>>;
+    resource: SupportedResource;
+    /** Provisional URL of the new resource; replaced by the real URL once created. */
+    resourceUrl: string;
+  }>;
+
+  /**
    * Get the UI used to choose a specific resource.
    * `resourceUrlPattern` is the `urlPattern` associated with the supported resource.
    */
@@ -737,6 +770,20 @@ export interface Gatekeeper<Session> extends DurableObject {
    * particular API.
    */
   startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<Session>;
+
+  /**
+   * For gatekeepers minted by GatekeeperUser.createResource(): submit the pending "create this
+   * resource" action to the given approval queue. The Overseer calls this exactly once,
+   * immediately after adding the workpiece, with a queue scoped to it and attributed to the
+   * creating agent's chat (so the approval card lands there). Implementations must be idempotent
+   * (a retried call must not queue a second creation) and must queue the creation FIRST.
+   *
+   * Ordering is the gatekeeper's responsibility: the platform applies auto-approvals in order,
+   * but a manual approval can target any pending action, so the gatekeeper must itself reject
+   * applyAction() of any action that depends on the resource existing until the creation has
+   * been applied. Only gatekeepers reachable via createResource() need implement this.
+   */
+  submitCreationAction?(approvalQueue: RpcStub<ApprovalQueue>): Promise<void>;
 
   /**
    * Bounded, user-specific metadata the agent uses to discover entries reachable through this
