@@ -75,7 +75,8 @@ const model = scriptedChatCompletions([
       },
     },
   },
-  // --- Test 2, turn 1: create a thing whose creation the user will reject.
+  // --- Test 2, turn 1: create a thing, queue an edit against it, then suspend on the edit's
+  // awaitDecision. The user rejects the creation, which must cascade to the queued edit.
   {
     toolCall: {
       id: "create-doomed",
@@ -88,7 +89,15 @@ const model = scriptedChatCompletions([
       },
     },
   },
-  { text: "Created the doomed thing." },
+  {
+    toolCall: {
+      id: "write-doomed",
+      name: "executeCode",
+      arguments: {
+        code: "export default async function(self, env) { console.log(await env.DOOMED.writeValue(5)); }",
+      },
+    },
+  },
   // --- Test 2, turn 2 (after rejection): the binding is dead, with an explanation.
   {
     toolCall: {
@@ -240,22 +249,42 @@ it("creates a resource the agent can use before the user approves it", async () 
   expect(write.resourceUrl).toContain("/things/created-");
   expect(write.resourceUrl).not.toContain("provisional");
 
-  // Replay told the model about the approval — the recorded tool result permanently says the
-  // resource doesn't exist yet, so without this the model's context never learns it now does.
+  // The creation action itself settled as approved.
+  const all = (await workspace.listActions({ filter: "all" })).entries;
+  expect(all.find(action => action.id === pending.id)?.state).toBe("approved");
+
+  // The decision reached the model as a durable nudge — the recorded tool result permanently
+  // says the resource doesn't exist yet, so without this the model's context never learns it
+  // now does.
   const approval = userMessagesShownToModel().find(message =>
     message.includes("The user approved the creation of env.NEW_THING"));
   expect(approval).toContain(write.resourceUrl);
 });
 
-it("kills the binding when the user rejects the creation", async () => {
+it("kills the binding and cascades to queued edits when the user rejects the creation",
+    async () => {
   using publicApi = connect(harness.url);
   using authenticated = await signUpScriptedUser(publicApi, "createrej");
   using workspace = await authenticated.newGadget();
-  const chatId = await workspace.newChat("Create a doomed test thing.", MODEL_ID);
-  await waitForAgentSays(workspace, chatId, "Created the doomed thing.");
+  const chatId = await workspace.newChat(
+      "Create a doomed test thing and write to it.", MODEL_ID);
 
-  const pending = await onlyPendingAction(workspace, "the creation action to be pending");
-  await workspace.rejectAction(pending.id);
+  // The write awaits a decision, so the turn suspends holding two pending actions: the
+  // creation and an edit that depends on it.
+  const pending = await waitFor("the creation and its edit to be pending", async () => {
+    const entries = (await workspace.listActions({ filter: "pending" })).entries;
+    return entries.length === 2 ? entries : null;
+  });
+  const creation = pending.find(action =>
+    action.description.title.startsWith("Create test thing"));
+  if (creation === undefined) throw new Error("No pending creation action found");
+  await workspace.rejectAction(creation.id);
+
+  // Rejecting the creation settled the dependent edit too — nothing left to decide one by one.
+  const all = (await workspace.listActions({ filter: "all" })).entries;
+  expect(all.filter(action => action.state === "pending")).toEqual([]);
+  expect(all.filter(action => action.type === "action" && action.state === "rejected"))
+      .toHaveLength(2);
 
   // The next turn's use of the binding fails with the gatekeeper's dead-binding explanation
   // rather than silently simulating against nothing.
@@ -264,7 +293,7 @@ it("kills the binding when the user rejects the creation", async () => {
   expect(toolResultShownToModel("read-doomed")).toContain("DEAD:");
   expect(toolResultShownToModel("read-doomed")).toMatch(/rejected/);
 
-  // Replay told the model about the rejection too.
+  // The rejection nudge reached the model.
   expect(userMessagesShownToModel().some(message =>
     message.includes("The user rejected the creation of env.DOOMED"))).toBe(true);
 });
@@ -283,7 +312,9 @@ it("settles the queued action when the vendor fails after queueing it", async ()
   // not left pending forever (approve/reject would both fail on the missing facet).
   const actions = (await workspace.listActions({ filter: "all" })).entries;
   expect(actions.filter(action => action.state === "pending")).toEqual([]);
-  expect(actions.some(action => action.type === "action" && action.state === "rejected"))
-      .toBe(true);
+  const settled = actions.find(action =>
+    action.type === "action" && action.state === "rejected");
+  if (settled?.gatekeeperId === undefined) throw new Error("No settled creation action found");
+  await expect(workspace.getGatekeeperById(settled.gatekeeperId)).rejects.toThrow();
   expect(model.remainingSteps()).toBe(0);
 });

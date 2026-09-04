@@ -671,7 +671,9 @@ function describeObservationCount(count: number): string {
   return count === 1 ? "Read 1 resource" : `${count} resource reads`;
 }
 
-function describeToolCallCount(toolName: AiToolCall["toolName"], count: number): string {
+function describeToolCallCount(calls: AiToolCall[]): string {
+  const toolName = calls[0].toolName;
+  const count = calls.length;
   switch (toolName) {
     case "readFile":
       return `Read ${pluralize(count, "file")}`;
@@ -705,8 +707,13 @@ function describeToolCallCount(toolName: AiToolCall["toolName"], count: number):
       return `Listed connectable resources`;
     case "requestConnection":
       return count === 1 ? "Requested a connection" : `Requested ${count} connections`;
-    case "createExternalResource":
-      return `Created ${pluralize(count, "external resource")}`;
+    case "createExternalResource": {
+      const created = calls.filter((tc) =>
+        tc.toolName === "createExternalResource" && isCreatedResourceSuccess(tc.output)).length;
+      return created === 0
+        ? `Tried to create ${pluralize(count, "external resource")}`
+        : `Created ${pluralize(created, "external resource")}`;
+    }
   }
   const _exhaustive: never = toolName;
   return _exhaustive;
@@ -912,12 +919,10 @@ function buildToolCallGroups(
     const summary = getToolCallSummary(toolCalls[0], outputOf);
     labelParts.push(detailLines.length === 1 && summary.target && observations.length === 0
       ? `${summary.verb} ${summary.target}`
-      : describeToolCallCount(toolCalls[0].toolName, toolCalls.length));
+      : describeToolCallCount(toolCalls));
   } else if (toolCalls.length > 1 && distinctToolNames.length <= 3) {
-    labelParts.push(...distinctToolNames.map((toolName) => {
-      const count = toolCalls.filter((tc) => tc.toolName === toolName).length;
-      return describeToolCallCount(toolName, count);
-    }));
+    labelParts.push(...distinctToolNames.map((toolName) =>
+      describeToolCallCount(toolCalls.filter((tc) => tc.toolName === toolName))));
   } else if (toolCalls.length > 0) {
     labelParts.push(`${toolCalls.length} tool calls`);
   }
