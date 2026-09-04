@@ -174,10 +174,10 @@ Formula evaluation happens in the browser. The engine caches computed cells, det
 Exports the Durable Object class `Gadget`, which is the authoritative persistence and synchronization layer. It:
 
 - Stores spreadsheet metadata and each sheet's cells in Durable Object storage
-- Serializes mutations and document snapshots through an in-memory queue; subscriber callbacks run outside it
+- Serializes mutations and document snapshots through an in-memory queue
 - Applies per-cell optimistic concurrency using cell versions
 - Uses last-writer-wins semantics for document structure
-- Broadcasts operations and presence events to subscribed clients
+- Broadcasts operations and presence events to subscribed clients after the queue releases, best-effort and without awaiting them, so a callback may itself read or write the document and a hung subscriber holds up only its own client
 - Sanitizes titles, dimensions, cell contents, references, and formatting
 - Advertises and produces the server-side workbook and CSV exports
 
@@ -230,9 +230,12 @@ Formulas are written without cached results and the workbook requests a full rec
 so Excel evaluates them itself. To keep them valid there, the exporter rewrites cross-sheet
 references to the exported worksheet names, prefixes OOXML "future functions" (`IFS`, `CONCAT`, ...)
 with `_xlfn.`, renames `ERRORTYPE()` to `ERROR.TYPE()`, and drops whitespace between a function
-name and its `(`. A formula that is empty or would exceed Excel's 8,192-character limit after
-rewriting is exported as text. Formula semantics are otherwise not translated (for example `^`
-associativity differs), and compatibility with Excel is not claimed beyond this.
+name and its `(`. A formula that is empty, structurally unbalanced (unterminated string or quoted
+name, mismatched parentheses or brackets — the grid's parser tolerates these) or that would exceed
+Excel's 8,192-character limit after rewriting is exported as text, since one such formula makes
+Excel report the whole workbook as damaged. Formula semantics are otherwise not translated (for
+example `^` associativity differs, and a reference outside the grid such as `XFE1` is empty here
+but `#NAME?` in Excel), and compatibility with Excel is not claimed beyond this.
 
 Worksheet names are made Excel-safe: invalid characters become `_`, blank names become `Sheet`,
 names are cut to 31 characters, and case-insensitive collisions get ` (2)`, ` (3)`, ... suffixes.

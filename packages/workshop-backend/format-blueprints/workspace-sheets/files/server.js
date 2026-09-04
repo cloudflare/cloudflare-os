@@ -78,10 +78,10 @@ export class Gadget extends DurableObject {
 
   async applyOperation(operation) {
     const { result, event } = await this.enqueueMutation(() => this.applyOperationLocked(operation));
-    // Delivered outside the queue so callbacks may re-enter. The calls are
-    // issued synchronously here, before the next queued mutation can reach
-    // storage, so subscribers still receive events in revision order.
-    if (event) await this.broadcast(event);
+    // Issued after the queue releases, so callbacks may re-enter it, but
+    // synchronously here, before the next queued mutation can reach storage,
+    // so each subscriber still receives events in revision order.
+    if (event) this.broadcast(event);
     return result;
   }
 
@@ -219,7 +219,7 @@ export class Gadget extends DurableObject {
       const existing = Array.from(this.subscribers.values());
       this.subscribers.set(dup, info);
       dup.onRpcBroken(() => {
-        this.subscribers.delete(dup);
+        this.dropSubscriber(dup);
         this.broadcastPresence({ type: "leave", clientId: info.clientId });
       });
       queueMicrotask(async () => {
@@ -228,14 +228,14 @@ export class Gadget extends DurableObject {
             await dup.presence({ type: "join", clientId: person.clientId, name: person.name, color: person.color });
           } catch (e) { break; }
         }
-        await this.broadcastPresence({ type: "join", clientId: info.clientId, name: info.name, color: info.color });
+        this.broadcastPresence({ type: "join", clientId: info.clientId, name: info.name, color: info.color });
       });
       return document;
     });
   }
 
-  async updatePresence(presence) {
-    await this.broadcastPresence({
+  updatePresence(presence) {
+    this.broadcastPresence({
       type: "cursor",
       clientId: String(presence.clientId || ""),
       name: String(presence.name || "Guest").slice(0, 40),
@@ -247,24 +247,26 @@ export class Gadget extends DurableObject {
     });
   }
 
-  async leavePresence(clientId) {
-    await this.broadcastPresence({ type: "leave", clientId: String(clientId || ""), at: Date.now() });
+  leavePresence(clientId) {
+    this.broadcastPresence({ type: "leave", clientId: String(clientId || ""), at: Date.now() });
   }
 
-  async broadcast(event) {
-    const calls = [];
-    for (const [stub] of this.subscribers) {
-      calls.push(Promise.resolve(stub.operation(event)).catch(() => this.subscribers.delete(stub)));
-    }
-    await Promise.all(calls);
+  dropSubscriber(stub) {
+    if (this.subscribers.delete(stub)) stub[Symbol.dispose]();
   }
 
-  async broadcastPresence(event) {
-    const calls = [];
+  // Delivery is best-effort and not awaited: a callback that fails is dropped,
+  // and one that never settles holds up nothing but its own client.
+  broadcast(event) {
     for (const [stub] of this.subscribers) {
-      calls.push(Promise.resolve(stub.presence(event)).catch(() => this.subscribers.delete(stub)));
+      Promise.resolve(stub.operation(event)).catch(() => this.dropSubscriber(stub));
     }
-    await Promise.all(calls);
+  }
+
+  broadcastPresence(event) {
+    for (const [stub] of this.subscribers) {
+      Promise.resolve(stub.presence(event)).catch(() => this.dropSubscriber(stub));
+    }
   }
 }
 

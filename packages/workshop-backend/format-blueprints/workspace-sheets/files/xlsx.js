@@ -440,7 +440,7 @@ function quotedSheetReference(formula, offset, names) {
       ? {end, text: `'${normalized.replace(/'/g, "''")}'!`}
       : {end, text};
   }
-  return {end: formula.length, text: formula.slice(offset)};
+  return null;
 }
 
 function unquotedSheetReference(formula, offset, names) {
@@ -483,9 +483,13 @@ function formulaFunctionAt(formula, offset) {
   return parenthesis > end ? {end: parenthesis, text: formula.slice(offset, end)} : null;
 }
 
+// Rewrites sheet and function names for Excel. Returns null when the formula is unbalanced
+// (unterminated string or quoted name, mismatched parentheses or brackets): the grid's parser
+// tolerates those, but one such `<f>` makes Excel report the whole workbook as damaged.
 function rewriteFormula(formula, names) {
   const result = [];
   let stringLiteral = false;
+  let parentheses = 0;
   let structuredReferenceDepth = 0;
   for (let i = 0; i < formula.length;) {
     const character = formula[i];
@@ -507,28 +511,33 @@ function rewriteFormula(formula, names) {
       }
       const escapedBracket = apostrophes % 2 === 1;
       if (character === "[" && !escapedBracket) ++structuredReferenceDepth;
-      else if (character === "]" && structuredReferenceDepth && !escapedBracket) --structuredReferenceDepth;
-      const reference = !structuredReferenceDepth && (formulaFunctionAt(formula, i) || (character === "'"
-        ? quotedSheetReference(formula, i, names)
-        : unquotedSheetReference(formula, i, names)));
-      if (reference) {
-        result.push(reference.text);
-        i = reference.end;
-        continue;
+      else if (character === "]" && !escapedBracket && --structuredReferenceDepth < 0) return null;
+      if (!structuredReferenceDepth) {
+        if (character === "(") ++parentheses;
+        else if (character === ")" && --parentheses < 0) return null;
+        const reference = character === "'"
+          ? quotedSheetReference(formula, i, names)
+          : formulaFunctionAt(formula, i) || unquotedSheetReference(formula, i, names);
+        if (character === "'" && !reference) return null;
+        if (reference) {
+          result.push(reference.text);
+          i = reference.end;
+          continue;
+        }
       }
     }
     result.push(character);
     ++i;
   }
-  return result.join("");
+  return stringLiteral || parentheses || structuredReferenceDepth ? null : result.join("");
 }
 
 function parsedCellValue(value, formulaNames) {
   if (value[0] === "'") return {type: "text", value: value.slice(1)};
   if (value[0] === "=") {
     const formula = rewriteFormula(value.slice(1), formulaNames);
-    // Excel rejects empty formulas and those over its length limit; keep the stored text instead.
-    return formula.trim() !== "" && formula.length + 1 <= MAX_FORMULA_CHARACTERS
+    // Excel also rejects empty formulas and those over its length limit; keep the stored text.
+    return formula && formula.trim() && formula.length < MAX_FORMULA_CHARACTERS
       ? {type: "formula", value: formula}
       : {type: "text", value};
   }

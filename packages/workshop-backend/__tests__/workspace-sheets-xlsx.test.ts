@@ -254,7 +254,7 @@ describe("Workspace Sheets XLSX", () => {
     expect(workbook).toContain('<calcPr calcId="0" fullCalcOnLoad="1"/>');
   });
 
-  it("preserves many maximum-length formulas with unmatched apostrophes", async () => {
+  it("exports many maximum-length formulas with unterminated quoted names as text", async () => {
     const formula = "'".repeat(8191);
     const cells = Object.fromEntries(Array.from({length: 64}, (_, index) => [
       `A${index + 1}`,
@@ -267,7 +267,7 @@ describe("Workspace Sheets XLSX", () => {
     }));
     const worksheet = text(entries, "xl/worksheets/sheet1.xml");
 
-    expect(worksheet.split(`<f>${formula}</f>`)).toHaveLength(65);
+    expect(worksheet.split(`<t xml:space="preserve">=${formula}</t>`)).toHaveLength(65);
   });
 
   it("does not lengthen maximum-size formulas when unquoted sheet names are unchanged", async () => {
@@ -329,6 +329,25 @@ describe("Workspace Sheets XLSX", () => {
     expect(cellXml(worksheet, "A2")).toContain('<f>SUM(1,2)+_xlfn.IFS(TRUE,1)+"SUM ("+A1 +1</f>');
     expect(cellXml(worksheet, "A3")).toContain('t="inlineStr"><is><t xml:space="preserve">=</t>');
     expect(cellXml(worksheet, "A4")).toContain('t="inlineStr"><is><t xml:space="preserve">=  </t>');
+  });
+
+  it("exports formulas the grid tolerates but Excel would reject as text", async () => {
+    const invalid = ['=SUM(1,2', '="abc', "='Sheet!A1", "=(1))", "=Table1[A", "=A]1", '=SUM("a)",1'];
+    const valid = ['=SUM("(",")",""""")")', "='It''s'!A1+Table1[['#Header]]", "=(1+(2))"];
+    const cells = Object.fromEntries([...invalid, ...valid].map((value, index) => [`A${index + 1}`, cell(value)]));
+    const {entries} = await readZip(workbookToXlsx({
+      sheetOrder: ["sheet", "its"],
+      sheets: {sheet: sheet("Sheet"), its: sheet("It's")},
+      cells: {sheet: cells, its: {}},
+    }));
+    const worksheet = text(entries, "xl/worksheets/sheet1.xml");
+
+    invalid.forEach((value, index) => {
+      expect(cellXml(worksheet, `A${index + 1}`)).toContain(`t="inlineStr"><is><t xml:space="preserve">${value}</t>`);
+    });
+    valid.forEach((value, index) => {
+      expect(cellXml(worksheet, `A${invalid.length + index + 1}`)).toContain(`<f>${value.slice(1)}</f>`);
+    });
   });
 
   it("translates ERRORTYPE function tokens to Excel's ERROR.TYPE name", async () => {
@@ -598,10 +617,8 @@ describe("Workspace Sheets XLSX", () => {
 
 describe("Workspace Sheets document snapshots", () => {
   it("completes a queued document read before beginning the next mutation", async () => {
-    let releaseRead!: () => void;
-    let markReadStarted!: () => void;
-    const readReleased = new Promise<void>(resolve => { releaseRead = resolve; });
-    const readStarted = new Promise<void>(resolve => { markReadStarted = resolve; });
+    const {promise: readReleased, resolve: releaseRead} = Promise.withResolvers<void>();
+    const {promise: readStarted, resolve: markReadStarted} = Promise.withResolvers<void>();
     const order: string[] = [];
     const fixture = Object.assign(Object.create(Gadget.prototype), {
       mutationQueue: Promise.resolve(),
@@ -632,29 +649,47 @@ describe("Workspace Sheets document snapshots", () => {
     expect(order).toEqual(["read started", "read completed", "write started", "write completed"]);
   });
 
-  it("lets a subscriber callback read and write the document without deadlocking", async () => {
+  it("lets a subscriber callback read and write the document without holding up the save", async () => {
     const subscribers = new Map();
     const fixture = inMemoryGadget(subscribers);
     const events: {revision: number}[] = [];
     const documents: {revision: number; cells: Record<string, Record<string, {value: string}>>}[] = [];
+    const {promise: callbacksFinished, resolve: finishCallbacks} = Promise.withResolvers<void>();
     subscribers.set({
       operation: vi.fn(async (event: {revision: number}) => {
         events.push(event);
         documents.push(await fixture.getDocument());
         if (event.revision === 1) await fixture.applyOperation(setCell("B1", "from callback"));
+        else finishCallbacks();
       }),
     }, {});
 
     const result = await fixture.applyOperation(setCell("A1", "committed"));
-
     expect(result.status).toBe("applied");
     expect(result).not.toHaveProperty("result");
+    expect(events).toHaveLength(1);
+
+    await callbacksFinished;
     expect(events.map(event => event.revision)).toEqual([1, 2]);
     expect(events[0]).not.toHaveProperty("status");
     expect(events[0]).not.toHaveProperty("conflicts");
     expect(documents[0].revision).toBe(1);
     expect(documents[0].cells.sheet.A1.value).toBe("committed");
     expect(documents[1].cells.sheet.B1.value).toBe("from callback");
+  });
+
+  it("drops and disposes a subscriber whose callback fails, and does not wait on one that hangs", async () => {
+    const failing = {operation: vi.fn(async () => { throw new Error("broken"); }), [Symbol.dispose]: vi.fn()};
+    const hung = {operation: vi.fn(() => new Promise(() => {})), [Symbol.dispose]: vi.fn()};
+    const fixture = inMemoryGadget(new Map([[failing, {}], [hung, {}]]));
+
+    const result = await fixture.applyOperation(setCell("A1", "value"));
+    expect(result.status).toBe("applied");
+    await vi.waitFor(() => expect(fixture.subscribers.has(failing)).toBe(false));
+    expect(failing[Symbol.dispose]).toHaveBeenCalledOnce();
+    expect(hung.operation).toHaveBeenCalledOnce();
+    expect(fixture.subscribers.has(hung)).toBe(true);
+    expect(hung[Symbol.dispose]).not.toHaveBeenCalled();
   });
 
   it("does not broadcast unchanged or conflicting-only operations", async () => {
@@ -673,8 +708,7 @@ describe("Workspace Sheets document snapshots", () => {
   it("registers a subscriber and takes its snapshot inside the mutation queue", async () => {
     const fixture = inMemoryGadget();
     const newcomer = {presence: vi.fn(), operation: vi.fn(), onRpcBroken: vi.fn()};
-    let releaseWrite!: () => void;
-    const writeReleased = new Promise<void>(resolve => { releaseWrite = resolve; });
+    const {promise: writeReleased, resolve: releaseWrite} = Promise.withResolvers<void>();
     const original = fixture.applyOperationLocked.bind(fixture);
     fixture.applyOperationLocked = async (operation: unknown) => { await writeReleased; return original(operation); };
 
