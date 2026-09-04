@@ -17,9 +17,10 @@ import type {
 import { docToMarkdown, markdownToDocRequests, computeReplaceOperations, DocSnapshot } from "./markdown-converter";
 import { DriveApi } from "./drive-api";
 import { driveObserverTracker } from "./drive-observers";
+import { readFolderRoot } from "./drive-folder-scope";
 import {
-  DriveSessionCore, GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, type DriveBindingScope,
-  type DriveSessionCoreOptions,
+  DriveSessionCore, GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, unguardedNativeRead,
+  type DriveBindingScope, type DriveSessionCoreOptions, type NativeRead,
 } from "./drive-session";
 import type { DriveEntry, DriveListOptions, DriveSearchQuery, GoogleDriveSession } from "./drive-types";
 import { BigQueryApi, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
@@ -51,6 +52,7 @@ import {
   GoogleSheetsConfiguratorUI,
   DriveAccountConfiguratorUI,
   DriveFileConfiguratorUI,
+  DriveFolderConfiguratorUI,
   SharedDriveConfiguratorUI,
 } from "./google-configurators";
 import BIGQUERY_CONFIGURATOR_HTML from "./generated/bigquery-configurator-ui.txt";
@@ -60,13 +62,15 @@ import GOOGLE_DOC_CONFIGURATOR_HTML from "./generated/google-doc-configurator-ui
 import GOOGLE_SHEETS_CONFIGURATOR_HTML from "./generated/google-sheets-configurator-ui.txt";
 import DRIVE_ACCOUNT_CONFIGURATOR_HTML from "./generated/drive-account-configurator-ui.txt";
 import DRIVE_FILE_CONFIGURATOR_HTML from "./generated/drive-file-configurator-ui.txt";
+import DRIVE_FOLDER_CONFIGURATOR_HTML from "./generated/drive-folder-configurator-ui.txt";
 import SHARED_DRIVE_CONFIGURATOR_HTML from "./generated/shared-drive-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
 import {
   BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
-  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_RESOURCE,
+  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
+  GOOGLE_DRIVE_RESOURCE,
   GOOGLE_SHARED_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, RESOURCE_BY_KIND, SUPPORTED_RESOURCES,
   grantedResourceUrlPatterns, hasDriveResourceGrant, parseResourceUrl,
   recordedResourceUrlPatterns, type RecordedResourceGrant,
@@ -738,14 +742,14 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       }
       case "driveAccount":
       case "sharedDrive":
+      case "driveFolder":
       case "driveFile": {
         let scope: DriveBindingScope;
-        if (target.kind === "driveAccount") {
-          scope = { kind: "account" };
-        } else if (target.kind === "sharedDrive") {
-          scope = { kind: "sharedDrive", driveId: target.driveId };
-        } else {
-          scope = { kind: "file", fileId: target.fileId };
+        switch (target.kind) {
+          case "driveAccount": scope = { kind: "account" }; break;
+          case "sharedDrive": scope = { kind: "sharedDrive", driveId: target.driveId }; break;
+          case "driveFolder": scope = { kind: "folder", folderId: target.folderId }; break;
+          default: scope = { kind: "file", fileId: target.fileId };
         }
         let props: GoogleDriveGatekeeperImplProps = { userObjectId, scope };
         return { class: this.ctx.exports.GoogleDriveGatekeeperImpl({ props }), resource };
@@ -807,6 +811,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       return {
         iframeHtml: SHARED_DRIVE_CONFIGURATOR_HTML,
         ui: new RpcStub(new SharedDriveConfiguratorUI(getToken)),
+      };
+    }
+
+    if (resourceUrlPattern === GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern) {
+      return {
+        iframeHtml: DRIVE_FOLDER_CONFIGURATOR_HTML,
+        ui: new RpcStub(new DriveFolderConfiguratorUI(getToken)),
       };
     }
 
@@ -1919,16 +1930,20 @@ class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpreadshee
   #api: GoogleSheetsApi;
   #spreadsheetId: string;
   #approvalQueue: RpcStub<ApprovalQueue>;
+  #read: NativeRead;
 
   constructor(
     api: GoogleSheetsApi,
     spreadsheetId: string,
     approvalQueue: RpcStub<ApprovalQueue>,
+    read?: NativeRead,
   ) {
     super();
     this.#api = api;
     this.#spreadsheetId = spreadsheetId;
     this.#approvalQueue = approvalQueue;
+    this.#read = read ?? unguardedNativeRead(
+      description => approvalQueue.authorizeObservation(description));
   }
 
   [Symbol.dispose](): void {
@@ -1936,14 +1951,14 @@ class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpreadshee
   }
 
   async getSpreadsheet(): Promise<SpreadsheetInfo> {
-    let spreadsheet = await this.#api.getSpreadsheet(this.#spreadsheetId);
-    await this.#approvalQueue.authorizeObservation({
-      title: "Read Google spreadsheet metadata",
-      description:
-        `Read metadata for "${spreadsheet.title}", including its ${spreadsheet.sheets.length} ` +
-        "worksheet(s).",
-    });
-    return spreadsheet;
+    return this.#read(
+      () => this.#api.getSpreadsheet(this.#spreadsheetId),
+      spreadsheet => ({
+        title: "Read Google spreadsheet metadata",
+        description:
+          `Read metadata for "${spreadsheet.title}", including its ${spreadsheet.sheets.length} ` +
+          "worksheet(s).",
+      }));
   }
 
   async readRange(
@@ -1964,22 +1979,22 @@ class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpreadshee
     ranges: string[],
     options?: { valueMode?: SpreadsheetValueMode },
   ): Promise<SpreadsheetRange[]> {
-    let result = await this.#api.readRanges(
-      this.#spreadsheetId, ranges, options?.valueMode,
-    );
-    let cellCount = result.reduce(
-      (total, range) => total + range.values.reduce((sum, row) => sum + row.length, 0),
-      0,
-    );
-    await this.#approvalQueue.authorizeObservation({
-      title: result.length === 1
-        ? `Read Google Sheets range ${result[0].range}`
-        : `Read ${result.length} Google Sheets ranges`,
-      description:
-        `Read ${cellCount.toLocaleString()} cell(s) from ${result.length} bounded range(s) in ` +
-        "the connected spreadsheet.",
-    });
-    return result;
+    return this.#read(
+      () => this.#api.readRanges(this.#spreadsheetId, ranges, options?.valueMode),
+      result => {
+        let cellCount = result.reduce(
+          (total, range) => total + range.values.reduce((sum, row) => sum + row.length, 0),
+          0,
+        );
+        return {
+          title: result.length === 1
+            ? `Read Google Sheets range ${result[0].range}`
+            : `Read ${result.length} Google Sheets ranges`,
+          description:
+            `Read ${cellCount.toLocaleString()} cell(s) from ${result.length} bounded range(s) ` +
+            "in the connected spreadsheet.",
+        };
+      });
   }
 }
 
@@ -2546,6 +2561,19 @@ export class GoogleDriveGatekeeperImpl
         tsType: "GoogleDriveSession",
       };
     }
+    if (scope.kind === "folder") {
+      // Validated here too, so a hand-built resource URL fails at connect rather than minting a
+      // presentable binding whose every call then refuses.
+      let folder = await readFolderRoot(scope.folderId, id => api.getFile(id));
+      return {
+        // The natural browser URL, not the internal `_resource` selector the grant is keyed on.
+        url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
+        title: folder.name,
+        snippet: `Find files and folders and read native Google Docs and Sheets in Drive folder "${folder.name}" and everything beneath it`,
+        suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
+        tsType: "GoogleDriveSession",
+      };
+    }
     let file = await api.getFile(scope.fileId);
     return {
       url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
@@ -2574,7 +2602,7 @@ export class GoogleDriveGatekeeperImpl
       this.ctx.props.scope,
       approvalQueue.dup(),
       fileIds => observerTracker.prepareObservation(fileIds),
-      () => [...observerTracker.observers()].map(([id]) => id),
+      () => observerTracker.prepareWithheld(),
     );
   }
 
@@ -2606,18 +2634,22 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   #driveApi: DriveApi;
   #documentId: string;
   #approvalQueue: RpcStub<ApprovalQueue>;
+  #read: NativeRead;
 
   constructor(
     docsApi: GoogleDocsApi,
     driveApi: DriveApi,
     documentId: string,
     approvalQueue: RpcStub<ApprovalQueue>,
+    read?: NativeRead,
   ) {
     super();
     this.#docsApi = docsApi;
     this.#driveApi = driveApi;
     this.#documentId = documentId;
     this.#approvalQueue = approvalQueue;
+    this.#read = read ?? unguardedNativeRead(
+      description => approvalQueue.authorizeObservation(description));
   }
 
   [Symbol.dispose](): void {
@@ -2625,25 +2657,26 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   }
 
   async getMetadata(): Promise<DocMetadata> {
-    let file = await this.#driveApi.getFile(this.#documentId);
-    let lastModified = new Date(file.modifiedTime ?? "");
-    if (Number.isNaN(lastModified.valueOf())) {
-      throw new Error("Google Drive returned an invalid modifiedTime");
-    }
-    await this.#approvalQueue.authorizeObservation({
+    return this.#read(async () => {
+      let file = await this.#driveApi.getFile(this.#documentId);
+      let lastModified = new Date(file.modifiedTime ?? "");
+      if (Number.isNaN(lastModified.valueOf())) {
+        throw new Error("Google Drive returned an invalid modifiedTime");
+      }
+      return { title: file.name, lastModified };
+    }, () => ({
       title: "Read Google Doc metadata",
       description: "Read the current title and modification time of the Drive document.",
-    });
-    return { title: file.name, lastModified };
+    }));
   }
 
   async getContent(): Promise<string> {
-    let snapshot = docToMarkdown(await this.#docsApi.getDocument(this.#documentId));
-    await this.#approvalQueue.authorizeObservation({
-      title: "Read Google Doc content",
-      description: "Read the current document body as Markdown.",
-    });
-    return snapshot.markdown;
+    return this.#read(
+      async () => docToMarkdown(await this.#docsApi.getDocument(this.#documentId)).markdown,
+      () => ({
+        title: "Read Google Doc content",
+        description: "Read the current document body as Markdown.",
+      }));
   }
 }
 
@@ -2664,14 +2697,14 @@ export class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSess
     scope: DriveBindingScope,
     approvalQueue: RpcStub<ApprovalQueue>,
     prepareObservation: (fileIds: string[]) => Promise<ObserverCheck<string>>,
-    observerIds: () => string[],
+    prepareWithheld: () => ObserverCheck<string>,
   ) {
     super();
     this.#driveApi = driveApi;
     this.#docsApi = docsApi;
     this.#sheetsApi = sheetsApi;
     this.#approvalQueue = approvalQueue;
-    this.#coreOptions = { api: driveApi, scope, prepareObservation, observerIds };
+    this.#coreOptions = { api: driveApi, scope, prepareObservation, prepareWithheld };
     this.#core = this.#coreFor(this.#approvalQueue);
   }
 
@@ -2727,21 +2760,39 @@ export class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSess
   }
 
   async openGoogleDoc(fileId: string): Promise<GoogleDocReadSession> {
-    let documentId = await this.#core.openNativeFile(
-      fileId, GOOGLE_DOC_MIME_TYPE, "Google Doc",
-    );
-    return new GoogleDocReadSessionImpl(
-      this.#docsApi, this.#driveApi, documentId, this.#approvalQueue.dup(),
-    );
+    return this.#openNative(fileId, GOOGLE_DOC_MIME_TYPE, "Google Doc",
+      (documentId, queue, read) =>
+        new GoogleDocReadSessionImpl(this.#docsApi, this.#driveApi, documentId, queue, read));
   }
 
   async openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetReadSession> {
-    let spreadsheetId = await this.#core.openNativeFile(
-      fileId, GOOGLE_SHEET_MIME_TYPE, "Google Sheet",
-    );
-    return new GoogleSpreadsheetSessionImpl(
-      this.#sheetsApi, spreadsheetId, this.#approvalQueue.dup(),
-    );
+    return this.#openNative(fileId, GOOGLE_SHEET_MIME_TYPE, "Google Sheet",
+      (spreadsheetId, queue, read) =>
+        new GoogleSpreadsheetSessionImpl(this.#sheetsApi, spreadsheetId, queue, read));
+  }
+
+  /**
+   * Opens one native child on an approval queue and a core of its own.
+   *
+   * The child outlives this session, so it needs its own queue stub — and the guard that revalidates
+   * its every read has to authorize through that same stub, which is why the core is built here
+   * rather than reusing the session's. Ownership passes to the child only once it exists.
+   */
+  async #openNative<T>(
+    fileId: string,
+    mimeType: string,
+    description: string,
+    build: (id: string, queue: RpcStub<ApprovalQueue>, read: NativeRead) => T,
+  ): Promise<T> {
+    let queue = this.#approvalQueue.dup();
+    try {
+      let core = this.#coreFor(queue);
+      let id = await core.openNativeFile(fileId, mimeType, description);
+      return build(id, queue, core.nativeRead(id, mimeType));
+    } catch (error) {
+      queue[Symbol.dispose]();
+      throw error;
+    }
   }
 }
 

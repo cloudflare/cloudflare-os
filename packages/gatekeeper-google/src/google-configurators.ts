@@ -4,7 +4,7 @@ import { BigQueryApi } from "./bigquery-api";
 import { GoogleCalendarApi } from "./calendar-api";
 import { GoogleAccessToken } from "./google-api";
 import { AccessTokenProvider, AccessTokenRequest } from "./auth-retry";
-import { DriveApi, DriveApiDisabledError } from "./drive-api";
+import { DriveApi, DriveApiDisabledError, FOLDER_MIME_TYPE } from "./drive-api";
 import type { BigQueryConfiguratorRpc } from "./configurator/bigquery-configurator-types";
 import type { CalendarConfiguratorRpc } from "./configurator/calendar-configurator-types";
 import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-types";
@@ -13,6 +13,7 @@ import type { GoogleSheetsConfiguratorRpc } from "./configurator/google-sheets-c
 import type { ConfiguratorOption } from "./configurator/configurator-option";
 import type { DriveAccountConfiguratorRpc } from "./configurator/drive-account-configurator-types";
 import type { DriveFileConfiguratorRpc } from "./configurator/drive-file-configurator-types";
+import type { DriveFolderConfiguratorRpc } from "./configurator/drive-folder-configurator-types";
 import type { SharedDriveConfiguratorRpc } from "./configurator/shared-drive-configurator-types";
 
 /**
@@ -278,7 +279,7 @@ export class DriveFileConfiguratorUI extends RpcTarget implements DriveFileConfi
     let { files } = await withDriveApiEnabled(
       "Drive file search requires the Google Drive API to be enabled for this OAuth project.",
       () => drive.listFiles({
-        namePrefix: query, excludeMimeTypes: ["application/vnd.google-apps.folder"],
+        namePrefix: query, excludeMimeTypes: [FOLDER_MIME_TYPE],
       }),
     );
     return files.map(file => ({
@@ -288,6 +289,31 @@ export class DriveFileConfiguratorUI extends RpcTarget implements DriveFileConfi
         file.mimeType,
         file.modifiedTime ? `Modified ${new Date(file.modifiedTime).toLocaleDateString()}` : undefined,
       ].filter(Boolean).join(" · ") || undefined,
+    }));
+  }
+}
+
+@validateRpc()
+export class DriveFolderConfiguratorUI extends RpcTarget implements DriveFolderConfiguratorRpc {
+  constructor(getToken: () => Promise<GoogleAccessToken>) {
+    super();
+    googleTokenGetters.set(this, getToken);
+  }
+
+  async listDriveFolders(query: string): Promise<ConfiguratorOption[]> {
+    let drive = new DriveApi(googleTokenProvider(this));
+    let { files } = await withDriveApiEnabled(
+      "Drive folder search requires the Google Drive API to be enabled for this OAuth project.",
+      () => drive.listFiles({ mimeType: FOLDER_MIME_TYPE, namePrefix: query }),
+    );
+    // A shared drive's root carries the drive's own ID. It is the Shared Drive resource, and
+    // offering it here too would make a folder binding a second, weaker name for a whole drive.
+    return files.filter(file => file.id !== file.driveId).map(file => ({
+      value: file.id,
+      title: file.name,
+      subtitle: file.driveId
+        ? "In a shared drive"
+        : file.owners?.[0]?.displayName ?? file.owners?.[0]?.emailAddress ?? "My Drive",
     }));
   }
 }

@@ -1,12 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
-import { DriveSessionCore, driveFileToEntry } from "../src/drive-session";
-import { DriveApiRequestError, type DriveFile, type DriveListFilesOptions } from "../src/drive-api";
+import { DriveSessionCore, driveFileToEntry, type DriveBindingScope } from "../src/drive-session";
+import { readFolderRoot } from "../src/drive-folder-scope";
+import {
+  DriveApiRequestError, FOLDER_MIME_TYPE,
+  type DriveFile, type DriveListFilesOptions, type DriveScopeNode,
+} from "../src/drive-api";
 import type { ObserverCheck } from "../src/observers";
 import { driveObserverTracker } from "../src/drive-observers";
 import { FakeKv } from "./fake-kv";
+import type { DriveEntry } from "../src/drive-types";
 
-const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
+const SHORTCUT_MIME_TYPE = "application/vnd.google-apps.shortcut";
+const docMime = "application/vnd.google-apps.document";
+const sheetMime = "application/vnd.google-apps.spreadsheet";
 
 const file = (overrides: Partial<DriveFile> = {}): DriveFile => ({
   id: "file-1",
@@ -17,8 +24,7 @@ const file = (overrides: Partial<DriveFile> = {}): DriveFile => ({
 });
 
 function core(overrides: {
-  scope?: { kind: "account" } | { kind: "sharedDrive"; driveId: string } |
-    { kind: "file"; fileId: string };
+  scope?: DriveBindingScope;
   files?: DriveFile[];
   getFile?: (id: string) => Promise<DriveFile>;
   getDrive?: (id: string) => Promise<{ id: string; name: string }>;
@@ -26,19 +32,22 @@ function core(overrides: {
     files: DriveFile[];
     nextPageToken?: string;
   }>;
+  getScopeNodes?: (ids: readonly string[]) => Promise<(DriveScopeNode | undefined)[]>;
   prepareObservation?: (ids: string[]) => Promise<ObserverCheck<string>>;
+  prepareWithheld?: () => ObserverCheck<string>;
   authorize?: (description: ObservationDescription) => Promise<void>;
-  observerIds?: () => string[];
 } = {}) {
   let listFiles = vi.fn(overrides.listFiles ?? (async () => ({ files: overrides.files ?? [file()] })));
   let getFile = vi.fn(overrides.getFile ?? (async (id: string) => file({ id })));
   let getDrive = vi.fn(overrides.getDrive ??
     (async (id: string) => ({ id, name: "Current shared drive" })));
+  let getScopeNodes = vi.fn(overrides.getScopeNodes ??
+    (async (ids: readonly string[]) => ids.map(() => undefined)));
   let prepared: string[][] = [];
   let authorizations: ObservationDescription[] = [];
   let events: string[] = [];
   let session = new DriveSessionCore({
-    api: { listFiles, getFile, getDrive },
+    api: { listFiles, getFile, getDrive, getScopeNodes },
     scope: overrides.scope ?? { kind: "account" },
     prepareObservation: overrides.prepareObservation ?? (async (ids: string[]) => {
       prepared.push(ids);
@@ -48,14 +57,70 @@ function core(overrides: {
         commit: () => events.push("commit"),
       };
     }),
-    observerIds: overrides.observerIds ?? (() => ["excluded"]),
+    prepareWithheld: overrides.prepareWithheld ?? (() => ({
+      excludeObservers: ["excluded"],
+      pendingSets: [],
+      commit: () => events.push("latch"),
+      discard: () => events.push("unlatch"),
+    })),
     authorize: async (description: ObservationDescription) => {
       authorizations.push(description);
       events.push("authorize");
       await overrides.authorize?.(description);
     },
   });
-  return { session, listFiles, getFile, getDrive, prepared, authorizations, events };
+  return {
+    session, listFiles, getFile, getDrive, getScopeNodes, prepared, authorizations, events,
+  };
+}
+
+const FOLDER_ROOT = "folder-root";
+
+const folder = (id: string, overrides: Partial<DriveFile> = {}): DriveFile =>
+  file({ id, name: id, mimeType: FOLDER_MIME_TYPE, trashed: false, ...overrides });
+
+const child = (id: string, parent: string, overrides: Partial<DriveFile> = {}): DriveFile =>
+  file({ id, name: id, parents: [parent], trashed: false, ...overrides });
+
+/**
+ * A provider serving one Drive tree. `parents` is the only edge, exactly as Drive models it, and
+ * the scope-node view is the narrow projection the real batch returns.
+ */
+function tree(nodes: DriveFile[]) {
+  let byId = new Map(nodes.map(node => [node.id, node]));
+  return {
+    byId,
+    getFile: async (id: string) => {
+      let found = byId.get(id);
+      if (!found) throw new DriveApiRequestError(404);
+      return found;
+    },
+    getScopeNodes: async (ids: readonly string[]) => ids.map((id): DriveScopeNode | undefined => {
+      let found = byId.get(id);
+      if (!found) return undefined;
+      return {
+        id: found.id,
+        ...(found.mimeType ? { mimeType: found.mimeType } : {}),
+        ...(found.parents ? { parents: found.parents } : {}),
+        ...(found.driveId ? { driveId: found.driveId } : {}),
+        ...(found.trashed === undefined ? {} : { trashed: found.trashed }),
+      };
+    }),
+  };
+}
+
+/** A folder-scoped core over `nodes`, which must include the root itself. */
+function folderCore(nodes: DriveFile[], overrides: Parameters<typeof core>[0] = {}) {
+  let provider = tree(nodes);
+  return {
+    ...core({
+      scope: { kind: "folder", folderId: FOLDER_ROOT },
+      getFile: provider.getFile,
+      getScopeNodes: provider.getScopeNodes,
+      ...overrides,
+    }),
+    provider,
+  };
 }
 
 describe("Drive metadata mapping", () => {
@@ -127,7 +192,20 @@ describe("Drive session scope", () => {
     })]);
     expect(authorizations[0]).not.toHaveProperty("prohibitAllSharing");
     expect(authorizations[0].description).not.toContain("0");
-    expect(events).toEqual(["authorize"]);
+    // The read registers no file ID, so nothing could ever verify a later observer against it:
+    // the audit lands, then admission latches closed, and only then is the caller refused.
+    expect(events).toEqual(["authorize", "latch"]);
+  });
+
+  it("leaves admission open when the empty search is itself refused", async () => {
+    let { session, events } = core({
+      files: [],
+      authorize: async () => { throw new Error("denied"); },
+    });
+
+    await expect((await session.search({ namePrefix: "missing" })).next())
+      .rejects.toThrow("denied");
+    expect(events).toEqual(["authorize", "unlatch"]);
   });
 
   it("ends a search cleanly after an earlier page disclosed results", async () => {
@@ -428,9 +506,6 @@ describe("Drive parent folder probe", () => {
 });
 
 describe("Drive native sessions", () => {
-  const docMime = "application/vnd.google-apps.document";
-  const sheetMime = "application/vnd.google-apps.spreadsheet";
-
   it.each([
     ["account Doc", { kind: "account" } as const, docMime, "Google Doc"],
     ["account Sheet", { kind: "account" } as const, sheetMime, "Google Sheet"],
@@ -500,10 +575,11 @@ describe("Drive native sessions", () => {
         listFiles: async () => ({ files: [] }),
         getFile: async () => { throw new DriveApiRequestError(404); },
         getDrive: async (id: string) => ({ id, name: "Current shared drive" }),
+        getScopeNodes: async ids => ids.map(() => undefined),
       },
       scope: { kind: "account" },
       prepareObservation: fileIds => track.prepareObservation(fileIds),
-      observerIds: () => [...track.observers()].map(([id]) => id),
+      prepareWithheld: () => track.prepareWithheld(),
       authorize: async () => {},
     });
 
@@ -511,7 +587,7 @@ describe("Drive native sessions", () => {
       .rejects.toBeInstanceOf(DriveApiRequestError);
 
     await expect(track.addObserver("late", "verifier"))
-      .rejects.toThrow(/cannot access Drive file file-1/);
+      .rejects.toThrow(/cannot access Drive data this workspace has read/);
     expect([...track.observers()]).toEqual([]);
   });
 
@@ -674,5 +750,563 @@ describe("Drive observation authorization", () => {
     expect(observation.description).toContain("salary-review-");
     expect(observation.description).not.toContain(longText);
     expect(observation.description.length).toBeLessThanOrEqual(240);
+  });
+});
+
+// Drive has no folder corpus and no recursive ancestor predicate, so every one of these outcomes
+// is decided by the gatekeeper's own `parents` walk rather than by anything the provider enforces.
+describe("Drive folder scope", () => {
+  const root = folder(FOLDER_ROOT, { parents: ["outside-folder"] });
+
+  describe("membership", () => {
+    it.each([
+      ["the root itself", FOLDER_ROOT, [root]],
+      ["a direct child", "kid", [root, child("kid", FOLDER_ROOT)]],
+      ["a deep descendant", "deep",
+        [root, folder("mid", { parents: [FOLDER_ROOT] }), child("deep", "mid")]],
+      ["a subfolder inside a shared drive", "kid", [
+        folder(FOLDER_ROOT, { parents: ["drive-1"], driveId: "drive-1" }),
+        child("kid", FOLDER_ROOT, { driveId: "drive-1" }),
+      ]],
+    ])("admits %s", async (_label, fileId, nodes) => {
+      let { session } = folderCore(nodes);
+      expect((await session.getEntry(fileId)).id).toBe(fileId);
+    });
+
+    it.each([
+      ["a sibling of the root", "sibling", [root, child("sibling", "outside-folder")]],
+      ["the root's own parent", "outside-folder",
+        [root, folder("outside-folder", { parents: ["grandparent"] })]],
+      ["a file whose parent is unreadable", "orphan", [root, child("orphan", "hidden")]],
+      ["a file with no parents at all", "loose", [root, file({ id: "loose", trashed: false })]],
+      ["a file with an empty parent array", "loose",
+        [root, file({ id: "loose", parents: [], trashed: false })]],
+      // Drive gives a file one current parent; anything else is a shape this cannot decide.
+      ["a file claiming two parents", "shared",
+        [root, file({ id: "shared", parents: [FOLDER_ROOT, "elsewhere"], trashed: false })]],
+      ["a trashed descendant", "gone",
+        [root, child("gone", FOLDER_ROOT, { trashed: true })]],
+      ["a descendant behind a trashed folder", "deep",
+        [root, folder("mid", { parents: [FOLDER_ROOT], trashed: true }), child("deep", "mid")]],
+      // A shortcut is a file of its own; it is listed, never followed, and cannot carry a chain.
+      ["a descendant behind a shortcut", "deep", [
+        root,
+        file({ id: "link", mimeType: SHORTCUT_MIME_TYPE, parents: [FOLDER_ROOT], trashed: false }),
+        child("deep", "link"),
+      ]],
+      ["a chain that cycles before reaching the root", "deep", [
+        root,
+        folder("a", { parents: ["b"] }),
+        folder("b", { parents: ["a"] }),
+        child("deep", "a"),
+      ]],
+    ])("refuses %s", async (_label, fileId, nodes) => {
+      let { session } = folderCore(nodes);
+      await expect(session.getEntry(fileId))
+        .rejects.toThrow("The requested file is outside this Drive binding.");
+    });
+
+    // Both storage domains cap nesting at 100 levels, so a chain longer than that never terminates
+    // at a legal root and must be abandoned rather than walked forever.
+    it("refuses a chain deeper than Drive's own nesting limit", async () => {
+      let chain = Array.from({ length: 120 },
+        (_, index) => folder(`n${index}`, { parents: [index === 0 ? FOLDER_ROOT : `n${index - 1}`] }));
+      let { session } = folderCore([root, ...chain, child("deep", "n119")]);
+
+      await expect(session.getEntry("deep"))
+        .rejects.toThrow("The requested file is outside this Drive binding.");
+    });
+
+    it("admits a descendant at the deepest legal nesting", async () => {
+      let chain = Array.from({ length: 98 },
+        (_, index) => folder(`n${index}`, { parents: [index === 0 ? FOLDER_ROOT : `n${index - 1}`] }));
+      let { session } = folderCore([root, ...chain, child("deep", "n97")]);
+
+      expect((await session.getEntry("deep")).id).toBe("deep");
+    });
+
+    // Membership is same-domain by construction: a chain that crosses between My Drive and a shared
+    // drive is walking through a hierarchy the binding's corpus never covered.
+    it("refuses a descendant whose chain changes storage domain", async () => {
+      let { session } = folderCore([
+        root,
+        folder("mid", { parents: [FOLDER_ROOT], driveId: "drive-1" }),
+        child("deep", "mid", { driveId: "drive-1" }),
+      ]);
+
+      await expect(session.getEntry("deep"))
+        .rejects.toThrow("The requested file is outside this Drive binding.");
+    });
+
+    // The walk reads one ancestor level per round trip, so a move landing mid-walk leaves the
+    // chain that would authorize the read already stale. Both direct operations go through the
+    // same proof, and neither may disclose or audit anything off it.
+    it.each([
+      ["getEntry", (session: DriveSessionCore) => session.getEntry("deep")],
+      ["openNativeFile",
+        (session: DriveSessionCore) => session.openNativeFile("deep", docMime, "Google Doc")],
+    ])("refuses %s when the chain changed during the ancestry walk", async (_label, operate) => {
+      let provider = tree([
+        root, folder("mid", { parents: [FOLDER_ROOT] }), child("deep", "mid", { mimeType: docMime }),
+      ]);
+      let walked = false;
+      let { session, authorizations } = core({
+        scope: { kind: "folder", folderId: FOLDER_ROOT },
+        getFile: provider.getFile,
+        getScopeNodes: async ids => {
+          let nodes = await provider.getScopeNodes(ids);
+          // "mid" leaves the subtree right after the walk read it, before the recheck re-reads it.
+          if (!walked) {
+            walked = true;
+            provider.byId.set("mid", folder("mid", { parents: ["elsewhere"] }));
+          }
+          return nodes;
+        },
+      });
+
+      await expect(operate(session))
+        .rejects.toThrow("The requested file is outside this Drive binding.");
+      expect(authorizations).toEqual([]);
+    });
+  });
+
+  describe("root validation", () => {
+    const badRoots: [string, DriveFile][] = [
+      ["a root that is not a folder", file({ id: FOLDER_ROOT, trashed: false })],
+      ["a shortcut standing in for the root",
+        file({ id: FOLDER_ROOT, mimeType: SHORTCUT_MIME_TYPE, trashed: false })],
+      ["a trashed root", folder(FOLDER_ROOT, { trashed: true })],
+      // A shared drive's root carries the drive's own ID and is the Shared Drive resource.
+      ["a shared drive's own root", folder(FOLDER_ROOT, { driveId: FOLDER_ROOT })],
+      // The provider answering for another file would decide membership from the wrong facts.
+      ["a root the provider echoes as another file", folder("someone-else")],
+    ];
+
+    it.each(badRoots)("refuses %s", async (_label, node) => {
+      let { session } = folderCore([node]);
+      await expect(session.getScope())
+        .rejects.toThrow("The requested file is outside this Drive binding.");
+    });
+
+    // `describe()` runs before any session exists, so both entry points share one validator rather
+    // than letting a hand-built resource URL mint a presentable binding that refuses every call.
+    it.each(badRoots)("refuses %s through the validator describe() shares", async (_label, node) => {
+      await expect(readFolderRoot(FOLDER_ROOT, async () => node))
+        .rejects.toThrow("The requested file is outside this Drive binding.");
+    });
+
+    // The alias resolves per account, so it names no stable authority to confine anything to.
+    it("refuses the account-relative alias at both entry points, contacting Drive at neither",
+      async () => {
+        let { session, getFile } = core({ scope: { kind: "folder", folderId: "root" } });
+        await expect(session.getScope())
+          .rejects.toThrow("The requested file is outside this Drive binding.");
+        expect(getFile).not.toHaveBeenCalled();
+
+        let fetch = vi.fn();
+        await expect(readFolderRoot("root", fetch))
+          .rejects.toThrow("The requested file is outside this Drive binding.");
+        expect(fetch).not.toHaveBeenCalled();
+      });
+
+    it("reports the folder's current name against its immutable ID", async () => {
+      let { session } = folderCore([folder(FOLDER_ROOT, { name: "Renamed", parents: ["above"] })]);
+
+      expect(await session.getScope())
+        .toEqual({ kind: "folder", folderId: FOLDER_ROOT, name: "Renamed" });
+    });
+
+    // The folder above the binding is outside it; naming it would disclose one level of hierarchy
+    // the grant never covered.
+    it("withholds the root's own parent", async () => {
+      let { session } = folderCore([root, child("kid", FOLDER_ROOT)]);
+
+      expect(await session.getEntry(FOLDER_ROOT)).not.toHaveProperty("parentId");
+      expect(await session.getEntry("kid")).toMatchObject({ parentId: FOLDER_ROOT });
+    });
+  });
+
+  describe("listing", () => {
+    const page = (files: DriveFile[], nextPageToken?: string) =>
+      ({ files, ...(nextPageToken ? { nextPageToken } : {}) });
+
+    it("selects the corpus the root lives in and asks for a bounded page", async () => {
+      let nodes = [
+        folder(FOLDER_ROOT, { parents: ["drive-1"], driveId: "drive-1" }),
+        child("kid", FOLDER_ROOT, { driveId: "drive-1" }),
+      ];
+      let { session, listFiles } = folderCore(nodes, {
+        listFiles: async () => page([nodes[1]]),
+      });
+
+      await (await session.list()).next();
+      expect(listFiles).toHaveBeenCalledWith(expect.objectContaining({
+        corpus: { kind: "drive", driveId: "drive-1" }, pageSize: 100,
+      }));
+    });
+
+    it("uses the user corpus for a folder in My Drive", async () => {
+      let { session, listFiles } = folderCore([root, child("kid", FOLDER_ROOT)], {
+        listFiles: async () => page([child("kid", FOLDER_ROOT)]),
+      });
+
+      await (await session.list()).next();
+      expect(listFiles).toHaveBeenCalledWith(expect.objectContaining({ corpus: { kind: "user" } }));
+    });
+
+    it("returns only proven descendants, in the order the provider gave them", async () => {
+      let nodes = [
+        root,
+        folder("mid", { parents: [FOLDER_ROOT] }),
+        child("deep", "mid"),
+        child("kid", FOLDER_ROOT),
+        child("sibling", "outside-folder"),
+      ];
+      let { session } = folderCore(nodes, {
+        listFiles: async () => page([nodes[4], nodes[2], nodes[3]]),
+      });
+
+      expect((await (await session.list()).next())?.map(entry => entry.id))
+        .toEqual(["deep", "kid"]);
+    });
+
+    // The corpus scan returns the bound folder like any other row, and it proves as a member so
+    // `getEntry` can read it. No test had ever put it in a provider page, so a listing disclosed
+    // the folder as one of its own children and inflated every count by one.
+    it("omits the bound folder from its own listing", async () => {
+      let nodes = [root, folder("mid", { parents: [FOLDER_ROOT] }), child("kid", FOLDER_ROOT)];
+      let { session } = folderCore(nodes, { listFiles: async () => page(nodes) });
+
+      expect((await (await session.list()).next())?.map(entry => entry.id))
+        .toEqual(["mid", "kid"]);
+    });
+
+    it("omits the bound folder from a search that matches folders", async () => {
+      let nodes = [root, folder("mid", { parents: [FOLDER_ROOT] })];
+      let { session } = folderCore(nodes, { listFiles: async () => page(nodes) });
+
+      let cursor = await session.search({ mimeTypes: [FOLDER_MIME_TYPE] });
+      expect((await cursor.next())?.map(entry => entry.id)).toEqual(["mid"]);
+    });
+
+    // The counterpart: excluding it from listings must not make the bound folder unreadable, and
+    // its own parent stays withheld because that folder is outside the binding.
+    it("still reads the bound folder's own metadata through getEntry", async () => {
+      let { session } = folderCore([root]);
+
+      let entry = await session.getEntry(FOLDER_ROOT);
+      expect(entry.id).toBe(FOLDER_ROOT);
+      expect(entry.parentId).toBeUndefined();
+    });
+
+    // The whole page filtering out is not a negative answer: one provider page per call is the
+    // subrequest budget, and the results are on the next one.
+    it("yields an empty page while results remain, then the results, then null", async () => {
+      let nodes = [root, child("kid", FOLDER_ROOT), child("sibling", "outside-folder")];
+      let { session } = folderCore(nodes, {
+        listFiles: async ({ pageToken }) =>
+          pageToken === "p2" ? page([nodes[1]]) : page([nodes[2]], "p2"),
+      });
+
+      let cursor = await session.list();
+      expect(await cursor.next()).toEqual([]);
+      expect((await cursor.next())?.map(entry => entry.id)).toEqual(["kid"]);
+      expect(await cursor.next()).toBeNull();
+    });
+
+    // Membership is a post-filter, so a small folder in a large drive walks past many pages. One
+    // audit record per scanned page would bury the listing that actually disclosed something.
+    it("audits the listing, not every page the scan walked past", async () => {
+      let nodes = [root, child("kid", FOLDER_ROOT), child("sibling", "outside-folder")];
+      let { session, authorizations } = folderCore(nodes, {
+        listFiles: async ({ pageToken }) =>
+          pageToken === "p2" ? page([nodes[1]]) : page([nodes[2]], "p2"),
+      });
+
+      let cursor = await session.list();
+      expect(await cursor.next()).toEqual([]);
+      expect(authorizations).toEqual([]);
+      expect((await cursor.next())?.map(entry => entry.id)).toEqual(["kid"]);
+      expect(authorizations).toHaveLength(1);
+    });
+
+    // The terminal one is a real answer about the folder, so it still gets a record.
+    it("audits a listing that ends with nothing in scope", async () => {
+      let sibling = child("sibling", "outside-folder");
+      let { session, authorizations } = folderCore([root, sibling], {
+        listFiles: async () => page([sibling]),
+      });
+
+      expect(await (await session.list()).next()).toBeNull();
+      expect(authorizations).toHaveLength(1);
+      expect(authorizations[0].description).toContain("for 0 Drive");
+    });
+
+    // The withheld latch is permanent, so it must not fire on an emptiness the root's own
+    // disappearance manufactured.
+    it("refuses rather than latching when the root vanished during an empty search", async () => {
+      let provider = tree([root]);
+      let { session, events, authorizations } = core({
+        scope: { kind: "folder", folderId: FOLDER_ROOT },
+        getFile: provider.getFile,
+        getScopeNodes: provider.getScopeNodes,
+        listFiles: async () => {
+          provider.byId.set(FOLDER_ROOT, folder(FOLDER_ROOT, { trashed: true }));
+          return page([]);
+        },
+      });
+
+      await expect((await session.search({ namePrefix: "anything" })).next())
+        .rejects.toThrow("The requested file is outside this Drive binding.");
+      expect(events).not.toContain("latch");
+      expect(authorizations).toEqual([]);
+    });
+
+    // A root that changed drive is still a valid root, so only the pinned corpus catches it — and
+    // the negative result was computed against the corpus the folder has left.
+    it("refuses rather than latching when the root changed drive during an empty search", async () => {
+      let provider = tree([root]);
+      let { session, events, authorizations } = core({
+        scope: { kind: "folder", folderId: FOLDER_ROOT },
+        getFile: provider.getFile,
+        getScopeNodes: provider.getScopeNodes,
+        listFiles: async () => {
+          provider.byId.set(FOLDER_ROOT,
+            folder(FOLDER_ROOT, { parents: ["drive-1"], driveId: "drive-1" }));
+          return page([]);
+        },
+      });
+
+      await expect((await session.search({ namePrefix: "anything" })).next())
+        .rejects.toThrow("moved to another drive");
+      expect(events).not.toContain("latch");
+      expect(authorizations).toEqual([]);
+    });
+
+    // A page token is only valid against the corpus that produced it, so a root that changes
+    // domain mid-pagination has nowhere safe to resume.
+    it("aborts a cursor whose root moved to another drive", async () => {
+      let current = folder(FOLDER_ROOT, { parents: ["above"] });
+      let provider = tree([current, child("kid", FOLDER_ROOT)]);
+      let { session } = core({
+        scope: { kind: "folder", folderId: FOLDER_ROOT },
+        getFile: provider.getFile,
+        getScopeNodes: provider.getScopeNodes,
+        listFiles: async () => page([child("kid", FOLDER_ROOT)], "p2"),
+      });
+
+      let cursor = await session.list();
+      expect((await cursor.next())?.map(entry => entry.id)).toEqual(["kid"]);
+      provider.byId.set(FOLDER_ROOT,
+        folder(FOLDER_ROOT, { parents: ["drive-1"], driveId: "drive-1" }));
+
+      await expect(cursor.next()).rejects.toThrow(/moved to another drive/);
+    });
+
+    // The earliest hops of a page's proof are the stalest thing authorizing its disclosure, so the
+    // recheck immediately before disclosure is what catches a move that landed during the walk.
+    it("discards a page whose chain changed under it, without advancing the cursor", async () => {
+      let provider = tree([root, folder("mid", { parents: [FOLDER_ROOT] }), child("deep", "mid")]);
+      let calls = 0;
+      let requested: (string | undefined)[] = [];
+      let { session, authorizations } = core({
+        scope: { kind: "folder", folderId: FOLDER_ROOT },
+        getFile: provider.getFile,
+        getScopeNodes: async ids => {
+          // The walk resolves "mid" first; the recheck re-reads the whole path afterwards.
+          if (++calls === 2) provider.byId.set("mid", folder("mid", { parents: ["elsewhere"] }));
+          return provider.getScopeNodes(ids);
+        },
+        listFiles: async ({ pageToken }) => {
+          requested.push(pageToken);
+          return page([child("deep", "mid")], "p2");
+        },
+      });
+
+      let cursor = await session.list();
+      await expect(cursor.next())
+        .rejects.toThrow("The requested file is outside this Drive binding.");
+      expect(authorizations).toEqual([]);
+
+      provider.byId.set("mid", folder("mid", { parents: [FOLDER_ROOT] }));
+      expect((await cursor.next())?.map(entry => entry.id)).toEqual(["deep"]);
+      expect(requested).toEqual([undefined, undefined]);
+    });
+
+    it("names the folder and its descendants in the observation", async () => {
+      let { session, authorizations } = folderCore([root, child("kid", FOLDER_ROOT)], {
+        listFiles: async () => page([child("kid", FOLDER_ROOT)]),
+      });
+
+      await (await session.list()).next();
+      expect(authorizations[0].description)
+        .toContain(`folder ${FOLDER_ROOT} and its descendants`);
+    });
+  });
+
+  describe("native reads", () => {
+    const nativeDoc = (parent: string) =>
+      child("doc-1", parent, { mimeType: docMime });
+
+    it("opens a native descendant and refuses one outside the subtree", async () => {
+      let inside = folderCore([root, nativeDoc(FOLDER_ROOT)]);
+      await expect(inside.session.openNativeFile("doc-1", docMime, "Google Doc"))
+        .resolves.toBe("doc-1");
+
+      let outside = folderCore([root, nativeDoc("outside-folder")]);
+      await expect(outside.session.openNativeFile("doc-1", docMime, "Google Doc"))
+        .rejects.toThrow("The requested file is outside this Drive binding.");
+    });
+
+    it("proves the file before the provider is contacted at all", async () => {
+      let { session } = folderCore([root, nativeDoc("outside-folder")]);
+      let fetched = vi.fn(async () => "content");
+
+      await expect(session.nativeRead("doc-1", docMime)(fetched, () => ({
+        title: "Read Google Doc content", description: "Read the body.",
+      }))).rejects.toThrow("The requested file is outside this Drive binding.");
+      expect(fetched).not.toHaveBeenCalled();
+    });
+
+    it("refuses a file whose native type no longer matches", async () => {
+      let { session } = folderCore([root, child("doc-1", FOLDER_ROOT, { mimeType: "application/pdf" })]);
+      let fetched = vi.fn(async () => "content");
+
+      await expect(session.nativeRead("doc-1", docMime)(fetched, () => ({
+        title: "Read Google Doc content", description: "Read the body.",
+      }))).rejects.toThrow("The requested file is outside this Drive binding.");
+      expect(fetched).not.toHaveBeenCalled();
+    });
+
+    // The move lands while the Docs API call is in flight, so only a check after the read catches
+    // it — and the content must not be authorized, let alone returned.
+    it("discards content when the file left the subtree during the read", async () => {
+      let provider = tree([root, nativeDoc(FOLDER_ROOT)]);
+      let { session, authorizations } = core({
+        scope: { kind: "folder", folderId: FOLDER_ROOT },
+        getFile: provider.getFile,
+        getScopeNodes: provider.getScopeNodes,
+      });
+
+      await expect(session.nativeRead("doc-1", docMime)(async () => {
+        provider.byId.set("doc-1", nativeDoc("outside-folder"));
+        return "secret";
+      }, () => ({ title: "Read Google Doc content", description: "Read the body." })))
+        .rejects.toThrow("The requested file is outside this Drive binding.");
+      expect(authorizations).toEqual([]);
+    });
+
+    it("authorizes and returns content that survived both checks", async () => {
+      let { session, authorizations, prepared, events } =
+        folderCore([root, nativeDoc(FOLDER_ROOT)]);
+
+      await expect(session.nativeRead("doc-1", docMime)(async () => "body", () => ({
+        title: "Read Google Doc content", description: "Read the body.",
+      }))).resolves.toBe("body");
+      expect(prepared).toEqual([["doc-1"]]);
+      expect(authorizations).toEqual([expect.objectContaining({
+        title: "Read Google Doc content", excludeObservers: ["excluded"],
+      })]);
+      expect(events).toEqual(["authorize", "commit"]);
+    });
+
+    // An immutable scope cannot move under the session, so it pays for no revalidation.
+    it("makes no scope calls for a binding whose scope cannot change", async () => {
+      let { session, getFile, getScopeNodes } = core({ scope: { kind: "file", fileId: "doc-1" } });
+
+      await expect(session.nativeRead("doc-1", docMime)(async () => "body", () => ({
+        title: "Read Google Doc content", description: "Read the body.",
+      }))).resolves.toBe("body");
+      expect(getFile).not.toHaveBeenCalled();
+      expect(getScopeNodes).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("failure modes", () => {
+    // A quota, outage, or account-wide block reported as a scope denial would look like the file
+    // left the folder, and the caller would go looking for a move that never happened.
+    it.each([
+      ["a quota refusal", new DriveApiRequestError(403, "userRateLimitExceeded")],
+      // The root read happens on every folder operation, so this is the one users would hit.
+      ["an account-wide policy block", new DriveApiRequestError(403, "domainPolicy")],
+      ["a server error", new DriveApiRequestError(500)],
+    ])("surfaces %s rather than a scope denial", async (_label, error) => {
+      let { session } = core({
+        scope: { kind: "folder", folderId: FOLDER_ROOT },
+        getFile: async () => { throw error; },
+      });
+
+      await expect(session.getEntry("kid")).rejects.toBe(error);
+    });
+
+    it("turns an inaccessible root into the generic refusal", async () => {
+      let { session } = core({
+        scope: { kind: "folder", folderId: FOLDER_ROOT },
+        getFile: async () => { throw new DriveApiRequestError(404); },
+      });
+
+      await expect(session.getEntry("kid"))
+        .rejects.toThrow("The requested file is outside this Drive binding.");
+    });
+
+    // Hidden ancestors and rejected neighbours are enforcement input, never disclosure: neither may
+    // consume observer cardinality or appear in anything the caller or the audit trail sees.
+    it("tracks and names only what it disclosed", async () => {
+      let nodes = [
+        root,
+        folder("secret-mid", { parents: [FOLDER_ROOT] }),
+        child("deep", "secret-mid"),
+        child("private-neighbour", "outside-folder"),
+      ];
+      let { session, prepared, authorizations } = folderCore(nodes, {
+        listFiles: async () => ({ files: [nodes[3], nodes[2]] }),
+      });
+
+      await (await session.list()).next();
+      expect(prepared).toEqual([["deep"]]);
+      let described = JSON.stringify(authorizations);
+      expect(described).not.toContain("secret-mid");
+      expect(described).not.toContain("private-neighbour");
+      expect(described).not.toContain("outside-folder");
+    });
+  });
+
+  // The end-to-end contract over a realistic fixture: a direct file, a nested one, and a sibling
+  // outside the root, spread over pages so both cursors have to be drained past an empty slice.
+  describe("draining a folder subtree", () => {
+    const nodes = [
+      root,
+      child("direct-file", FOLDER_ROOT),
+      folder("nested", { parents: [FOLDER_ROOT] }),
+      child("nested-file", "nested"),
+      child("sibling", "outside-folder"),
+    ];
+
+    /** Serves the sibling alone, then the two in-scope files, then ends. */
+    const paged = async ({ pageToken }: DriveListFilesOptions) => {
+      if (pageToken === undefined) return { files: [nodes[4]], nextPageToken: "p2" };
+      if (pageToken === "p2") return { files: [nodes[1], nodes[3]], nextPageToken: "p3" };
+      return { files: [] };
+    };
+
+    async function drain(cursor: { next(): Promise<DriveEntry[] | null> }): Promise<string[]> {
+      let ids: string[] = [];
+      for (let call = 0; call < 10; call++) {
+        let page = await cursor.next();
+        if (page === null) return ids;
+        ids.push(...page.map(entry => entry.id));
+      }
+      throw new Error("cursor did not terminate");
+    }
+
+    it.each([
+      ["list", async (session: DriveSessionCore) => session.list()],
+      ["full-text search",
+        async (session: DriveSessionCore) => session.search({ fullTextContains: "plan" })],
+    ])("returns every descendant and no neighbour through %s", async (_label, open) => {
+      let { session } = folderCore(nodes, { listFiles: paged });
+
+      expect(await drain(await open(session))).toEqual(["direct-file", "nested-file"]);
+    });
   });
 });

@@ -20,6 +20,15 @@
 const OBSERVER_PREFIX = "observer:";
 const OBSERVER_ATTEMPT_PREFIX = "observer-attempt:";
 const OBSERVER_NONCE_PREFIX = "observer-nonce:";
+/** Latched once an owner-only observation has been made: admission is closed for good. */
+const OBSERVER_WITHHELD_KEY = "observer-withheld";
+/** One marker per owner-only read still in flight. A marker stranded by a crash fails closed. */
+const OBSERVER_WITHHOLD_PREFIX = "observer-withhold:";
+
+/** Refusal when the binding has read something no observer can ever be verified against. */
+export const OBSERVER_WITHHELD_MESSAGE =
+  "This binding has made an observation no collaborator can be verified against, so it can no " +
+  "longer be observed.";
 
 /** Persisted state of one tracked set. `true` is the pre-"pending" legacy encoding of observed. */
 export type ObservedSetState = true | "pending" | "observed";
@@ -35,6 +44,8 @@ export type ObserverCheck<T> = {
   pendingSets: T[];
   /** Promotes the pending sets to observed. Call only after the read is authorized. */
   commit(): void;
+  /** Releases state this call staged. Call when the read was refused. */
+  discard?(): void;
 };
 
 /** The storage surface the tracker needs, satisfied by a Durable Object's `ctx.storage.kv`. */
@@ -118,7 +129,9 @@ export class ObserverTracker<T, V> {
   #options: ObserverTrackerOptions<T, V>;
 
   constructor(kv: ObserverKv, options: ObserverTrackerOptions<T, V>) {
-    let reserved = [OBSERVER_PREFIX, OBSERVER_ATTEMPT_PREFIX, OBSERVER_NONCE_PREFIX];
+    let reserved = [
+      OBSERVER_PREFIX, OBSERVER_ATTEMPT_PREFIX, OBSERVER_NONCE_PREFIX, OBSERVER_WITHHOLD_PREFIX,
+    ];
     if (reserved.includes(options.setPrefix)) {
       throw new Error(`setPrefix must not collide with a reserved prefix (${reserved.join(", ")})`);
     }
@@ -237,10 +250,47 @@ export class ObserverTracker<T, V> {
   }
 
   /**
+   * Fences an owner-only observation: nobody currently admitted may see it, and nobody new may be
+   * admitted after it.
+   *
+   * Such a read registers no tracked set, so {@link addObserver} would have nothing to verify a
+   * later candidate against — the backward check would pass vacuously over data the candidate was
+   * never entitled to. The durable marker goes down before the caller asks for approval, so an
+   * activation that dies mid-read leaves admission closed rather than open; `commit` latches and
+   * then clears it, and `discard` clears it when the read was refused.
+   */
+  prepareWithheld(): ObserverCheck<T> {
+    // Enumerated before the marker goes down: a throw here must strand nothing.
+    let excludeObservers = [...this.observers()].map(([id]) => id);
+    let markerKey = `${OBSERVER_WITHHOLD_PREFIX}${crypto.randomUUID()}`;
+    this.#kv.put(markerKey, true);
+    return {
+      ...(excludeObservers.length > 0 ? { excludeObservers } : {}),
+      pendingSets: [],
+      // Latch before the marker goes, so no state has neither fence standing.
+      commit: () => {
+        this.#kv.put(OBSERVER_WITHHELD_KEY, true);
+        this.#kv.delete(markerKey);
+      },
+      discard: () => this.#kv.delete(markerKey),
+    };
+  }
+
+  /** Whether an owner-only read has latched, or is still unsettled. */
+  #observationWithheld(): boolean {
+    if (this.#kv.get<boolean>(OBSERVER_WITHHELD_KEY)) return true;
+    for (let _ of this.#kv.list({ prefix: OBSERVER_WITHHOLD_PREFIX })) return true;
+    return false;
+  }
+
+  /**
    * Admits `id` as an observer, or throws naming the first set they cannot reach. Bulk verification
    * stages the candidate, then re-lists until every set has been checked before promotion.
    */
   async addObserver(id: string, verifier: V): Promise<void> {
+    // A withheld read tracks no set, so nothing here can establish this candidate was entitled to
+    // it. One still in flight counts: this candidate is absent from the exclusion list it sent.
+    if (this.#observationWithheld()) throw new Error(OBSERVER_WITHHELD_MESSAGE);
     let verifyBatch = this.#options.verifyBatch;
     if (verifyBatch !== undefined) return this.#addBulkObserver(id, verifier, verifyBatch);
 

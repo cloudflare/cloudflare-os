@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DRIVE_FILE_FIELDS, DRIVE_FILE_ITEM_FIELDS, DriveApi, DriveApiDisabledError, DriveApiRequestError,
-  buildDriveQuery, escapeDriveQueryLiteral,
+  FOLDER_MIME_TYPE, buildDriveQuery, escapeDriveQueryLiteral,
 } from "../src/drive-api";
 
 /** Google's real error envelope for an API that is not enabled on the project. */
@@ -39,6 +39,10 @@ const jsonResponse = (body: unknown, status = 200) =>
 
 const api = (token = "tok") => new DriveApi(async () => token);
 
+/**
+ * A batch response shaped like a real one: every part's body is followed by a blank line before the
+ * next boundary. Omitting that line made the parser's old last-chunk body extraction look correct.
+ */
 function batchResponse(results: { status: number; body?: string; contentId?: string }[]): Response {
   let boundary = "drive_test_boundary";
   let body = results.map((result, index) => [
@@ -50,6 +54,7 @@ function batchResponse(results: { status: number; body?: string; contentId?: str
     "Content-Type: application/json",
     "",
     result.body ?? "{}",
+    "",
   ].join("\r\n")).join("\r\n") + `\r\n--${boundary}--\r\n`;
   return new Response(body, { headers: { "Content-Type": `multipart/mixed; boundary=${boundary}` } });
 }
@@ -563,6 +568,146 @@ describe("bulk access verification", () => {
     stubFetch([batchResponse([{ status: 200, contentId: "response-item-7" }])]);
     await expect(api().checkFileAccess(["one"]))
       .rejects.toThrow("Google Drive batch response part had an unrecognised Content-ID");
+  });
+});
+
+describe("folder scope nodes", () => {
+  const node = (id: string, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ id, mimeType: FOLDER_MIME_TYPE, parents: ["p"], trashed: false, ...extra });
+
+  it("parses ancestry facts and asks only for the fields a proof decides from", async () => {
+    let calls = stubFetch([batchResponse([
+      { status: 200, body: node("one", { driveId: "drive-1" }) },
+    ])]);
+
+    await expect(api().getScopeNodes(["one"])).resolves.toEqual([{
+      id: "one", mimeType: FOLDER_MIME_TYPE, parents: ["p"], trashed: false, driveId: "drive-1",
+    }]);
+    expect(calls[0].body).toContain(
+      `fields=${encodeURIComponent("id,mimeType,parents,driveId,trashed")}`);
+    expect(calls[0].body).not.toContain("name");
+  });
+
+  it("places nodes by Content-ID rather than positional order", async () => {
+    stubFetch([batchResponse([
+      { status: 200, body: node("two"), contentId: "response-item-1" },
+      { status: 200, body: node("one"), contentId: "response-item-0" },
+    ])]);
+
+    await expect(api().getScopeNodes(["one", "two"]))
+      .resolves.toEqual([expect.objectContaining({ id: "one" }), expect.objectContaining({ id: "two" })]);
+  });
+
+  it("keeps positions across the 100-file chunk boundary", async () => {
+    stubFetch([
+      batchResponse([
+        ...Array.from({ length: 99 }, (_, index) => ({ status: 200, body: node(`file-${index}`) })),
+        { status: 404 },
+      ]),
+      batchResponse([{ status: 200, body: node("file-100") }]),
+    ]);
+
+    let nodes = await api().getScopeNodes(
+      Array.from({ length: 101 }, (_, index) => `file-${index}`));
+    expect(nodes).toHaveLength(101);
+    expect(nodes[98]).toEqual(expect.objectContaining({ id: "file-98" }));
+    expect(nodes[99]).toBeUndefined();
+    expect(nodes[100]).toEqual(expect.objectContaining({ id: "file-100" }));
+  });
+
+  it.each([403, 404])("reports only an inaccessible file (%i) as a hole", async status => {
+    stubFetch([batchResponse([{ status }])]);
+    await expect(api().getScopeNodes(["one"])).resolves.toEqual([undefined]);
+  });
+
+  // A quota, outage, or account-wide block answered as "not a descendant" would silently shrink a
+  // listing, which is the one failure shape a scope check must never produce.
+  it.each([
+    ["quota", 403, JSON.stringify({ error: { errors: [{ reason: "userRateLimitExceeded" }] } })],
+    // Google's domainPolicy denies the app every file, so no single file's membership follows.
+    ["an account-wide policy block", 403,
+      JSON.stringify({ error: { errors: [{ reason: "domainPolicy" }] } })],
+    ["rate limiting", 429, "{}"],
+    ["a server error", 503, "{}"],
+  ])("throws on %s rather than reporting a hole", async (_label, status, body) => {
+    stubFetch([batchResponse([{ status, body }])]);
+    await expect(api().getScopeNodes(["one"])).rejects.toThrow(/batch subrequest failed/);
+  });
+
+  it("throws when the API is not enabled for the project", async () => {
+    stubFetch([batchResponse([{ status: 403, body: API_DISABLED_BODY }])]);
+    await expect(api().getScopeNodes(["one"])).rejects.toBeInstanceOf(DriveApiDisabledError);
+  });
+
+  // The echo is what ties a node's facts to the file whose membership they decide.
+  it("throws when a part's body answers for another file", async () => {
+    stubFetch([batchResponse([{ status: 200, body: node("other") }])]);
+    await expect(api().getScopeNodes(["one"]))
+      .rejects.toThrow("Google Drive batch response did not echo the requested file ID");
+  });
+
+  // The live failure: a body terminated by a blank line before the boundary made the old parser
+  // read the empty trailing chunk as the body, so every *successful* subrequest threw. Spelled out
+  // byte by byte rather than through `batchResponse`, so a fixture that drifts cannot hide it.
+  it("reads a body that a conforming emitter terminates with a blank line", async () => {
+    let boundary = "conforming_boundary";
+    let text = [
+      `--${boundary}`,
+      "Content-Type: application/http",
+      "Content-ID: <response-item-0>",
+      "",
+      "HTTP/1.1 200 OK",
+      "Content-Type: application/json; charset=UTF-8",
+      "",
+      node("one"),
+      "",
+      `--${boundary}--`,
+      "",
+    ].join("\r\n");
+    stubFetch([new Response(text, {
+      headers: { "Content-Type": `multipart/mixed; boundary=${boundary}` },
+    })]);
+
+    await expect(api().getScopeNodes(["one"]))
+      .resolves.toEqual([expect.objectContaining({ id: "one", parents: ["p"] })]);
+  });
+
+  it.each([
+    ["a non-string parent", JSON.stringify({ id: "one", parents: [7] })],
+    ["a non-boolean trashed", JSON.stringify({ id: "one", trashed: "no" })],
+  ])("throws on %s", async (_label, body) => {
+    stubFetch([batchResponse([{ status: 200, body }])]);
+    await expect(api().getScopeNodes(["one"])).rejects.toThrow();
+  });
+
+  // This escaped as a raw SyntaxError into agent code, where it read as a harness or RPC fault
+  // rather than a Drive one. The byte count is what separates an empty part body from a truncated
+  // one without putting file metadata in the message.
+  it.each([["malformed", "not json"], ["empty", ""]])(
+    "reports %s JSON as a Drive error carrying the body's size", async (_label, body) => {
+      stubFetch([batchResponse([{ status: 200, body }])]);
+      await expect(api().getScopeNodes(["one"])).rejects.toThrow(
+        `Google Drive batch response part was not valid JSON (${body.length} bytes)`);
+    });
+
+  it("replays once after an inner 401, then gives up", async () => {
+    let tokens = ["stale", "fresh"];
+    let drive = new DriveApi(async () => tokens.shift() ?? "fresh");
+    let calls = stubFetch([
+      batchResponse([{ status: 401 }]),
+      batchResponse([{ status: 200, body: node("one") }]),
+    ]);
+
+    await expect(drive.getScopeNodes(["one"]))
+      .resolves.toEqual([expect.objectContaining({ id: "one" })]);
+    expect(calls.map(call => call.headers.get("Authorization")))
+      .toEqual(["Bearer stale", "Bearer fresh"]);
+  });
+
+  it("issues no request for an empty list", async () => {
+    let calls = stubFetch([]);
+    await expect(api().getScopeNodes([])).resolves.toEqual([]);
+    expect(calls).toEqual([]);
   });
 });
 

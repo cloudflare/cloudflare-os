@@ -42,6 +42,14 @@ describe("driveObserverTracker", () => {
     expect(asked).toEqual([["drive-1"]]);
   });
 
+  it("seeds a folder binding with its root, which is durable authority a proof is not", async () => {
+    let { kv, asked, track } = tracker({ kind: "folder", folderId: "folder-1" }, allow);
+
+    expect([...kv.entries.keys()]).toEqual([`${DRIVE_OBSERVATION_PREFIX}folder-1`]);
+    await track.addObserver("obs", "verifier");
+    expect(asked).toEqual([["folder-1"]]);
+  });
+
   it("seeds an account binding with nothing", async () => {
     let { kv, asked, track } = tracker({ kind: "account" }, allow);
 
@@ -54,7 +62,7 @@ describe("driveObserverTracker", () => {
     let { kv, track } = tracker({ kind: "file", fileId: "file-1" }, deny);
 
     await expect(track.addObserver("obs", "verifier"))
-      .rejects.toThrow(/cannot access Drive file file-1/);
+      .rejects.toThrow("This collaborator cannot access Drive data this workspace has read.");
     expect([...track.observers()]).toEqual([]);
     expect([...kv.entries.keys()]).toEqual([`${DRIVE_OBSERVATION_PREFIX}file-1`]);
   });
@@ -83,7 +91,7 @@ describe("driveObserverTracker", () => {
     kv.put(`${DRIVE_OBSERVATION_PREFIX}file-1`, "pending");
     release();
 
-    await expect(admission).rejects.toThrow(/cannot access Drive file file-1/);
+    await expect(admission).rejects.toThrow(/cannot access Drive data this workspace has read/);
     expect(asked).toEqual([[], ["file-1"]]);
   });
 
@@ -95,7 +103,7 @@ describe("driveObserverTracker", () => {
     await track.addObserver("obs", "old");
 
     await expect(track.addObserver("obs", "new"))
-      .rejects.toThrow(/cannot access Drive file file-1/);
+      .rejects.toThrow(/cannot access Drive data this workspace has read/);
 
     expect((await track.prepareObservation(["file-2"])).excludeObservers).toBeUndefined();
   });

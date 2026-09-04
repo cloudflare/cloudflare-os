@@ -625,3 +625,58 @@ describe("concurrency", () => {
     expect(hasAccess).toHaveBeenCalledTimes(6);
   });
 });
+
+// An observation no tracked set describes is one `addObserver` can never verify a candidate
+// against: the backward check would pass vacuously over data the candidate was never entitled to.
+describe("withheld observations", () => {
+  const withholdKeys = () => [...kv.list({ prefix: "observer-withhold:" })].map(([key]) => key);
+
+  it("excludes every current observer, including one still being admitted", async () => {
+    let tracker = makeTracker();
+    await tracker.addObserver("settled", allow());
+    kv.put("observer-attempt:joining", allow());
+
+    expect(tracker.prepareWithheld().excludeObservers).toEqual(["settled", "joining"]);
+  });
+
+  it("reports no exclusions when nobody is admitted", () => {
+    expect(makeTracker().prepareWithheld().excludeObservers).toBeUndefined();
+  });
+
+  // The marker goes down before the approval is requested, so an activation that dies awaiting the
+  // overseer leaves admission closed rather than open over a record the overseer may already hold.
+  it("closes admission while the read is still in flight", async () => {
+    let tracker = makeTracker();
+    tracker.prepareWithheld();
+
+    await expect(tracker.addObserver("late", allow())).rejects.toThrow(/can no longer be observed/);
+    expect(withholdKeys()).toHaveLength(1);
+  });
+
+  it("latches admission closed for good once the read is authorized", async () => {
+    let tracker = makeTracker();
+    tracker.prepareWithheld().commit();
+
+    // No marker survives the latch, and a fresh tracker over the same storage still refuses.
+    expect(withholdKeys()).toEqual([]);
+    await expect(makeTracker().addObserver("late", allow()))
+      .rejects.toThrow(/can no longer be observed/);
+  });
+
+  it("reopens admission when the read was refused", async () => {
+    let tracker = makeTracker();
+    tracker.prepareWithheld().discard!();
+
+    expect(withholdKeys()).toEqual([]);
+    await expect(tracker.addObserver("late", allow())).resolves.toBeUndefined();
+  });
+
+  it("keeps a concurrent read's fence standing when another is discarded", async () => {
+    let tracker = makeTracker();
+    let refused = tracker.prepareWithheld();
+    tracker.prepareWithheld();
+
+    refused.discard!();
+    await expect(tracker.addObserver("late", allow())).rejects.toThrow(/can no longer be observed/);
+  });
+});
