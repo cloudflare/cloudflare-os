@@ -622,7 +622,15 @@ wranglerChild.on("error", err => {
 wranglerChild.on("exit", async (code, signal) => {
   // The crash path: Wrangler died on its own, so nothing has signalled the watchers and this handler
   // is what tears them down.
-  await stopDevWatchersDeep();
+  //
+  // `…Once()`, not `stopDevWatchersDeep()` directly: on every *signalled* shutdown this handler also
+  // runs -- Wrangler exits because it was signalled -- and it then runs concurrently with the walk
+  // `onShutdownSignal` already started. A second walk over the same pids is the failure the memo
+  // exists to prevent (see it above): the first walk's kills reparent the watchers' children, so the
+  // second walk's `collectTree` finds a tree that is no longer there. Joining also makes the
+  // `process.exit` below safe, since it can no longer fire while `forceKillWrangler` is still
+  // awaiting the same walk.
+  await stopDevWatchersDeepOnce();
   // The output was already shown via stdio: "inherit". A signal-initiated shutdown reports the
   // initiating signal's status; only when Wrangler died on its own is its status propagated.
   process.exit(shutdownExitCode ?? (signal ? 128 + (constants.signals[signal] ?? 0) : code ?? 1));
