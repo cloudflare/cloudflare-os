@@ -6,7 +6,8 @@ import { after, describe, it } from "node:test";
 import {
   BYTES_PER_TASK, ROOT_ENV_FILE, VP_DEFAULT_CONCURRENCY_LIMIT, VP_RUN_CONCURRENCY_LIMIT,
   cgroupMemoryLimitBytes, cgroupMounts, concurrencyEnv, defaultConcurrencyLimit,
-  effectiveMemoryBytes, envFileConcurrencyLimit, overridesConcurrency, vpRunEnv,
+  effectiveMemoryBytes, envFileConcurrencyLimit, overridesConcurrency, splitConcurrencyLimit,
+  vpRunEnv,
 } from "./concurrency.ts";
 
 const GiB = 1024 ** 3;
@@ -430,7 +431,7 @@ function captureStderr(run: () => NodeJS.ProcessEnv): { env: NodeJS.ProcessEnv; 
 describe("vpRunEnv", () => {
   it("stays silent but still sets the variable when a flag overrides it", () => {
     for (const args of [["--concurrency-limit", "2"], ["--concurrency-limit=2"], ["--parallel"]]) {
-      const { env, err } = captureStderr(() => vpRunEnv({}, args));
+      const { env, err } = captureStderr(() => vpRunEnv({ env: {}, vpArgs: args }));
       // Set regardless: the flag wins in vp either way, and leaving it set is what preserves
       // behaviour if the flag turns out to be malformed.
       assert.match(env[VP_RUN_CONCURRENCY_LIMIT] ?? "", /^\d+$/,
@@ -440,7 +441,8 @@ describe("vpRunEnv", () => {
   });
 
   it("prints the note when no flag overrides it", () => {
-    const { env, err } = captureStderr(() => vpRunEnv({}, ["--filter=!cloudflare-os", "build"]));
+    const { env, err } = captureStderr(
+        () => vpRunEnv({ env: {}, vpArgs: ["--filter=!cloudflare-os", "build"] }));
     assert.match(env[VP_RUN_CONCURRENCY_LIMIT] ?? "", /^\d+$/);
     assert.match(err, /^vp run: concurrency \d+ /);
   });
@@ -448,7 +450,7 @@ describe("vpRunEnv", () => {
   // The default: callers that build their own fixed `vp run` invocation pass no args, and their own
   // argv must not be mistaken for vp flags.
   it("prints the note when given no arguments at all", () => {
-    const { err } = captureStderr(() => vpRunEnv({}));
+    const { err } = captureStderr(() => vpRunEnv({ env: {} }));
     assert.match(err, /^vp run: concurrency \d+ /);
   });
 
@@ -457,9 +459,76 @@ describe("vpRunEnv", () => {
   it("stays silent for an environment value, flag or no flag", () => {
     for (const args of [[], ["--parallel"]]) {
       const { env, err } = captureStderr(
-          () => vpRunEnv({ [VP_RUN_CONCURRENCY_LIMIT]: "3" }, args));
+          () => vpRunEnv({ env: { [VP_RUN_CONCURRENCY_LIMIT]: "3" }, vpArgs: args }));
       assert.equal(env[VP_RUN_CONCURRENCY_LIMIT], "3");
       assert.equal(err, "");
     }
+  });
+});
+
+// The division table, shared by the pure function and the wrapper that applies it. Driven by explicit
+// env values so it is deterministic: no machine dependence, and silent, since an environment value
+// prints no note.
+const SPLITS: [label: string, value: string, runs: number, expected: string][] = [
+  ["divides evenly", "16", 2, "8"],
+  ["divides four ways", "16", 4, "4"],
+  ["floors at vp's default rather than 3", "6", 2, "4"],
+  // An explicit limit below the floor is what was asked for, and must not be raised past it.
+  ["never raises an explicit limit past what was asked", "3", 2, "3"],
+  ["one run is no division", "16", 1, "16"],
+  // Unvalidated, so vp reports the bad value against the name the user set.
+  ["passes a non-numeric value through", "abc", 2, "abc"],
+  ["passes a fraction through", "2.5", 2, "2.5"],
+  ["passes zero through", "0", 2, "0"],
+];
+
+describe("splitConcurrencyLimit", () => {
+  for (const [label, value, runs, expected] of SPLITS) {
+    it(`${label}: ${value} / ${runs} -> ${expected}`, () => {
+      const env = splitConcurrencyLimit({ PATH: "/usr/bin", [VP_RUN_CONCURRENCY_LIMIT]: value }, runs);
+      assert.equal(env[VP_RUN_CONCURRENCY_LIMIT], expected);
+      assert.equal(env.PATH, "/usr/bin");
+    });
+  }
+
+  it("leaves an unset variable unset", () => {
+    assert.deepEqual(splitConcurrencyLimit({ PATH: "/usr/bin" }, 2), { PATH: "/usr/bin" });
+  });
+
+  it("returns a copy, never the input", () => {
+    for (const runs of [1, 2]) {
+      const input: NodeJS.ProcessEnv = { [VP_RUN_CONCURRENCY_LIMIT]: "16" };
+      const env = splitConcurrencyLimit(input, runs);
+      assert.notEqual(env, input);
+      assert.equal(input[VP_RUN_CONCURRENCY_LIMIT], "16");
+    }
+  });
+});
+
+// The dev server spawns two `vp run`s at once with one environment; without the split each would
+// claim the whole machine's budget.
+describe("vpRunEnv concurrentRuns", () => {
+  for (const [label, value, runs, expected] of SPLITS) {
+    it(`${label}: ${value} / ${runs} -> ${expected}`, () => {
+      const { env, err } = captureStderr(() =>
+          vpRunEnv({ env: { [VP_RUN_CONCURRENCY_LIMIT]: value }, concurrentRuns: runs }));
+      assert.equal(env[VP_RUN_CONCURRENCY_LIMIT], expected);
+      assert.equal(err, "");
+    });
+  }
+
+  // The machine-derived number is divided too, and the note still names the undivided budget: that
+  // is the number a user would set to override it.
+  it("divides the machine-derived limit and prints the whole budget once", () => {
+    const whole = captureStderr(() => vpRunEnv({ env: {} }));
+    const split = captureStderr(() => vpRunEnv({ env: {}, concurrentRuns: 2 }));
+    const total = Number(whole.env[VP_RUN_CONCURRENCY_LIMIT]);
+    const perRun = Number(split.env[VP_RUN_CONCURRENCY_LIMIT]);
+    assert.match(split.env[VP_RUN_CONCURRENCY_LIMIT] ?? "", /^\d+$/);
+    assert.ok(perRun <= total, `${perRun} > ${total}`);
+    assert.ok(perRun >= VP_DEFAULT_CONCURRENCY_LIMIT);
+    assert.equal(perRun, Math.min(total, Math.max(VP_DEFAULT_CONCURRENCY_LIMIT, Math.floor(total / 2))));
+    assert.equal(split.err, whole.err);
+    assert.match(split.err, /^vp run: concurrency \d+ /);
   });
 });
