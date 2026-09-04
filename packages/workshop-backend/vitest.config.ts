@@ -48,6 +48,7 @@ export default defineConfig({
         durableObjects: {
           TEST_OVERSEER: { className: 'OverseerDurableObject', useSQLite: true },
           TEST_USER: { className: 'UserDurableObject', useSQLite: true },
+          TEST_PENDING_LOGIN: { className: 'PendingLogin', useSQLite: true },
         },
       },
     }),

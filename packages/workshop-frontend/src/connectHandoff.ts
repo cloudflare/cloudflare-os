@@ -29,6 +29,21 @@ export function gatekeeperOrigin(): string {
 const TICKET_PATTERN = /^[0-9a-f]{64}$/
 
 /**
+ * The ticket a `message` event carries, or null unless it came from the gatekeeper origin with a
+ * well-formed handoff envelope. Shared by the connect listener and the sign-in buttons, so both apply
+ * exactly the same checks.
+ */
+export function connectHandoffTicket(event: MessageEvent): string | null {
+  if (event.origin !== gatekeeperOrigin()) return null
+  const data: unknown = event.data
+  if (typeof data !== 'object' || data === null) return null
+  const { type, ticket } = data as { type?: unknown; ticket?: unknown }
+  if (type !== CONNECT_HANDOFF_MESSAGE_TYPE) return null
+  if (typeof ticket !== 'string' || !TICKET_PATTERN.test(ticket)) return null
+  return ticket
+}
+
+/**
  * Opens a connect / reconnect / ensure-resources URL as a popup that keeps this window as its
  * opener — the opener *is* the channel the completion ticket comes back on, so `noopener` (which
  * `noreferrer` implies) must not be used here. Throws when the browser blocked the popup.
@@ -55,12 +70,8 @@ export function useConnectHandoffListener(
 ): void {
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      if (event.origin !== gatekeeperOrigin()) return
-      const data: unknown = event.data
-      if (typeof data !== 'object' || data === null) return
-      const { type, ticket } = data as { type?: unknown; ticket?: unknown }
-      if (type !== CONNECT_HANDOFF_MESSAGE_TYPE) return
-      if (typeof ticket !== 'string' || !TICKET_PATTERN.test(ticket)) return
+      const ticket = connectHandoffTicket(event)
+      if (ticket === null) return
       const source = event.source
       authenticatedApi.completeConnectHandoff(ticket).then(
         () => { (source as Window | null)?.close?.() },

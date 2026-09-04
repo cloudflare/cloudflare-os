@@ -38,11 +38,14 @@ export const SERVICE_SALT = new Uint8Array([
  */
 export interface LoginAttempt extends RpcTarget {
   /**
-   * Resolves with a session token (to store and pass to `authenticate()`, same format as `login()`)
-   * once the gatekeeper popup completes, or rejects if the attempt fails or is abandoned. Safe to
-   * call immediately after `startGatekeeperLogin()`.
+   * Redeem the handoff ticket the sign-in popup posted to this window (the `ticket` of a
+   * `CONNECT_HANDOFF_MESSAGE_TYPE` message, exactly as for `AuthenticatedApi.completeConnectHandoff`)
+   * for a session token (to store and pass to `authenticate()`, same format as `login()`). Rejects if
+   * the gatekeeper reported a failure, the ticket does not match this attempt, or the attempt has
+   * expired or was already claimed. Holding this stub alone never yields a token: the sign-in URL is a
+   * bearer capability, and only the browser that finished it receives the ticket.
    */
-  wait(): Promise<string>;
+  claim(ticket: string): Promise<string>;
 }
 
 /** Public API exposed to the internet. */
@@ -58,8 +61,9 @@ export interface PublicApi extends RpcTarget {
 
   /**
    * Begin a sign-in via an authentication gatekeeper (e.g. "google", "github", "cloudflare").
-   * Returns a `url` the client opens in a new tab (the gatekeeper's OAuth popup, which self-closes)
-   * and an `attempt` stub whose `wait()` resolves once the popup completes. The vendor must be
+   * Returns a `url` the client opens as a popup with the opener retained (as for
+   * `AuthenticatedApi.connectAccount`) and an `attempt` stub whose `claim()` exchanges the ticket the
+   * popup posts back for the session token. The vendor must be
    * auth-capable and allowlisted (see ServerConfig.authVendors); throws otherwise.
    *
    * Dispose `attempt` to abandon the sign-in (e.g. the user closed the popup); this cancels the wait

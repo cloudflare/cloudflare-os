@@ -38,16 +38,18 @@ what persists a usable connected account. `GatekeeperVendor.connectAccount` take
    `PendingLogin` DO, hands the gatekeeper a `LoginConnectCallbackImpl`, and returns the gatekeeper's
    OAuth `url` plus an `attempt` stub (a capability wrapping the `PendingLogin` DO — no login id is
    exposed to the client).
-2. The client opens `url` in a pop-up (the gatekeeper's OAuth window) and calls
-   `attempt.wait()`, which blocks on the `PendingLogin` DO.
+2. The client opens `url` as a pop-up, keeping itself as the pop-up's opener.
 3. When the gatekeeper finishes, it calls `complete(user)`. The callback reads
    `user.getAuthenticatedEmail()`, resolves/creates the email-keyed `UserDurableObject`, mints a
-   session, and delivers the `"<email>:<secret>"` token to the `PendingLogin` DO — which resolves the
-   awaiting RPC. `complete()` also returns a connect handoff ticket that the pop-up posts to its
-   opener, like the connect-account flow does; for sign-in the ticket is **not yet enforced** (the
-   session is released to `attempt.wait()` regardless), which is the follow-up noted on
-   `LoginConnectCallbackImpl.complete`.
-4. The client stores the token and authenticates as usual.
+   session, and parks the `"<email>:<secret>"` token in the `PendingLogin` DO under the hash of a
+   fresh handoff ticket. `complete()` returns that ticket, and the gatekeeper's final page posts it to
+   its opener — exactly as the connect-account flow does (`connectHandoffPageHtml` in gatekeeper-kit).
+4. The opener calls `attempt.claim(ticket)`; the `PendingLogin` DO releases the token only for the
+   matching ticket, once. This is what binds the session to the browser that started the attempt:
+   the sign-in URL is a bearer capability, so whoever holds `attempt` without the ticket (an attacker
+   who phished a victim into finishing the flow) gets nothing, and the unclaimed token is wiped after
+   two minutes.
+5. The client stores the token and authenticates as usual.
 
 Sign-in does **not** persist a connected account: the minimal-scope grant is only used to read the
 email and is then discarded by the gatekeeper. To use a gatekeeper's capabilities (repos, Gmail/Docs)
@@ -76,10 +78,10 @@ In local dev, `run-dev-server.ts` seeds each gatekeeper's `CLIENT_ID`/`CLIENT_SE
 
 ## Storage / bindings
 
-- `PendingLogin` (DO) — short-lived bridge between a gatekeeper login pop-up and the waiting browser,
-  reached via `ctx.exports` (no explicit binding). Holds no durable storage: the in-flight
-  `attempt.wait()` keeps it alive, and it's evicted once the login completes or the client disposes
-  the `attempt` stub.
+- `PendingLogin` (DO) — short-lived bridge between a gatekeeper login pop-up and the browser that
+  started the attempt, reached via `ctx.exports` (no explicit binding). Stores the delivered token
+  under the ticket's hash until `claim()` consumes it; an alarm wipes an unclaimed result after two
+  minutes.
 
 ## Code layout
 
@@ -91,4 +93,4 @@ auth/
 ```
 
 Client-side: `ServerConfigContext` exposes `authVendors` and `passwordAuthEnabled`;
-`components/auth/OAuthButtons` renders the sign-in options (pop-up + `attempt.wait()`).
+`components/auth/OAuthButtons` renders the sign-in options (pop-up + handoff ticket + `attempt.claim()`).

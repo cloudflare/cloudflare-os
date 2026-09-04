@@ -8,11 +8,17 @@
 //   1. PublicApi.startGatekeeperLogin(vendorId) creates a PendingLogin DO (keyed by a random DO id),
 //      hands the gatekeeper a LoginConnectCallbackImpl, and returns {url, attempt}, where `attempt`
 //      is an RpcStub wrapping the DO (so the client awaits via a capability, never a guessable id).
-//   2. The browser opens `url` (the gatekeeper's self-closing OAuth popup) and calls
-//      `attempt.wait()`, which blocks on the PendingLogin DO.
+//   2. The browser opens `url` as a popup, keeping itself as the popup's opener.
 //   3. When the gatekeeper finishes, it calls LoginConnectCallbackImpl.complete(user). We read the
 //      verified email, resolve/create the email-keyed user DO, mint a session, and deliver the token
-//      to the PendingLogin DO, which resolves the awaiting RPC.
+//      to the PendingLogin DO under the hash of a fresh handoff ticket, which complete() returns for
+//      the gatekeeper's final page to post to its opener (see connect-handoff.ts).
+//   4. The opener calls `attempt.claim(ticket)`, and the PendingLogin DO releases the token only for
+//      a matching ticket.
+//
+// The sign-in URL is a bearer capability, so step 4 is what binds the session to the browser that
+// started the attempt: whoever holds `attempt` but never receives the ticket — an attacker who
+// phished a victim into finishing the flow — gets nothing, and the unclaimed token expires.
 //
 // Sign-in only requests minimal scopes and the gatekeeper grant is transient (it self-destructs
 // shortly after we read the email) — so login does NOT create a persistent connected account.
@@ -24,59 +30,58 @@ import { ConnectHandoff, GatekeeperConnectCallback, GatekeeperUser } from "@gadg
 import { createWorkshopLogger } from "../observability";
 import { CLOUDFLARE_VENDOR_ID } from "../user.js";
 import { readAdminConfig } from "../admin-config.js";
-import { handoffTargetOrigin, newSecretToken } from "../connect-handoff.js";
+import {
+  handoffTargetOrigin, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS,
+} from "../connect-handoff.js";
 
 const logger = createWorkshopLogger("workshop.auth");
 
-type PendingResult = { token: string } | { error: string };
+type PendingResult = { token: string; ticketHash: string } | { error: string };
+
+const RESULT_KEY = "result";
+const EXPIRED_MESSAGE = "This sign-in attempt has expired. Please try again.";
 
 /**
- * Bridges a login result from the (separate) OAuth-callback invocation back to the waiting browser.
- *
- * This DO holds no durable storage: a login normally completes within seconds, and the in-flight
- * awaitResult() request keeps the DO alive so the in-memory waiter is reachable when deliver()/fail()
- * fire. If the attempt is abandoned, the client disposes the awaiting RPC (the `attempt` stub) and
- * the DO is simply evicted — no alarm or cleanup needed.
+ * Bridges a login result from the (separate) OAuth-callback invocation back to the browser that
+ * started the attempt. The result is written to storage: the ticket reaches the browser only after
+ * deliver() has returned, so claim() always follows it, but nothing keeps this DO in memory across
+ * that gap. It lives for PENDING_HANDOFF_LIFETIME_MS at most; an alarm then wipes an unclaimed token.
  */
 export class PendingLogin extends DurableObject<Cloudflare.Env> {
-  // Awaiters from in-flight awaitResult() calls, resolved/rejected when the result arrives.
-  #waiters: { resolve: (token: string) => void; reject: (err: Error) => void }[] = [];
-  // Stash for the rare case deliver()/fail() arrives before awaitResult() registers a waiter.
-  #result?: PendingResult;
+  /** Called by LoginConnectCallbackImpl on success, with the hash of the ticket that may claim it. */
+  async deliver(token: string, ticketHash: string): Promise<void> {
+    await this.#store({ token, ticketHash });
+  }
 
-  /** Block until the login completes (or fails). */
-  async awaitResult(): Promise<string> {
-    if (this.#result) {
-      const result = this.#result;
-      this.#result = undefined;  // one-time use
-      if ("token" in result) return result.token;
-      throw new Error(result.error);
-    }
-    return await new Promise<string>((resolve, reject) => {
-      this.#waiters.push({ resolve, reject });
-    });
+  /** Called by LoginConnectCallbackImpl when the sign-in cannot complete; claim() reports `reason`. */
+  async fail(reason: string): Promise<void> {
+    await this.#store({ error: reason });
+  }
+
+  async #store(result: PendingResult): Promise<void> {
+    this.ctx.storage.kv.put(RESULT_KEY, result);
+    await this.ctx.storage.setAlarm(Date.now() + PENDING_HANDOFF_LIFETIME_MS);
   }
 
   /**
-   * Called by LoginConnectCallbackImpl on success: resolve the awaiter (or stash the token if none
-   * is waiting yet).
+   * Release the token to the holder of the matching ticket. Single use: the result is removed before
+   * it is checked, so neither a wrong ticket nor a repeat gets a second try.
    */
-  async deliver(token: string): Promise<void> {
-    if (this.#waiters.length > 0) {
-      for (const w of this.#waiters) w.resolve(token);
-      this.#waiters = [];
-    } else {
-      this.#result = { token };
+  async claim(ticket: string): Promise<string> {
+    const result = this.ctx.storage.kv.get<PendingResult>(RESULT_KEY);
+    await this.ctx.storage.deleteAll();
+    await this.ctx.storage.deleteAlarm();
+    if (!result) throw new Error(EXPIRED_MESSAGE);
+    if ("error" in result) throw new Error(result.error);
+    if (!/^[0-9a-f]{64}$/.test(ticket) ||
+        await hashSecret(Uint8Array.fromHex(ticket)) !== result.ticketHash) {
+      throw new Error("This sign-in attempt could not be verified. Please try again.");
     }
+    return result.token;
   }
 
-  async fail(reason: string): Promise<void> {
-    if (this.#waiters.length > 0) {
-      for (const w of this.#waiters) w.reject(new Error(reason));
-      this.#waiters = [];
-    } else {
-      this.#result = { error: reason };
-    }
+  async alarm(): Promise<void> {
+    await this.ctx.storage.deleteAll();
   }
 }
 
@@ -91,24 +96,18 @@ export class LoginConnectCallbackImpl
   }
 
   /**
-   * Delivers the session to the waiting `attempt` and returns a handoff for the popup to post.
-   *
-   * TODO(follow-up): the ticket is minted but not yet enforced, so this flow is still
-   * bound to whoever holds `attempt.wait()` rather than to the browser that finished OAuth — the same
-   * bearer-URL takeover the connect flow now closes. The fix is `LoginAttempt.claim(ticket)`: the
-   * PendingLogin DO stores the token under the ticket's hash across the deliver→claim gap and only
-   * a claim carrying the ticket (relayed from the popup via its opener) releases it.
+   * Mints the session and parks it in the PendingLogin DO under a fresh ticket's hash; returns the
+   * handoff whose ticket `LoginAttempt.claim()` must present to receive it.
    */
   async complete(account: Fetcher<GatekeeperUser>, expiresAt?: Date): Promise<ConnectHandoff> {
-    const handoff = {
-      targetOrigin: handoffTargetOrigin(this.env),
-      ticket: (await newSecretToken()).secret.toHex(),
-    };
-    await this.#deliver(account, expiresAt);
-    return handoff;
+    const targetOrigin = handoffTargetOrigin(this.env);
+    const { secret, hash } = await newSecretToken();
+    await this.#deliver(account, expiresAt, hash);
+    return { targetOrigin, ticket: secret.toHex() };
   }
 
-  async #deliver(account: Fetcher<GatekeeperUser>, expiresAt?: Date): Promise<void> {
+  async #deliver(account: Fetcher<GatekeeperUser>, expiresAt: Date | undefined,
+                 ticketHash: string): Promise<void> {
     const loginLogger = logger.with({
       operation: "gatekeeper.login",
       vendorId: this.ctx.props.vendorId,
@@ -147,7 +146,7 @@ export class LoginConnectCallbackImpl
       }
       // Session tokens are "<doName>:<secret>"; PublicApi.authenticate() routes via idFromName of
       // the first part. The user DO is keyed by email, so the prefix must be the email.
-      await pending.deliver(`${email}:${secret}`);
+      await pending.deliver(`${email}:${secret}`, ticketHash);
       loginLogger.info("gatekeeper login finished", {
         event: "gatekeeper.login.finished", outcome: "ok",
       });
