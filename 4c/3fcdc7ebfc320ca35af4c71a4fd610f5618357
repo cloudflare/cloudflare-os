@@ -1,0 +1,41 @@
+packages/workshop-backend/__tests__/connect-handoff.test.ts
+  s_3402201043bce4::t_c81a80fa7f906e 1-223
+packages/workshop-backend/__tests__/test-worker.ts
+  s_3402201043bce4::t_cbb58d7da0b9cb 1-47
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_3402201043bce4::t_368efb4d9590ca 273-276
+packages/workshop-backend/src/connect-handoff.ts
+  s_3402201043bce4::t_5206b05fb79566 1-38
+packages/workshop-backend/src/server.ts
+  s_3402201043bce4::t_5f162f5f16eb18 321-324
+packages/workshop-backend/src/observability.ts
+  s_3402201043bce4::t_81fdadfaf394d9 21
+packages/workshop-backend/vitest.config.ts
+  s_3402201043bce4::t_8f93c23046e1f4 41-42,45-47,50
+scripts/run-dev-server.ts
+  s_3402201043bce4::t_6952131b2de912 558-566
+packages/workshop-backend/src/user.ts
+  s_3402201043bce4::t_4f6c958c6c70e8 3,15,36-48,186-188,362,364,1679-1795,1872-1875,1877-1878
+packages/workshop-shared/src/api.ts
+  s_3402201043bce4::t_558354f683308e 530-533,544-552,555-557,688-690
+packages/workshop-shared/src/gatekeeper.ts
+  s_3402201043bce4::t_b102399578935f 446-468,475-476,479-481,488-498,561-564,573-583,599-603,661-665,667-672,676-683,701-702,704-705
+packages/workshop-backend/src/auth/login-flow.ts
+  s_3402201043bce4::t_cc099dabcf855f 23,27,93-111,174-178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4c3fcdc7ebfc320ca35af4c71a4fd610f5618357",
+  "prompts": {},
+  "sessions": {
+    "s_3402201043bce4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a32aae8a-81f3-4288-a8db-4d09adf37f7c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
