@@ -44,6 +44,21 @@ function stallingNotify() {
   };
 }
 
+/** Starts a run whose 401 stalls until released, resolving once the operation has entered. */
+async function stalledRun(
+  instance: CredentialSource<Creds>, options: { replayable?: boolean } = {},
+) {
+  const entered = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  const run = instance.run(async () => {
+    entered.resolve();
+    await gate.promise;
+    throw new Error("401");
+  }, options);
+  await entered.promise;
+  return { run, release: gate.resolve };
+}
+
 describe("CredentialCoordinator", () => {
   it("reports expiry when nothing is stored", async () => {
     await expect(coordinator(makeKv()).fresh(async () => live))
@@ -825,17 +840,63 @@ describe("CredentialSource", () => {
 
   const fresh: Creds = { token: "fresh", expiresAt: Date.now() + 60 * 60 * 1000 };
 
-  function source(overrides: Partial<CredentialSourceOptions<Creds>> = {}) {
-    const getCredentials =
-      vi.fn(async () => ({ creds: live, identity: "id-a", generation: "gen-a" }));
-    const reportCredentialsRejected = vi.fn(async (_identity: string) => "expired" as const);
+  type SourceOverrides = Partial<Omit<CredentialSourceOptions<Creds>, "account">> & {
+    getCredentials?: () => Promise<CredentialsWithIdentity<Creds>>;
+    reportCredentialsRejected?: (identity: string) => Promise<RejectionVerdict>;
+  };
+
+  /** A source over a stub account; unset halves serve one live read and answer expired. */
+  function source(overrides: SourceOverrides = {}) {
+    const { getCredentials: read, reportCredentialsRejected: report, ...options } = overrides;
+    const getCredentials = vi.fn<() => Promise<CredentialsWithIdentity<Creds>>>(
+      read ?? (async () => ({ creds: live, identity: "id-a", generation: "gen-a" })));
+    const reportCredentialsRejected = vi.fn<(identity: string) => Promise<RejectionVerdict>>(
+      report ?? (async () => "expired"));
     const instance = new CredentialSource<Creds>({
       account: () => ({ getCredentials, reportCredentialsRejected }),
       isAuthError: error => error instanceof Error && error.message === "401",
       expiredMessage,
-      ...overrides,
+      ...options,
     });
     return { instance, getCredentials, reportCredentialsRejected };
+  }
+
+  /** A source whose account parks every read for the test to release in order. */
+  function queuedSource(overrides: SourceOverrides = {}) {
+    const reads: PromiseWithResolvers<CredentialsWithIdentity<Creds>>[] = [];
+    const parked = source({
+      getCredentials: () => {
+        const read = Promise.withResolvers<CredentialsWithIdentity<Creds>>();
+        reads.push(read);
+        return read.promise;
+      },
+      ...overrides,
+    });
+    return { reads, ...parked };
+  }
+
+  /**
+   * A source over one mutable account triple: reads serve a copy of `current`, the report answers
+   * with the given verdict, and `set` — the callback's or the returned one — replaces the triple
+   * the way a refresh commit or a reconnect does.
+   */
+  function mutableSource(
+    report: (
+      identity: string,
+      current: CredentialsWithIdentity<Creds>,
+      set: (next: CredentialsWithIdentity<Creds>) => void,
+    ) => RejectionVerdict,
+  ) {
+    let current: CredentialsWithIdentity<Creds> =
+      { creds: live, identity: "id-a", generation: "gen-a" };
+    const set = (next: CredentialsWithIdentity<Creds>) => { current = next; };
+    return {
+      ...source({
+        getCredentials: async () => ({ ...current }),
+        reportCredentialsRejected: async identity => report(identity, current, set),
+      }),
+      set,
+    };
   }
 
   /**
@@ -844,35 +905,12 @@ describe("CredentialSource", () => {
    * bearer.
    */
   function healingSource() {
-    let current = { creds: live, identity: "id-a", generation: "gen-a" };
-    const getCredentials = vi.fn(async () => ({ ...current }));
-    const reportCredentialsRejected = vi.fn(async (identity: string) => {
+    return mutableSource((identity, current, set) => {
       if (identity === current.identity) {
-        current = { creds: fresh, identity: "id-b", generation: current.generation };
+        set({ creds: fresh, identity: "id-b", generation: current.generation });
       }
-      return "superseded" as const;
+      return "superseded";
     });
-    const instance = new CredentialSource<Creds>({
-      account: () => ({ getCredentials, reportCredentialsRejected }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
-    return { instance, getCredentials, reportCredentialsRejected };
-  }
-
-  /** Starts a run whose 401 stalls until released, resolving once the operation has entered. */
-  async function stalledRun(
-    instance: CredentialSource<Creds>, options: { replayable?: boolean } = {},
-  ) {
-    const entered = Promise.withResolvers<void>();
-    const gate = Promise.withResolvers<void>();
-    const run = instance.run(async () => {
-      entered.resolve();
-      await gate.promise;
-      throw new Error("401");
-    }, options);
-    await entered.promise;
-    return { run, release: gate.resolve };
   }
 
   it("coalesces concurrent account round-trips", async () => {
@@ -928,14 +966,8 @@ describe("CredentialSource", () => {
   it("surfaces the authority only while the principal is known", async () => {
     let identity = "id-a";
     let generation = "gen-a";
-    const instance = new CredentialSource<Creds>({
-      account: () => ({
-        getCredentials: async () => ({ creds: live, identity, generation }),
-        reportCredentialsRejected: async () => "expired" as const,
-      }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
+    const { instance } =
+      source({ getCredentials: async () => ({ creds: live, identity, generation }) });
     // Nothing fetched yet: a cache keyed on this must bypass, not hit a props-keyed partition.
     expect(instance.authority()).toBeUndefined();
 
@@ -992,18 +1024,10 @@ describe("CredentialSource", () => {
   });
 
   it("reports the identity the retry actually used when its credentials are rejected too", async () => {
-    let current = { creds: live, identity: "id-a", generation: "gen-a" };
-    const reportCredentialsRejected = vi.fn(async (identity: string) => {
-      if (identity === "id-a") {
-        current = { creds: fresh, identity: "id-b", generation: "gen-a" };
-        return "superseded" as const;
-      }
-      return "expired" as const;
-    });
-    const instance = new CredentialSource<Creds>({
-      account: () => ({ getCredentials: async () => ({ ...current }), reportCredentialsRejected }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
+    const { instance, reportCredentialsRejected } = mutableSource((identity, _current, set) => {
+      if (identity !== "id-a") return "expired";
+      set({ creds: fresh, identity: "id-b", generation: "gen-a" });
+      return "superseded";
     });
     const operation = vi.fn(async () => { throw new Error("401"); });
 
@@ -1022,16 +1046,9 @@ describe("CredentialSource", () => {
     // Another consumer over the same account healed past id-a; this snapshot cannot see that, so
     // the account's answer is what keeps the caller off a false reconnect prompt — and without
     // `replayable`, off a second execution the operation cannot afford.
-    const reportCredentialsRejected = vi.fn(async (_identity: string) => "superseded" as const);
     const operation = vi.fn(async () => { throw new Error("401"); });
-    const instance = new CredentialSource<Creds>({
-      account: () => ({
-        getCredentials: async () => ({ creds: live, identity: "id-a", generation: "gen-a" }),
-        reportCredentialsRejected,
-      }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
+    const { instance, reportCredentialsRejected } =
+      source({ reportCredentialsRejected: async () => "superseded" });
 
     await expect(instance.run(operation)).rejects.toThrow(CredentialsChangedError);
     expect(operation).toHaveBeenCalledOnce();
@@ -1043,15 +1060,10 @@ describe("CredentialSource", () => {
 
   it("surfaces the original rejection when the account cannot adjudicate", async () => {
     const rejection = new Error("401");
-    const reportCredentialsRejected = vi.fn(async (_identity: string) => "unavailable" as const);
     const operation = vi.fn(async () => { throw rejection; });
-    const instance = new CredentialSource<Creds>({
-      account: () => ({
-        getCredentials: async () => ({ creds: live, identity: "id-a", generation: "gen-a" }),
-        reportCredentialsRejected,
-      }),
+    const { instance } = source({
+      reportCredentialsRejected: async () => "unavailable",
       isAuthError: error => error === rejection,
-      expiredMessage,
     });
 
     // Nothing was adjudicated — replayable or not, the caller gets the provider error it actually
@@ -1068,15 +1080,8 @@ describe("CredentialSource", () => {
 
   it("fails closed on a malformed verdict", async () => {
     // The RPC boundary can hand back anything; an unrecognized answer must not read as retryable.
-    const reportCredentialsRejected =
-      vi.fn(async (_identity: string) => "definitely" as unknown as RejectionVerdict);
-    const instance = new CredentialSource<Creds>({
-      account: () => ({
-        getCredentials: async () => ({ creds: live, identity: "id-a", generation: "gen-a" }),
-        reportCredentialsRejected,
-      }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
+    const { instance } = source({
+      reportCredentialsRejected: async () => "definitely" as unknown as RejectionVerdict,
     });
 
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1094,10 +1099,7 @@ describe("CredentialSource", () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const { instance } = source({
-        account: () => ({
-          getCredentials: async () => ({ creds: live, identity: "id-a", generation: "gen-a" }),
-          reportCredentialsRejected: async () => { throw new Error("account unreachable"); },
-        }),
+        reportCredentialsRejected: async () => { throw new Error("account unreachable"); },
       });
 
       // An outage must not mask a dead grant as retryable; the caller sees expiry.
@@ -1110,17 +1112,11 @@ describe("CredentialSource", () => {
   });
 
   it("refuses the retry when the refetch crosses a reconnect", async () => {
-    let current = { creds: live, identity: "id-a", generation: "gen-a" };
-    const reportCredentialsRejected = vi.fn(async (_identity: string) => {
-      // A reconnect lands while the report is in flight; the account's gate answers superseded.
-      current = { creds: fresh, identity: "id-b", generation: "gen-b" };
-      return "superseded" as const;
-    });
     const operation = vi.fn(async () => { throw new Error("401"); });
-    const instance = new CredentialSource<Creds>({
-      account: () => ({ getCredentials: async () => ({ ...current }), reportCredentialsRejected }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
+    const { instance, reportCredentialsRejected } = mutableSource((_identity, _current, set) => {
+      // A reconnect lands while the report is in flight; the account's gate answers superseded.
+      set({ creds: fresh, identity: "id-b", generation: "gen-b" });
+      return "superseded";
     });
 
     await expect(instance.run(operation, { replayable: true }))
@@ -1138,16 +1134,9 @@ describe("CredentialSource", () => {
     // A hand-written account whose "heal" lazily re-serves the very credentials the provider
     // rejected: superseded promised a successor, so the same identity back means re-entering,
     // never burning the one retry on a corpse and then falsely retiring the grant.
-    const reportCredentialsRejected = vi.fn(async (_identity: string) => "superseded" as const);
     const operation = vi.fn(async () => { throw new Error("401"); });
-    const instance = new CredentialSource<Creds>({
-      account: () => ({
-        getCredentials: async () => ({ creds: live, identity: "id-a", generation: "gen-a" }),
-        reportCredentialsRejected,
-      }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
+    const { instance, reportCredentialsRejected } =
+      source({ reportCredentialsRejected: async () => "superseded" });
 
     await expect(instance.run(operation, { replayable: true }))
       .rejects.toThrow(CredentialsChangedError);
@@ -1162,14 +1151,8 @@ describe("CredentialSource", () => {
     // Two runs read one grant and both 401. The first's post-verdict refetch dangles; the second's
     // verdict fences it out, and the second's own refetch adopts a reconnect. The dangling
     // response — same generation as the rejected read — must never be executed under.
-    const reads: PromiseWithResolvers<CredentialsWithIdentity<Creds>>[] = [];
-    const getCredentials = vi.fn(() => {
-      const read = Promise.withResolvers<CredentialsWithIdentity<Creds>>();
-      reads.push(read);
-      return read.promise;
-    });
-    const reportCredentialsRejected = vi.fn(async (_identity: string) => "superseded" as const);
-    const { instance } = source({ account: () => ({ getCredentials, reportCredentialsRejected }) });
+    const { instance, reads } =
+      queuedSource({ reportCredentialsRejected: async () => "superseded" });
 
     const gate = Promise.withResolvers<void>();
     const first = vi.fn(async () => { throw new Error("401"); });
@@ -1199,14 +1182,8 @@ describe("CredentialSource", () => {
     // Same shape as above, but the dangling response re-serves the rejected identity itself. The
     // re-serve branch undoes a refetch's adoption — this refetch adopted nothing, so acting on it
     // would destroy the reconnect's live authority instead.
-    const reads: PromiseWithResolvers<CredentialsWithIdentity<Creds>>[] = [];
-    const getCredentials = vi.fn(() => {
-      const read = Promise.withResolvers<CredentialsWithIdentity<Creds>>();
-      reads.push(read);
-      return read.promise;
-    });
-    const reportCredentialsRejected = vi.fn(async (_identity: string) => "superseded" as const);
-    const { instance } = source({ account: () => ({ getCredentials, reportCredentialsRejected }) });
+    const { instance, reads } =
+      queuedSource({ reportCredentialsRejected: async () => "superseded" });
 
     const gate = Promise.withResolvers<void>();
     const runFirst = instance.run(async () => { throw new Error("401"); }, { replayable: true });
@@ -1230,16 +1207,10 @@ describe("CredentialSource", () => {
 
   it("never runs the retry under a successor already adjudicated dead", async () => {
     const gate = Promise.withResolvers<void>();
-    let current = { creds: live, identity: "id-a", generation: "gen-a" };
-    const reportCredentialsRejected = vi.fn(async (identity: string) => {
-      if (identity === "id-b") return "expired" as const;
-      current = { creds: fresh, identity: "id-b", generation: "gen-a" };
-      return "superseded" as const;
-    });
-    const instance = new CredentialSource<Creds>({
-      account: () => ({ getCredentials: async () => ({ ...current }), reportCredentialsRejected }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
+    const { instance } = mutableSource((identity, _current, set) => {
+      if (identity === "id-b") return "expired";
+      set({ creds: fresh, identity: "id-b", generation: "gen-a" });
+      return "superseded";
     });
 
     // Two calls share one read; the slow one's rejection lands after the healed successor was
@@ -1260,15 +1231,10 @@ describe("CredentialSource", () => {
   });
 
   it("re-enters instead of expiring when a dead successor's fenced-out refetch postdates a reconnect", async () => {
-    const reads: PromiseWithResolvers<CredentialsWithIdentity<Creds>>[] = [];
-    const getCredentials = vi.fn(() => {
-      const read = Promise.withResolvers<CredentialsWithIdentity<Creds>>();
-      reads.push(read);
-      return read.promise;
+    const { instance, reads } = queuedSource({
+      reportCredentialsRejected: async identity =>
+        identity === "id-b" ? "expired" : "superseded",
     });
-    const reportCredentialsRejected = vi.fn(async (identity: string) =>
-      identity === "id-b" ? "expired" as const : "superseded" as const);
-    const { instance } = source({ account: () => ({ getCredentials, reportCredentialsRejected }) });
 
     const gate = Promise.withResolvers<void>();
     const first = vi.fn(async () => { throw new Error("401"); });
@@ -1303,17 +1269,11 @@ describe("CredentialSource", () => {
 
   it("makes at most two attempts however many verdicts answer superseded", async () => {
     let minted = 0;
-    let current = { creds: live, identity: "id-0", generation: "gen-a" };
-    const reportCredentialsRejected = vi.fn(async (_identity: string) => {
-      minted += 1;
-      current = { creds: fresh, identity: `id-${minted}`, generation: "gen-a" };
-      return "superseded" as const;
-    });
     const operation = vi.fn(async () => { throw new Error("401"); });
-    const instance = new CredentialSource<Creds>({
-      account: () => ({ getCredentials: async () => ({ ...current }), reportCredentialsRejected }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
+    const { instance, reportCredentialsRejected } = mutableSource((_identity, _current, set) => {
+      minted += 1;
+      set({ creds: fresh, identity: `id-${minted}`, generation: "gen-a" });
+      return "superseded";
     });
 
     await expect(instance.run(operation, { replayable: true }))
@@ -1398,21 +1358,15 @@ describe("CredentialSource", () => {
   });
 
   it("adjudicates a repeat report afresh instead of caching the verdict", async () => {
-    let current = { creds: live, identity: "id-a", generation: "gen-a" };
-    const reportCredentialsRejected = vi.fn(async (identity: string) =>
-      identity === current.identity ? "expired" as const : "superseded" as const);
-    const instance = new CredentialSource<Creds>({
-      account: () => ({ getCredentials: async () => ({ ...current }), reportCredentialsRejected }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
+    const { instance, reportCredentialsRejected, set } = mutableSource((identity, current) =>
+      identity === current.identity ? "expired" : "superseded");
 
     await expect(instance.run(async () => { throw new Error("401"); }, { replayable: true }))
       .rejects.toThrow(CredentialsExpiredError);
 
     // A straggler reads the dead grant the account still serves, then the user reconnects.
     const stalled = await stalledRun(instance, { replayable: true });
-    current = { creds: fresh, identity: "id-b", generation: "gen-b" };
+    set({ creds: fresh, identity: "id-b", generation: "gen-b" });
     stalled.release();
 
     // The account re-adjudicates and answers moved-past; a cached verdict would expire the
@@ -1427,12 +1381,8 @@ describe("CredentialSource", () => {
       { creds: live, identity: "id-a", generation: "gen-a" },
       { creds: fresh, identity: "id-b", generation: "gen-b" },
     ];
-    const reportCredentialsRejected = vi.fn(async (_identity: string) => "expired" as const);
-    const instance = new CredentialSource<Creds>({
-      account: () => ({ getCredentials: async () => reads.shift()!, reportCredentialsRejected }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
+    const { instance, reportCredentialsRejected } =
+      source({ getCredentials: async () => reads.shift()! });
 
     const stalled = await stalledRun(instance, { replayable: true });
 
@@ -1451,16 +1401,11 @@ describe("CredentialSource", () => {
   it("skips the second ask when a reconnect is adopted during the retry", async () => {
     const replaying = Promise.withResolvers<void>();
     const replayGate = Promise.withResolvers<void>();
-    let current = { creds: live, identity: "id-a", generation: "gen-a" };
-    const reportCredentialsRejected = vi.fn(async (_identity: string) => {
-      current = { creds: fresh, identity: "id-b", generation: "gen-a" };
-      return "superseded" as const;
-    });
-    const instance = new CredentialSource<Creds>({
-      account: () => ({ getCredentials: async () => ({ ...current }), reportCredentialsRejected }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
+    const { instance, reportCredentialsRejected, set } =
+      mutableSource((_identity, _current, mint) => {
+        mint({ creds: fresh, identity: "id-b", generation: "gen-a" });
+        return "superseded";
+      });
 
     const call = instance.run(async creds => {
       if (creds.token === "live") throw new Error("401");
@@ -1471,7 +1416,7 @@ describe("CredentialSource", () => {
     await replaying.promise;
 
     // A reconnect lands and a plain read adopts it while the retry is out.
-    current = { creds: live, identity: "id-c", generation: "gen-c" };
+    set({ creds: live, identity: "id-c", generation: "gen-c" });
     expect(await instance.get()).toEqual(live);
     expect(instance.authority()).toBe("gen-c");
 
@@ -1499,15 +1444,8 @@ describe("CredentialSource", () => {
   ] as const)("never re-adopts the rejected identity while its verdict is pending ($verdict)",
     async ({ verdict, error, readopted }) => {
       const answer = Promise.withResolvers<RejectionVerdict>();
-      const reportCredentialsRejected = vi.fn((_identity: string) => answer.promise);
-      const instance = new CredentialSource<Creds>({
-        account: () => ({
-          getCredentials: async () => ({ creds: live, identity: "id-a", generation: "gen-a" }),
-          reportCredentialsRejected,
-        }),
-        isAuthError: error => error instanceof Error && error.message === "401",
-        expiredMessage,
-      });
+      const { instance, reportCredentialsRejected } =
+        source({ reportCredentialsRejected: () => answer.promise });
 
       const report = instance.run(async () => { throw new Error("401"); });
       await vi.waitFor(() => expect(reportCredentialsRejected).toHaveBeenCalled());
@@ -1528,13 +1466,8 @@ describe("CredentialSource", () => {
 
   it("stops vouching for a rejected authority while the verdict is pending", async () => {
     const answer = Promise.withResolvers<RejectionVerdict>();
-    const reportCredentialsRejected = vi.fn((_identity: string) => answer.promise);
-    const { instance } = source({
-      account: () => ({
-        getCredentials: async () => ({ creds: live, identity: "id-a", generation: "gen-a" }),
-        reportCredentialsRejected,
-      }),
-    });
+    const { instance, reportCredentialsRejected } =
+      source({ reportCredentialsRejected: () => answer.promise });
 
     await instance.get();
     expect(instance.authority()).toBe("gen-a");
@@ -1550,23 +1483,15 @@ describe("CredentialSource", () => {
   });
 
   it("reports a rejection served by a fenced read once the authority is unknown", async () => {
-    const reads: Array<(value: CredentialsWithIdentity<Creds>) => void> = [];
     const answer = Promise.withResolvers<RejectionVerdict>();
-    const reportCredentialsRejected = vi.fn(async (identity: string) =>
-      identity === "id-a" ? answer.promise : "expired" as const);
-    const instance = new CredentialSource<Creds>({
-      account: () => ({
-        getCredentials: vi.fn(() =>
-          new Promise<CredentialsWithIdentity<Creds>>(resolve => { reads.push(resolve); })),
-        reportCredentialsRejected,
-      }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
+    const { instance, reads, reportCredentialsRejected } = queuedSource({
+      reportCredentialsRejected: async identity =>
+        identity === "id-a" ? answer.promise : "expired",
     });
 
     const first = instance.run(async () => { throw new Error("401"); });
     await vi.waitFor(() => expect(reads).toHaveLength(1));
-    reads[0]({ creds: live, identity: "id-a", generation: "gen-a" });
+    reads[0].resolve({ creds: live, identity: "id-a", generation: "gen-a" });
     await vi.waitFor(() => expect(reportCredentialsRejected).toHaveBeenCalledWith("id-a"));
 
     // A second run's read starts before the verdict lands, so its result arrives fenced: served
@@ -1575,7 +1500,7 @@ describe("CredentialSource", () => {
     await vi.waitFor(() => expect(reads).toHaveLength(2));
     answer.resolve("superseded");
     await expect(first).rejects.toThrow(CredentialsChangedError);
-    reads[1]({ creds: fresh, identity: "id-b", generation: "gen-b" });
+    reads[1].resolve({ creds: fresh, identity: "id-b", generation: "gen-b" });
 
     // The retained id-a identity is no successor once its authority dropped — the failure under
     // the account's actual current credential must reach the account, not resolve as stale.
@@ -1586,15 +1511,8 @@ describe("CredentialSource", () => {
   it("treats an auth failure under superseded credentials as stale, not expiry", async () => {
     let identity = "id-a";
     let generation = "gen-a";
-    const reportCredentialsRejected = vi.fn(async (_identity: string) => "expired" as const);
-    const instance = new CredentialSource<Creds>({
-      account: () => ({
-        getCredentials: async () => ({ creds: live, identity, generation }),
-        reportCredentialsRejected,
-      }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
+    const { instance, reportCredentialsRejected } =
+      source({ getCredentials: async () => ({ creds: live, identity, generation }) });
 
     await expect(instance.run(async () => {
       // A reconnect lands and another caller refetches while this call is in flight.
@@ -1618,16 +1536,7 @@ describe("CredentialSource", () => {
   });
 
   it("never lets a fenced read opened after a report restore authority", async () => {
-    const reads: Array<(read: CredentialsWithIdentity<Creds>) => void> = [];
-    const getCredentials = vi.fn(() => new Promise<CredentialsWithIdentity<Creds>>(resolve => {
-      reads.push(resolve);
-    }));
-    const reportCredentialsRejected = vi.fn(async (_identity: string) => "expired" as const);
-    const instance = new CredentialSource<Creds>({
-      account: () => ({ getCredentials, reportCredentialsRejected }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
+    const { instance, reads } = queuedSource();
 
     const gate = Promise.withResolvers<void>();
     const fast = instance.run(async () => { throw new Error("401"); });
@@ -1635,7 +1544,7 @@ describe("CredentialSource", () => {
       await gate.promise;
       throw new Error("401");
     });
-    reads[0]?.({ creds: live, identity: "id-a", generation: "gen-a" });
+    reads[0].resolve({ creds: live, identity: "id-a", generation: "gen-a" });
     await expect(fast).rejects.toThrow(CredentialsExpiredError);
     expect(instance.authority()).toBeUndefined();
 
@@ -1646,22 +1555,13 @@ describe("CredentialSource", () => {
 
     // Resolving now must not restore authority: this is a fenced response, not a fetch started
     // after the report — however its generation compares to the unknown one it opened under.
-    reads[1]?.({ creds: live, identity: "id-b", generation: "gen-a" });
+    reads[1].resolve({ creds: live, identity: "id-b", generation: "gen-a" });
     expect(await pending).toEqual(live);
     expect(instance.authority()).toBeUndefined();
   });
 
   it("never hands a caller the fetch in flight when credentials were reported dead", async () => {
-    const fetches: Array<(fetched: CredentialsWithIdentity<Creds>) => void> = [];
-    const getCredentials = vi.fn(() => new Promise<CredentialsWithIdentity<Creds>>(resolve => {
-      fetches.push(resolve);
-    }));
-    const instance = new CredentialSource<Creds>({
-      account: () =>
-        ({ getCredentials, reportCredentialsRejected: async () => "expired" as const }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
+    const { instance, reads, getCredentials } = queuedSource();
 
     // Two provider calls share one fetch, the way parallel calls in one gadget request do.
     const first = Promise.withResolvers<void>();
@@ -1674,7 +1574,7 @@ describe("CredentialSource", () => {
       await second.promise;
       throw new Error("401");
     });
-    fetches[0]?.({ creds: live, identity: "id-a", generation: "gen-a" });
+    reads[0].resolve({ creds: live, identity: "id-a", generation: "gen-a" });
 
     // The first 401 empties the cache, so the next caller opens a second fetch...
     second.resolve();
@@ -1692,30 +1592,21 @@ describe("CredentialSource", () => {
 
     const fromSecond = { token: "second-fetch", expiresAt: live.expiresAt };
     const fromThird = { token: "third-fetch", expiresAt: live.expiresAt };
-    fetches[1]?.({ creds: fromSecond, identity: "id-b", generation: "gen-a" });
-    fetches[2]?.({ creds: fromThird, identity: "id-c", generation: "gen-a" });
+    reads[1].resolve({ creds: fromSecond, identity: "id-b", generation: "gen-a" });
+    reads[2].resolve({ creds: fromThird, identity: "id-c", generation: "gen-a" });
     expect(await riding).toEqual(fromSecond);
     expect(await after).toEqual(fromThird);
   });
 
   it("never resurrects a generation cleared while another fetch was in flight", async () => {
-    const fetches: Array<(fetched: CredentialsWithIdentity<Creds>) => void> = [];
-    const getCredentials = vi.fn(() => new Promise<CredentialsWithIdentity<Creds>>(resolve => {
-      fetches.push(resolve);
-    }));
-    const instance = new CredentialSource<Creds>({
-      account: () =>
-        ({ getCredentials, reportCredentialsRejected: async () => "expired" as const }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
+    const { instance, reads, getCredentials } = queuedSource();
 
     const gate = Promise.withResolvers<void>();
     const call = instance.run(async () => {
       await gate.promise;
       throw new Error("401");
     });
-    fetches[0]?.({ creds: live, identity: "id-a", generation: "gen-a" });
+    reads[0].resolve({ creds: live, identity: "id-a", generation: "gen-a" });
     expect(await instance.get()).toEqual(live);
 
     // Another caller's fetch opens while the provider call is out, and is still in flight when the
@@ -1728,29 +1619,24 @@ describe("CredentialSource", () => {
 
     // That fetch resolving carries the dead grant's generation; adopting it would put the cache
     // back on the dead partition.
-    fetches[1]?.({ creds: live, identity: "id-a", generation: "gen-a" });
+    reads[1].resolve({ creds: live, identity: "id-a", generation: "gen-a" });
     expect(await pending).toEqual(live);
     expect(instance.authority()).toBeUndefined();
 
     // A fetch opened after the clear re-establishes the principal.
     const after = instance.get();
-    fetches[2]?.({ creds: live, identity: "id-b", generation: "gen-b" });
+    reads[2].resolve({ creds: live, identity: "id-b", generation: "gen-b" });
     expect(await after).toEqual(live);
     expect(instance.authority()).toBe("gen-b");
   });
 
   it("drops the authority only when a fetch fails with confirmed expiry", async () => {
     let failure: Error | undefined;
-    const instance = new CredentialSource<Creds>({
-      account: () => ({
-        getCredentials: async () => {
-          if (failure) throw failure;
-          return { creds: live, identity: "id-a", generation: "gen-a" };
-        },
-        reportCredentialsRejected: async () => "expired" as const,
-      }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
+    const { instance } = source({
+      getCredentials: async () => {
+        if (failure) throw failure;
+        return { creds: live, identity: "id-a", generation: "gen-a" };
+      },
     });
 
     await instance.get();
@@ -1769,23 +1655,12 @@ describe("CredentialSource", () => {
   });
 
   it("ignores a straggler fetch that rejects with expiry after the partition revived", async () => {
-    const fetches: Array<PromiseWithResolvers<CredentialsWithIdentity<Creds>>> = [];
-    const getCredentials = vi.fn(() => {
-      const fetch = Promise.withResolvers<CredentialsWithIdentity<Creds>>();
-      fetches.push(fetch);
-      return fetch.promise;
-    });
-    const instance = new CredentialSource<Creds>({
-      account: () =>
-        ({ getCredentials, reportCredentialsRejected: async () => "expired" as const }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
+    const { instance, reads } = queuedSource();
 
     // Grant A is adopted, another fetch opens, then A's expiry forgets that fetch mid-flight.
     const gate = Promise.withResolvers<void>();
     const call = instance.run(async () => { await gate.promise; throw new Error("401"); });
-    fetches[0]?.resolve({ creds: live, identity: "id-a", generation: "gen-a" });
+    reads[0].resolve({ creds: live, identity: "id-a", generation: "gen-a" });
     expect(await instance.get()).toEqual(live);
     const straggler = instance.get();
     gate.resolve();
@@ -1793,33 +1668,24 @@ describe("CredentialSource", () => {
 
     // A successful refresh commits a new identity on the same connection: the partition revives.
     const revived = instance.get();
-    fetches[2]?.resolve({ creds: live, identity: "id-b", generation: "gen-a" });
+    reads[2].resolve({ creds: live, identity: "id-b", generation: "gen-a" });
     expect(await revived).toEqual(live);
     expect(instance.authority()).toBe("gen-a");
 
     // The forgotten fetch's stale coalesced refresh finally fails; it must not clear the revival.
-    fetches[1]?.reject(
+    reads[1].reject(
       Object.assign(new Error("grant expired upstream"), { name: "CredentialsExpiredError" }));
     await expect(straggler).rejects.toThrow("grant expired upstream");
     expect(instance.authority()).toBe("gen-a");
   });
 
   it("never adopts a straggler fetch that outlived later expiry reports", async () => {
-    const fetches: Array<(fetched: CredentialsWithIdentity<Creds>) => void> = [];
-    const getCredentials = vi.fn(() => new Promise<CredentialsWithIdentity<Creds>>(resolve => {
-      fetches.push(resolve);
-    }));
-    const instance = new CredentialSource<Creds>({
-      account: () =>
-        ({ getCredentials, reportCredentialsRejected: async () => "expired" as const }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
+    const { instance, reads, getCredentials } = queuedSource();
 
     // Grant A is adopted, another fetch opens, then A's expiry forgets that fetch mid-flight.
     const gate = Promise.withResolvers<void>();
     const callA = instance.run(async () => { await gate.promise; throw new Error("401"); });
-    fetches[0]?.({ creds: live, identity: "id-a", generation: "gen-a" });
+    reads[0].resolve({ creds: live, identity: "id-a", generation: "gen-a" });
     expect(await instance.get()).toEqual(live);
     const straggler = instance.get();
     expect(getCredentials).toHaveBeenCalledTimes(2);
@@ -1828,39 +1694,30 @@ describe("CredentialSource", () => {
 
     // Grant B is adopted and dies too, rotating the dead marker away from A.
     const callB = instance.run(async () => { throw new Error("401"); });
-    fetches[2]?.({ creds: live, identity: "id-b", generation: "gen-b" });
+    reads[2].resolve({ creds: live, identity: "id-b", generation: "gen-b" });
     await expect(callB).rejects.toThrow(CredentialsExpiredError);
     expect(instance.authority()).toBeUndefined();
 
     // The straggler resolves with A, which no longer matches the marker. Adopting it would
     // resurrect a dead partition and misroute genuine B failures as superseded.
-    fetches[1]?.({ creds: live, identity: "id-a", generation: "gen-a" });
+    reads[1].resolve({ creds: live, identity: "id-a", generation: "gen-a" });
     expect(await straggler).toEqual(live);
     expect(instance.authority()).toBeUndefined();
 
     // A failure under the still-current dead grant routes to expiry, not "retry".
     const callC = instance.run(async () => { throw new Error("401"); });
-    fetches[3]?.({ creds: live, identity: "id-b", generation: "gen-b" });
+    reads[3].resolve({ creds: live, identity: "id-b", generation: "gen-b" });
     await expect(callC).rejects.toThrow(CredentialsExpiredError);
     expect(instance.authority()).toBeUndefined();
   });
 
   it("reports a failure under fenced-out credentials as expiry when nothing live succeeded them", async () => {
-    const fetches: Array<(fetched: CredentialsWithIdentity<Creds>) => void> = [];
-    const getCredentials = vi.fn(() => new Promise<CredentialsWithIdentity<Creds>>(resolve => {
-      fetches.push(resolve);
-    }));
-    const reportCredentialsRejected = vi.fn(async (_identity: string) => "expired" as const);
-    const instance = new CredentialSource<Creds>({
-      account: () => ({ getCredentials, reportCredentialsRejected }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
+    const { instance, reads, getCredentials, reportCredentialsRejected } = queuedSource();
 
     // Grant A is adopted, a concurrent operation's fetch opens, then A's expiry fences it out.
     const gate = Promise.withResolvers<void>();
     const callA = instance.run(async () => { await gate.promise; throw new Error("401"); });
-    fetches[0]?.({ creds: live, identity: "id-a", generation: "gen-a" });
+    reads[0].resolve({ creds: live, identity: "id-a", generation: "gen-a" });
     expect(await instance.get()).toEqual(live);
     const callB = instance.run(async () => { throw new Error("401"); });
     expect(getCredentials).toHaveBeenCalledTimes(2);
@@ -1869,7 +1726,7 @@ describe("CredentialSource", () => {
 
     // The fenced-out fetch delivers B, which fails too. Nothing live was adopted since A's
     // report, so "the credentials changed" would be a lie — B's death is fresh evidence.
-    fetches[1]?.({ creds: live, identity: "id-b", generation: "gen-a" });
+    reads[1].resolve({ creds: live, identity: "id-b", generation: "gen-a" });
     await expect(callB).rejects.toThrow(CredentialsExpiredError);
     expect(reportCredentialsRejected).toHaveBeenCalledWith("id-b");
     expect(instance.authority()).toBeUndefined();
@@ -1877,49 +1734,34 @@ describe("CredentialSource", () => {
     // The account keeps serving the unrefreshed grant; readopting it would let cache hits mask
     // the expiry it just confirmed.
     const refetch = instance.get();
-    fetches[2]?.({ creds: live, identity: "id-b", generation: "gen-a" });
+    reads[2].resolve({ creds: live, identity: "id-b", generation: "gen-a" });
     expect(await refetch).toEqual(live);
     expect(instance.authority()).toBeUndefined();
   });
 
   it("keeps a dead grant refused however many stale failures report after it", async () => {
-    const fetches: Array<(fetched: CredentialsWithIdentity<Creds>) => void> = [];
-    const getCredentials = vi.fn(() => new Promise<CredentialsWithIdentity<Creds>>(resolve => {
-      fetches.push(resolve);
-    }));
-    const instance = new CredentialSource<Creds>({
-      account: () =>
-        ({ getCredentials, reportCredentialsRejected: async () => "expired" as const }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage,
-    });
+    const { instance, reads } = queuedSource();
 
     // Nine operations park holding distinct stale identities, read one at a time so nothing
     // coalesces.
-    const gates = Array.from({ length: 9 }, () => Promise.withResolvers<void>());
-    const stale: Promise<unknown>[] = [];
-    for (const [index, gate] of gates.entries()) {
-      const reading = Promise.withResolvers<void>();
-      stale.push(instance.run(async () => {
-        reading.resolve();
-        await gate.promise;
-        throw new Error("401");
-      }));
-      fetches[index]?.({ creds: live, identity: `id-stale-${index}`, generation: "gen-a" });
-      await reading.promise;
+    const stale: Array<{ run: Promise<unknown>; release: () => void }> = [];
+    for (let index = 0; index < 9; index += 1) {
+      const stalling = stalledRun(instance);
+      reads[index].resolve({ creds: live, identity: `id-stale-${index}`, generation: "gen-a" });
+      stale.push(await stalling);
     }
 
     // Grant B — a same-generation rotation, so no adopted successor proves the stale reads
     // superseded — is adopted and dies, then every stale operation reports its own identity dead.
     const callB = instance.run(async () => { throw new Error("401"); });
-    fetches[9]?.({ creds: live, identity: "id-b", generation: "gen-a" });
+    reads[9].resolve({ creds: live, identity: "id-b", generation: "gen-a" });
     await expect(callB).rejects.toThrow(CredentialsExpiredError);
-    for (const gate of gates) gate.resolve();
-    for (const failure of stale) await expect(failure).rejects.toThrow(CredentialsExpiredError);
+    for (const { release } of stale) release();
+    for (const { run } of stale) await expect(run).rejects.toThrow(CredentialsExpiredError);
 
     // The stale reports land after B's in mark order; none may push B back into adoption.
     const refetch = instance.get();
-    fetches[10]?.({ creds: live, identity: "id-b", generation: "gen-a" });
+    reads[10].resolve({ creds: live, identity: "id-b", generation: "gen-a" });
     expect(await refetch).toEqual(live);
     expect(instance.authority()).toBeUndefined();
   });
@@ -2010,18 +1852,10 @@ describe("CredentialSource over a CredentialCoordinator", () => {
   it("resolves a rejection under a mid-operation reconnect as retryable without healing", async () => {
     const { coordinator, source, notify, mint } = harness();
     coordinator.connect({ token: "old", expiresAt: Date.now() + hour });
-    const entered = Promise.withResolvers<void>();
-    const gate = Promise.withResolvers<void>();
-
-    const call = source.run(async () => {
-      entered.resolve();
-      await gate.promise;
-      throw new Error("401");
-    }, { replayable: true });
-    await entered.promise;
+    const { run: call, release } = await stalledRun(source, { replayable: true });
 
     coordinator.connect({ token: "reconnected", expiresAt: Date.now() + hour });
-    gate.resolve();
+    release();
 
     // The rejected identity was already replaced: the moved-past gate answers superseded with no
     // mint, and the crossed generation keeps the retry off the new principal — the caller

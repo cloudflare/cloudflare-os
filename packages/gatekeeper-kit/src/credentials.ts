@@ -14,19 +14,36 @@ const logger = createLogger<{ vendorId: string }>({ component: "gatekeeper.crede
  */
 export type CredentialsKv = KvMutable;
 
-/** Provider-confirmed grant expiry. Transport and service failures must use their original errors. */
-export class CredentialsExpiredError extends Error {
-  /** Transport-stable discriminator — survives hops that rebuild the error and strip `name`. */
-  readonly code = "CredentialsExpiredError";
+/**
+ * Base for errors crossing the account RPC boundary. The mark is written to both `name` and a
+ * transport-stable `code` (an enumerable own prop), so it survives hops that rebuild the error
+ * and strip `name`.
+ */
+abstract class MarkedError extends Error {
+  readonly code: string;
 
+  /**
+   * Creates a marked error.
+   * @param mark Discriminator written to both `name` and `code`.
+   * @param message Display-safe message.
+   * @param options Optional error cause.
+   */
+  constructor(mark: string, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.code = mark;
+    this.name = mark;
+  }
+}
+
+/** Provider-confirmed grant expiry. Transport and service failures must use their original errors. */
+export class CredentialsExpiredError extends MarkedError {
   /**
    * Creates a confirmed-expiry error.
    * @param message Display-safe expiry message.
    * @param options Optional error cause.
    */
   constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = this.code;
+    super("CredentialsExpiredError", message, options);
   }
 }
 
@@ -34,17 +51,14 @@ export class CredentialsExpiredError extends Error {
  * Credentials replaced while an operation was in flight: the rejection the operation saw was
  * stale, nothing was adjudicated against the account, and the caller retries by re-entering.
  */
-export class CredentialsChangedError extends Error {
-  /** Transport-stable discriminator — survives hops that rebuild the error and strip `name`. */
-  readonly code = "CredentialsChangedError";
-
+export class CredentialsChangedError extends MarkedError {
   /**
    * Creates a retryable mid-operation replacement error.
    * @param options Optional error cause — typically the stale provider rejection.
    */
   constructor(options?: { cause?: unknown }) {
-    super("This account's credentials changed during the operation; retry it.", options);
-    this.name = this.code;
+    super("CredentialsChangedError",
+      "This account's credentials changed during the operation; retry it.", options);
   }
 }
 
@@ -651,7 +665,7 @@ export class CredentialSource<Creds> {
       // replayable operation retries under it — no ask spent, the account already moved past. A
       // moved generation is a reconnect, and stays a re-entry.
       if (retry && read.generation === this.#generation) return this.#retry(operation, read, cause);
-      throw this.#changed(cause);
+      throw new CredentialsChangedError({ cause });
     }
     const verdict = await this.#verdict(read.identity);
     if (verdict === "expired") {
@@ -660,7 +674,7 @@ export class CredentialSource<Creds> {
     // Nothing adjudicated: the account's heal failed for non-credential reasons (its error lives
     // in the account's logs), so the caller sees the provider rejection it actually got.
     if (verdict === "unavailable") throw cause;
-    if (!retry) throw this.#changed(cause);
+    if (!retry) throw new CredentialsChangedError({ cause });
     return this.#retry(operation, read, cause);
   }
 
@@ -701,7 +715,7 @@ export class CredentialSource<Creds> {
     const second = await this.#current();
     // A moved generation is a reconnect: never run under a principal the caller didn't start
     // with. The caller re-enters and fetches the new connection deliberately.
-    if (second.generation !== first.generation) throw this.#changed(cause);
+    if (second.generation !== first.generation) throw new CredentialsChangedError({ cause });
     // A concurrent resolution already had this successor adjudicated dead — don't run under it.
     // Only when it is the read the source last stood behind: a fenced-out refetch of a dead
     // identity is stale evidence, adjudicating nothing the source stands behind now.
@@ -712,7 +726,7 @@ export class CredentialSource<Creds> {
     // refetch is stale evidence that can postdate a reconnect the source already adopted, with
     // no adoption of its own to act on — checked before the same-identity supersede below.
     if (this.#generation !== second.generation || this.#identity !== second.identity) {
-      throw this.#changed(cause);
+      throw new CredentialsChangedError({ cause });
     }
     // "Superseded" promised a successor; the same identity back means a lazy account re-served
     // the credentials the provider already rejected. Re-entering is honest — retrying would burn
@@ -720,15 +734,10 @@ export class CredentialSource<Creds> {
     // credential cannot keep vouching for the cache partition.
     if (second.identity === first.identity) {
       this.#supersede();
-      throw this.#changed(cause);
+      throw new CredentialsChangedError({ cause });
     }
     // At most two attempts: a second rejection is adjudicated but never retried again.
     return this.#attempt(operation, second, false);
-  }
-
-  /** @returns The retryable error for credentials replaced mid-operation. */
-  #changed(cause: unknown): Error {
-    return new CredentialsChangedError({ cause });
   }
 
   /**
