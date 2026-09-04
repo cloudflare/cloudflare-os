@@ -9,7 +9,9 @@
 // `pnpm test` leave most of the machine idle. The flag and the env var are the only levers, which is
 // why this is a wrapper around the repo's own invocations (root scripts via `run.ts`; the dev
 // server, run-local and the release build set `env` on their spawns) rather than configuration. A
-// bare `vp run -F <pkg> …` typed by hand still gets Vite+'s default.
+// bare `vp run -F <pkg> …` typed by hand still gets Vite+'s default. The dev server spawns two
+// `vp run`s at once, so it divides the one limit between them (`concurrentRuns`, below) rather than
+// handing each the whole machine.
 //
 // Formula: `max(4, min(availableParallelism(), floor(min(totalmem(), cgroup limit) / 2 GiB)))`.
 //   - `availableParallelism()` rather than `cpus().length` because it respects cgroup CPU limits in
@@ -356,22 +358,71 @@ export function overridesConcurrency(args: readonly string[]): boolean {
 }
 
 /**
+ * `env` with `VP_RUN_CONCURRENCY_LIMIT` divided between `concurrentRuns` children that will be
+ * spawned with it *at the same time*, so that N concurrent runs stay inside the one budget the
+ * formula computed rather than claiming it N times over.
+ *
+ * Never below vp's own default, which is what each child would have used with the variable unset:
+ * dividing below it would make a machine-aware limit *slower* than no limit at all. Capped at the
+ * whole limit for the other end -- an explicitly-set limit smaller than the floor must not be raised
+ * past what was asked for. So the split can only ever raise a machine's effective parallelism above
+ * vp's default, never lower it, and never above what the user typed.
+ *
+ * Unvalidated on the way in and passed straight through when the value is not a plain positive
+ * integer, for the same reason `concurrencyEnv` does not validate: a bad value has to reach vp,
+ * which reports it against the name the user actually set. Nothing sensible can be divided by,
+ * either. `concurrentRuns <= 1` returns a copy of `env` unchanged.
+ */
+export function splitConcurrencyLimit(
+  env: NodeJS.ProcessEnv, concurrentRuns: number,
+): NodeJS.ProcessEnv {
+  if (concurrentRuns <= 1) return { ...env };
+
+  const total = Number(env[VP_RUN_CONCURRENCY_LIMIT]);
+  if (!Number.isInteger(total) || total < 1) return { ...env };
+
+  const perRun =
+      Math.min(total, Math.max(VP_DEFAULT_CONCURRENCY_LIMIT, Math.floor(total / concurrentRuns)));
+  return { ...env, [VP_RUN_CONCURRENCY_LIMIT]: String(perRun) };
+}
+
+/** See {@link vpRunEnv}. */
+export interface VpRunEnvOptions {
+  /**
+   * The arguments being forwarded to `vp run`, inspected only to decide whether to print: a flag
+   * that beats the environment makes the note a lie. Defaults to none, because only run.ts forwards
+   * user argv -- run-dev-server, run-local and the release build each construct a fixed `vp run`
+   * invocation, and their *own* argv must not be mistaken for vp flags.
+   */
+  vpArgs?: readonly string[];
+  /**
+   * How many `vp run` children will be spawned with this environment *at the same time*. The limit
+   * is divided between them (`splitConcurrencyLimit`), so that N concurrent runs stay inside the
+   * one budget the formula computed rather than claiming it N times over -- but never below vp's
+   * own default, which is what each of them would have used anyway, so the split can only ever
+   * raise the machine's effective parallelism and never lower it. Defaults to 1: no division.
+   */
+  concurrentRuns?: number;
+  /** The environment to resolve against. Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
  * The environment to spawn `vp run` with: `process.env` plus the resolved concurrency limit, unless
  * one was already set there. Prints the note to stderr, so call it once per process rather than once
  * per spawn.
  *
- * `vpArgs` are the arguments being forwarded to `vp run`, and are inspected only to decide whether
- * to print: a flag that beats the environment makes the note a lie. Defaults to none, because only
- * run.ts forwards user argv -- run-dev-server, run-local and the release build each construct a
- * fixed `vp run` invocation, and their *own* argv must not be mistaken for vp flags.
+ * The variable is set even when a `--concurrency-limit`/`--parallel` flag in `vpArgs` will beat it.
+ * The flag wins regardless, and leaving it set is what keeps behaviour unchanged if the flag turns
+ * out to be malformed -- vp reports that itself.
  *
- * The variable is still set either way. The flag wins regardless, and leaving it set is what keeps
- * behaviour unchanged if the flag turns out to be malformed -- vp reports that itself.
+ * The note names the *undivided* number, since that is the machine's budget and what the user would
+ * set to override it; with `concurrentRuns > 1` each child then gets its share of it.
  */
 export function vpRunEnv(
-  env: NodeJS.ProcessEnv = process.env, vpArgs: readonly string[] = [],
+  { vpArgs = [], concurrentRuns = 1, env = process.env }: VpRunEnvOptions = {},
 ): NodeJS.ProcessEnv {
   const result = concurrencyEnv(env, measureMachine(), envFileConcurrencyLimit());
   if (result.note && !overridesConcurrency(vpArgs)) console.error(result.note);
-  return result.env;
+  return splitConcurrencyLimit(result.env, concurrentRuns);
 }
