@@ -1,0 +1,27 @@
+AGENTS.md
+  s_6a80cc9d024e3c::t_c316e45052fe02 76
+scripts/run-dev-server.ts
+  s_6a80cc9d024e3c::t_4bbd977a8c8736 312-325,334-335
+scripts/vp/concurrency.test.ts
+  s_6a80cc9d024e3c::t_8f692dc078ae0a 9-10,434,444-445,453,462,468-534
+scripts/vp/concurrency.ts
+  s_6a80cc9d024e3c::t_58134f009d078a 12-14,360-409,415-417,419-420,423,427
+scripts/vp/run.ts
+  s_6a80cc9d024e3c::t_d452bbd1f41e8b 29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b6e44b57ea27212f11a18251d4eb6d719c3afba3",
+  "prompts": {},
+  "sessions": {
+    "s_6a80cc9d024e3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e4720da-9bf2-4fb9-a123-fbb63d5a2cac",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
