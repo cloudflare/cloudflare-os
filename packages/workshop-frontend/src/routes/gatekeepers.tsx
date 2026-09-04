@@ -25,6 +25,7 @@ import { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { useSiteName } from '../ServerConfigContext'
 import { AccountsSubscriberAdapter } from '../accountsSubscriber'
+import { openConnectWindow } from '../connectHandoff'
 
 export const Route = createFileRoute('/gatekeepers')({
   component: ConnectorsPage,
@@ -577,7 +578,7 @@ function ConnectorsPage() {
         refreshGatekeeperApps(authenticatedApi)
       } else {
         const { url } = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
-        window.open(url, '_blank', 'noopener,noreferrer')
+        openConnectWindow(url)
       }
       handleCloseModal()
     } catch (err) {
@@ -597,7 +598,7 @@ function ConnectorsPage() {
         resourceUrlPatterns,
       )
       if (result.url) {
-        window.open(result.url, '_blank', 'noopener,noreferrer')
+        openConnectWindow(result.url)
       }
       // On success the new grant arrives via subscribeConnectedAccounts(); the toggle reflects it
       // once `grantedResourceUrlPatterns` updates.
@@ -634,7 +635,7 @@ function ConnectorsPage() {
     setReconnectingAccountId(accountId)
     try {
       const { url } = await authenticatedApi.reconnectAccount(accountId)
-      window.open(url, '_blank', 'noopener,noreferrer')
+      openConnectWindow(url)
     } catch (err) {
       console.error('Failed to reconnect account:', err)
       toasts.add({ title: 'Failed to reconnect account', variant: 'error' })

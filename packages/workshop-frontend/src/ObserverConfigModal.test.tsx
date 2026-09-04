@@ -191,7 +191,7 @@ describe('ObserverConfigModal account selection', () => {
     const connectAccount = vi.fn<
       (vendorId: string, resourceUrlPatterns?: string[]) => Promise<{ url: string }>
     >().mockResolvedValue({ url: 'https://accounts.google.test/oauth' })
-    vi.spyOn(window, 'open').mockImplementation(() => null)
+    vi.spyOn(window, 'open').mockImplementation(() => ({ close() {} }) as unknown as Window)
     const rendered = await render([], {
       api: fakeApi([], { connectAccount }),
     })
@@ -203,7 +203,7 @@ describe('ObserverConfigModal account selection', () => {
 
     expect(connectAccount).toHaveBeenCalledWith('google', [DOC_RESOURCE.urlPattern])
     expect(window.open).toHaveBeenCalledWith(
-      'https://accounts.google.test/oauth', '_blank', 'noopener,noreferrer',
+      'https://accounts.google.test/oauth', 'gadgets-connect', 'popup,width=520,height=680',
     )
   })
 
@@ -212,7 +212,7 @@ describe('ObserverConfigModal account selection', () => {
       (accountId: number, resourceUrlPatterns: string[]) => Promise<{ url?: string }>
     >()
       .mockResolvedValue({ url: 'https://accounts.google.test/oauth' })
-    vi.spyOn(window, 'open').mockImplementation(() => null)
+    vi.spyOn(window, 'open').mockImplementation(() => ({ close() {} }) as unknown as Window)
     const underScoped = account(1, 'dan@cloudflare.com', [GMAIL_RESOURCE_PATTERN])
     const rendered = await render([underScoped], {
       api: fakeApi([underScoped], { ensureAccountResources }),
@@ -230,7 +230,7 @@ describe('ObserverConfigModal account selection', () => {
 
     expect(ensureAccountResources).toHaveBeenCalledWith(1, [DOC_RESOURCE.urlPattern])
     expect(window.open).toHaveBeenCalledWith(
-      'https://accounts.google.test/oauth', '_blank', 'noopener,noreferrer',
+      'https://accounts.google.test/oauth', 'gadgets-connect', 'popup,width=520,height=680',
     )
     expect(rendered.textContent).not.toContain('Ready')
     expect(verify?.disabled).toBe(true)
@@ -240,7 +240,7 @@ describe('ObserverConfigModal account selection', () => {
     const ensureAccountResources = vi.fn<
       (accountId: number, resourceUrlPatterns: string[]) => Promise<{ url?: string }>
     >().mockResolvedValue({ url: 'https://accounts.google.test/oauth' })
-    vi.spyOn(window, 'open').mockImplementation(() => null)
+    vi.spyOn(window, 'open').mockImplementation(() => ({ close() {} }) as unknown as Window)
     const legacy = account(1, 'dan@cloudflare.com')
     const rendered = await render([legacy], {
       api: fakeApi([legacy], { ensureAccountResources }),
@@ -257,7 +257,7 @@ describe('ObserverConfigModal account selection', () => {
 
     expect(ensureAccountResources).toHaveBeenCalledWith(1, [DOC_RESOURCE.urlPattern])
     expect(window.open).toHaveBeenCalledWith(
-      'https://accounts.google.test/oauth', '_blank', 'noopener,noreferrer',
+      'https://accounts.google.test/oauth', 'gadgets-connect', 'popup,width=520,height=680',
     )
   })
 

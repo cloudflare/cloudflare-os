@@ -36,6 +36,7 @@ import { reportIssue } from './errorReporting'
 import { useSiteName } from './ServerConfigContext'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
+import { openConnectWindow } from './connectHandoff'
 
 export interface GatekeeperModalProps {
   open: boolean
@@ -587,8 +588,8 @@ export default function GatekeeperModal({
     setConnectingVendor(vendorId)
     try {
       const result = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
-      window.open(result.url, '_blank', 'noopener,noreferrer')
-      toasts.add({ title: 'Complete the account connection in the new tab.', variant: 'success' })
+      openConnectWindow(result.url)
+      toasts.add({ title: 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (error) {
       console.error('Failed to initiate connection:', error)
       reportIssue('gatekeeper.connect-start', error, { gatekeeperVendorId: vendorId })
@@ -609,8 +610,8 @@ export default function GatekeeperModal({
     try {
       const result = await authenticatedApi.ensureAccountResources(accountId, missing)
       if (result.url) {
-        window.open(result.url, '_blank', 'noopener,noreferrer')
-        toasts.add({ title: 'Grant the additional access in the new tab.', variant: 'success' })
+        openConnectWindow(result.url)
+        toasts.add({ title: 'Grant the additional access in the pop-up window.', variant: 'success' })
       }
       // The new grant arrives via subscribeConnectedAccounts(); the account's flag then clears and
       // the configurator loads automatically.
@@ -629,8 +630,8 @@ export default function GatekeeperModal({
     setReconnectingAccountId(accountId)
     try {
       const result = await authenticatedApi.reconnectAccount(accountId)
-      window.open(result.url, '_blank', 'noopener,noreferrer')
-      toasts.add({ title: 'Complete the account reconnect in the new tab.', variant: 'success' })
+      openConnectWindow(result.url)
+      toasts.add({ title: 'Complete the account reconnect in the pop-up window.', variant: 'success' })
     } catch (error) {
       console.error('Failed to initiate reconnect:', error)
       reportIssue('gatekeeper.reconnect-start', error, {

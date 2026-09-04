@@ -38,12 +38,15 @@ what persists a usable connected account. `GatekeeperVendor.connectAccount` take
    `PendingLogin` DO, hands the gatekeeper a `LoginConnectCallbackImpl`, and returns the gatekeeper's
    OAuth `url` plus an `attempt` stub (a capability wrapping the `PendingLogin` DO — no login id is
    exposed to the client).
-2. The client opens `url` in a pop-up (the gatekeeper's self-closing OAuth window) and calls
+2. The client opens `url` in a pop-up (the gatekeeper's OAuth window) and calls
    `attempt.wait()`, which blocks on the `PendingLogin` DO.
 3. When the gatekeeper finishes, it calls `complete(user)`. The callback reads
    `user.getAuthenticatedEmail()`, resolves/creates the email-keyed `UserDurableObject`, mints a
    session, and delivers the `"<email>:<secret>"` token to the `PendingLogin` DO — which resolves the
-   awaiting RPC.
+   awaiting RPC. `complete()` also returns a connect handoff ticket that the pop-up posts to its
+   opener, like the connect-account flow does; for sign-in the ticket is **not yet enforced** (the
+   session is released to `attempt.wait()` regardless), which is the follow-up noted on
+   `LoginConnectCallbackImpl.complete`.
 4. The client stores the token and authenticates as usual.
 
 Sign-in does **not** persist a connected account: the minimal-scope grant is only used to read the
