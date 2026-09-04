@@ -138,8 +138,18 @@ async function redeem(config: CloudflareOAuthConfig, body: URLSearchParams): Pro
     body,
   });
   if (!resp.ok) {
-    resp.body?.cancel();
-    return null;
+    const providerError: unknown = await resp.json().catch(() => null);
+    const errorCode = providerError !== null && typeof providerError === "object" &&
+        "error" in providerError && typeof providerError.error === "string"
+      ? ` ${providerError.error}`
+      : "";
+    const errorDescription = providerError !== null && typeof providerError === "object" &&
+        "error_description" in providerError && typeof providerError.error_description === "string"
+      ? `: ${providerError.error_description}`
+      : "";
+    throw new Error(
+      `Cloudflare OAuth token exchange failed (${resp.status}${errorCode})${errorDescription}`,
+    );
   }
   const data = await resp.json() as RawTokenResponse;
   if (!data.access_token) return null;
