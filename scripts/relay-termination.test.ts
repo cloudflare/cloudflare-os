@@ -35,6 +35,17 @@ async function waitUntilGone(pid: number, timeoutMs = 10_000): Promise<boolean> 
   return true;
 }
 
+// A marker file is the only channel a fixture with `stdio: "ignore"` has back to this suite, so both
+// the readiness handshake and the cleanup case below signal through one.
+async function waitForFile(path: string, timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  return true;
+}
+
 const IDLE = "setTimeout(() => {}, 60_000)";
 // Whatever survives the forwarded signal is what the escalation exists for.
 const IGNORES_SIGNALS =
@@ -45,6 +56,16 @@ const IGNORES_SIGNALS =
 // on the first one would hide any second.
 const COUNTS_SIGINTS =
     "let n = 0; process.on('SIGINT', () => process.stdout.write('sigint ' + ++n + '\\n')); " + IDLE;
+
+/** How long the cleanup fixture below spends handling its SIGTERM. */
+const CLEANUP_MS = 400;
+
+// A descendant with real cleanup to do: it handles SIGTERM, spends `CLEANUP_MS` on it, and records
+// that it got to the end by writing `markerFile`. Absent that marker, it was SIGKILLed part-way.
+const cleansUpSlowly = (markerFile: string) =>
+    "process.on('SIGTERM', () => setTimeout(() => { " +
+    `require('node:fs').writeFileSync(${JSON.stringify(markerFile)}, ''); process.exit(0); ` +
+    `}, ${CLEANUP_MS})); ` + IDLE;
 
 interface Wrapper {
   /** The process under test: it spawns `child`, which spawns `grandchild`, then relays. */
@@ -155,11 +176,7 @@ async function spawnWrapper(
     grandchildPid = Number(/^grandchild (\d+)$/m.exec(text)?.[1] ?? 0);
     assert.ok(childPid && grandchildPid, "the wrapper never reported both pids");
 
-    const deadline = Date.now() + 10_000;
-    while (!existsSync(readyFile)) {
-      assert.ok(Date.now() < deadline, "the grandchild never finished starting up");
-      await new Promise(resolve => setTimeout(resolve, 25));
-    }
+    assert.ok(await waitForFile(readyFile), "the grandchild never finished starting up");
   } catch (error) {
     cleanUp();
     throw error;
@@ -169,7 +186,10 @@ async function spawnWrapper(
 
 // Concurrent for the reason `kill-process-tree.test.ts` is: these cases spend their time waiting on
 // signalled processes to go away, not doing work. Each addresses its own tree by pid.
-describe("relayTermination", { concurrency: true }, () => {
+describe("relayTermination", {
+  concurrency: true,
+  skip: process.platform === "win32" ? "the relay and these signal fixtures are POSIX-only" : false,
+}, () => {
   // The bug this exists for: signalled at the wrapper alone -- `kill`, a process manager, a CI job
   // cancellation -- the old code died on the spot and left the whole tree below it running.
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
@@ -197,6 +217,28 @@ describe("relayTermination", { concurrency: true }, () => {
       // fixture idles for 60s -- awaiting the exit first would also be satisfied by that timer
       // simply running out, which is not the escalation doing its job.
       assert.ok(await waitUntilGone(grandchildPid), "the grandchild survived the escalation");
+      assert.deepEqual(await exit, { code: null, signal: "SIGTERM" });
+    } finally {
+      cleanUp();
+    }
+  });
+
+  // The grace belongs to the tree, not to the direct child. `childBody` stays at IDLE so the child
+  // dies the instant the forwarded signal lands, which is the trigger the bug hung off: the relay
+  // used to abort its own escalation from the child's `exit` handler, dropping straight to SIGKILL
+  // and leaving this grandchild whatever the child's exit latency happened to be (~70ms observed) of
+  // the 400ms it needs -- no matter what `graceMs` said. 3000ms here is well clear of the 400, so a
+  // missing marker means the window was collapsed rather than merely tight.
+  it("gives a descendant the full grace after the child has already exited", async () => {
+    const cleaned = join(fixtureRoot, "grandchild-cleaned");
+    const { wrapperPid, grandchildPid, exit, cleanUp } = await spawnWrapper(
+        { grandchildBody: cleansUpSlowly(cleaned), graceMs: 3_000 });
+    try {
+      process.kill(wrapperPid, "SIGTERM");
+      assert.ok(await waitUntilGone(grandchildPid), "the grandchild outlived the forwarded signal");
+      // Read after the grandchild is gone, so it needs no wait of its own: the marker is written
+      // before that process exits, and its absence therefore means a SIGKILL got there first.
+      assert.ok(existsSync(cleaned), "the grandchild was SIGKILLed before it finished cleaning up");
       assert.deepEqual(await exit, { code: null, signal: "SIGTERM" });
     } finally {
       cleanUp();

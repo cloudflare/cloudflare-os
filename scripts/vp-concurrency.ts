@@ -108,16 +108,26 @@ export function defaultConcurrencyLimit(cpus: number, totalMemBytes: number): nu
 
 /** Filesystem facts the cgroup probe reads; parameters so tests can point at a fixture tree. */
 export interface CgroupProbe {
-  /** The cgroupfs mount point. Defaults to `/sys/fs/cgroup`. */
+  /**
+   * Where cgroupfs is assumed to be mounted, used only when `mountInfo` names no cgroup mount.
+   * Defaults to `/sys/fs/cgroup`.
+   */
   root?: string;
   /** The file naming which cgroup this process is in. Defaults to `/proc/self/cgroup`. */
   procSelfCgroup?: string;
+  /**
+   * The file listing this process's mounts, from which the cgroup roots are discovered. Defaults to
+   * `/proc/self/mountinfo`. Separate from `root` rather than derived from it, because `root` is the
+   * fallback assumption and this is the evidence that replaces it.
+   */
+  mountInfo?: string;
   /** Defaults to `process.platform`; anything but `linux` short-circuits to `null`. */
   platform?: NodeJS.Platform;
 }
 
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const PROC_SELF_CGROUP = "/proc/self/cgroup";
+const PROC_SELF_MOUNTINFO = "/proc/self/mountinfo";
 
 // Every read here is best-effort: an absent file, an unreadable controller and EACCES are all just
 // "no limit from this path", never a failure of the build we are about to run.
@@ -154,6 +164,70 @@ function selfCgroupPaths(procSelfCgroup: string): { v2: string; v1: string } {
   return { v2, v1 };
 }
 
+// The four characters `/proc/self/mountinfo` escapes in a mount point, since a literal one would
+// break its space-separated format. Applied in a single regex pass, so an escaped backslash cannot
+// be re-read as the start of another escape.
+const MOUNTINFO_ESCAPES: Record<string, string> = {
+  "040": " ", "011": "\t", "012": "\n", "134": "\\",
+};
+
+function unescapeMountPoint(field: string): string {
+  return field.replace(/\\(040|011|012|134)/g, (_match, code: string) => MOUNTINFO_ESCAPES[code]);
+}
+
+/**
+ * The cgroup mount points this process can see, or `null` per hierarchy when there is none.
+ *
+ * Read rather than assumed, because the canonical layout is a convention and not a guarantee: a
+ * cgroup2 hierarchy can be mounted somewhere other than the cgroupfs root (hybrid setups put it at
+ * `/sys/fs/cgroup/unified`), and a v1 memory controller can be co-mounted with others under a joined
+ * name (`/sys/fs/cgroup/cpu,memory`) instead of the fixed `memory` subdirectory. Under either the
+ * hardcoded paths read nothing, and because every read here is best-effort that failure is silent
+ * and *opens*: the budget falls back to `totalmem()`, the host's physical memory, which is exactly
+ * the container OOM the cgroup term was added to prevent.
+ *
+ * Lines are `id parent major:minor root mountPoint options [optional...] - fstype source superOpts`
+ * (proc(5)). The optional-fields group is variable length, so each line is split on the first ` - `
+ * separator before being split into fields: the mount point is index 4 of the left half, and
+ * `fstype` and `superOpts` are indices 0 and 2 of the right. v2 is the mount whose `fstype` is
+ * `cgroup2`; v1-memory is a `cgroup` mount whose comma-split `superOpts` include `memory`. Where
+ * several mounts match, the shortest mount point wins, so a canonical `/sys/fs/cgroup` beats a
+ * nested bind mount of the same hierarchy.
+ *
+ * One simplification, documented rather than solved: field 4 -- the mounted subtree's root *within*
+ * the filesystem -- is ignored, so a bind mount exposing a subtree is treated as the hierarchy root.
+ * That is the right reading for the namespaced-container case, which is the one that matters here.
+ */
+export function cgroupMounts(mountInfo: string = PROC_SELF_MOUNTINFO): {
+  v2Root: string | null;
+  v1MemoryRoot: string | null;
+} {
+  let v2Root: string | null = null;
+  let v1MemoryRoot: string | null = null;
+
+  for (const line of (readTrimmed(mountInfo) ?? "").split("\n")) {
+    const separator = line.indexOf(" - ");
+    if (separator < 0) continue;
+    const left = line.slice(0, separator).split(" ");
+    const right = line.slice(separator + " - ".length).split(" ");
+    // A left half with no mount point in it is junk, not a mount worth guessing at. The right half
+    // needs no such guard: `fstype` and `superOpts` are only ever compared, so a missing one simply
+    // matches nothing.
+    if (left.length < 5) continue;
+
+    const mountPoint = unescapeMountPoint(left[4]);
+    const fstype = right[0];
+    if (fstype === "cgroup2") {
+      if (v2Root === null || mountPoint.length < v2Root.length) v2Root = mountPoint;
+    } else if (fstype === "cgroup" && (right[2] ?? "").split(",").includes("memory")) {
+      if (v1MemoryRoot === null || mountPoint.length < v1MemoryRoot.length) {
+        v1MemoryRoot = mountPoint;
+      }
+    }
+  }
+  return { v2Root, v1MemoryRoot };
+}
+
 // `/foo/bar` → [`/`, `/foo`, `/foo/bar`]: the cgroup itself and every ancestor. Each one carries its
 // own limit, so all of them have to be read -- see the `min` below.
 function withAncestors(path: string): string[] {
@@ -175,18 +249,27 @@ function withAncestors(path: string): string[] {
  * Unlimited reads as `null` for v2, whose sentinel is the literal `max` (→ `NaN`). v1's sentinel is a
  * huge byte count (`9223372036854771712`) which parses fine and is left to be clamped against host
  * memory by `effectiveMemoryBytes`, so no magic threshold is needed here.
+ *
+ * Each hierarchy's root comes from `cgroupMounts`, and falls back to the canonical layout under
+ * `root` when `mountInfo` is unreadable or names no cgroup mount of that version -- so on a host
+ * mounted the usual way the files read are byte-identical to what a hardcoded layout would give.
  */
 export function cgroupMemoryLimitBytes(probe: CgroupProbe = {}): number | null {
   const {
-    root = CGROUP_ROOT, procSelfCgroup = PROC_SELF_CGROUP, platform = process.platform,
+    root = CGROUP_ROOT, procSelfCgroup = PROC_SELF_CGROUP, mountInfo = PROC_SELF_MOUNTINFO,
+    platform = process.platform,
   } = probe;
   // Nothing else has cgroups, and this keeps macOS and Windows at zero syscalls.
   if (platform !== "linux") return null;
 
+  const mounts = cgroupMounts(mountInfo);
+  const v2Root = mounts.v2Root ?? root;
+  const v1MemoryRoot = mounts.v1MemoryRoot ?? join(root, "memory");
+
   const paths = selfCgroupPaths(procSelfCgroup);
   const files = [
-    ...withAncestors(paths.v2).map(path => join(root, path, "memory.max")),
-    ...withAncestors(paths.v1).map(path => join(root, "memory", path, "memory.limit_in_bytes")),
+    ...withAncestors(paths.v2).map(path => join(v2Root, path, "memory.max")),
+    ...withAncestors(paths.v1).map(path => join(v1MemoryRoot, path, "memory.limit_in_bytes")),
   ];
 
   let limit: number | null = null;

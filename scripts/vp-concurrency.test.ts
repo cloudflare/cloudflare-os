@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import {
   BYTES_PER_TASK, ROOT_ENV_FILE, VP_DEFAULT_CONCURRENCY_LIMIT, VP_RUN_CONCURRENCY_LIMIT,
-  cgroupMemoryLimitBytes, concurrencyEnv, defaultConcurrencyLimit, effectiveMemoryBytes,
-  envFileConcurrencyLimit, overridesConcurrency, vpRunEnv,
+  cgroupMemoryLimitBytes, cgroupMounts, concurrencyEnv, defaultConcurrencyLimit,
+  effectiveMemoryBytes, envFileConcurrencyLimit, overridesConcurrency, vpRunEnv,
 } from "./vp-concurrency.ts";
 
 const GiB = 1024 ** 3;
@@ -73,12 +73,19 @@ after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 
 let caseCount = 0;
 
+/** A path that is never written, for the cases that need a probe file to be absent. */
+const ABSENT = join(fixtureRoot, "absent");
+
 // A cgroupfs-shaped fixture: `files` are paths relative to the cgroup root, `procSelfCgroup` the
-// contents of `/proc/self/cgroup` (omitted to leave that file absent).
-function cgroupFixture(files: Record<string, string>, procSelfCgroup?: string): {
-  root: string;
-  procSelfCgroup: string;
-} {
+// contents of `/proc/self/cgroup` and `mountInfo` those of `/proc/self/mountinfo` (each omitted to
+// leave that file absent -- and an absent `mountInfo` is what puts the probe on its hardcoded
+// fallback layout, which is why most cases below leave it out). `mountInfo` is a function of the
+// fixture's own cgroup root, since the mount points it names have to point into the fixture tree.
+function cgroupFixture(
+  files: Record<string, string>,
+  procSelfCgroup?: string,
+  mountInfo?: (root: string) => string,
+): { root: string; procSelfCgroup: string; mountInfo: string } {
   const dir = join(fixtureRoot, `case-${++caseCount}`);
   const root = join(dir, "cgroup");
   for (const [path, contents] of Object.entries(files)) {
@@ -91,8 +98,76 @@ function cgroupFixture(files: Record<string, string>, procSelfCgroup?: string): 
     mkdirSync(dir, { recursive: true });
     writeFileSync(procPath, procSelfCgroup);
   }
-  return { root, procSelfCgroup: procPath };
+  const mountInfoPath = join(dir, "proc-self-mountinfo");
+  if (mountInfo !== undefined) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(mountInfoPath, mountInfo(root));
+  }
+  return { root, procSelfCgroup: procPath, mountInfo: mountInfoPath };
 }
+
+// A `/proc/self/mountinfo` fixture, written as the literal lines a real kernel emits so the parser
+// is exercised against the format rather than against a builder that shares its assumptions.
+function mountInfoWith(lines: string[]): string {
+  const dir = join(fixtureRoot, `mountinfo-${++caseCount}`);
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "mountinfo");
+  writeFileSync(file, `${lines.join("\n")}\n`);
+  return file;
+}
+
+describe("cgroupMounts", () => {
+  const table: [label: string, lines: string[], v2Root: string | null,
+    v1MemoryRoot: string | null][] = [
+    ["canonical v2 at the cgroupfs root", [
+      "23 27 0:22 / /sys ro,nosuid,nodev,noexec,relatime shared:7 - sysfs sysfs ro",
+      "28 23 0:25 / /sys/fs/cgroup ro,nosuid,nodev,noexec shared:9 - cgroup2 cgroup2 " +
+        "rw,nsdelegate,memory_recursiveprot",
+    ], "/sys/fs/cgroup", null],
+    // The hybrid layout the hardcoded v2 path missed entirely: cgroup2 is not at the root.
+    ["hybrid cgroup2 beside a v1 memory controller", [
+      "30 23 0:26 / /sys/fs/cgroup/unified rw,nosuid,nodev,noexec,relatime shared:5 - cgroup2 " +
+        "cgroup2 rw",
+      "35 23 0:31 / /sys/fs/cgroup/memory rw,nosuid,nodev,noexec,relatime shared:10 - cgroup " +
+        "cgroup rw,memory",
+    ], "/sys/fs/cgroup/unified", "/sys/fs/cgroup/memory"],
+    // A joined-name v1 mount: the controller is there, just not at the `memory` subdirectory.
+    ["v1 memory co-mounted under a joined name", [
+      "36 23 0:32 / /sys/fs/cgroup/cpu,memory rw,nosuid,nodev,noexec,relatime shared:11 - cgroup " +
+        "cgroup rw,cpu,cpuacct,memory",
+    ], null, "/sys/fs/cgroup/cpu,memory"],
+    // `shared:9` present versus absent shifts every later field, which is the whole reason the line
+    // is split on ` - ` before it is split into fields.
+    ["a line with no optional fields at all", [
+      "28 23 0:25 / /sys/fs/cgroup rw,relatime - cgroup2 cgroup2 rw",
+    ], "/sys/fs/cgroup", null],
+    ["a mount point carrying octal escapes", [
+      "28 23 0:25 / /tmp/odd\\040cgroup\\134dir rw,relatime shared:9 - cgroup2 cgroup2 rw",
+    ], "/tmp/odd cgroup\\dir", null],
+    // Shortest wins, so the canonical mount beats a bind mount of the same hierarchy.
+    ["a nested bind mount of the same hierarchy", [
+      "40 23 0:25 /foo /var/lib/nested/cgroup2 rw,relatime - cgroup2 cgroup2 rw",
+      "28 23 0:25 / /sys/fs/cgroup rw,relatime shared:9 - cgroup2 cgroup2 rw",
+    ], "/sys/fs/cgroup", null],
+    // A `cgroup` mount without the controller must not be mistaken for one that has it, and no
+    // non-cgroup filesystem may match either.
+    ["no cgroup mounts at all", [
+      "25 27 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+      "33 23 0:29 / /sys/fs/cgroup/pids rw,relatime shared:8 - cgroup cgroup rw,pids",
+    ], null, null],
+    ["unparseable junk", ["", "nonsense", "1 2 3 - ", "- cgroup2 cgroup2 rw"], null, null],
+  ];
+
+  for (const [label, lines, v2Root, v1MemoryRoot] of table) {
+    it(`${label} -> ${v2Root ?? "no v2"} / ${v1MemoryRoot ?? "no v1 memory"}`, () => {
+      assert.deepEqual(cgroupMounts(mountInfoWith(lines)), { v2Root, v1MemoryRoot });
+    });
+  }
+
+  it("reports neither hierarchy when the file is absent", () => {
+    assert.deepEqual(cgroupMounts(ABSENT), { v2Root: null, v1MemoryRoot: null });
+  });
+});
 
 describe("cgroupMemoryLimitBytes", () => {
   it("reads a v2 memory.max", () => {
@@ -140,6 +215,37 @@ describe("cgroupMemoryLimitBytes", () => {
   it("falls back to the root cgroup when /proc/self/cgroup is missing", () => {
     const probe = cgroupFixture({ "memory.max": String(4 * GiB) });
     assert.equal(cgroupMemoryLimitBytes({ ...probe, platform: "linux" }), 4 * GiB);
+  });
+
+  // The two layouts the hardcoded paths silently missed. Each asserts `null` for the same fixture
+  // read without `mountInfo`, so the case is a demonstration of the bug and not just of the fix.
+  it("finds a hybrid layout's cgroup2 mount away from the cgroupfs root", () => {
+    const probe = cgroupFixture(
+        { "unified/memory.max": String(4 * GiB) },
+        "0::/\n",
+        root => `30 23 0:26 / ${root}/unified rw,relatime shared:5 - cgroup2 cgroup2 rw`);
+    assert.equal(cgroupMemoryLimitBytes({ ...probe, mountInfo: ABSENT, platform: "linux" }), null);
+    assert.equal(cgroupMemoryLimitBytes({ ...probe, platform: "linux" }), 4 * GiB);
+  });
+
+  it("finds a v1 memory controller co-mounted under a joined name", () => {
+    const probe = cgroupFixture(
+        { "cpu,memory/svc/memory.limit_in_bytes": String(2 * GiB) },
+        "12:cpu,memory:/svc\n",
+        root =>
+          `36 23 0:32 / ${root}/cpu,memory rw,relatime - cgroup cgroup rw,cpu,cpuacct,memory`);
+    assert.equal(cgroupMemoryLimitBytes({ ...probe, mountInfo: ABSENT, platform: "linux" }), null);
+    assert.equal(cgroupMemoryLimitBytes({ ...probe, platform: "linux" }), 2 * GiB);
+  });
+
+  // The canonical case has to stay byte-identical to the behaviour before discovery existed, since
+  // that is what makes this change purely additive.
+  it("falls back to the canonical layout when mountinfo is unreadable", () => {
+    const probe = cgroupFixture(
+        { "memory.max": String(4 * GiB), "memory/memory.limit_in_bytes": String(2 * GiB) },
+        "0::/\n5:memory:/\n");
+    assert.equal(cgroupMemoryLimitBytes({ ...probe, mountInfo: ABSENT, platform: "linux" }),
+        2 * GiB);
   });
 
   it("reports no limit and reads nothing off Linux", () => {
