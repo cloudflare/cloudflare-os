@@ -38,7 +38,23 @@ export const GOOGLE_DOC_RESOURCE: SupportedResource = {
   title: "Google Doc",
   description: "Read and edit documents you choose.",
   grantable: true,
+  creatable: {
+    description:
+        "Creates a new, empty Google Doc with the given title in the account's My Drive.",
+  },
 };
+
+/**
+ * Prefix marking a document ID minted locally (by createResource) before the document exists at
+ * Google. Chosen to be visibly non-Google (real IDs are opaque base64-ish tokens) and stable: it
+ * appears in persisted resource URLs, so never change it.
+ */
+export const PROVISIONAL_DOC_ID_PREFIX = "provisional-";
+
+/** Whether a document ID is a locally-minted provisional ID rather than a Google-issued one. */
+export function isProvisionalDocId(id: string): boolean {
+  return id.startsWith(PROVISIONAL_DOC_ID_PREFIX);
+}
 
 /** A single Google Sheet. */
 export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {

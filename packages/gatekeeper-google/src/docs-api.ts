@@ -152,6 +152,28 @@ export class GoogleDocsApi {
     });
   }
 
+  /**
+   * Create a new, empty document titled `title` in the account's My Drive. Requires the
+   * `documents` (write) scope. Returns the new document's id/title/revision — `documents.create`
+   * responds with the full document resource, but only these fields are needed and a fresh doc
+   * has no tabs content worth normalizing.
+   */
+  async createDocument(
+    title: string,
+  ): Promise<Pick<GoogleDocsDocument, "documentId" | "title" | "revisionId">> {
+    return await this.#request<
+      Pick<GoogleDocsDocument, "documentId" | "title" | "revisionId">
+    >(
+      DOCS_API_BASE,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      },
+      "create document",
+    );
+  }
+
   /** Fetch and normalize a single-tab document. */
   async getDocument(documentId: string): Promise<GoogleDocsDocument> {
     let document = await this.#request<GoogleDocsResponse>(

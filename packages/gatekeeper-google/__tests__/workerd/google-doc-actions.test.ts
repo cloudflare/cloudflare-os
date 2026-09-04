@@ -12,10 +12,14 @@ type BatchKind = "content" | "cleanup";
 
 class DocsModel {
   content = "";
+  title = "Test document";
   cleanupFailures = 0;
   ambiguousContentResponses = 0;
   contentBatches = 0;
   maxMarkerCount = 0;
+  /** Every provider request, of any kind. Provisional simulation must leave this at zero. */
+  requests = 0;
+  readonly createdTitles: string[] = [];
   readonly deletedMarkerIds: string[] = [];
   readonly markers = new Map<string, string>();
   #revision = 1;
@@ -60,6 +64,16 @@ class DocsModel {
     let url = new URL(input instanceof Request ? input.url : input.toString());
     if (url.hostname !== "docs.googleapis.com") {
       throw new Error(`Unexpected provider request: ${url}`);
+    }
+    this.requests++;
+    if (url.pathname === "/v1/documents" && init?.method === "POST") {
+      // documents.create: mints doc-1, which the model's other routes already serve.
+      let body = JSON.parse(String(init?.body)) as { title: string };
+      this.createdTitles.push(body.title);
+      this.title = body.title;
+      return Response.json({
+        documentId: "doc-1", title: body.title, revisionId: `revision-${this.#revision}`,
+      });
     }
     if (!url.pathname.endsWith(":batchUpdate")) return Response.json(this.#document());
 
@@ -134,7 +148,7 @@ class DocsModel {
     }
     return {
       documentId: "doc-1",
-      title: "Test document",
+      title: this.title,
       revisionId: `revision-${this.#revision}`,
       tabs: [{
         documentTab: {
@@ -323,6 +337,95 @@ describe("Google Doc write receipts", () => {
     let content = await hooks().readContent("lost-response");
 
     expect(content.match(/first/g)).toHaveLength(1);
+  });
+});
+
+describe("Google Doc creation (createExternalResource)", () => {
+  const CREATION = { title: "My New Doc" };
+
+  it("advertises creation as its own auto-approvable kind", async () => {
+    new DocsModel().install();
+    // A separate tag from edits, so hands-free creation (a scheduled task minting a doc each
+    // day) is its own opt-in rule.
+    expect(await hooks().autoApprovableActions("create-kinds", CREATION)).toEqual([
+      { tag: "editDocument", label: "Document edits" },
+      { tag: "createDocument", label: "Document creation" },
+    ]);
+  });
+
+  it("simulates the uncreated document without touching the provider", async () => {
+    let docs = new DocsModel();
+    docs.install();
+
+    let creationId = await hooks().submitCreation("create-simulate", CREATION.title);
+    expect(creationId).toBe(1);
+    // Idempotent: a retried submitCreationAction queues nothing new.
+    expect(await hooks().submitCreation("create-simulate", CREATION.title)).toBeNull();
+
+    expect(await hooks().readContent("create-simulate", CREATION)).toBe("");
+    await hooks().submitAppend("create-simulate", "hello", CREATION);
+    expect(await hooks().readContent("create-simulate", CREATION)).toContain("hello");
+    expect(await hooks().readMetadata("create-simulate", CREATION)).toBeGreaterThan(0);
+
+    let description = await hooks().describeDoc("create-simulate", CREATION);
+    expect(description.title).toBe(CREATION.title);
+    expect(description.url).toContain("provisional-create-simulate");
+    expect(description.snippet).toContain("pending creation");
+
+    expect(docs.requests).toBe(0);
+  });
+
+  it("applies the creation first, then queued edits, against the real document", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let creationId = await hooks().submitCreation("create-apply", CREATION.title);
+    let editId = await hooks().submitAppend("create-apply", "hello", CREATION);
+
+    // In-order approval: the edit cannot apply before the creation.
+    expect(await hooks().applyAction("create-apply", editId, CREATION))
+      .toMatch(/approved in order/);
+    expect(docs.createdTitles).toEqual([]);
+
+    expect(await hooks().applyAction("create-apply", creationId!, CREATION)).toBeNull();
+    expect(docs.createdTitles).toEqual([CREATION.title]);
+
+    expect(await hooks().applyAction("create-apply", editId, CREATION)).toBeNull();
+    expect(docs.content).toContain("hello");
+
+    // The binding now describes (and reads) the real document.
+    let description = await hooks().describeDoc("create-apply", CREATION);
+    expect(description.url).toContain("doc-1");
+    expect(description.snippet).not.toContain("pending creation");
+    expect(await hooks().readContent("create-apply", CREATION)).toContain("hello");
+  });
+
+  it("does not create a second document on a retried approval", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let creationId = await hooks().submitCreation("create-retry", CREATION.title);
+
+    expect(await hooks().applyAction("create-retry", creationId!, CREATION)).toBeNull();
+    expect(await hooks().applyAction("create-retry", creationId!, CREATION))
+      .toMatch(/Unknown pending/);
+    expect(docs.createdTitles).toEqual([CREATION.title]);
+  });
+
+  it("rejecting the creation cascades to queued edits and kills the binding", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let creationId = await hooks().submitCreation("create-reject", CREATION.title);
+    let editId = await hooks().submitAppend("create-reject", "hello", CREATION);
+
+    expect(await hooks().rejectAction("create-reject", creationId!, CREATION)).toBe(true);
+
+    // The queued edit was invalidated: approving it settles the record without a provider call.
+    expect(await hooks().applyAction("create-reject", editId, CREATION)).toBeNull();
+    expect(docs.requests).toBe(0);
+
+    // The binding is dead, with an explanation rather than simulation against nothing.
+    expect(await hooks().readContentError("create-reject", CREATION)).toMatch(/rejected/);
+    let description = await hooks().describeDoc("create-reject", CREATION);
+    expect(description.snippet).toContain("creation rejected");
   });
 });
 

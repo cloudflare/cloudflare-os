@@ -61,6 +61,24 @@ export type Segment =
 // Google Docs → Markdown
 // ---------------------------------------------------------------------------
 
+/**
+ * Snapshot of a document that exists only locally (a pending creation): empty content, no source
+ * map. Safe to simulate over because `sourceMap`/`bodyEndIndex` are consumed only when an action
+ * is materialized for the provider, which cannot happen before the document really exists.
+ * `bodyEndIndex` is 2 to match a genuinely empty Google Doc (one empty paragraph).
+ */
+export function emptyDocSnapshot(title: string, revisionId: string): DocSnapshot {
+  return {
+    title,
+    revisionId,
+    markdown: "",
+    sourceMap: { blocks: [] },
+    fetchedAt: Date.now(),
+    committedWriteIds: [],
+    bodyEndIndex: 2,
+  };
+}
+
 /** Convert a Google Docs document to Markdown with source map. */
 export function docToMarkdown(document: GoogleDocsDocument): DocSnapshot {
   let md = "";
