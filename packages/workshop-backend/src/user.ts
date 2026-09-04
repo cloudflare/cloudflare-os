@@ -1710,6 +1710,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       if (!record || record.vendorId !== vendorId) {
         throw new Error(`There is no connected "${vendorId}" account with id ${accountId}.`);
       }
+      if (!areCredentialsValid(record)) {
+        throw new Error(`The connected "${vendorId}" account ${accountId} has expired ` +
+            `credentials. Ask the user to reconnect it, then retry.`);
+      }
       account = record;
     } else {
       let candidates = [...this.#connectedAccountRecords()]

@@ -3317,6 +3317,9 @@ export async function runAgent(
             nameProblem = `There is already a binding named "${input.bindingName}" in your ` +
                 `env. Choose a different name.`;
           }
+          if (nameProblem === undefined && input.title.trim().length === 0) {
+            nameProblem = `A resource requires a non-empty title.`;
+          }
           if (nameProblem !== undefined) {
             let message = `Cannot create the resource: ${nameProblem}`;
             return toolResult(message, { output: message });
