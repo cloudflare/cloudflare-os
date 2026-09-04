@@ -327,6 +327,7 @@ export class CredentialCoordinator<Creds> {                  // lives in the Use
       Creds | undefined;                 // reassembles the grant those keys hold. Retired by
                                          // clear(), so a clear() (or a restart after one) cannot
                                          // resurrect a grant since replaced or revoked
+    vendorId?: string;                   // log attribution for the heal-failure/overtaken logs
   });
   stored(): Creds | undefined;   // mints an identity for a record that predates them, so credentials
                                  // and a fence are always surfaced together
