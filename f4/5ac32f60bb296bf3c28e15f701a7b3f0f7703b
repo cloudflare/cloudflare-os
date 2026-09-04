@@ -1,0 +1,26 @@
+packages/integration-tests/src/harness.ts
+  s_3c1ab8c0a1269e::t_605e610c014bc3 181
+  s_3c1ab8c0a1269e::t_58e0e060eb07f0 182
+docs/observers.md
+  s_3c1ab8c0a1269e::t_03a35c1a57213d 379
+docs/sharing.md
+  s_3c1ab8c0a1269e::t_4933baa196a2d0 155,157-159
+packages/workshop-backend/src/overseer.ts
+  s_3c1ab8c0a1269e::t_cd8c430f2de62d 5856,5994,6001-6010,6015-6020,6022-6026,6028-6033,6037-6041
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f45ac32f60bb296bf3c28e15f701a7b3f0f7703b",
+  "prompts": {},
+  "sessions": {
+    "s_3c1ab8c0a1269e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9ab061e0-fb7c-499d-9776-c0e0a58e311b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+docs/observers.md
+  s_b296808b013749::t_9026286224e47f 260-261,424
+packages/workshop-backend/__tests__/observer-scope-restart.test.ts
+  s_b296808b013749::t_6cc81ff1968e1a 493-530,537-539,544,553-561,592-638
+packages/workshop-backend/src/overseer.ts
+  s_b296808b013749::t_93b4856da15452 9163-9171,9212-9216,9223
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "900e9f03698d150455330536493fc3a900566cf6",
+  "prompts": {},
+  "sessions": {
+    "s_b296808b013749": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57860223-4cde-498d-b995-c919e961aac6",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/observer-verification-failure.test.ts
+  s_3c1ab8c0a1269e::t_61699e9d5d27de 39-44,85-147
+packages/workshop-backend/src/overseer.ts
+  s_3c1ab8c0a1269e::t_c4a3fb5a5e408d 8890-8893,8896-8898,8989,9005-9007,9045-9056
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "02558f3b106d2ac43d68be80c3f511d733136693",
+  "prompts": {},
+  "sessions": {
+    "s_3c1ab8c0a1269e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9ab061e0-fb7c-499d-9776-c0e0a58e311b",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

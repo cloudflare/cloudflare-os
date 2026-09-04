@@ -1,0 +1,23 @@
+scripts/kill-process-tree.test.ts
+  s_fcc903b17ec62a::t_c1705e488a387d 25
+scripts/relay-termination.test.ts
+  s_fcc903b17ec62a::t_112fcbed945682 3,43-48,56-59,69-71,74,78,84-92,98,114,134-147,149-155,157-162,167,196-198,200-248
+scripts/run-dev-server.ts
+  s_fcc903b17ec62a::t_3bd155c2ac6b32 177-196,202-207,216-232,248-249
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8dd5d12eaa39e1fe1b8811cbd78e7cf4ce8d5d9f",
+  "prompts": {},
+  "sessions": {
+    "s_fcc903b17ec62a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75d068b1-2d92-4e32-9f38-87260ac2c2f3",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,37 @@
+scripts/run-dev-server.ts
+  s_78236dfcca2d26::t_25c4acdcde545b 28,312
+scripts/run-local.ts
+  s_78236dfcca2d26::t_eef21a46f3d01b 21,25
+scripts/release/build-release.ts
+  s_78236dfcca2d26::t_6230b5018421c1 30,225
+scripts/vp/concurrency.ts
+  s_78236dfcca2d26::t_5a13ba908045df 10-365
+scripts/env-passthrough.test.ts
+  s_78236dfcca2d26::t_12f6a746e9211e 94
+package.json
+  s_78236dfcca2d26::t_ad8565d195e9f5 8,10,19
+scripts/vp/run.ts
+  s_78236dfcca2d26::t_0ff633b0130913 3-23
+AGENTS.md
+  s_78236dfcca2d26::t_4365a45ca2aa82 69,73
+scripts/relay-termination.ts
+  s_78236dfcca2d26::t_810dda2e250cd6 1
+scripts/vp/concurrency.test.ts
+  s_78236dfcca2d26::t_9f179ced2051ed 2-428
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "677cef9f75947043a298b9eaa961f0238abebc24",
+  "prompts": {},
+  "sessions": {
+    "s_78236dfcca2d26": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "54b89734-38df-48af-a8aa-77bd3e03c492",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
