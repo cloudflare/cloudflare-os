@@ -9,7 +9,7 @@ import type {
   AiChatAuthorInfo, AiModelConfig, AuthenticatedApi, Overseer, PublicApi,
 } from "@gadgets/workshop-shared/api";
 import { startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness } from "../src/harness.js";
-import { scriptedChatCompletions } from "../src/mock-model.js";
+import { scriptedChatCompletions, type ScriptedChatCompletions } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
   connect, listConnectedAccounts, nextUsernames, signUp, waitFor,
@@ -27,98 +27,12 @@ const MODEL_CONFIG: AiModelConfig = {
 const RESOURCE_URL_PATTERN = "https://gadgets-test.example/things/*";
 
 let harness: Harness;
-const model = scriptedChatCompletions([
-  // --- Test 1, turn 1: a fixable rejection, then a successful creation, used immediately.
-  {
-    toolCall: {
-      id: "create-bad-type",
-      name: "createExternalResource",
-      arguments: {
-        vendorId: TEST_VENDOR_ID,
-        resourceUrlPattern: "https://gadgets-test.example/nope/*",
-        title: "My Thing",
-        bindingName: "NEW_THING",
-      },
-    },
-  },
-  {
-    toolCall: {
-      id: "create-thing",
-      name: "createExternalResource",
-      arguments: {
-        vendorId: TEST_VENDOR_ID,
-        resourceUrlPattern: RESOURCE_URL_PATTERN,
-        title: "My Thing",
-        bindingName: "NEW_THING",
-      },
-    },
-  },
-  {
-    toolCall: {
-      id: "read-new-thing",
-      name: "executeCode",
-      arguments: {
-        code: "export default async function(self, env) { console.log(await env.NEW_THING.readValue()); }",
-      },
-    },
-  },
-  { text: "Created the thing and read 42 from it." },
-  // --- Test 1, turn 2 (after approval): the replayed binding still works, and the write's
-  // action snapshot shows the refreshed (created) resource URL. writeValue awaits a decision,
-  // so this turn deliberately suspends.
-  {
-    toolCall: {
-      id: "write-new-thing",
-      name: "executeCode",
-      arguments: {
-        code: "export default async function(self, env) { console.log(await env.NEW_THING.writeValue(9)); }",
-      },
-    },
-  },
-  // --- Test 2, turn 1: create a thing whose creation the user will reject.
-  {
-    toolCall: {
-      id: "create-doomed",
-      name: "createExternalResource",
-      arguments: {
-        vendorId: TEST_VENDOR_ID,
-        resourceUrlPattern: RESOURCE_URL_PATTERN,
-        title: "Doomed Thing",
-        bindingName: "DOOMED",
-      },
-    },
-  },
-  { text: "Created the doomed thing." },
-  // --- Test 2, turn 2 (after rejection): the binding is dead, with an explanation.
-  {
-    toolCall: {
-      id: "read-doomed",
-      name: "executeCode",
-      arguments: {
-        code: "export default async function(self, env) {" +
-            " try { console.log(await env.DOOMED.readValue()); }" +
-            " catch (err) { console.log('DEAD: ' + (err && err.message)); } }",
-      },
-    },
-  },
-  { text: "The doomed thing is gone." },
-  // --- Test 3: the vendor fails after durably queueing its creation action; the overseer must
-  // settle the orphan instead of leaving it pending against a removed gatekeeper.
-  {
-    toolCall: {
-      id: "create-orphan",
-      name: "createExternalResource",
-      arguments: {
-        vendorId: TEST_VENDOR_ID,
-        resourceUrlPattern: RESOURCE_URL_PATTERN,
-        title: "fail-after-queue",
-        bindingName: "ORPHAN",
-      },
-    },
-  },
-  { text: "The creation failed." },
-]);
-const network = new NetworkInterceptor({ handlers: [model.handler] });
+// Each test owns its script (assigned before its first turn) so tests stay independently
+// runnable; the interceptor delegates to whichever script is current.
+let model: ScriptedChatCompletions;
+const network = new NetworkInterceptor({
+  handlers: [(url, method, headers, request) => model.handler(url, method, headers, request)],
+});
 
 beforeAll(async () => {
   network.install();
@@ -196,6 +110,55 @@ function userMessagesShownToModel(): string[] {
 }
 
 it("creates a resource the agent can use before the user approves it", async () => {
+  model = scriptedChatCompletions([
+    // Turn 1: a fixable rejection, then a successful creation, used immediately.
+    {
+      toolCall: {
+        id: "create-bad-type",
+        name: "createExternalResource",
+        arguments: {
+          vendorId: TEST_VENDOR_ID,
+          resourceUrlPattern: "https://gadgets-test.example/nope/*",
+          title: "My Thing",
+          bindingName: "NEW_THING",
+        },
+      },
+    },
+    {
+      toolCall: {
+        id: "create-thing",
+        name: "createExternalResource",
+        arguments: {
+          vendorId: TEST_VENDOR_ID,
+          resourceUrlPattern: RESOURCE_URL_PATTERN,
+          title: "My Thing",
+          bindingName: "NEW_THING",
+        },
+      },
+    },
+    {
+      toolCall: {
+        id: "read-new-thing",
+        name: "executeCode",
+        arguments: {
+          code: "export default async function(self, env) { console.log(await env.NEW_THING.readValue()); }",
+        },
+      },
+    },
+    { text: "Created the thing and read 42 from it." },
+    // Turn 2 (after approval): the replayed binding still works, and the write's action
+    // snapshot shows the refreshed (created) resource URL. writeValue awaits a decision, so
+    // this turn deliberately suspends.
+    {
+      toolCall: {
+        id: "write-new-thing",
+        name: "executeCode",
+        arguments: {
+          code: "export default async function(self, env) { console.log(await env.NEW_THING.writeValue(9)); }",
+        },
+      },
+    },
+  ]);
   using publicApi = connect(harness.url);
   using authenticated = await signUpScriptedUser(publicApi, "createres");
   using workspace = await authenticated.newGadget();
@@ -240,22 +203,81 @@ it("creates a resource the agent can use before the user approves it", async () 
   expect(write.resourceUrl).toContain("/things/created-");
   expect(write.resourceUrl).not.toContain("provisional");
 
-  // Replay told the model about the approval — the recorded tool result permanently says the
-  // resource doesn't exist yet, so without this the model's context never learns it now does.
+  // The creation action itself settled as approved.
+  const all = (await workspace.listActions({ filter: "all" })).entries;
+  expect(all.find(action => action.id === pending.id)?.state).toBe("approved");
+
+  // The decision reached the model as a durable nudge — the recorded tool result permanently
+  // says the resource doesn't exist yet, so without this the model's context never learns it
+  // now does.
   const approval = userMessagesShownToModel().find(message =>
     message.includes("The user approved the creation of env.NEW_THING"));
   expect(approval).toContain(write.resourceUrl);
+  expect(model.remainingSteps()).toBe(0);
 });
 
-it("kills the binding when the user rejects the creation", async () => {
+it("kills the binding and cascades to queued edits when the user rejects the creation",
+    async () => {
+  model = scriptedChatCompletions([
+    // Turn 1: create a thing, queue an edit against it, then suspend on the edit's
+    // awaitDecision. The user rejects the creation, which must cascade to the queued edit.
+    {
+      toolCall: {
+        id: "create-doomed",
+        name: "createExternalResource",
+        arguments: {
+          vendorId: TEST_VENDOR_ID,
+          resourceUrlPattern: RESOURCE_URL_PATTERN,
+          title: "Doomed Thing",
+          bindingName: "DOOMED",
+        },
+      },
+    },
+    {
+      toolCall: {
+        id: "write-doomed",
+        name: "executeCode",
+        arguments: {
+          code: "export default async function(self, env) { console.log(await env.DOOMED.writeValue(5)); }",
+        },
+      },
+    },
+    // Turn 2 (after rejection): the binding is dead, with an explanation.
+    {
+      toolCall: {
+        id: "read-doomed",
+        name: "executeCode",
+        arguments: {
+          code: "export default async function(self, env) {" +
+              " try { console.log(await env.DOOMED.readValue()); }" +
+              " catch (err) { console.log('DEAD: ' + (err && err.message)); } }",
+        },
+      },
+    },
+    { text: "The doomed thing is gone." },
+  ]);
   using publicApi = connect(harness.url);
   using authenticated = await signUpScriptedUser(publicApi, "createrej");
   using workspace = await authenticated.newGadget();
-  const chatId = await workspace.newChat("Create a doomed test thing.", MODEL_ID);
-  await waitForAgentSays(workspace, chatId, "Created the doomed thing.");
+  const chatId = await workspace.newChat(
+      "Create a doomed test thing and write to it.", MODEL_ID);
 
-  const pending = await onlyPendingAction(workspace, "the creation action to be pending");
-  await workspace.rejectAction(pending.id);
+  // The write awaits a decision, so the turn suspends holding two pending actions: the
+  // creation and an edit that depends on it.
+  const pending = await waitFor("the creation and its edit to be pending", async () => {
+    const entries = (await workspace.listActions({ filter: "pending" })).entries;
+    return entries.length === 2 ? entries : null;
+  });
+  const creation = pending.find(action =>
+    action.description.title.startsWith("Create test thing"));
+  if (creation === undefined) throw new Error("No pending creation action found");
+  await workspace.rejectAction(creation.id);
+
+  // Rejecting the creation settled the dependent edit too — nothing left to decide one by one.
+  const all = (await workspace.listActions({ filter: "all" })).entries;
+  expect(all.filter(action => action.state === "pending")).toEqual([]);
+  expect(all.filter(action => action.type === "action" && action.state === "rejected"))
+      .toHaveLength(2);
 
   // The next turn's use of the binding fails with the gatekeeper's dead-binding explanation
   // rather than silently simulating against nothing.
@@ -264,12 +286,30 @@ it("kills the binding when the user rejects the creation", async () => {
   expect(toolResultShownToModel("read-doomed")).toContain("DEAD:");
   expect(toolResultShownToModel("read-doomed")).toMatch(/rejected/);
 
-  // Replay told the model about the rejection too.
+  // The rejection nudge reached the model.
   expect(userMessagesShownToModel().some(message =>
     message.includes("The user rejected the creation of env.DOOMED"))).toBe(true);
+  expect(model.remainingSteps()).toBe(0);
 });
 
 it("settles the queued action when the vendor fails after queueing it", async () => {
+  model = scriptedChatCompletions([
+    // The vendor fails after durably queueing its creation action; the overseer must settle
+    // the orphan instead of leaving it pending against a removed gatekeeper.
+    {
+      toolCall: {
+        id: "create-orphan",
+        name: "createExternalResource",
+        arguments: {
+          vendorId: TEST_VENDOR_ID,
+          resourceUrlPattern: RESOURCE_URL_PATTERN,
+          title: "fail-after-queue",
+          bindingName: "ORPHAN",
+        },
+      },
+    },
+    { text: "The creation failed." },
+  ]);
   using publicApi = connect(harness.url);
   using authenticated = await signUpScriptedUser(publicApi, "createfail");
   using workspace = await authenticated.newGadget();
@@ -283,7 +323,9 @@ it("settles the queued action when the vendor fails after queueing it", async ()
   // not left pending forever (approve/reject would both fail on the missing facet).
   const actions = (await workspace.listActions({ filter: "all" })).entries;
   expect(actions.filter(action => action.state === "pending")).toEqual([]);
-  expect(actions.some(action => action.type === "action" && action.state === "rejected"))
-      .toBe(true);
+  const settled = actions.find(action =>
+    action.type === "action" && action.state === "rejected");
+  if (settled?.gatekeeperId === undefined) throw new Error("No settled creation action found");
+  await expect(workspace.getGatekeeperById(settled.gatekeeperId)).rejects.toThrow();
   expect(model.remainingSteps()).toBe(0);
 });
