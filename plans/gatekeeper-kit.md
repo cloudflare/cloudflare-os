@@ -382,11 +382,14 @@ export class CredentialSource<Creds> {          // held by User entrypoint / fac
                                  //   reportCredentialsRejected(identity): Promise<RejectionVerdict> —
                                  //   an adjudication of identity, never of notification delivery
                                  //   (that is the latch's, §4.4); a malformed or lost answer reads
-                                 //   "expired", so a broken transport cannot mask a dead grant as
-                                 //   retryable. A structural two-method type: the coordinator
-                                 //   helpers are the reference implementation, and a hand-written
-                                 //   stub owns their invariants — atomic triple, moved-past gate,
-                                 //   heal fenced on the rejected identity, honest verdicts }
+                                 //   "expired" — never dead-marking, only the account's word
+                                 //   retires an identity — so a broken transport cannot mask a
+                                 //   dead grant as retryable. A structural two-method type: the
+                                 //   coordinator helpers are the reference implementation, and a
+                                 //   hand-written stub owns their invariants — atomic triple
+                                 //   under a non-"" identity (the source refuses a "" read),
+                                 //   moved-past gate, heal fenced on the rejected identity,
+                                 //   honest verdicts }
     isAuthError(e: unknown): boolean;              // credential rejection — the provider refusing
                                  // the presented credentials — never a per-resource denial; the
                                  // account's heal inside the adjudication, not the classifier,
@@ -2451,7 +2454,8 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
    against the identity the failed attempt used, and the verdict decides — `"expired"` throws
    `CredentialsExpiredError(expiredMessage)` with the identity marked dead, `"superseded"` throws
    `CredentialsChangedError` or, under `replayable`, refetches and retries once, `"unavailable"`
-   (or a malformed or lost answer, which reads `"expired"`) never masks a dead grant as retryable;
+   (or a malformed or lost answer, which reads `"expired"` without the dead-mark — only the
+   account's word retires an identity) never masks a dead grant as retryable;
    the retry is refused as "changed" when its refetch crosses a generation, re-serves the
    rejected identity, or was not itself adopted (a fenced-out refetch triggers neither the
    re-serve's authority drop nor the dead successor's expiry — both act only on the read the

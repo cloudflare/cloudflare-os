@@ -1140,6 +1140,10 @@ describe("CredentialSource", () => {
       logged.mockRestore();
     }
     expect(instance.authority()).toBeUndefined();
+
+    // Synthesized, never adjudicated: the identity is not dead-marked, so the next read re-adopts.
+    await instance.get();
+    expect(instance.authority()).toBe("gen-a");
   });
 
   it("fails closed when the report cannot reach the account", async () => {
@@ -1153,9 +1157,23 @@ describe("CredentialSource", () => {
       await expect(instance.run(async () => { throw new Error("401"); }))
         .rejects.toThrow(CredentialsExpiredError);
       expect(logged).toHaveBeenCalledOnce();
+
+      // A transient outage is not the account's word: the identity is not dead-marked, so the
+      // next read re-adopts and caching survives the activation.
+      await instance.get();
+      expect(instance.authority()).toBe("gen-a");
     } finally {
       logged.mockRestore();
     }
+  });
+
+  it("refuses a read served under the reserved empty identity", async () => {
+    const { instance } = source({
+      getCredentials: async () => ({ creds: live, identity: "", generation: "gen-a" }),
+    });
+
+    await expect(instance.get()).rejects.toThrow('reserved "" identity');
+    expect(instance.authority()).toBeUndefined();
   });
 
   it("refuses the retry when the refetch crosses a reconnect", async () => {
@@ -1815,7 +1833,7 @@ describe("CredentialSource", () => {
 });
 
 describe("CredentialSource over a CredentialCoordinator", () => {
-  // The two halves composed the way a port wires them: `getCredentials` projects
+  // The two halves composed the way a port wires them: `getCredentials` serves
   // `coordinator.snapshot(...)`, the rejection report delegates to `adjudicateRejection`, and in
   // production `notify` is `notifyCredentialsExpiredOnce` over the same storage.
   function harness(options: { mint?: (current: Creds) => Promise<Creds> } = {}) {
@@ -1974,5 +1992,40 @@ describe("CredentialSource over a CredentialCoordinator", () => {
     expect(operation).toHaveBeenCalledTimes(2);
     expect(mint).toHaveBeenCalledTimes(2);
     expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("keeps refresh material account-side when getCredentials serves a projection", async () => {
+    // The coordinator and source type parameters are independent on purpose: the account holds
+    // the full grant, the source only its public projection.
+    type Grant = Creds & { refreshSecret: string };
+    const grants = new CredentialCoordinator<Grant>(fakeKv());
+    grants.connect({ token: "stale", expiresAt: Date.now() + hour, refreshSecret: "keep-me" });
+    const source = new CredentialSource<Creds>({
+      account: () => ({
+        getCredentials: async () => {
+          const { creds, identity, generation } =
+            await grants.snapshot(async current => current, { notify: async () => {} });
+          return { creds: { token: creds.token, expiresAt: creds.expiresAt }, identity, generation };
+        },
+        reportCredentialsRejected: identity => grants.adjudicateRejection(identity, {
+          refresh: async current => ({ ...current, token: "minted" }),
+          notify: async () => {},
+        }),
+      }),
+      isAuthError: error => error instanceof Error && error.message === "401",
+      expiredMessage: "Reconnect.",
+    });
+
+    const handed: Creds[] = [];
+    const result = await source.run(async creds => {
+      handed.push(creds);
+      if (creds.token !== "minted") throw new Error("401");
+      return creds.token;
+    }, { replayable: true });
+
+    // The heal ran account-side against the full grant; no read ever carried the secret.
+    expect(result).toBe("minted");
+    expect(grants.stored()).toMatchObject({ token: "minted", refreshSecret: "keep-me" });
+    for (const creds of handed) expect(creds).not.toHaveProperty("refreshSecret");
   });
 });
