@@ -1,0 +1,35 @@
+packages/wiki-import/README.md
+  s_d78fe856f76a3c::t_71f4aa3c852d54 234,258-270
+packages/wiki-import/__tests__/fixtures/links.xhtml
+  s_d78fe856f76a3c::t_40324a829fbe02 9
+packages/wiki-import/__tests__/plan.test.ts
+  s_d78fe856f76a3c::t_cabc49cdb38015 21-22,67-68,101-105,992-1093
+packages/wiki-import/__tests__/source-api.test.ts
+  s_d78fe856f76a3c::t_900c7eab19dce5 659-753
+packages/wiki-import/__tests__/storage-to-blocks.test.ts
+  s_d78fe856f76a3c::t_dfac18e4e27633 19,173-177,1003-1005,1138-1198
+packages/wiki-import/src/import.ts
+  s_d78fe856f76a3c::t_960987ee4412a6 74,142-153,226-227,257-258,289-295,422-426,463-464,529-531,756-802,825,828,989-992,1013,1036-1040,1045,1056-1063
+packages/wiki-import/src/index.ts
+  s_d78fe856f76a3c::t_2c9667753d894b 23,25
+packages/wiki-import/src/source-api.ts
+  s_d78fe856f76a3c::t_a84aaff2ef36f3 196-213,225-237,380-387,421-445,807-822
+packages/wiki-import/src/storage-to-blocks.ts
+  s_d78fe856f76a3c::t_192dfda78171a8 50,160-170,251-284,429-430,454,1449-1456
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3a415ec5f0085f76f9b2fe4fd9df458368bc11a4",
+  "prompts": {},
+  "sessions": {
+    "s_d78fe856f76a3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63609131-6dc8-4bbd-89fc-3b9404121acb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
