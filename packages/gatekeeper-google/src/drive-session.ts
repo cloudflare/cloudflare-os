@@ -46,13 +46,21 @@ function requiredString(value: string | undefined, field: string): string {
   return value;
 }
 
+/** Drive's `modifiedTime`, validated. */
+export function driveModifiedTime(file: DriveFile): Date {
+  let modifiedTime = new Date(requiredString(file.modifiedTime, "modifiedTime"));
+  if (Number.isNaN(modifiedTime.valueOf())) {
+    throw new Error("Google Drive returned an invalid modifiedTime");
+  }
+  return modifiedTime;
+}
+
 /** Maps one validated provider file to the permanent agent-facing declaration. */
 export function driveFileToEntry(file: DriveFile): DriveEntry {
   let mimeType = requiredString(file.mimeType, "mimeType");
   let isFolder = mimeType === FOLDER_MIME_TYPE;
   let isShortcut = mimeType === SHORTCUT_MIME_TYPE;
-  let modifiedTime = new Date(requiredString(file.modifiedTime, "modifiedTime"));
-  if (Number.isNaN(modifiedTime.valueOf())) throw new Error("Google Drive returned an invalid modifiedTime");
+  let modifiedTime = driveModifiedTime(file);
 
   let size: number | undefined;
   if (file.size !== undefined && !isFolder && !isShortcut) {
