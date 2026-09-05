@@ -119,16 +119,24 @@ export class McpSessionBase extends RpcTarget {
     (this.#queue as RpcStub<ApprovalQueue> & { [Symbol.dispose](): void })[Symbol.dispose]();
   }
 
+  // The server's name and endpoint as an observation shows them. Both are chosen by the far
+  // side -- on the portal connector the name comes straight out of the upstream's own
+  // `portal_list_servers` reply -- so they get the same treatment the agent's search query
+  // already gets below, for the reason given there: an observation is read by a person, and
+  // either one is as able to forge structure as a tool description is.
+  get #serverLabel(): string { return plainInline(this.#host.serverName); }
+  get #endpointSpan(): string { return codeSpan(this.#host.endpoint); }
+
   async listTools(
     options?: McpToolListOptions,
   ): Promise<McpToolInfo[] | McpToolSummary[]> {
     if (options === undefined) {
       const tools = await this.#host.tools();
       await this.#queue.authorizeObservation({
-        title: `${this.#host.serverName}: list tools`,
+        title: `${this.#serverLabel}: list tools`,
         description:
-          `Read the tool catalog of the MCP server **${this.#host.serverName}** ` +
-          `(\`${this.#host.endpoint}\`).`,
+          `Read the tool catalog of the MCP server **${this.#serverLabel}** ` +
+          `(${this.#endpointSpan}).`,
       });
       return tools.map(toolInfo);
     }
@@ -144,10 +152,10 @@ export class McpSessionBase extends RpcTarget {
       requireToolName("listTools", options.name);
       const tool = await this.#host.findTool(options.name);
       await this.#queue.authorizeObservation({
-        title: `${this.#host.serverName}: find tool`,
+        title: `${this.#serverLabel}: find tool`,
         description:
           `Looked for ${codeSpan(options.name, MAX_TOOL_NAME_CHARS)} on the MCP server ` +
-          `**${this.#host.serverName}** (\`${this.#host.endpoint}\`).`,
+          `**${this.#serverLabel}** (${this.#endpointSpan}).`,
       });
       return tool ? [toolInfo(tool)] : [];
     }
@@ -163,12 +171,12 @@ export class McpSessionBase extends RpcTarget {
     }
     const tools = await this.#host.searchTools(trimmed);
     await this.#queue.authorizeObservation({
-      title: `${this.#host.serverName}: search tools`,
+      title: `${this.#serverLabel}: search tools`,
       description:
-        `Searched the tool catalog of the MCP server **${this.#host.serverName}** ` +
+        `Searched the tool catalog of the MCP server **${this.#serverLabel}** ` +
         // The query is the agent's text, so it is flattened before being quoted: an observation is
         // read by a person, and a query is as able to forge structure as a tool description is.
-        `(\`${this.#host.endpoint}\`) for \`${plainInline(trimmed)}\` ` +
+        `(${this.#endpointSpan}) for \`${plainInline(trimmed)}\` ` +
         `and returned ${tools.length} match(es), up to a limit of ${MAX_SEARCH_RESULTS}.`,
     });
     return tools.map(toolSummary);
@@ -271,10 +279,10 @@ export class McpSessionBase extends RpcTarget {
         // The result was produced while the Gadget was not looking, so it becomes an observation at
         // the moment it is handed over rather than when the call was applied.
         await this.#queue.authorizeObservation({
-          title: `${host.serverName}: result of ${stored.toolName}`,
+          title: `${this.#serverLabel}: result of ${plainInline(stored.toolName)}`,
           description:
-            `Read the response from the approved call to \`${stored.toolName}\` on ` +
-            `**${host.serverName}**.`,
+            `Read the response from the approved call to ${codeSpan(stored.toolName)} on ` +
+            `**${this.#serverLabel}**.`,
         });
         return result;
       }
