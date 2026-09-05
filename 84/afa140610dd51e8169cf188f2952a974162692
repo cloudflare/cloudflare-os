@@ -1,0 +1,37 @@
+packages/wiki-import/README.md
+  s_d78fe856f76a3c::t_f7eddeb7d5f3e2 1-262
+packages/wiki-import/__tests__/plan.test.ts
+  s_d78fe856f76a3c::t_7f029bc2fc39f7 1-1034
+packages/wiki-import/__tests__/source-api.test.ts
+  s_d78fe856f76a3c::t_a81999e43db7e1 1-567
+packages/wiki-import/__tests__/workshop-client.test.ts
+  s_d78fe856f76a3c::t_1b1dfb028aea8b 1-716
+packages/wiki-import/src/import.ts
+  s_d78fe856f76a3c::t_ace72312957d3f 1-914
+packages/wiki-import/src/index.ts
+  s_d78fe856f76a3c::t_57ef9a212783f4 1-30
+packages/wiki-import/src/source-api.ts
+  s_d78fe856f76a3c::t_7950f3a184a0cd 1-677
+packages/wiki-import/src/state.ts
+  s_d78fe856f76a3c::t_917d71b9ecbbd9 1-256
+packages/wiki-import/src/workshop-client.ts
+  s_d78fe856f76a3c::t_29e57358f57736 1-618
+pnpm-lock.yaml
+  s_d78fe856f76a3c::t_a2b22709e04433 899-901,905-907,916,918-920,2906-2908,7009-7012
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "84afa140610dd51e8169cf188f2952a974162692",
+  "prompts": {},
+  "sessions": {
+    "s_d78fe856f76a3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63609131-6dc8-4bbd-89fc-3b9404121acb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
