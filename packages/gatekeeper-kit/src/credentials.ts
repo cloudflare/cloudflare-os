@@ -2,6 +2,7 @@
 
 import { createLogger } from "@gadgets/backend-utils/logger";
 import { ACCESS_TOKEN_SAFETY_MS, generateNonce } from "./connect-nonce";
+import { clearCredentialExpiryLatch } from "./credential-expiry";
 import type { KvMutable } from "./kv";
 import { perStorage } from "./per-storage";
 import { SingleFlight } from "./single-flight";
@@ -134,13 +135,23 @@ export type CredentialCoordinatorOptions<Creds> = {
    * @returns Legacy credentials, or `undefined` when absent.
    */
   upgrade?(kv: Pick<CredentialsKv, "get">): Creds | undefined;
+  /**
+   * Disposes of a provider mint that lost its identity fence -- a reconnect or revoke won while
+   * the refresh was in flight -- and will never be stored. Revoke it provider-side; a provider
+   * that rotates refresh tokens must treat this as required, since the discarded grant chain
+   * otherwise stays live with no stored handle. Errors are logged, never rethrown.
+   * @param mint Credentials the coordinator is dropping.
+   */
+  discardMint?(mint: Creds): void | Promise<void>;
   /** Vendor id for log attribution. */
   vendorId?: string;
 };
 
 /**
  * Owns credential storage, migration, and skew-aware refresh. Concurrent refreshes share one
- * provider request. A crash after provider-side token rotation may still require reconnection.
+ * provider request, and a mint a reconnect or revoke overtook goes to `discardMint` for
+ * provider-side disposal. A crash after provider-side token rotation may still require
+ * reconnection.
  */
 export class CredentialCoordinator<Creds> {
   readonly #kv: CredentialsKv;
@@ -192,13 +203,19 @@ export class CredentialCoordinator<Creds> {
 
     // Canonical record first, legacy keys second. Both land in one implicit transaction, so a
     // machine failure takes neither; the order is what makes a throw between them survivable, since
-    // the grant is already readable under its new key before the old one goes away.
-    this.#commit(upgraded);
+    // the grant is already readable under its new key before the old one goes away. Publishes
+    // rather than commits: moving a grant between layouts replaces nothing, so a death this
+    // account already announced must stay latched.
+    this.#publish(upgraded);
     this.#reap();
     return upgraded;
   }
 
-  /** @returns The opaque identity of the current credential value. */
+  /**
+   * @returns The opaque identity of the current credential value, or `""` when never connected.
+   * That value is reserved for a never-connected read: it always adjudicates `"superseded"`, so a
+   * hand-written `getCredentials` must never serve credentials under it.
+   */
   identity(): string {
     return this.#kv.get<string>(IDENTITY_KEY) ?? "";
   }
@@ -227,9 +244,20 @@ export class CredentialCoordinator<Creds> {
    * credentials, where the identity match gating `"expired"` would falsely retire a live grant.
    * @param credentials Credentials to store.
    */
-  #commit(credentials: Creds): void {
+  #publish(credentials: Creds): void {
     this.#supersede();
     this.#kv.put(CREDENTIALS_KEY, credentials);
+  }
+
+  /**
+   * Publishes replacement credentials and re-arms the expiry latch, so the next confirmed death
+   * notifies again and a notification still in flight for the credentials this replaces cannot
+   * latch these.
+   * @param credentials Credentials to store.
+   */
+  #commit(credentials: Creds): void {
+    clearCredentialExpiryLatch(this.#kv);
+    this.#publish(credentials);
   }
 
   /** Clears credentials and prevents legacy migration from restoring them. */
@@ -325,7 +353,11 @@ export class CredentialCoordinator<Creds> {
       return this.#overtaken(error);
     }
 
-    if (this.identity() !== fence) return this.#overtaken();
+    if (this.identity() !== fence) {
+      // The mint is fenced out and will never be stored, so the provider is told to drop it.
+      await this.#discard(refreshed);
+      return this.#overtaken();
+    }
     this.#commit(refreshed);
     return refreshed;
   }
@@ -339,6 +371,21 @@ export class CredentialCoordinator<Creds> {
     const latest = this.stored();
     if (latest !== undefined) return latest;
     throw new CredentialsExpiredError("This account was disconnected while refreshing.", { cause });
+  }
+
+  /**
+   * Hands a fenced-out mint to the provider-side disposal seam.
+   * @param mint Credentials that will never be stored.
+   */
+  async #discard(mint: Creds): Promise<void> {
+    try {
+      await this.#options.discardMint?.(mint);
+    } catch (error) {
+      this.#logger.warn("discarded mint handler failed", {
+        event: "credentials.mint.discard.failed",
+        error,
+      });
+    }
   }
 
   /**
@@ -366,7 +413,9 @@ export class CredentialCoordinator<Creds> {
     } catch (error) {
       if (!isCredentialsExpired(error) || this.stored() === undefined
         || options.notify === undefined) throw error;
-      // A reconnect landing mid-notify replaced the dead grant: serve it instead of stale death.
+      // This reads the dead grant's own fence: only microtasks separate it from `#refresh`'s
+      // `identity() === fence` check, and a `connect()` arrives on an I/O turn. A reconnect
+      // landing mid-notify replaced the dead grant: serve it instead of stale death.
       if (await this.#notified(this.identity(), options.notify)) throw error;
       // A disconnect landing there moves the fence too; keep the death's provenance.
       if (this.stored() === undefined) {
@@ -480,7 +529,8 @@ export type CredentialsWithIdentity<Creds> = CredentialRead & { creds: Creds };
  * The identity and generation of the read a `run` operation executes under — the values to
  * capture in an action fence, since a retry runs under a different read than the first attempt
  * and a shared accessor like `authority()` can move mid-operation. A fresh object per attempt,
- * never the source's internal state.
+ * never the source's internal state. An identity of `""` is reserved for a never-connected read:
+ * it always adjudicates `"superseded"`, and no read serving credentials may carry it.
  */
 export type CredentialRead = { identity: string; generation: string };
 
@@ -517,8 +567,8 @@ export type AccountCredentialStub<Creds> = {
    * `"expired"` means the grant is dead or the account disconnected, with any Workshop
    * notification the account's own to deliver;
    * `"unavailable"` means the heal failed for non-credential reasons and nothing was adjudicated,
-   * so the source surfaces the caller's original provider error. A malformed or lost answer reads
-   * as `"expired"`, so a dead grant is never masked as retryable by a broken transport.
+   * so the source surfaces the caller's original provider error. A malformed or lost answer does
+   * the same: only the account's own word dead-marks or expires an identity.
    */
   reportCredentialsRejected(identity: string): Promise<RejectionVerdict>;
 };
@@ -592,6 +642,16 @@ export class CredentialSource<Creds> {
   }
 
   /**
+   * Fetches the current read's fence data without the credentials — for action-fence capture and
+   * comparison outside a `run` operation, such as at action apply.
+   * @returns A fresh object carrying the current identity fence and connection generation.
+   */
+  async read(): Promise<CredentialRead> {
+    const { identity, generation } = await this.#current();
+    return { identity, generation };
+  }
+
+  /**
    * The cache authority for data fetched through this source (`KvTtlCache.partitionedBy`): mirrors
    * the connection generation of the last successful fetch rather than reading the account live, so
    * a reconnect repartitions at the next fetch and a token refresh never does. A shared last-seen
@@ -626,7 +686,8 @@ export class CredentialSource<Creds> {
    * `"expired"` verdict — the credential fetch itself may also throw one, and that carries the
    * account's own message instead; `CredentialsChangedError` when the rejection was stale and re-entering
    * will read live credentials; the original provider error when the failure was not a credential
-   * rejection or the account could not adjudicate it (`"unavailable"`). Both named errors match
+   * rejection, or the account could not adjudicate it — its heal failed for non-credential
+   * reasons, or it could not be reached at all. Both named errors match
    * (`isCredentialsExpired` / `isCredentialsChanged`) across RPC boundaries — their `code`
    * survives the transports that strip `name`.
    */
@@ -688,9 +749,10 @@ export class CredentialSource<Creds> {
     if (verdict === "expired") {
       throw new CredentialsExpiredError(this.#options.expiredMessage, { cause });
     }
-    // Nothing adjudicated: the account's heal failed for non-credential reasons (its error lives
-    // in the account's logs), so the caller sees the provider rejection it actually got.
-    if (verdict === "unavailable") throw cause;
+    // Nothing adjudicated: the account's heal failed for non-credential reasons, or the account
+    // could not answer at all (either error lives in a log, not in this path), so the caller sees
+    // the provider rejection it actually got.
+    if (verdict === "unavailable" || verdict === "unadjudicated") throw cause;
     if (!retry) throw new CredentialsChangedError({ cause });
     return this.#retry(operation, read, cause);
   }
@@ -698,9 +760,10 @@ export class CredentialSource<Creds> {
   /**
    * Reports a rejection and takes the account's verdict.
    * @param identity Credential identity used by the failed call.
-   * @returns The account's verdict on that identity.
+   * @returns The account's verdict on that identity, or `"unadjudicated"` when it could not
+   * answer.
    */
-  async #verdict(identity: string): Promise<RejectionVerdict> {
+  async #verdict(identity: string): Promise<RejectionVerdict | "unadjudicated"> {
     // Drop at the ask: the rejection already proves this snapshot cannot vouch, whichever way
     // the answer goes — dead, its partition could serve the next principal stale data on a hit;
     // superseded, it no longer vouches for the current principal — so cache-first readers bypass
@@ -711,10 +774,11 @@ export class CredentialSource<Creds> {
     // The verdict adjudicates the identity, not the report, so concurrent reporters of one grant
     // share the account round trip — and the account's fence-keyed heal collapses their mints.
     const answer = await this.#asks.run(identity, () => this.#note(identity));
+    // An unadjudicated report never dead-marks: a transient account outage must not retire a
+    // possibly-live identity for the rest of the activation, nor invent an expiry the account
+    // never confirmed.
     this.#supersede(answer === "expired" ? identity : undefined);
-    // An unadjudicated report fails closed as expiry, but never dead-marks: a transient account
-    // outage must not retire a possibly-live identity for the rest of the activation.
-    return answer === "unadjudicated" ? "expired" : answer;
+    return answer;
   }
 
   /**
@@ -814,8 +878,8 @@ export class CredentialSource<Creds> {
    * Reports a rejection without replacing the provider error.
    * @param identity Credential identity used by the failed call.
    * @returns The account's verdict, or `"unadjudicated"` for an unreachable account or a
-   * malformed answer. The caller still reads that as expiry — a broken transport cannot mask a
-   * dead grant as retryable — but only the account's own word dead-marks the identity.
+   * malformed answer — which the caller surfaces as the provider error it already had, since only
+   * the account's own word may dead-mark or expire an identity.
    */
   async #note(identity: string): Promise<RejectionVerdict | "unadjudicated"> {
     let verdict: RejectionVerdict;

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
+import type { ApprovalQueue, GitCache } from "@gadgets/workshop-shared/gatekeeper";
 import type { RpcStub } from "cloudflare:workers";
 import {
   ActionApplyError,
@@ -7,6 +7,7 @@ import {
   APPLY_OUTCOME_UNKNOWN_MESSAGE,
   defineActions,
   stageAction,
+  type ActionContext,
   type ActionDefinition,
   type ActionJournalKv,
   type ActionPresentation,
@@ -14,6 +15,7 @@ import {
   type ResolveOutcome,
   type TaggedAction,
 } from "../src/actions";
+import type { CredentialRead } from "../src/credentials";
 import { ObservationGate, openObservers } from "../src/observers";
 import { fakeKv } from "./fake-kv";
 
@@ -241,7 +243,7 @@ describe("ActionJournal", () => {
     // below refuse the first allocation instead of the last.
     for (const maxPending of [Number.NaN, Infinity, 0, -1, 1.5]) {
       expect(() => new ActionJournal(makeKv(), { maxPending }))
-        .toThrow(/maxPending must be a positive integer/);
+        .toThrow(/maxPending must be a positive safe integer/);
     }
   });
 
@@ -394,6 +396,20 @@ describe("ActionJournal", () => {
     expect(journal.get(2)).toBeUndefined();
   });
 
+  it("drops an explained failure before one whose cleanup is still owed", () => {
+    const journal = new ActionJournal<Sql>(makeKv(), { maxPending: 1 });
+    journal.markFailed(journal.allocate({ sql: "owed" }), "no handler ran", { undispatched: true });
+    journal.markFailed(journal.allocate({ sql: "explained" }), "terminal");
+    journal.markFailed(journal.allocate({ sql: "explained too" }), "terminal");
+    journal.allocate({ sql: "the allocation that forces a prune" });
+
+    // Oldest-first among failures would take the undispatched record, dropping a rejection's
+    // obligation to release what staging set up rather than only the reason it failed.
+    expect(journal.get(1)?.undispatched).toBe(true);
+    expect(journal.get(2)).toBeUndefined();
+    expect(journal.get(3)?.error).toBe("terminal");
+  });
+
   it("answers for a failed record whose reason storage lost", () => {
     const kv = makeKv();
     const journal = new ActionJournal<Sql>(kv);
@@ -504,8 +520,8 @@ describe("defineActions", () => {
   type Host = { ran: string[] };
 
   function bind(overrides: {
-    apply?: (payload: Sql, host: Host, ctx: { id: number }) => Promise<void | { action?: Sql }>;
-    reject?: (payload: Sql, host: Host, ctx: { id: number }) => Promise<void>;
+    apply?: (payload: Sql, host: Host, ctx: ActionContext) => Promise<void | { action?: Sql }>;
+    reject?: (payload: Sql, host: Host, ctx: ActionContext) => Promise<void>;
     describe?: (payload: Sql, host: Host) => ActionPresentation;
     retainApplied?: boolean;
     afterResolve?: (host: Host, outcome: ResolveOutcome) => void | Promise<void>;
@@ -1061,14 +1077,49 @@ describe("defineActions", () => {
 
     await expect(actions.apply(id)).rejects.toThrow("storage unavailable");
     expect(host.ran).toEqual(["one"]);
-    expect(journal.get(id)?.state).toBe("claimed");
     expect(outcomes).toEqual([]);
 
-    // The claim outlived the attempt that wrote it, so the next one reports the unknown outcome
-    // rather than running the handler over an effect that already happened.
-    await expect(actions.apply(id)).rejects.toThrow(APPLY_OUTCOME_UNKNOWN_MESSAGE);
+    // The retire tombstoned the id before attempting the delete, so the effect is known applied:
+    // the stale record stops projecting and stops holding a pending slot.
+    expect(journal.wasApplied(id)).toBe(true);
+    expect(journal.listPending()).toEqual([]);
+
+    // A retry answers success rather than reporting a landed action as failed: it retries the
+    // cleanup, and a delete that fails again is logged, not raised.
+    const logged = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(actions.apply(id)).resolves.toBeUndefined();
+      expect(logged).toHaveBeenCalledOnce();
+    } finally {
+      logged.mockRestore();
+    }
     expect(host.ran).toEqual(["one"]);
-    expect(outcomes).toEqual(["failed"]);
+    expect(outcomes).toEqual([]);
+
+    // And the executed action can never be reported rejected, whatever the record still says.
+    await expect(actions.reject(id)).rejects.toThrow(/no longer pending/);
+  });
+
+  it("heals an interrupted retire on the next apply, leaving no record behind", async () => {
+    const kv = makeKv();
+    let failDelete = true;
+    const journal = new ActionJournal<TaggedAction<Actions>>({
+      ...kv,
+      delete: key => {
+        if (failDelete) throw new Error(`storage unavailable: ${key}`);
+        kv.delete(key);
+      },
+    });
+    const { actions, host } = bind({ journal });
+    const id = journal.allocate({ kind: "execute", payload: { sql: "one" } });
+    journal.markSubmitted(id);
+
+    await expect(actions.apply(id)).rejects.toThrow("storage unavailable");
+
+    failDelete = false;
+    await expect(actions.apply(id)).resolves.toBeUndefined();
+    expect(host.ran).toEqual(["one"]);
+    expect(kv.get(`pending:action:${id}`)).toBeUndefined();
   });
 
   it("refuses to submit past the pending cap, leaving nothing staged", async () => {
@@ -1172,13 +1223,105 @@ describe("defineActions", () => {
     expect(journal.get(id)).toBeUndefined();
     expect(outcomes).toEqual(["rejected"]);
   });
+
+  it("applies a fenced action under the connection that staged it", async () => {
+    const { actions, journal, host } = bind();
+    // A `CredentialRead` is structurally an `ActionFence`, so the staging read passes verbatim.
+    const read: CredentialRead = { identity: "id-a", generation: "gen-a" };
+    const id = await actions.submit(fakeQueue(), "execute", { sql: "one" }, { fence: read });
+
+    await actions.apply(id, { generation: "gen-a" });
+    expect(host.ran).toEqual(["one"]);
+    expect(journal.get(id)).toBeUndefined();
+  });
+
+  it("terminally fails a fenced action whose connection was replaced", async () => {
+    const { actions, journal, host, outcomes } = bind();
+    const id = await actions.submit(
+      fakeQueue(), "execute", { sql: "one" }, { fence: { generation: "gen-a" } });
+
+    await expect(actions.apply(id, { generation: "gen-b" }))
+      .rejects.toThrow(/connection that has since been replaced/);
+    expect(host.ran).toEqual([]);
+    expect(journal.get(id)?.state).toBe("failed");
+    expect(outcomes).toEqual(["failed"]);
+
+    // Terminal: every later attempt answers with the same message and no provider call, leaving
+    // the user the move the message names.
+    await expect(actions.apply(id, { generation: "gen-b" }))
+      .rejects.toThrow(/connection that has since been replaced/);
+    expect(host.ran).toEqual([]);
+  });
+
+  it("stores only the generation a fence declares, never the whole read", async () => {
+    const { actions, journal } = bind();
+    const read: CredentialRead = { identity: "id-a", generation: "gen-a" };
+    const id = await actions.submit(fakeQueue(), "execute", { sql: "one" }, { fence: read });
+
+    expect(journal.get(id)?.fence).toEqual({ generation: "gen-a" });
+  });
+
+  it("releases a mismatched action's staging artifacts when the user rejects it", async () => {
+    const { actions, journal, host, outcomes } = bind();
+    const id = await actions.submit(
+      fakeQueue(), "execute", { sql: "one" }, { fence: { generation: "gen-a" } });
+
+    await expect(actions.apply(id, { generation: "gen-b" }))
+      .rejects.toThrow(/connection that has since been replaced/);
+    // The handler never ran, so the rejection the message asks for still owes its cleanup.
+    await actions.reject(id);
+    expect(host.ran).toEqual(["rejected one"]);
+    expect(journal.get(id)).toBeUndefined();
+    expect(outcomes).toEqual(["failed", "rejected"]);
+  });
+
+  it("leaves a dispatched failure's cleanup to the handler that already ran", async () => {
+    const { actions, journal, host } = bind({
+      apply: async () => { throw new ActionApplyError("half applied") },
+    });
+    const id = await actions.submit(fakeQueue(), "execute", { sql: "one" });
+
+    await expect(actions.apply(id)).rejects.toThrow("half applied");
+    await actions.reject(id);
+    // Clearing the record, not undoing it: the handler owns whatever its partial effect left.
+    expect(host.ran).toEqual([]);
+    expect(journal.get(id)).toBeUndefined();
+  });
+
+  it("refuses a fenced action with no generation to compare, leaving it pending", async () => {
+    const { actions, journal, host } = bind();
+    const id = await actions.submit(
+      fakeQueue(), "execute", { sql: "one" }, { fence: { generation: "gen-a" } });
+
+    // A wiring bug, not a decision: the record must survive to be applied once apply() passes one.
+    await expect(actions.apply(id)).rejects.toThrow(/pass the current generation/);
+    expect(host.ran).toEqual([]);
+    expect(journal.get(id)?.state).toBe("pending");
+
+    await actions.apply(id, { generation: "gen-a" });
+    expect(host.ran).toEqual(["one"]);
+  });
+
+  it("hands the handler the action-scoped git cache the overseer passed", async () => {
+    const seen: ActionContext[] = [];
+    const gitCache = {} as RpcStub<GitCache>;
+    const { actions } = bind({ apply: async (_payload, _host, ctx) => void seen.push(ctx) });
+    const id = await actions.submit(fakeQueue(), "execute", { sql: "one" });
+
+    await actions.apply(id, { gitCache });
+    expect(seen[0]?.gitCache).toBe(gitCache);
+    expect(seen[0]?.fence).toBeUndefined();
+  });
 });
 
 describe("dependent actions", () => {
   type Actions = { create: { ref: string }; edit: { target: string } };
   type Host = { ran: string[] };
 
-  function bind(overrides: { apply?: () => Promise<void> } = {}) {
+  function bind(overrides: {
+    apply?: () => Promise<void>;
+    isResolvedReference?: (ref: string) => boolean;
+  } = {}) {
     const host: Host = { ran: [] };
     const journal = new ActionJournal<TaggedAction<Actions>>(makeKv());
     const set = defineActions<Host, Actions>({
@@ -1189,14 +1332,16 @@ describe("dependent actions", () => {
         provides: payload => [payload.ref],
         dependsOn: payload => (payload.ref.startsWith("child-") ? [payload.ref.slice(6)] : []),
         apply: overrides.apply ?? (async () => {}),
+        reject: async payload => void host.ran.push(`released ${payload.ref}`),
       },
       edit: {
         delivery: "continue-with-simulation",
         describe: () => presentation,
         dependsOn: payload => [payload.target],
         apply: overrides.apply ?? (async () => {}),
+        reject: async payload => void host.ran.push(`released edit ${payload.target}`),
       },
-    });
+    }, { isResolvedReference: overrides.isResolvedReference });
     return { host, journal, actions: set.bind(journal, host) };
   }
 
@@ -1206,6 +1351,23 @@ describe("dependent actions", () => {
     journal.markSubmitted(id);
     return id;
   }
+
+  it("refuses to apply an action whose provisional reference is unresolved", async () => {
+    const bound = new Set<string>();
+    const { actions, journal } = bind({ isResolvedReference: ref => bound.has(ref) });
+    const create = queued(journal, { kind: "create", payload: { ref: "~1" } });
+    const edit = queued(journal, { kind: "edit", payload: { target: "~1" } });
+
+    // Retryable and no cascade: the creation is still pending, so the dependent must survive to be
+    // applied after it — passing "~1" to the provider is what must not happen.
+    await expect(actions.apply(edit)).rejects.toThrow(/depends on ~1, which is not applied yet/);
+    expect(journal.get(edit)?.state).toBe("pending");
+
+    await actions.apply(create);
+    bound.add("~1");
+    await actions.apply(edit);
+    expect(journal.get(edit)).toBeUndefined();
+  });
 
   it("retires the actions a rejected creation strands, transitively", async () => {
     const { actions, journal } = bind();
@@ -1224,6 +1386,21 @@ describe("dependent actions", () => {
         .toBe(`This action needed action ${create}, which was not applied.`);
     }
     expect(journal.listPending().map(({ id }) => id)).toEqual([unrelated]);
+  });
+
+  it("still owes a stranded dependent's cleanup when the user rejects it", async () => {
+    const { actions, journal, host } = bind();
+    const create = queued(journal, { kind: "create", payload: { ref: "~1" } });
+    const edit = queued(journal, { kind: "edit", payload: { target: "~1" } });
+
+    await actions.reject(create);
+    expect(journal.get(edit)?.undispatched).toBe(true);
+
+    // The dependent never reached its handler either, so the rejection it is left with still has
+    // to release what staging set up for it.
+    await actions.reject(edit);
+    expect(host.ran).toEqual(["released ~1", "released edit ~1"]);
+    expect(journal.get(edit)).toBeUndefined();
   });
 
   it("retires them for a terminal failure too, which no provider effect can resolve", async () => {

@@ -43,8 +43,8 @@ describe("readTextCapped", () => {
     const { body } = streamed(["x".repeat(64)]);
     const response = new Response(body);
 
-    await expect(readTextCapped(response, NaN)).rejects.toThrow(/positive integer/);
-    await expect(readTextCapped(response, Infinity)).rejects.toThrow(/positive integer/);
+    await expect(readTextCapped(response, NaN)).rejects.toThrow(/positive safe integer/);
+    await expect(readTextCapped(response, Infinity)).rejects.toThrow(/positive safe integer/);
     // The body is untouched: the same response still reads in full under a real cap.
     expect(body.locked).toBe(false);
     expect(await readTextCapped(response, 128)).toBe("x".repeat(64));

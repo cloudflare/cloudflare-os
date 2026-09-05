@@ -7,13 +7,10 @@ import {
   OAUTH_NONCE_LIFETIME_MS,
   type TimedNonce,
 } from "./connect-nonce";
+import type { KvMutable } from "./kv";
 
 /** The Durable Object KV surface this module needs. */
-export type ConnectNonceKv = {
-  get<T>(key: string): T | undefined;
-  put<T>(key: string, value: T): void;
-  delete(key: string): void;
-};
+export type ConnectNonceKv = KvMutable;
 
 /** KV key holding the in-flight connect nonce. Unchanged from every current gatekeeper. */
 export const NONCE_KEY = "nonce";
@@ -98,7 +95,10 @@ export function advanceToOAuth<Extra extends object>(
 }
 
 /**
- * Claims a valid OAuth callback.
+ * Claims a valid OAuth callback. The claim is irrevocable: the nonce is consumed whatever happens
+ * next, so a consumer whose `complete()` or credential persistence fails after the provider
+ * exchange must roll back anything it just persisted itself — the storage shape is provider-owned,
+ * and a second callback with the same nonce will not arrive.
  * @param kv Durable Object nonce storage.
  * @param oauthNonce Provider-returned nonce.
  * @param now Current Unix time in milliseconds.
