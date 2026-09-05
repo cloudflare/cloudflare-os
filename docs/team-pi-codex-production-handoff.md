@@ -2,6 +2,10 @@
 
 Last verified: 2026-08-06
 
+GPT-6 Astra is the code default. Production uses the first entry in the
+`TEAM_PI_CODEX_MODELS` Worker secret. The production workflow prepends Astra to the GitHub
+configuration and synchronizes the resulting list only after the updated Worker code is deployed.
+
 Internal operational document. It contains deployment identifiers and secret locations, but no
 secret values.
 
@@ -98,7 +102,7 @@ Required backend environment values:
 
 ```text
 TEAM_PI_CODEX_BASE_URL=https://team-pi-proxy.unison.totango.com/api/odie
-TEAM_PI_CODEX_MODELS=gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5,gpt-5.4,gpt-5.4-mini
+TEAM_PI_CODEX_MODELS=gpt-6-astra,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5,gpt-5.4,gpt-5.4-mini
 TEAM_PI_CODEX_HMAC_SECRET=<secret>
 TEAM_PI_CODEX_ONLY=true
 CF_AI_GATEWAY_API_TOKEN=<secret>
@@ -108,6 +112,18 @@ The Odie production configuration enables `TEAM_PI_CODEX_ONLY` and does not enab
 `CF_AI_GATEWAY_PROVIDERS`. For eligible Totango accounts, model listing, preferred and quick model
 selection, and chat resolution then fail closed to the configured Team PI model IDs. The Workers AI
 binding remains deployed but is not an available LLM route for those accounts.
+
+The production workflow requires a nonempty `TEAM_PI_CODEX_MODELS` GitHub secret, prepends Astra,
+deduplicates the list, and writes it to `odie-os-backend`. Older configured IDs remain available
+for persisted selections. Updating the GitHub secret alone does not update the running Worker;
+the synchronization happens during deployment.
+
+On 2026-09-05, the production pool served `gpt-6-astra` successfully through both the Jarvis
+Responses/Chat Completions paths and Odie's Codex Responses path. Odie's existing gateway key
+had a Sol-only allowlist and forced model; its model policy was updated to allow Astra and the
+legacy profiles listed above without forcing a model. The credential, account assignments, and
+codex-lb 1.23.0 deployment were unchanged. Future model rollouts must verify the response's
+actual model, not just HTTP success, because a gateway key can override the requested model.
 
 Secret locations:
 

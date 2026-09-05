@@ -35,8 +35,8 @@ describe("coding session runtimes", () => {
     expect(command.slice(0, 15)).toEqual([
       "/usr/local/bin/pi",
       "--provider", "odie-team-pi",
-      "--model", "gpt-5.6-sol",
-      "--models", "odie-team-pi/gpt-5.6-sol",
+      "--model", "gpt-6-astra",
+      "--models", "odie-team-pi/gpt-6-astra,odie-team-pi/gpt-5.6-sol",
       "--tui-mode", "fullscreen",
       "--no-extensions",
       "--extension", "/workspace/.odie-pi/odie-runtime.ts",
@@ -63,8 +63,8 @@ describe("coding session runtimes", () => {
       "/usr/local/bin/prime-agent",
       "--offline",
       "--provider", "odie-team-pi",
-      "--model", "gpt-5.6-sol",
-      "--models", "odie-team-pi/gpt-5.6-sol",
+      "--model", "gpt-6-astra",
+      "--models", "odie-team-pi/gpt-6-astra,odie-team-pi/gpt-5.6-sol",
       "--no-extensions",
       "--extension", "/workspace/.odie-prime-agent/odie-runtime.ts",
       "--no-skills",
@@ -93,6 +93,10 @@ describe("coding session runtimes", () => {
 
     expect(source).toContain('baseUrl: "https://team-pi-proxy.example.com/api/odie/codex"');
     expect(source).toContain('url: "https://workshop-mcp.internal/mcp"');
+    expect(source).toContain('"id":"gpt-6-astra"');
+    expect(source).toContain('"id":"gpt-5.6-sol"');
+    expect(source).toContain('"inputTokensAbove":272000');
+    expect(source).toContain('"input":20,"output":75,"cacheRead":2,"cacheWrite":25');
     expect(source).toContain('hostConfigDiscovery: "off"');
     expect(source).toContain("scriptMode: false");
     expect(source).not.toContain("TEAM_PI_CODEX_HMAC_SECRET");
@@ -103,6 +107,9 @@ describe("coding session runtimes", () => {
 
     expect(source).toContain('baseUrl: "https://team-pi-proxy.example.com/api/odie/codex"');
     expect(source).toContain('apiKey: "synthetic"');
+    expect(source).toContain('"name":"GPT-6 Astra"');
+    expect(source).toContain('"name":"GPT 5.6 Sol"');
+    expect(source).toContain('"contextWindow":1050000,"maxTokens":128000');
     expect(source).not.toContain("TEAM_PI_CODEX_HMAC_SECRET");
     expect(primeAgentSettings()).toEqual({
       telemetry: { enabled: false },
