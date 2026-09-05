@@ -714,6 +714,53 @@ describe("CredentialCoordinator", () => {
       await expect(verdict).resolves.toBe("superseded");
     });
 
+    it.each([
+      { death: "a grant-death verdict", refresh: undefined },
+      { death: "a dead mint's verdict",
+        refresh: async () => { throw new CredentialsExpiredError("invalid_grant"); } },
+    ])("keeps $death expired when a disconnect lands mid-notify", async ({ refresh }) => {
+      const instance = coordinator(makeKv());
+      instance.connect(live);
+      const { notify, entered, release } = stallingNotify();
+
+      const verdict = instance.adjudicateRejection(instance.identity(), { refresh, notify });
+      await entered;
+      instance.clear();
+      release();
+
+      // "Superseded" promises a successor; the disconnect left none to re-enter into.
+      await expect(verdict).resolves.toBe("expired");
+    });
+
+    it("expires a rejected identity a disconnect moved past, without notifying", async () => {
+      const instance = coordinator(makeKv());
+      instance.connect(live);
+      const rejected = instance.identity();
+      const notify = vi.fn(async () => {});
+      instance.clear();
+
+      await expect(instance.adjudicateRejection(rejected, { notify })).resolves.toBe("expired");
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("expires the rejection when a disconnect lands during a failing mint", async () => {
+      const instance = coordinator(makeKv());
+      instance.connect(stale);
+      const rejected = instance.identity();
+      const notify = vi.fn(async () => {});
+      const mint = Promise.withResolvers<Creds>();
+
+      const adjudicating = instance.adjudicateRejection(rejected, {
+        refresh: () => mint.promise, notify,
+      });
+      instance.clear();
+      mint.reject(new Error("502 from token endpoint"));
+
+      // Neither "unavailable" nor "superseded" helps a caller whose account is gone.
+      await expect(adjudicating).resolves.toBe("expired");
+      expect(notify).not.toHaveBeenCalled();
+    });
+
     it("answers unavailable when the heal fails for non-credential reasons", async () => {
       const instance = coordinator(makeKv());
       instance.connect(stale);
@@ -1846,6 +1893,22 @@ describe("CredentialSource over a CredentialCoordinator", () => {
     expect(await source.run(operation)).toBe("minted");
 
     expect(mint).toHaveBeenCalledOnce();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("reports a disconnect landing mid-heal as expiry, not a retryable change", async () => {
+    const gate = Promise.withResolvers<Creds>();
+    const { coordinator, source, notify, mint } = harness({ mint: () => gate.promise });
+    coordinator.connect({ token: "stale-bearer", expiresAt: Date.now() + hour });
+
+    const run = source.run(async () => { throw new Error("401"); });
+    await vi.waitFor(() => expect(mint).toHaveBeenCalled());
+    coordinator.clear();
+    gate.reject(new Error("502 from token endpoint"));
+
+    // "Retry it" would bounce the caller into a disconnected account; expiry says reconnect.
+    await expect(run).rejects.toThrow(CredentialsExpiredError);
+    await expect(run).rejects.toThrow("Reconnect.");
     expect(notify).not.toHaveBeenCalled();
   });
 

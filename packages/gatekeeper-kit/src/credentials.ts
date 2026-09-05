@@ -91,10 +91,11 @@ export function isCredentialsChanged(error: unknown): boolean {
 
 /**
  * The account's adjudication of a reported credential rejection.
- * - `"expired"` — the grant is dead; the account owns announcing it to the Workshop, and the
- *   verdict never adjudicates that delivery.
- * - `"superseded"` — the rejected identity is no longer current: already replaced, or just healed
- *   past. The failure was stale, so the caller retries or re-enters.
+ * - `"expired"` — the grant is gone: provider-confirmed death, or a disconnect discovered during
+ *   the adjudication. The account owns announcing a death to the Workshop — a disconnect is a user
+ *   action and never notifies — and the verdict never adjudicates that delivery.
+ * - `"superseded"` — a live successor replaced the rejected identity: a refresh, a heal inside the
+ *   ask, or a reconnect. The failure was stale, so the caller retries or re-enters.
  * - `"unavailable"` — the heal failed for non-credential reasons; nothing was adjudicated, and the
  *   consumer surfaces the caller's original provider error.
  */
@@ -377,8 +378,9 @@ export class CredentialCoordinator<Creds> {
    * credential inside the ask. The verdict adjudicates the identity, never notification delivery,
    * which the account owns end to end. Invariants a hand-written implementation owns instead:
    * the moved-past gate (`""` never matches), the heal fenced on the rejected identity, and
-   * honest verdicts — `"expired"` only for provider-confirmed grant death, re-checked after the
-   * notify await since a reconnect landing mid-notification supersedes it.
+   * honest verdicts — `"superseded"` only under a live successor and `"expired"` for a dead or
+   * disconnected grant, the fence re-checked after the notify await since a reconnect landing
+   * mid-notification supersedes it.
    *
    * No durable mint latch guards a dead grant: a repeat report costs one provider call that
    * answers `invalid_grant` again — the same verdict — and Workshop notification is already
@@ -393,9 +395,10 @@ export class CredentialCoordinator<Creds> {
     identity: string,
     options: { refresh?: (current: Creds) => Promise<Creds>; notify: () => Promise<void> },
   ): Promise<RejectionVerdict> {
-    // Moved-past gate: a rejected identity no longer current was already replaced, and "" — a
-    // never-connected read — must not match a never-connected account's own "".
-    if (identity === "" || identity !== this.identity()) return "superseded";
+    // "" — a never-connected read — must not match a never-connected account's own "".
+    if (identity === "") return "superseded";
+    // Moved-past gate: whatever moved the fence already adjudicated the rejected identity.
+    if (identity !== this.identity()) return this.#moved();
     // A grant-death provider has no mint to heal with: the rejection is the grant's death.
     if (options.refresh === undefined) return this.#expired(identity, options.notify);
     try {
@@ -405,14 +408,14 @@ export class CredentialCoordinator<Creds> {
       // identity is no longer current.
       return "superseded";
     } catch (error) {
-      // A reconnect landing while the mint failed replaced the rejected grant; it wins whatever
-      // the mint died of — logged, since this branch is the mint error's only account-side trace.
+      // A reconnect or disconnect landing while the mint failed wins whatever the mint died of —
+      // logged, since this branch is the mint error's only account-side trace.
       if (this.identity() !== identity) {
         this.#logger.warn("credential rejection heal overtaken", {
           event: "credentials.rejection.heal.overtaken",
           error,
         });
-        return "superseded";
+        return this.#moved();
       }
       if (isCredentialsExpired(error)) return this.#expired(identity, options.notify);
       // Non-credential mint failure: nothing adjudicated, credentials intact. The consumer
@@ -429,10 +432,20 @@ export class CredentialCoordinator<Creds> {
    * Resolves a confirmed grant death into its verdict.
    * @param identity The dead grant's identity fence.
    * @param notify Announces the grant death to the Workshop.
-   * @returns `"expired"`, or `"superseded"` when a reconnect landing mid-notify moved the fence.
+   * @returns `"expired"`, or the moved-fence verdict when the fence moved mid-notify.
    */
   async #expired(identity: string, notify: () => Promise<void>): Promise<RejectionVerdict> {
-    return await this.#notified(identity, notify) ? "expired" : "superseded";
+    return await this.#notified(identity, notify) ? "expired" : this.#moved();
+  }
+
+  /**
+   * Resolves a rejected identity the fence moved past. `"superseded"` promises a live successor;
+   * a fence moved by a disconnect left none, so the caller is told to reconnect rather than
+   * re-enter into a disconnected account. The disconnect itself never notifies — a user action.
+   * @returns `"superseded"` under a live successor, `"expired"` when the account disconnected.
+   */
+  #moved(): RejectionVerdict {
+    return this.stored() === undefined ? "expired" : "superseded";
   }
 
   /**
@@ -495,10 +508,10 @@ export type AccountCredentialStub<Creds> = {
    * honest verdicts, with `"expired"` reserved for provider-confirmed grant death.
    * @param identity Credential identity used by the failed call.
    * @returns An adjudication of identity, never of notification delivery, which the account owns
-   * end to end. `"superseded"` means the rejected identity is no longer current — already
-   * replaced, or just healed past — so the failure was stale and the source resolves it as
-   * retryable; `"expired"` means the grant is dead, with Workshop notification the account's own
-   * to deliver;
+   * end to end. `"superseded"` means a live successor replaced the rejected identity — a refresh,
+   * a heal, or a reconnect — so the failure was stale and the source resolves it as retryable;
+   * `"expired"` means the grant is dead or the account disconnected, with any Workshop
+   * notification the account's own to deliver;
    * `"unavailable"` means the heal failed for non-credential reasons and nothing was adjudicated,
    * so the source surfaces the caller's original provider error. A malformed or lost answer reads
    * as `"expired"`, so a dead grant is never masked as retryable by a broken transport.

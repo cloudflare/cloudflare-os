@@ -311,8 +311,9 @@ export function isCredentialsChanged(e: unknown): boolean;  // transport strips 
                                                             // props but not the name — code survives
 
 export type RejectionVerdict = "expired" | "superseded" | "unavailable";
-  // expired     — grant dead; the account owns announcing it (delivery never adjudicated)
-  // superseded  — the rejected identity is no longer current: already replaced, or just healed past
+  // expired     — grant gone: provider-confirmed death (the account owns announcing it; delivery
+  //               never adjudicated) or a disconnect discovered during adjudication (never notifies)
+  // superseded  — a live successor replaced the rejected identity: refresh, heal, or reconnect
   // unavailable — the heal failed for non-credential reasons; nothing adjudicated, and the source
   //               rethrows the caller's original provider error
 
@@ -357,15 +358,18 @@ export class CredentialCoordinator<Creds> {                  // lives in the Use
                                  // there reads as not connected with the death as its cause; a
                                  // disconnect is a user action and never notifies
   adjudicateRejection(identity, opts: { refresh?; notify }): Promise<RejectionVerdict>;
-                                 // the account's reportCredentialsRejected half. Moved-past gate
-                                 // first ("" — never-connected — never matches); no refresh means a
-                                 // grant-death provider: notify, "expired". Otherwise heal via
-                                 // rotate() — fence-keyed, so concurrent heals share one mint:
-                                 // success or overtaken-by-reconnect → "superseded"; confirmed
-                                 // death → notify, "expired" (the fence re-checked after the
-                                 // notify await: a reconnect landing mid-notification supersedes);
-                                 // any other mint failure → logged
-                                 // account-side, "unavailable" (credentials intact). No durable
+                                 // the account's reportCredentialsRejected half. "" (never-
+                                 // connected) answers "superseded"; every other moved fence
+                                 // resolves by successor — "superseded" when one is stored,
+                                 // "expired" when a disconnect left none (never notifying for the
+                                 // disconnect itself). No refresh means a grant-death provider:
+                                 // notify, "expired". Otherwise heal via rotate() — fence-keyed,
+                                 // so concurrent heals share one mint: success → "superseded";
+                                 // confirmed death → notify, "expired" (the fence re-checked
+                                 // after the notify await resolves a mid-notification reconnect
+                                 // or disconnect by successor again); any other mint failure →
+                                 // logged account-side, "unavailable" (credentials intact),
+                                 // unless the fence moved meanwhile. No durable
                                  // dead-grant mint latch: a repeat report costs one doomed provider
                                  // call answering invalid_grant again, and notification is deduped
                                  // by notifyCredentialsExpiredOnce's own latch — a port that
@@ -497,8 +501,9 @@ started after the report, adopting an identity not in the dead set (successful r
 reconnect), re-establishes the authority. Expiry also surfaces through the fetch itself — a failed
 refresh rejects `getCredentials()` with an error marked `CredentialsExpiredError` — and the source
 drops the authority there too, under the same fence so a straggler's stale rejection cannot clear a
-revived partition. `"superseded"` — the rejected identity was already replaced, or the account
-just healed past it — resolves as `CredentialsChangedError` with the authority left unknown, or,
+revived partition. `"superseded"` — a live successor already replaced the rejected identity, or
+the account just healed past it — resolves as `CredentialsChangedError` with the authority left
+unknown, or,
 under `replayable`, as one internal retry: a fresh account read (the ask's fence bump forgot the
 pre-ask flight, and the single-threaded account answers after the heal's commit), refused as
 "changed" when its generation moved (a reconnect — never run under a principal the caller didn't
@@ -1677,9 +1682,10 @@ section previously specified collapsed into the verdict protocol; the dated inve
 records why)*: the account heals past a rejected-but-current credential *inside*
 `reportCredentialsRejected`, and `run(operation, { replayable: true })` retries once on its
 `"superseded"` answer. The whole protocol is three verdicts and one refetch. `"expired"` is
-provider-confirmed grant death, already notified account-side: `run` throws
-`CredentialsExpiredError(expiredMessage)` and marks the identity dead. `"superseded"` means the
-rejected identity is no longer the account's current one — already replaced, or just healed past
+provider-confirmed grant death, already notified account-side — or a disconnect discovered during
+the adjudication, which leaves no successor to retry into and never notifies: `run` throws
+`CredentialsExpiredError(expiredMessage)` and marks the identity dead. `"superseded"` means a live
+successor replaced the rejected identity — already replaced, or just healed past
 by `adjudicateRejection`'s fence-keyed `rotate()` (§4.6): a non-replayable `run` throws
 `CredentialsChangedError` and the caller re-enters; a replayable one refetches and retries. The
 refetch is ordering, not hope: the ask's fence bump forgot the pre-ask flight, so the retry opens
@@ -1694,8 +1700,9 @@ adjudicated but never retried — at most two executions, same doctrine as this 
 caller gets the provider rejection it actually saw, and the token endpoint's error lives in the
 account's logs. A read superseded before any ask — a live successor adopted mid-operation — still
 skips the report entirely: its failure has nothing to tell a caller who only needs to re-enter.
-Identity succession is the account's to adjudicate: the moved-past gate answers `"superseded"`
-for any identity that is not its current one ("" — a never-connected read — never matches), and
+Identity succession is the account's to adjudicate: the moved-past gate resolves any identity
+that is not its current one by successor — `"superseded"` when a live one is stored, `"expired"`
+after a disconnect ("" — a never-connected read — never matches, always `"superseded"`) — and
 the verdict adjudicates identity, never notification delivery, whose latch deliberately stays
 unset on a failed callback so a later expiry re-notifies. The rejected
 authority drops at the ask: the rejection already proves the snapshot cannot vouch whichever way
