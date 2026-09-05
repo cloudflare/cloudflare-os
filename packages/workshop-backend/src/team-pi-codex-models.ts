@@ -1,11 +1,12 @@
-import type { AiChatAuthorInfo, AiModelConfig } from "@gadgets/workshop-shared/api";
+import { SUGGESTED_MODELS, type AiChatAuthorInfo, type AiModelConfig }
+  from "@gadgets/workshop-shared/api";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { OPENAI_CODEX_MODELS } from "@earendil-works/pi-ai/providers/openai-codex.models";
 
 /** Prefix for deployment-provided Team PI Codex model profile IDs. */
 export const TEAM_PI_CODEX_PROFILE_PREFIX = "team-pi-codex/";
 
-const DEFAULT_TEAM_PI_CODEX_MODELS = "gpt-5.6-sol";
+const DEFAULT_TEAM_PI_CODEX_MODELS = "gpt-6-astra";
 const TEAM_PI_CODEX_CONFIG_URL = "internal:team-pi-codex";
 
 /** A built-in model record resolved from deployment Team PI Codex configuration. */
@@ -32,7 +33,7 @@ function configuredModelIds(env: Cloudflare.Env): string[] {
 }
 
 function modelName(modelId: string): string {
-  return `Team PI Codex ${modelId}`;
+  return SUGGESTED_MODELS.openai[modelId]?.name ?? `Team PI Codex ${modelId}`;
 }
 
 /** Return true when the authenticated user can use the internal Team PI model route. */
@@ -77,6 +78,7 @@ export function resolveTeamPiCodexModel(
   const modelId = parseTeamPiCodexProfileId(profileId);
   if (!modelId || !configuredModelIds(env).includes(modelId)) return undefined;
   const catalog = (OPENAI_CODEX_MODELS as Record<string, Model<Api>>)[modelId];
+  const suggested = SUGGESTED_MODELS.openai[modelId];
   return {
     profile: { type: "agent", id: profileId, name: modelName(modelId) },
     config: {
@@ -84,8 +86,8 @@ export function resolveTeamPiCodexModel(
       model: modelId,
       apiToken: "",
       apiUrl: TEAM_PI_CODEX_CONFIG_URL,
-      contextWindow: catalog?.contextWindow ?? 128_000,
-      outputLimit: catalog?.maxTokens,
+      contextWindow: suggested?.contextWindow ?? catalog?.contextWindow ?? 128_000,
+      outputLimit: suggested?.outputLimit ?? catalog?.maxTokens,
     },
   };
 }

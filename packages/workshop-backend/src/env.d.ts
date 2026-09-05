@@ -30,7 +30,7 @@ declare global {
 
       // Optional deployment-provided Codex models routed through Team PI Codex. Both BASE_URL and
       // HMAC_SECRET must be present to list/resolve these built-ins; MODELS defaults to
-      // "gpt-5.6-sol" when omitted.
+      // "gpt-6-astra" when omitted. Explicit lists retain their configured order and first-model default.
       // Team PI Codex relay prefix, e.g. https://team-pi-proxy.example.com/api/odie. The adapter appends
       // /codex/responses.
       TEAM_PI_CODEX_BASE_URL?: string;

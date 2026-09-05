@@ -262,6 +262,18 @@ jobs:
           wrangler deploy --no-bundle --config router-native/wrangler.json --message "$message"
           wrangler deploy --no-bundle --config router/wrangler.json --message "$message"
 
+      - name: Sync Team PI Codex models
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TEAM_PI_CODEX_MODELS: ${{ secrets.TEAM_PI_CODEX_MODELS }}
+        run: |
+          test -n "$TEAM_PI_CODEX_MODELS"
+          # Deploy model metadata first, then retain all configured profiles when changing the default.
+          models="$(node -e 'const models = process.env.TEAM_PI_CODEX_MODELS.split(",").map(model => model.trim()).filter(Boolean); if (!models.length) process.exit(1); process.stdout.write([...new Set(["gpt-6-astra", ...models])].join(","));')"
+          printf '%s' "$models" | wrangler secret put TEAM_PI_CODEX_MODELS --name odie-os-backend
+
       - name: Verify production origins
         run: |
           web_headers="$(mktemp)"

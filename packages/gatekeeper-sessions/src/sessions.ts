@@ -5,6 +5,7 @@ import type { OutboundHandlerContext } from "@cloudflare/containers";
 import { validateRpc } from "capnweb-validate";
 import { createLogger } from "@gadgets/backend-utils/logger";
 import {
+  SUGGESTED_MODELS,
   type CodingSessionApplicationCapability,
   type CodingSessionAttachCapability,
   type CodingSessionDevelopmentCatalog,
@@ -120,6 +121,10 @@ const MAX_SESSIONS_PER_USER = 5;
 const MAX_TITLE_LENGTH = 120;
 const GITHUB_ORIGIN = "https://github.com";
 const OPENCODE_CONFIG_DIR = "/workspace/.odie-opencode";
+const OPENCODE_TEAM_PI_MODEL_ID = "gpt-6-astra";
+const OPENCODE_TEAM_PI_MODEL = SUGGESTED_MODELS.openai[OPENCODE_TEAM_PI_MODEL_ID]!;
+const OPENCODE_SOL_MODEL_ID = "gpt-5.6-sol";
+const OPENCODE_SOL_MODEL = SUGGESTED_MODELS.openai[OPENCODE_SOL_MODEL_ID]!;
 const UPLOAD_DIR = "/workspace/.odie-uploads";
 const STARTUP_ALARM_DELAY_MS = 1_000;
 const STARTUP_MAX_ATTEMPTS = 3;
@@ -2413,7 +2418,7 @@ export class CodingSessionRegistry extends DurableObject<Env> {
       await sandbox.writeFile("/tmp/odie-feedback-evidence.json", JSON.stringify(agentEvidence, null, 2));
       const agentProcess = await sandbox.exec([
         "sh", "-lc",
-        "opencode run --pure --auto --model openai/gpt-5.6-sol \"$(cat /tmp/odie-feedback-prompt.txt)\" > /tmp/feedback-agent.log 2>&1",
+        "opencode run --pure --auto --model openai/gpt-6-astra \"$(cat /tmp/odie-feedback-prompt.txt)\" > /tmp/feedback-agent.log 2>&1",
       ], {
         cwd: `/workspace/${PRODUCT_FEEDBACK_REPOSITORY}`,
         env: opencodeEnvironment(this.env, { plugins: [], skills: [] }, false),
@@ -3234,12 +3239,26 @@ function opencodeEnvironment(
           apiKey: "synthetic",
         },
         models: {
-          "gpt-5.6-sol": {
-            name: "GPT 5.6 Sol",
+          [OPENCODE_TEAM_PI_MODEL_ID]: {
+            name: OPENCODE_TEAM_PI_MODEL.name,
             reasoning: true,
             temperature: false,
             tool_call: true,
-            limit: { context: 1_050_000, output: 128_000 },
+            cost: openCodeModelCost(),
+            limit: {
+              context: OPENCODE_TEAM_PI_MODEL.contextWindow,
+              output: OPENCODE_TEAM_PI_MODEL.outputLimit,
+            },
+          },
+          [OPENCODE_SOL_MODEL_ID]: {
+            name: OPENCODE_SOL_MODEL.name,
+            reasoning: true,
+            temperature: false,
+            tool_call: true,
+            limit: {
+              context: OPENCODE_SOL_MODEL.contextWindow,
+              output: OPENCODE_SOL_MODEL.outputLimit,
+            },
           },
         },
       },
@@ -3252,7 +3271,10 @@ function opencodeEnvironment(
     OPENCODE_CONFIG_CONTENT: JSON.stringify({
       $schema: "https://opencode.ai/config.json",
       share: "disabled",
-      ...(baseUrl ? { model: "openai/gpt-5.6-sol", small_model: "openai/gpt-5.6-sol" } : {}),
+      ...(baseUrl ? {
+        model: `openai/${OPENCODE_TEAM_PI_MODEL_ID}`,
+        small_model: `openai/${OPENCODE_TEAM_PI_MODEL_ID}`,
+      } : {}),
       ...provider,
       mcp: includeWorkshopMcp ? {
         workshop: {
@@ -3265,6 +3287,19 @@ function opencodeEnvironment(
       } : {},
       plugin: customization.plugins,
     }),
+  };
+}
+
+function openCodeModelCost(): Record<string, unknown> | undefined {
+  const cost = OPENCODE_TEAM_PI_MODEL.cost;
+  if (!cost) return undefined;
+  // OpenCode only supports a fixed >200K bucket, so Astra's >272K tier cannot be represented.
+  // Omitting it makes OpenCode's displayed estimate use base rates for requests above 272K.
+  return {
+    input: cost.input,
+    output: cost.output,
+    cache_read: cost.cacheRead,
+    cache_write: cost.cacheWrite,
   };
 }
 

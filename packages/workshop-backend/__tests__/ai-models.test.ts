@@ -161,6 +161,27 @@ describe("getModel AI Gateway routing", () => {
     });
   }, 15000);
 
+  it("synthesizes suggested Astra metadata when the pi catalog is missing it", () => {
+    const handle = getModel(env(), {
+      provider: "openai",
+      model: "gpt-6-astra",
+      apiToken: "ignored-in-gateway-mode",
+    }, INITIATOR);
+
+    expect(handle.model).toMatchObject({
+      name: "GPT-6 Astra",
+      contextWindow: 1_050_000,
+      maxTokens: 128_000,
+      cost: {
+        input: 10,
+        output: 50,
+        cacheRead: 1,
+        cacheWrite: 12.5,
+        tiers: [{ inputTokensAbove: 272_000, input: 20, output: 75, cacheRead: 2, cacheWrite: 25 }],
+      },
+    });
+  });
+
   it("routes Google through the gateway's google-ai-studio passthrough", () => {
     // The @google/genai SDK sends its API key as `x-goog-api-key`, which AI Gateway forwards to
     // the provider verbatim (taking precedence over the gateway's stored keys), so the documented
@@ -482,22 +503,23 @@ describe("Team PI Codex routing", () => {
     }))).toEqual([]);
 
     const models = getTeamPiCodexModelList(teamPiEnv({
-      TEAM_PI_CODEX_MODELS: "gpt-5.6-sol,gpt-5.6-luna,gpt-5.6-sol",
+      TEAM_PI_CODEX_MODELS: "gpt-5.6-sol,gpt-6-astra,gpt-5.6-sol",
     }));
     expect(models.map(model => model.id)).toEqual([
       "team-pi-codex/gpt-5.6-sol",
-      "team-pi-codex/gpt-5.6-luna",
+      "team-pi-codex/gpt-6-astra",
     ]);
+    expect(models.map(model => model.name)).toEqual(["GPT 5.6 Sol", "GPT-6 Astra"]);
 
-    expect(resolveTeamPiCodexModel(teamPiEnv(), "team-pi-codex/gpt-5.6-sol"))
+    expect(resolveTeamPiCodexModel(teamPiEnv(), "team-pi-codex/gpt-6-astra"))
         .toEqual(expect.objectContaining({
-          profile: expect.objectContaining({ id: "team-pi-codex/gpt-5.6-sol" }),
+          profile: expect.objectContaining({ id: "team-pi-codex/gpt-6-astra", name: "GPT-6 Astra" }),
           config: {
             provider: "openai",
-            model: "gpt-5.6-sol",
+            model: "gpt-6-astra",
             apiToken: "",
             apiUrl: "internal:team-pi-codex",
-            contextWindow: 272000,
+            contextWindow: 1050000,
             outputLimit: 128000,
           },
         }));
@@ -507,7 +529,10 @@ describe("Team PI Codex routing", () => {
     expect(isTeamPiCodexEligibleUser("builder@totango.com", true)).toBe(false);
     expect(isTeamPiCodexEligibleUser("builder@example.com", false)).toBe(false);
     expect(getDefaultTeamPiCodexModel(teamPiEnv(), "builder@totango.com")?.profile.id)
-        .toBe("team-pi-codex/gpt-5.6-sol");
+        .toBe("team-pi-codex/gpt-6-astra");
+    expect(getDefaultTeamPiCodexModel(teamPiEnv({
+      TEAM_PI_CODEX_MODELS: "gpt-5.6-sol,gpt-6-astra",
+    }), "builder@totango.com")?.profile.id).toBe("team-pi-codex/gpt-5.6-sol");
     expect(getDefaultTeamPiCodexModel(teamPiEnv(), "builder@example.com")).toBeUndefined();
     expect(isTeamPiCodexConfig(teamPiEnv(), {
       provider: "openai",
@@ -527,7 +552,7 @@ describe("Team PI Codex routing", () => {
     const record = resolveTeamPiCodexModel(env({
       TEAM_PI_CODEX_BASE_URL: "https://team-pi.example/proxy",
       TEAM_PI_CODEX_HMAC_SECRET: "team-pi-secret",
-    }), "team-pi-codex/gpt-5.6-sol")!;
+    }), "team-pi-codex/gpt-6-astra")!;
 
     const handle = getModel(env({
       TEAM_PI_CODEX_BASE_URL: "https://team-pi.example/proxy",
@@ -536,7 +561,23 @@ describe("Team PI Codex routing", () => {
 
     expect(handle.model.api).toBe("openai-codex-responses");
     expect(handle.model.provider).toBe("openai-codex");
-    expect(handle.model.id).toBe("gpt-5.6-sol");
+    expect(handle.model.id).toBe("gpt-6-astra");
+    expect(handle.model.name).toBe("GPT-6 Astra");
+    expect(handle.model.contextWindow).toBe(1_050_000);
+    expect(handle.model.maxTokens).toBe(128_000);
+    expect(handle.model.cost).toEqual({
+      input: 10,
+      output: 50,
+      cacheRead: 1,
+      cacheWrite: 12.5,
+      tiers: [{
+        inputTokensAbove: 272_000,
+        input: 20,
+        output: 75,
+        cacheRead: 2,
+        cacheWrite: 25,
+      }],
+    });
     expect(handle.model.baseUrl).toBe("https://team-pi.example/proxy");
     expect(handle.aiGatewayLogRoute).toBeUndefined();
 
@@ -544,7 +585,7 @@ describe("Team PI Codex routing", () => {
     expect(request.url).toBe("https://team-pi.example/proxy/codex/responses");
     expect(request.headers.get("accept")).toBe("text/event-stream");
     expect(request.headers.get("content-encoding")).toBe("identity");
-    expect(JSON.parse(request.body)).toMatchObject({ model: "gpt-5.6-sol", stream: true });
+    expect(JSON.parse(request.body)).toMatchObject({ model: "gpt-6-astra", stream: true });
     expect(request.headers.get("authorization")).toBeNull();
     expect(request.headers.get("chatgpt-account-id")).toBeNull();
     expect(request.headers.get("x-team-pi-odie-key-id")).toBe("odie-v1");
@@ -792,6 +833,27 @@ describe("getModel direct routing (no gateway)", () => {
     expect(request.headers.get("x-api-key")).toBe("direct-api-token");
     expect(request.headers.get("cf-aig-metadata")).toBeNull();
   }, 15000);
+
+  it("synthesizes suggested Astra metadata for direct OpenAI", () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "openai",
+      model: "gpt-6-astra",
+      apiToken: "direct-api-token",
+    }, INITIATOR);
+
+    expect(handle.model).toMatchObject({
+      name: "GPT-6 Astra",
+      contextWindow: 1_050_000,
+      maxTokens: 128_000,
+      cost: {
+        input: 10,
+        output: 50,
+        cacheRead: 1,
+        cacheWrite: 12.5,
+        tiers: [{ inputTokensAbove: 272_000, input: 20, output: 75, cacheRead: 2, cacheWrite: 25 }],
+      },
+    });
+  });
 
   it("uses the config's own account and token for direct Workers AI", async () => {
     // Outside gateway mode, Workers AI is BYOK like any other provider: credentials come from

@@ -9,7 +9,7 @@ import type { AiChatAuthorInfo, ConnectedAccountsSubscriber, GatekeeperVendorInf
 const testState = vi.hoisted(() => ({
   authenticatedApi: {
     listModels: vi.fn<() => Promise<AiChatAuthorInfo[]>>(async () => [
-      { type: 'agent' as const, id: 'team-pi-codex/gpt-5.6-sol', name: 'Team PI Codex gpt-5.6-sol' },
+      { type: 'agent' as const, id: 'team-pi-codex/gpt-6-astra', name: 'GPT-6 Astra' },
     ]),
     listGatekeeperVendors: vi.fn<() => Promise<GatekeeperVendorInfo[]>>(async () => [
       {
@@ -116,7 +116,7 @@ describe('Getting started', () => {
     await act(async () => root!.render(
       <GettingStartedPageContent
         readiness={{
-          models: [{ type: 'agent', id: 'team-pi-codex/gpt-5.6-sol', name: 'Team PI Codex gpt-5.6-sol' }],
+          models: [{ type: 'agent', id: 'team-pi-codex/gpt-6-astra', name: 'GPT-6 Astra' }],
           accounts: [{
             id: 1,
             accountDescription: {

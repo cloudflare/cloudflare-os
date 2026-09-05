@@ -2145,9 +2145,26 @@ describe("coding session asynchronous startup", () => {
     }));
     const env = sandbox.exec.mock.calls[0]![1]!.env as Record<string, string>;
     expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!)).toMatchObject({
+      model: "openai/gpt-6-astra",
+      small_model: "openai/gpt-6-astra",
       plugin: customization.plugins,
       mcp: { workshop: { enabled: true } },
+      provider: { openai: { models: { "gpt-6-astra": {
+        name: "GPT-6 Astra",
+        limit: { context: 1_050_000, output: 128_000 },
+        cost: {
+          input: 10,
+          output: 50,
+          cache_read: 1,
+          cache_write: 12.5,
+        },
+      }, "gpt-5.6-sol": {
+        name: "GPT 5.6 Sol",
+        limit: { context: 1_050_000, output: 128_000 },
+      } } } },
     });
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!).provider.openai.models["gpt-6-astra"].cost)
+      .not.toHaveProperty("context_over_200k");
     expect(process.waitForPort).toHaveBeenCalledWith(40_913, expect.objectContaining({ path: "/global/health" }));
     expect(tools.prepareSessionStartup).toHaveBeenCalledTimes(2);
     expect(policy.storeOpenCodeTicket).toHaveBeenCalledTimes(2);

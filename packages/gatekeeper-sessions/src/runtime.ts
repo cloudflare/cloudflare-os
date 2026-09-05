@@ -1,4 +1,4 @@
-import type { CodingSessionRuntime } from "@gadgets/workshop-shared/api";
+import { SUGGESTED_MODELS, type CodingSessionRuntime } from "@gadgets/workshop-shared/api";
 import { WORKSHOP_MCP_HOST } from "./mcp-policy.js";
 
 export const PI_CONFIG_DIR = "/workspace/.odie-pi";
@@ -8,6 +8,8 @@ export const PRIME_AGENT_EXTENSION_PATH = `${PRIME_AGENT_CONFIG_DIR}/odie-runtim
 export const VALHALLA_ROOT = "/opt/odie-pi/node_modules/@howlerops/valhalla";
 
 const VALHALLA_PROMPTS = ["hugin", "tyr", "munin", "eitri", "vidar", "skuld", "polaris"];
+const TEAM_PI_MODEL_ID = "gpt-6-astra";
+const TEAM_PI_MODEL_IDS = [TEAM_PI_MODEL_ID, "gpt-5.6-sol"] as const;
 
 export function codingSessionRuntime(runtime: unknown): CodingSessionRuntime {
   if (runtime === undefined || runtime === "opencode") return "opencode";
@@ -26,8 +28,8 @@ export function piCommand(): [string, ...string[]] {
   return [
     "/usr/local/bin/pi",
     "--provider", "odie-team-pi",
-    "--model", "gpt-5.6-sol",
-    "--models", "odie-team-pi/gpt-5.6-sol",
+    "--model", TEAM_PI_MODEL_ID,
+    "--models", TEAM_PI_MODEL_IDS.map(id => `odie-team-pi/${id}`).join(","),
     "--tui-mode", "fullscreen",
     "--no-extensions",
     "--extension", PI_EXTENSION_PATH,
@@ -48,8 +50,8 @@ export function primeAgentCommand(): [string, ...string[]] {
     "/usr/local/bin/prime-agent",
     "--offline",
     "--provider", "odie-team-pi",
-    "--model", "gpt-5.6-sol",
-    "--models", "odie-team-pi/gpt-5.6-sol",
+    "--model", TEAM_PI_MODEL_ID,
+    "--models", TEAM_PI_MODEL_IDS.map(id => `odie-team-pi/${id}`).join(","),
     "--no-extensions",
     "--extension", PRIME_AGENT_EXTENSION_PATH,
     "--no-skills",
@@ -76,15 +78,7 @@ export function primeAgentExtensionSource(teamPiBaseUrl: string): string {
     baseUrl: ${JSON.stringify(providerBaseUrl)},
     apiKey: "synthetic",
     api: "openai-responses",
-    models: [{
-      id: "gpt-5.6-sol",
-      name: "GPT 5.6 Sol",
-      reasoning: true,
-      input: ["text", "image"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 1050000,
-      maxTokens: 128000,
-    }],
+    models: ${JSON.stringify(teamPiRuntimeModels())},
   });
 }
 `;
@@ -128,15 +122,7 @@ export default function odieRuntime(pi) {
     baseUrl: ${JSON.stringify(providerBaseUrl)},
     apiKey: "synthetic",
     api: "openai-responses",
-    models: [{
-      id: "gpt-5.6-sol",
-      name: "GPT 5.6 Sol",
-      reasoning: true,
-      input: ["text", "image"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 1050000,
-      maxTokens: 128000,
-    }],
+    models: ${JSON.stringify(teamPiRuntimeModels())},
   });
   createMcpAdapter({
     config: {
@@ -161,4 +147,19 @@ export default function odieRuntime(pi) {
 
 function ensureTrailingSlash(value: string): string {
   return value.endsWith("/") ? value : `${value}/`;
+}
+
+function teamPiRuntimeModels(): Array<Record<string, unknown>> {
+  return TEAM_PI_MODEL_IDS.map(id => {
+    const model = SUGGESTED_MODELS.openai[id]!;
+    return {
+      id,
+      name: model.name,
+      reasoning: true,
+      input: ["text", "image"],
+      cost: model.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: model.contextWindow,
+      maxTokens: model.outputLimit,
+    };
+  });
 }
