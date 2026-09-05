@@ -26,7 +26,32 @@ export {
   type ObserverTrackerOptions,
 } from "./observer-tracker";
 
-/** Defines collaborator admission and per-observation exclusion. */
+/**
+ * The mark an overseer refusal of an observation carries, on `name` or a transport-stable `code`.
+ * A failure carrying it proves the observation was refused by policy *before* it was recorded, so
+ * prepared observer state may be reclaimed; any other failure leaves the outcome unknown, and
+ * durable fences must be retained.
+ */
+export const OBSERVATION_REFUSED_CODE = "ObservationRefusedError";
+
+/**
+ * Matches an overseer observation refusal by `name` or `code`: capnweb rebuilds errors, keeping
+ * enumerable own props but not the name. Until the overseer marks its refusals nothing matches, so
+ * every failure takes the unknown-outcome path.
+ * @param error Caught error.
+ * @returns Whether the overseer refused the observation before recording it.
+ */
+export function isObservationRefused(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.name === OBSERVATION_REFUSED_CODE
+    || ("code" in error && error.code === OBSERVATION_REFUSED_CODE);
+}
+
+/**
+ * Defines collaborator admission and per-observation exclusion. Baseline access is verified at
+ * admission only -- losing Workshop membership is the revocation path -- and only
+ * `trackedSetObservers` re-runs its ACL oracle for every observer on every set-scoped read.
+ */
 export interface ObserverStrategy {
   /**
    * Attempts to admit an observer.
@@ -76,7 +101,8 @@ export function privateObservers(message: string): ObserverStrategy {
 }
 
 /**
- * Creates a resource-level ACL strategy.
+ * Creates a resource-level ACL strategy. `hasAccess` runs only at admission; an observer who loses
+ * access afterwards is caught at their next open, when the overseer re-admits them.
  * @param options ACL oracle and denial message.
  * @returns An ACL observer strategy.
  */
@@ -137,7 +163,12 @@ export function escapeObservationValue(value: string): string {
   return value.replace(/[\r\n]+/g, " ").replace(/[\\`*_{}[\]()#+.!|>~-]/g, "\\$&");
 }
 
-/** Describes whether a read uses baseline access, set ACLs, or owner-only disclosure. */
+/**
+ * Describes whether a read uses baseline access, set ACLs, or owner-only disclosure. The scope
+ * describes the disclosure and the strategy decides the policy: declaring `sets` under a strategy
+ * with no `prepare` is a deliberate no-op, and choosing an ACL strategy for a resource whose
+ * children carry their own ACLs is the unsafe act.
+ */
 export type ObservationScope =
   | { kind: "baseline" }
   | { kind: "sets"; ids: readonly string[] }
@@ -211,7 +242,10 @@ export class ObservationGate implements Disposable {
       await this.#queue.authorizeObservation(
         exclude?.length ? { ...input, excludeObservers: exclude } : input);
     } catch (error) {
-      check.discard?.();
+      // A marked refusal proves nothing was recorded, so prepared state is reclaimed; any other
+      // failure leaves the outcome unknown, and durable fences stay.
+      if (isObservationRefused(error)) check.discard?.();
+      else check.abandon?.();
       throw error;
     }
     check.commit();

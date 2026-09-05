@@ -20,10 +20,25 @@ export type JournalKeys = {
  */
 type JournalState = "staged" | "pending" | "claimed" | "failed" | "applied";
 
+/**
+ * An opaque, equality-only connection generation captured when an action was staged. Nothing may
+ * be inferred from its content or ordering, and the journal never interprets it: a consumer
+ * wanting account-scoped rather than connection-scoped fencing stores its own stable provider
+ * account id here instead, and compares that at apply.
+ */
+export type ActionFence = { generation: string };
+
 /** A stored action. Failed records always include a reason. */
 export type JournalRecord<A> =
-  | { state: Exclude<JournalState, "failed">; action: A; error?: never }
-  | { state: "failed"; action: A; error: string };
+  | {
+    state: Exclude<JournalState, "failed">; action: A; fence?: ActionFence; error?: never;
+    undispatched?: never;
+  }
+  | {
+    state: "failed"; action: A; fence?: ActionFence; error: string;
+    /** The apply refused before the handler ran, so a rejection still owes its cleanup. */
+    undispatched?: true;
+  };
 
 /** An action ID and payload used by simulation. */
 export type JournalEntry<A> = { readonly id: number; readonly action: A };
@@ -118,9 +133,10 @@ export class ActionJournal<A> {
   /**
    * Reserves and stages the next action.
    * @param action Payload to store.
+   * @param fence Connection generation the staging operation ran under.
    * @returns Allocated action ID.
    */
-  allocate(action: A): number {
+  allocate(action: A, fence?: ActionFence): number {
     this.#requireCapacity();
     const id = this.#kv.get<number>(this.#nextIdKey) ?? 1;
     // Occupancy or retired-id memory at this id means the counter is behind -- a port pointed
@@ -132,7 +148,8 @@ export class ActionJournal<A> {
         + `"${this.#nextIdKey}" must hold the next unused id, not the last issued one.`);
     }
     this.#kv.put(this.#nextIdKey, id + 1);
-    this.#write(this.#pendingKey(id), { state: "staged", action });
+    this.#write(this.#pendingKey(id),
+      { state: "staged", action, ...(fence ? { fence: { generation: fence.generation } } : {}) });
     return id;
   }
 
@@ -164,14 +181,21 @@ export class ActionJournal<A> {
    * Records a terminal failure and removes the action from simulation.
    * @param id Action ID that failed.
    * @param error Display-safe failure reason.
+   * @param options `undispatched` when the apply refused before reaching the handler.
    */
-  markFailed(id: number, error: string): void {
+  markFailed(id: number, error: string, options: { undispatched?: boolean } = {}): void {
     const record = this.#transitionable(id, ["staged", "pending", "claimed"]);
     if (record) {
       const reason = error.length > MAX_FAILURE_REASON
         ? `${error.slice(0, MAX_FAILURE_REASON)}\u2026`
         : error;
-      this.#write(this.#pendingKey(id), { state: "failed", action: record.action, error: reason });
+      this.#write(this.#pendingKey(id), {
+        state: "failed",
+        action: record.action,
+        error: reason,
+        ...(options.undispatched ? { undispatched: true } as const : {}),
+        ...(record.fence ? { fence: record.fence } : {}),
+      });
     }
   }
 
@@ -205,6 +229,7 @@ export class ActionJournal<A> {
     this.#write(this.#retainedKey(id), {
       state: "applied",
       action: action ?? record.action,
+      ...(record.fence ? { fence: record.fence } : {}),
     });
     this.#kv.delete(this.#pendingKey(id));
   }
@@ -220,16 +245,20 @@ export class ActionJournal<A> {
 
   /**
    * Removes an applied action, remembering the id so a replayed resolution settles instead of
-   * erroring or mislabeling it. Memory is bounded to the prunable allowance.
+   * erroring or mislabeling it. Idempotent, so an interrupted retire can be finished by the next
+   * apply. Memory is bounded to the prunable allowance.
    * @param id Action ID to retire.
    */
   retire(id: number): void {
-    const ids = this.#kv.get<number[]>(this.#appliedIdsKey) ?? [];
-    ids.push(id);
-    // Removal first: split writes then degrade to a retryable unknown id, never to a remembered
-    // apply whose record still projects.
+    const ids = this.#appliedIds();
+    // Tombstone first: split writes then degrade to a stale record the scans below filter out and
+    // the next apply retires, never to a remembered apply whose record still projects. A failed
+    // tombstone write leaves the record applicable again, which at-least-once apply already owns.
+    if (!ids.includes(id)) {
+      ids.push(id);
+      this.#kv.put(this.#appliedIdsKey, ids.slice(-this.#maxPending * PRUNABLE_RECORD_FACTOR));
+    }
     this.remove(id);
-    this.#kv.put(this.#appliedIdsKey, ids.slice(-this.#maxPending * PRUNABLE_RECORD_FACTOR));
   }
 
   /**
@@ -238,7 +267,12 @@ export class ActionJournal<A> {
    * @returns Whether the id is within the retired-action memory.
    */
   wasApplied(id: number): boolean {
-    return (this.#kv.get<number[]>(this.#appliedIdsKey) ?? []).includes(id);
+    return this.#appliedIds().includes(id);
+  }
+
+  /** @returns The action IDs held in the retired-action memory. */
+  #appliedIds(): number[] {
+    return this.#kv.get<number[]>(this.#appliedIdsKey) ?? [];
   }
 
   /**
@@ -267,13 +301,14 @@ export class ActionJournal<A> {
    */
   #scan(states: readonly JournalState[]): JournalEntry<A>[] {
     const found: JournalEntry<A>[] = [];
+    const applied = new Set(this.#appliedIds());
     for (const [key, raw] of this.#kv.list<unknown>({ prefix: this.#prefix })) {
       const record = this.#coerce(raw);
       if (record === undefined || !states.includes(record.state)) continue;
       const id = this.#idFrom(key);
-      // A record left behind by an interrupted `retain` is applied, not pending: projecting it
-      // would simulate an effect the provider has already made real.
-      if (id === undefined || this.isRetained(id)) continue;
+      // A record left behind by an interrupted `retain` or `retire` is applied, not pending:
+      // projecting it would simulate an effect the provider has already made real.
+      if (id === undefined || applied.has(id) || this.isRetained(id)) continue;
       found.push({ id, action: record.action });
     }
     return found.toSorted((a, b) => a.id - b.id);
@@ -284,18 +319,21 @@ export class ActionJournal<A> {
     let unresolved = 0;
     const staged: number[] = [];
     const failed: number[] = [];
+    const owed: number[] = [];
+    const applied = new Set(this.#appliedIds());
     for (const [key, raw] of this.#kv.list<unknown>({ prefix: this.#prefix })) {
       // A key this journal cannot name an id for is not its record: counting one would hold a slot
       // no approval can clear, and pruning one would delete a stranger's key.
       const id = this.#idFrom(key);
       if (id === undefined) continue;
-      const state = this.#coerce(raw)?.state;
-      // An interrupted `retain` leaves a stale source record here, whatever its state; the retained
-      // tier decides, as it does for `get` and `listPending`.
-      if (state === undefined || this.isRetained(id)) continue;
-      if (state === "staged") staged.push(id);
-      else if (state === "failed") failed.push(id);
-      else unresolved += 1;
+      const record = this.#coerce(raw);
+      // An interrupted `retain` or `retire` leaves a stale source record here, whatever its state;
+      // the retained tier and the retired-id memory decide, as they do for `get` and `listPending`.
+      if (record === undefined || applied.has(id) || this.isRetained(id)) continue;
+      if (record.state === "staged") staged.push(id);
+      else if (record.state !== "failed") unresolved += 1;
+      else if (record.undispatched) owed.push(id);
+      else failed.push(id);
     }
     if (unresolved >= this.#maxPending) {
       throw new Error(
@@ -303,9 +341,10 @@ export class ActionJournal<A> {
     }
 
     // Staged first whatever their age: one is plumbing a submission left behind, while a `failed`
-    // record holds the only account of what went wrong.
+    // record holds the only account of what went wrong. Undispatched last: pruning one drops a
+    // rejection's obligation to release what staging set up, not just the reason.
     const byId = (a: number, b: number) => a - b;
-    const prunable = [...staged.toSorted(byId), ...failed.toSorted(byId)];
+    const prunable = [...staged.toSorted(byId), ...failed.toSorted(byId), ...owed.toSorted(byId)];
     const excess = prunable.length - this.#maxPending * PRUNABLE_RECORD_FACTOR;
     // Clamped, because a negative end counts back from the array's own length: under the bound,
     // `slice(0, -n)` would drop records the user is still owed an answer for.
@@ -359,7 +398,13 @@ export class ActionJournal<A> {
    */
   #transition(id: number, from: readonly JournalState[], next: Exclude<JournalState, "failed">) {
     const record = this.#transitionable(id, from);
-    if (record) this.#write(this.#pendingKey(id), { state: next, action: record.action });
+    if (record) {
+      this.#write(this.#pendingKey(id), {
+        state: next,
+        action: record.action,
+        ...(record.fence ? { fence: record.fence } : {}),
+      });
+    }
   }
 
   /**
@@ -399,13 +444,18 @@ export class ActionJournal<A> {
     if ("v" in raw && raw.v === JOURNAL_VERSION) {
       // The marker is storage detail; callers see the record only. One fallback here, not one per
       // reader, keeps the type's promise that a failed record explains itself.
-      const { state, action, error } = raw as StoredJournalRecord<A>;
+      const { state, action, error, fence, undispatched } = raw as StoredJournalRecord<A>;
+      const carried = fence ? { fence: { generation: fence.generation } } : {};
       return state === "failed"
-        ? { state, action, error: error ?? FAILURE_REASON_LOST }
-        : { state, action };
+        ? {
+          state, action, error: error ?? FAILURE_REASON_LOST, ...carried,
+          ...(undispatched ? { undispatched: true } as const : {}),
+        }
+        : { state, action, ...carried };
     }
     // Anything else was written by whatever this gatekeeper stored before adopting the journal,
-    // and since it only kept records awaiting approval, it was pending.
+    // and since it only kept records awaiting approval, it was pending. An upgraded record carries
+    // no fence: nothing staged it under a generation this journal recorded.
     const upgraded = this.#upgradeRecord?.(raw);
     return upgraded === undefined ? undefined : { state: "pending", action: upgraded };
   }

@@ -6,12 +6,14 @@ import type {
   ActionDescription,
   ActionKind,
   ApprovalQueue,
+  GitCache,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { ActionJournal } from "./action-journal";
+import { ActionJournal, type ActionFence } from "./action-journal";
 import { SerialTaskQueue } from "./serial-queue";
 
 export {
   ActionJournal,
+  type ActionFence,
   type ActionJournalKv,
   type ActionJournalOptions,
   type JournalEntry,
@@ -36,6 +38,7 @@ const submissions = new WeakMap<object, SerialTaskQueue>();
  * @param queue Approval queue capability.
  * @param action Action payload to store.
  * @param description Approver-facing action description.
+ * @param fence Connection generation the staging operation ran under, when the action is fenced.
  * @returns The allocated action ID.
  */
 export function stageAction<A>(
@@ -43,11 +46,12 @@ export function stageAction<A>(
   queue: ActionSubmitter,
   action: A,
   description: ActionDescription,
+  fence?: ActionFence,
 ): Promise<number> {
   let lane = submissions.get(journal);
   if (!lane) submissions.set(journal, lane = new SerialTaskQueue());
   return lane.run(async () => {
-    const id = journal.allocate(action);
+    const id = journal.allocate(action, fence);
     try {
       await queue.submitAction(id, description);
     } catch (error) {
@@ -78,10 +82,24 @@ export type ActionPresentation =
   Pick<ActionDescription, "title" | "description" | "implementsRevert">;
 
 /**
- * Durable action ID available to handlers. It is stable across retries and can seed provider
- * idempotency keys.
+ * Durable action ID and apply-time context available to handlers. The ID is stable across retries
+ * and can seed provider idempotency keys.
  */
-export type ActionContext = { readonly id: number };
+export type ActionContext = {
+  readonly id: number;
+  /**
+   * Action-scoped git cache the overseer handed `applyAction`; absent outside apply, and for
+   * gatekeepers that pass none.
+   */
+  readonly gitCache?: RpcStub<GitCache>;
+  /**
+   * The connection fence captured at submit, when the submitter passed one. Apply already refuses
+   * a record whose fence does not match the generation handed to `apply()`; a handler wanting
+   * strict enforcement compares this against the `CredentialRead` its own operation runs under,
+   * which also catches a reconnect landing after that entry check.
+   */
+  readonly fence?: ActionFence;
+};
 
 /** How one kind of action is described to the approver and carried out once approved. */
 export type ActionDefinition<Payload, Host> = {
@@ -123,7 +141,10 @@ export type ActionDefinition<Payload, Host> = {
    */
   apply(payload: Payload, host: Host, ctx: ActionContext): Promise<void | { action?: Payload }>;
   /**
-   * Handles a rejected action.
+   * Releases what staging set up for an action that will never apply. Also runs when the user
+   * rejects a terminal failure the apply refused *before* dispatch, whose artifacts are still
+   * unreleased; a failure the handler itself raised is cleared without it, since the handler owns
+   * whatever its partial effect left behind.
    * @param payload Stored action payload.
    * @param host Bound provider host.
    * @param ctx Durable action context.
@@ -145,12 +166,28 @@ export type ActionSetOptions<Host> = {
    * @returns Completion, optionally asynchronous.
    */
   afterResolve?(host: Host, outcome: ResolveOutcome): void | Promise<void>;
+  /**
+   * Reports whether a provisional reference from `dependsOn` has been bound to a real provider id
+   * (e.g. `ref => provisionalIds.isResolved(ref)`). When set, apply refuses to run a handler whose
+   * references are unresolved instead of passing provisional strings to the provider.
+   * @param ref Provisional reference the action depends on.
+   * @returns Whether the reference names a real provider id.
+   */
+  isResolvedReference?(ref: string): boolean;
   /** Vendor id for log attribution. */
   vendorId?: string;
 };
 
 /** A journal entry tagged with the kind that knows how to resolve it. */
 export type TaggedAction<M> = { [K in keyof M]: { kind: K; payload: M[K] } }[keyof M];
+
+/** Approval-time context the overseer hands `Gatekeeper.applyAction`. */
+export type ActionApplyContext = {
+  /** The action-scoped git cache stub, for handlers that touch git. */
+  gitCache?: RpcStub<GitCache>;
+  /** The account's current connection generation, from `CredentialSource.read()`. */
+  generation?: string;
+};
 
 /** The action set bound to one resource's journal and host. */
 export type BoundActionSet<M extends Record<string, unknown>> = {
@@ -160,17 +197,32 @@ export type BoundActionSet<M extends Record<string, unknown>> = {
    * @param queue Approval queue capability.
    * @param kind Declared action kind.
    * @param payload Action payload.
+   * @param options `fence` pins the action to a connection generation, so apply refuses a record
+   * approved under a connection that has since been replaced. Capture it from the `CredentialRead`
+   * the staging operation ran under — structurally an `ActionFence`, so `{ fence: read }` works
+   * verbatim — never from a shared accessor a concurrent fetch can move. `CredentialCoordinator`
+   * rotates the generation on `connect()` and `clear()` only, never on refresh, so a same-account
+   * re-authorization mismatches too; fence the kinds whose payload means nothing under another
+   * connection and leave the rest unfenced.
    * @returns The allocated action ID.
    */
-  submit<K extends keyof M>(queue: ActionSubmitter, kind: K, payload: M[K]): Promise<number>;
+  submit<K extends keyof M>(
+    queue: ActionSubmitter,
+    kind: K,
+    payload: M[K],
+    options?: { fence?: ActionFence },
+  ): Promise<number>;
   /**
    * Applies an action, at-least-once across activations unless its definition sets
    * `claimBeforeApply`; re-applying an applied ID is a no-op. Resolution is serialized with
    * rejection to prevent a duplicate provider call. A missing definition records a terminal
    * failure so the action can still be rejected.
    * @param id Action ID to apply.
+   * @param context Apply-time context from the overseer: `gitCache` is the `cache` stub
+   * `applyAction(action, cache)` received (git-free gatekeepers omit it), and `generation` is the
+   * account's current connection generation, required for an action submitted with a fence.
    */
-  apply(id: number): Promise<void>;
+  apply(id: number, context?: ActionApplyContext): Promise<void>;
   /**
    * Rejects an action, including one whose definition was removed after submission.
    * @param id Action ID to reject.
@@ -347,9 +399,12 @@ export function defineActions<Host, M extends Record<string, unknown>>(
               dependsOn: definition?.dependsOn?.(record.action.payload) ?? [],
             };
           }));
+          // Undispatched: a stranded dependent never reached its handler, so its rejection still
+          // owes the cleanup.
           for (const strandedId of stranded) {
             journal.markFailed(
-              strandedId, `This action needed action ${id}, which was not applied.`);
+              strandedId, `This action needed action ${id}, which was not applied.`,
+              { undispatched: true });
           }
           if (stranded.length > 0) {
             attributed.debug("retired actions left unresolvable by a decision", {
@@ -374,12 +429,29 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         throw new Error(APPLY_OUTCOME_UNKNOWN_MESSAGE);
       };
 
-      const applyRecord = async (id: number): Promise<void> => {
+      const applyRecord = async (id: number, context?: ActionApplyContext): Promise<void> => {
         const record = journal.get(id);
         // Idempotent for a retry of an applied id ("applied" exists only in the retained tier;
         // retired ids are remembered durably): erroring here reports an action that succeeded as
-        // failed.
-        if (record?.state === "applied" || journal.wasApplied(id)) return;
+        // failed. A record still here alongside the memory is an interrupted retire, finished now
+        // so no later reject can report the executed action as rejected -- and a cleanup that
+        // fails again is logged, not raised: the effect landed, the id is tombstoned, and the
+        // leftover record already falls out of every scan.
+        if (journal.wasApplied(id)) {
+          if (record !== undefined) {
+            try {
+              journal.retire(id);
+            } catch (error) {
+              attributed.warn("failed to clear an applied action's leftover record", {
+                event: "actions.retire.heal.failed",
+                action: id,
+                error,
+              });
+            }
+          }
+          return;
+        }
+        if (record?.state === "applied") return;
 
         if (record === undefined) throw new Error(`Unknown pending action: ${id}`);
         // A callback naming the id proves the overseer holds it: promote a record stranded
@@ -404,6 +476,31 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           await resolved("failed");
           throw new Error(message);
         }
+        if (record.fence !== undefined) {
+          // The early gate against the common case. A reconnect landing after it is caught only by
+          // a handler comparing `ctx.fence` against its own operation's read.
+          if (context?.generation === undefined) {
+            throw new Error(`Action ${id} is fenced to a connection generation; pass the current `
+              + "generation to apply().");
+          }
+          if (record.fence.generation !== context.generation) {
+            const message = "This action was approved under a connection that has since been "
+              + "replaced. Reject it and submit it again.";
+            journal.markFailed(id, message, { undispatched: true });
+            strandDependents(id, action);
+            await resolved("failed");
+            throw new Error(message);
+          }
+        }
+        // Retryable, never terminal, and no cascade: the providing action may still apply later,
+        // and the cascade owns terminal marking when it cannot.
+        if (options.isResolvedReference) {
+          for (const ref of definition.dependsOn?.(action.payload) ?? []) {
+            if (options.isResolvedReference(ref) === true) continue;
+            throw new Error(`Action ${id} depends on ${ref}, which is not applied yet. Apply its `
+              + "providing action first, or reject this action.");
+          }
+        }
         try {
           let result: void | { action?: unknown };
           try {
@@ -411,7 +508,11 @@ export function defineActions<Host, M extends Record<string, unknown>>(
               journal.markClaimed(id);
               claimedHere.add(id);
             }
-            result = await definition.apply(action.payload, host, { id });
+            result = await definition.apply(action.payload, host, {
+              id,
+              ...(context?.gitCache ? { gitCache: context.gitCache } : {}),
+              ...(record.fence ? { fence: record.fence } : {}),
+            });
           } catch (error) {
             // Terminal handler failures stop retry; ordinary failures restore the pending claim.
             if (error instanceof ActionApplyError) {
@@ -446,31 +547,35 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         if (record === undefined) return;
         // The same proof of receipt apply takes.
         journal.markSubmitted(id);
-        if (record.state === "failed") {
-          // Nothing to undo, so rejecting a terminal failure is the user clearing the record.
-          journal.remove(id);
-          await resolved("rejected");
-          return;
-        }
         if (record.state === "claimed" && !claimedHere.has(id)) {
           return failOrphanedClaim(id);
         }
 
         const action = record.action;
+        // Rejecting a terminal failure is the user clearing the record: its handler already ran
+        // and owns whatever it left behind. One that never reached the handler is the exception —
+        // its staging artifacts are still the rejection's to release.
+        const failed = record.state === "failed";
         try {
-          await definitionFor(action)?.reject?.(action.payload, host, { id });
+          if (!failed || record.undispatched) {
+            await definitionFor(action)?.reject?.(action.payload, host, {
+              id,
+              ...(record.fence ? { fence: record.fence } : {}),
+            });
+          }
         } catch (error) {
           // Same reasoning as a failed apply: the handler may have half-changed simulation state.
           await resolved("failed");
           throw error;
         }
         journal.remove(id);
-        strandDependents(id, action);
+        // A failure stranded its dependents when it was recorded.
+        if (!failed) strandDependents(id, action);
         await resolved("rejected");
       };
 
       const set: BoundActionSet<M> = {
-        submit: async (queue, kind, payload) => {
+        submit: async (queue, kind, payload, { fence } = {}) => {
           const definition = definitions[kind];
           // Snapshotted before the first await: the stored payload must be the one describe rendered.
           payload = structuredClone(payload);
@@ -486,10 +591,10 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             // Spread, so a kindless or simulating action puts no key on the wire at all.
             ...(definition.kind ? { actionKind: definition.kind } : {}),
             ...(definition.delivery === "await-decision" ? { awaitDecision: true } : {}),
-          });
+          }, fence);
         },
 
-        apply: id => resolutionQueue.run(() => applyRecord(id)),
+        apply: (id, context) => resolutionQueue.run(() => applyRecord(id, context)),
 
         reject: id => resolutionQueue.run(() => rejectRecord(id)),
 

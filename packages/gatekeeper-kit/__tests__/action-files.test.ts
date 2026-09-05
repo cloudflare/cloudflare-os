@@ -213,8 +213,8 @@ describe("ActionFileStore", () => {
   });
 
   it.each([
-    [{ maxFileBytes: 0 }, /maxFileBytes must be a positive integer/],
-    [{ maxTotalBytes: 0 }, /maxTotalBytes must be a positive integer/],
+    [{ maxFileBytes: 0 }, /maxFileBytes must be a positive safe integer/],
+    [{ maxTotalBytes: 0 }, /maxTotalBytes must be a positive safe integer/],
   ] as const)("rejects invalid limits %#", (overrides, error) => {
     expect(() => actionFiles(overrides)).toThrow(error);
   });

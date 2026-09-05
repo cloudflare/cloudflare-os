@@ -3,6 +3,7 @@
 import { createLogger } from "@gadgets/backend-utils/logger";
 import { generateNonce } from "./connect-nonce";
 import type { KvScannable } from "./kv";
+import { perStorage } from "./per-storage";
 import { requirePositiveInt } from "./positive-int";
 
 const logger = createLogger<{ vendorId: string; observerId: string }>({
@@ -34,13 +35,19 @@ export type ObserverKv = KvScannable;
 
 type SetState = "pending" | "observed";
 
-/** Prepared observation state. Exactly one of `commit` or `discard` may run, synchronously. */
+/**
+ * Prepared observation state. Exactly one of `commit`, `discard`, or `abandon` runs, synchronously:
+ * `discard` only after a marked refusal proves nothing was recorded, `abandon` when the outcome is
+ * unknown.
+ */
 export type ObservationCheck = {
   excludeObservers?: string[];
   /** Commits prepared observation state. */
   commit(): void;
-  /** Discards prepared observation state. */
+  /** Reclaims prepared state after a refusal that recorded nothing. */
   discard?(): void;
+  /** Releases in-memory bookkeeping when the outcome is unknown; durable fences stay. */
+  abandon?(): void;
 };
 
 /** Internal: the check for a read that reveals no tracked set. */
@@ -78,6 +85,56 @@ const DEFAULT_MAX_OBSERVERS = 10;
 
 const DEFAULT_CONCURRENCY = 6;
 
+// What the reads disclosing one set marker still owe it. A marker may be reclaimed only once every
+// claimant settled and all of them settled as proven refusals -- one unknown outcome fences it for
+// good, since a lost reply may have followed a durable record. A DO runs in one isolate, so
+// in-memory tracking is sound; `perStorage` shares it across trackers over the same storage.
+type SetClaim = { held: number; created: boolean; refusedOnly: boolean };
+
+const setClaims = perStorage(() => new Map<string, SetClaim>());
+
+/** How a prepared observation settled, per the overseer's answer. */
+type Outcome = "committed" | "refused" | "unknown";
+
+/**
+ * Claims the set markers one read discloses.
+ * @param claims Per-storage claim records.
+ * @param keys Set storage keys the read discloses.
+ * @param created Keys whose markers this read wrote.
+ */
+function claimSets(claims: Map<string, SetClaim>, keys: readonly string[], created: Set<string>) {
+  for (const key of keys) {
+    const claim = claims.get(key) ?? { held: 0, created: false, refusedOnly: true };
+    claim.held += 1;
+    claim.created ||= created.has(key);
+    claims.set(key, claim);
+  }
+}
+
+/**
+ * Settles one read's claims.
+ * @param claims Per-storage claim records.
+ * @param keys Set storage keys the read claimed.
+ * @param outcome How the read settled.
+ * @returns The keys whose markers every claimant has now refused, and nothing else accounts for.
+ */
+function settleSets(
+  claims: Map<string, SetClaim>,
+  keys: readonly string[],
+  outcome: Outcome,
+): string[] {
+  const reclaimable: string[] = [];
+  for (const key of keys) {
+    const claim = claims.get(key);
+    if (claim === undefined) continue;
+    if (outcome !== "refused") claim.refusedOnly = false;
+    if ((claim.held -= 1) > 0) continue;
+    claims.delete(key);
+    if (claim.created && claim.refusedOnly) reclaimable.push(key);
+  }
+  return reclaimable;
+}
+
 // Map with bounded concurrency while preserving result order.
 async function mapLimit<In, Out>(
   items: readonly In[],
@@ -112,7 +169,9 @@ export type ObserverTrackerOptions<V> = {
    */
   canonicalSetId?(setId: string): string;
   /**
-   * Checks admission-level access before set ACLs.
+   * Checks admission-level access before set ACLs, at admission only: losing Workshop membership
+   * is the revocation path. A provider needing per-read baseline freshness folds that check into
+   * `hasSetAccess`.
    * @param verifier Vendor-specific verifier capability.
    */
   verifyBaseline?(verifier: V): Promise<void>;
@@ -129,7 +188,11 @@ export type ObserverTrackerOptions<V> = {
    * @returns A message that does not disclose the set ID.
    */
   denyMessage?(setId: string): string;
-  /** Caps distinct sets before disclosure, so existing observers never become unverifiable. */
+  /**
+   * Caps distinct sets before disclosure, so existing observers never become unverifiable. Size it
+   * from the provider's read fan-out: a refused read reclaims its slots, but a marker stranded by
+   * a crash is kept permanently, since a lost reply may still have recorded the observation.
+   */
   maxTrackedSets?: number;
   /** Caps fan-out before reads can exceed Worker invocation limits. */
   maxObservers?: number;
@@ -276,6 +339,8 @@ export class ObserverTracker<V> {
         kv.put(OBSERVER_WITHHELD_KEY, true);
         kv.delete(markerKey);
       },
+      // Refusal-only: the overseer proved it recorded nothing, so the fence can go. An unknown
+      // outcome leaves the marker, which keeps `addObserver` closed (no `abandon`).
       discard: () => kv.delete(markerKey),
     };
   }
@@ -356,6 +421,11 @@ export class ObserverTracker<V> {
       }
       for (const setId of untracked) kv.put<SetState>(this.#setKey(setId), "pending");
     }
+    // Claimed after the capacity throw and before the first await, like the markers themselves, so
+    // no concurrent read can reclaim a marker this one still depends on.
+    const claims = setClaims(kv);
+    const claimed = canonical.map(setId => this.#setKey(setId));
+    claimSets(claims, claimed, new Set(untracked.map(setId => this.#setKey(setId))));
 
     const observers = [...this.#observers()];
     const access = await mapLimit(observers, this.#concurrency, async ([id, verifier]) => {
@@ -390,7 +460,16 @@ export class ObserverTracker<V> {
     return {
       excludeObservers: excluded.length > 0 ? excluded : undefined,
       commit: () => {
+        settleSets(claims, claimed, "committed");
         for (const setId of promote) kv.put<SetState>(this.#setKey(setId), "observed");
+      },
+      abandon: () => void settleSets(claims, claimed, "unknown"),
+      discard: () => {
+        // Reclaimed by whichever claimant settles last, so a set two refused reads disclosed does
+        // not keep a slot -- and a marker anything promoted or left unaccounted for stays.
+        for (const key of settleSets(claims, claimed, "refused")) {
+          if (kv.get<SetState | true>(key) === "pending") kv.delete(key);
+        }
       },
     };
   }

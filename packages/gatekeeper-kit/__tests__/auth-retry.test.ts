@@ -8,7 +8,7 @@ describe("withAuthRetry", () => {
     const getToken = vi.fn(async () => "current");
     const run = vi.fn(async (token: string) => `${token}-result`);
 
-    expect(await withAuthRetry({ getToken, isAuthError: () => false }, run))
+    expect(await withAuthRetry({ getToken, isAuthError: () => false, replayable: true }, run))
       .toBe("current-result");
     expect(getToken).toHaveBeenCalledOnce();
     expect(getToken).toHaveBeenCalledWith({ forceRefresh: false });
@@ -20,7 +20,7 @@ describe("withAuthRetry", () => {
     const getToken = vi.fn(async () => "current");
     const run = vi.fn(async () => { throw failure; });
 
-    await expect(withAuthRetry({ getToken, isAuthError: () => false }, run))
+    await expect(withAuthRetry({ getToken, isAuthError: () => false, replayable: true }, run))
       .rejects.toBe(failure);
     expect(getToken).toHaveBeenCalledOnce();
   });
@@ -34,7 +34,8 @@ describe("withAuthRetry", () => {
       return "accepted";
     });
 
-    expect(await withAuthRetry({ getToken, isAuthError: error => error === authError }, run))
+    expect(await withAuthRetry(
+      { getToken, isAuthError: error => error === authError, replayable: true }, run))
       .toBe("accepted");
     expect(getToken).toHaveBeenNthCalledWith(2, {
       forceRefresh: true,
@@ -52,10 +53,13 @@ describe("withAuthRetry", () => {
       throw token === "stale" ? firstError : secondError;
     });
 
-    // Reporting it belongs to `CredentialSource.run`, which holds the identity to fence on.
+    // Reporting is out of scope here: `CredentialSource.run(operation, { replayable: true })`
+    // owns the retry-then-report flow, with the account healing inside the rejection
+    // adjudication.
     await expect(withAuthRetry({
       getToken,
       isAuthError: error => error === firstError || error === secondError,
+      replayable: true,
     }, run)).rejects.toBe(secondError);
   });
 
@@ -71,6 +75,7 @@ describe("withAuthRetry", () => {
     await expect(withAuthRetry({
       getToken,
       isAuthError: error => error === authError,
+      replayable: true,
     }, run)).rejects.toBe(providerError);
   });
 });

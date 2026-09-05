@@ -127,6 +127,20 @@ describe("ProvisionalIds", () => {
     expect(() => ids.requireResolved("~2")).toThrow(/has not been created yet/);
   });
 
+  it("reports a classified provider id as resolved, since nothing has to bind it", () => {
+    // The natural `isResolvedReference` spelling for an action set: a dependsOn ref that is
+    // already a provider id must not read as unresolved and block its apply.
+    const ids = new ProvisionalIds<string>(makeKv(), {
+      namespace: "issues:",
+      isProvisional: id => id.startsWith("~"),
+    });
+    ids.bind("~1", "real-1");
+
+    expect(ids.isResolved("real-9")).toBe(true);
+    expect(ids.isResolved("~1")).toBe(true);
+    expect(ids.isResolved("~2")).toBe(false);
+  });
+
   it("can adopt existing unnamespaced provisional keys without migration", () => {
     const kv = makeKv();
     kv.put("seq:provisional", 7);

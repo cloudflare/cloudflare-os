@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { KvTtlCache, type AuthoritySource, type CacheKv } from "../src/cache";
-import { CredentialSource } from "../src/credentials";
+import { CredentialsExpiredError, CredentialSource } from "../src/credentials";
 import { fakeKv } from "./fake-kv";
 
 function makeKv(): CacheKv {
@@ -95,6 +95,48 @@ describe("KvTtlCache", () => {
 
     expect(await authorityB.cached("project", 60_000, load)).toBe("from b");
     expect(load).toHaveBeenCalledOnce();
+  });
+
+  it("keeps named caches over one storage from colliding or invalidating each other", async () => {
+    // Two logical families with a natural key in common: unnamed, each would serve the other's
+    // value on a hit, and either one's invalidateAll would clear both.
+    const kv = makeKv();
+    const issues = new KvTtlCache(kv, () => "authority", { name: "issues" });
+    const pages = new KvTtlCache(kv, () => "authority", { name: "pages" });
+
+    expect(await issues.cached("home", 60_000, async () => "issue")).toBe("issue");
+    expect(await pages.cached("home", 60_000, async () => "page")).toBe("page");
+
+    issues.invalidateAll();
+    expect(await issues.cached("home", 60_000, async () => "issue again")).toBe("issue again");
+    expect(await pages.cached("home", 60_000, async () => "page again")).toBe("page");
+  });
+
+  it("keeps a named cache clear of the unnamed layout ports already have in storage", async () => {
+    const kv = makeKv();
+    const ported = new KvTtlCache(kv, () => "authority");
+    // "entry" is the name that would collide without the sigil: `cache:entry:generation` is the
+    // unnamed cache's own entry for the key "generation", and `cache:entry:entry:home` is its
+    // entry for "entry:home".
+    const named = new KvTtlCache(kv, () => "authority", { name: "entry" });
+
+    expect(await ported.cached("home", 60_000, async () => "legacy")).toBe("legacy");
+    expect(await ported.cached("generation", 60_000, async () => "counter-shaped")).toBe(
+      "counter-shaped");
+    expect(await named.cached("home", 60_000, async () => "named")).toBe("named");
+    named.invalidateAll();
+
+    // Both survive the other's writes, and the unnamed layout is byte-for-byte what ports have.
+    expect(await ported.cached("home", 60_000, async () => "legacy again")).toBe("legacy");
+    expect(await ported.cached("generation", 60_000, async () => "again")).toBe("counter-shaped");
+    expect(kv.get("cache:entry:home")).toBeDefined();
+    expect(kv.get("cache:@entry:entry:home")).toBeDefined();
+  });
+
+  it("refuses a name that would not survive the key it is spliced into", () => {
+    for (const name of ["", "has:colon", "spaced name"]) {
+      expect(() => new KvTtlCache(makeKv(), () => "authority", { name })).toThrow(/Cache name/);
+    }
   });
 
   it("follows a reconnect under one live instance, in both directions", async () => {
@@ -197,10 +239,10 @@ describe("KvTtlCache.partitionedBy", () => {
       account: () => ({
         getCredentials: async () =>
           ({ creds: { token: "live" }, identity: account.identity, generation: account.generation }),
-        noteCredentialsExpired: async () => {},
+        reportCredentialsRejected: async () => "expired" as const,
       }),
       isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage: "Reconnect the account.",
+      expiredMessage: "Reconnect.",
     });
     return { source, account };
   }
@@ -218,7 +260,7 @@ describe("KvTtlCache.partitionedBy", () => {
 
     // A reported expiry drops the partition: the cache bypasses rather than serves the dead grant.
     await expect(source.run(async () => { throw new Error("401"); }))
-      .rejects.toThrow("Reconnect the account.");
+      .rejects.toThrow(CredentialsExpiredError);
     expect(await cache.cached("project", 60_000, async () => "unpartitioned"))
       .toBe("unpartitioned");
 
@@ -237,7 +279,7 @@ describe("KvTtlCache.partitionedBy", () => {
     await source.get();
     expect(await cache.cached("project", 60_000, async () => "from a")).toBe("from a");
     await expect(source.run(async () => { throw new Error("401"); }))
-      .rejects.toThrow("Reconnect the account.");
+      .rejects.toThrow(CredentialsExpiredError);
 
     // The account keeps the grant until reconnect, so the refetch returns the same identity;
     // adopting its generation would let hit-only paths serve the dead partition unchecked.
