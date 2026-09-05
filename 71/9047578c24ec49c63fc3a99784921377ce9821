@@ -1,0 +1,49 @@
+packages/wiki-import/README.md
+  s_fe30841bd8390c::t_53e4fcacdc7da9 123-128,380-387,390-391,399-401,436,498-508,522-528,545-546
+packages/wiki-import/__tests__/page-vocabulary.ts
+  s_fe30841bd8390c::t_2d4b391db4840d 2,4-9,21
+packages/wiki-import/__tests__/plan.test.ts
+  s_fe30841bd8390c::t_7882600d1fcfc0 29
+packages/wiki-import/__tests__/slug.test.ts
+  s_fe30841bd8390c::t_f40f16a2a9c59a 4,51,53-55,57
+packages/wiki-import/__tests__/storage-to-blocks.test.ts
+  s_fe30841bd8390c::t_c9b986f8c7e41d 6,14,25,1510-1556
+packages/wiki-import/__tests__/workshop-client.test.ts
+  s_fe30841bd8390c::t_c22fae20ebe043 4,1349-1350
+packages/wiki-import/package.json
+  s_fe30841bd8390c::t_359bc3b36c01ae 21
+packages/wiki-import/src/import.ts
+  s_fe30841bd8390c::t_382dba896c3a31 117,119-125,131,328-332,2194-2195
+packages/wiki-import/src/index.ts
+  s_fe30841bd8390c::t_438257421c5f66 37
+packages/wiki-import/src/slug.ts
+  s_fe30841bd8390c::t_5615721804171d 2,5-6,8-10,13-14,25-28
+packages/wiki-import/src/storage-dom.ts
+  s_fe30841bd8390c::t_108424037b4299 25,119-129
+packages/wiki-import/src/storage-to-blocks.ts
+  s_fe30841bd8390c::t_ddbf24779e075e 67,79-81,92,107,124,126,140,1578,2163
+packages/wiki-import/src/vocabulary.ts
+  s_fe30841bd8390c::t_210f4600241882 4,34,36,367,375-437
+packages/wiki-import/src/workshop-client.ts
+  s_fe30841bd8390c::t_ca59541068ce66 14,16-23,28-29,128-129
+packages/wiki-import/tsconfig.json
+  s_fe30841bd8390c::t_39a650a756873d 7-12
+pnpm-lock.yaml
+  s_fe30841bd8390c::t_87f136c3bfd56a 920-922
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "719047578c24ec49c63fc3a99784921377ce9821",
+  "prompts": {},
+  "sessions": {
+    "s_fe30841bd8390c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3cc7444f-cdcb-45a9-9d6f-c9080bf89899",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
