@@ -204,6 +204,7 @@ function workersAiCompat(catalog: Model<Api> | undefined): OpenAICompletionsComp
 // speaks. Returns undefined for providers AI Gateway cannot serve (ollama).
 function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Api> | undefined {
   const catalog = catalogModel(config.provider, config.model);
+  const suggested = SUGGESTED_MODELS[config.provider]?.[config.model];
   const window = modelTokenWindow(config, catalog);
   switch (config.provider) {
     case "anthropic":
@@ -227,13 +228,13 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
     case "openai":
       return {
         id: config.model,
-        name: catalog?.name ?? config.model,
+        name: suggested?.name ?? catalog?.name ?? config.model,
         api: "openai-responses",
         provider: "openai",
         baseUrl: `${gatewayUrl}/openai`,
         reasoning: catalog?.reasoning ?? true,
         input: catalog?.input ?? ["text", "image"],
-        cost: catalog?.cost ?? ZERO_COST,
+        cost: suggested?.cost ?? catalog?.cost ?? ZERO_COST,
         ...window,
         thinkingLevelMap: catalog?.thinkingLevelMap,
         compat: catalog?.compat,
@@ -678,17 +679,18 @@ function getModelViaTeamPiCodex(
   sessionAffinity?: string,
 ): ModelHandle {
   const catalog = catalogCodexModel(config.model);
+  const suggested = SUGGESTED_MODELS.openai[config.model];
   const window = modelTokenWindow(config, catalog);
   return makeHandle({
     model: {
       id: config.model,
-      name: catalog?.name ?? config.model,
+      name: suggested?.name ?? catalog?.name ?? config.model,
       api: "openai-codex-responses",
       provider: "openai-codex",
       baseUrl: env.TEAM_PI_CODEX_BASE_URL!,
       reasoning: catalog?.reasoning ?? true,
       input: catalog?.input ?? ["text", "image"],
-      cost: catalog?.cost ?? ZERO_COST,
+      cost: suggested?.cost ?? catalog?.cost ?? ZERO_COST,
       ...window,
       thinkingLevelMap: catalog?.thinkingLevelMap,
       compat: catalog?.compat,
@@ -833,6 +835,7 @@ function getModelViaGateway(
 // Direct provider access using the credentials in the model config itself (no AI Gateway).
 function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelHandle {
   const catalog = catalogModel(config.provider, config.model);
+  const suggested = SUGGESTED_MODELS[config.provider]?.[config.model];
   const window = modelTokenWindow(config, catalog);
   switch (config.provider) {
     case "anthropic":
@@ -951,13 +954,13 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
       return makeHandle({
         model: {
           id: config.model,
-          name: catalog?.name ?? config.model,
+          name: suggested?.name ?? catalog?.name ?? config.model,
           api: "openai-responses",
           provider: "openai",
           baseUrl: config.apiUrl ?? "https://api.openai.com/v1",
           reasoning: catalog?.reasoning ?? true,
           input: catalog?.input ?? ["text", "image"],
-          cost: catalog?.cost ?? ZERO_COST,
+          cost: suggested?.cost ?? catalog?.cost ?? ZERO_COST,
           ...window,
           thinkingLevelMap: catalog?.thinkingLevelMap,
           compat: catalog?.compat,

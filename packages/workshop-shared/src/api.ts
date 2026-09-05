@@ -1911,6 +1911,25 @@ export type AiModelConfig = {
  */
 export const WORKERS_AI_OUTPUT_LIMIT = 32768;
 
+type SuggestedModel = {
+  name: string;
+  contextWindow: number;
+  outputLimit?: number;
+  cost?: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    tiers?: Array<{
+      inputTokensAbove: number;
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+    }>;
+  };
+};
+
 /**
  * Models offered in the picker. `contextWindow` is the maximum tokens one request may total.
  * `outputLimit`, when present, is both the requested response cap and the space reserved for it,
@@ -1918,7 +1937,7 @@ export const WORKERS_AI_OUTPUT_LIMIT = 32768;
  */
 export const SUGGESTED_MODELS: Record<
   AiModelProvider,
-  Record<string, {name: string, contextWindow: number, outputLimit?: number}>
+  Record<string, SuggestedModel>
 > = {
   "cloudflare": {
     "@cf/moonshotai/kimi-k2.7-code": {
@@ -1937,6 +1956,24 @@ export const SUGGESTED_MODELS: Record<
     "claude-haiku-4-5": {name: "Claude Haiku 4.5", contextWindow: 200000},
   },
   "openai": {
+    "gpt-6-astra": {
+      name: "GPT-6 Astra",
+      contextWindow: 1050000,
+      outputLimit: 128000,
+      cost: {
+        input: 10,
+        output: 50,
+        cacheRead: 1,
+        cacheWrite: 12.5,
+        tiers: [{
+          inputTokensAbove: 272000,
+          input: 20,
+          output: 75,
+          cacheRead: 2,
+          cacheWrite: 25,
+        }],
+      },
+    },
     "gpt-5.6-sol": {name: "GPT 5.6 Sol", contextWindow: 1050000, outputLimit: 128000},
     "gpt-5.6-luna": {name: "GPT 5.6 Luna", contextWindow: 1050000, outputLimit: 128000},
     "gpt-5.6-terra": {name: "GPT 5.6 Terra", contextWindow: 1050000, outputLimit: 128000},

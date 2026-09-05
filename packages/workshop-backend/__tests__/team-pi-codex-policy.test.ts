@@ -11,6 +11,7 @@ declare module "cloudflare:workers" {
 }
 
 const TEAM_PI_MODEL_IDS = [
+  "team-pi-codex/gpt-6-astra",
   "team-pi-codex/gpt-5.6-sol",
   "team-pi-codex/gpt-5.6-terra",
   "team-pi-codex/gpt-5.6-luna",
@@ -40,7 +41,9 @@ async function withIneligibleUser(run: (user: UserDurableObject) => Promise<void
 describe("Team PI Codex-only policy", () => {
   it("lists every configured Team PI model and no other models", async () => {
     await withTeamPiUser(async user => {
-      expect((await user.listModels()).map(model => model.id)).toEqual(TEAM_PI_MODEL_IDS);
+      const models = await user.listModels();
+      expect(models.map(model => model.id)).toEqual(TEAM_PI_MODEL_IDS);
+      expect(models[0]?.name).toBe("GPT-6 Astra");
       await expect(user.getPreferredModel()).resolves.toBe(TEAM_PI_MODEL_IDS[0]);
       await expect(user.getQuickModel()).resolves.toBe(TEAM_PI_MODEL_IDS[0]);
     });
