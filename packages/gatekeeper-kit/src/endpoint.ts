@@ -5,11 +5,14 @@ import { stripTrailingSlashes } from "@gadgets/workshop-shared/gatekeeper";
 /**
  * Normalizes an operator-supplied vendor endpoint. Validation errors are display-safe and never echo
  * the raw input.
+ *
+ * This validates one URL; it is not a fetch policy. Following redirects by default can leave the
+ * allowlisted host and carry `Authorization` with it, so fetch with `redirect: "manual"`, or
+ * re-validate each `Location` and drop origin-scoped headers whenever the origin changes.
  * @param raw Endpoint URL.
  * @param options Host, label, and scheme policy.
  * @returns The origin and normalized path, preserving an explicit port and dropping query and
  * fragment.
- *
  * @example
  * ```ts
  * const endpoint = normalizeVendorEndpoint(String(form.get("endpoint") ?? ""), {

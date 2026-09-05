@@ -41,9 +41,8 @@ describe("tracked observers over real Durable Object storage", () => {
   it("fences admission through a second tracker while a withheld read is open", async () => {
     const tracker = host("withheld-fence");
 
-    // The fence is in memory, keyed by the storage object, so it only reaches a second tracker if
-    // `ctx.storage.kv` answers with one identity per Durable Object. Nothing in the Workers types
-    // promises that; a fresh wrapper per access would admit an observer the open read excludes.
+    // The fence is a durable marker under the binding's own storage, so it reaches a second
+    // tracker built over the same `ctx.storage.kv` -- and would reach a later activation too.
     expect(await tracker.admitDuringWithheldRead("mallory", { allowed: [] }))
       .toMatch(/can no longer be observed/);
   });

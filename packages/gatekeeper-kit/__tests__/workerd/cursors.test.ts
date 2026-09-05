@@ -38,8 +38,8 @@ describe("ArrayCursor", () => {
   });
 
   it("rejects a page size that would never terminate", () => {
-    expect(() => new ArrayCursor([1], 0)).toThrow(/positive integer/);
-    expect(() => new ArrayCursor([1], 1.5)).toThrow(/positive integer/);
+    expect(() => new ArrayCursor([1], 0)).toThrow(/positive safe integer/);
+    expect(() => new ArrayCursor([1], 1.5)).toThrow(/positive safe integer/);
   });
 });
 
@@ -174,11 +174,11 @@ describe("PageNumberCursor", () => {
 
   it("rejects page sizes that would never terminate", () => {
     const fetchPage = pagedApi([]);
-    expect(() => new PageNumberCursor<Issue>({ fetchPage, pageSize: 0 })).toThrow(/positive integer/);
+    expect(() => new PageNumberCursor<Issue>({ fetchPage, pageSize: 0 })).toThrow(/positive safe integer/);
     expect(() => new PageNumberCursor<Issue>({ fetchPage, pageSize: 2, remotePageSize: 0 }))
-      .toThrow(/positive integer/);
+      .toThrow(/positive safe integer/);
     expect(() => new PageNumberCursor<Issue>({ fetchPage, pageSize: 2.5 }))
-      .toThrow(/positive integer/);
+      .toThrow(/positive safe integer/);
   });
 });
 
@@ -309,10 +309,26 @@ describe("TokenCursor", () => {
     expect(fetchPage.mock.calls.map(([token]) => token)).toEqual([undefined, "a", "b"]);
   });
 
+  it("releases what the fetch callback owns, once, however often it is disposed", async () => {
+    // A callback that duplicates a stub for the walk has nowhere else to release it: the cursor
+    // stub's disposal is the only signal that the walk is over.
+    const dispose = vi.fn();
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [{ id: 1, open: true }] }]),
+      pageSize: 1,
+      dispose,
+    });
+    expect(ids(await cursor.next())).toEqual([1]);
+
+    cursor[Symbol.dispose]();
+    cursor[Symbol.dispose]();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
   it("rejects page sizes that would never terminate", () => {
     const fetchPage = tokenApi([]);
-    expect(() => new TokenCursor<Issue>({ fetchPage, pageSize: 0 })).toThrow(/positive integer/);
+    expect(() => new TokenCursor<Issue>({ fetchPage, pageSize: 0 })).toThrow(/positive safe integer/);
     expect(() => new TokenCursor<Issue>({ fetchPage, pageSize: 2, remotePageSize: 1.5 }))
-      .toThrow(/positive integer/);
+      .toThrow(/positive safe integer/);
   });
 });

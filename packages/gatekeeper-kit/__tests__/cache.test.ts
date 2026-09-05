@@ -97,6 +97,48 @@ describe("KvTtlCache", () => {
     expect(load).toHaveBeenCalledOnce();
   });
 
+  it("keeps named caches over one storage from colliding or invalidating each other", async () => {
+    // Two logical families with a natural key in common: unnamed, each would serve the other's
+    // value on a hit, and either one's invalidateAll would clear both.
+    const kv = makeKv();
+    const issues = new KvTtlCache(kv, () => "authority", { name: "issues" });
+    const pages = new KvTtlCache(kv, () => "authority", { name: "pages" });
+
+    expect(await issues.cached("home", 60_000, async () => "issue")).toBe("issue");
+    expect(await pages.cached("home", 60_000, async () => "page")).toBe("page");
+
+    issues.invalidateAll();
+    expect(await issues.cached("home", 60_000, async () => "issue again")).toBe("issue again");
+    expect(await pages.cached("home", 60_000, async () => "page again")).toBe("page");
+  });
+
+  it("keeps a named cache clear of the unnamed layout ports already have in storage", async () => {
+    const kv = makeKv();
+    const ported = new KvTtlCache(kv, () => "authority");
+    // "entry" is the name that would collide without the sigil: `cache:entry:generation` is the
+    // unnamed cache's own entry for the key "generation", and `cache:entry:entry:home` is its
+    // entry for "entry:home".
+    const named = new KvTtlCache(kv, () => "authority", { name: "entry" });
+
+    expect(await ported.cached("home", 60_000, async () => "legacy")).toBe("legacy");
+    expect(await ported.cached("generation", 60_000, async () => "counter-shaped")).toBe(
+      "counter-shaped");
+    expect(await named.cached("home", 60_000, async () => "named")).toBe("named");
+    named.invalidateAll();
+
+    // Both survive the other's writes, and the unnamed layout is byte-for-byte what ports have.
+    expect(await ported.cached("home", 60_000, async () => "legacy again")).toBe("legacy");
+    expect(await ported.cached("generation", 60_000, async () => "again")).toBe("counter-shaped");
+    expect(kv.get("cache:entry:home")).toBeDefined();
+    expect(kv.get("cache:@entry:entry:home")).toBeDefined();
+  });
+
+  it("refuses a name that would not survive the key it is spliced into", () => {
+    for (const name of ["", "has:colon", "spaced name"]) {
+      expect(() => new KvTtlCache(makeKv(), () => "authority", { name })).toThrow(/Cache name/);
+    }
+  });
+
   it("follows a reconnect under one live instance, in both directions", async () => {
     // The two-instance case above passes with an authority captured at construction; an in-place
     // reconnect, which replaces the grant while this cache stays alive, does not.

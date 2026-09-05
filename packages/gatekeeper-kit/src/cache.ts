@@ -25,10 +25,17 @@ type CacheEntry<T> = {
 
 const CACHE_PREFIX = "cache:";
 
+// The sigil keeps a named cache's keys out of the unnamed layout, whatever the name.
+const NAMED_PREFIX = `${CACHE_PREFIX}@`;
+
+const CACHE_NAME = /^[A-Za-z0-9_-]+$/;
+
 /**
  * Durable TTL cache partitioned by authority and generation. In-flight loads are stored only when
- * both still match, so reconnects and invalidations cannot restore stale values.
- *
+ * both still match, so reconnects and invalidations cannot restore stale values. Every unnamed
+ * instance over one storage shares a single key and generation namespace — two of them with
+ * colliding `cached()` keys serve each other's values, and either one's `invalidateAll()` clears
+ * both — so give each logical cache family a `name`.
  * @example
  * ```ts
  * #cache = KvTtlCache.partitionedBy(this.ctx.storage.kv, this.#creds);
@@ -42,6 +49,7 @@ const CACHE_PREFIX = "cache:";
 export class KvTtlCache {
   readonly #kv: CacheKv;
   readonly #authority: () => string | undefined;
+  readonly #prefix: string;
   readonly #loads = new SingleFlight();
 
   /**
@@ -50,10 +58,18 @@ export class KvTtlCache {
    * served without a partition could cross a reconnect.
    * @param kv Durable Object cache storage.
    * @param authority Returns the current opaque cache partition, or `undefined` when unknown.
+   * @param options `name` gives this cache its own keys and generation, so it neither collides
+   * with nor is invalidated by another cache over the same storage.
    */
-  constructor(kv: CacheKv, authority: () => string | undefined) {
+  constructor(kv: CacheKv, authority: () => string | undefined, options: { name?: string } = {}) {
     this.#kv = kv;
     this.#authority = authority;
+    const { name } = options;
+    if (name !== undefined && !CACHE_NAME.test(name)) {
+      throw new Error(`Cache name "${name}" must match ${CACHE_NAME.source}.`);
+    }
+    // Unnamed keeps the layout every ported gatekeeper already has in storage.
+    this.#prefix = name === undefined ? CACHE_PREFIX : `${NAMED_PREFIX}${name}:`;
   }
 
   /**
@@ -62,10 +78,15 @@ export class KvTtlCache {
    * composed of more dimensions, use the constructor; per-kind scoping belongs in key segments.
    * @param kv Durable Object cache storage.
    * @param source Live authority to partition entries by.
+   * @param options `name` gives this cache its own keys and generation.
    * @returns A cache partitioned by the source's authority.
    */
-  static partitionedBy(kv: CacheKv, source: AuthoritySource): KvTtlCache {
-    return new KvTtlCache(kv, () => source.authority());
+  static partitionedBy(
+    kv: CacheKv,
+    source: AuthoritySource,
+    options: { name?: string } = {},
+  ): KvTtlCache {
+    return new KvTtlCache(kv, () => source.authority(), options);
   }
 
   /**
@@ -80,7 +101,7 @@ export class KvTtlCache {
     requirePositiveInt("ttlMs", ttlMs);
     const authority = this.#authority();
     if (authority === undefined) return load();
-    const entryKey = `${CACHE_PREFIX}entry:${key}`;
+    const entryKey = `${this.#prefix}entry:${key}`;
     const generation = this.#generation();
     const entry = this.#kv.get<CacheEntry<T>>(entryKey);
     if (entry?.authority === authority && entry.generation === generation
@@ -102,11 +123,11 @@ export class KvTtlCache {
 
   /** Invalidates every cached entry by advancing the shared generation. */
   invalidateAll(): void {
-    this.#kv.put(`${CACHE_PREFIX}generation`, this.#generation() + 1);
+    this.#kv.put(`${this.#prefix}generation`, this.#generation() + 1);
   }
 
   /** @returns The current cache generation. */
   #generation(): number {
-    return this.#kv.get<number>(`${CACHE_PREFIX}generation`) ?? 0;
+    return this.#kv.get<number>(`${this.#prefix}generation`) ?? 0;
   }
 }

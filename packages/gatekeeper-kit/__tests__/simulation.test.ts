@@ -127,6 +127,20 @@ describe("ProvisionalIds", () => {
     expect(() => ids.requireResolved("~2")).toThrow(/has not been created yet/);
   });
 
+  it("reports a classified provider id as resolved, since nothing has to bind it", () => {
+    // The natural `isResolvedReference` spelling for an action set: a dependsOn ref that is
+    // already a provider id must not read as unresolved and block its apply.
+    const ids = new ProvisionalIds<string>(makeKv(), {
+      namespace: "issues:",
+      isProvisional: id => id.startsWith("~"),
+    });
+    ids.bind("~1", "real-1");
+
+    expect(ids.isResolved("real-9")).toBe(true);
+    expect(ids.isResolved("~1")).toBe(true);
+    expect(ids.isResolved("~2")).toBe(false);
+  });
+
   it("can adopt existing unnamespaced provisional keys without migration", () => {
     const kv = makeKv();
     kv.put("seq:provisional", 7);
@@ -164,6 +178,22 @@ describe("ProvisionalIds", () => {
     expect(() => ids.bind("~1", "~2")).toThrow(/target is also provisional/);
     expect(ids.resolve("real-1")).toBe("real-1");
     expect(ids.isResolved("~1")).toBe(false);
+  });
+
+  it("refuses an id a classifierless instance bound to another provisional", () => {
+    const kv = makeKv();
+    // The only writer that can leave such a pair: with no classifier, `bind` cannot tell the
+    // target apart from a provider ID.
+    new ProvisionalIds<string>(kv, { namespace: "issues:" }).bind("~1", "~2");
+    const ids = new ProvisionalIds<string>(kv, {
+      namespace: "issues:",
+      isProvisional: id => id.startsWith("~"),
+    });
+
+    // The documented `isResolvedReference` predicate must not release what requireResolved and
+    // the provider will both refuse.
+    expect(ids.isResolved("~1")).toBe(false);
+    expect(() => ids.requireResolved("~1")).toThrow(/bound to ~2/);
   });
 
   it("refuses to retarget a provisional ID an at-least-once retry created twice", () => {
