@@ -4,6 +4,8 @@ import type { RpcStub } from "cloudflare:workers";
 import {
   aclObservers,
   escapeObservationValue,
+  isObservationRefused,
+  OBSERVATION_REFUSED_CODE,
   ObservationGate,
   OBSERVER_ATTEMPT_LIFETIME_MS,
   OBSERVER_DENIED,
@@ -49,6 +51,12 @@ async function observe(instance: ObserverTracker<V>, sets: string[]) {
 // Approval queue fake that records authorization requests.
 function fakeQueue(authorizeObservation = vi.fn(async () => {})) {
   return { authorizeObservation } as unknown as RpcStub<ApprovalQueue>;
+}
+
+// The mark the overseer carries on a policy refusal. No kernel error class exists yet, so the
+// protocol is exercised the way the transport delivers it: an enumerable own `code`.
+function refusal(message = "a collaborator may not see this"): Error {
+  return Object.assign(new Error(message), { code: OBSERVATION_REFUSED_CODE });
 }
 
 const someUser = {} as Fetcher<GatekeeperUserVerifier>;
@@ -122,15 +130,15 @@ describe("ObserverTracker", () => {
     expect(denied.batches).toEqual([["new"]]);
   });
 
-  it("leaves the pending records of a read that never disclosed", async () => {
-    // A pending record means the read never committed, so nothing was shown. Keeping it costs a
-    // tracking slot and denies an observer a set nobody saw, which the whole corpus accepts.
+  it("keeps the pending records of a read whose outcome is unknown", async () => {
+    // A lost reply may still have recorded the observation, so the set stays admission-relevant
+    // and its tracking slot stays consumed -- fail closed.
     const kv = makeKv();
     const instance = tracker(kv);
-    const refused = await instance.prepareObservation(["secret"]);
+    const unknown = await instance.prepareObservation(["secret"]);
     expect(kv.get("observed:secret")).toBe("pending");
 
-    refused.discard?.();
+    unknown.abandon?.();
     expect(kv.get("observed:secret")).toBe("pending");
 
     // Still admission-relevant, and promoted by the next read that does commit.
@@ -139,6 +147,83 @@ describe("ObserverTracker", () => {
     expect(denied.batches).toEqual([["secret"]]);
     (await instance.prepareObservation(["secret"])).commit();
     expect(kv.get("observed:secret")).toBe("observed");
+  });
+
+  it("reclaims the pending records of a refused read, which recorded nothing", async () => {
+    const kv = makeKv();
+    const instance = tracker(kv, { maxTrackedSets: 1 });
+    const refused = await instance.prepareObservation(["secret"]);
+    expect(kv.get("observed:secret")).toBe("pending");
+
+    refused.discard?.();
+    expect(kv.get("observed:secret")).toBeUndefined();
+
+    // The slot is free again, and admission no longer answers for a set nobody was shown.
+    expect(await observe(instance, ["other"])).toBeUndefined();
+    const late = verifier("other");
+    await expect(instance.addObserver("late", late)).resolves.toBeUndefined();
+    expect(late.batches).toEqual([["other"]]);
+  });
+
+  it("keeps a refused read's record while a concurrent read still depends on it", async () => {
+    const kv = makeKv();
+    const instance = tracker(kv);
+    const refused = await instance.prepareObservation(["secret"]);
+    const disclosing = await instance.prepareObservation(["secret"]);
+
+    // The second read is still awaiting the overseer under this marker: reclaiming it here would
+    // drop the fence its admission checks rely on.
+    refused.discard?.();
+    expect(kv.get("observed:secret")).toBe("pending");
+
+    disclosing.commit();
+    expect(kv.get("observed:secret")).toBe("observed");
+  });
+
+  it("reclaims a record only after every claimant has refused", async () => {
+    const kv = makeKv();
+    const instance = tracker(kv, { maxTrackedSets: 1 });
+    const first = await instance.prepareObservation(["secret"]);
+    const second = await instance.prepareObservation(["secret"]);
+
+    // The creator refuses first, so reclaiming falls to whoever settles last -- otherwise the slot
+    // stays spent for a set no read ever disclosed.
+    first.discard?.();
+    expect(kv.get("observed:secret")).toBe("pending");
+
+    second.discard?.();
+    expect(kv.get("observed:secret")).toBeUndefined();
+    expect(await observe(instance, ["other"])).toBeUndefined();
+  });
+
+  it("keeps a record a concurrent read's unknown outcome may have had recorded", async () => {
+    // The dangerous ordering: the sibling settles first with an unknown outcome, so the overseer
+    // may hold its record, and the creator's later refusal must not reclaim the marker anyway.
+    const kv = makeKv();
+    const instance = tracker(kv);
+    const creator = await instance.prepareObservation(["secret"]);
+    const unknown = await instance.prepareObservation(["secret"]);
+
+    unknown.abandon?.();
+    creator.discard?.();
+    expect(kv.get("observed:secret")).toBe("pending");
+
+    // Still admission-relevant, which is the whole point of keeping it.
+    const denied = verifier();
+    await expect(instance.addObserver("late", denied)).rejects.toThrow(/does not have access/);
+    expect(denied.batches).toEqual([["secret"]]);
+  });
+
+  it("never reclaims a marker a later read finds already pending", async () => {
+    // A fresh activation cannot know whether the read that wrote a pending marker was recorded, so
+    // only the read that created one may ever reclaim it.
+    const kv = makeKv();
+    const stranded = tracker(kv);
+    (await stranded.prepareObservation(["secret"])).abandon?.();
+
+    const revived = tracker({ ...kv });
+    (await revived.prepareObservation(["secret"])).discard?.();
+    expect(kv.get("observed:secret")).toBe("pending");
   });
 
   it("refuses an observer past the cap, and still re-admits one it already answers for", async () => {
@@ -476,7 +561,7 @@ describe("ObserverTracker", () => {
 
   it("refuses a cap or window that cannot make progress", () => {
     for (const options of [{ maxTrackedSets: 0 }, { concurrency: 0 }, { concurrency: 1.5 }]) {
-      expect(() => tracker(makeKv(), options)).toThrow(/must be a positive integer/);
+      expect(() => tracker(makeKv(), options)).toThrow(/must be a positive safe integer/);
     }
   });
 
@@ -604,6 +689,23 @@ describe("escapeObservationValue", () => {
   });
 });
 
+describe("isObservationRefused", () => {
+  it("matches the mark on a rebuilt error's `code`, as the transport delivers it", () => {
+    expect(isObservationRefused(refusal())).toBe(true);
+  });
+
+  it("matches the mark on `name`, as a thrown class carries it", () => {
+    const thrown = new Error("refused");
+    thrown.name = OBSERVATION_REFUSED_CODE;
+    expect(isObservationRefused(thrown)).toBe(true);
+  });
+
+  it("reads an unmarked failure as an unknown outcome", () => {
+    expect(isObservationRefused(new Error("connection lost"))).toBe(false);
+    expect(isObservationRefused(OBSERVATION_REFUSED_CODE)).toBe(false);
+  });
+});
+
 describe("ObservationGate", () => {
   const read = { title: "Read", description: "Read a row" };
 
@@ -665,13 +767,14 @@ describe("ObservationGate", () => {
   it("discards rather than commits when the overseer refuses, keeping its error", async () => {
     const commit = vi.fn();
     const discard = vi.fn();
+    const abandon = vi.fn();
     const strategy: ObserverStrategy = {
       addObserver: async () => {},
       removeObserver: async () => {},
       prepareWithheld: () => ({ commit() {} }),
-      prepare: async () => ({ excludeObservers: ["limited"], commit, discard }),
+      prepare: async () => ({ excludeObservers: ["limited"], commit, discard, abandon }),
     };
-    const authorizeObservation = vi.fn(async () => { throw new Error("cannot hide observation"); });
+    const authorizeObservation = vi.fn(async () => { throw refusal("cannot hide observation"); });
 
     await expect(
       new ObservationGate(fakeQueue(authorizeObservation), strategy)
@@ -679,6 +782,28 @@ describe("ObservationGate", () => {
     ).rejects.toThrow("cannot hide observation");
     expect(commit).not.toHaveBeenCalled();
     expect(discard).toHaveBeenCalledOnce();
+    expect(abandon).not.toHaveBeenCalled();
+  });
+
+  it("abandons prepared state when the outcome is unknown, keeping durable fences", async () => {
+    // An unmarked failure may be a lost reply to an observation the overseer already recorded, so
+    // nothing prepared may be reclaimed.
+    const discard = vi.fn();
+    const abandon = vi.fn();
+    const strategy: ObserverStrategy = {
+      addObserver: async () => {},
+      removeObserver: async () => {},
+      prepareWithheld: () => ({ commit() {} }),
+      prepare: async () => ({ commit() {}, discard, abandon }),
+    };
+    const authorizeObservation = vi.fn(async () => { throw new Error("connection lost"); });
+
+    await expect(
+      new ObservationGate(fakeQueue(authorizeObservation), strategy)
+        .authorize(read, { kind: "sets", ids: ["p1"] }),
+    ).rejects.toThrow("connection lost");
+    expect(discard).not.toHaveBeenCalled();
+    expect(abandon).toHaveBeenCalledOnce();
   });
 
   it("passes the description through untouched for a strategy that tracks nothing", async () => {
@@ -767,15 +892,25 @@ describe("ObservationGate", () => {
     // ordinary answer, not an outage. Nothing was disclosed, so nothing may be latched.
     const kv = makeKv();
     const strategy = trackedSetObservers<V>({ kv, hasSetAccess: async () => [] });
-    const refusing = fakeQueue(vi.fn(async () => {
-      throw new Error("a collaborator may not see this");
-    }));
+    const refusing = fakeQueue(vi.fn(async () => { throw refusal(); }));
 
     await expect(new ObservationGate(refusing, strategy)
       .authorize(read, { kind: "withholdFromObservers" }))
       .rejects.toThrow("a collaborator may not see this");
 
     await expect(strategy.addObserver("late", someUser)).resolves.toBeUndefined();
+  });
+
+  it("keeps admission closed when a withheld read's outcome is unknown", async () => {
+    // The overseer may already hold the record, so an unmarked failure leaves the fence standing.
+    const kv = makeKv();
+    const strategy = trackedSetObservers<V>({ kv, hasSetAccess: async () => [] });
+    const failing = fakeQueue(vi.fn(async () => { throw new Error("connection lost"); }));
+
+    await expect(new ObservationGate(failing, strategy)
+      .authorize(read, { kind: "withholdFromObservers" })).rejects.toThrow("connection lost");
+
+    await expect(strategy.addObserver("late", someUser)).rejects.toThrow(OBSERVER_WITHHELD);
   });
 
   it("fences admission while a withheld read is still awaiting the overseer", async () => {
@@ -795,18 +930,18 @@ describe("ObservationGate", () => {
   it("holds the fence for a second withheld read when the first is refused", async () => {
     const kv = makeKv();
     const strategy = trackedSetObservers<V>({ kv, hasSetAccess: async () => [] });
-    const refusal = Promise.withResolvers<void>();
+    const refused = Promise.withResolvers<void>();
     const overseer = Promise.withResolvers<void>();
 
-    const refused = new ObservationGate(fakeQueue(vi.fn(() => refusal.promise)), strategy)
+    const reclaiming = new ObservationGate(fakeQueue(vi.fn(() => refused.promise)), strategy)
       .authorize(read, { kind: "withholdFromObservers" });
     const surviving = new ObservationGate(fakeQueue(vi.fn(() => overseer.promise)), strategy)
       .authorize(read, { kind: "withholdFromObservers" });
 
-    refusal.reject(new Error("a collaborator may not see this"));
-    await expect(refused).rejects.toThrow("a collaborator may not see this");
+    // A marked refusal reclaims its own marker, so only the second read's fence is left.
+    refused.reject(refusal());
+    await expect(reclaiming).rejects.toThrow("a collaborator may not see this");
 
-    // The second read is still awaiting the overseer, so its fence must have survived the first.
     await expect(strategy.addObserver("late", someUser)).rejects.toThrow(OBSERVER_WITHHELD);
     overseer.resolve();
     await surviving;

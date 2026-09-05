@@ -211,12 +211,14 @@ describe("PreviewOAuth", () => {
     )).rejects.toBeInstanceOf(PreviewOAuthConfigurationError);
   });
 
-  it("relays only the provider result and unchanged signed state", async () => {
+  it("relays the standard provider result set and unchanged signed state", async () => {
     const oauth = new PreviewOAuth({ callbackUri: STABLE_CALLBACK, env: STABLE_ENV });
     const encoded = await signedState(PREVIEW_CALLBACK);
     const callback = new URL(STABLE_CALLBACK);
     callback.searchParams.set("error", "access_denied");
-    callback.searchParams.set("error_description", "provider-secret");
+    callback.searchParams.set("error_description", "The user denied the request");
+    callback.searchParams.set("error_uri", "https://provider.example/errors/access_denied");
+    callback.searchParams.set("iss", "https://provider.example");
     callback.searchParams.set("scope", "private-scope");
     callback.searchParams.set("state", encoded);
     const result = await oauth.handleCallback(callback);
@@ -227,8 +229,64 @@ describe("PreviewOAuth", () => {
     expect(location.origin + location.pathname).toBe(PREVIEW_CALLBACK);
     expect(location.searchParams.get("error")).toBe("access_denied");
     expect(location.searchParams.get("state")).toBe(encoded);
-    expect(location.searchParams.has("error_description")).toBe(false);
+    // The error triple is what the preview's own failure page has to work from, and `iss` is
+    // RFC 9207 mix-up defense: dropping it would disarm the check on the leg that runs it.
+    expect(location.searchParams.get("error_description")).toBe("The user denied the request");
+    expect(location.searchParams.get("error_uri"))
+      .toBe("https://provider.example/errors/access_denied");
+    expect(location.searchParams.get("iss")).toBe("https://provider.example");
+    // Anything the provider adds that this deployment did not name stays behind.
     expect(location.searchParams.has("scope")).toBe(false);
+  });
+
+  it("forwards a deployment-configured extra parameter, and nothing beside it", async () => {
+    const oauth = new PreviewOAuth({
+      callbackUri: STABLE_CALLBACK,
+      env: STABLE_ENV,
+      relayParams: ["authuser"],
+    });
+    const encoded = await signedState(PREVIEW_CALLBACK);
+    const callback = new URL(STABLE_CALLBACK);
+    callback.searchParams.set("code", "authorization-code");
+    callback.searchParams.set("authuser", "2");
+    callback.searchParams.set("prompt", "consent");
+    callback.searchParams.set("state", encoded);
+    const result = await oauth.handleCallback(callback);
+    if (result.kind !== "relay") throw new Error("Expected a relay response");
+    const location = new URL(result.response.headers.get("location") ?? "");
+
+    expect(location.searchParams.get("authuser")).toBe("2");
+    expect(location.searchParams.has("prompt")).toBe(false);
+  });
+
+  it("refuses relay parameters the kit owns, already forwards, or repeats", () => {
+    // A repeat would append each provider occurrence once per listing, manufacturing duplicates
+    // the provider never sent.
+    for (const relayParams of [["state"], ["code"], ["iss"], ["authuser", "authuser"]]) {
+      expect(() => new PreviewOAuth({ callbackUri: STABLE_CALLBACK, env: STABLE_ENV, relayParams }))
+        .toThrow(PreviewOAuthConfigurationError);
+    }
+  });
+
+  it("relays every occurrence of a forwarded parameter, empty values included", async () => {
+    // The preview's own RFC 9207 check decides whether an issuer is acceptable; collapsing a
+    // duplicate or dropping an empty one would hide the ambiguity from the code that enforces it.
+    const oauth = new PreviewOAuth({ callbackUri: STABLE_CALLBACK, env: STABLE_ENV });
+    const encoded = await signedState(PREVIEW_CALLBACK);
+    const callback = new URL(STABLE_CALLBACK);
+    callback.searchParams.append("iss", "https://provider.example");
+    callback.searchParams.append("iss", "https://attacker.example");
+    callback.searchParams.append("error_description", "");
+    callback.searchParams.set("state", encoded);
+    const result = await oauth.handleCallback(callback);
+    if (result.kind !== "relay") throw new Error("Expected a relay response");
+    const location = new URL(result.response.headers.get("location") ?? "");
+
+    expect(location.searchParams.getAll("iss"))
+      .toEqual(["https://provider.example", "https://attacker.example"]);
+    expect(location.searchParams.getAll("error_description")).toEqual([""]);
+    // Still exactly one state, and it is the kit's.
+    expect(location.searchParams.getAll("state")).toEqual([encoded]);
   });
 
   it("relays successful callbacks behind a shared router path", async () => {

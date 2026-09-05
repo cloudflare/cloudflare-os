@@ -203,12 +203,19 @@ export class ProvisionalIds<Id extends string> {
   }
 
   /**
-   * Checks whether an ID has a durable binding.
-   * @param id ID to check.
-   * @returns Whether a binding exists.
+   * Checks whether an ID can be sent to the provider — a classified provider ID, or a provisional
+   * one bound to a target the classifier accepts. Without a classifier only a binding counts,
+   * since nothing can tell an unbound provisional from a provider ID.
+   * @param id Provisional or provider ID.
+   * @returns Whether the ID is safe to pass through — that is, not an unbound provisional
+   * reference. Classification is syntactic: nothing here confirms the provider holds the object.
    */
   isResolved(id: Id): boolean {
-    return this.#bound(id) !== undefined;
+    if (this.#isProvisional?.(id) === false) return true;
+    const bound = this.#bound(id);
+    // Classified on the way out too, exactly as `requireResolved` does: a pair an instance with no
+    // classifier wrote may aim at something the provider still does not have.
+    return bound !== undefined && this.#isProvisional?.(bound) !== true;
   }
 
   /**

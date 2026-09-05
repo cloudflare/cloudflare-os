@@ -36,6 +36,14 @@ type CursorShape = {
   pageSize: number;
   /** How many items to ask the provider for at a time. */
   remotePageSize?: number;
+  /**
+   * Releases resources the fetch callback owns — a duplicated RPC stub, most often — when the
+   * cursor is disposed. Without it a fetch callback may only borrow stubs the session owns for at
+   * least as long as the walk: dropping the cursor stub would otherwise leak whatever the callback
+   * duplicated for itself. Return a cursor to exactly one RPC call: capnweb disposes the target
+   * once per stub, so the first drop of a shared cursor would release the walk another still uses.
+   */
+  dispose?(): void;
 };
 
 // Bound sequential requests per `next()`; an empty visibility window returns `[]`, not exhaustion.
@@ -47,22 +55,36 @@ const DEFAULT_REMOTE_PAGE_SIZE = 100;
 const loadMore = Symbol("loadMore");
 
 // Shared buffered implementation for provider-backed cursors.
-abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T> {
+abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposable {
   readonly #pageSize: number;
   readonly #queue = new SerialTaskQueue();
+  readonly #dispose?: () => void;
+  #disposed = false;
   protected readonly remotePageSize: number;
   protected readonly buffer: T[] = [];
   protected remoteExhausted = false;
 
   /**
    * Creates a buffered provider cursor.
-   * @param options Local and provider page sizes.
+   * @param options Local and provider page sizes, and an optional release hook.
    */
   constructor(options: CursorShape) {
     super();
     this.#pageSize = requirePositiveInt("pageSize", options.pageSize);
     this.remotePageSize =
       requirePositiveInt("remotePageSize", options.remotePageSize ?? DEFAULT_REMOTE_PAGE_SIZE);
+    this.#dispose = options.dispose;
+  }
+
+  /**
+   * Releases what the fetch callback owns. Idempotent, since the runtime may dispose a target a
+   * second reference already released. A `next()` after disposal is the callback's own business:
+   * whatever it borrowed or released decides what that call does.
+   */
+  [Symbol.dispose](): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#dispose?.();
   }
 
   /** Loads the next provider page into the buffer. */

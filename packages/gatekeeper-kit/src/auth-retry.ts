@@ -14,6 +14,8 @@ export type AuthRetryOptions<Token> = {
    * @returns Whether credentials caused the failure.
    */
   isAuthError(error: unknown): boolean;
+  /** Acknowledges the operation may execute twice; only replay-safe calls qualify. */
+  replayable: true;
 };
 
 /**
@@ -32,6 +34,7 @@ export type AuthRetryOptions<Token> = {
  * return withAuthRetry({
  *   getToken: options => this.#account.getToken(options),
  *   isAuthError: error => error instanceof VendorApiError && error.status === 401,
+ *   replayable: true,
  * }, token => this.#api.listProjects(token));
  * ```
  */

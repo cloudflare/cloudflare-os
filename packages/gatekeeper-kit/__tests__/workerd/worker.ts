@@ -24,7 +24,7 @@ export class TrackerHost extends DurableObject {
   readonly #tracker = this.#newTracker();
 
   /** Built the way a gatekeeper that rebuilds one per accessor gets it: fresh from
-   *  `this.ctx.storage.kv`, which the in-memory withhold fence is keyed by. */
+   *  `this.ctx.storage.kv`, whose durable markers every tracker over it reads. */
   #newTracker(): ObserverTracker<Verifier> {
     return new ObserverTracker<Verifier>({
       kv: this.ctx.storage.kv,

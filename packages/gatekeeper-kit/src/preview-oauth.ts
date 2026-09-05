@@ -148,10 +148,26 @@ function isCurrentCallback(url: URL, callback: URL): boolean {
   return url.origin === callback.origin && url.pathname === callback.pathname;
 }
 
-function relayCallback(target: URL, callbackUrl: URL, state: string): Response {
-  for (const key of ["code", "error"]) {
-    const value = callbackUrl.searchParams.get(key);
-    if (value) target.searchParams.set(key, value);
+/**
+ * The provider callback parameters the stable→preview relay forwards. `iss` is RFC 9207 mix-up
+ * defense and must survive the relay intact — every occurrence, empty values included, since the
+ * preview's own check is what decides whether the issuer is acceptable and a collapsed duplicate
+ * would hide the ambiguity from it. The error triple is what a provider's own failure page needs
+ * to say anything useful. Values are copied verbatim onto a target `validateReturnUrl` has already
+ * accepted, so the trust model is unchanged — `state` is never taken from this list, since the kit
+ * always sets its own last.
+ */
+const RELAY_FORWARDED_PARAMS: readonly string[] =
+  ["code", "error", "error_description", "error_uri", "iss"];
+
+function relayCallback(
+  target: URL,
+  callbackUrl: URL,
+  state: string,
+  forwarded: readonly string[],
+): Response {
+  for (const key of forwarded) {
+    for (const value of callbackUrl.searchParams.getAll(key)) target.searchParams.append(key, value);
   }
   target.searchParams.set("state", state);
   return Response.redirect(target.toString(), 302);
@@ -163,6 +179,7 @@ export class PreviewOAuth {
   readonly #callback: URL;
   readonly #enabled: boolean;
   readonly #signingSecret: string | undefined;
+  readonly #relayParams: readonly string[];
 
   /** Exact callback URI to send to the provider and retain for the code exchange. */
   readonly redirectUri: string;
@@ -177,7 +194,22 @@ export class PreviewOAuth {
     callbackUri: string;
     /** Stable/preview runtime variables and signing secret. */
     env: PreviewOAuthEnv;
+    /** Additional provider callback parameters to forward across the stable→preview relay. */
+    relayParams?: readonly string[];
   }) {
+    const extras = new Set<string>();
+    for (const key of options.relayParams ?? []) {
+      if (key === "state") {
+        throw new PreviewOAuthConfigurationError(
+          'OAuth relay parameters may not include "state", which the kit always sets itself.');
+      }
+      if (RELAY_FORWARDED_PARAMS.includes(key) || extras.has(key)) {
+        throw new PreviewOAuthConfigurationError(
+          `OAuth relay parameter "${key}" is already forwarded.`);
+      }
+      extras.add(key);
+    }
+    this.#relayParams = [...RELAY_FORWARDED_PARAMS, ...extras];
     this.#callback = configurationUrl(options.callbackUri, "OAuth callback URI");
     const configuredRedirect = options.env.OAUTH_REDIRECT_URI;
     this.redirectUri = configuredRedirect || options.callbackUri;
@@ -258,7 +290,10 @@ export class PreviewOAuth {
       if (!this.#enabled) throw new Error("OAuth return URLs are not allowed.");
       const target = validateReturnUrl(state.returnUrl, this.#callback, this.#enabled);
       if (!isCurrentCallback(target, this.#callback)) {
-        return { kind: "relay", response: relayCallback(target, callbackUrl, encodedState) };
+        return {
+          kind: "relay",
+          response: relayCallback(target, callbackUrl, encodedState, this.#relayParams),
+        };
       }
     }
 
