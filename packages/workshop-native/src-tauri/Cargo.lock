@@ -3209,7 +3209,7 @@ dependencies = [
 
 [[package]]
 name = "odie-os-native"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "getrandom 0.3.4",
  "iota_stronghold",

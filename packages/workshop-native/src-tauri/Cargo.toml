@@ -1,6 +1,6 @@
 [package]
 name = "odie-os-native"
-version = "1.0.1"
+version = "1.0.2"
 description = "Odie OS native shell"
 authors = ["Totango"]
 edition = "2021"
