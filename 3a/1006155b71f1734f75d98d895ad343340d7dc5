@@ -1,0 +1,19 @@
+packages/integration-tests/__tests__/workshop-managed-frame.test.ts
+  s_9687893864678c::t_7fc5063889a9a3 3-5,209-210,231-236,240-244,247-248,260,266
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3a1006155b71f1734f75d98d895ad343340d7dc5",
+  "prompts": {},
+  "sessions": {
+    "s_9687893864678c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53be0b5f-c978-4cf6-9c71-1b7089449bb7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
