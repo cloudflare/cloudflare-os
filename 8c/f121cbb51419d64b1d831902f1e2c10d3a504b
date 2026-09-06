@@ -1,0 +1,103 @@
+packages/gadget-libraries/README.md
+  s_fe30841bd8390c::t_bb5fd4ff28faa7 98-104
+packages/gadget-libraries/package.json
+  s_fe30841bd8390c::t_0dbf46c73afc29 11-19
+packages/gadget-libraries/sync/README.md
+  s_fe30841bd8390c::t_bec9eacd9b2802 1-77
+packages/gadget-libraries/sync/__tests__/mutation-queue.test.ts
+  s_fe30841bd8390c::t_cc6827fb9d07b4 1-40
+packages/gadget-libraries/sync/__tests__/presence.test.ts
+  s_fe30841bd8390c::t_df600e03971260 1-108
+packages/gadget-libraries/sync/__tests__/save-scheduler.test.ts
+  s_fe30841bd8390c::t_694939109a0efe 1-138
+packages/gadget-libraries/sync/__tests__/server.test.ts
+  s_fe30841bd8390c::t_acea9eb0094e85 1-93
+packages/gadget-libraries/sync/__tests__/subscriber.test.ts
+  s_fe30841bd8390c::t_48da3c66d21ca4 1-33
+packages/gadget-libraries/sync/__tests__/subscribers.test.ts
+  s_fe30841bd8390c::t_200c5ac6ca976b 1-187
+packages/gadget-libraries/sync/__tests__/versioned.test.ts
+  s_fe30841bd8390c::t_dc8b8771bb4cc9 1-112
+packages/gadget-libraries/sync/client.ts
+  s_fe30841bd8390c::t_e03b6da2c3f388 1-37
+packages/gadget-libraries/sync/library.json
+  s_fe30841bd8390c::t_55a7077f75409a 1-5
+packages/gadget-libraries/sync/server.ts
+  s_fe30841bd8390c::t_2e79da7a0d1c68 1-31
+packages/gadget-libraries/sync/src/collaborator.ts
+  s_fe30841bd8390c::t_49ee36092bcbb0 1-53
+packages/gadget-libraries/sync/src/mutation-queue.ts
+  s_fe30841bd8390c::t_225a66ab35e013 1-22
+packages/gadget-libraries/sync/src/presence.ts
+  s_fe30841bd8390c::t_9972181589b0d1 1-155
+packages/gadget-libraries/sync/src/save-scheduler.ts
+  s_fe30841bd8390c::t_50753697055e16 1-135
+packages/gadget-libraries/sync/src/subscriber.ts
+  s_fe30841bd8390c::t_bc82fdf06dcc5d 1-29
+packages/gadget-libraries/sync/src/subscribers.ts
+  s_fe30841bd8390c::t_4845cc4fc42ecf 1-142
+packages/gadget-libraries/sync/src/versioned.ts
+  s_fe30841bd8390c::t_b6111220b59420 1-148
+packages/gadget-libraries/tsconfig.client.json
+  s_fe30841bd8390c::t_b669e1e0230581 25-30
+packages/gadget-libraries/tsconfig.server.json
+  s_fe30841bd8390c::t_6e3dabaa794e05 17-22
+packages/gadget-libraries/tsconfig.tests.json
+  s_fe30841bd8390c::t_b3a739c17d11fc 20-25
+packages/gadget-libraries/ui/README.md
+  s_fe30841bd8390c::t_0f2a361d6e4195 1-85
+packages/gadget-libraries/ui/__tests__/dom.test.ts
+  s_fe30841bd8390c::t_a6e009eccdbe52 1-91
+packages/gadget-libraries/ui/__tests__/icons.test.ts
+  s_fe30841bd8390c::t_11a7fe406cf192 1-25
+packages/gadget-libraries/ui/__tests__/images.test.ts
+  s_fe30841bd8390c::t_0e675f5101992f 1-206
+packages/gadget-libraries/ui/__tests__/prompt.test.ts
+  s_fe30841bd8390c::t_972f6ff6a6a9ea 1-95
+packages/gadget-libraries/ui/__tests__/status.test.ts
+  s_fe30841bd8390c::t_cc44e20da8617f 1-41
+packages/gadget-libraries/ui/__tests__/time.test.ts
+  s_fe30841bd8390c::t_e57e152aa7a7bf 1-34
+packages/gadget-libraries/ui/__tests__/toolbar.test.ts
+  s_fe30841bd8390c::t_c78a144d93305f 1-214
+packages/gadget-libraries/ui/client.ts
+  s_fe30841bd8390c::t_c4dda034b0a68a 1-40
+packages/gadget-libraries/ui/library.json
+  s_fe30841bd8390c::t_26b346a8f6fdf5 1-5
+packages/gadget-libraries/ui/server.ts
+  s_fe30841bd8390c::t_e6e82d58d7c162 1-8
+packages/gadget-libraries/ui/src/dom.ts
+  s_fe30841bd8390c::t_1043a238ea771b 1-56
+packages/gadget-libraries/ui/src/icons.ts
+  s_fe30841bd8390c::t_d7956ed2c82833 1-28
+packages/gadget-libraries/ui/src/images.ts
+  s_fe30841bd8390c::t_17ca6187cce3db 1-126
+packages/gadget-libraries/ui/src/prompt.ts
+  s_fe30841bd8390c::t_5a9cd46487c45c 1-64
+packages/gadget-libraries/ui/src/status.ts
+  s_fe30841bd8390c::t_b0acf0e26afbfd 1-47
+packages/gadget-libraries/ui/src/time.ts
+  s_fe30841bd8390c::t_4b394edcdc8e75 1-16
+packages/gadget-libraries/ui/src/toolbar.ts
+  s_fe30841bd8390c::t_406b096b9c0821 1-188
+packages/gadget-libraries/vitest.config.ts
+  s_fe30841bd8390c::t_d5012e05fadf41 1-2,5-6,11-13,16-18
+packages/workshop-backend/scripts/build-gadget-libraries.ts
+  s_fe30841bd8390c::t_6adb18945f4a61 22,47-64,101-104,144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8cf121cbb51419d64b1d831902f1e2c10d3a504b",
+  "prompts": {},
+  "sessions": {
+    "s_fe30841bd8390c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3cc7444f-cdcb-45a9-9d6f-c9080bf89899",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
