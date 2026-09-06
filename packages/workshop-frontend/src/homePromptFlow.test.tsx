@@ -55,7 +55,7 @@ vi.mock("./AuthContext", () => ({
   }),
 }));
 
-vi.mock("./ChatInterface", () => ({
+vi.mock("./ChatInput", () => ({
   ChatInput: ({ seedText, seedNonce, draftStorageKey, onSend, onInputIntent, sendingStatusLabel }: {
     seedText?: string;
     seedNonce?: number;

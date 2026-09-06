@@ -1,16 +1,38 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
+import { Component, lazy, Suspense, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, type ReactNode } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import { DownloadSimple, List } from '@phosphor-icons/react'
-import { Overseer, CodeSubscriber, CodeUpdate } from '@gadgets/workshop-shared/api'
+import type { Overseer, CodeSubscriber, CodeUpdate } from '@gadgets/workshop-shared/api'
 import { RpcPromise, RpcStub, RpcTarget } from 'capnweb'
 import * as Y from 'yjs'
 import FileSidebar from './FileSidebar'
 import type { FileChangeStatus, FileSidebarHandle } from './FileSidebar'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
-import CodeEditor from './CodeEditor'
-import CodeDiffEditor from './CodeDiffEditor'
 import type { StreamingProposedChanges } from './ChatInterface'
 import { saveTextToFile } from './fileTransfers'
+
+const CodeEditor = lazy(() => import('./CodeEditor'))
+const CodeDiffEditor = lazy(() => import('./CodeDiffEditor'))
+
+class EditorErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-kumo-subtle">
+          <p>The code editor could not load. Reload the page to try again; switching files cannot retry this load.</p>
+          <WorkshopButton onClick={() => window.location.reload()}>Reload page</WorkshopButton>
+        </div>
+      )
+    }
+
+    return this.props.children
+  }
+}
 
 // RpcTarget implementation for receiving code updates from the server
 class CodeSubscriberImpl extends RpcTarget implements CodeSubscriber {
@@ -263,9 +285,6 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
 
   // Keep a ref to the ready state so we can check it in error handlers without closure issues
   const isReadyRef = useRef(false)
-
-  // Subscription stub for cleanup
-  const subscriptionRef = useRef<RpcStub<{}> | null>(null)
 
   // When the selected workpiece changes, the previous root's file selection and per-turn state
   // are meaningless; reset so the auto-select effect picks a file from the new root.
@@ -666,10 +685,13 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
   }
   sendUpdateToServerRef.current = sendUpdateToServer
 
-  // Subscribe to code updates from server
+  // Keep authoritative code presence and streaming bases synced even while Files is hidden.
+  // Only the Monaco-backed editors below are lazy and visibility-gated.
   useEffect(() => {
     const ydoc = ydocRef.current
     const isInitialLoad = serverVersionRef.current === 0
+    let cancelled = false
+    let subscriptionStub: RpcStub<{}> | null = null
 
     const subscriberImpl = new CodeSubscriberImpl(
       ydoc,
@@ -700,14 +722,19 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
           subscriberImpl,
           serverVersionRef.current
         ) as unknown as RpcPromise<{}>
-        const subscriptionStub = await subscriptionPromise
-        subscriptionRef.current = subscriptionStub as unknown as RpcStub<{}>
+        const resolvedSubscription = await subscriptionPromise as unknown as RpcStub<{}>
+        if (cancelled) {
+          resolvedSubscription[Symbol.dispose]()
+          return
+        }
+        subscriptionStub = resolvedSubscription
 
         // If this is a reconnection, the user can continue editing immediately
         if (!isInitialLoad) {
           setIsReady(true)
         }
       } catch (error) {
+        if (cancelled) return
         console.error('Failed to subscribe to code updates:', error)
         // Only show error if we've never successfully loaded (never reached ready state)
         if (!isReadyRef.current) {
@@ -722,9 +749,9 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
 
     return () => {
       // Cleanup: dispose subscription stub
-      if (subscriptionRef.current) {
-        subscriptionRef.current[Symbol.dispose]()
-        subscriptionRef.current = null
+      cancelled = true
+      if (subscriptionStub) {
+        subscriptionStub[Symbol.dispose]()
       }
       subscriberImpl.disable();
     }
@@ -888,6 +915,10 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
       ? 'Editing changes in'
       : 'Editing'
 
+  if (!isVisible) {
+    return <div style={{ height, width: '100%' }} />
+  }
+
   if (loading) {
     return (
       <div
@@ -897,10 +928,6 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
         Loading code files...
       </div>
     )
-  }
-
-  if (!isVisible) {
-    return <div style={{ height, width: '100%' }} />
   }
 
   return (
@@ -1011,21 +1038,27 @@ export default function GadgetCodeInterface({ overseer, filesRoot, height = '100
                   </div>
                 </div>
               </div>
-            ) : isDiffMode ? (
-              <CodeDiffEditor
-                filename={activeFile}
-                originalYText={activeFileYText}
-                modifiedYText={activeFileModifiedYText}
-                readOnly={isEditingLocked}
-                height="100%"
-              />
             ) : (
-              <CodeEditor
-                filename={activeFile}
-                ytext={isDiffMode ? activeFileModifiedYText : activeFileYText}
-                isReady={isReady}
-                height="100%"
-              />
+              <EditorErrorBoundary>
+                <Suspense fallback={<div className="flex h-full items-center justify-center text-kumo-subtle">Loading editor...</div>}>
+                  {isDiffMode ? (
+                    <CodeDiffEditor
+                      filename={activeFile}
+                      originalYText={activeFileYText}
+                      modifiedYText={activeFileModifiedYText}
+                      readOnly={isEditingLocked}
+                      height="100%"
+                    />
+                  ) : (
+                    <CodeEditor
+                      filename={activeFile}
+                      ytext={isDiffMode ? activeFileModifiedYText : activeFileYText}
+                      isReady={isReady}
+                      height="100%"
+                    />
+                  )}
+                </Suspense>
+              </EditorErrorBoundary>
             )}
           </div>
         </div>

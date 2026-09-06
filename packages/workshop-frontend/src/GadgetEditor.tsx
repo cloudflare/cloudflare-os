@@ -1870,7 +1870,7 @@ export default function GadgetEditor() {
                   streamingProposedChanges={streamingProposedChanges}
                   streamingActiveFile={streamingActiveFileForSelected}
                   isAgentActive={isAgentActive}
-                  isVisible={activeTab === 'code'}
+                  isVisible={showFullEditor && !paneShowsActivity && activeTab === 'code' && !isGadgetFullscreen}
                   onHasCodeChange={setHasCode}
                 />
               ) : (

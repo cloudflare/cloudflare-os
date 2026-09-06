@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
-import { RpcTarget, type RpcPromise } from 'capnweb'
-import type { ConnectedAccountsSubscriber } from '@gadgets/workshop-shared/api'
-import type { AccountDescription, SupportedResource, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
+import type { RpcPromise } from 'capnweb'
 import { useAuthenticatedApi } from '../AuthContext'
+import { AccountsSubscriberAdapter, type AccountEvent } from '../accountsSubscriber'
 
 export type GitHubConnectionState =
   | { state: 'loading' }
@@ -12,63 +11,56 @@ export type GitHubConnectionState =
 
 export function useGitHubConnection(): GitHubConnectionState {
   const { authenticatedApi } = useAuthenticatedApi()
-  const [status, setStatus] = useState<GitHubConnectionState>({ state: 'loading' })
+  const [status, setStatus] = useState<{ api: unknown; value: GitHubConnectionState }>(() => ({
+    api: authenticatedApi,
+    value: { state: 'loading' },
+  }))
 
   useEffect(() => {
     let cancelled = false
     let subscription: { [Symbol.dispose](): void } | null = null
     const accounts = new Map<number, { label: string; valid: boolean }>()
+    setStatus({ api: authenticatedApi, value: { state: 'loading' } })
 
     const publish = (ready = false) => {
       if (cancelled) return
       const valid = [...accounts].find(([, account]) => account.valid)
       if (valid) {
-        setStatus({ state: 'connected', accountId: valid[0], label: valid[1].label })
+        setStatus({ api: authenticatedApi, value: { state: 'connected', accountId: valid[0], label: valid[1].label } })
         return
       }
       const expired = accounts.entries().next().value as [number, { label: string; valid: boolean }] | undefined
       if (expired) {
-        setStatus({ state: 'expired', accountId: expired[0], label: expired[1].label })
+        setStatus({ api: authenticatedApi, value: { state: 'expired', accountId: expired[0], label: expired[1].label } })
       } else if (ready) {
-        setStatus({ state: 'missing' })
-      }
-    }
-
-    class GitHubSubscriber extends RpcTarget implements ConnectedAccountsSubscriber {
-      add(
-        id: number,
-        description: AccountDescription,
-        vendor: VendorDescription,
-        _supportedResources: SupportedResource[] = [],
-        credentialsValid = true,
-        vendorId = '',
-      ) {
-        if (vendorId !== 'github') return
-        accounts.set(id, {
-          label: description.uniqueName ?? description.displayName ?? vendor.displayName,
-          valid: credentialsValid,
-        })
-        publish()
-      }
-
-      remove(id: number) {
-        accounts.delete(id)
-        publish(true)
-      }
-
-      ready() {
-        publish(true)
+        setStatus({ api: authenticatedApi, value: { state: 'missing' } })
       }
     }
 
     const subscriptionPromise = authenticatedApi.subscribeConnectedAccounts(
-      new GitHubSubscriber(),
+      new AccountsSubscriberAdapter({
+        add(event: AccountEvent) {
+          if (event.vendorId !== 'github') return
+          accounts.set(event.id, {
+            label: event.description.uniqueName ?? event.description.displayName ?? event.vendor.displayName,
+            valid: event.credentialsValid,
+          })
+          publish()
+        },
+        remove(id: number) {
+          accounts.delete(id)
+          publish(true)
+        },
+        ready() {
+          publish(true)
+        },
+      }),
     ) as unknown as RpcPromise<{}>
     subscriptionPromise.then((stub) => {
       if (cancelled) stub[Symbol.dispose]()
       else subscription = stub
     }).catch(() => {
-      if (!cancelled) setStatus({ state: 'missing' })
+      if (!cancelled) setStatus({ api: authenticatedApi, value: { state: 'missing' } })
     })
 
     return () => {
@@ -77,5 +69,5 @@ export function useGitHubConnection(): GitHubConnectionState {
     }
   }, [authenticatedApi])
 
-  return status
+  return status.api === authenticatedApi ? status.value : { state: 'loading' }
 }

@@ -10,6 +10,7 @@ const testState = vi.hoisted(() => ({
     | { state: 'missing' }
     | { state: 'expired'; accountId: number; label: string }
     | { state: 'connected'; accountId: number; label: string },
+  activity: [] as Array<{ state: string }>,
   pathname: '/',
   authenticatedApi: {
     listCodingSessionActivity: vi.fn<() => Promise<never[]>>(async () => []),
@@ -28,9 +29,9 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 
 vi.mock('../../ServerConfigContext', () => ({ useSiteName: () => 'Gadgets' }))
 vi.mock('../../useGatekeeperApps', () => ({ useGatekeeperApps: () => [] }))
-vi.mock('../../hooks/useGitHubConnection', () => ({ useGitHubConnection: () => testState.github }))
 vi.mock('../../AuthContext', () => ({ useAuthenticatedApi: () => ({ authenticatedApi: testState.authenticatedApi }) }))
 vi.mock('../../ThemeContext', () => ({ useTheme: () => ({ themeMode: 'system', resolvedThemeMode: 'light', setThemeMode: vi.fn<(mode: string) => void>() }) }))
+vi.mock('../sessions/SessionsContext', () => ({ useSessionsContext: () => ({ github: testState.github, activity: testState.activity }) }))
 vi.mock('../SiteLogo', () => ({ default: ({ children }: { children: ReactNode }) => <>{children}</> }))
 vi.mock('../UserMenu', () => ({ default: () => <button type="button">User</button> }))
 vi.mock('../sessions/SessionsSidebar', () => ({ default: () => <div>Sessions list</div> }))
@@ -54,6 +55,7 @@ describe('Sidebar Code navigation', () => {
     root = undefined
     container = undefined
     testState.github = { state: 'missing' }
+    testState.activity = []
     testState.pathname = '/'
     vi.clearAllMocks()
   })
@@ -106,5 +108,16 @@ describe('Sidebar Code navigation', () => {
     expect(libraryLink?.className).toContain('bg-kumo-fill')
     expect(libraryLink?.getAttribute('aria-current')).toBe('page')
     expect(rendered.querySelector('a[href="/explore"]')).toBeNull()
+  })
+
+  it('uses SessionsProvider activity for Code badges without starting a duplicate activity poll', async () => {
+    testState.github = { state: 'connected', accountId: 42, label: 'octo@example.com' }
+    testState.activity = [{ state: 'pending' }, { state: 'approved' }, { state: 'pending' }]
+
+    const rendered = await renderSidebar()
+
+    const codeLink = rendered.querySelector('a[href="/sessions"]')
+    expect(codeLink?.textContent).toContain('2')
+    expect(testState.authenticatedApi.listCodingSessionActivity).not.toHaveBeenCalled()
   })
 })
