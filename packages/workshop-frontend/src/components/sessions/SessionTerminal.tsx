@@ -23,6 +23,15 @@ const TERMINAL_THEMES = {
   dark: { background: '#111318', foreground: '#f4f4f5', cursor: '#ff4801', selectionBackground: '#3f3f46' },
 } as const
 
+export type SessionTerminalProps = {
+  sessionId: string
+  terminalKind?: CodingSessionTerminalKind
+  runtime?: CodingSessionRuntime
+  initialInput?: string
+  onInitialInputSent?: () => void
+  onSessionUnavailable?: () => void
+}
+
 export default function SessionTerminal({
   sessionId,
   terminalKind = 'opencode',
@@ -30,14 +39,7 @@ export default function SessionTerminal({
   initialInput,
   onInitialInputSent,
   onSessionUnavailable,
-}: {
-  sessionId: string
-  terminalKind?: CodingSessionTerminalKind
-  runtime?: CodingSessionRuntime
-  initialInput?: string
-  onInitialInputSent?: () => void
-  onSessionUnavailable?: () => void
-}) {
+}: SessionTerminalProps) {
   const { authenticatedApi } = useAuthenticatedApi()
   const { resolvedThemeMode } = useTheme()
   const hostRef = useRef<HTMLDivElement>(null)

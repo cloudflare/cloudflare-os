@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, createElement, type ComponentProps } from 'react'
+import { StrictMode, act, createElement, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CodingSessionActivity } from '@gadgets/workshop-shared/coding-sessions'
@@ -87,7 +87,7 @@ function createApi() {
 
 type ProviderContext = ReturnType<typeof useSessionsContext>
 
-async function renderProvider({ loadRepositories = false }: { loadRepositories?: boolean } = {}) {
+async function renderProvider({ loadRepositories = false, strictMode = false }: { loadRepositories?: boolean; strictMode?: boolean } = {}) {
   let latestContext: ProviderContext | undefined
   let root: Root | undefined
   const container = document.createElement('div')
@@ -101,7 +101,8 @@ async function renderProvider({ loadRepositories = false }: { loadRepositories?:
   root = createRoot(container)
   await act(async () => {
     const props: ComponentProps<typeof SessionsProvider> = { loadRepositories, children: createElement(Probe) }
-    root!.render(createElement(SessionsProvider, props))
+    const tree = createElement(SessionsProvider, props)
+    root!.render(strictMode ? createElement(StrictMode, undefined, tree) : tree)
   })
   return {
     get context() {
@@ -109,6 +110,13 @@ async function renderProvider({ loadRepositories = false }: { loadRepositories?:
       return latestContext
     },
     container,
+    async rerender(next: { loadRepositories?: boolean } = {}) {
+      await act(async () => {
+        const props: ComponentProps<typeof SessionsProvider> = { loadRepositories: next.loadRepositories ?? loadRepositories, children: createElement(Probe) }
+        const tree = createElement(SessionsProvider, props)
+        root!.render(strictMode ? createElement(StrictMode, undefined, tree) : tree)
+      })
+    },
     async unmount() {
       await act(async () => root?.unmount())
       container.remove()
@@ -300,6 +308,34 @@ describe('SessionsProvider responsiveness', () => {
     await rendered.unmount()
   })
 
+  it('ignores a delayed create response after GitHub access is revoked', async () => {
+    const api = createApi()
+    const createRead = deferred<CodingSessionSummary>()
+    api.createCodingSession.mockReturnValueOnce(createRead.promise)
+    testState.authenticatedApi = api
+    const rendered = await renderProvider()
+
+    await act(async () => rendered.context.setRepositories(['jarvis']))
+    let createPromise!: Promise<void>
+    await act(async () => {
+      createPromise = rendered.context.create()
+      await Promise.resolve()
+    })
+    expect(api.createCodingSession).toHaveBeenCalledOnce()
+
+    testState.github = { state: 'missing' }
+    await rendered.rerender()
+    await act(async () => createRead.resolve(session({ id: 'stale-session', status: 'starting' })))
+    await createPromise
+    await act(async () => {})
+
+    expect(rendered.context.sessions).toEqual([])
+    expect(rendered.context.activeId).toBeUndefined()
+    expect(rendered.context.preparedInput).toBeUndefined()
+
+    await rendered.unmount()
+  })
+
   it('polls starting session metadata without overlapping requests', async () => {
     vi.useFakeTimers()
     const api = createApi()
@@ -391,6 +427,145 @@ describe('SessionsProvider responsiveness', () => {
     await rendered.unmount()
   })
 
+  it('coalesces timer and manual activity refreshes without overlapping endpoint reads', async () => {
+    vi.useFakeTimers()
+    const api = createApi()
+    const initialActivity = deferred<CodingSessionActivity[]>()
+    api.listCodingSessionActivity.mockReturnValueOnce(initialActivity.promise)
+    testState.authenticatedApi = api
+    const rendered = await renderProvider()
+
+    expect(api.listCodingSessionActivity).toHaveBeenCalledOnce()
+    await act(async () => {
+      rendered.context.refreshActivity()
+      vi.advanceTimersByTime(9_000)
+      await Promise.resolve()
+    })
+    expect(api.listCodingSessionActivity).toHaveBeenCalledOnce()
+
+    api.listCodingSessionActivity.mockResolvedValueOnce([activity({ id: 'activity-2' })])
+    await act(async () => initialActivity.resolve([]))
+    await act(async () => {})
+
+    expect(api.listCodingSessionActivity).toHaveBeenCalledTimes(2)
+    expect(rendered.context.activity.map((item) => item.id)).toEqual(['activity-2'])
+
+    await rendered.unmount()
+  })
+
+  it('ignores delayed session and activity reads after GitHub access is revoked', async () => {
+    const api = createApi()
+    const sessionsRead = deferred<CodingSessionSummary[]>()
+    const activityRead = deferred<CodingSessionActivity[]>()
+    api.listCodingSessions.mockReturnValueOnce(sessionsRead.promise)
+    api.listCodingSessionActivity.mockReturnValueOnce(activityRead.promise)
+    testState.authenticatedApi = api
+    const rendered = await renderProvider()
+
+    testState.github = { state: 'missing' }
+    await rendered.rerender()
+    expect(rendered.context.github.state).toBe('missing')
+    expect(rendered.context.sessions).toEqual([])
+    expect(rendered.context.activity).toEqual([])
+
+    await act(async () => {
+      sessionsRead.resolve([session()])
+      activityRead.resolve([activity()])
+    })
+    await act(async () => {})
+
+    expect(rendered.context.sessions).toEqual([])
+    expect(rendered.context.activity).toEqual([])
+    expect(testState.runtime.sendNotification).not.toHaveBeenCalled()
+
+    await rendered.unmount()
+  })
+
+  it('clears a pending archive confirmation when GitHub access is revoked', async () => {
+    const api = createApi()
+    api.listCodingSessions.mockResolvedValueOnce([session()])
+    testState.authenticatedApi = api
+    const rendered = await renderProvider()
+
+    await act(async () => rendered.context.archiveSession('session-1'))
+    expect(document.body.textContent).toContain('Archive session?')
+
+    testState.github = { state: 'missing' }
+    await rendered.rerender()
+
+    expect(document.body.textContent).not.toContain('Archive session?')
+    expect(api.archiveCodingSession).not.toHaveBeenCalled()
+
+    await rendered.unmount()
+  })
+
+  it('does not refresh sessions when a delayed stop resolves after unmount', async () => {
+    const api = createApi()
+    const stopped = deferred<void>()
+    api.listCodingSessions.mockResolvedValueOnce([session()])
+    api.stopCodingSession.mockReturnValueOnce(stopped.promise)
+    testState.authenticatedApi = api
+    const rendered = await renderProvider()
+
+    let stopPromise!: Promise<void>
+    await act(async () => {
+      stopPromise = rendered.context.stopSession('session-1')
+      await Promise.resolve()
+    })
+    expect(api.stopCodingSession).toHaveBeenCalledOnce()
+
+    await rendered.unmount()
+    await act(async () => stopped.resolve())
+    await stopPromise
+
+    expect(api.listCodingSessions).toHaveBeenCalledOnce()
+  })
+
+  it('does not refresh activity when a delayed action decision resolves after unmount', async () => {
+    const api = createApi()
+    const approved = deferred<void>()
+    api.approveCodingSessionAction.mockReturnValueOnce(approved.promise)
+    testState.authenticatedApi = api
+    const rendered = await renderProvider()
+
+    let resolvePromise!: Promise<void>
+    await act(async () => {
+      resolvePromise = rendered.context.resolveActivity('activity-1', 'approve')
+      await Promise.resolve()
+    })
+    expect(api.approveCodingSessionAction).toHaveBeenCalledOnce()
+
+    await rendered.unmount()
+    await act(async () => approved.resolve())
+    await resolvePromise
+
+    expect(api.listCodingSessionActivity).toHaveBeenCalledOnce()
+  })
+
+  it('ignores queued old activity reads when the authenticated API switches', async () => {
+    const oldApi = createApi()
+    const oldActivity = deferred<CodingSessionActivity[]>()
+    oldApi.listCodingSessionActivity.mockReturnValueOnce(oldActivity.promise)
+    testState.authenticatedApi = oldApi
+    const rendered = await renderProvider()
+
+    rendered.context.refreshActivity()
+    const newApi = createApi()
+    newApi.listCodingSessions.mockResolvedValueOnce([])
+    newApi.listCodingSessionActivity.mockResolvedValueOnce([activity({ id: 'new-activity' })])
+    testState.authenticatedApi = newApi
+    await rendered.rerender()
+    expect(newApi.listCodingSessionActivity).not.toHaveBeenCalled()
+    await act(async () => oldActivity.resolve([activity({ id: 'old-activity' })]))
+    await act(async () => {})
+
+    expect(oldApi.listCodingSessionActivity).toHaveBeenCalledOnce()
+    expect(newApi.listCodingSessionActivity).toHaveBeenCalledOnce()
+    expect(rendered.context.activity.map((item) => item.id)).toEqual(['new-activity'])
+
+    await rendered.unmount()
+  })
+
   it('notifies once when an observed activity becomes pending without bursting initial pending actions', async () => {
     const api = createApi()
     api.listCodingSessionActivity.mockResolvedValueOnce([activity({ id: 'initial-pending' })])
@@ -432,6 +607,19 @@ describe('SessionsProvider responsiveness', () => {
     const rendered = await renderProvider({ loadRepositories: true })
 
     expect(testState.runtime.requestNotificationPermission).toHaveBeenCalledOnce()
+    await rendered.unmount()
+  })
+
+  it('still starts connected reads when React StrictMode replays effect cleanup and setup', async () => {
+    const api = createApi()
+    testState.authenticatedApi = api
+
+    const rendered = await renderProvider({ strictMode: true })
+
+    expect(api.listCodingSessions).toHaveBeenCalled()
+    expect(api.listCodingSessionActivity).toHaveBeenCalled()
+    expect(rendered.context.github.state).toBe('connected')
+
     await rendered.unmount()
   })
 

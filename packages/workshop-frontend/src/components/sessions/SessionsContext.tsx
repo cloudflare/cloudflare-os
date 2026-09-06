@@ -130,43 +130,83 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
   const activityStateById = useRef<Map<string, CodingSessionActivity['state']> | undefined>(undefined)
   const notifiedPendingActivityIds = useRef<Set<string>>(new Set())
   const archiveSubmittingRef = useRef(false)
+  const latestApiRef = useRef(authenticatedApi)
+  const githubConnectedRef = useRef(github.state === 'connected')
+  const lifecycleRef = useRef(0)
+  const mountedRef = useRef(false)
+  latestApiRef.current = authenticatedApi
+  githubConnectedRef.current = github.state === 'connected'
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      lifecycleRef.current += 1
+    }
+  }, [])
+
+  useEffect(() => {
+    lifecycleRef.current += 1
+    // RPC reads have no abort handle, so queued current-lifecycle reads wait for old reads to settle.
+    // Starting replacements would violate the single physical in-flight request invariant.
+    sessionRefreshPending.current = false
+    activityRefreshPending.current = false
+    setArchiveRequest(undefined)
+    setArchiveError(undefined)
+    if (github.state !== 'connected') {
+      setSessions([])
+      setLoaded(false)
+      setActiveId(undefined)
+      setActivity([])
+      activityStateById.current = undefined
+      notifiedPendingActivityIds.current.clear()
+    }
+  }, [authenticatedApi, github.state])
 
   const refresh = useCallback((options?: { background?: boolean }) => {
     void options
+    if (!mountedRef.current || !githubConnectedRef.current) return
     if (sessionRefreshInFlight.current) {
       sessionRefreshPending.current = true
       return
     }
+    const lifecycle = lifecycleRef.current
+    const api = latestApiRef.current
     const requestId = ++sessionRefreshSequence.current
     sessionRefreshInFlight.current = true
     setError(undefined)
-    authenticatedApi.listCodingSessions().then((items) => {
-      if (requestId !== sessionRefreshSequence.current) return
+    api.listCodingSessions().then((items) => {
+      if (api !== latestApiRef.current || lifecycle !== lifecycleRef.current || !githubConnectedRef.current || requestId !== sessionRefreshSequence.current) return
       setSessions(items)
       setLoaded(true)
       setActiveId((current) => items.some((session) => session.id === current && !session.archivedAt) ? current : undefined)
     }).catch((caught: unknown) => {
-      if (requestId !== sessionRefreshSequence.current) return
+      if (api !== latestApiRef.current || lifecycle !== lifecycleRef.current || !githubConnectedRef.current || requestId !== sessionRefreshSequence.current) return
       setError(caught instanceof Error ? caught.message : 'Could not load coding sessions.')
       setLoaded(true)
     }).finally(() => {
       sessionRefreshInFlight.current = false
-      if (sessionRefreshPending.current) {
+      if (mountedRef.current && githubConnectedRef.current && sessionRefreshPending.current) {
         sessionRefreshPending.current = false
         refresh({ background: true })
+      } else {
+        sessionRefreshPending.current = false
       }
     })
-  }, [authenticatedApi])
+  }, [])
 
   const refreshActivity = useCallback(() => {
+    if (!mountedRef.current || !githubConnectedRef.current) return
     if (activityRefreshInFlight.current) {
       activityRefreshPending.current = true
       return
     }
+    const lifecycle = lifecycleRef.current
+    const api = latestApiRef.current
     const requestId = ++activityRefreshSequence.current
     activityRefreshInFlight.current = true
-    authenticatedApi.listCodingSessionActivity().then((items) => {
-      if (requestId !== activityRefreshSequence.current) return
+    api.listCodingSessionActivity().then((items) => {
+      if (api !== latestApiRef.current || lifecycle !== lifecycleRef.current || !githubConnectedRef.current || requestId !== activityRefreshSequence.current) return
       if (!activityStateById.current) {
         activityStateById.current = new Map(items.map((item) => [item.id, item.state] as const))
         for (const item of items) {
@@ -176,18 +216,20 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
       setActivity(items)
     }).catch(() => {}).finally(() => {
       activityRefreshInFlight.current = false
-      if (activityRefreshPending.current) {
+      if (mountedRef.current && githubConnectedRef.current && activityRefreshPending.current) {
         activityRefreshPending.current = false
         refreshActivity()
+      } else {
+        activityRefreshPending.current = false
       }
     })
-  }, [authenticatedApi])
+  }, [])
 
   useEffect(() => {
     if (github.state !== 'connected') return
     refresh()
     refreshActivity()
-  }, [github.state, refresh, refreshActivity])
+  }, [authenticatedApi, github.state, refresh, refreshActivity])
 
   useEffect(() => {
     if (github.state !== 'connected' || !loadRepositories) return
@@ -292,11 +334,14 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
 
   const create = useCallback(async () => {
     if (creatingRef.current || !repositories.length) return
+    const api = authenticatedApi
+    const lifecycle = lifecycleRef.current
     creatingRef.current = true
     setCreating(true)
     setError(undefined)
     try {
-      const session = await authenticatedApi.createCodingSession({ title, repositories, runtime })
+      const session = await api.createCodingSession({ title, repositories, runtime })
+      if (api !== latestApiRef.current || lifecycle !== lifecycleRef.current || !githubConnectedRef.current) return
       sessionRefreshSequence.current += 1
       setSessions((current) => [session, ...current])
       if (launchInput) {
@@ -305,28 +350,36 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
       }
       setActiveId(session.id)
     } catch (caught) {
+      if (api !== latestApiRef.current || lifecycle !== lifecycleRef.current || !githubConnectedRef.current) return
       setError(caught instanceof Error ? caught.message : 'Could not create coding session.')
     } finally {
       creatingRef.current = false
-      setCreating(false)
+      if (mountedRef.current) setCreating(false)
     }
   }, [authenticatedApi, launchInput, repositories, runtime, title])
 
   const stopSession = useCallback(async (id: string) => {
+    const api = authenticatedApi
+    const lifecycle = lifecycleRef.current
     sessionRefreshSequence.current += 1
     setSessions((current) => current.map((item) => item.id === id ? { ...item, status: 'stopping' } : item))
-    await authenticatedApi.stopCodingSession(id)
+    await api.stopCodingSession(id)
+    if (api !== latestApiRef.current || lifecycle !== lifecycleRef.current || !githubConnectedRef.current) return
     refresh({ background: true })
   }, [authenticatedApi, refresh])
 
   const restartSession = useCallback(async (id: string) => {
+    const api = authenticatedApi
+    const lifecycle = lifecycleRef.current
     setError(undefined)
     try {
-      const session = await authenticatedApi.restartCodingSession(id)
+      const session = await api.restartCodingSession(id)
+      if (api !== latestApiRef.current || lifecycle !== lifecycleRef.current || !githubConnectedRef.current) return
       sessionRefreshSequence.current += 1
       setSessions((current) => current.map((item) => item.id === id ? session : item))
       setActiveId(session.id)
     } catch (caught) {
+      if (api !== latestApiRef.current || lifecycle !== lifecycleRef.current || !githubConnectedRef.current) return
       setError(caught instanceof Error ? caught.message : 'Could not restart coding session.')
     }
   }, [authenticatedApi])
@@ -341,32 +394,40 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
   const confirmArchiveSession = useCallback(async () => {
     const request = archiveRequest
     if (!request || archiveSubmittingRef.current) return
+    const api = authenticatedApi
+    const lifecycle = lifecycleRef.current
     archiveSubmittingRef.current = true
     setArchiveSubmitting(true)
     setArchiveError(undefined)
     try {
-      await authenticatedApi.archiveCodingSession(request.id)
+      await api.archiveCodingSession(request.id)
+      if (api !== latestApiRef.current || lifecycle !== lifecycleRef.current || !githubConnectedRef.current) return
       sessionRefreshSequence.current += 1
       setSessions((current) => current.map((item) => item.id === request.id ? { ...item, archivedAt: new Date() } : item))
       setArchiveRequest(undefined)
       if (activeId === request.id) setActiveId(undefined)
       refresh()
     } catch (caught) {
+      if (api !== latestApiRef.current || lifecycle !== lifecycleRef.current || !githubConnectedRef.current) return
       setArchiveError(caught instanceof Error ? caught.message : 'Could not archive coding session.')
     } finally {
       archiveSubmittingRef.current = false
-      setArchiveSubmitting(false)
+      if (mountedRef.current) setArchiveSubmitting(false)
     }
   }, [activeId, archiveRequest, authenticatedApi, refresh])
 
   const resolveActivity = useCallback(async (id: string, decision: 'approve' | 'reject') => {
+    const api = authenticatedApi
+    const lifecycle = lifecycleRef.current
     setError(undefined)
     try {
-      if (decision === 'approve') await authenticatedApi.approveCodingSessionAction(id)
-      else await authenticatedApi.rejectCodingSessionAction(id)
+      if (decision === 'approve') await api.approveCodingSessionAction(id)
+      else await api.rejectCodingSessionAction(id)
+      if (api !== latestApiRef.current || lifecycle !== lifecycleRef.current || !githubConnectedRef.current) return
       activityRefreshSequence.current += 1
       refreshActivity()
     } catch (caught) {
+      if (api !== latestApiRef.current || lifecycle !== lifecycleRef.current || !githubConnectedRef.current) return
       setError(caught instanceof Error ? caught.message : 'Could not resolve tool action.')
     }
   }, [authenticatedApi, refreshActivity])

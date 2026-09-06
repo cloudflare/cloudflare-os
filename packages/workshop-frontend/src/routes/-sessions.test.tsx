@@ -60,7 +60,7 @@ vi.mock('../AuthContext', () => ({
 vi.mock('../components/sessions/SessionsContext', () => ({
   useSessionsContext: () => testState.context,
 }))
-vi.mock('../components/sessions/SessionTerminal', async () => {
+vi.mock('../components/sessions/LazySessionTerminal', async () => {
   const React = await vi.importActual<typeof import('react')>('react')
   return {
     default: (props: unknown) => {
@@ -275,12 +275,14 @@ describe('SessionsPage locked Code setup', () => {
     await act(async () => shellTab!.click())
 
     expect(testState.terminalProps).toHaveBeenCalledWith(expect.objectContaining({ terminalKind: 'shell', runtime: 'opencode' }))
+    const terminalMountId = (testState.terminalProps.mock.calls.at(-1)![0] as { mountId: number }).mountId
     expect(rendered.textContent).toContain('Push')
 
     const changesTab = Array.from(rendered.querySelectorAll('button')).find((candidate) => candidate.textContent?.includes('Changes'))
     await act(async () => changesTab!.click())
     expect(testState.workbenchProps).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-opencode', surface: 'changes' }))
     expect(testState.workbenchMounts).toBe(1)
+    expect((testState.terminalProps.mock.calls.at(-1)![0] as { mountId: number }).mountId).toBe(terminalMountId)
     testState.context.activity = []
   })
 
@@ -446,5 +448,29 @@ describe('SessionsPage locked Code setup', () => {
     const latestProps = testState.terminalProps.mock.calls.at(-1)?.[0]
     expect(latestProps).toBeDefined()
     expect((latestProps as { mountId: number }).mountId).toBe(firstMountId)
+  })
+
+  it('does not carry an opened OpenCode shell terminal across a session switch before effects reset it', async () => {
+    testState.context.github = { state: 'connected', accountId: 42, label: 'octo@example.com' }
+    testState.context.activeSession = {
+      id: 'session-opencode-1', title: 'First', repositories: ['jarvis'], runtime: 'opencode', status: 'running',
+      createdAt: new Date('2026-08-18T00:00:00Z'), lastActiveAt: new Date('2026-08-18T00:00:00Z'),
+    }
+    const rendered = await render()
+    const shellTab = Array.from(rendered.querySelectorAll('button')).find((candidate) => candidate.textContent?.includes('Terminal'))
+    expect(shellTab).toBeTruthy()
+
+    await act(async () => shellTab!.click())
+    expect(testState.terminalProps).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-opencode-1', terminalKind: 'shell' }))
+    testState.terminalProps.mockClear()
+
+    testState.context.activeSession = {
+      id: 'session-opencode-2', title: 'Second', repositories: ['jarvis'], runtime: 'opencode', status: 'running',
+      createdAt: new Date('2026-08-18T00:00:00Z'), lastActiveAt: new Date('2026-08-18T00:00:00Z'),
+    }
+    await act(async () => root!.render(<SessionsPage />))
+
+    expect(testState.workbenchProps).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-opencode-2' }))
+    expect(testState.terminalProps).not.toHaveBeenCalled()
   })
 })

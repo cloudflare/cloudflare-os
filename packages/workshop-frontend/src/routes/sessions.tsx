@@ -21,7 +21,7 @@ import { useDocumentTitle } from '../useDocumentTitle'
 import { useAuthenticatedApi } from '../AuthContext'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from '../components/WorkshopControls'
 import OpenCodeWorkbench from '../components/sessions/OpenCodeWorkbench'
-import SessionTerminal from '../components/sessions/SessionTerminal'
+import LazySessionTerminal from '../components/sessions/LazySessionTerminal'
 import { useSessionsContext } from '../components/sessions/SessionsContext'
 import { useUiFeatureFlag } from '../FeatureFlagsContext'
 
@@ -54,7 +54,7 @@ export function SessionsPage() {
     refresh,
   } = sessions
   const [surface, setSurface] = useState<WorkbenchTab>('agent')
-  const [terminalOpened, setTerminalOpened] = useState(false)
+  const [openedTerminalSessionId, setOpenedTerminalSessionId] = useState<string>()
   const [editorAvailable, setEditorAvailable] = useState(false)
   const [editorBusy, setEditorBusy] = useState(false)
   const [editorError, setEditorError] = useState<string>()
@@ -70,8 +70,9 @@ export function SessionsPage() {
   useEffect(() => {
     if (!activeSession || activeSession.status !== 'running') return
     setSurface('agent')
-    setTerminalOpened(false)
+    setOpenedTerminalSessionId(undefined)
   }, [activeSession?.id, activeSession?.runtime, activeSession?.status])
+  const terminalOpened = activeSession?.id !== undefined && openedTerminalSessionId === activeSession.id
 
   const openEditor = async (sessionId: string) => {
     if (editorBusy) return
@@ -147,7 +148,7 @@ export function SessionsPage() {
                     aria-pressed={surface === item.value}
                     onClick={() => {
                       setSurface(item.value)
-                      if (item.value === 'terminal') setTerminalOpened(true)
+                      if (item.value === 'terminal') setOpenedTerminalSessionId(activeSession.id)
                     }}
                     className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-colors ${surface === item.value ? 'border-kumo-brand bg-kumo-base text-kumo-strong shadow-sm' : 'border-kumo-line bg-kumo-tint text-kumo-subtle hover:text-kumo-default'}`}
                   >
@@ -188,7 +189,7 @@ export function SessionsPage() {
                   </div>
                   {terminalOpened && (
                     <div className={surface === 'terminal' ? 'h-full min-h-0 min-w-0' : 'hidden'}>
-                      <SessionTerminal
+                      <LazySessionTerminal
                         key={`terminal:${activeSession.id}`}
                         sessionId={activeSession.id}
                         terminalKind="shell"
@@ -202,7 +203,7 @@ export function SessionsPage() {
               ) : (
                 <>
                   <div className={surface === 'agent' ? 'h-full min-h-0 min-w-0' : 'hidden'}>
-                    <SessionTerminal
+                    <LazySessionTerminal
                       key={`agent:${activeSession.id}:${activeSession.runtime}`}
                       sessionId={activeSession.id}
                       terminalKind="opencode"
@@ -214,7 +215,7 @@ export function SessionsPage() {
                   </div>
                   {terminalOpened && (
                     <div className={surface === 'terminal' ? 'h-full min-h-0 min-w-0' : 'hidden'}>
-                      <SessionTerminal
+                      <LazySessionTerminal
                         key={`terminal:${activeSession.id}:${activeSession.runtime}`}
                         sessionId={activeSession.id}
                         terminalKind="shell"

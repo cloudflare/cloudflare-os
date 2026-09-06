@@ -21,12 +21,10 @@ import {
   SidebarWorkspacesLists,
 } from './SidebarWorkspaces'
 import SidebarUtilityStrip from './SidebarUtilityStrip'
-import { useGitHubConnection } from '../../hooks/useGitHubConnection'
-import { useAuthenticatedApi } from '../../AuthContext'
-import { useEffect, useState } from 'react'
 import SessionsSidebar from '../sessions/SessionsSidebar'
 import ProductFeedbackButton from '../../ProductFeedbackButton'
 import NativeUpdateCard from './NativeUpdateCard'
+import { useSessionsContext } from '../sessions/SessionsContext'
 
 /**
  * The persistent left rail. Three pinned regions sandwich a single scrolling region of lists, so
@@ -53,24 +51,12 @@ export default function Sidebar({
   // and is connected / enabled for everyone). Disabled or not-yet-connected ones aren't returned, so
   // they simply don't appear. The set is fully dynamic — no gatekeeper is hardcoded.
   const gatekeeperApps = useGatekeeperApps()
-  const github = useGitHubConnection()
-  const { authenticatedApi } = useAuthenticatedApi()
-  const [pendingSessionActions, setPendingSessionActions] = useState(0)
+  const { github, activity } = useSessionsContext()
   const showSessions = github.state === 'connected'
   const codeNeedsSetup = github.state === 'missing' || github.state === 'expired'
+  const pendingSessionActions = showSessions ? activity.filter((entry) => entry.state === 'pending').length : 0
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const isCodeMode = pathname === '/sessions'
-
-  useEffect(() => {
-    if (!showSessions) return
-    let cancelled = false
-    const refresh = () => authenticatedApi.listCodingSessionActivity().then((activity) => {
-      if (!cancelled) setPendingSessionActions(activity.filter((entry) => entry.state === 'pending').length)
-    }).catch(() => {})
-    refresh()
-    const timer = window.setInterval(refresh, 10_000)
-    return () => { cancelled = true; window.clearInterval(timer) }
-  }, [authenticatedApi, showSessions])
 
   return (
     <aside
