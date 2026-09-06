@@ -1921,7 +1921,7 @@ export default function GadgetEditor() {
         </div>
 
         {showOutputRail && (
-          <div className="max-md:hidden">
+          <div className="flex flex-shrink-0 max-md:hidden">
             <WorkpiecePicker
               gadgets={allGadgets}
               selectedId={null}
