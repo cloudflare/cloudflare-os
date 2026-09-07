@@ -193,6 +193,12 @@ Pass the same `ctx.storage.kv` object on every access. Credential refreshes, exp
 and observer claim counts key process-local coordination by storage-object identity. Wrapping the
 storage for every call defeats coalescing and can spend a single-use refresh token twice.
 
+That identity requirement is also why the kit's stateful objects are Durable-Object-local. A
+journal, gate, cache, coordinator, source, or tracker is built inside the object that owns its
+storage and never crosses an RPC boundary — attempting it fails with `DataCloneError`. Expose RPC
+methods instead, and return either plain data or a cursor: `ArrayCursor` and the provider-backed
+cursors extend `RpcTarget` precisely because they are the one kit type meant to be handed out.
+
 ### Name every keyspace
 
 `ActionJournal` takes a `namespace` and `KvTtlCache` a `name`; both derive every key from it. Two
