@@ -8,7 +8,11 @@ export default defineConfig({
     miniflare: {
       compatibilityDate: "2026-09-04",
       compatibilityFlags: ["allow_irrevocable_stub_storage"],
-      durableObjects: { TRACKER_HOST: { className: "TrackerHost", useSQLite: true } },
+      durableObjects: {
+        TRACKER_HOST: { className: "TrackerHost", useSQLite: true },
+        CONFORMANCE_ACCOUNT: { className: "ConformanceAccount", useSQLite: true },
+        CONFORMANCE_RESOURCE: { className: "ConformanceResource", useSQLite: true },
+      },
     },
   })],
   test: {

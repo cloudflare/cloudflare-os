@@ -267,12 +267,13 @@ export class ObservationGate implements Disposable {
    * can advertise them without holding a raw queue stub of its own. Observations still go only
    * through `authorize()`.
    *
-   * The returned stub is **caller-owned**: dispose it when the read is done, or use `using`. The
-   * gate keeps its own queue stub either way. The promise pipelines, so a call on it need not be
-   * awaited first.
+   * The returned stub is **caller-owned**: dispose it when the read is done, or take it with
+   * `using`. The gate keeps its own queue stub either way. The promise pipelines, so a call on it
+   * need not be awaited first. The return type is the queue's own, so the stub stays `Disposable`
+   * rather than being flattened to a bare `GitCache` that `using` would reject.
    * @returns The gatekeeper-scoped git cache.
    */
-  getGitCache(): Promise<GitCache> {
+  getGitCache(): ReturnType<RpcStub<ApprovalQueue>["getGitCache"]> {
     return this.#queue.getGitCache();
   }
 
