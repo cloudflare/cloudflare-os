@@ -474,7 +474,7 @@ describe('OpenCodeWorkbench', () => {
     await assertDraftOnly('critical reads')
     expect(container.textContent).not.toContain('secret-capability')
     await act(async () => first === 'messages' ? messages.resolve(json([])) : status.resolve(json({})))
-    if (first === 'messages') expect(container.textContent).toContain('Checking OpenCode readiness…')
+    expect(container.textContent).toContain(first === 'messages' ? 'Checking OpenCode readiness…' : 'Reading the transcript…')
     await assertDraftOnly('one critical read pending')
     await act(async () => first === 'messages' ? status.resolve(json({})) : messages.resolve(json([])))
     expect(textarea.value).toBe('/draft one critical read pending')
@@ -553,7 +553,7 @@ describe('OpenCodeWorkbench', () => {
     const textarea = container.querySelector('textarea')!
     await typePrompt(textarea, '/draft')
     const replacement = deferred<{ url: string; expiresAt: Date }>()
-    const mintReplacement = vi.fn(() => replacement.promise)
+    const mintReplacement = vi.fn<() => Promise<{ url: string; expiresAt: Date }>>(() => replacement.promise)
     await act(async () => root.render(<OpenCodeWorkbenchInner
       authenticatedApi={{ mintCodingSessionOpenCodeCapability: mintReplacement }} sessionId="odie-session" sessionTitle="Repair Jarvis"
     />))
@@ -831,12 +831,10 @@ describe('OpenCodeWorkbench', () => {
       await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     }
     function assertMenu() {
-      if (interaction === 'Escape') {
-        expect(container.querySelector('[role="listbox"]')).toBeNull()
-        expect(textarea.getAttribute('aria-expanded')).toBe('false')
-      } else {
-        expect(container.querySelector('[role="option"][aria-selected="true"]')?.textContent).toContain('/test')
-      }
+      const expanded = interaction === 'highlight'
+      expect(container.querySelector('[role="listbox"]') !== null).toBe(expanded)
+      expect(textarea.getAttribute('aria-expanded')).toBe(String(expanded))
+      expect(container.querySelector('[role="option"][aria-selected="true"]')?.textContent?.includes('/test') ?? false).toBe(expanded)
     }
     assertMenu()
     const listsBeforePoll = fetchCalls.filter((call) => call.url.endsWith('/session')).length
@@ -849,8 +847,8 @@ describe('OpenCodeWorkbench', () => {
     assertMenu()
     if (interaction === 'highlight') {
       await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
-      expect(textarea.value).toBe('/test ')
     }
+    expect(textarea.value).toBe(interaction === 'highlight' ? '/test ' : '/')
   })
 
   it('discovers slash commands, supports keyboard selection, and submits command payloads', async () => {
