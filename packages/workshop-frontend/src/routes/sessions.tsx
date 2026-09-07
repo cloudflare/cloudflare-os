@@ -236,32 +236,16 @@ function SessionsPageBody() {
               ) : (
                 <>
                   <div className={surface === 'agent' ? 'h-full min-h-0 min-w-0' : 'hidden'}>
-                    {activeSession.runtime === 'pi' ? (
-                      <Suspense fallback={<CenteredMessage>Loading Pi workbench…</CenteredMessage>}>
-                        <PiWorkbench
-                          key={`pi:${activeSession.id}`}
-                          sessionId={activeSession.id}
-                          initialInput={initialInput}
-                          onInitialInputSent={() => markInitialInputSent(activeSession.id)}
-                          onSessionUnavailable={refresh}
-                        />
-                      </Suspense>
-                    ) : (
-                      <div className="flex h-full min-h-0 flex-col">
-                        <p className="border-b border-kumo-line p-3 text-xs text-kumo-subtle">Prime is terminal-only in Workshop. Its stdio protocol exists, but full-history and whole-tree settlement need a separate owner adapter.</p>
-                        <div className="min-h-0 flex-1">
-                          <LazySessionTerminal
-                            key={`agent:${activeSession.id}:${activeSession.runtime}`}
-                            sessionId={activeSession.id}
-                            terminalKind="opencode"
-                            runtime={activeSession.runtime}
-                            initialInput={initialInput}
-                            onInitialInputSent={() => markInitialInputSent(activeSession.id)}
-                            onSessionUnavailable={refresh}
-                          />
-                        </div>
-                      </div>
-                    )}
+                    <Suspense fallback={<CenteredMessage>Loading agent workbench…</CenteredMessage>}>
+                      <PiWorkbench
+                        key={`pi:${activeSession.id}`}
+                        sessionId={activeSession.id}
+                        runtime={activeSession.runtime}
+                        initialInput={initialInput}
+                        onInitialInputSent={() => markInitialInputSent(activeSession.id)}
+                        onSessionUnavailable={refresh}
+                      />
+                    </Suspense>
                   </div>
                   {terminalOpened && (
                     <div className={surface === 'terminal' ? 'h-full min-h-0 min-w-0' : 'hidden'}>
@@ -525,7 +509,7 @@ function NewSessionPane() {
               {([
                 ['opencode', 'OpenCode', 'Structured agent conversation and diffs, with account plugins and skills.'],
                 ['pi', 'Pi', 'Agent terminal using Team PI Codex and Workshop tools. No structured diffs here.'],
-                ['prime-agent', 'Prime Agent', 'IPython-based agent terminal using Team PI Codex and Workshop tools. No structured diffs here.'],
+                ['prime-agent', 'Prime Agent', 'IPython-based agent workbench with current model context and bounded events. Full history and branch tree unavailable.'],
               ] as const).map(([value, label, description]) => (
                 <button
                   key={value}

@@ -5,7 +5,8 @@ import { WorkshopButton } from '../WorkshopControls'
 import LazySessionTerminal from './LazySessionTerminal'
 
 type Api = Pick<AuthenticatedApi, 'connectCodingSessionPi' | 'callCodingSessionPi'>
-type Props = { sessionId: string; initialInput?: string; onInitialInputSent?: () => void; onSessionUnavailable?: () => void }
+type Props = { sessionId: string; runtime?: 'pi' | 'prime-agent'; initialInput?: string; onInitialInputSent?: () => void; onSessionUnavailable?: () => void }
+type Connection = Extract<CodingSessionPiConnection, { mode: 'rpc' }>
 type RecordValue = Record<string, unknown>
 type Dialog = { id: string; method: string; title: string; message: string; options: string[]; value: string }
 type Snapshot = { state: RecordValue; entries?: RecordValue[]; historyError?: string; tree: unknown; treeError?: string; dialogs: Dialog[]; events: unknown[]; gap: boolean; dead: boolean; settled: boolean; awaitingStart: boolean; inputAttempted: boolean }
@@ -36,14 +37,15 @@ function parseDialogs(value: unknown): Dialog[] {
   })
 }
 
-function downloadHtml(value: unknown) {
-  if (!record(value) || value.filename !== 'pi-session.html' || value.mediaType !== 'text/html' || typeof value.base64 !== 'string' || value.base64.length > 1_398_104) throw new Error('Invalid Pi export.')
+function downloadHtml(value: unknown, runtime: Connection['runtime']) {
+  const filename = `${runtime}-session.html`
+  if (!record(value) || value.filename !== filename || value.mediaType !== 'text/html' || typeof value.base64 !== 'string' || value.base64.length > 1_398_104) throw new Error('Invalid Pi export.')
   const bytes = Uint8Array.from(atob(value.base64), (character) => character.charCodeAt(0))
   if (bytes.length > 1024 * 1024) throw new Error('Pi export is too large.')
   const url = URL.createObjectURL(new Blob([bytes], { type: 'text/html' }))
   const link = document.createElement('a')
   link.href = url
-  link.download = 'pi-session.html'
+  link.download = filename
   document.body.append(link)
   try { link.click() } finally {
     link.remove()
@@ -62,7 +64,10 @@ export function PiWorkbenchInner(props: Props & { authenticatedApi: Api }) {
   return <PiSession key={props.sessionId} {...props} />
 }
 
-function PiSession({ authenticatedApi, sessionId, initialInput, onInitialInputSent, onSessionUnavailable }: Props & { authenticatedApi: Api }) {
+function PiSession({ authenticatedApi, sessionId, runtime = 'pi', initialInput, onInitialInputSent, onSessionUnavailable }: Props & { authenticatedApi: Api }) {
+  const [transport, setTransport] = useState<Connection>()
+  const label = transport ? transport.runtime === 'prime' ? 'Prime' : 'Pi' : runtime === 'prime-agent' ? 'Prime' : 'Pi'
+  const fullHistory = transport?.capabilities.history === 'persisted-entries'
   const [snapshot, setSnapshot] = useState<Snapshot>(emptySnapshot)
   const [draft, setDraft] = useState(initialInput ?? '')
   const [mode, setMode] = useState<'prompt' | 'steer' | 'follow_up'>('prompt')
@@ -107,20 +112,22 @@ function PiSession({ authenticatedApi, sessionId, initialInput, onInitialInputSe
     // Large reads are independent of the control loop, including while they hang.
     // Each result commits separately; neither failure hides healthy state/dialogs.
     const refreshHistory = async () => {
-      if (historyLoading) return
+      if (historyLoading || !connection) return
+      const capabilities = connection.capabilities
       historyLoading = true
       await Promise.all([
         (async () => {
           try {
-            const history = await call({ type: 'get_entries' })
-            if (!record(history) || !Array.isArray(history.entries) || !history.entries.every(record)) throw new Error('Invalid Pi full history response.')
-            const entries = history.entries
+            const history = await call({ type: capabilities.history === 'persisted-entries' ? 'get_entries' : 'get_messages' })
+            const entries = record(history) ? history[capabilities.history === 'persisted-entries' ? 'entries' : 'messages'] : undefined
+            if (!Array.isArray(entries) || !entries.every(record)) throw new Error('Invalid history/context response.')
             if (alive && !stopped) setSnapshot((previous) => ({ ...previous, entries, historyError: undefined }))
           } catch (error) {
             if (alive && !stopped) setSnapshot((previous) => ({ ...previous, entries: undefined, historyError: error instanceof Error ? error.message : 'Could not read Pi history.' }))
           }
         })(),
         (async () => {
+          if (!capabilities.tree) return
           try {
             const tree = await call({ type: 'get_tree' })
             if (!record(tree) && !Array.isArray(tree)) throw new Error('Invalid Pi tree response.')
@@ -146,7 +153,9 @@ function PiSession({ authenticatedApi, sessionId, initialInput, onInitialInputSe
             return
           }
           if (attached.mode !== 'rpc' || attached.version !== 1 || !attached.connectionId || !(attached.expiresAt instanceof Date) || !Number.isFinite(attached.expiresAt.valueOf()) || attached.expiresAt.valueOf() <= Date.now()) throw new Error('Invalid Pi connection.')
+          if (!['pi', 'prime'].includes(attached.runtime) || !attached.capabilities || attached.capabilities.messages !== 'current-context' || !['persisted-entries', 'unavailable'].includes(attached.capabilities.history) || typeof attached.capabilities.tree !== 'boolean' || !['agent_settled', 'unavailable'].includes(attached.capabilities.settlement) || !['delta', 'cumulative'].includes(attached.capabilities.messageUpdates)) throw new Error('Invalid workbench capabilities.')
           connection = attached
+          setTransport(attached)
         }
         const events = await call({ type: 'events', after: cursor })
         if (!record(events) || typeof events.cursor !== 'number' || !Number.isSafeInteger(events.cursor) || events.cursor < cursor || typeof events.truncated !== 'boolean' || typeof events.dead !== 'boolean' || !Array.isArray(events.events)) throw new Error('Invalid Pi event response.')
@@ -174,7 +183,7 @@ function PiSession({ authenticatedApi, sessionId, initialInput, onInitialInputSe
               settled = false
               awaitingStart = false
             }
-            if (event.data.type === 'agent_settled' && !awaitingStart) settled = true
+            if (connection?.runtime === 'pi' && connection.capabilities.settlement === 'agent_settled' && event.data.type === 'agent_settled' && !awaitingStart) settled = true
           }
           return { ...previous, dialogs, settled, awaitingStart, events: recentEvents.length ? recentEvents : previous.events, gap: previous.gap || gap }
         })
@@ -182,7 +191,7 @@ function PiSession({ authenticatedApi, sessionId, initialInput, onInitialInputSe
         if (!record(state)) throw new Error('Invalid Pi state response.')
         setSnapshot((previous) => ({ ...previous, state, settled: state.isStreaming === true ? false : previous.settled }))
         setReady(true)
-        // Read persisted entries, never substitute get_messages (current context).
+        // Only supported reads; current context is never presented as full history.
         void refreshHistory()
         timer = setTimeout(() => void poll(), 3000)
       } catch (error) {
@@ -218,7 +227,7 @@ function PiSession({ authenticatedApi, sessionId, initialInput, onInitialInputSe
         attempted?.()
         const result = await call(command)
         if (!alive) return
-        if (command.type === 'export_html') downloadHtml(result)
+        if (command.type === 'export_html') downloadHtml(result, connection.runtime)
         setWriteNotice(command.type === 'export_html' ? 'HTML downloaded; not displayed in Workshop.' : 'Request acknowledged, not proof of turn completion or settlement.')
       } catch (error) {
         if (alive) setWriteNotice(`Outcome unknown; this request was not retried. Inspect history before sending another request. ${error instanceof Error ? error.message : 'Pi request failed.'}`)
@@ -238,41 +247,41 @@ function PiSession({ authenticatedApi, sessionId, initialInput, onInitialInputSe
 
   if (terminalReason !== undefined) return (
     <div className="flex h-full min-h-0 flex-col">
-      <p className="border-b border-kumo-line p-3 text-xs text-kumo-subtle">Pi terminal mode: {terminalReason} Initial input is not automatically sent; paste it explicitly in the terminal.</p>
+      <p className="border-b border-kumo-line p-3 text-xs text-kumo-subtle">{label} terminal mode: {terminalReason} Initial input is not automatically sent; paste it explicitly in the terminal.</p>
       {initialInput && <details className="p-3 text-xs"><summary>Prepared input (not sent)</summary><pre className="whitespace-pre-wrap">{initialInput}</pre></details>}
-      <div className="min-h-0 flex-1"><LazySessionTerminal sessionId={sessionId} terminalKind="opencode" runtime="pi" onSessionUnavailable={onSessionUnavailable} /></div>
+      <div className="min-h-0 flex-1"><LazySessionTerminal sessionId={sessionId} terminalKind="opencode" runtime={runtime} onSessionUnavailable={onSessionUnavailable} /></div>
     </div>
   )
 
   const disabled = !ready || busy || snapshot.dead
   return (
-    <section aria-label="Pi workbench" className="flex h-full min-h-0 flex-col bg-kumo-base text-kumo-default">
+    <section aria-label={`${label} workbench`} className="flex h-full min-h-0 flex-col bg-kumo-base text-kumo-default">
       <header className="flex flex-wrap items-center gap-2 border-b border-kumo-line p-3 text-xs">
-        <h2 className="font-semibold">Pi</h2>
-        <span role="status">{snapshot.dead ? 'Pi exited. Explicit environment restart required.' : !ready ? 'Pi status unavailable / connecting' : snapshot.state.isStreaming === true ? 'Streaming' : snapshot.state.isStreaming === false ? 'Not streaming (not proof of settlement)' : 'Connected; streaming status unknown'}</span>
-        <span role="status" aria-label="Pi settlement">{snapshot.settled && snapshot.state.isStreaming !== true ? 'Verified Pi settlement' : 'Pi settlement unknown'}</span>
+        <h2 className="font-semibold">{label}</h2>
+        <span role="status">{snapshot.dead ? `${label} exited. Explicit environment restart required.` : !ready ? `${label} status unavailable / connecting` : snapshot.state.isStreaming === true ? 'Streaming' : snapshot.state.isStreaming === false ? 'Not streaming (not proof of settlement)' : 'Connected; streaming status unknown'}</span>
+        <span role="status" aria-label={`${label} settlement`}>{transport?.runtime === 'prime' || transport?.capabilities.settlement === 'unavailable' ? 'Whole-tree settlement unavailable' : snapshot.settled && snapshot.state.isStreaming !== true ? 'Verified Pi settlement' : 'Pi settlement unknown'}</span>
         <WorkshopButton disabled={disabled} onClick={() => void write.current({ type: 'abort' })}>Cancel turn</WorkshopButton>
         <WorkshopButton disabled={disabled} onClick={() => void write.current({ type: 'export_html' })}>Download HTML</WorkshopButton>
         {readError && <WorkshopButton disabled={busy} onClick={() => setRevision((value) => value + 1)}>Reconnect reads</WorkshopButton>}
       </header>
       {readError && <p role="alert" className="p-3 text-xs text-kumo-danger">Read failed; history may be stale. No terminal fallback or agent restart was attempted. {readError}</p>}
       {writeNotice && <p role="status" className="p-3 text-xs text-kumo-subtle">{writeNotice}</p>}
-      {snapshot.inputAttempted && <p className="p-3 text-xs text-kumo-subtle">Settlement remains unknown after local input for this mounted session, including reconnects: Pi events cannot be correlated with that input. Streaming state and raw historical events remain available.</p>}
+      {snapshot.inputAttempted && <p className="p-3 text-xs text-kumo-subtle">Settlement remains unknown after local input for this mounted session, including reconnects: runtime events cannot be correlated with that input. Streaming state and bounded raw events remain available.</p>}
       {snapshot.gap && <p role="status" className="p-3 text-xs text-kumo-subtle">Event gap detected. State/history refresh requested; missing live events cannot be reconstructed and do not prove settlement.</p>}
       <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
-        <h3 className="text-sm font-semibold">{snapshot.historyError ? 'Pi history unavailable' : 'Full persisted Pi history'}</h3>
-        {snapshot.historyError && <p role="alert" className="text-xs text-kumo-danger">Full history is unavailable, not complete. {snapshot.historyError} Control polling continues; writes are never automatically retried.</p>}
-        <p className="text-xs text-kumo-subtle">All returned entries, including branches and compaction records. Current model context is not full history.</p>
-        {!snapshot.historyError && snapshot.entries === undefined && <p className="text-sm">Loading full history…</p>}
-        {snapshot.entries?.length === 0 && <p className="text-sm">No persisted entries yet.</p>}
-        {snapshot.entries?.map((entry, index) => <HistoryEntry key={`${text(entry.id)}:${index}`} entry={entry} />)}
-        <details className="text-xs"><summary>Pi state</summary><Json value={snapshot.state} /></details>
-        <details className="text-xs"><summary>Pi branch tree</summary>{snapshot.treeError ? <p role="alert">Branch tree unavailable, not complete. {snapshot.treeError}</p> : snapshot.tree === undefined ? <p>Loading branch tree…</p> : <Json value={snapshot.tree} />}</details>
-        <details className="text-xs"><summary>Latest Pi events (deltas are not full messages)</summary><Json value={snapshot.events} /></details>
-        {snapshot.dialogs.length > 0 && <aside aria-label="Pi extension dialogs" className="space-y-3 rounded-lg border border-kumo-line p-3">
-          <h3 className="text-sm font-semibold">Pi extension dialogs — not Workshop approvals</h3>
+        <h3 className="text-sm font-semibold">{fullHistory ? 'Full persisted Pi history' : 'Current model context (not full history)'}</h3>
+        {snapshot.historyError && <p role="alert" className="text-xs text-kumo-danger">{fullHistory ? 'Full history is unavailable, not complete.' : 'Current model context unavailable.'} {snapshot.historyError} Control polling continues; writes are never automatically retried.</p>}
+        <p className="text-xs text-kumo-subtle">{fullHistory ? 'All returned entries, including branches and compaction records. Current model context is not full history.' : 'Full persisted history unavailable. Current context may omit earlier messages, branches and compaction records.'}</p>
+        {!snapshot.historyError && snapshot.entries === undefined && <p className="text-sm">Loading {fullHistory ? 'full history' : 'current context'}…</p>}
+        {snapshot.entries?.length === 0 && <p className="text-sm">{fullHistory ? 'No persisted entries yet.' : 'No messages in current context.'}</p>}
+        {snapshot.entries?.map((entry, index) => <HistoryEntry key={`${text(entry.id)}:${index}`} entry={fullHistory ? entry : { message: entry }} />)}
+        <details className="text-xs"><summary>{label} state</summary><Json value={snapshot.state} /></details>
+        <details className="text-xs"><summary>{label} branch tree</summary>{!transport?.capabilities.tree ? <p>Branch tree unavailable through this transport.</p> : snapshot.treeError ? <p role="alert">Branch tree unavailable, not complete. {snapshot.treeError}</p> : snapshot.tree === undefined ? <p>Loading branch tree…</p> : <Json value={snapshot.tree} />}</details>
+        <details className="text-xs"><summary>Latest {label} events ({transport?.capabilities.messageUpdates === 'cumulative' ? 'cumulative updates, not deltas' : 'deltas are not full messages'})</summary><p>Bounded event history, not complete conversation history. Original runtime shapes, including tools and results.</p><Json value={snapshot.events} /></details>
+        {snapshot.dialogs.length > 0 && <aside aria-label={`${label} extension dialogs`} className="space-y-3 rounded-lg border border-kumo-line p-3">
+          <h3 className="text-sm font-semibold">{label} extension dialogs — not Workshop approvals</h3>
           <p className="text-xs text-kumo-subtle">These expire within 30 seconds. Workshop tool approvals remain in the separate activity panel. Replies here do not approve Workshop actions.</p>
-          {snapshot.dialogs.map((dialog) => <PiDialog key={dialog.id} dialog={dialog} disabled={disabled || attemptedDialogs.current.has(dialog.id)} respond={(command) => void write.current(command)} />)}
+          {snapshot.dialogs.map((dialog) => <PiDialog key={dialog.id} label={label} dialog={dialog} disabled={disabled || attemptedDialogs.current.has(dialog.id)} respond={(command) => void write.current(command)} />)}
         </aside>}
       </div>
       <form className="space-y-2 border-t border-kumo-line p-3" onSubmit={(event) => {
@@ -280,14 +289,14 @@ function PiSession({ authenticatedApi, sessionId, initialInput, onInitialInputSe
         if (disabled || !draft.trim() || new TextEncoder().encode(draft).length > 32768) return
         void write.current({ type: mode, message: draft }, () => { setDraft(''); onInitialInputSent?.() })
       }}>
-        <label className="block text-xs">Pi input (draft, never sent automatically)
+        <label className="block text-xs">{label} input (draft, never sent automatically)
           <textarea value={draft} onChange={(event) => setDraft(event.target.value)} disabled={busy} className="mt-2 w-full rounded-lg border border-kumo-line bg-kumo-tint p-3 text-sm" rows={3} />
         </label>
         <div className="flex flex-wrap items-center gap-2">
           <label className="text-xs">Input mode <select className="rounded border border-kumo-line bg-kumo-base p-2" value={mode} onChange={(event) => { const value = event.target.value; if (value === 'prompt' || value === 'steer' || value === 'follow_up') setMode(value) }}>
             <option value="prompt">Input</option><option value="steer">Steer</option><option value="follow_up">Follow up</option>
           </select></label>
-          <WorkshopButton type="submit" tone="primary" disabled={disabled || !draft.trim() || new TextEncoder().encode(draft).length > 32768}>Send to Pi</WorkshopButton>
+          <WorkshopButton type="submit" tone="primary" disabled={disabled || !draft.trim() || new TextEncoder().encode(draft).length > 32768}>Send to {label}</WorkshopButton>
           <span className="text-xs text-kumo-subtle">32 KiB maximum. Steer / follow up explicitly queue streaming input.</span>
         </div>
       </form>
@@ -311,15 +320,15 @@ function HistoryEntry({ entry }: { entry: RecordValue }) {
   </article>
 }
 
-function PiDialog({ dialog, disabled, respond }: { dialog: Dialog; disabled: boolean; respond: (command: CodingSessionPiCommand) => void }) {
+function PiDialog({ dialog, label, disabled, respond }: { dialog: Dialog; label: string; disabled: boolean; respond: (command: CodingSessionPiCommand) => void }) {
   const [value, setValue] = useState(dialog.value)
   const reply = (fields: { value?: string; confirmed?: boolean; cancelled?: boolean }) => respond({ type: 'extension_ui_response', id: dialog.id, ...fields })
   return <fieldset disabled={disabled} className="space-y-2 rounded border border-kumo-line p-3 text-xs">
-    <legend>{dialog.title || `Pi ${dialog.method}`}</legend><p className="whitespace-pre-wrap">{dialog.message}</p>
-    {dialog.method === 'confirm' ? <><WorkshopButton onClick={() => reply({ confirmed: true })}>Confirm Pi dialog</WorkshopButton> <WorkshopButton onClick={() => reply({ confirmed: false })}>Decline Pi dialog</WorkshopButton></> : <>
-      <label className="block">Pi dialog response{dialog.method === 'select' ? <select className="ml-2 bg-kumo-base" value={value} onChange={(event) => setValue(event.target.value)}><option value="" disabled>Choose…</option>{dialog.options.map((option, index) => <option key={index} value={option}>{option}</option>)}</select> : <textarea className="block w-full border border-kumo-line bg-kumo-base p-2" value={value} onChange={(event) => setValue(event.target.value)} />}</label>
-      <WorkshopButton disabled={dialog.method === 'select' && !dialog.options.includes(value)} onClick={() => reply({ value })}>Reply to Pi</WorkshopButton>
+    <legend>{dialog.title || `${label} ${dialog.method}`}</legend><p className="whitespace-pre-wrap">{dialog.message}</p>
+    {dialog.method === 'confirm' ? <><WorkshopButton onClick={() => reply({ confirmed: true })}>Confirm {label} dialog</WorkshopButton> <WorkshopButton onClick={() => reply({ confirmed: false })}>Decline {label} dialog</WorkshopButton></> : <>
+      <label className="block">{label} dialog response{dialog.method === 'select' ? <select className="ml-2 bg-kumo-base" value={value} onChange={(event) => setValue(event.target.value)}><option value="" disabled>Choose…</option>{dialog.options.map((option, index) => <option key={index} value={option}>{option}</option>)}</select> : <textarea className="block w-full border border-kumo-line bg-kumo-base p-2" value={value} onChange={(event) => setValue(event.target.value)} />}</label>
+      <WorkshopButton disabled={new TextEncoder().encode(value).length > 32768 || (dialog.method === 'select' && !dialog.options.includes(value))} onClick={() => reply({ value })}>Reply to {label}</WorkshopButton>
     </>}
-    <WorkshopButton onClick={() => reply({ cancelled: true })}>Dismiss Pi dialog</WorkshopButton>
+    <WorkshopButton onClick={() => reply({ cancelled: true })}>Dismiss {label} dialog</WorkshopButton>
   </fieldset>
 }
