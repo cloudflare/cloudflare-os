@@ -4,7 +4,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { CodingSessionRepository, CodingSessionRuntime, CodingSessionSummary } from '@gadgets/workshop-shared/api'
+import type { CodingSessionPiCommand, CodingSessionPiConnection, CodingSessionRepository, CodingSessionRuntime, CodingSessionSummary } from '@gadgets/workshop-shared/api'
 import type { CodingSessionActivity } from '@gadgets/workshop-shared/coding-sessions'
 
 const testState = vi.hoisted(() => ({
@@ -15,6 +15,11 @@ const testState = vi.hoisted(() => ({
   workbenchMounts: 0,
   workbenchProps: vi.fn<(props: unknown) => void>(),
   authenticatedApi: {
+    connectCodingSessionPi: vi.fn<(id: string) => Promise<CodingSessionPiConnection>>(async () => ({ mode: 'rpc', version: 1, connectionId: 'pi-handle', expiresAt: new Date(Date.now() + 300_000) })),
+    callCodingSessionPi: vi.fn<(id: string, handle: string, command: CodingSessionPiCommand) => Promise<{ json: string }>>(async (_id, _handle, command) => ({ json: JSON.stringify(
+      command.type === 'events' ? { cursor: 0, truncated: false, dead: false, events: [], dialogs: [] }
+        : command.type === 'get_entries' ? { entries: [] } : command.type === 'get_tree' ? { tree: [] } : { isStreaming: false },
+    ) })),
     codingSessionEditorAvailable: vi.fn<() => Promise<boolean>>(async () => true),
     mintCodingSessionEditorCapability: vi.fn<() => Promise<{ url: string; expiresAt: Date }>>(async () => ({
       url: 'https://odie-os-gk-sessions.example.workers.dev/c/test-token/',
@@ -113,7 +118,18 @@ describe('SessionsPage locked Code setup', () => {
     document.body.append(container)
     root = createRoot(container)
     await act(async () => root!.render(<SessionsPage />))
+    if (testState.context.activeSession?.runtime === 'pi' && testState.context.activeSession.status === 'running') {
+      await waitForPi()
+    }
     return container
+  }
+
+  async function waitForPi() {
+    await vi.waitFor(async () => {
+      await act(async () => {})
+      expect(testState.authenticatedApi.connectCodingSessionPi).toHaveBeenCalled()
+      expect(container!.textContent).not.toContain('Loading Pi workbench…')
+    }, { timeout: 5000 })
   }
 
   it('shows setup and connects when GitHub is missing', async () => {
@@ -190,7 +206,43 @@ describe('SessionsPage locked Code setup', () => {
     expect(testState.context.setRuntime).not.toHaveBeenCalled()
   })
 
-  it('labels the primary terminal with the persisted runtime', async () => {
+  it.each(['opencode', 'pi', 'prime-agent'] as const)('blocks creation while flags load, then submits the selected %s runtime', async (runtime) => {
+    testState.context.github = { state: 'connected', accountId: 42, label: 'octo@example.com' }
+    testState.context.runtime = runtime
+    testState.piEnabled = true // A cached enabled value must not bypass loading.
+    testState.piLoading = true
+    const rendered = await render()
+    const openButton = () => Array.from(rendered.querySelectorAll('button')).find((button) => button.textContent?.includes('Open session'))!
+    expect(openButton().disabled).toBe(true)
+    expect(rendered.querySelector('[aria-label="Coding agent runtime"]')).toBeNull()
+    await act(async () => openButton().click())
+    expect(testState.context.create).not.toHaveBeenCalled()
+    expect(testState.context.setRuntime).not.toHaveBeenCalled()
+
+    testState.piLoading = false
+    await act(async () => root!.render(<SessionsPage />))
+    const selected = rendered.querySelector('[aria-label="Coding agent runtime"] [aria-pressed="true"]')
+    expect(selected?.textContent).toContain(runtime === 'pi' ? 'Pi' : runtime === 'prime-agent' ? 'Prime Agent' : 'OpenCode')
+    testState.context.create.mockImplementationOnce(async () => { expect(testState.context.runtime).toBe(runtime) })
+    await act(async () => openButton().click())
+    expect(testState.context.create).toHaveBeenCalledOnce()
+  })
+
+  it.each(['pi', 'prime-agent'] as const)('blocks a disabled %s selection until the fallback state commits', async (runtime) => {
+    testState.context.github = { state: 'connected', accountId: 42, label: 'octo@example.com' }
+    testState.context.runtime = runtime
+    const rendered = await render()
+    const button = Array.from(rendered.querySelectorAll('button')).find((candidate) => candidate.textContent?.includes('Open session'))!
+    expect(testState.context.setRuntime).toHaveBeenCalledWith('opencode')
+    await act(async () => button.click())
+    expect(button.disabled).toBe(true)
+    expect(testState.context.create).not.toHaveBeenCalled()
+    testState.context.runtime = 'opencode'
+    await act(async () => root!.render(<SessionsPage />))
+    expect(button.disabled).toBe(false)
+  })
+
+  it('labels the structured Pi workbench with the persisted runtime', async () => {
     testState.context.github = { state: 'connected', accountId: 42, label: 'octo@example.com' }
     testState.context.activeSession = {
       id: 'session-1',
@@ -210,7 +262,9 @@ describe('SessionsPage locked Code setup', () => {
     expect(terminalMode?.textContent).toContain('Terminal')
     expect(terminalMode?.textContent).toContain('Changes')
     expect(terminalMode?.textContent).not.toContain('OpenCode')
-    expect(testState.terminalProps).toHaveBeenCalledWith(expect.objectContaining({ runtime: 'pi', terminalKind: 'opencode' }))
+    expect(rendered.querySelector('[aria-label="Pi workbench"]')).not.toBeNull()
+    expect(testState.authenticatedApi.connectCodingSessionPi).toHaveBeenCalledWith('session-1')
+    expect(testState.terminalProps).not.toHaveBeenCalled()
   })
 
   it('labels the primary terminal for a persisted Prime Agent session', async () => {
@@ -287,6 +341,7 @@ describe('SessionsPage locked Code setup', () => {
   })
 
   it('refreshes sessions when the terminal reports the environment is unavailable', async () => {
+    testState.authenticatedApi.connectCodingSessionPi.mockResolvedValueOnce({ mode: 'terminal', reason: 'Existing legacy Pi terminal' })
     testState.context.github = { state: 'connected', accountId: 42, label: 'octo@example.com' }
     testState.context.activeSession = {
       id: 'session-1',
@@ -303,6 +358,32 @@ describe('SessionsPage locked Code setup', () => {
     props.onSessionUnavailable?.()
 
     expect(testState.context.refresh).toHaveBeenCalledOnce()
+  })
+
+  it.each(['pi', 'prime-agent'] as const)('keeps %s approvals explicit across terminal and changes surfaces', async (runtime) => {
+    testState.context.github = { state: 'connected', accountId: 42, label: 'octo@example.com' }
+    testState.context.activeSession = {
+      id: 'alternate', title: 'Repair', repositories: ['jarvis'], runtime, status: 'running',
+      createdAt: new Date(), lastActiveAt: new Date(),
+    }
+    testState.context.activity = [{
+      id: 'approval', sessionId: 'alternate', state: 'pending', resourceTitle: 'GitHub',
+      vendorId: 'github', type: 'action', createdAt: new Date(),
+      description: { title: 'Push branch', description: 'Requires approval' },
+    }]
+    const rendered = await render()
+    for (const label of ['Terminal', 'Changes', 'Agent']) {
+      const tab = Array.from(rendered.querySelectorAll('[aria-label="Workbench tools"] button')).find((button) => button.textContent?.trim().startsWith(label)) as HTMLButtonElement
+      await act(async () => tab.click())
+      expect(rendered.textContent).toContain('Requires approval')
+      expect(testState.context.resolveActivity).not.toHaveBeenCalled()
+      expect(testState.workbenchProps).not.toHaveBeenCalled()
+      expect(rendered.textContent).toContain(label === 'Changes' ? 'do not expose structured diff data' : 'Tool approvals')
+    }
+    expect(testState.terminalMounts).toBe(runtime === 'pi' ? 1 : 2) // Structured Pi needs only the shell; Prime also has an agent terminal.
+    const reject = Array.from(rendered.querySelectorAll('button')).find((button) => button.textContent?.includes('Reject'))!
+    await act(async () => reject.click())
+    expect(testState.context.resolveActivity).toHaveBeenCalledExactlyOnceWith('approval', 'reject')
   })
 
   it('presents restart instead of terminal reconnect for expired environments', async () => {
@@ -347,6 +428,23 @@ describe('SessionsPage locked Code setup', () => {
     expect(rendered.textContent).toContain('Starting environment')
     expect(rendered.textContent).not.toContain('Environment needs restart')
     expect(testState.terminalProps).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['authorize', 'Checking access'],
+    ['clone', 'Cloning repositories'],
+    ['materialize', 'Configuring the coding agent'],
+    ['terminal', 'Starting the coding agent'],
+  ] as const)('shows the mirrored %s startup phase without attaching', async (startupPhase, title) => {
+    testState.context.github = { state: 'connected', accountId: 42, label: 'octo@example.com' }
+    testState.context.activeSession = {
+      id: 'session-1', title: 'Starting repair', repositories: ['jarvis'], runtime: 'opencode',
+      status: 'starting', startupPhase, createdAt: new Date(), lastActiveAt: new Date(),
+    }
+    const rendered = await render()
+    expect(rendered.querySelector('[role="status"]')?.textContent).toContain(title)
+    expect(testState.terminalProps).not.toHaveBeenCalled()
+    expect(testState.workbenchProps).not.toHaveBeenCalled()
   })
 
   it('shows a neutral progress panel while an active session is stopping', async () => {
@@ -423,7 +521,7 @@ describe('SessionsPage locked Code setup', () => {
     expect(replace).toHaveBeenCalledWith('https://odie-os-gk-sessions.example.workers.dev/c/test-token/')
   })
 
-  it('does not remount a running terminal when only lastActiveAt changes', async () => {
+  it('does not reconnect structured Pi when only lastActiveAt changes', async () => {
     testState.context.github = { state: 'connected', accountId: 42, label: 'octo@example.com' }
     testState.context.activeSession = {
       id: 'session-1',
@@ -435,9 +533,7 @@ describe('SessionsPage locked Code setup', () => {
       lastActiveAt: new Date('2026-08-18T00:00:00Z'),
     }
     await render()
-    const firstProps = testState.terminalProps.mock.calls.at(-1)?.[0]
-    expect(firstProps).toBeDefined()
-    const firstMountId = (firstProps as { mountId: number }).mountId
+    expect(testState.authenticatedApi.connectCodingSessionPi).toHaveBeenCalledOnce()
 
     testState.context.activeSession = {
       ...testState.context.activeSession,
@@ -445,9 +541,8 @@ describe('SessionsPage locked Code setup', () => {
     } as CodingSessionSummary
     await act(async () => root!.render(<SessionsPage />))
 
-    const latestProps = testState.terminalProps.mock.calls.at(-1)?.[0]
-    expect(latestProps).toBeDefined()
-    expect((latestProps as { mountId: number }).mountId).toBe(firstMountId)
+    expect(testState.authenticatedApi.connectCodingSessionPi).toHaveBeenCalledOnce()
+    expect(testState.terminalProps).not.toHaveBeenCalled()
   })
 
   it('does not carry an opened OpenCode shell terminal across a session switch before effects reset it', async () => {

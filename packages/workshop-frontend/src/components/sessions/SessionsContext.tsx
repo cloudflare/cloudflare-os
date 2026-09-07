@@ -340,7 +340,7 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
     setCreating(true)
     setError(undefined)
     try {
-      const session = await api.createCodingSession({ title, repositories, runtime })
+      const session = await api.createCodingSession({ title, repositories, runtime, ...(runtime === 'pi' ? { piWorkbench: true as const } : {}) })
       if (api !== latestApiRef.current || lifecycle !== lifecycleRef.current || !githubConnectedRef.current) return
       sessionRefreshSequence.current += 1
       setSessions((current) => [session, ...current])

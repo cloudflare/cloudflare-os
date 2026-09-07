@@ -13,6 +13,7 @@ const testState = vi.hoisted(() => ({
   terminalWriteCallbacks: [] as Array<() => void>,
   sockets: [] as MockWebSocket[],
   scrollToBottom: vi.fn<() => void>(),
+  terminalInput: (_data: string) => {},
 }))
 
 vi.mock('@xterm/xterm', () => ({
@@ -38,7 +39,7 @@ vi.mock('@xterm/xterm', () => ({
     scrollToBottom() { testState.scrollToBottom() }
     clear() {}
     dispose() {}
-    onData() { return { dispose() {} } }
+    onData(callback: (data: string) => void) { testState.terminalInput = callback; return { dispose() {} } }
     write(bytes: Uint8Array, callback: () => void) {
       testState.terminalWrites.push(bytes)
       testState.terminalWriteCallbacks.push(callback)
@@ -147,6 +148,7 @@ function createApi() {
 function createFile(name: string, bytes = new Uint8Array([1, 2, 3, 4, 5])): File {
   const file = new File([bytes], name)
   Object.defineProperty(file, 'arrayBuffer', {
+    configurable: true,
     value: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
   })
   return file
@@ -180,6 +182,19 @@ async function advance(ms: number) {
   })
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: Error) => void
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
+}
+
+async function selectFiles(container: HTMLElement, files: File[]) {
+  const input = container.querySelector('input[type="file"]') as HTMLInputElement
+  Object.defineProperty(input, 'files', { configurable: true, value: files })
+  await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })))
+}
+
 beforeEach(() => {
   vi.useFakeTimers()
   testState.authenticatedApi = createApi()
@@ -202,6 +217,221 @@ afterEach(() => {
 })
 
 describe('SessionTerminal', () => {
+
+  it.each(['resolve', 'reject'] as const)('times out a pending capability and ignores its late %s after recovery', async (outcome) => {
+    const ticket = deferred<{ url: string }>()
+    testState.authenticatedApi.mintCodingSessionAttachCapability.mockReturnValueOnce(ticket.promise)
+    const rendered = await renderTerminal()
+    await advance(30_000)
+    expect(rendered.container.textContent).toContain('Timed out obtaining terminal access')
+    expect(rendered.container.textContent).toContain('Retrying in 1s')
+    await advance(1000)
+    expect(testState.sockets).toHaveLength(1)
+    await act(async () => testState.sockets[0]!.serverMessage(JSON.stringify({ type: 'ready' })))
+    await act(async () => {
+      if (outcome === 'resolve') ticket.resolve({ url: 'https://terminal.example.test/stale' })
+      else ticket.reject(new Error('stale ticket error'))
+    })
+    await advance(60_000)
+    expect(testState.sockets).toHaveLength(1)
+    expect(rendered.container.textContent).toContain('Live connection')
+    expect(rendered.container.textContent).not.toContain('Timed out')
+    expect(rendered.container.textContent).not.toContain('stale ticket error')
+    await rendered.unmount()
+  })
+
+  it('gives a slow capability a separate bounded ready window', async () => {
+    const ticket = deferred<{ url: string }>()
+    testState.authenticatedApi.mintCodingSessionAttachCapability.mockReturnValueOnce(ticket.promise)
+    const rendered = await renderTerminal()
+    await advance(25_000)
+    await act(async () => ticket.resolve({ url: 'https://terminal.example.test/slow' }))
+    await advance(29_000)
+    expect(rendered.container.textContent).not.toContain('Timed out')
+    await advance(1000)
+    expect(rendered.container.textContent).toContain('Timed out waiting for the terminal to attach')
+    await rendered.unmount()
+  })
+
+  it('clears a previous startup deadline before manual reconnect', async () => {
+    const rendered = await renderTerminal()
+    await advance(10_000)
+    await act(async () => testState.sockets[0]!.serverClose())
+    const reconnect = Array.from(rendered.container.querySelectorAll('button')).find((button) => button.textContent === 'Reconnect')!
+    await act(async () => reconnect.click())
+    await advance(20_000)
+    expect(testState.sockets).toHaveLength(2)
+    expect(testState.sockets[1]!.close).not.toHaveBeenCalled()
+    expect(rendered.container.textContent).not.toContain('Timed out')
+    await act(async () => testState.sockets[1]!.serverMessage(JSON.stringify({ type: 'ready' })))
+    await advance(60_000)
+    expect(testState.sockets).toHaveLength(2)
+    expect(rendered.container.textContent).toContain('Live connection')
+    await rendered.unmount()
+  })
+
+  it.each([false, true])('bounds waiting for ready (socket opened: %s), drains output and fences late events', async (opened) => {
+    const rendered = await renderTerminal()
+    const socket = testState.sockets[0]!
+    await act(async () => {
+      if (opened) socket.serverOpen()
+      socket.serverMessage(JSON.stringify({ type: 'chunk', byteLength: 1, cursor: 'committed' }))
+      socket.serverMessage(new Uint8Array([65]).buffer)
+    })
+    await advance(30_000)
+    expect(socket.close).toHaveBeenCalledOnce()
+    expect(rendered.container.textContent).toContain('Timed out waiting for the terminal to attach')
+    await act(async () => socket.serverMessage(JSON.stringify({ type: 'ready', cursor: 'stale' })))
+    expect(rendered.container.textContent).not.toContain('Live connection')
+    await advance(1000)
+    expect(testState.authenticatedApi.mintCodingSessionAttachCapability).toHaveBeenCalledTimes(1)
+    await act(async () => testState.terminalWriteCallbacks.shift()?.())
+    expect(testState.sockets).toHaveLength(2)
+    expect(new URL(testState.sockets[1]!.url).searchParams.get('cursor')).toBe('committed')
+    await rendered.unmount()
+  })
+
+  it('caps repeated startup timeouts and supports manual recovery', async () => {
+    testState.authenticatedApi.mintCodingSessionAttachCapability.mockImplementation(() => new Promise(() => {}))
+    const onSessionUnavailable = vi.fn<() => void>()
+    const rendered = await renderTerminal({ onSessionUnavailable })
+    for (const delay of [1000, 2000, 4000, 8000, 8000]) {
+      await advance(30_000 + delay)
+    }
+    await advance(30_000)
+    expect(rendered.container.textContent).toContain('Disconnected')
+    expect(onSessionUnavailable).toHaveBeenCalledOnce()
+    await advance(60_000)
+    expect(testState.authenticatedApi.mintCodingSessionAttachCapability).toHaveBeenCalledTimes(6)
+    testState.authenticatedApi.mintCodingSessionAttachCapability.mockResolvedValueOnce({ url: 'https://terminal.example.test/recovered' })
+    const reconnect = Array.from(rendered.container.querySelectorAll('button')).find((button) => button.textContent === 'Reconnect')!
+    await act(async () => reconnect.click())
+    await act(async () => testState.sockets[0]!.serverMessage(JSON.stringify({ type: 'ready' })))
+    expect(rendered.container.textContent).toContain('Live connection')
+    await rendered.unmount()
+  })
+
+  it('cleans the startup deadline on unmount', async () => {
+    const onSessionUnavailable = vi.fn<() => void>()
+    const rendered = await renderTerminal({ onSessionUnavailable })
+    await rendered.unmount()
+    await advance(300_000)
+    expect(testState.authenticatedApi.mintCodingSessionAttachCapability).toHaveBeenCalledTimes(1)
+    expect(onSessionUnavailable).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['resolve', 'reject'] as const)('fences a pending file read across API replacement (%s)', async (outcome) => {
+    const oldApi = testState.authenticatedApi
+    const read = deferred<ArrayBuffer>()
+    const file = new File(['x'], 'old.txt')
+    Object.defineProperty(file, 'arrayBuffer', { value: () => read.promise })
+    const rendered = await renderTerminal()
+    await act(async () => testState.sockets[0]!.serverMessage(JSON.stringify({ type: 'ready' })))
+    await selectFiles(rendered.container, [file, createFile('never.txt')])
+    testState.authenticatedApi = createApi()
+    await rendered.rerender({})
+    const replacement = testState.sockets[1]!
+    await act(async () => replacement.serverMessage(JSON.stringify({ type: 'ready' })))
+    await act(async () => {
+      if (outcome === 'resolve') read.resolve(new ArrayBuffer(1))
+      else read.reject(new Error('stale file error'))
+    })
+    expect(oldApi.uploadCodingSessionFile).not.toHaveBeenCalled()
+    expect(testState.authenticatedApi.uploadCodingSessionFile).not.toHaveBeenCalled()
+    expect(replacement.send.mock.calls.filter(([data]) => typeof data !== 'string')).toHaveLength(0)
+    expect(rendered.container.textContent).not.toMatch(/old.txt|stale file error|uploaded/)
+    await selectFiles(rendered.container, [createFile('new.txt')])
+    expect(testState.authenticatedApi.uploadCodingSessionFile).toHaveBeenCalledOnce()
+    expect(rendered.container.textContent).toContain('File uploaded and path inserted.')
+    await rendered.unmount()
+  })
+
+  it.each(['resolve', 'reject'] as const)('fences an in-flight upload and its final state updates across API replacement (%s)', async (outcome) => {
+    const oldApi = testState.authenticatedApi
+    const upload = deferred<{ path: string }>()
+    oldApi.uploadCodingSessionFile.mockReturnValueOnce(upload.promise)
+    const rendered = await renderTerminal()
+    await act(async () => testState.sockets[0]!.serverMessage(JSON.stringify({ type: 'ready' })))
+    const nextFile = createFile('never.txt')
+    const nextRead = vi.spyOn(nextFile, 'arrayBuffer')
+    await selectFiles(rendered.container, [createFile('old.txt'), nextFile])
+    expect(oldApi.uploadCodingSessionFile).toHaveBeenCalledOnce()
+    testState.authenticatedApi = createApi()
+    const newUpload = deferred<{ path: string }>()
+    testState.authenticatedApi.uploadCodingSessionFile.mockReturnValueOnce(newUpload.promise)
+    await rendered.rerender({})
+    const replacement = testState.sockets[1]!
+    await act(async () => replacement.serverMessage(JSON.stringify({ type: 'ready' })))
+    await selectFiles(rendered.container, [createFile('new.txt')])
+    await act(async () => {
+      if (outcome === 'resolve') upload.resolve({ path: '/workspace/old.txt' })
+      else upload.reject(new Error('stale upload error'))
+    })
+    expect(oldApi.uploadCodingSessionFile).toHaveBeenCalledOnce()
+    expect(nextRead).not.toHaveBeenCalled()
+    expect(replacement.send.mock.calls.filter(([data]) => typeof data !== 'string')).toHaveLength(0)
+    expect(rendered.container.textContent).toContain('Uploading new.txt')
+    expect(rendered.container.textContent).not.toContain('stale upload error')
+    const button = Array.from(rendered.container.querySelectorAll('button')).find((candidate) => candidate.textContent === 'Uploading…')!
+    expect(button.disabled).toBe(true)
+    await act(async () => newUpload.resolve({ path: '/workspace/new.txt' }))
+    expect(new TextDecoder().decode(replacement.send.mock.calls.at(-1)![0] as Uint8Array)).toBe("'/workspace/new.txt'")
+    await rendered.unmount()
+  })
+
+  it('does not continue a multi-file upload after unmount', async () => {
+    const upload = deferred<{ path: string }>()
+    testState.authenticatedApi.uploadCodingSessionFile.mockReturnValueOnce(upload.promise)
+    const rendered = await renderTerminal()
+    const socket = testState.sockets[0]!
+    await act(async () => socket.serverMessage(JSON.stringify({ type: 'ready' })))
+    await selectFiles(rendered.container, [createFile('old.txt'), createFile('never.txt')])
+    await rendered.unmount()
+    await act(async () => upload.resolve({ path: '/workspace/old.txt' }))
+    expect(testState.authenticatedApi.uploadCodingSessionFile).toHaveBeenCalledOnce()
+    expect(socket.send.mock.calls.filter(([data]) => typeof data !== 'string')).toHaveLength(0)
+  })
+
+  it('distinguishes attach, output waiting and retry phases, and gates input on ready', async () => {
+    const rendered = await renderTerminal({ runtime: 'pi' })
+    const socket = testState.sockets[0]!
+    expect(rendered.container.textContent).toContain('Connecting…')
+    await act(async () => socket.serverOpen())
+    expect(rendered.container.textContent).toContain('Attaching terminal…')
+    testState.terminalInput('not ready')
+    expect(socket.send.mock.calls.filter(([data]) => typeof data !== 'string')).toHaveLength(0)
+    await act(async () => {
+      socket.serverMessage(JSON.stringify({ type: 'chunk', byteLength: 1, cursor: 'output' }))
+      socket.serverMessage(new Uint8Array([65]).buffer)
+    })
+    expect(rendered.container.textContent).not.toContain('Live connection')
+    await act(async () => socket.serverMessage(JSON.stringify({ type: 'ready' })))
+    expect(rendered.container.textContent).toContain('Waiting for Pi terminal output…')
+    testState.terminalInput('ready')
+    expect(socket.send.mock.calls.filter(([data]) => typeof data !== 'string')).toHaveLength(1)
+    await act(async () => socket.serverClose())
+    expect(rendered.container.textContent).toContain('Retrying in 1s (attempt 1/5)')
+    await advance(1000)
+    expect(rendered.container.textContent).toContain('Finishing buffered output before reconnecting')
+    await act(async () => testState.terminalWriteCallbacks.shift()?.())
+    expect(rendered.container.textContent).toContain('Connecting…')
+    await rendered.unmount()
+  })
+
+  it('does not accept input or late ready messages after exit', async () => {
+    const rendered = await renderTerminal()
+    const socket = testState.sockets[0]!
+    await act(async () => {
+      socket.serverMessage(JSON.stringify({ type: 'ready' }))
+      socket.serverMessage(JSON.stringify({ type: 'exit', cursor: 'exit' }))
+      socket.serverMessage(JSON.stringify({ type: 'ready' }))
+    })
+    testState.terminalInput('must not send')
+    expect(socket.send.mock.calls.filter(([data]) => typeof data !== 'string')).toHaveLength(0)
+    expect(rendered.container.textContent).toContain('Disconnected')
+    await rendered.unmount()
+  })
 
   it('uploads a selected file and inserts its quoted sandbox path without submitting', async () => {
     const rendered = await renderTerminal()
@@ -298,7 +528,7 @@ describe('SessionTerminal', () => {
     await act(async () => socket.serverMessage(JSON.stringify({ type: 'ready' })))
 
     expect(rendered.container.textContent).toContain('Live connection')
-    expect(rendered.container.querySelector('[title^="PTY connectivity"]')).toBeTruthy()
+    expect(rendered.container.querySelector('[title^="Terminal-only integration in this application"]')).toBeTruthy()
     const follow = Array.from(rendered.container.querySelectorAll('button')).find((candidate) => candidate.textContent?.includes('Resume Prime Agent output'))
     expect(follow).toBeTruthy()
     await act(async () => follow!.click())
@@ -469,7 +699,7 @@ describe('SessionTerminal', () => {
     await act(async () => button!.click())
 
     expect(api.mintCodingSessionAttachCapability).toHaveBeenCalledTimes(2)
-    expect(rendered.container.textContent).toContain('Disconnected')
+    expect(rendered.container.textContent).toContain('Retrying in 1s')
     await advance(1_000)
 
     expect(api.mintCodingSessionAttachCapability).toHaveBeenCalledTimes(3)
@@ -671,5 +901,30 @@ describe('SessionTerminal', () => {
     await advance(60_000)
     expect(testState.authenticatedApi.mintCodingSessionAttachCapability).toHaveBeenCalledTimes(1)
     expect(testState.sockets).toHaveLength(1)
+  })
+
+  it('unmount cancels a reconnect waiting for buffered output', async () => {
+    const rendered = await renderTerminal()
+    const socket = testState.sockets[0]!
+    await act(async () => {
+      socket.serverMessage(JSON.stringify({ type: 'chunk', byteLength: 1, cursor: 'pending' }))
+      socket.serverMessage(new Uint8Array([65]).buffer)
+      socket.serverClose()
+    })
+    await advance(1000)
+    expect(rendered.container.textContent).toContain('Finishing buffered output')
+    await rendered.unmount()
+    await act(async () => testState.terminalWriteCallbacks.shift()?.())
+    await advance(60_000)
+    expect(testState.authenticatedApi.mintCodingSessionAttachCapability).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores an attach capability resolved after unmount', async () => {
+    let resolve!: (value: { url: string }) => void
+    testState.authenticatedApi.mintCodingSessionAttachCapability.mockReturnValueOnce(new Promise((done) => { resolve = done }))
+    const rendered = await renderTerminal()
+    await rendered.unmount()
+    await act(async () => resolve({ url: 'https://terminal.example.test/attach' }))
+    expect(testState.sockets).toHaveLength(0)
   })
 })
