@@ -1,0 +1,27 @@
+AGENTS.md
+  s_47c456ca6ea293::t_777b13df8205c1 18,23-24,30,57
+docs/wiki.md
+  s_47c456ca6ea293::t_d64cdb0500c8d7 20,23,25-28,32-33,132-153,337-343,418-649,755-756,762-779,804-805,811-812,841-843,846-847,965-966,990-992
+packages/gadget-libraries/README.md
+  s_47c456ca6ea293::t_0a571947e7f92f 15-19
+packages/wiki-convert/README.md
+  s_47c456ca6ea293::t_fff8f8726ad582 12-13,44-46
+packages/wiki-import/README.md
+  s_47c456ca6ea293::t_8d6e712a2d42e5 564-568,588-590
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "789ad55a51fdd88caa5304bfdf4153590ccf787e",
+  "prompts": {},
+  "sessions": {
+    "s_47c456ca6ea293": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0644985-87cc-456b-8ee1-1adbbdfaf8cd",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
