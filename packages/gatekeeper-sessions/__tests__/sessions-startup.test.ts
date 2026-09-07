@@ -26,6 +26,7 @@ const OPENCODE_COMMAND = [
   "-lc",
   "cd /workspace/jarvis && exec opencode",
 ];
+const OPENCODE_ATTACH_COMMAND = ["opencode", "attach", "http://127.0.0.1:40913", "--dir", "/workspace/jarvis"];
 
 type StoredRecord = Omit<CodingSessionSummary, "runtime"> & {
   runtime?: CodingSessionSummary["runtime"];
@@ -772,15 +773,20 @@ describe("coding session asynchronous startup", () => {
     expect(kv.get("startup")).toBeDefined();
   });
 
-  it("duplicate terminal alarm adopts one matching primary and cleans duplicates", async () => {
+  it.each([
+    { kind: "legacy", command: OPENCODE_COMMAND },
+    { kind: "attached", command: OPENCODE_ATTACH_COMMAND },
+  ])("terminal replay adopts a $kind primary and cleans duplicates", async ({ command }) => {
     const { policy, kv, registry } = createPolicy();
     const sandbox = createStartupSandbox();
     const duplicate = {
       id: "term-duplicate",
-      getSnapshot: vi.fn(async () => ({ id: "term-duplicate", command: OPENCODE_COMMAND, cwd: "/workspace/jarvis", status: "running" })),
+      getSnapshot: vi.fn(async () => ({ id: "term-duplicate", command, cwd: "/workspace/jarvis", status: "running" })),
       terminate: vi.fn(),
     };
-    sandbox.listTerminals.mockResolvedValue([await sandbox.createTerminal(), duplicate]);
+    const primary = await sandbox.createTerminal();
+    primary.getSnapshot.mockResolvedValue({ id: primary.id, command, cwd: "/workspace/jarvis", status: "running" });
+    sandbox.listTerminals.mockResolvedValue([primary, duplicate]);
     sandbox.createTerminal.mockClear();
     kv.put("startup", startupRecord({ phase: "terminal" }));
 
@@ -958,6 +964,38 @@ describe("coding session asynchronous startup", () => {
     await policy.alarm();
 
     expect(kv.get<any>("startup")).toMatchObject({ phase: "terminal", attempt: 1 });
+  });
+
+  it.each(["terminal response", "completion response"])("reuses the attached TUI after a lost %s and policy replay", async lost => {
+    const { policy, kv, registry, tools } = createPolicy();
+    const sandbox = createStartupSandbox();
+    const terminal = await sandbox.createTerminal();
+    terminal.getSnapshot.mockResolvedValue({
+      id: terminal.id, command: OPENCODE_ATTACH_COMMAND, cwd: "/workspace/jarvis", status: "running",
+    });
+    sandbox.createTerminal.mockClear();
+    sandbox.createTerminal.mockImplementationOnce(async () => {
+      sandbox.listTerminals.mockResolvedValue([terminal]);
+      if (lost === "terminal response") throw new Error("response lost");
+      return terminal;
+    });
+    if (lost === "completion response") registry.startupSucceeded.mockRejectedValueOnce(new Error("response lost"));
+    kv.put("startup", startupRecord({ phase: "terminal" }));
+    await policy.alarm();
+    expect(kv.get("startup")).toMatchObject({ phase: "terminal", attempt: 1 });
+
+    const replay = new CodingSessionPolicy() as typeof policy;
+    replay.ctx = policy.ctx;
+    replay.env = policy.env;
+    await replay.alarm();
+
+    expect(sandbox.createTerminal).toHaveBeenCalledOnce();
+    expect(terminal.terminate).not.toHaveBeenCalled();
+    expect(tools.prepareSessionStartup).toHaveBeenCalledTimes(2);
+    expect(registry.prestartOpenCodeServer).toHaveBeenCalledTimes(2);
+    expect(registry.startupSucceeded).toHaveBeenLastCalledWith("session-1", 0, "sandbox-1", terminal.id);
+    expect(kv.get("primary-terminal-id")).toBe(terminal.id);
+    expect(kv.get("startup")).toBeUndefined();
   });
 
   it("registry ignores old generation completion after restart, stop, or archive invalidates it", async () => {
@@ -2219,7 +2257,7 @@ describe("coding session asynchronous startup", () => {
     expect(registry.getDevelopmentStatus("session-1").generation).toBe(2);
   });
 
-  it("authorizes and waits for OpenCode prestart before launching the standalone primary TUI", async () => {
+  it("authorizes and waits for OpenCode health before launching the attached primary TUI", async () => {
     const p = createPolicy();
     const f = openCodeAttachFixture({ status: "starting", terminalId: undefined, generation: 0 });
     const sandbox = createStartupSandbox();
@@ -2239,7 +2277,13 @@ describe("coding session asynchronous startup", () => {
     expect(p.registry.startupSucceeded).not.toHaveBeenCalled();
     ready.resolve();
     await alarm;
-    expect(sandbox.createTerminal).toHaveBeenCalledWith(expect.objectContaining({ command: OPENCODE_COMMAND }));
+    expect(f.process.waitForPort).toHaveBeenCalledWith(40913, {
+      mode: "http", path: "/global/health", status: { min: 200, max: 200 }, timeout: 30_000,
+    });
+    expect(sandbox.createTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      command: OPENCODE_ATTACH_COMMAND, cwd: "/workspace/jarvis", cols: 120, rows: 40, bufferSize: 256 * 1024,
+    }));
+    expect(f.sandbox.exec).toHaveBeenCalledOnce();
     expect(p.registry.startupSucceeded).toHaveBeenCalledOnce();
     expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
   });
@@ -2286,6 +2330,27 @@ describe("coding session asynchronous startup", () => {
     });
     await expect(f.registry.prestartOpenCodeServer("session-1", 3, "sandbox-1", f.customization)).rejects.toThrow("not running");
     expect(f.process.kill).toHaveBeenCalled();
+  });
+
+  it("does not launch an attached TUI when the generation changes during prestart health", async () => {
+    const p = createPolicy();
+    const f = openCodeAttachFixture({ status: "starting", terminalId: undefined, generation: 0 });
+    const sandbox = createStartupSandbox();
+    sandbox.exec.mockImplementation(f.sandbox.exec);
+    sandbox.getProcess.mockImplementation(f.sandbox.getProcess);
+    p.registry.prestartOpenCodeServer.mockImplementation(async () =>
+      f.registry.prestartOpenCodeServer("session-1", 0, "sandbox-1", f.customization));
+    f.process.waitForPort.mockImplementationOnce(async () => {
+      f.kv.put("session:session-1", { ...f.running, generation: 1, sandboxId: "sandbox-2" });
+    });
+    p.kv.put("startup", startupRecord({ phase: "terminal" }));
+
+    await p.policy.alarm();
+
+    expect(sandbox.createTerminal).not.toHaveBeenCalled();
+    expect(p.registry.startupSucceeded).not.toHaveBeenCalled();
+    expect(f.process.kill).toHaveBeenCalled();
+    expect(f.kv.get("session:session-1")).toMatchObject({ generation: 1, sandboxId: "sandbox-2" });
   });
 
   it("recovers a lost exec response only by exact command and cwd, with no duplicate launch", async () => {

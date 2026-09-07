@@ -1834,7 +1834,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /** Mints an OpenCode server capability after re-authorizing every session repository. */
   async mintCodingSessionOpenCodeCapability(sessionId: string): Promise<CodingSessionOpenCodeCapability> {
     let initial = await this.#codingSessionsOwner();
-    let session = await initial.service.getSession(initial.owner, sessionId);
+    let session = await initial.service.getSessionMetadata(initial.owner, sessionId);
     if (!session) throw new Error("Coding session was not found.");
     let {owner, service} = await this.#codingSessionsAccess(session.repositories);
     return service.mintOpenCodeCapability(owner, sessionId);

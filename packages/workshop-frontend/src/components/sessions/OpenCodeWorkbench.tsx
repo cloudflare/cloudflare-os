@@ -345,6 +345,22 @@ export function OpenCodeWorkbenchInner({
       setSnapshot((current) => ({ ...current, sessions, selected, ...(changed ? { messages: [], diffText: undefined, todoText: undefined, mcpText: undefined } : {}) }))
       setStartupPhase('Reading the transcript…')
 
+      // Dispatch critical reads first, but let metadata publish independently.
+      const readiness = Promise.all([
+        fetchJson(`/session/${selectedId}/message`).then((messages) => {
+          if (!isCurrent()) return
+          setSnapshot((current) => ({ ...current, messages: parseMessages(messages) }))
+          setLoading(false)
+          setStartupPhase('Checking whether OpenCode is ready…')
+        }),
+        fetchJson('/session/status').then((status) => {
+          if (!isCurrent()) return
+          if (!isTrustworthyStatus(status, selected)) throw new Error('OpenCode status is unavailable. Retry before sending.')
+          setSnapshot((current) => ({ ...current, running: parseRunning(status, selected), statusText: summarizeStatus(status, selected) }))
+          setStatusReady(true)
+        }),
+      ])
+
       // Metadata reads neither create a session nor establish whether it is safe to send.
       // Keep one read per field/selection in flight across polls, so slow reads cannot starve.
       for (const [field, path, label] of [
@@ -369,21 +385,7 @@ export function OpenCodeWorkbenchInner({
         })
       }
 
-      // Publish the transcript immediately, even if the safety-critical status read is slow.
-      await Promise.all([
-        fetchJson(`/session/${selectedId}/message`).then((messages) => {
-          if (!isCurrent()) return
-          setSnapshot((current) => ({ ...current, messages: parseMessages(messages) }))
-          setLoading(false)
-          setStartupPhase('Checking whether OpenCode is ready…')
-        }),
-        fetchJson('/session/status').then((status) => {
-          if (!isCurrent()) return
-          if (!isTrustworthyStatus(status, selected)) throw new Error('OpenCode status is unavailable. Retry before sending.')
-          setSnapshot((current) => ({ ...current, running: parseRunning(status, selected), statusText: summarizeStatus(status, selected) }))
-          setStatusReady(true)
-        }),
-      ])
+      await readiness
     } catch (caught) {
       if (!mountedRef.current || epoch !== requestEpochRef.current || sequence !== refreshSequenceRef.current || isAbortError(caught)) return
       setLoading(false)
@@ -444,6 +446,12 @@ export function OpenCodeWorkbenchInner({
   }, [commandQuery, commands, prompt])
 
   useEffect(() => {
+    if (!capabilityRef.current || loading || refreshing || !statusReady || error || !snapshot.selected || snapshot.running || !prompt.startsWith('/')) return
+    void loadCommands()
+  }, [loadCommands, prompt, loading, refreshing, statusReady, error, snapshot.selected?.id, snapshot.running])
+
+  // Polling readiness and command discovery must not reset selection or dismissal.
+  useEffect(() => {
     if (!prompt.startsWith('/')) {
       setCommandMenuOpen(false)
       setCommandMenuSuppressedToken(undefined)
@@ -457,8 +465,7 @@ export function OpenCodeWorkbenchInner({
     if (commandMenuSuppressedToken && token !== commandMenuSuppressedToken) setCommandMenuSuppressedToken(undefined)
     setCommandMenuOpen(true)
     setHighlightedCommandIndex(0)
-    void loadCommands()
-  }, [commandMenuSuppressedToken, loadCommands, prompt])
+  }, [commandMenuSuppressedToken, prompt, authenticatedApi, sessionId])
 
   useEffect(() => {
     setHighlightedCommandIndex((current) => Math.min(current, Math.max(0, filteredCommands.length - 1)))
@@ -736,7 +743,11 @@ export function OpenCodeWorkbenchInner({
               <>
                 <div ref={transcriptRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto p-3">
                   {loading ? <EmptyState title="Loading OpenCode…" body={startupPhase} /> : null}
-                  {!loading && !error && snapshot.messages.length === 0 ? <EmptyState title="Ready for instructions" body="Send a prompt to start this structured OpenCode session." /> : null}
+                  {!loading && !error && snapshot.messages.length === 0 && !snapshot.running && !sending ? (
+                    statusReady && !refreshing
+                      ? <EmptyState title="Ready for instructions" body="Send a prompt to start this structured OpenCode session." />
+                      : <EmptyState title="Checking OpenCode readiness…" body="You can draft now. Sending will be available once OpenCode is ready." />
+                  ) : null}
                   <div className="min-w-0 space-y-3">
                     {snapshot.messages.map((message) => <MessageCard key={message.id} message={message} />)}
                     {(snapshot.running || sending) && <WorkingIndicator />}
@@ -762,7 +773,7 @@ export function OpenCodeWorkbenchInner({
                     id="opencode-prompt"
                     className="max-h-40 min-h-20 w-full resize-y rounded-lg border border-kumo-line bg-kumo-base px-3 py-2 text-sm text-kumo-default outline-none focus:border-kumo-brand"
                     value={prompt}
-                    disabled={loading || sending || snapshot.running || !snapshot.selected}
+                    disabled={sending || snapshot.running}
                     placeholder="Ask OpenCode to inspect, edit, test, or explain…"
                     onChange={(event) => setPrompt(event.currentTarget.value)}
                     onKeyDown={onComposerKeyDown}

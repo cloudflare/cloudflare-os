@@ -1104,7 +1104,12 @@ export class CodingSessionPolicy extends DurableObject<Env> {
       }
       if (this.#policy().piWorkbench) await sandbox.writeFile(runtime === "pi" ? PI_BRIDGE_PATH : PRIME_BRIDGE_PATH, piBridgeSource(runtime));
     }
-    const existing = await matchingRunningTerminals(sandbox, options.command, options.cwd);
+    let existing = await matchingRunningTerminals(sandbox, options.command, options.cwd);
+    if (runtime === "opencode" && existing.length === 0) {
+      // Preserve a legacy standalone TUI on replay; new TUIs share the prestarted server.
+      options.command = ["opencode", "attach", `http://127.0.0.1:${OPENCODE_SERVER_PORT}`, "--dir", options.cwd!];
+      existing = await matchingRunningTerminals(sandbox, options.command, options.cwd);
+    }
     if (existing.length > 0) {
       for (const duplicate of existing.slice(1)) await duplicate.terminate();
       return existing[0]!;
