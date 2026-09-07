@@ -1840,6 +1840,24 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return service.mintOpenCodeCapability(owner, sessionId);
   }
 
+  /** Attaches to an existing Pi process after rechecking all owner access requirements. */
+  async connectCodingSessionPi(sessionId: string): Promise<import('@gadgets/workshop-shared/api').CodingSessionPiConnection> {
+    const initial = await this.#codingSessionsOwner();
+    const session = await initial.service.getSession(initial.owner, sessionId);
+    if (!session) throw new Error("Coding session was not found.");
+    const {owner, service} = await this.#codingSessionsAccess(session.repositories);
+    return service.connectPi(owner, sessionId);
+  }
+
+  /** Rechecks owner authority on every Pi operation, including reads and dialog responses. */
+  async callCodingSessionPi(sessionId: string, connectionId: string, command: import('@gadgets/workshop-shared/api').CodingSessionPiCommand): Promise<import('@gadgets/workshop-shared/api').CodingSessionPiResult> {
+    const initial = await this.#codingSessionsOwner();
+    const session = await initial.service.getSession(initial.owner, sessionId);
+    if (!session) throw new Error("Coding session was not found.");
+    const {owner, service} = await this.#codingSessionsAccess(session.repositories);
+    return service.callPi(owner, sessionId, connectionId, command);
+  }
+
   /** Mints an application capability after verifying ownership and current repository authority. */
   async mintCodingSessionApplicationCapability(
     sessionId: string,

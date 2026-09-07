@@ -192,4 +192,26 @@ describe('RequiredConnectionsGate', () => {
     expect(api.getRequiredConnectionStatuses).toHaveBeenCalledTimes(2)
     expect(rendered.textContent).toContain('Unlocked app')
   })
+
+  it('checks a replacement API synchronously and ignores its predecessor’s late result', async () => {
+    const first = createApi([])
+    const rendered = await renderGate(first, '/sessions')
+    const stale = deferred<RequiredConnectionStatus[]>()
+    first.getRequiredConnectionStatuses.mockReturnValue(stale.promise)
+    await act(async () => first.subscriber!.ready())
+    const next = createApi([])
+    const pending = deferred<RequiredConnectionStatus[]>()
+    next.getRequiredConnectionStatuses.mockReturnValue(pending.promise)
+    await act(async () => root!.render(
+      <RequiredConnectionsGate authenticatedApi={next as never} pathname="/sessions">
+        <div>Unlocked app</div>
+      </RequiredConnectionsGate>,
+    ))
+    expect(rendered.textContent).toContain('Checking required connections')
+    await act(async () => stale.resolve([]))
+    expect(rendered.textContent).toContain('Checking required connections')
+    await act(async () => pending.resolve([{ vendorId: 'github', displayName: 'GitHub', state: 'missing' }]))
+    expect(rendered.textContent).toContain('Connect required services')
+    expect(rendered.textContent).not.toContain('Unlocked app')
+  })
 })

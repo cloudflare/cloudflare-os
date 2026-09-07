@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act } from 'react'
+import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { OpenCodeWorkbenchInner } from './OpenCodeWorkbench'
@@ -28,6 +28,13 @@ function json(data: unknown, status = 200) {
 
 function noContent(status = 204) {
   return new Response(null, { status })
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
 }
 
 function queue(handler: (url: URL, init?: RequestInit) => Response | Promise<Response>) {
@@ -128,6 +135,348 @@ describe('OpenCodeWorkbench', () => {
     expect(rendered.textContent).toContain('odie')
     expect(rendered.querySelector('[aria-label="OpenCode sessions"]')).toBeNull()
     expect(rendered.querySelector<HTMLSelectElement>('[aria-label="OpenCode transcript"]')?.value).toBe('newer')
+  })
+
+  it('renders the transcript and sends while ancillary metadata is deferred, without overlapping metadata polls', async () => {
+    const metadata = deferred<Response>()
+    queue((url, init) => {
+      fetchCalls.push({ url: url.pathname, init })
+      if (url.pathname.endsWith('/session')) return json([{ id: 'newer', title: 'Newer' }])
+      if (url.pathname.endsWith('/message')) return json([{ info: { id: 'm1', role: 'assistant', text: 'Transcript ready' } }])
+      if (url.pathname.endsWith('/status')) return json({}) // idle sessions are omitted by OpenCode
+      if (url.pathname.endsWith('/prompt_async')) return noContent()
+      return metadata.promise.then((response) => response.clone())
+    })
+    await render()
+    expect(container.textContent).toContain('Transcript ready')
+    const textarea = container.querySelector('textarea')!
+    expect(textarea.disabled).toBe(false)
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_000) })
+    expect(fetchCalls.filter((call) => call.url.endsWith('/mcp'))).toHaveLength(1)
+    expect(fetchCalls.filter((call) => call.url.endsWith('/message'))).toHaveLength(2)
+    await typePrompt(textarea, 'Keep going')
+    await act(async () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!.click())
+    expect(fetchCalls.filter((call) => call.url.endsWith('/prompt_async'))).toHaveLength(1)
+    await act(async () => metadata.resolve(json({ note: 'Metadata finally ready' })))
+    expect(container.textContent).toContain('Metadata finally ready')
+  })
+
+  it('publishes transcript and independent metadata failures while status is deferred, then sends initial input only when idle', async () => {
+    const status = deferred<Response>()
+    let statusReads = 0
+    queue((url, init) => {
+      fetchCalls.push({ url: url.pathname, init })
+      if (url.pathname.endsWith('/session')) return json([{ id: 'newer', title: 'Newer', status: 'idle' }])
+      if (url.pathname.endsWith('/message')) return json([{ info: { id: 'm1', role: 'assistant', text: 'Visible before status' } }])
+      if (url.pathname.endsWith('/status')) return statusReads++ === 0 ? status.promise : json({})
+      if (url.pathname.endsWith('/mcp')) throw new Error('secret capability URL and provider diagnostics')
+      if (url.pathname.endsWith('/diff')) return json({ files: ['ready.ts'] })
+      if (url.pathname.endsWith('/prompt_async')) return noContent()
+      return json([])
+    })
+    await render('Queued instructions')
+    expect(container.textContent).toContain('Visible before status')
+    expect(container.textContent).toContain('Checking whether OpenCode is ready')
+    expect(container.textContent).toContain('MCP unavailable. Will retry automatically.')
+    expect(container.textContent).toContain('ready.ts')
+    expect(container.textContent).not.toContain('secret capability')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+    expect(container.querySelector<HTMLTextAreaElement>('textarea')!.disabled).toBe(false)
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true)
+    expect(fetchCalls.some((call) => call.url.endsWith('/prompt_async'))).toBe(false)
+    await act(async () => status.resolve(json({ newer: { type: 'idle' } })))
+    expect(fetchCalls.filter((call) => call.url.endsWith('/prompt_async'))).toHaveLength(1)
+    expect(onInitialInputSent).toHaveBeenCalledOnce()
+    expect(container.querySelector<HTMLTextAreaElement>('textarea')!.disabled).toBe(false)
+  })
+
+  it.each([null, [], { error: 'unexpected response' }, { newer: {} }, { newer: { type: 'unrecognized' } }])('fails closed for malformed status %j despite an idle session-list hint', async (status) => {
+    queue((url) => {
+      if (url.pathname.endsWith('/session')) return json([{ id: 'newer', title: 'Newer', status: 'idle' }])
+      if (url.pathname.endsWith('/status')) return json(status)
+      return json([])
+    })
+    await render('Must not send')
+    expect(container.textContent).toContain('OpenCode status is unavailable. Retry before sending.')
+    expect(container.querySelector<HTMLTextAreaElement>('textarea')!.disabled).toBe(false)
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true)
+    expect(onInitialInputSent).not.toHaveBeenCalled()
+  })
+
+  it('keeps pending approval status gated even when all metadata fails', async () => {
+    queue((url) => {
+      if (url.pathname.endsWith('/session')) return json([{ id: 'newer', title: 'Newer' }])
+      if (url.pathname.endsWith('/status')) return json({ newer: { type: 'pending' } })
+      if (url.pathname.endsWith('/message')) return json([])
+      return noContent(503)
+    })
+    await render('Must wait for approval')
+    expect(container.querySelector<HTMLTextAreaElement>('textarea')!.disabled).toBe(true)
+    expect(container.querySelector('[aria-label="Abort OpenCode session"]')).toBeTruthy()
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+    expect(onInitialInputSent).not.toHaveBeenCalled()
+  })
+
+  it('keeps a status request failure fatal to sending but not to transcript visibility, and recovers on retry', async () => {
+    const status = deferred<Response>()
+    let failed = true
+    queue((url) => {
+      if (url.pathname.endsWith('/session')) return json([{ id: 'newer', title: 'Newer' }])
+      if (url.pathname.endsWith('/status')) return failed ? status.promise : json({})
+      if (url.pathname.endsWith('/message')) return json([{ info: { id: 'm1', text: 'Still readable' } }])
+      return json([])
+    })
+    await render()
+    await act(async () => status.reject(new Error('sensitive transport details')))
+    expect(container.textContent).toContain('Still readable')
+    expect(container.querySelector('[role="alert"]')).toBeTruthy()
+    expect(container.textContent).not.toContain('sensitive transport')
+    expect(container.querySelector<HTMLTextAreaElement>('textarea')!.disabled).toBe(false)
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true)
+    failed = false
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Refresh OpenCode"]')!.click())
+    expect(container.querySelector<HTMLTextAreaElement>('textarea')!.disabled).toBe(false)
+  })
+
+  it('keeps the focused draft editable through a quiet poll and unknown status while blocking button and Enter sends', async () => {
+    const status = deferred<Response>()
+    let statusReads = 0
+    queue((url, init) => {
+      fetchCalls.push({ url: url.pathname, init })
+      if (url.pathname.endsWith('/session')) return json([{ id: 'newer', title: 'Newer' }])
+      if (url.pathname.endsWith('/status')) return ++statusReads === 2 ? status.promise : json({})
+      if (url.pathname.endsWith('/prompt_async')) return noContent()
+      return json([])
+    })
+    await render()
+    const textarea = container.querySelector('textarea')!
+    const send = container.querySelector<HTMLButtonElement>('button[type="submit"]')!
+    textarea.focus()
+    await typePrompt(textarea, 'Draft before polling')
+    expect(send.disabled).toBe(false)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_000) })
+    expect(container.textContent).toContain('Checking whether OpenCode is ready')
+    expect(textarea.disabled).toBe(false)
+    expect(document.activeElement).toBe(textarea)
+    await typePrompt(textarea, 'Draft edited while status is pending')
+    expect(textarea.value).toBe('Draft edited while status is pending')
+    expect(send.disabled).toBe(true)
+    await act(async () => {
+      send.click()
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(fetchCalls.some((call) => call.url.endsWith('/prompt_async'))).toBe(false)
+
+    await act(async () => status.resolve(json({ newer: { type: 'unknown' } })))
+    expect(textarea.disabled).toBe(false)
+    expect(document.activeElement).toBe(textarea)
+    await typePrompt(textarea, 'Draft edited after status failure')
+    expect(send.disabled).toBe(true)
+    await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(fetchCalls.some((call) => call.url.endsWith('/prompt_async'))).toBe(false)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_000) })
+    expect(textarea.value).toBe('Draft edited after status failure')
+    expect(document.activeElement).toBe(textarea)
+    expect(send.disabled).toBe(false)
+  })
+
+  it.each(['timeout', 'transport'])('does not automatically replay an accepted initial prompt after an ambiguous %s failure', async (failure) => {
+    const response = deferred<Response>()
+    let accepted = 0
+    queue((url, init) => {
+      if (url.pathname.endsWith('/session')) return json([{ id: 'newer', title: 'Newer' }])
+      if (url.pathname.endsWith('/status')) return json({})
+      if (url.pathname.endsWith('/message')) return json(accepted ? [{ info: { id: 'accepted', role: 'user', text: 'Accepted work' } }] : [])
+      if (url.pathname.endsWith('/prompt_async')) {
+        accepted++ // The server accepted work, but the browser may never receive its acknowledgement.
+        if (accepted > 1) return noContent()
+        init?.signal?.addEventListener('abort', () => response.reject(init.signal?.reason))
+        return response.promise
+      }
+      return json([])
+    })
+    await render('Accepted work')
+    expect(accepted).toBe(1)
+    expect(onInitialInputSent).toHaveBeenCalledOnce()
+    if (failure === 'timeout') {
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+    } else {
+      await act(async () => response.reject(new TypeError('Network connection lost')))
+    }
+    expect(onInitialInputSent).toHaveBeenCalledOnce()
+    expect(container.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('Accepted work')
+
+    // Error recovery and several successful idle polls must not replay the initial input.
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Refresh OpenCode"]')!.click())
+    await act(async () => { await vi.advanceTimersByTimeAsync(12_000) })
+    expect(container.textContent).toContain('Accepted work')
+    expect(accepted).toBe(1)
+    expect(onInitialInputSent).toHaveBeenCalledOnce()
+
+    // The user can deliberately send again from the composer after reviewing the transcript.
+    await act(async () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!.click())
+    expect(accepted).toBe(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_000) })
+    expect(accepted).toBe(2)
+  })
+
+  it.each(['failed', 'in-flight'])('consumes parent initial input before acknowledgement so a %s request cannot replay on navigation remount', async (stage) => {
+    const status = deferred<Response>()
+    const request = deferred<Response>()
+    let statusReads = 0
+    let accepted = 0
+    const api = { mintCodingSessionOpenCodeCapability: mint }
+    queue((url, init) => {
+      if (url.pathname.endsWith('/session')) return json([{ id: 'newer', title: 'Newer' }])
+      if (url.pathname.endsWith('/status')) return statusReads++ === 0 ? status.promise : json({})
+      if (url.pathname.endsWith('/prompt_async')) {
+        accepted++
+        init?.signal?.addEventListener('abort', () => request.reject(init.signal?.reason))
+        return request.promise
+      }
+      return json([])
+    })
+    // Mirrors SessionsContext: the parent survives route navigation and consumes
+    // its queued input via the callback, while the workbench itself remounts.
+    function Parent({ visible }: { visible: boolean }) {
+      const [pendingInitialInput, setPendingInitialInput] = useState<string | undefined>('Accepted work')
+      return <>
+        <output>{pendingInitialInput ? 'Input queued' : 'Input consumed'}</output>
+        {visible && <OpenCodeWorkbenchInner
+          authenticatedApi={api}
+          sessionId="odie-session"
+          sessionTitle="Repair Jarvis"
+          initialInput={pendingInitialInput}
+          onInitialInputSent={() => { onInitialInputSent(); setPendingInitialInput(undefined) }}
+        />}
+      </>
+    }
+    await act(async () => root.render(<Parent visible />))
+    expect(container.textContent).toContain('Input queued')
+    expect(onInitialInputSent).not.toHaveBeenCalled()
+    expect(accepted).toBe(0)
+
+    await act(async () => status.resolve(json({})))
+    expect(accepted).toBe(1)
+    expect(container.textContent).toContain('Input consumed')
+    expect(onInitialInputSent).toHaveBeenCalledOnce()
+    if (stage === 'failed') await act(async () => request.reject(new TypeError('Response lost after acceptance')))
+
+    await act(async () => root.render(<Parent visible={false} />))
+    await act(async () => root.render(<Parent visible />))
+    await act(async () => { await vi.advanceTimersByTimeAsync(12_000) })
+    expect(container.textContent).toContain('Input consumed')
+    expect(accepted).toBe(1)
+    expect(onInitialInputSent).toHaveBeenCalledOnce()
+  })
+
+  it.each(['list', 'details', 'abort', 'command'])('replaces the API capability and ignores stale %s continuations for the same coding session', async (stage) => {
+    const stale = deferred<Response>()
+    const signals: AbortSignal[] = []
+    let holdAbort = false
+    let oldRequests = 0
+    queue((url, init) => {
+      const old = !url.pathname.includes('/replacement/')
+      if (old) {
+        oldRequests++
+        if ((stage === 'list' && url.pathname.endsWith('/session')) ||
+          (stage === 'details' && !url.pathname.endsWith('/session')) ||
+          (stage === 'abort' && holdAbort && url.pathname.endsWith('/abort')) ||
+          (stage === 'command' && url.pathname.endsWith('/command'))) {
+          if (init?.signal) signals.push(init.signal)
+          return stale.promise.then((response) => response.clone())
+        }
+      }
+      if (url.pathname.endsWith('/session')) return json([{ id: old ? 'old' : 'new', title: old ? 'Old transcript' : 'Replacement transcript' }])
+      if (url.pathname.endsWith('/status')) return json(old && stage === 'abort' ? { old: { type: 'busy' } } : {})
+      if (url.pathname.endsWith('/message')) return json([{ info: { id: 'm1', text: old ? 'Old message' : 'Replacement message' } }])
+      return json([])
+    })
+    await render()
+    if (stage === 'abort') {
+      holdAbort = true
+      await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Abort OpenCode session"]')!.click())
+    }
+    if (stage === 'command') await typePrompt(container.querySelector('textarea')!, '/')
+    const replacement = vi.fn<() => Promise<{ url: string; expiresAt: Date }>>(async () => ({ url: `${window.location.origin}/replacement/`, expiresAt: new Date(Date.now() + 60_000) }))
+    await act(async () => root.render(<OpenCodeWorkbenchInner authenticatedApi={{ mintCodingSessionOpenCodeCapability: replacement }} sessionId="odie-session" sessionTitle="Repair Jarvis" onSessionUnavailable={onSessionUnavailable} />))
+    expect(signals.length).toBeGreaterThan(0)
+    expect(signals.every((signal) => signal.aborted)).toBe(true)
+    expect(replacement).toHaveBeenCalledOnce()
+    expect(container.textContent).toContain('Replacement message')
+    const beforeRelease = vi.mocked(fetch).mock.calls.length
+    await act(async () => stale.resolve(stage === 'list' ? json([]) : stage === 'command' ? json([{ name: 'stale-command' }]) : json({ old: { type: 'busy' }, secret: 'Stale metadata' })))
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(beforeRelease)
+    expect(oldRequests).toBeGreaterThan(0)
+    expect(mint).toHaveBeenCalledOnce()
+    expect(onSessionUnavailable).not.toHaveBeenCalled()
+    expect(container.textContent).not.toContain('Stale metadata')
+    expect(container.textContent).toContain('Replacement message')
+    expect(container.querySelector<HTMLTextAreaElement>('textarea')!.disabled).toBe(false)
+    if (stage === 'command') {
+      await typePrompt(container.querySelector('textarea')!, '/')
+    }
+    expect(container.textContent).not.toContain('stale-command')
+  })
+
+  it('reports concrete startup phases without displaying capability data', async () => {
+    const capability = deferred<{ url: string; expiresAt: Date }>()
+    const list = deferred<Response>()
+    const create = deferred<Response>()
+    const messages = deferred<Response>()
+    mint.mockImplementationOnce(() => capability.promise)
+    queue((url, init) => {
+      if (url.pathname.endsWith('/session')) return init?.method === 'POST' ? create.promise : list.promise
+      if (url.pathname.endsWith('/message')) return messages.promise
+      return json({})
+    })
+    await render()
+    expect(container.textContent).toContain('Connecting to the coding session…')
+    await act(async () => capability.resolve({ url: `${window.location.origin}/secret-capability/`, expiresAt: new Date(Date.now() + 60_000) }))
+    expect(container.textContent).toContain('Finding the OpenCode session…')
+    await act(async () => list.resolve(json([])))
+    expect(container.textContent).toContain('Creating the OpenCode session…')
+    await act(async () => create.resolve(json({ id: 'created', title: 'Created' })))
+    expect(container.textContent).toContain('Reading the transcript…')
+    expect(container.textContent).not.toContain('secret-capability')
+    await act(async () => messages.resolve(json([])))
+    expect(container.querySelector<HTMLTextAreaElement>('textarea')!.disabled).toBe(false)
+  })
+
+  it('discards a late capability mint when the authenticated API is replaced', async () => {
+    const oldCapability = deferred<{ url: string; expiresAt: Date }>()
+    mint.mockImplementationOnce(() => oldCapability.promise)
+    await render()
+    const replacement = vi.fn<() => Promise<{ url: string; expiresAt: Date }>>(async () => ({ url: `${window.location.origin}/replacement/`, expiresAt: new Date(Date.now() + 60_000) }))
+    await act(async () => root.render(<OpenCodeWorkbenchInner authenticatedApi={{ mintCodingSessionOpenCodeCapability: replacement }} sessionId="odie-session" sessionTitle="Repair Jarvis" />))
+    expect(container.textContent).toContain('Please fix it')
+    const before = vi.mocked(fetch).mock.calls.length
+    await act(async () => oldCapability.resolve({ url: `${window.location.origin}/stale-capability/`, expiresAt: new Date(Date.now() + 60_000) }))
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(before)
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Refresh OpenCode"]')!.click())
+    expect(vi.mocked(fetch).mock.calls.every(([url]) => String(url).includes('/replacement/'))).toBe(true)
+    expect(replacement).toHaveBeenCalledOnce()
+  })
+
+  it('aborts ancillary reads and clears their deadlines on unmount', async () => {
+    const signals: AbortSignal[] = []
+    queue((url, init) => {
+      if (url.pathname.endsWith('/session')) return json([{ id: 'newer', title: 'Newer' }])
+      if (url.pathname.endsWith('/status')) return json({})
+      if (url.pathname.endsWith('/message')) return json([])
+      return new Promise<Response>((_resolve, reject) => {
+        signals.push(init!.signal!)
+        init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason))
+      })
+    })
+    await render()
+    expect(container.querySelector<HTMLTextAreaElement>('textarea')!.disabled).toBe(false)
+    await act(async () => root.unmount())
+    expect(signals).toHaveLength(3)
+    expect(signals.every((signal) => signal.aborted)).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('can render the reusable Changes surface from OpenCode diff data', async () => {
@@ -352,7 +701,7 @@ describe('OpenCodeWorkbench', () => {
     }))
   })
 
-  it('adds image attachments and sends them as OpenCode file parts', async () => {
+  it.each([false, true])('preserves image and text drafts for sending (API replacement: %s)', async (replaceApi) => {
     class ImmediateFileReader {
       result: string | ArrayBuffer | null = null
       #listeners = new Map<string, Array<() => void>>()
@@ -378,6 +727,25 @@ describe('OpenCodeWorkbench', () => {
     expect(container.textContent).toContain('bug.png')
     const textarea = container.querySelector('textarea')!
     await typePrompt(textarea, 'Use this screenshot')
+    const capability = deferred<{ url: string; expiresAt: Date }>()
+    if (replaceApi) {
+      await act(async () => root.render(<OpenCodeWorkbenchInner
+        authenticatedApi={{ mintCodingSessionOpenCodeCapability: () => capability.promise }}
+        sessionId="odie-session" sessionTitle="Repair Jarvis"
+        onInitialInputSent={onInitialInputSent} onSessionUnavailable={onSessionUnavailable}
+      />))
+    }
+    expect(textarea.value).toBe('Use this screenshot')
+    expect(container.textContent).toContain('bug.png')
+    expect(fetchCalls.some(call => call.url.endsWith('/prompt_async'))).toBe(false)
+    if (replaceApi) {
+      await act(async () => capability.resolve({
+        url: `${window.location.origin}/gatekeeper/sessions/opencode/token/`,
+        expiresAt: new Date(Date.now() + 60_000),
+      }))
+    }
+    expect(textarea.value).toBe('Use this screenshot')
+    expect(container.textContent).toContain('bug.png')
     await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
 
     const call = fetchCalls.find((item) => item.url.endsWith('/prompt_async'))
@@ -473,25 +841,76 @@ describe('OpenCodeWorkbench', () => {
     expect(container.textContent).toContain('OpenCode request failed (410).')
   })
 
+  it('loads the transcript when capability startup succeeds after 45 seconds', async () => {
+    const capability = deferred<{ url: string; expiresAt: Date }>()
+    mint.mockImplementationOnce(() => capability.promise)
+
+    await render()
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+
+    expect(container.textContent).toContain('Connecting to the coding session…')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000)
+      capability.resolve({ url: `${window.location.origin}/gatekeeper/sessions/opencode/token/`, expiresAt: new Date(Date.now() + 60_000) })
+    })
+
+    expect(mint).toHaveBeenCalledOnce()
+    expect(container.textContent).toContain('Please fix it')
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="OpenCode transcript"]')?.value).toBe('newer')
+    expect(container.textContent).not.toContain('Connecting to the coding session…')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+  })
+
   it('bounds capability startup and can retry after it times out', async () => {
-    mint.mockImplementationOnce(() => new Promise(() => {}))
+    const capability = deferred<{ url: string; expiresAt: Date }>()
+    mint.mockImplementationOnce(() => capability.promise)
 
     await act(async () => {
       root.render(<OpenCodeWorkbenchInner authenticatedApi={{ mintCodingSessionOpenCodeCapability: mint }} sessionId="odie-session" sessionTitle="Repair" />)
     })
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(59_999) })
+
+    expect(container.textContent).toContain('Connecting to the coding session…')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
 
     expect(container.textContent).toContain('OpenCode took too long to start.')
+    expect(container.querySelector('[role="alert"]')).not.toBeNull()
+    const timedOutUi = container.innerHTML
+    await act(async () => {
+      capability.resolve({ url: `${window.location.origin}/gatekeeper/sessions/opencode/stale/`, expiresAt: new Date(Date.now() + 60_000) })
+    })
+
+    expect(fetch).not.toHaveBeenCalled()
+    expect(container.innerHTML).toBe(timedOutUi)
+    expect(mint).toHaveBeenCalledOnce()
     const retry = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Retry')!
 
     defaultOpenCodeResponses()
-    mint.mockResolvedValue({ url: `${window.location.origin}/gatekeeper/sessions/opencode/token/`, expiresAt: new Date(Date.now() + 60_000) })
+    mint.mockResolvedValue({ url: `${window.location.origin}/gatekeeper/sessions/opencode/fresh/`, expiresAt: new Date(Date.now() + 60_000) })
     await act(async () => retry.click())
     await act(async () => {})
 
     expect(mint).toHaveBeenCalledTimes(2)
     expect(container.textContent).toContain('Please fix it')
     expect(container.textContent).not.toContain('OpenCode took too long to start.')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+    expect(fetchCalls.length).toBeGreaterThan(0)
+    expect(fetchCalls.every((call) => call.url.startsWith('/gatekeeper/sessions/opencode/fresh/'))).toBe(true)
+
+    const callsBeforeRefresh = fetchCalls.length
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Refresh OpenCode"]')!.click())
+
+    expect(mint).toHaveBeenCalledTimes(2)
+    expect(fetchCalls.length).toBeGreaterThan(callsBeforeRefresh)
+    expect(fetchCalls.every((call) => call.url.startsWith('/gatekeeper/sessions/opencode/fresh/'))).toBe(true)
+    expect(container.textContent).toContain('Please fix it')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
   })
 
   it('aborts an OpenCode HTTP request that does not respond', async () => {

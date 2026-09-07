@@ -101,8 +101,17 @@ export function pendingActivityNotificationBody(activity: CodingSessionActivity,
 }
 
 export function SessionsProvider({ children, loadRepositories = false }: { children: ReactNode; loadRepositories?: boolean }) {
-  const { authenticatedApi } = useAuthenticatedApi()
-  const github = useGitHubConnection()
+  const { currentUser } = useAuthenticatedApi()
+  const [owner, setOwner] = useState(currentUser?.id)
+  // An unresolved identity suspends authority, not ownership. A verified change discards all state.
+  if (currentUser && currentUser.id !== owner) setOwner(currentUser.id)
+  return <OwnerSessionsProvider key={owner} loadRepositories={loadRepositories}>{children}</OwnerSessionsProvider>
+}
+
+function OwnerSessionsProvider({ children, loadRepositories }: { children: ReactNode; loadRepositories: boolean }) {
+  const { authenticatedApi, currentUser } = useAuthenticatedApi()
+  const connection = useGitHubConnection()
+  const github: ReturnType<typeof useGitHubConnection> = currentUser ? connection : { state: 'loading' }
   const [sessions, setSessions] = useState<CodingSessionSummary[]>([])
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string>()
@@ -153,7 +162,7 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
     activityRefreshPending.current = false
     setArchiveRequest(undefined)
     setArchiveError(undefined)
-    if (github.state !== 'connected') {
+    if (github.state === 'missing' || github.state === 'expired') {
       setSessions([])
       setLoaded(false)
       setActiveId(undefined)
@@ -238,6 +247,7 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
   }, [github.state, loadRepositories])
 
   useEffect(() => {
+    if (github.state !== 'connected') return
     const nextStates = new Map(activity.map((item) => [item.id, item.state] as const))
     if (!activityStateById.current) {
       return
@@ -252,7 +262,7 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
         body: pendingActivityNotificationBody(item, sessions),
       })
     }
-  }, [activity, sessions])
+  }, [activity, sessions, github.state])
 
   useEffect(() => {
     if (github.state !== 'connected') return
@@ -313,12 +323,14 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
   }, [authenticatedApi, github.state, loadRepositories, repositorySearch])
 
   const connect = useCallback(async () => {
+    if (!mountedRef.current || !currentUser || authenticatedApi !== latestApiRef.current) return
     await openGitHubAccountPopup(authenticatedApi, { kind: 'connect' })
-  }, [authenticatedApi])
+  }, [authenticatedApi, currentUser])
 
   const reconnect = useCallback(async (accountId: number) => {
+    if (!mountedRef.current || !currentUser || authenticatedApi !== latestApiRef.current) return
     await openGitHubAccountPopup(authenticatedApi, { kind: 'reconnect', accountId })
-  }, [authenticatedApi])
+  }, [authenticatedApi, currentUser])
 
   const prepareSession = useCallback((nextTitle: string, initialInput: string) => {
     setTitle(nextTitle)
@@ -333,6 +345,7 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
   }, [])
 
   const create = useCallback(async () => {
+    if (!mountedRef.current || !githubConnectedRef.current || authenticatedApi !== latestApiRef.current) return
     if (creatingRef.current || !repositories.length) return
     const api = authenticatedApi
     const lifecycle = lifecycleRef.current
@@ -340,7 +353,7 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
     setCreating(true)
     setError(undefined)
     try {
-      const session = await api.createCodingSession({ title, repositories, runtime })
+      const session = await api.createCodingSession({ title, repositories, runtime, ...(runtime === 'pi' ? { piWorkbench: true as const } : {}) })
       if (api !== latestApiRef.current || lifecycle !== lifecycleRef.current || !githubConnectedRef.current) return
       sessionRefreshSequence.current += 1
       setSessions((current) => [session, ...current])
@@ -359,6 +372,7 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
   }, [authenticatedApi, launchInput, repositories, runtime, title])
 
   const stopSession = useCallback(async (id: string) => {
+    if (!mountedRef.current || !githubConnectedRef.current || authenticatedApi !== latestApiRef.current) return
     const api = authenticatedApi
     const lifecycle = lifecycleRef.current
     sessionRefreshSequence.current += 1
@@ -369,6 +383,7 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
   }, [authenticatedApi, refresh])
 
   const restartSession = useCallback(async (id: string) => {
+    if (!mountedRef.current || !githubConnectedRef.current || authenticatedApi !== latestApiRef.current) return
     const api = authenticatedApi
     const lifecycle = lifecycleRef.current
     setError(undefined)
@@ -385,6 +400,7 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
   }, [authenticatedApi])
 
   const archiveSession = useCallback(async (id: string) => {
+    if (!mountedRef.current || !githubConnectedRef.current) return
     const session = sessions.find((item) => item.id === id)
     if (!session || session.archivedAt || archiveSubmitting) return
     setArchiveError(undefined)
@@ -392,6 +408,7 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
   }, [archiveSubmitting, sessions])
 
   const confirmArchiveSession = useCallback(async () => {
+    if (!mountedRef.current || !githubConnectedRef.current || authenticatedApi !== latestApiRef.current) return
     const request = archiveRequest
     if (!request || archiveSubmittingRef.current) return
     const api = authenticatedApi
@@ -417,6 +434,7 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
   }, [activeId, archiveRequest, authenticatedApi, refresh])
 
   const resolveActivity = useCallback(async (id: string, decision: 'approve' | 'reject') => {
+    if (!mountedRef.current || !githubConnectedRef.current || authenticatedApi !== latestApiRef.current) return
     const api = authenticatedApi
     const lifecycle = lifecycleRef.current
     setError(undefined)
@@ -486,7 +504,7 @@ export function SessionsProvider({ children, loadRepositories = false }: { child
     <SessionsContext.Provider value={value}>
       {children}
       <DeleteConfirmationDialog
-        open={Boolean(archiveRequest)}
+        open={github.state === 'connected' && Boolean(archiveRequest)}
         title="Archive session?"
         description={(
           <div className="space-y-2">

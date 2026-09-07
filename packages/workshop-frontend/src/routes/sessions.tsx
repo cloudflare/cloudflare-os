@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { Activity, lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   Archive,
   ArrowClockwise,
@@ -15,7 +15,7 @@ import {
   TerminalWindow,
   X,
 } from '@phosphor-icons/react'
-import type { CodingSessionRepository, CodingSessionRuntime } from '@gadgets/workshop-shared/api'
+import type { CodingSessionRepository, CodingSessionRuntime, CodingSessionSummary } from '@gadgets/workshop-shared/api'
 import type { CodingSessionActivity } from '@gadgets/workshop-shared/coding-sessions'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { useAuthenticatedApi } from '../AuthContext'
@@ -26,6 +26,7 @@ import { useSessionsContext } from '../components/sessions/SessionsContext'
 import { useUiFeatureFlag } from '../FeatureFlagsContext'
 
 export const Route = createFileRoute('/sessions')({ component: SessionsPage })
+const PiWorkbench = lazy(() => import('../components/sessions/PiWorkbench'))
 
 function runtimeLabel(runtime: CodingSessionRuntime): string {
   if (runtime === 'pi') return 'Pi'
@@ -37,10 +38,22 @@ type WorkbenchTab = 'agent' | 'terminal' | 'changes'
 
 export function SessionsPage() {
   useDocumentTitle('Code')
+  const { github } = useSessionsContext()
+  if (github.state === 'missing' || github.state === 'expired') return <CodeSetupScreen />
+  return (
+    <>
+      {github.state === 'loading' && <CenteredMessage>Checking GitHub connection…</CenteredMessage>}
+      <Activity mode={github.state === 'connected' ? 'visible' : 'hidden'}>
+        <SessionsPageBody />
+      </Activity>
+    </>
+  )
+}
+
+function SessionsPageBody() {
   const { authenticatedApi } = useAuthenticatedApi()
   const sessions = useSessionsContext()
   const {
-    github,
     activeSession,
     error,
     activity,
@@ -58,6 +71,20 @@ export function SessionsPage() {
   const [editorAvailable, setEditorAvailable] = useState(false)
   const [editorBusy, setEditorBusy] = useState(false)
   const [editorError, setEditorError] = useState<string>()
+  const surfaceSessionRef = useRef<string | undefined>(undefined)
+  const editorLifecycle = useRef<{ popup: Window | null } | null>(null)
+
+  useLayoutEffect(() => {
+    const lifecycle: { popup: Window | null } = { popup: null }
+    editorLifecycle.current = lifecycle
+    setEditorBusy(false)
+    setEditorError(undefined)
+    // Activity preserves state, but pending editor requests must not survive hiding.
+    return () => {
+      editorLifecycle.current = null
+      lifecycle.popup?.close()
+    }
+  }, [authenticatedApi, activeSession?.id, activeSession?.runtime, activeSession?.status, sessions.github.state])
 
   useEffect(() => {
     let cancelled = false
@@ -68,35 +95,41 @@ export function SessionsPage() {
   }, [authenticatedApi])
 
   useEffect(() => {
-    if (!activeSession || activeSession.status !== 'running') return
+    const key = activeSession?.status === 'running' ? `${activeSession.id}:${activeSession.runtime}` : undefined
+    if (surfaceSessionRef.current === key) return
+    surfaceSessionRef.current = key
+    if (!key) return
     setSurface('agent')
     setOpenedTerminalSessionId(undefined)
   }, [activeSession?.id, activeSession?.runtime, activeSession?.status])
   const terminalOpened = activeSession?.id !== undefined && openedTerminalSessionId === activeSession.id
 
   const openEditor = async (sessionId: string) => {
-    if (editorBusy) return
+    const lifecycle = editorLifecycle.current
+    if (!lifecycle || lifecycle.popup || editorBusy || sessions.github.state !== 'connected' || activeSession?.id !== sessionId || activeSession.status !== 'running') return
     const popup = window.open('about:blank', '_blank')
     if (!popup) {
       setEditorError('Allow pop-ups to open browser VS Code.')
       return
     }
     popup.opener = null
+    lifecycle.popup = popup
     setEditorBusy(true)
     setEditorError(undefined)
     try {
       const capability = await authenticatedApi.mintCodingSessionEditorCapability(sessionId)
+      if (editorLifecycle.current !== lifecycle) return
       popup.location.replace(capability.url)
     } catch (caught) {
       popup.close()
-      setEditorError(caught instanceof Error ? caught.message : 'Could not open browser VS Code.')
+      if (editorLifecycle.current === lifecycle) setEditorError(caught instanceof Error ? caught.message : 'Could not open browser VS Code.')
     } finally {
-      setEditorBusy(false)
+      if (editorLifecycle.current === lifecycle) {
+        lifecycle.popup = null
+        setEditorBusy(false)
+      }
     }
   }
-
-  if (github.state === 'loading') return <CenteredMessage>Checking GitHub connection…</CenteredMessage>
-  if (github.state === 'missing' || github.state === 'expired') return <CodeSetupScreen />
 
   if (activeSession) {
     const sessionActivity = activity.filter((entry) => entry.sessionId === activeSession.id)
@@ -203,15 +236,32 @@ export function SessionsPage() {
               ) : (
                 <>
                   <div className={surface === 'agent' ? 'h-full min-h-0 min-w-0' : 'hidden'}>
-                    <LazySessionTerminal
-                      key={`agent:${activeSession.id}:${activeSession.runtime}`}
-                      sessionId={activeSession.id}
-                      terminalKind="opencode"
-                      runtime={activeSession.runtime}
-                      initialInput={initialInput}
-                      onInitialInputSent={() => markInitialInputSent(activeSession.id)}
-                      onSessionUnavailable={refresh}
-                    />
+                    {activeSession.runtime === 'pi' ? (
+                      <Suspense fallback={<CenteredMessage>Loading Pi workbench…</CenteredMessage>}>
+                        <PiWorkbench
+                          key={`pi:${activeSession.id}`}
+                          sessionId={activeSession.id}
+                          initialInput={initialInput}
+                          onInitialInputSent={() => markInitialInputSent(activeSession.id)}
+                          onSessionUnavailable={refresh}
+                        />
+                      </Suspense>
+                    ) : (
+                      <div className="flex h-full min-h-0 flex-col">
+                        <p className="border-b border-kumo-line p-3 text-xs text-kumo-subtle">Prime is terminal-only in Workshop. Its stdio protocol exists, but full-history and whole-tree settlement need a separate owner adapter.</p>
+                        <div className="min-h-0 flex-1">
+                          <LazySessionTerminal
+                            key={`agent:${activeSession.id}:${activeSession.runtime}`}
+                            sessionId={activeSession.id}
+                            terminalKind="opencode"
+                            runtime={activeSession.runtime}
+                            initialInput={initialInput}
+                            onInitialInputSent={() => markInitialInputSent(activeSession.id)}
+                            onSessionUnavailable={refresh}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
                   {terminalOpened && (
                     <div className={surface === 'terminal' ? 'h-full min-h-0 min-w-0' : 'hidden'}>
@@ -247,9 +297,15 @@ export function SessionsPage() {
   return <NewSessionPane />
 }
 
-function SessionProgressPanel({ session }: { session: { status: string } }) {
+function SessionProgressPanel({ session }: { session: Pick<CodingSessionSummary, 'status' | 'startupPhase'> }) {
+  const phases = {
+    authorize: { title: 'Checking access', body: 'Verifying current connections and repository permissions.' },
+    clone: { title: 'Cloning repositories', body: 'Preparing the selected repositories inside the private sandbox.' },
+    materialize: { title: 'Configuring the coding agent', body: 'Applying the runtime configuration and approved account customization.' },
+    terminal: { title: 'Starting the coding agent', body: 'Starting the agent process. The workbench will connect when the environment is ready.' },
+  }
   const copy = session.status === 'starting'
-    ? {
+    ? (session.startupPhase && phases[session.startupPhase]) || {
         title: 'Starting environment',
         body: 'Preparing this coding session sandbox. The terminal will connect automatically when it is ready.',
       }
@@ -258,7 +314,7 @@ function SessionProgressPanel({ session }: { session: { status: string } }) {
         body: 'Shutting down this coding session sandbox. The session status will update automatically.',
       }
   return (
-    <div className="flex h-full items-center justify-center bg-kumo-tint/30 px-6 text-center">
+    <div role="status" className="flex h-full items-center justify-center bg-kumo-tint/30 px-6 text-center">
       <div className="max-w-md rounded-2xl border border-kumo-line bg-kumo-base p-6 shadow-sm">
         <div className="mx-auto h-10 w-10 rounded-full border-2 border-kumo-line border-t-kumo-brand animate-spin" aria-hidden="true" />
         <h2 className="mt-4 text-lg font-semibold text-kumo-default">{copy.title}</h2>
@@ -409,6 +465,9 @@ function NewSessionPane() {
     error,
   } = useSessionsContext()
 
+  // Do not submit a stale selection before the flag settles or its reset commits.
+  const runtimeReady = !piLoading && (runtime === 'opencode' || piEnabled)
+
   useEffect(() => {
     if (runtime !== 'opencode' && !piLoading && !piEnabled) {
       setRuntime('opencode')
@@ -458,18 +517,20 @@ function NewSessionPane() {
           </div>
         )}
 
-        {piEnabled && (
+        {piLoading && <p role="status" className="mt-7 text-xs text-kumo-subtle">Checking coding agent availability…</p>}
+        {!piLoading && piEnabled && (
           <div className="mt-7">
             <div className="text-[11px] font-medium uppercase tracking-wider text-kumo-subtle">Coding agent</div>
             <div className="mt-2 grid gap-2 sm:grid-cols-3" role="group" aria-label="Coding agent runtime">
               {([
-                ['opencode', 'OpenCode', 'Established runtime with your account plugins and skills.'],
-                ['pi', 'Pi', 'Focused runtime using Team PI Codex and Workshop tools.'],
-                ['prime-agent', 'Prime Agent', 'IPython-based runtime using shared Codex and Workshop tools.'],
+                ['opencode', 'OpenCode', 'Structured agent conversation and diffs, with account plugins and skills.'],
+                ['pi', 'Pi', 'Agent terminal using Team PI Codex and Workshop tools. No structured diffs here.'],
+                ['prime-agent', 'Prime Agent', 'IPython-based agent terminal using Team PI Codex and Workshop tools. No structured diffs here.'],
               ] as const).map(([value, label, description]) => (
                 <button
                   key={value}
                   type="button"
+                  disabled={creating}
                   aria-pressed={runtime === value}
                   onClick={() => setRuntime(value)}
                   className={`rounded-xl border bg-kumo-base p-3 text-left transition-colors ${runtime === value ? 'border-kumo-brand ring-1 ring-kumo-brand/15' : 'border-kumo-line hover:border-kumo-strong'}`}
@@ -509,7 +570,7 @@ function NewSessionPane() {
       <div className="shrink-0 border-t border-kumo-line bg-kumo-base/95 px-6 py-3 shadow-[0_-8px_24px_rgba(0,0,0,0.03)] backdrop-blur sm:px-8">
         <div className="mx-auto flex max-w-3xl flex-col gap-3 sm:flex-row sm:items-center">
           <WorkshopInput value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Session title" className="flex-1" />
-          <WorkshopButton tone="primary" className="shrink-0 gap-1.5 !rounded-lg !px-3" disabled={creating || !repositories.length || !title.trim()} onClick={create}>
+          <WorkshopButton tone="primary" className="shrink-0 gap-1.5 !rounded-lg !px-3" disabled={creating || !runtimeReady || !repositories.length || !title.trim()} onClick={() => { if (runtimeReady && !creating) void create() }}>
             <TerminalWindow size={14} /> {creating ? 'Starting…' : 'Open session'}
           </WorkshopButton>
         </div>

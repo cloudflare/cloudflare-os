@@ -9,7 +9,8 @@ import { WorkshopButton, WorkshopIconButton } from '../WorkshopControls'
 
 const POLL_INTERVAL_MS = 4_000
 const EXPIRY_REFRESH_WINDOW_MS = 10_000
-const CAPABILITY_TIMEOUT_MS = 30_000
+// Total mint budget includes auth/policy startup before the backend's readiness-only wait.
+const CAPABILITY_TIMEOUT_MS = 60_000
 const REQUEST_TIMEOUT_MS = 20_000
 const MAX_MESSAGE_COUNT = 80
 const MAX_TEXT_LENGTH = 16_000
@@ -22,6 +23,8 @@ const SAFE_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const NOTIFICATION_BODY_MAX_LENGTH = 120
 
 type Capability = { url: string; expiresAt: Date }
+type MetadataField = 'diffText' | 'todoText' | 'mcpText'
+type MetadataState = Partial<Record<MetadataField, { loading: boolean; error?: string }>>
 
 type OpenCodeSession = {
   id: string
@@ -96,6 +99,7 @@ type Props = {
   sessionId: string
   sessionTitle: string
   initialInput?: string
+  /** Consume the parent's queued input once attempted, not once acknowledged. */
   onInitialInputSent?: () => void
   onSessionUnavailable?: () => void
   surface?: 'agent' | 'changes'
@@ -176,15 +180,32 @@ export function OpenCodeWorkbenchInner({
   const [attachmentError, setAttachmentError] = useState<string>()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const composingRef = useRef(false)
+  const metadataRequestsRef = useRef(new Map<MetadataField, { key: string }>())
+  const [metadata, setMetadata] = useState<MetadataState>({})
+  const [statusReady, setStatusReady] = useState(false)
+  const [startupPhase, setStartupPhase] = useState('Connecting to the coding session…')
+  const draftSessionIdRef = useRef(sessionId)
 
   useEffect(() => {
     mountedRef.current = true
     return () => {
       mountedRef.current = false
+      requestEpochRef.current += 1
       for (const controller of abortsRef.current) controller.abort()
       abortsRef.current.clear()
     }
   }, [])
+
+  useEffect(() => {
+    // Activity re-creates effects on resume; only a different session discards local input.
+    if (draftSessionIdRef.current === sessionId) return
+    draftSessionIdRef.current = sessionId
+    selectedOpenCodeSessionIdRef.current = undefined
+    initialSendKeyRef.current = undefined
+    setPrompt('')
+    setAttachments([])
+    setAttachmentError(undefined)
+  }, [sessionId])
 
   useEffect(() => {
     requestEpochRef.current += 1
@@ -193,22 +214,24 @@ export function OpenCodeWorkbenchInner({
     abortsRef.current.clear()
     capabilityRef.current = undefined
     capabilityPromiseRef.current = undefined
-    selectedOpenCodeSessionIdRef.current = undefined
-    initialSendKeyRef.current = undefined
     pendingTurnNotificationRef.current = undefined
     sendingRef.current = false
     setSnapshot({ sessions: [], messages: [], running: false, statusText: 'Connecting…' })
     setLoading(true)
+    setRefreshing(false)
+    setSending(false)
+    setAborting(false)
+    setStatusReady(false)
+    setStartupPhase('Connecting to the coding session…')
+    metadataRequestsRef.current.clear()
+    setMetadata({})
     setError(undefined)
-    setPrompt('')
     setCommands([])
     setCommandsLoaded(false)
     setCommandMenuOpen(false)
     setCommandMenuSuppressedToken(undefined)
     setHighlightedCommandIndex(0)
-    setAttachments([])
-    setAttachmentError(undefined)
-  }, [sessionId])
+  }, [authenticatedApi, sessionId])
 
   const mintCapability = useCallback(async (expectedEpoch = requestEpochRef.current) => {
     if (expectedEpoch !== requestEpochRef.current) throw new DOMException('Session changed.', 'AbortError')
@@ -263,6 +286,7 @@ export function OpenCodeWorkbenchInner({
         },
         redirect: 'error',
       })
+      if (!mountedRef.current || epoch !== requestEpochRef.current) throw new DOMException('Session changed.', 'AbortError')
       if (response.status === 403 && retry) {
         if (epoch !== requestEpochRef.current) throw new DOMException('Session changed.', 'AbortError')
         capabilityRef.current = undefined
@@ -272,6 +296,7 @@ export function OpenCodeWorkbenchInner({
       if (!response.ok) throw new Error(`OpenCode request failed (${response.status}).`)
       if (response.status === 204) return undefined
       const text = await response.text()
+      if (!mountedRef.current || epoch !== requestEpochRef.current) throw new DOMException('Session changed.', 'AbortError')
       if (!text) return undefined
       try {
         return JSON.parse(text)
@@ -287,17 +312,26 @@ export function OpenCodeWorkbenchInner({
   const refreshWorkbench = useCallback(async (options: { quiet?: boolean } = {}) => {
     const epoch = requestEpochRef.current
     const sequence = ++refreshSequenceRef.current
-    if (!options.quiet) setRefreshing(true)
-    if (!options.quiet) setError(undefined)
+    const isCurrent = () => mountedRef.current && epoch === requestEpochRef.current && sequence === refreshSequenceRef.current
+    setRefreshing(true)
+    setStatusReady(false)
+    setError(undefined)
     try {
+      if (!options.quiet) setStartupPhase('Connecting to the coding session…')
+      await ensureCapability(epoch)
+      if (!isCurrent()) return
+      setStartupPhase('Finding the OpenCode session…')
       const sessionListJson = await fetchJson('/session')
+      if (!isCurrent()) return
       let sessions = parseSessions(sessionListJson)
       let selected = selectSession(sessions, selectedOpenCodeSessionIdRef.current)
       if (!selected) {
+        setStartupPhase('Creating the OpenCode session…')
         const created = await fetchJson('/session', {
           method: 'POST',
           body: JSON.stringify({ title: sessionTitle || 'Odie coding session' }),
         })
+        if (!isCurrent()) return
         const createdSession = parseSession(created)
         if (createdSession) {
           selected = createdSession
@@ -305,50 +339,73 @@ export function OpenCodeWorkbenchInner({
         }
       }
       const selectedId = selected?.id
-      const [messagesJson, statusJson, diffJson, todoJson, mcpJson] = selectedId
-        ? await Promise.all([
-            fetchJson(`/session/${selectedId}/message`),
-            fetchJson('/session/status'),
-            fetchJson(`/session/${selectedId}/diff`),
-            fetchJson(`/session/${selectedId}/todo`),
-            fetchJson('/mcp'),
-          ])
-        : [undefined, undefined, undefined, undefined, undefined]
-      const nextSnapshot = {
-        sessions,
-        selected,
-        messages: parseMessages(messagesJson),
-        running: parseRunning(statusJson, selected),
-        statusText: summarizeStatus(statusJson, selected),
-        diffText: summarizeUnknown(diffJson, MAX_PAYLOAD_LENGTH),
-        todoText: summarizeUnknown(todoJson, MAX_PAYLOAD_LENGTH),
-        mcpText: summarizeUnknown(mcpJson, MAX_PAYLOAD_LENGTH),
-      }
-      if (!mountedRef.current || epoch !== requestEpochRef.current || sequence !== refreshSequenceRef.current) return
+      if (!selectedId) throw new Error('Could not select an OpenCode session.')
+      const changed = selectedOpenCodeSessionIdRef.current !== selectedId
       selectedOpenCodeSessionIdRef.current = selectedId
-      setSnapshot(nextSnapshot)
-      setLoading(false)
-      setError(undefined)
+      setSnapshot((current) => ({ ...current, sessions, selected, ...(changed ? { messages: [], diffText: undefined, todoText: undefined, mcpText: undefined } : {}) }))
+      setStartupPhase('Reading the transcript…')
+
+      // Metadata reads neither create a session nor establish whether it is safe to send.
+      // Keep one read per field/selection in flight across polls, so slow reads cannot starve.
+      for (const [field, path, label] of [
+        ['diffText', `/session/${selectedId}/diff`, 'Diff'],
+        ['todoText', `/session/${selectedId}/todo`, 'Todo'],
+        ['mcpText', '/mcp', 'MCP'],
+      ] as const) {
+        const key = `${epoch}:${selectedId}`
+        if (metadataRequestsRef.current.get(field)?.key === key) continue
+        const request = { key }
+        metadataRequestsRef.current.set(field, request)
+        const metadataCurrent = () => mountedRef.current && epoch === requestEpochRef.current && selectedOpenCodeSessionIdRef.current === selectedId && metadataRequestsRef.current.get(field) === request
+        setMetadata((current) => ({ ...current, [field]: { loading: true } }))
+        void fetchJson(path).then((data) => {
+          if (!metadataCurrent()) return
+          setSnapshot((current) => ({ ...current, [field]: summarizeUnknown(data, MAX_PAYLOAD_LENGTH) }))
+          setMetadata((current) => ({ ...current, [field]: { loading: false } }))
+        }).catch(() => {
+          if (metadataCurrent()) setMetadata((current) => ({ ...current, [field]: { loading: false, error: `${label} unavailable. Will retry automatically.` } }))
+        }).finally(() => {
+          if (metadataRequestsRef.current.get(field) === request) metadataRequestsRef.current.delete(field)
+        })
+      }
+
+      // Publish the transcript immediately, even if the safety-critical status read is slow.
+      await Promise.all([
+        fetchJson(`/session/${selectedId}/message`).then((messages) => {
+          if (!isCurrent()) return
+          setSnapshot((current) => ({ ...current, messages: parseMessages(messages) }))
+          setLoading(false)
+          setStartupPhase('Checking whether OpenCode is ready…')
+        }),
+        fetchJson('/session/status').then((status) => {
+          if (!isCurrent()) return
+          if (!isTrustworthyStatus(status, selected)) throw new Error('OpenCode status is unavailable. Retry before sending.')
+          setSnapshot((current) => ({ ...current, running: parseRunning(status, selected), statusText: summarizeStatus(status, selected) }))
+          setStatusReady(true)
+        }),
+      ])
     } catch (caught) {
       if (!mountedRef.current || epoch !== requestEpochRef.current || sequence !== refreshSequenceRef.current || isAbortError(caught)) return
       setLoading(false)
-      setError(caught instanceof Error ? caught.message : 'Could not load OpenCode workbench.')
+      setError(safeWorkbenchError(caught))
     } finally {
       if (mountedRef.current && epoch === requestEpochRef.current && sequence === refreshSequenceRef.current) setRefreshing(false)
     }
-  }, [fetchJson, sessionTitle])
+  }, [ensureCapability, fetchJson, sessionTitle])
 
   const loadCommands = useCallback(async () => {
     if (commandsLoaded) return
+    const epoch = requestEpochRef.current
+    const isCurrent = () => mountedRef.current && epoch === requestEpochRef.current
     try {
       const commandJson = await fetchJson('/command')
-      if (!mountedRef.current) return
+      if (!isCurrent()) return
       setCommands(parseCommands(commandJson))
     } catch {
-      if (!mountedRef.current) return
+      if (!isCurrent()) return
       setCommands([])
     } finally {
-      if (mountedRef.current) setCommandsLoaded(true)
+      if (isCurrent()) setCommandsLoaded(true)
     }
   }, [commandsLoaded, fetchJson])
 
@@ -409,7 +466,7 @@ export function OpenCodeWorkbenchInner({
 
   const readyAttachments = attachments.filter((attachment) => attachment.status === 'ready')
   const attachmentsLoading = attachments.some((attachment) => attachment.status === 'loading')
-  const canSend = Boolean(snapshot.selected) && !loading && !refreshing && !sending && !snapshot.running && !attachmentsLoading && !error && (Boolean(prompt.trim()) || readyAttachments.length > 0)
+  const canSend = Boolean(snapshot.selected) && statusReady && !loading && !refreshing && !sending && !snapshot.running && !attachmentsLoading && !error && (Boolean(prompt.trim()) || readyAttachments.length > 0)
 
   const addImageFiles = useCallback((fileList: FileList | File[]) => {
     const files = Array.from(fileList).filter((file) => file.type.startsWith('image/'))
@@ -483,17 +540,21 @@ export function OpenCodeWorkbenchInner({
     const selectedId = selectedOpenCodeSessionIdRef.current
     const trimmed = text.trim()
     const fileParts = options.attachments ?? []
-    if (!selectedId || (!trimmed && fileParts.length === 0) || sendingRef.current || snapshot.running) return
+    if (!mountedRef.current || !selectedId || !statusReady || loading || refreshing || error || (!trimmed && fileParts.length === 0) || sendingRef.current || snapshot.running) return
     sendingRef.current = true
     const parts: OpenCodePromptPart[] = [...(trimmed ? [{ type: 'text' as const, text: trimmed }] : []), ...fileParts]
     const command = parseCommandPrompt(trimmed)
     setSending(true)
     setError(undefined)
     try {
-      await fetchJson(command ? `/session/${selectedId}/command` : `/session/${selectedId}/prompt_async`, {
+      const request = fetchJson(command ? `/session/${selectedId}/command` : `/session/${selectedId}/prompt_async`, {
         method: 'POST',
         body: JSON.stringify(command ? { command: command.command, arguments: command.arguments, parts } : { parts }),
       })
+      // Consume before awaiting acknowledgement: navigation must not replay an
+      // attempted request whose response was lost after the server accepted it.
+      if (options.fromInitialInput) onInitialInputSent?.()
+      await request
       if (epoch !== requestEpochRef.current || selectedOpenCodeSessionIdRef.current !== selectedId) return
       if (!options.fromInitialInput) {
         pendingTurnNotificationRef.current = {
@@ -508,22 +569,23 @@ export function OpenCodeWorkbenchInner({
       if (!options.fromInitialInput) setAttachments([])
       if (!options.fromInitialInput) setAttachmentError(undefined)
       setCommandMenuOpen(false)
-      if (options.fromInitialInput) onInitialInputSent?.()
       await refreshWorkbench({ quiet: true })
     } catch (caught) {
       if (epoch === requestEpochRef.current && !isAbortError(caught)) {
         if (!options.fromInitialInput) pendingTurnNotificationRef.current = undefined
-        if (options.fromInitialInput) initialSendKeyRef.current = undefined
+        // A timeout/transport failure can follow acceptance. Retain the attempted
+        // initial-input key: refreshing must not silently replay side effects.
+        if (options.fromInitialInput) setPrompt((current) => current || text)
         setError(caught instanceof Error ? caught.message : 'Could not send prompt.')
       }
     } finally {
       if (epoch === requestEpochRef.current) sendingRef.current = false
       if (mountedRef.current && epoch === requestEpochRef.current) setSending(false)
     }
-  }, [fetchJson, onInitialInputSent, refreshWorkbench, snapshot.messages, snapshot.running])
+  }, [error, loading, refreshing, statusReady, fetchJson, onInitialInputSent, refreshWorkbench, snapshot.messages, snapshot.running])
 
   const submitComposer = useCallback(() => {
-    if (!canSend) return
+    if (!mountedRef.current || !canSend) return
     void getWorkshopRuntime().requestNotificationPermission()
     void sendPrompt(prompt, { attachments: readyAttachments.map(({ type, mime, filename, url }) => ({ type, mime, filename, url })) })
   }, [canSend, prompt, readyAttachments, sendPrompt])
@@ -543,6 +605,7 @@ export function OpenCodeWorkbenchInner({
       pending.observedRunning = true
       return
     }
+    if (!statusReady || refreshing) return
     const assistantCount = countAssistantMessages(snapshot.messages)
     if (!pending.observedRunning && assistantCount <= pending.assistantMessageBaseline) return
     pending.notified = true
@@ -550,7 +613,7 @@ export function OpenCodeWorkbenchInner({
       title: 'Agent turn complete',
       body: boundedTurnNotificationBody(sessionTitle || snapshot.selected?.title || 'Coding session'),
     })
-  }, [aborting, error, sessionTitle, snapshot.messages, snapshot.running, snapshot.selected])
+  }, [aborting, error, refreshing, statusReady, sessionTitle, snapshot.messages, snapshot.running, snapshot.selected])
 
   const onComposerKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (composingRef.current || event.nativeEvent.isComposing) return
@@ -591,12 +654,13 @@ export function OpenCodeWorkbenchInner({
 
   useEffect(() => {
     const input = initialInput
-    if (surface !== 'agent' || !input || error || !snapshot.selected || snapshot.running || refreshing || sending) return
+    if (surface !== 'agent' || !input || error || loading || !statusReady || !snapshot.selected || snapshot.running || refreshing || sending) return
+    if (selectedOpenCodeSessionIdRef.current !== snapshot.selected.id) return
     const key = `${sessionId}:${snapshot.selected.id}:${input}`
     if (initialSendKeyRef.current === key) return
     initialSendKeyRef.current = key
     void sendPrompt(input, { fromInitialInput: true })
-  }, [error, initialInput, refreshing, sending, sessionId, sendPrompt, snapshot.running, snapshot.selected, surface])
+  }, [error, loading, statusReady, initialInput, refreshing, sending, sessionId, sendPrompt, snapshot.running, snapshot.selected, surface])
 
   const abortOpenCodeSession = useCallback(async () => {
     const epoch = requestEpochRef.current
@@ -606,6 +670,7 @@ export function OpenCodeWorkbenchInner({
     setError(undefined)
     try {
       await fetchJson(`/session/${selectedId}/abort`, { method: 'POST', body: '{}' })
+      if (!mountedRef.current || epoch !== requestEpochRef.current || selectedOpenCodeSessionIdRef.current !== selectedId) return
       pendingTurnNotificationRef.current = undefined
       await refreshWorkbench({ quiet: true })
     } catch (caught) {
@@ -635,6 +700,8 @@ export function OpenCodeWorkbenchInner({
                       if (!selected) return
                       pendingTurnNotificationRef.current = undefined
                       selectedOpenCodeSessionIdRef.current = selected.id
+                      setLoading(true)
+                      setStatusReady(false)
                       setSnapshot((current) => ({
                         ...current,
                         selected,
@@ -643,6 +710,7 @@ export function OpenCodeWorkbenchInner({
                         statusText: 'Loading transcript…',
                         diffText: undefined,
                         todoText: undefined,
+                        mcpText: undefined,
                       }))
                       void refreshWorkbench()
                     }}
@@ -650,7 +718,7 @@ export function OpenCodeWorkbenchInner({
                     {sessionOptions.map((session) => <option key={session.id} value={session.id}>{session.title}</option>)}
                   </select>
                 ) : <div className="truncate text-[13px] font-semibold text-kumo-default">{selectedLabel}</div>}
-                <div className="truncate text-[11px] text-kumo-subtle">{snapshot.statusText}</div>
+                <div className="truncate text-[11px] text-kumo-subtle" role="status">{refreshing ? startupPhase : snapshot.statusText}</div>
               </div>
               {refreshing && <CircleNotch size={13} className="animate-spin text-kumo-subtle" aria-label="Refreshing" />}
               <WorkshopButton aria-label="Refresh OpenCode" disabled={refreshing} onClick={() => void refreshWorkbench()}><ArrowClockwise size={13} /> Refresh</WorkshopButton>
@@ -663,11 +731,11 @@ export function OpenCodeWorkbenchInner({
               </div>
             )}
             {surface === 'changes' ? (
-              <ChangesPane diffText={snapshot.diffText} todoText={snapshot.todoText} loading={loading} />
+              <ChangesPane diffText={metadata.diffText?.error ?? snapshot.diffText} todoText={metadata.todoText?.error ?? snapshot.todoText} diffLoading={metadata.diffText?.loading ?? loading} todoLoading={metadata.todoText?.loading ?? loading} />
             ) : (
               <>
                 <div ref={transcriptRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto p-3">
-                  {loading ? <EmptyState title="Loading OpenCode…" body="Minting a local workbench capability and reading the current transcript." /> : null}
+                  {loading ? <EmptyState title="Loading OpenCode…" body={startupPhase} /> : null}
                   {!loading && !error && snapshot.messages.length === 0 ? <EmptyState title="Ready for instructions" body="Send a prompt to start this structured OpenCode session." /> : null}
                   <div className="min-w-0 space-y-3">
                     {snapshot.messages.map((message) => <MessageCard key={message.id} message={message} />)}
@@ -694,7 +762,7 @@ export function OpenCodeWorkbenchInner({
                     id="opencode-prompt"
                     className="max-h-40 min-h-20 w-full resize-y rounded-lg border border-kumo-line bg-kumo-base px-3 py-2 text-sm text-kumo-default outline-none focus:border-kumo-brand"
                     value={prompt}
-                    disabled={Boolean(error) || loading || refreshing || sending || snapshot.running || !snapshot.selected}
+                    disabled={loading || sending || snapshot.running || !snapshot.selected}
                     placeholder="Ask OpenCode to inspect, edit, test, or explain…"
                     onChange={(event) => setPrompt(event.currentTarget.value)}
                     onKeyDown={onComposerKeyDown}
@@ -738,9 +806,9 @@ export function OpenCodeWorkbenchInner({
         </main>
 
         <aside className="grid gap-3 lg:block lg:min-h-0 lg:overflow-y-auto" aria-label="OpenCode context">
-          <ContextCard title="MCP" text={snapshot.mcpText} loading={loading} />
-          <ContextCard title="Todo" text={snapshot.todoText} loading={loading} />
-          <ContextCard title="Diff" text={snapshot.diffText} loading={loading} />
+          <ContextCard title="MCP" text={metadata.mcpText?.error ?? snapshot.mcpText} loading={metadata.mcpText?.loading ?? loading} />
+          <ContextCard title="Todo" text={metadata.todoText?.error ?? snapshot.todoText} loading={metadata.todoText?.loading ?? loading} />
+          <ContextCard title="Diff" text={metadata.diffText?.error ?? snapshot.diffText} loading={metadata.diffText?.loading ?? loading} />
         </aside>
       </div>
     </section>
@@ -793,14 +861,14 @@ function ToolDetail({ label, text, tone }: { label: string; text?: string; tone?
   )
 }
 
-function ChangesPane({ diffText, todoText, loading }: { diffText?: string; todoText?: string; loading: boolean }) {
+function ChangesPane({ diffText, todoText, diffLoading, todoLoading }: { diffText?: string; todoText?: string; diffLoading: boolean; todoLoading: boolean }) {
   return (
     <div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-3">
       <div className="mb-3 rounded-xl border border-kumo-line bg-kumo-tint/40 p-3 text-xs leading-5 text-kumo-subtle">
         Review OpenCode's current diff here. For a full editor and source control workflow, open browser VS Code from the workbench toolbar.
       </div>
-      <ContextCard title="Diff" text={diffText} loading={loading} />
-      <ContextCard title="Todo" text={todoText} loading={loading} />
+      <ContextCard title="Diff" text={diffText} loading={diffLoading} />
+      <ContextCard title="Todo" text={todoText} loading={todoLoading} />
     </div>
   )
 }
@@ -956,6 +1024,27 @@ function readPartTool(input: unknown): OpenCodeTool | undefined {
 function parseRunning(statusJson: unknown, selected?: OpenCodeSession): boolean {
   const status = selectedStatus(statusJson, selected)
   return /running|busy|pending|working|loading|retry/.test(status.toLowerCase())
+}
+
+function isTrustworthyStatus(input: unknown, selected?: OpenCodeSession): boolean {
+  const statuses = readRecord(input)
+  if (!statuses || !selected) return false
+  // OpenCode removes idle sessions from its status map. An absent entry is idle,
+  // but an invalid response or unknown explicit status must never authorize a send.
+  return Object.values(statuses).every((value) => {
+    const status = readRecord(value)
+    const type = readString(status?.type) ?? readString(status?.status) ?? readString(status?.state)
+    return Boolean(type && /^(idle|running|busy|pending|working|loading|retry)$/.test(type.toLowerCase()))
+  })
+}
+
+function safeWorkbenchError(caught: unknown): string {
+  if (caught instanceof Error && (/^OpenCode request failed \(\d{3}\)\.$/.test(caught.message) ||
+    caught.message === 'OpenCode status is unavailable. Retry before sending.' ||
+    caught.message === 'OpenCode workbench capability was not same-origin.' ||
+    caught.message === 'OpenCode took too long to start. Retry, or restart the coding session if the problem continues.' ||
+    caught.message === 'OpenCode did not respond in time. Retry the request.')) return caught.message
+  return 'Could not load OpenCode workbench. Retry the connection.'
 }
 
 function summarizeStatus(statusJson: unknown, selected?: OpenCodeSession): string {

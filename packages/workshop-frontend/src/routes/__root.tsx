@@ -1,5 +1,5 @@
 import { logRpcFailure } from '../rpcErrors'
-import { useState, useEffect } from 'react'
+import { Activity, Suspense, useState, useEffect } from 'react'
 import { createRootRoute, Outlet, useRouterState } from '@tanstack/react-router'
 import { TooltipProvider, Toasty } from '@cloudflare/kumo'
 import { RpcStub } from 'capnweb'
@@ -49,11 +49,6 @@ function RootComponent() {
     }
   }
 
-  // Loading state
-  if (isLoading && !standalone) {
-    return <AppLoadingSkeleton label={connectionLost ? 'Waiting for server' : 'Restoring session'} />
-  }
-
   // Auth error
   if (error && !standalone) {
     return (
@@ -70,12 +65,12 @@ function RootComponent() {
   }
 
   // CF Access mode: show spinner while pipelined auth resolves
-  if (!isAuthenticated && CF_ACCESS_MODE && !standalone) {
+  if (!isLoading && !isAuthenticated && CF_ACCESS_MODE && !standalone) {
     return <AppLoadingSkeleton label="Authenticating" />
   }
 
   // Not authenticated and not a public route — show login
-  if (!isAuthenticated && !standalone) {
+  if (!isLoading && !isAuthenticated && !standalone) {
     return <LoginPage rpcStub={rpcStub} onLoginSuccess={handleLoginSuccess} />
   }
 
@@ -96,10 +91,36 @@ function RootComponent() {
     )
   }
 
-  // Authenticated — render the full shell (with onboarding gate)
-  // authenticatedApi is guaranteed non-null here: isLoading, error, and
-  // !isAuthenticated branches all return early above.
-  if (!authenticatedApi) return null
+  // Keep visual state through reconnect, but disconnect every effect while authority is absent.
+  // Logout and errors return above, deliberately destroying this boundary and its saved state.
+  return (
+    <>
+      <Activity mode={isLoading ? 'hidden' : 'visible'}>
+        <Suspense fallback={null}>
+          <CurrentAuthenticatedContent
+            authenticatedApi={isLoading ? null : authenticatedApi}
+            logout={logout}
+            isWorkspaceEditor={isWorkspaceEditor}
+            pathname={pathname}
+          />
+        </Suspense>
+      </Activity>
+      {isLoading && <AppLoadingSkeleton label={connectionLost ? 'Waiting for server' : 'Restoring session'} />}
+    </>
+  )
+}
+
+// A prop update with the replacement API retries this seam; no old capability is cached.
+// Hidden Activities still render, so returning null here would discard the preserved subtree.
+const waitingForAuthenticatedApi = new Promise<never>(() => {})
+
+function CurrentAuthenticatedContent({ authenticatedApi, logout, isWorkspaceEditor, pathname }: {
+  authenticatedApi: RpcStub<AuthenticatedApi> | null
+  logout: () => void
+  isWorkspaceEditor: boolean
+  pathname: string
+}) {
+  if (!authenticatedApi) throw waitingForAuthenticatedApi
   return (
     <AuthProvider authenticatedApi={authenticatedApi} onLogout={logout}>
       <FeatureFlagsProvider>

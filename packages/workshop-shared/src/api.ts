@@ -610,6 +610,8 @@ export interface CodingSessionSummary {
   runtime: CodingSessionRuntime;
   /** Current lifecycle state. */
   status: CodingSessionStatus;
+  /** Last mirrored startup phase; absent for historical sessions and after startup finishes. */
+  startupPhase?: "authorize" | "clone" | "materialize" | "terminal";
   /** Persisted development-stack selection, absent on historical terminal-only sessions. */
   development?: CodingSessionDevelopmentMetadata;
   /** When the session was created. */
@@ -630,6 +632,8 @@ export interface CreateCodingSessionRequest {
   repositories: CodingSessionRepository[];
   /** Coding agent runtime. Omitted requests retain the historical OpenCode behavior. */
   runtime?: CodingSessionRuntime;
+  /** Opt into the structured Pi interface for this session. Omission preserves terminal support for older clients; only valid with runtime "pi". */
+  piWorkbench?: true;
   /** Server-owned development-stack selection. Omission retains terminal-only standard-1 behavior. */
   developmentStack?: CodingSessionStackSelection;
 }
@@ -696,6 +700,9 @@ export interface CodingSessionEditorCapability {
   /** Time after which new HTTP requests and WebSocket handshakes require a freshly minted URL. */
   expiresAt: Date;
 }
+
+/** Owner-side Pi workbench command, connection, and bounded result contracts. */
+export type { CodingSessionPiCommand, CodingSessionPiConnection, CodingSessionPiResult } from "./pi-backbone.js";
 
 /** Short-lived same-origin capability for the OpenCode HTTP workbench in one session generation. */
 export interface CodingSessionOpenCodeCapability {
@@ -900,6 +907,11 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /** Mints a generation-bound same-origin OpenCode server capability in an owned running session. */
   mintCodingSessionOpenCodeCapability(sessionId: string): Promise<CodingSessionOpenCodeCapability>;
+
+  /** Attaches to an existing Pi backbone after checking membership, repositories and required connections. Never launches a process. */
+  connectCodingSessionPi(sessionId: string): Promise<import("./pi-backbone.js").CodingSessionPiConnection>;
+  /** Executes one bounded Pi operation after rechecking authority and handle generation/expiry. Never automatically retry writes after timeout. */
+  callCodingSessionPi(sessionId: string, connectionId: string, command: import("./pi-backbone.js").CodingSessionPiCommand): Promise<import("./pi-backbone.js").CodingSessionPiResult>;
 
   /** Mints a generation-bound capability for one catalog application in an owned running session. */
   mintCodingSessionApplicationCapability(

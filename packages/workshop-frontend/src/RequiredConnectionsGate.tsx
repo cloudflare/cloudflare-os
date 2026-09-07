@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Activity, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { Link } from '@tanstack/react-router'
 import { ArrowClockwise, ArrowSquareOut, CheckCircle, Plugs, WarningCircle } from '@phosphor-icons/react'
@@ -32,11 +32,14 @@ export function isRequiredConnectionsEscapeRoute(pathname: string): boolean {
 }
 
 export function RequiredConnectionsGate({ authenticatedApi, pathname, children }: RequiredConnectionsGateProps) {
-  const [statuses, setStatuses] = useState<RequiredConnectionStatus[] | null>(null)
-  const [loadError, setLoadError] = useState<string>()
+  const escapeRoute = isRequiredConnectionsEscapeRoute(pathname)
+  const scope = useMemo(() => ({ authenticatedApi, escapeRoute }), [authenticatedApi, escapeRoute])
+  const [result, setResult] = useState<{ scope: typeof scope; statuses: RequiredConnectionStatus[] | null; loadError?: string }>()
+  // An old API's healthy result must never reveal children on the replacement's first render.
+  const statuses = result?.scope === scope ? result.statuses : null
+  const loadError = result?.scope === scope ? result.loadError : undefined
   const [checking, setChecking] = useState(false)
   const refreshGeneration = useRef(0)
-  const escapeRoute = isRequiredConnectionsEscapeRoute(pathname)
 
   const refresh = useCallback(async () => {
     const generation = ++refreshGeneration.current
@@ -44,23 +47,20 @@ export function RequiredConnectionsGate({ authenticatedApi, pathname, children }
     try {
       const next = await authenticatedApi.getRequiredConnectionStatuses()
       if (generation !== refreshGeneration.current) return
-      setStatuses(next)
-      setLoadError(undefined)
+      setResult({ scope, statuses: next })
     } catch (error) {
       logRpcFailure('Failed to check required gatekeeper connections:', error)
       if (generation !== refreshGeneration.current) return
-      setStatuses(null)
-      setLoadError('We could not check required connections. Try again in a moment.')
+      setResult({ scope, statuses: null, loadError: 'We could not check required connections. Try again in a moment.' })
     } finally {
       if (generation === refreshGeneration.current) setChecking(false)
     }
-  }, [authenticatedApi])
+  }, [authenticatedApi, scope])
 
   useEffect(() => {
     if (escapeRoute) return
-    setStatuses(null)
-    setLoadError(undefined)
     void refresh()
+    return () => { refreshGeneration.current += 1 }
   }, [escapeRoute, refresh])
 
   useEffect(() => {
@@ -102,14 +102,15 @@ export function RequiredConnectionsGate({ authenticatedApi, pathname, children }
     [statuses],
   )
 
-  if (escapeRoute) return <>{children}</>
-
-  if (statuses === null && !loadError) {
-    return <AppLoadingSkeleton label="Checking required connections" />
-  }
-
-  if (statuses !== null && unhealthy.length === 0) {
-    return <>{children}</>
+  const pending = checking || (statuses === null && !loadError)
+  if (escapeRoute || pending || (statuses !== null && unhealthy.length === 0)) {
+    return (
+      <>
+        {/* Keep this boundary stable; confirmed failures below deliberately discard the subtree. */}
+        <Activity mode={!escapeRoute && pending ? 'hidden' : 'visible'}>{children}</Activity>
+        {!escapeRoute && pending && <AppLoadingSkeleton label="Checking required connections" />}
+      </>
+    )
   }
 
   return (

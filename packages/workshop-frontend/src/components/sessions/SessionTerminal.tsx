@@ -14,6 +14,7 @@ type PendingChunk = { byteLength: number; cursor: string }
 const MAX_RECONNECT_ATTEMPTS = 5
 const MAX_CURSOR_LENGTH = 1024
 const RECONNECT_STABILITY_WINDOW_MS = 5_000
+const STARTUP_TIMEOUT_MS = 30_000
 const MAX_FILES_PER_UPLOAD = 5
 
 const hasFiles = (types: readonly string[]) => Array.from(types).includes('Files')
@@ -46,6 +47,7 @@ export default function SessionTerminal({
   const terminalRef = useRef<Terminal>(null)
   const reconnectRef = useRef<() => void>(() => {})
   const insertTextRef = useRef<(text: string) => boolean>(() => false)
+  const uploadLifecycleRef = useRef<{ active: boolean; uploading: boolean } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dragDepthRef = useRef(0)
   const runtimeRef = useRef(runtime)
@@ -55,7 +57,8 @@ export default function SessionTerminal({
   const onInitialInputSentRef = useRef(onInitialInputSent)
   initialInputRef.current = initialInput
   onInitialInputSentRef.current = onInitialInputSent
-  const [state, setState] = useState<'connecting' | 'starting' | 'connected' | 'disconnected'>('connecting')
+  const [state, setState] = useState<'connecting' | 'starting' | 'connected' | 'reconnecting' | 'disconnected'>('connecting')
+  const [reconnectMessage, setReconnectMessage] = useState('')
   const [interactive, setInteractive] = useState(false)
   const [error, setError] = useState<string>()
   const [uploadMessage, setUploadMessage] = useState<string>()
@@ -69,15 +72,25 @@ export default function SessionTerminal({
     setState('connecting')
     setInteractive(false)
     setError(undefined)
+    setUploading(false)
+    setUploadMessage(undefined)
+    const uploadLifecycle = { active: true, uploading: false }
+    uploadLifecycleRef.current = uploadLifecycle
     let cancelled = false
     let socket: WebSocket | undefined
     let reconnectTimer: number | undefined
     let reconnectStabilityTimer: number | undefined
+    let startupTimer: number | undefined
+    const clearStartupDeadline = () => {
+      if (startupTimer !== undefined) window.clearTimeout(startupTimer)
+      startupTimer = undefined
+    }
     let reconnectAttempts = 0
     let connectionGeneration = 0
     let reconnectRequestGeneration = 0
     let terminalExited = false
     let fatalProtocolError = false
+    let transportReady = false
     let cursor: string | undefined
     let pendingChunk: PendingChunk | undefined
     let resizeFrame: number | undefined
@@ -119,11 +132,11 @@ export default function SessionTerminal({
     resizeObserver.observe(host)
 
     const input = terminal.onData((data) => {
-      if (socket?.readyState !== WebSocket.OPEN) return
+      if (!transportReady || socket?.readyState !== WebSocket.OPEN) return
       socket.send(inputEncoder.encode(data))
     })
     insertTextRef.current = (text) => {
-      if (socket?.readyState !== WebSocket.OPEN) return false
+      if (!transportReady || socket?.readyState !== WebSocket.OPEN) return false
       socket.send(inputEncoder.encode(text))
       terminal.focus()
       return true
@@ -131,7 +144,7 @@ export default function SessionTerminal({
     followLatestRef.current = () => {
       terminal.scrollToBottom()
       if (terminalKind === 'opencode' && runtimeRef.current === 'prime-agent' &&
-          socket?.readyState === WebSocket.OPEN) {
+          transportReady && socket?.readyState === WebSocket.OPEN) {
         // Prime Agent documents Ctrl+Shift+Down as its explicit "resume following output" command.
         socket.send(inputEncoder.encode('\x1b[1;6B'))
       }
@@ -157,19 +170,24 @@ export default function SessionTerminal({
 
     const scheduleReconnect = (message: string) => {
       if (cancelled || terminalExited || reconnectTimer !== undefined) return
+      clearStartupDeadline()
       if (reconnectStabilityTimer !== undefined) {
         window.clearTimeout(reconnectStabilityTimer)
         reconnectStabilityTimer = undefined
       }
-      setState('disconnected')
+      transportReady = false
       if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        setState('disconnected')
         setError(message)
         onSessionUnavailable?.()
         return
       }
       const delay = Math.min(1000 * 2 ** reconnectAttempts, 8000)
+      setState('reconnecting')
+      setReconnectMessage(`Retrying in ${delay / 1000}s (attempt ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})…`)
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = undefined
+        setReconnectMessage('Finishing buffered output before reconnecting…')
         reconnectAttempts++
         const reconnectRequest = ++reconnectRequestGeneration
         outputBatcher.flush()
@@ -180,6 +198,7 @@ export default function SessionTerminal({
     }
 
     const connect = () => {
+      clearStartupDeadline()
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
       reconnectTimer = undefined
       if (reconnectStabilityTimer !== undefined) window.clearTimeout(reconnectStabilityTimer)
@@ -189,9 +208,26 @@ export default function SessionTerminal({
       socket = undefined
       pendingChunk = undefined
       fatalProtocolError = false
+      transportReady = false
       setState('connecting')
+      const startDeadline = (message: string) => {
+        clearStartupDeadline()
+        startupTimer = window.setTimeout(() => {
+          if (cancelled || generation !== connectionGeneration) return
+          startupTimer = undefined
+          // Fence late tickets/events before closing; replay still drains via scheduleReconnect.
+          connectionGeneration++
+          transportReady = false
+          socket?.close()
+          socket = undefined
+          setError(message)
+          scheduleReconnect(message)
+        }, STARTUP_TIMEOUT_MS)
+      }
+      startDeadline('Timed out obtaining terminal access. You can reconnect to try again.')
       authenticatedApi.mintCodingSessionAttachCapability(sessionId, terminalKind).then((capability) => {
         if (cancelled || generation !== connectionGeneration) return
+        startDeadline('Timed out waiting for the terminal to attach. You can reconnect to try again.')
         const url = new URL(capability.url, window.location.href)
         url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
         if (cursor) url.searchParams.set('cursor', cursor)
@@ -205,9 +241,11 @@ export default function SessionTerminal({
           sendSize()
         })
         nextSocket.addEventListener('message', (event) => {
-          if (cancelled || generation !== connectionGeneration) return
+          if (cancelled || generation !== connectionGeneration || terminalExited || fatalProtocolError) return
           const failProtocol = () => {
+            clearStartupDeadline()
             fatalProtocolError = true
+            transportReady = false
             if (reconnectStabilityTimer !== undefined) {
               window.clearTimeout(reconnectStabilityTimer)
               reconnectStabilityTimer = undefined
@@ -226,9 +264,6 @@ export default function SessionTerminal({
             outputBatcher.push(bytes, () => {
               if (!cancelled) cursor = chunk.cursor
             })
-            if (!visibleOutputDetected) {
-              setState('connected')
-            }
             pendingChunk = undefined
             return
           }
@@ -251,6 +286,7 @@ export default function SessionTerminal({
                 return
               }
               const readyCursor = message.cursor
+              clearStartupDeadline()
               outputBatcher.flush()
               terminalOperations.enqueue((done) => {
                 if (!cancelled && readyCursor !== undefined) cursor = readyCursor
@@ -262,6 +298,7 @@ export default function SessionTerminal({
                 reconnectAttempts = 0
               }, RECONNECT_STABILITY_WINDOW_MS)
               setError(undefined)
+              transportReady = true
               setState('connected')
               if (terminalKind === 'shell') setInteractive(true)
               sendSize()
@@ -305,12 +342,14 @@ export default function SessionTerminal({
                 return
               }
               const exitCursor = message.cursor
+              clearStartupDeadline()
               outputBatcher.flush()
               terminalOperations.enqueue((done) => {
                 if (!cancelled) cursor = exitCursor
                 done()
               })
               terminalExited = true
+              transportReady = false
               setError(`Terminal exited${message.exit?.code === undefined ? '' : ` (${message.exit.code})`}.`)
               setState('disconnected')
               void terminalOperations.whenIdle().then(() => {
@@ -349,6 +388,7 @@ export default function SessionTerminal({
     }
 
     reconnectRef.current = () => {
+      clearStartupDeadline()
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
       reconnectTimer = undefined
       if (reconnectStabilityTimer !== undefined) window.clearTimeout(reconnectStabilityTimer)
@@ -356,9 +396,12 @@ export default function SessionTerminal({
       connectionGeneration++
       socket?.close()
       socket = undefined
+      transportReady = false
       reconnectAttempts = 0
       terminalExited = false
       setError(undefined)
+      setState('reconnecting')
+      setReconnectMessage('Finishing buffered output before reconnecting…')
       const reconnectRequest = ++reconnectRequestGeneration
       outputBatcher.flush()
       void terminalOperations.whenIdle().then(() => {
@@ -369,6 +412,8 @@ export default function SessionTerminal({
 
     return () => {
       cancelled = true
+      uploadLifecycle.active = false
+      clearStartupDeadline()
       outputBatcher.cancel()
       terminalOperations.cancel()
       resizeObserver.disconnect()
@@ -391,7 +436,8 @@ export default function SessionTerminal({
   }, [resolvedThemeMode])
 
   const uploadFiles = async (files: File[]) => {
-    if (files.length === 0 || uploading) return
+    const lifecycle = uploadLifecycleRef.current
+    if (!lifecycle?.active || files.length === 0 || lifecycle.uploading) return
     if (state !== 'connected') {
       setUploadMessage('Connect to the terminal before uploading files.')
       return
@@ -409,26 +455,35 @@ export default function SessionTerminal({
       return
     }
 
+    lifecycle.uploading = true
+    // Capture this lifecycle's insertion function, never a replacement terminal's ref.
+    const insertText = insertTextRef.current
     setUploading(true)
     setUploadMessage(`Uploading ${selected.length === 1 ? selected[0]!.name : `${selected.length} files`}…`)
     try {
       const results = []
       for (const file of selected) {
+        const content = new Uint8Array(await file.arrayBuffer())
+        if (!lifecycle.active) return
         results.push(await authenticatedApi.uploadCodingSessionFile({
           sessionId,
           filename: file.name,
-          content: new Uint8Array(await file.arrayBuffer()),
+          content,
         }))
+        if (!lifecycle.active) return
       }
-      const inserted = insertTextRef.current(results.map(({ path }) => quoteTerminalPath(path)).join(' '))
+      const inserted = insertText(results.map(({ path }) => quoteTerminalPath(path)).join(' '))
       const resultMessage = inserted
         ? `${results.length === 1 ? 'File' : 'Files'} uploaded and path${results.length === 1 ? '' : 's'} inserted.`
         : `${results.length === 1 ? 'File' : 'Files'} uploaded, but the terminal disconnected before insertion.`
       setUploadMessage(omittedCount > 0 ? `${resultMessage} ${omittedCount} more not uploaded.` : resultMessage)
     } catch (caught) {
-      setUploadMessage(caught instanceof Error ? caught.message : 'Could not upload files.')
+      if (lifecycle.active) setUploadMessage(caught instanceof Error ? caught.message : 'Could not upload files.')
     } finally {
-      setUploading(false)
+      if (lifecycle.active) {
+        lifecycle.uploading = false
+        setUploading(false)
+      }
     }
   }
 
@@ -437,11 +492,13 @@ export default function SessionTerminal({
       <div className="flex h-10 items-center justify-between border-b border-kumo-line px-3 text-[12px] text-kumo-subtle">
         <span
           aria-live="polite"
-          title="PTY connectivity only. Agent running or idle state is shown inside the terminal."
+          title={terminalKind === 'opencode' && runtime !== 'opencode'
+            ? 'Terminal-only integration in this application. PTY connectivity does not indicate agent running or idle state.'
+            : 'PTY connectivity only. Agent running or idle state is shown inside the terminal.'}
           className="flex items-center gap-1.5"
         >
           {state === 'connected' && <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-kumo-success" />}
-          {state === 'connected' ? 'Live connection' : state === 'starting' ? 'Starting terminal…' : state === 'connecting' ? 'Connecting…' : 'Disconnected'}
+          {state === 'connected' ? 'Live connection' : state === 'starting' ? 'Attaching terminal…' : state === 'connecting' ? 'Connecting…' : state === 'reconnecting' ? reconnectMessage : 'Disconnected'}
           {state === 'connected' && <span className="sr-only">PTY connectivity only; agent running or idle state is shown inside the terminal.</span>}
         </span>
         <div className="flex items-center gap-2">
@@ -476,7 +533,7 @@ export default function SessionTerminal({
                 : 'Follow latest'}
             </WorkshopButton>
           )}
-          {state === 'disconnected' && (
+          {(state === 'disconnected' || state === 'reconnecting') && (
             <WorkshopButton onClick={() => reconnectRef.current()}>
               Reconnect
             </WorkshopButton>
@@ -526,9 +583,9 @@ export default function SessionTerminal({
             Drop files to upload and insert their paths
           </div>
         )}
-        {!interactive && state !== 'disconnected' && (
+        {!interactive && state !== 'disconnected' && state !== 'reconnecting' && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-kumo-base/90 text-xs text-kumo-subtle">
-            {state === 'connecting' ? 'Connecting to the sandbox…' : `Starting ${terminalLabel}…`}
+            {state === 'connecting' ? 'Connecting to the sandbox…' : state === 'starting' ? `Attaching ${terminalLabel} terminal…` : `Waiting for ${terminalLabel} terminal output…`}
           </div>
         )}
         <div ref={hostRef} className="h-full min-h-0" aria-label={`${terminalLabel} session terminal`} />
