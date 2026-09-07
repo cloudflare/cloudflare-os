@@ -8,7 +8,7 @@
  */
 
 import { env } from "cloudflare:test";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { ConformanceAccount } from "./conformance/gatekeeper";
 import { advertised, observations, provider, resetProvider, submissions } from "./conformance/gatekeeper";
 
@@ -63,18 +63,31 @@ describe("credentials and connect", () => {
     expect(latest.identity).not.toBe(first.identity);
   });
 
+  it("reports a grant the provider revoked as expiry, not as a recycled 401", async () => {
+    // Only the refresh frame can tell the two apart. Left as an ordinary auth error, the account
+    // adjudicates "unavailable" and the dead grant stays adoptable as cache authority.
+    const { account, resource } = bind();
+    await connect(account);
+    await resource.bind(account);
+    provider.controls.grantDead = true;
+    provider.controls.rejectCredentials = true;
+
+    await expect(async () => { await resource.searchProjects("Alpha"); })
+      .rejects.toThrow(/Reconnect the conformance account/);
+  });
+
   it("refuses a completion whose connection was replaced while it exchanged", async () => {
-    // Two attempts race: the second reconnect lands before the first callback returns. Without the
-    // fence the older completion would silently overwrite the newer connection.
+    // The real race: the disconnect lands *inside* the token exchange, not before it. Checked
+    // before the exchange instead of after, this would pass while the window stayed open.
     const { account } = bind();
     await connect(account);
     const initiation = await account.beginConnect();
     const stale = await account.beginOAuth(initiation);
 
-    // A disconnect rotates the connection generation the stale attempt captured.
-    await account.disconnect();
-
-    expect(await account.completeConnect(stale!)).toBe(false);
+    // The revoke lands inside the exchange, not before it. Checked before the exchange instead of
+    // after, this would pass while the window stayed open.
+    expect(await account.completeConnect(stale!, true)).toBe(false);
+    expect(await account.isConnected()).toBe(false);
   });
 
   it("refuses a callback whose nonce a newer attempt replaced", async () => {
@@ -146,6 +159,26 @@ describe("observations", () => {
     expect(observations).toHaveLength(pages);
     expect(pages).toBeGreaterThan(1);
   });
+
+  it("stops a walk whose connection was replaced between pages", async () => {
+    // A continuation token is provider state scoped to one account. Presenting it under the next
+    // connection would page through the new principal's projects from the old one's offset.
+    const { account, resource } = bind();
+    for (const index of [1, 2, 3, 4, 5]) {
+      provider.projects.set(`extra-${index}`,
+        { id: `extra-${index}`, name: `Extra ${index}`, spaceId: "space-1" });
+    }
+    await connect(account);
+    await resource.bind(account);
+
+    using cursor = await resource.listProjects();
+    expect(await cursor.next()).not.toBeNull();
+    await account.disconnect();
+    await connect(account);
+
+    await expect(async () => { await cursor.next(); })
+      .rejects.toThrow(/walk was started under a connection/);
+  });
 });
 
 describe("actions", () => {
@@ -165,6 +198,25 @@ describe("actions", () => {
     // The provisional reference resolved to whatever the provider minted.
     expect([...provider.projects.values()].map(project => project.name))
       .toContain("Gamma Renamed");
+  });
+
+  it("puts every staged action through the approval queue with its rendered description", async () => {
+    // Without this the whole queue seam is untested: a consumer that stopped calling
+    // `submitAction` would still allocate a journal record and still apply.
+    const { account, resource } = bind();
+    await connect(account);
+    await resource.bind(account);
+
+    const id = await resource.submit("createProject",
+      { ref: "~queued", name: "Iota", spaceId: "space-1" });
+
+    expect(submissions).toEqual([[id, {
+      title: 'Create project "Iota"',
+      description: "Creates **Iota** in space space-1.",
+      implementsRevert: false,
+      autoApprovable: false,
+      actionKind: { tag: "create-project", label: "Create a project" },
+    }]]);
   });
 
   it("refuses to dispatch a dependent whose reference is still provisional", async () => {
@@ -274,6 +326,21 @@ describe("assembly", () => {
     await expect(async () => { await resource.apply(staged); })
       .rejects.toThrow(/has since been replaced/);
     expect((await resource.record(staged))?.state).toBe("failed");
+  });
+
+  it("refuses a reconnect landing after apply's entry check but before the provider call", async () => {
+    // The entry check passes under connection A and the provider call would run under B. Only the
+    // handler comparing its own read against the fence closes this; nothing earlier can.
+    const { account, resource } = bind();
+    await connect(account);
+    await resource.bind(account);
+    const staged = await resource.submit("createProject",
+      { ref: "~raced", name: "Raced", spaceId: "space-1" });
+
+    await expect(async () => { await resource.apply(staged, true); })
+      .rejects.toThrow(/has since been replaced/);
+    // The provider was never called, so no project was created under the new connection.
+    expect([...provider.projects.values()].map(project => project.name)).not.toContain("Raced");
   });
 
   it("keeps two journals over one Durable Object from seeing each other", async () => {

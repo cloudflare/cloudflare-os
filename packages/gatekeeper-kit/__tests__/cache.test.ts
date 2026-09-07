@@ -43,6 +43,30 @@ describe("KvTtlCache", () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
+  it("dates the entry from the load, not from the fence read that follows it", async () => {
+    // `cacheAuthority()` is a live account read that can itself refresh credentials. Stamping the
+    // entry when that returns would hand the caller the whole TTL again on top of the wait.
+    vi.useFakeTimers();
+    const fence = Promise.withResolvers<void>();
+    let reads = 0;
+    const cache = new KvTtlCache(makeKv(), async () => {
+      // The entry read runs first; only the one after `load()` is parked.
+      if (++reads === 2) await fence.promise;
+      return "authority";
+    }, { legacyUnnamed: true });
+
+    const loading = cache.cached("project", 60_000, async () => "loaded");
+    // The load has resolved and the fence read is parked; the clock runs while it waits.
+    await vi.advanceTimersByTimeAsync(30_000);
+    fence.resolve();
+    expect(await loading).toBe("loaded");
+
+    // 30s of the 60s window went to the fence read, so the entry expires 30s from now, not 60s.
+    await vi.advanceTimersByTimeAsync(31_000);
+    const reload = vi.fn(async () => "reloaded");
+    expect(await cache.cached("project", 60_000, reload)).toBe("reloaded");
+  });
+
   it("coalesces one key across instances over the same storage", async () => {
     // A facet that builds its cache per call has two instances over one namespace. Coalescing per
     // instance would let both load, and the slower one overwrite the newer entry afterwards.

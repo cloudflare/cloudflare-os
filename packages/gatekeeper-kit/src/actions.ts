@@ -81,9 +81,15 @@ export class ActionApplyError extends Error {}
 
 /**
  * Marks an apply failure as terminal with an **unknown** provider outcome: the call may already
- * have taken effect. The record is never replayed and never pruned, and no dependent is retired on
- * its account -- a reference it was to provide may in fact exist at the provider. It stays until
- * the user rejects it, so the reconciliation warning survives.
+ * have taken effect. The record is not pruned and no dependent is retired on its account -- a
+ * reference it was to provide may in fact exist at the provider -- so it stays until the user
+ * rejects it and the reconciliation warning survives.
+ *
+ * Pair it with `claimBeforeApply`. Non-replay rests on the durable claim taken *before* dispatch:
+ * without one the record is still `pending` when the handler throws, so an activation that dies
+ * between the provider call and this mark leaves it replayable, which is the effect the class
+ * exists to prevent. Thrown from an unclaimed definition it still records the outcome, and the kit
+ * logs that the guarantee was unavailable.
  *
  * This is the honest classification for a timeout, an aborted request, or any failure after the
  * provider was reached. Use `ActionApplyError` only when the effect is known absent.
@@ -218,12 +224,14 @@ export type ActionSetOptions<Host, M> = {
   afterResolve?(host: Host, outcome: ResolveOutcome): void | Promise<void>;
   /**
    * Reports whether a provisional reference from `dependsOn` has been bound to a real provider id
-   * (e.g. `ref => provisionalIds.isResolved(ref)`). When set, apply refuses to run a handler whose
-   * references are unresolved instead of passing provisional strings to the provider.
+   * (e.g. `(host, ref) => host.provisionalIds.isResolved(ref)`). When set, apply refuses to run a
+   * handler whose references are unresolved instead of passing provisional strings to the provider.
+   * The host is passed because the bindings are durable provider state, which lives per resource.
+   * @param host Provider host this set is bound to.
    * @param ref Provisional reference the action depends on.
    * @returns Whether the reference names a real provider id.
    */
-  isResolvedReference?(ref: string): boolean;
+  isResolvedReference?(host: Host, ref: string): boolean;
   /** Vendor id for log attribution. */
   vendorId?: string;
 };
@@ -389,6 +397,12 @@ export function defineActions<Host, M extends Record<string, unknown>>(
   // The cast above is the one place the payload type is erased: TypeScript cannot correlate a
   // tagged union's payload with its definition.
   const byName = new Map(declared);
+  // Mapped like `byName`, and for the same reason: a kind named after an `Object.prototype` member
+  // would otherwise resolve an inherited one, reading as a policy that is neither "authority" nor
+  // "none" and silently skipping the fence. `Object.entries` yields own properties only.
+  const fenceByKind = new Map(Object.entries(options.fenceOverrides ?? {}));
+  const fencePolicyFor = (kind: keyof M): FencePolicy =>
+    fenceByKind.get(String(kind)) ?? options.fence;
   for (const [name, definition] of declared) {
     // Auto-approval rules key on the tag, so without a kind the flag could never take effect.
     if (definition.autoApprovable === true && !definition.kind) {
@@ -432,7 +446,6 @@ export function defineActions<Host, M extends Record<string, unknown>>(
 
       // Use a Map so stale stored kinds cannot resolve inherited object members.
       const definitionFor = (entry: TaggedAction<M>) => byName.get(String(entry.kind));
-      const fencePolicyFor = (kind: keyof M) => options.fenceOverrides?.[kind] ?? options.fence;
       const requireGeneration = (id: number, at?: { generation?: string }): string => {
         if (at?.generation === undefined) {
           throw new Error(`Action ${id} is fenced to a connection generation; pass the current `
@@ -466,7 +479,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           // A reference the provider already bound is not dead, however this action ended: apply
           // consults the same oracle before dispatching a handler, and a cascade that ignored it
           // would retire dependents whose reference demonstrably exists.
-          const unbound = (ref: string) => options.isResolvedReference?.(ref) !== true;
+          const unbound = (ref: string) => options.isResolvedReference?.(host, ref) !== true;
           const dead = (definitionFor(action)?.provides?.(action.payload) ?? []).filter(unbound);
           if (dead.length === 0) return;
 
@@ -578,7 +591,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         // and the cascade owns terminal marking when it cannot.
         if (options.isResolvedReference) {
           for (const ref of definition.dependsOn?.(action.payload) ?? []) {
-            if (options.isResolvedReference(ref) === true) continue;
+            if (options.isResolvedReference(host, ref) === true) continue;
             throw new Error(`Action ${id} depends on ${ref}, which is not applied yet. Apply its `
               + "providing action first, or reject this action.");
           }
@@ -604,6 +617,12 @@ export function defineActions<Host, M extends Record<string, unknown>>(
               strandDependents(id, action);
             } else if (error instanceof ActionOutcomeUnknownError) {
               journal.markFailed(id, error.message, { outcome: "unknown" });
+              if (!definition.claimBeforeApply) {
+                attributed.error("unknown outcome recorded without a pre-dispatch claim", {
+                  event: "actions.outcome.unclaimed",
+                  action: id,
+                });
+              }
             } else journal.restorePending(id);
             await resolved("failed");
             throw error;
@@ -662,8 +681,9 @@ export function defineActions<Host, M extends Record<string, unknown>>(
 
       const set: BoundActionSet<M> = {
         submit: async (queue, kind, payload, { fence } = {}) => {
-          const definition = definitions[kind];
-          const policy = options.fenceOverrides?.[kind] ?? options.fence;
+          const definition = byName.get(String(kind));
+          if (definition === undefined) throw new Error(`Unknown action kind "${String(kind)}".`);
+          const policy = fencePolicyFor(kind);
           // Declared, not inferred from what the call site happened to pass: an omitted fence on a
           // connection-scoped kind is the silent failure this policy exists to prevent, and a
           // fence on an authority-independent one would pin an action nothing needed pinned.
