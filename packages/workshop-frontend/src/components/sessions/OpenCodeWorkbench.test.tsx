@@ -421,28 +421,113 @@ describe('OpenCodeWorkbench', () => {
     expect(container.textContent).not.toContain('stale-command')
   })
 
-  it('reports concrete startup phases without displaying capability data', async () => {
+  it.each(['messages', 'status'])('allows drafts throughout bootstrap but gates all sends until both critical reads finish (%s first)', async (first) => {
     const capability = deferred<{ url: string; expiresAt: Date }>()
     const list = deferred<Response>()
     const create = deferred<Response>()
     const messages = deferred<Response>()
+    const status = deferred<Response>()
     mint.mockImplementationOnce(() => capability.promise)
     queue((url, init) => {
-      if (url.pathname.endsWith('/session')) return init?.method === 'POST' ? create.promise : list.promise
-      if (url.pathname.endsWith('/message')) return messages.promise
-      return json({})
+      fetchCalls.push({ url: url.pathname, init, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+      if (url.pathname.endsWith('/session')) return (init?.method === 'POST' ? create.promise : list.promise).then((response) => response.clone())
+      if (url.pathname.endsWith('/message')) return messages.promise.then((response) => response.clone())
+      if (url.pathname.endsWith('/status')) return status.promise.then((response) => response.clone())
+      if (url.pathname.endsWith('/prompt_async')) return noContent()
+      if (url.pathname.endsWith('/diff')) return json({ file: 'Independent metadata' })
+      return json([])
     })
-    await render()
+    await render('Queued instructions')
+    const textarea = container.querySelector('textarea')!
+    const send = container.querySelector<HTMLButtonElement>('button[type="submit"]')!
+    textarea.focus()
+    async function assertDraftOnly(phase: string) {
+      expect(textarea.disabled).toBe(false)
+      expect(document.activeElement).toBe(textarea)
+      await typePrompt(textarea, `/draft ${phase}`)
+      expect(textarea.value).toBe(`/draft ${phase}`)
+      expect(send.disabled).toBe(true)
+      await act(async () => {
+        send.click()
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+        container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      })
+      expect(fetchCalls.some((call) => call.url.endsWith('/prompt_async') || call.url.endsWith('/command'))).toBe(false)
+      expect(onInitialInputSent).not.toHaveBeenCalled()
+      expect(container.textContent).not.toContain('Ready for instructions')
+    }
     expect(container.textContent).toContain('Connecting to the coding session…')
+    await assertDraftOnly('capability')
+    expect(fetch).not.toHaveBeenCalled()
     await act(async () => capability.resolve({ url: `${window.location.origin}/secret-capability/`, expiresAt: new Date(Date.now() + 60_000) }))
     expect(container.textContent).toContain('Finding the OpenCode session…')
+    await assertDraftOnly('list')
     await act(async () => list.resolve(json([])))
     expect(container.textContent).toContain('Creating the OpenCode session…')
+    await assertDraftOnly('create')
     await act(async () => create.resolve(json({ id: 'created', title: 'Created' })))
     expect(container.textContent).toContain('Reading the transcript…')
+    expect(container.textContent).toContain('Independent metadata')
+    expect(fetchCalls.slice(2).map((call) => call.url.replace('/secret-capability', ''))).toEqual([
+      '/session/created/message', '/session/status', '/session/created/diff', '/session/created/todo', '/mcp',
+    ])
+    await assertDraftOnly('critical reads')
     expect(container.textContent).not.toContain('secret-capability')
-    await act(async () => messages.resolve(json([])))
-    expect(container.querySelector<HTMLTextAreaElement>('textarea')!.disabled).toBe(false)
+    await act(async () => first === 'messages' ? messages.resolve(json([])) : status.resolve(json({})))
+    if (first === 'messages') expect(container.textContent).toContain('Checking OpenCode readiness…')
+    await assertDraftOnly('one critical read pending')
+    await act(async () => first === 'messages' ? status.resolve(json({})) : messages.resolve(json([])))
+    expect(textarea.value).toBe('/draft one critical read pending')
+    expect(textarea.disabled).toBe(false)
+    expect(send.disabled).toBe(false)
+    expect(container.textContent).toContain('Ready for instructions')
+    expect(fetchCalls.filter((call) => call.url.endsWith('/prompt_async'))).toEqual([
+      expect.objectContaining({ body: { parts: [{ type: 'text', text: 'Queued instructions' }] } }),
+    ])
+    expect(onInitialInputSent).toHaveBeenCalledOnce()
+    expect(fetchCalls.some((call) => call.url.endsWith('/command'))).toBe(true)
+  })
+
+  it.each(['capability', 'list', 'create', 'messages', 'status'])('clears an early draft on session change and cannot activate from stale %s results', async (stage) => {
+    const stale = deferred<Response>()
+    const oldCapability = deferred<{ url: string; expiresAt: Date }>()
+    const newCapability = deferred<{ url: string; expiresAt: Date }>()
+    const capability = { url: `${window.location.origin}/old/`, expiresAt: new Date(Date.now() + 60_000) }
+    mint.mockImplementationOnce(() => stage === 'capability' ? oldCapability.promise : Promise.resolve(capability))
+      .mockImplementationOnce(() => newCapability.promise)
+    queue((url, init) => {
+      fetchCalls.push({ url: url.pathname, init })
+      if ((stage === 'list' && url.pathname.endsWith('/session')) ||
+        (stage === 'create' && init?.method === 'POST') ||
+        (stage === 'messages' && url.pathname.endsWith('/message')) ||
+        (stage === 'status' && url.pathname.endsWith('/status'))) return stale.promise
+      if (url.pathname.endsWith('/session')) return json(stage === 'create' ? [] : [{ id: 'old', title: 'Old transcript' }])
+      if (url.pathname.endsWith('/status')) return json({})
+      return json([])
+    })
+    await render('Queued instructions')
+    const textarea = container.querySelector('textarea')!
+    await typePrompt(textarea, 'Old early draft')
+    expect(textarea.disabled).toBe(false)
+    await act(async () => root.render(<OpenCodeWorkbenchInner
+      authenticatedApi={{ mintCodingSessionOpenCodeCapability: mint }} sessionId="new-session" sessionTitle="New"
+      initialInput="New queued instructions" onInitialInputSent={onInitialInputSent}
+    />))
+    expect(textarea.value).toBe('')
+    await typePrompt(textarea, 'New early draft')
+    const before = fetchCalls.length
+    await act(async () => {
+      oldCapability.resolve(capability)
+      stale.resolve(json(stage === 'list' ? [{ id: 'old' }] : stage === 'create' ? { id: 'old' } : stage === 'status' ? {} : []))
+    })
+    expect(fetchCalls).toHaveLength(before)
+    expect(textarea.value).toBe('New early draft')
+    expect(container.textContent).not.toContain('Old transcript')
+    expect(container.textContent).not.toContain('Ready for instructions')
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true)
+    await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(fetchCalls.some((call) => call.url.endsWith('/prompt_async'))).toBe(false)
+    expect(onInitialInputSent).not.toHaveBeenCalled()
   })
 
   it('discards a late capability mint when the authenticated API is replaced', async () => {
@@ -458,6 +543,43 @@ describe('OpenCodeWorkbench', () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Refresh OpenCode"]')!.click())
     expect(vi.mocked(fetch).mock.calls.every(([url]) => String(url).includes('/replacement/'))).toBe(true)
     expect(replacement).toHaveBeenCalledOnce()
+  })
+
+  it('does not discover slash commands from the previous ready render during API replacement', async () => {
+    await render()
+    const responses = handlers[0]
+    const staleCommands = deferred<Response>()
+    handlers = [(url, init) => url.pathname.endsWith('/command') ? staleCommands.promise : responses(url, init)]
+    const textarea = container.querySelector('textarea')!
+    await typePrompt(textarea, '/draft')
+    const replacement = deferred<{ url: string; expiresAt: Date }>()
+    const mintReplacement = vi.fn(() => replacement.promise)
+    await act(async () => root.render(<OpenCodeWorkbenchInner
+      authenticatedApi={{ mintCodingSessionOpenCodeCapability: mintReplacement }} sessionId="odie-session" sessionTitle="Repair Jarvis"
+    />))
+    // Only the session list may start after reminting; readiness is still unknown.
+    const list = deferred<Response>()
+    const status = deferred<Response>()
+    handlers = [(url) => {
+      if (url.pathname.endsWith('/session')) return list.promise
+      if (url.pathname.endsWith('/status')) return status.promise
+      if (url.pathname.endsWith('/command')) return json([{ name: 'draft-new' }])
+      return json([])
+    }]
+    const callsBeforeMint = vi.mocked(fetch).mock.calls.length
+    await act(async () => replacement.resolve({ url: `${window.location.origin}/replacement/`, expiresAt: new Date(Date.now() + 60_000) }))
+    expect(vi.mocked(fetch).mock.calls.slice(callsBeforeMint).map(([url]) => new URL(String(url)).pathname)).toEqual(['/replacement/session'])
+    expect(textarea.value).toBe('/draft')
+    expect(textarea.disabled).toBe(false)
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true)
+    await act(async () => staleCommands.resolve(json([{ name: 'draft-stale' }])))
+    expect(container.textContent).not.toContain('draft-stale')
+    await act(async () => list.resolve(json([{ id: 'replacement' }])))
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith('/replacement/command'))).toBe(false)
+    await act(async () => status.resolve(json({})))
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/replacement/command'))).toHaveLength(1)
+    expect(container.querySelector('[role="option"]')?.textContent).toContain('draft-new')
+    expect(container.textContent).not.toContain('draft-stale')
   })
 
   it('aborts ancillary reads and clears their deadlines on unmount', async () => {
@@ -665,6 +787,70 @@ describe('OpenCodeWorkbench', () => {
 
     expect(fetchCalls.filter((call) => call.url.endsWith('/prompt_async'))).toHaveLength(1)
     await act(async () => { resolvePrompt?.(noContent()) })
+  })
+
+  it.each(['messages', 'status'])('defers slash discovery until bootstrap is ready and opens the draft menu (%s first)', async (first) => {
+    const messages = deferred<Response>()
+    const status = deferred<Response>()
+    queue((url) => {
+      fetchCalls.push({ url: url.pathname })
+      if (url.pathname.endsWith('/session')) return json([{ id: 'newer' }])
+      if (url.pathname.endsWith('/message')) return messages.promise
+      if (url.pathname.endsWith('/status')) return status.promise
+      if (url.pathname.endsWith('/command')) return json([{ name: 'review' }, { name: 'test' }])
+      return json([])
+    })
+    await render()
+    const textarea = container.querySelector('textarea')!
+    await typePrompt(textarea, '/')
+    expect(fetchCalls.some((call) => call.url.endsWith('/command'))).toBe(false)
+    await act(async () => first === 'messages' ? messages.resolve(json([])) : status.resolve(json({})))
+    expect(fetchCalls.some((call) => call.url.endsWith('/command'))).toBe(false)
+    await act(async () => first === 'messages' ? status.resolve(json({})) : messages.resolve(json([])))
+    expect(fetchCalls.filter((call) => call.url.endsWith('/command'))).toHaveLength(1)
+    expect(container.querySelectorAll('[role="option"]')).toHaveLength(2)
+    expect(textarea.getAttribute('aria-expanded')).toBe('true')
+    await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(textarea.value).toBe('/review ')
+  })
+
+  it.each(['highlight', 'Escape'])('preserves slash menu interaction across an in-flight and completed quiet poll (%s)', async (interaction) => {
+    await render()
+    const responses = handlers[0]
+    const status = deferred<Response>()
+    handlers = [(url, init) => {
+      if (url.pathname.endsWith('/command')) return json([{ name: 'review' }, { name: 'test' }])
+      if (url.pathname.endsWith('/status')) return status.promise
+      return responses(url, init)
+    }]
+    const textarea = container.querySelector('textarea')!
+    await typePrompt(textarea, '/')
+    await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    expect(container.querySelector('[role="option"][aria-selected="true"]')?.textContent).toContain('/test')
+    if (interaction === 'Escape') {
+      await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    }
+    function assertMenu() {
+      if (interaction === 'Escape') {
+        expect(container.querySelector('[role="listbox"]')).toBeNull()
+        expect(textarea.getAttribute('aria-expanded')).toBe('false')
+      } else {
+        expect(container.querySelector('[role="option"][aria-selected="true"]')?.textContent).toContain('/test')
+      }
+    }
+    assertMenu()
+    const listsBeforePoll = fetchCalls.filter((call) => call.url.endsWith('/session')).length
+    await act(async () => vi.advanceTimersByTimeAsync(4000))
+    expect(fetchCalls.filter((call) => call.url.endsWith('/session'))).toHaveLength(listsBeforePoll + 1)
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true)
+    assertMenu()
+    await act(async () => status.resolve(json({ newer: { type: 'idle' } })))
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false)
+    assertMenu()
+    if (interaction === 'highlight') {
+      await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+      expect(textarea.value).toBe('/test ')
+    }
   })
 
   it('discovers slash commands, supports keyboard selection, and submits command payloads', async () => {
@@ -1070,7 +1256,7 @@ describe('OpenCodeWorkbench', () => {
     expect(container.textContent).not.toContain('Stale A')
   })
 
-  it('aligns the visible transcript and disables prompting while a child selection loads', async () => {
+  it('aligns the visible transcript and blocks sending while a child selection loads', async () => {
     let releaseB: (() => void) | undefined
     handlers = []
     queue((url) => {
@@ -1099,7 +1285,9 @@ describe('OpenCodeWorkbench', () => {
 
     expect(picker.value).toBe('session-b')
     expect(container.textContent).not.toContain('Current A')
-    expect(container.querySelector<HTMLTextAreaElement>('textarea')?.disabled).toBe(true)
+    expect(container.querySelector<HTMLTextAreaElement>('textarea')?.disabled).toBe(false)
+    await typePrompt(container.querySelector('textarea')!, 'Draft while switching transcripts')
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true)
 
     await act(async () => releaseB?.())
     expect(container.textContent).toContain('Current B')
