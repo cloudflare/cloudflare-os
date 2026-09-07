@@ -1,17 +1,23 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act, type ComponentProps } from 'react'
+import { act, type ComponentProps, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AiChatAuthorInfo, ConnectedAccountsSubscriber, CodingSessionPiCommand, CodingSessionPiConnection, CodingSessionSummary } from '@gadgets/workshop-shared/api'
+import type { AiChatAuthorInfo, ConnectedAccountsSubscriber, CodingSessionPiCommand, CodingSessionPiConnection, CodingSessionSummary, RequiredConnectionStatus } from '@gadgets/workshop-shared/api'
 import type { AccountDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 import { AuthProvider, useAuthenticatedApi } from '../AuthContext'
 import { SessionsProvider, useSessionsContext } from '../components/sessions/SessionsContext'
 import { SessionsPage } from './sessions'
+import { RequiredConnectionsGate } from '../RequiredConnectionsGate'
 
 vi.mock('../runtime', () => ({ getWorkshopRuntime: () => ({ kind: 'web', requestNotificationPermission: async () => false }) }))
 vi.mock('../FeatureFlagsContext', () => ({ useUiFeatureFlag: () => ({ enabled: true, loading: false }) }))
+// Navigation is not under test; the gate itself and all session providers are real.
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@tanstack/react-router')>(),
+  Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a>,
+}))
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -30,14 +36,23 @@ const owner = (id = 'alice'): AiChatAuthorInfo => ({ id, name: id, type: 'user' 
 
 function createApi(runtime: CodingSessionSummary['runtime'] = 'opencode') {
   const identity = deferred<AiChatAuthorInfo>()
-  const subscribers: ConnectedAccountsSubscriber[] = []
+  const subscribers = new Set<ConnectedAccountsSubscriber>()
+  let githubStatus: boolean | 'missing' | undefined
+  const publish = (subscriber: ConnectedAccountsSubscriber) => {
+    if (githubStatus === undefined) return
+    if (githubStatus === 'missing') subscriber.remove(42)
+    else subscriber.add(42, { displayName: 'GitHub' } as AccountDescription, { displayName: 'GitHub' } as VendorDescription, [], githubStatus, 'github')
+    subscriber.ready()
+  }
   const disposals: ReturnType<typeof vi.fn>[] = []
   const api = {
     whoami: vi.fn<() => Promise<AiChatAuthorInfo>>(() => identity.promise),
     amIAdmin: vi.fn<() => Promise<boolean>>(async () => false),
+    getRequiredConnectionStatuses: vi.fn<() => Promise<RequiredConnectionStatus[]>>(async () => []),
     subscribeConnectedAccounts: vi.fn<(subscriber: ConnectedAccountsSubscriber) => Promise<{ [Symbol.dispose](): void }>>(async (subscriber) => {
-      subscribers.push(subscriber)
-      const dispose = vi.fn<() => void>()
+      subscribers.add(subscriber)
+      publish(subscriber)
+      const dispose = vi.fn<() => void>(() => { subscribers.delete(subscriber) })
       disposals.push(dispose)
       return { [Symbol.dispose]: dispose }
     }),
@@ -63,11 +78,9 @@ function createApi(runtime: CodingSessionSummary['runtime'] = 'opencode') {
     api, identity, disposals,
     async github(valid: boolean | 'missing' = true) {
       await act(async () => {
-        for (const subscriber of subscribers) {
-          if (valid === 'missing') subscriber.remove(42)
-          else subscriber.add(42, { displayName: 'GitHub' } as AccountDescription, { displayName: 'GitHub' } as VendorDescription, [], valid, 'github')
-          subscriber.ready()
-        }
+        githubStatus = valid
+        const activeSubscribers = [...subscribers]
+        for (const subscriber of activeSubscribers) publish(subscriber)
       })
     },
   }
@@ -89,10 +102,12 @@ describe('authenticated session workbench transitions', () => {
   async function render(connection: ReturnType<typeof createApi>) {
     await act(async () => root.render(
       <AuthProvider authenticatedApi={connection.api as unknown as ComponentProps<typeof AuthProvider>['authenticatedApi']} onLogout={() => {}}>
-        <SessionsProvider loadRepositories>
-          <Probe />
-          <SessionsPage />
-        </SessionsProvider>
+        <RequiredConnectionsGate authenticatedApi={connection.api as unknown as ComponentProps<typeof RequiredConnectionsGate>['authenticatedApi']} pathname="/sessions">
+          <SessionsProvider loadRepositories>
+            <Probe />
+            <SessionsPage />
+          </SessionsProvider>
+        </RequiredConnectionsGate>
       </AuthProvider>,
     ))
   }
@@ -150,6 +165,10 @@ describe('authenticated session workbench transitions', () => {
   async function assertPaused(api: ReturnType<typeof createApi>['api']) {
     expect(context.github.state).toBe('loading')
     expect(container.textContent).toContain('Checking GitHub connection')
+    await assertNoWork(api)
+  }
+
+  async function assertNoWork(api: ReturnType<typeof createApi>['api']) {
     const textarea = container.querySelector('textarea')!
     expect(textarea.closest('[style*="display: none"]')).not.toBeNull()
     const count = calls.length
@@ -161,11 +180,21 @@ describe('authenticated session workbench transitions', () => {
       await context.restartSession(session.id)
       await context.archiveSession(session.id)
       await context.resolveActivity('action', 'approve')
+      await context.resolveActivity('action', 'reject')
       container.querySelector<HTMLButtonElement>('button[type="submit"]')?.click()
+      editorButton()?.click()
       await vi.advanceTimersByTimeAsync(12_000)
     })
     expect(calls).toHaveLength(count)
     assertNoSessionCalls(api)
+  }
+
+  async function assertRequiredPaused(previous: ReturnType<typeof createApi>['api'], next: ReturnType<typeof createApi>['api']) {
+    expect(container.textContent).toContain('Checking required connections')
+    const before = Object.values(previous).map((mock) => mock.mock.calls.length)
+    await assertNoWork(next)
+    // The captured provider context and hidden DOM must not use the old API either.
+    expect(Object.values(previous).map((mock) => mock.mock.calls.length)).toEqual(before)
   }
 
   function assertNoSessionCalls(api: ReturnType<typeof createApi>['api']) {
@@ -315,9 +344,14 @@ describe('authenticated session workbench transitions', () => {
     await act(async () => changes().click())
     expect(changes().getAttribute('aria-pressed')).toBe('true')
     const next = createApi()
+    const required = deferred<RequiredConnectionStatus[]>()
+    next.api.getRequiredConnectionStatuses.mockReturnValue(required.promise)
     await render(next)
     await next.github()
     await act(async () => next.identity.resolve(owner()))
+    assertNoSessionCalls(next.api)
+    expect(container.textContent).toContain('Checking required connections')
+    await act(async () => required.resolve([]))
     expect(changes().getAttribute('aria-pressed')).toBe('true')
   })
 
@@ -331,7 +365,11 @@ describe('authenticated session workbench transitions', () => {
     expect(container.querySelector('textarea')!.value).toBe('Private draft')
     const oldContext = context
     const next = createApi()
+    const required = deferred<RequiredConnectionStatus[]>()
+    next.api.getRequiredConnectionStatuses.mockReturnValue(required.promise)
     await render(next)
+    await assertRequiredPaused(first.api, next.api)
+    await act(async () => required.resolve([]))
     expect(identity!).toBeNull()
     expect(first.disposals.every((dispose) => dispose.mock.calls.length === 1)).toBe(true)
     expect(context.activeId).toBe(session.id)
@@ -391,6 +429,51 @@ describe('authenticated session workbench transitions', () => {
     expect(failed.api.codingSessionEditorAvailable).not.toHaveBeenCalled()
   })
 
+  it.each(['missing', 'error'])('destructively resets a confirmed required-connection %s, even for the same owner and session IDs', async (failure) => {
+    const first = createApi()
+    await render(first)
+    await act(async () => first.identity.resolve(owner()))
+    await first.github()
+    await selectSession()
+    await draft()
+    const required = deferred<RequiredConnectionStatus[]>()
+    first.api.getRequiredConnectionStatuses.mockReturnValue(required.promise)
+    await first.github()
+    expect(container.textContent).toContain('Checking required connections')
+    const before = Object.values(first.api).map((mock) => mock.mock.calls.length)
+    const transportCount = calls.length
+    await act(async () => {
+      context.refresh()
+      context.refreshActivity()
+      await context.create()
+      await context.stopSession(session.id)
+      await context.restartSession(session.id)
+      await context.archiveSession(session.id)
+      await context.resolveActivity('action', 'approve')
+      await context.resolveActivity('action', 'reject')
+      container.querySelector<HTMLButtonElement>('button[type="submit"]')?.click()
+      await vi.advanceTimersByTimeAsync(12_000)
+    })
+    expect(Object.values(first.api).map((mock) => mock.mock.calls.length)).toEqual(before)
+    expect(calls).toHaveLength(transportCount)
+    await act(async () => {
+      if (failure === 'error') required.reject(new Error('offline'))
+      else required.resolve([{ vendorId: 'github', displayName: 'GitHub', state: 'missing' }])
+    })
+    expect(container.querySelector('textarea')).toBeNull()
+    expect(container.textContent).toContain('Connect required services to continue')
+    first.api.getRequiredConnectionStatuses.mockResolvedValue([])
+    await first.github()
+    // Resubscribing the resumed provider sends its own ready snapshot, not a gate refresh.
+    expect(first.api.getRequiredConnectionStatuses).toHaveBeenCalledTimes(4)
+    expect(context.activeId).toBeUndefined()
+    expect(context.title).toBe('Coordinated code change')
+    await selectSession()
+    expect(container.querySelector('textarea')!.value).toBe('')
+    expect(container.querySelector('[aria-label="Image attachments"]')).toBeNull()
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="OpenCode transcript"]')!.value).toBe('newer')
+  })
+
   it('preserves the actual Pi draft, stops its polling while checking, and resets it for a new owner', async () => {
     const first = createApi('pi')
     await render(first)
@@ -406,7 +489,11 @@ describe('authenticated session workbench transitions', () => {
     })
     const count = first.api.callCodingSessionPi.mock.calls.length
     const next = createApi('pi')
+    const required = deferred<RequiredConnectionStatus[]>()
+    next.api.getRequiredConnectionStatuses.mockReturnValue(required.promise)
     await render(next)
+    await assertRequiredPaused(first.api, next.api)
+    await act(async () => required.resolve([]))
     await assertPaused(next.api)
     await next.github()
     await assertPaused(next.api)
