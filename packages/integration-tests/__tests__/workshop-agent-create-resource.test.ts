@@ -1,18 +1,20 @@
 // createExternalResource end to end against the fixture gatekeeper: tool → binding → action card
-// → approve → describe refresh, plus the rejection path, replay across turns, and a vendor that
-// fails after queueing its creation action. (Provider depth is covered by per-vendor suites,
-// e.g. gatekeeper-google's workerd tests.)
+// → out-of-order refusal → in-order approval → describe refresh, plus the rejection path, replay
+// across turns, and a vendor that fails after queueing its creation action. (Provider depth is
+// covered by per-vendor suites, e.g. gatekeeper-google's workerd tests.)
 
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
 import type {
   AiChatAuthorInfo, AiModelConfig, AuthenticatedApi, Overseer, PublicApi,
 } from "@gadgets/workshop-shared/api";
-import { startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness } from "../src/harness.js";
+import {
+  startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
+} from "../src/harness.js";
 import { scriptedChatCompletions, type ScriptedChatCompletions } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
-  connect, listConnectedAccounts, nextUsernames, signUp, waitFor,
+  accountLabel, connect, listConnectedAccounts, nextUsernames, signUp, waitFor,
 } from "../src/rpc-client.js";
 
 const MODEL_ID = "@cf/zai-org/glm-5.2";
@@ -109,6 +111,27 @@ function userMessagesShownToModel(): string[] {
       .map(message => message.content ?? "");
 }
 
+/** The hydrated action card for `actionId` in the chat history (what the UI renders from). */
+async function actionCard(workspace: RpcStub<Overseer>, chatId: number, actionId: number) {
+  const history = await workspace.getChatHistory(chatId);
+  const message = history.messages.find(entry =>
+    entry.type === "action" && entry.actionId === actionId);
+  if (message?.type !== "action") throw new Error(`No action card for action ${actionId}`);
+  return message;
+}
+
+/** Vendor-side action bookkeeping for `label` (the fixture control DO's view). */
+async function actionState(label: string) {
+  const response = await harness.fetchWorker(
+      TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/action-state",
+      { method: "POST", body: JSON.stringify({ label }) });
+  if (response.status !== 200) {
+    throw new Error(`Reading test action state failed with ${response.status}`);
+  }
+  // Loose shape: the assertions pin the fields that matter.
+  return await response.json() as { pending: unknown[]; value?: number; applyCount: number };
+}
+
 it("creates a resource the agent can use before the user approves it", async () => {
   model = scriptedChatCompletions([
     // Turn 1: a fixable rejection, then a successful creation, used immediately.
@@ -146,9 +169,8 @@ it("creates a resource the agent can use before the user approves it", async () 
       },
     },
     { text: "Created the thing and read 42 from it." },
-    // Turn 2 (after approval): the replayed binding still works, and the write's action
-    // snapshot shows the refreshed (created) resource URL. writeValue awaits a decision, so
-    // this turn deliberately suspends.
+    // Turn 2: replay re-establishes the binding, and a write is queued against the
+    // still-provisional resource. writeValue awaits a decision, so this turn suspends.
     {
       toolCall: {
         id: "write-new-thing",
@@ -158,6 +180,17 @@ it("creates a resource the agent can use before the user approves it", async () 
         },
       },
     },
+    // Resumed turn (after in-order approval): the write reached the provider path.
+    {
+      toolCall: {
+        id: "read-after-write",
+        name: "executeCode",
+        arguments: {
+          code: "export default async function(self, env) { console.log(await env.NEW_THING.readValue()); }",
+        },
+      },
+    },
+    { text: "The value is now 9." },
   ]);
   using publicApi = connect(harness.url);
   using authenticated = await signUpScriptedUser(publicApi, "createres");
@@ -184,35 +217,66 @@ it("creates a resource the agent can use before the user approves it", async () 
     description: { title: 'Create test thing "My Thing"' },
   });
   expect(pending.resourceUrl).toContain("/things/provisional-");
-  const history = await workspace.getChatHistory(chatId);
-  expect(history.messages.some(message =>
-    message.type === "action" && message.actionId === pending.id)).toBe(true);
+  // The card in the chat history renders from the hydrated actionLog, not just the id.
+  expect((await actionCard(workspace, chatId, pending.id)).actionLog)
+      .toMatchObject({ state: "pending" });
 
-  await workspace.approveAction(pending.id);
-
-  // A second turn proves both replay (the binding is re-established from the recorded tool
-  // output) and the post-apply describe refresh (the new action's snapshot carries the real,
-  // no-longer-provisional resource URL).
+  // Turn 2: the binding is re-established from the recorded tool output, and the write is
+  // queued while the resource is still provisional. The turn suspends holding both actions.
   await workspace.sendChatMessage(chatId, "Now set its value to 9.", MODEL_ID);
-  const write = await onlyPendingAction(workspace, "the write action to be pending");
-  expect(write).toMatchObject({
-    type: "action",
-    state: "pending",
-    description: { title: "Set the test value to 9" },
+  const queued = await waitFor("the creation and the write to be pending", async () => {
+    const entries = (await workspace.listActions({ filter: "pending" })).entries;
+    return entries.length === 2 ? entries : null;
   });
-  expect(write.resourceUrl).toContain("/things/created-");
-  expect(write.resourceUrl).not.toContain("provisional");
+  const write = queued.find(action => action.description.title === "Set the test value to 9");
+  if (write === undefined) throw new Error("No pending write action found");
+  // Queue-time snapshot: the resource was still provisional when the write was queued.
+  expect(write.resourceUrl).toContain("/things/provisional-");
 
-  // The creation action itself settled as approved.
+  // Approving the dependent write before the creation is refused (the gatekeeper's in-order
+  // guard) and the write stays pending.
+  await expect(workspace.approveAction(write.id)).rejects.toThrow(/does not exist yet/);
+  expect((await workspace.listActions({ filter: "pending" })).entries
+      .some(action => action.id === write.id)).toBe(true);
+
+  // In order: creation, then the write. The write approval resolving is the apply proof — the
+  // platform awaits the vendor's applyAction before marking it approved, and the identical call
+  // was just refused. The second approval resumes the suspended turn.
+  await workspace.approveAction(pending.id);
+  await workspace.approveAction(write.id);
+  await waitForAgentSays(workspace, chatId, "The value is now 9.");
+
+  // Both actions settled, and the post-apply describe refresh retired the provisional URL:
+  // the resumed read's observation snapshots the created resource.
   const all = (await workspace.listActions({ filter: "all" })).entries;
   expect(all.find(action => action.id === pending.id)?.state).toBe("approved");
+  expect(all.find(action => action.id === write.id)?.state).toBe("approved");
+  expect(all.some(action =>
+    action.type === "observation" && action.resourceUrl?.includes("/things/created-"))).toBe(true);
+
+  // actionLog hydrates at read time: the same card now carries the decision, and the creation
+  // card's link was refreshed off the dead provisional URL.
+  expect((await actionCard(workspace, chatId, pending.id)).actionLog).toMatchObject({
+    state: "approved",
+    resourceUrl: expect.stringContaining("/things/created-"),
+  });
+
+  // Vendor-side proof the applies really landed: the creation staged value 0, the write 9.
+  const account = (await listConnectedAccounts(authenticated))
+      .find(entry => entry.vendorId === TEST_VENDOR_ID);
+  if (!account) throw new Error("No connected test account");
+  expect(await actionState(accountLabel(account)))
+      .toMatchObject({ pending: [], value: 9, applyCount: 2 });
 
   // The decision reached the model as a durable nudge — the recorded tool result permanently
   // says the resource doesn't exist yet, so without this the model's context never learns it
-  // now does.
-  const approval = userMessagesShownToModel().find(message =>
-    message.includes("The user approved the creation of env.NEW_THING"));
-  expect(approval).toContain(write.resourceUrl);
+  // now does. The verdict lands before the describe refresh (so it carries no URL); the
+  // refresh then delivers the real URL as a follow-up, or the model would only ever hold the
+  // dead provisional one.
+  expect(userMessagesShownToModel().some(message =>
+    message.includes("The user approved the creation of env.NEW_THING"))).toBe(true);
+  expect(userMessagesShownToModel().some(message =>
+    /env\.NEW_THING now exists at .*\/things\/created-/.test(message))).toBe(true);
   expect(model.remainingSteps()).toBe(0);
 });
 
@@ -327,5 +391,68 @@ it("settles the queued action when the vendor fails after queueing it", async ()
     action.type === "action" && action.state === "rejected");
   if (settled?.gatekeeperId === undefined) throw new Error("No settled creation action found");
   await expect(workspace.getGatekeeperById(settled.gatekeeperId)).rejects.toThrow();
+  expect(model.remainingSteps()).toBe(0);
+});
+
+it("fails closed when the vendor never queues its creation action", async () => {
+  model = scriptedChatCompletions([
+    // A contract-breaking vendor returns from submitCreationAction without queueing; the
+    // overseer must surface the bug instead of leaving a permanently provisional binding.
+    {
+      toolCall: {
+        id: "create-unqueued",
+        name: "createExternalResource",
+        arguments: {
+          vendorId: TEST_VENDOR_ID,
+          resourceUrlPattern: RESOURCE_URL_PATTERN,
+          title: "never-queues",
+          bindingName: "UNQUEUED",
+        },
+      },
+    },
+    { text: "The creation failed." },
+  ]);
+  using publicApi = connect(harness.url);
+  using authenticated = await signUpScriptedUser(publicApi, "createnoop");
+  using workspace = await authenticated.newGadget();
+  const chatId = await workspace.newChat("Create a never-queued test thing.", MODEL_ID);
+  await waitForAgentSays(workspace, chatId, "The creation failed.");
+
+  expect(toolResultShownToModel("create-unqueued")).toMatch(/vendor bug/);
+  expect((await workspace.listActions({ filter: "all" })).entries).toEqual([]);
+  expect(model.remainingSteps()).toBe(0);
+});
+
+it("settles an undecided creation when its chat is deleted", async () => {
+  model = scriptedChatCompletions([
+    {
+      toolCall: {
+        id: "create-abandoned",
+        name: "createExternalResource",
+        arguments: {
+          vendorId: TEST_VENDOR_ID,
+          resourceUrlPattern: RESOURCE_URL_PATTERN,
+          title: "Abandoned Thing",
+          bindingName: "ABANDONED",
+        },
+      },
+    },
+    { text: "Created the abandoned thing." },
+  ]);
+  using publicApi = connect(harness.url);
+  using authenticated = await signUpScriptedUser(publicApi, "createdel");
+  using workspace = await authenticated.newGadget();
+  const chatId = await workspace.newChat("Create a thing I will abandon.", MODEL_ID);
+  await waitForAgentSays(workspace, chatId, "Created the abandoned thing.");
+  const pending = await onlyPendingAction(workspace, "the creation action to be pending");
+  if (pending.gatekeeperId === undefined) throw new Error("Creation action has no gatekeeper");
+
+  await workspace.deleteChat(chatId);
+
+  // The deleted log was the only thing that could ever bind the resource, so the card must not
+  // stay approvable: approving it would mint a provider resource nothing can address.
+  const all = (await workspace.listActions({ filter: "all" })).entries;
+  expect(all.find(action => action.id === pending.id)?.state).toBe("rejected");
+  await expect(workspace.getGatekeeperById(pending.gatekeeperId)).rejects.toThrow();
   expect(model.remainingSteps()).toBe(0);
 });

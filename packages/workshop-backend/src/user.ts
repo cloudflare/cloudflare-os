@@ -1746,9 +1746,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // RPC, exactly like getGatekeeperClassFor -- the vendor is the authority on which resource
     // type a request maps to. (createResource mints only the class and a provisional URL; the
     // provider-side creation is a separate pending action, so nothing external happened yet.)
+    // A dormant auto-provisioning vendor (ambient mode "disabled") blocks here too: existing
+    // accounts stay unusable, matching startHook's use-time check.
     let config = await readAdminConfig(this.env);
     let vendorIdLower = account.vendorId.toLowerCase();
-    if (config.disabledGatekeepers.includes(vendorIdLower)) {
+    if (config.disabledGatekeepers.includes(vendorIdLower) ||
+        ambientGatekeeperMode(config, vendorIdLower) === "disabled") {
       throw new Error(
           `The "${account.vendorId}" gatekeeper is disabled on this deployment by an administrator.`);
     }

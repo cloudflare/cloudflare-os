@@ -2520,10 +2520,14 @@ export async function runAgent(
           `can; use listConnectableResources to learn a vendor's resource URL patterns first). The ` +
           `user accepts or denies in the chat. If they accept, you'll be resumed and the resource ` +
           `becomes available as a binding in your env; if they deny, your turn ends and you wait ` +
-          `for the user's next message. Resource types listConnectableResources marks "Creatable" ` +
-          `can instead be created brand-new with createExternalResource through an ` +
-          `already-connected account — that binding is usable immediately (the user approves the ` +
-          `creation as a normal action while you keep working).\n` +
+          `for the user's next message.\n` +
+          `If you need a brand-new resource instead (a new document, for example), resource types ` +
+          `listConnectableResources marks "Creatable" can be created with createExternalResource ` +
+          `through an already-connected account. This applies even when your existing binding for ` +
+          `that vendor is read-only: creation goes through the account, not the binding. Don't ` +
+          `assume a type isn't creatable — listConnectableResources answers in one call, no ` +
+          `connected account required. The new binding is usable immediately (the user approves ` +
+          `the creation as a normal action while you keep working).\n` +
           `If one of these services likely holds information relevant to the task, consider ` +
           `requesting a connection and reading from it before you answer, instead of answering from ` +
           `guesswork — a connection often gives you the real information. Connectable vendors:\n` +

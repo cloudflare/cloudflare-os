@@ -916,7 +916,9 @@ function buildToolCallGroups(
     const summary = getToolCallSummary(toolCalls[0], outputOf);
     labelParts.push(`${summary.verb}${summary.target ? ` ${summary.target}` : ""}`);
   } else if (toolCalls.length > 1 && distinctToolNames.length === 1) {
-    const summary = getToolCallSummary(toolCalls[0], outputOf);
+    // Label by the last call: for same-target retries the final outcome wins (a failed create
+    // retried successfully is "Created", not "Tried").
+    const summary = getToolCallSummary(toolCalls[toolCalls.length - 1], outputOf);
     labelParts.push(detailLines.length === 1 && summary.target && observations.length === 0
       ? `${summary.verb} ${summary.target}`
       : describeToolCallCount(toolCalls));
@@ -1451,9 +1453,21 @@ const ToolCallDetails = memo(function ToolCallDetails(
           )}
         </>
       ) : (
-        <pre className="max-h-56 overflow-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-3 font-mono text-[12px] leading-[18px] text-kumo-subtle whitespace-pre-wrap">
-          {JSON.stringify(tc.input, null, 2)}
-        </pre>
+        <>
+          <pre className="max-h-56 overflow-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-3 font-mono text-[12px] leading-[18px] text-kumo-subtle whitespace-pre-wrap">
+            {JSON.stringify(tc.input, null, 2)}
+          </pre>
+          {tc.toolName === "createExternalResource" && typeof tc.output === "string" && (
+            <>
+              <span className="font-mono text-[11px] leading-4 text-kumo-inactive uppercase tracking-[0.08em]">
+                Output
+              </span>
+              <pre className="max-h-56 overflow-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-3 font-mono text-[12px] leading-[18px] text-kumo-subtle whitespace-pre-wrap">
+                {tc.output}
+              </pre>
+            </>
+          )}
+        </>
       )}
     </div>
   );

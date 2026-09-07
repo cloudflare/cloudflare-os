@@ -444,6 +444,8 @@ export class TestGatekeeper
     if (!creation) {
       throw new Error("This test gatekeeper was not minted by createResource().");
     }
+    // Test knob: a contract-breaking vendor that returns without queueing its creation.
+    if (creation.title === "never-queues") return;
     if (this.ctx.storage.kv.get<number>("creationActionId") !== undefined) return;
     const id = await control(this.ctx.exports).stageAction(this.ctx.props.label, 0);
     this.ctx.storage.kv.put("creationActionId", id);
