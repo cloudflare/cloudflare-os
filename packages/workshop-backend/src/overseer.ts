@@ -9195,7 +9195,8 @@ class OverseerImpl implements AgentHooks {
       let userStub = wrapDoStubForTelemetry(
           this.users.get(this.users.idFromName(initiator.id)), this.logger);
       minted = await userStub.createResourceGatekeeper(
-          input.vendorId, input.accountId, input.resourceUrlPattern, {title: input.title});
+          input.vendorId, input.accountId, input.resourceUrlPattern,
+          {title: input.title, options: input.options});
     } catch (error) {
       return `Cannot create the resource: ${stringifyError(error)}`;
     }

@@ -1,6 +1,6 @@
 import { RpcStub } from "capnweb";
 import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, AUTH_ERROR_CODES, createAuthError } from '@gadgets/workshop-shared/api';
-import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
+import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, SupportedResource, ResourceConfiguratorFrame, ResourceCreationOptions, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -1701,7 +1701,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async createResourceGatekeeper(
       vendorId: string, accountId: number | undefined, resourceUrlPattern: string,
-      options: {title: string})
+      input: {title: string, options?: ResourceCreationOptions})
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, vendorId: string,
                   typeUrlPattern: string, resourceUrl: string}> {
     let account: ConnectedAccountRecord;
@@ -1740,7 +1740,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // error, which the overseer relays to the agent.
     let {class: cls, resource, resourceUrl} =
         await (account.account as unknown as ResourceCreatorStub)
-            .createResource(resourceUrlPattern, options);
+            .createResource(resourceUrlPattern, input);
 
     // Check the admin disable-set against the pattern the vendor actually resolved, after the
     // RPC, exactly like getGatekeeperClassFor -- the vendor is the authority on which resource

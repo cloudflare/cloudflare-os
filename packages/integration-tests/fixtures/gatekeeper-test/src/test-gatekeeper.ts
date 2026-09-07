@@ -24,8 +24,8 @@ import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudf
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import type {
   AccountDescription, ActionKind, ApprovalQueue, Gatekeeper, GatekeeperConnectCallback,
-  GatekeeperUser, GatekeeperUserVerifier, ResourceDescription, ResourceConfiguratorFrame,
-  SupportedResource, VendorDescription,
+  GatekeeperUser, GatekeeperUserVerifier, ResourceCreationOptions, ResourceDescription,
+  ResourceConfiguratorFrame, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   ChatGatewayRpcTarget, GadgetResponse,
@@ -168,7 +168,7 @@ type BindingProps = AccountProps & {
   resourceUrl: string;
   ambient?: true;
   /** Present on bindings minted by createResource(): the thing to create once approved. */
-  creation?: { title: string };
+  creation?: { title: string, shelf?: string };
 };
 
 @validateRpc()
@@ -262,7 +262,8 @@ export class TestAccount
    * Mint a NEW test thing (createExternalResource): a provisional resource URL and a gatekeeper
    * class that simulates the thing until the creation action is approved.
    */
-  async createResource(resourceUrlPattern: string, options: { title: string }): Promise<{
+  async createResource(resourceUrlPattern: string,
+      input: { title: string, options?: ResourceCreationOptions }): Promise<{
     class: DurableObjectClass<Gatekeeper<TestSession>>;
     resource: SupportedResource;
     resourceUrl: string;
@@ -271,11 +272,24 @@ export class TestAccount
       throw new Error(
           `The test gatekeeper cannot create resources of type "${resourceUrlPattern}".`);
     }
+    // Per the ResourceCreationOptions contract: unknown/invalid options are agent-fixable
+    // rejections, and accepted ones surface on the creation card (see submitCreationAction).
+    const { title, options } = input;
+    const unknown = Object.keys(options ?? {}).filter((key) => key !== "shelf");
+    if (unknown.length > 0) {
+      throw new Error(`Unknown creation option(s): ${unknown.join(", ")}. ` +
+          `Test things accept only "shelf" (a string).`);
+    }
+    const shelf = options?.shelf;
+    if (shelf !== undefined && typeof shelf !== "string") {
+      throw new Error(`The "shelf" creation option must be a string.`);
+    }
     const resourceUrl = `https://${VENDOR_HOST}/things/provisional-${crypto.randomUUID()}`;
     return {
       class: this.ctx.exports.TestGatekeeper({
         props: {
-          label: this.ctx.props.label, resourceUrl, creation: { title: options.title },
+          label: this.ctx.props.label, resourceUrl,
+          creation: { title, ...(shelf !== undefined ? { shelf } : {}) },
         },
       }),
       resource: SUPPORTED_RESOURCES[0],
@@ -452,7 +466,8 @@ export class TestGatekeeper
     try {
       await approvalQueue.submitAction(id, {
         title: `Create test thing "${creation.title}"`,
-        description: `Create a new test thing titled **${creation.title}**.`,
+        description: `Create a new test thing titled **${creation.title}**` +
+            `${creation.shelf !== undefined ? ` on shelf ${creation.shelf}` : ""}.`,
         implementsRevert: false,
         actionKind: { tag: "create-thing", label: "Create thing" },
       });

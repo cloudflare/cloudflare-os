@@ -569,6 +569,15 @@ export interface GatekeeperConnectCallback extends WorkerEntrypoint {
 }
 
 /**
+ * Vendor-specific creation parameters for GatekeeperUser.createResource(), authored by the agent
+ * and untrusted like `title`. Flat bounded scalars only (e.g. a parent folder id). The resource's
+ * `creatable.description` documents the accepted keys; the vendor MUST reject unknown or invalid
+ * entries with an agent-readable message, and MUST reflect consequential entries (e.g. placement)
+ * in the creation action's description so the user approves what will actually happen.
+ */
+export type ResourceCreationOptions = Record<string, string | number | boolean>;
+
+/**
  * RPC interface to an Adapter. This is a privileged interface exposed to the Gadget Workshop UI
  * itself, not to Gadgets nor AI agents.
  *
@@ -620,9 +629,11 @@ export interface GatekeeperUser extends WorkerEntrypoint {
    * state's own policy.
    *
    * Throws with an agent-readable message when the account cannot create this resource type
-   * (e.g. its authorization does not cover the needed scopes); callers surface the message.
+   * (e.g. its authorization does not cover the needed scopes) or when `input.options` carries
+   * unknown or invalid entries (see ResourceCreationOptions); callers surface the message.
    */
-  createResource?(resourceUrlPattern: string, options: {title: string}): Promise<{
+  createResource?(resourceUrlPattern: string,
+                  input: {title: string, options?: ResourceCreationOptions}): Promise<{
     class: DurableObjectClass<Gatekeeper<any>>;
     resource: SupportedResource;
     /** Provisional URL of the new resource; replaced by the real URL once created. */

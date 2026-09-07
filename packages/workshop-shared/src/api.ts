@@ -24,7 +24,7 @@
 // Gadget a stub pointing to the Gadget's server-side Durable Object interface.
 
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import { AccountDescription, ActionKind, ActionDescription, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
+import { AccountDescription, ActionKind, ActionDescription, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, ResourceCreationOptions, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { CodeChange } from "./code-change.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
@@ -3255,6 +3255,12 @@ export type AiToolCall = {
 
     /** Which connected account creates the resource; required only when several match. */
     accountId?: number;
+
+    /**
+     * Vendor-specific creation parameters (flat scalars), as documented by the creatable
+     * type's description; see ResourceCreationOptions.
+     */
+    options?: ResourceCreationOptions;
   };
 
   /**

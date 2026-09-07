@@ -2,7 +2,7 @@ import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSp
 import { applyCodeChange, codeChangeSerializedSize, replaceSpanChange, type CodeContent,
   type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
-import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
+import { AgentCatalog, ObservationDescription, type ResourceCreationOptions } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger } from "./observability";
 import { Type } from "@earendil-works/pi-ai";
 import type {
@@ -393,6 +393,7 @@ export type CreateExternalResourceInput = {
   title: string;
   bindingName: string;
   accountId?: number;
+  options?: ResourceCreationOptions;
 };
 
 /**
@@ -3305,6 +3306,13 @@ export async function runAgent(
           description:
               "Which connected account creates the resource. Only needed when several accounts " +
               "of the vendor are connected (a rejection will list the candidate ids).",
+        })),
+        options: Type.Optional(Type.Record(
+            Type.String(), Type.Union([Type.String(), Type.Number(), Type.Boolean()]), {
+          description:
+              "Vendor-specific creation parameters (flat scalars), e.g. a parent folder id. " +
+              "The creatable type's description lists the accepted keys; omit unless it names " +
+              "some. Unknown keys are rejected with guidance.",
         })),
       }),
       execute: async (toolCallId, input) => {
