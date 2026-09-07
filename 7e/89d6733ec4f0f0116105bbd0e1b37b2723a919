@@ -1,0 +1,31 @@
+packages/gadget-libraries/page/README.md
+  s_4a30a440cc2138::t_47cbb77d3440e5 527-534,606,611
+packages/gadget-libraries/page/__tests__/comments.test.ts
+  s_4a30a440cc2138::t_721cb87228a6b3 446-461
+packages/gadget-libraries/page/__tests__/editor-harness.ts
+  s_4a30a440cc2138::t_95d8239c235232 16-17,33,38-39
+packages/gadget-libraries/page/__tests__/editor.test.ts
+  s_4a30a440cc2138::t_20e6947a9ff128 4,579-747
+packages/gadget-libraries/page/client.ts
+  s_4a30a440cc2138::t_3d2fc6caad27c1 41,160-161,188-201,283-284,335,429,438,500
+packages/gadget-libraries/page/src/comments.ts
+  s_4a30a440cc2138::t_2379931a434501 371-376,406
+packages/gadget-libraries/page/src/editor.ts
+  s_4a30a440cc2138::t_78e917f8f06fbb 127-133,167-168,185-186,1128-1184,1189-1191,1250-1255,1654-1678,2377-2386
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7e89d6733ec4f0f0116105bbd0e1b37b2723a919",
+  "prompts": {},
+  "sessions": {
+    "s_4a30a440cc2138": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8775eb53-edf4-4778-8216-f263267a5316",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
