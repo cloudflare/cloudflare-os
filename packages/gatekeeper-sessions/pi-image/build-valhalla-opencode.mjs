@@ -7,7 +7,13 @@ const root = process.env.VALHALLA_OUTPUT_ROOT ?? "/opt/odie-valhalla/opencode";
 const commandDir = `${root}/command`;
 const skillDir = `${root}/skills/vegvisir`;
 
-const hooks = await AgenticCommandsPlugin({}, {});
+// Baro and AutoAgent run externally: they cannot implicitly inherit the current
+// OpenCode session's model. These options set embedded delegation defaults only;
+// explicit user selections take precedence, and saved settings are not rewritten.
+const hooks = await AgenticCommandsPlugin({}, {
+  tyr: { baroModel: "openai/gpt-6-astra" },
+  eitri: { completionModel: "openai/gpt-6-astra" },
+});
 const config = { command: {} };
 await hooks.config(config);
 const expectedCommands = ["eitri", "hugin", "munin", "polaris", "skuld", "tyr", "vegvisir", "vidar"];

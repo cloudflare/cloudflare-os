@@ -61,6 +61,44 @@ export function primeAgentCommand(): [string, ...string[]] {
   ];
 }
 
+/**
+ * Build a piped-stdio command for the pinned Pi/Prime releases, not a PTY or HTTP
+ * server. The session owner allocates sessionFile and supplies cwd/environment.
+ * A resumed conversation keeps its saved model unless explicitly overridden.
+ */
+export function harnessRpcCommand(
+  runtime: "pi" | "prime-agent",
+  options: { sessionFile?: string; model?: typeof TEAM_PI_MODEL_IDS[number] } = {},
+): [string, ...string[]] {
+  if (runtime !== "pi" && runtime !== "prime-agent") throw new Error("Unsupported RPC runtime.");
+  if (options.sessionFile !== undefined &&
+      (!options.sessionFile.startsWith("/") || options.sessionFile.includes("\0"))) {
+    throw new Error("An owner-allocated absolute session path is required.");
+  }
+  if (options.model !== undefined && !TEAM_PI_MODEL_IDS.includes(options.model)) {
+    throw new Error("Unsupported managed model.");
+  }
+  const source = runtime === "pi" ? piCommand() : primeAgentCommand();
+  const command: [string, ...string[]] = [source[0]];
+  for (let i = 1; i < source.length; i++) {
+    const argument = source[i]!;
+    if (argument === "--tui-mode" || (options.sessionFile !== undefined &&
+        options.model === undefined && ["--provider", "--model", "--models"].includes(argument))) {
+      i++;
+    } else if (argument === "--model" && options.model !== undefined) {
+      command.push(argument, options.model);
+      i++;
+    } else {
+      command.push(argument);
+    }
+  }
+  command.push("--mode", "rpc");
+  if (options.sessionFile !== undefined) {
+    command.push(runtime === "pi" ? "--session" : "--resume", options.sessionFile);
+  }
+  return command;
+}
+
 export function primeAgentEnvironment(): Record<string, string> {
   return {
     PRIME_AGENT_CODING_AGENT_DIR: PRIME_AGENT_CONFIG_DIR,
