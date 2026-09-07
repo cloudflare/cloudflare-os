@@ -2756,7 +2756,12 @@ export class CodingSessionRegistry extends DurableObject<Env> {
         throw new Error("Capacity activation returned a different reservation.");
       }
     }
-    const running = { ...current, status: "running" as const, terminalId, lastActiveAt: new Date() };
+    // Capacity activation can yield to stop/restart or another completion callback.
+    const latest = this.#get(sessionId);
+    if (!latest || latest.archivedAt || storedSessionGeneration(latest) !== generation || latest.sandboxId !== sandboxId) return false;
+    if (latest.status === "running" && latest.terminalId === terminalId) return true;
+    if (latest.status !== "starting") return false;
+    const running = { ...latest, status: "running" as const, terminalId, lastActiveAt: new Date() };
     this.#put(running);
     logger.info("coding session environment ready", {
       event: "coding.session.environment.ready",

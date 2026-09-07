@@ -249,6 +249,29 @@ describe("coding session asynchronous startup", () => {
     expect(registry.startupProgressed(record.id, 3, record.sandboxId, "terminal")).toBe(false);
   });
 
+  it.each(["stop", "restart", "duplicate"])("fences startup completion after capacity activation races with %s", async kind => {
+    const capacityLease = {
+      tier: "standard-2" as const, reservationId: "lease-1", sessionId: "session-1",
+      generation: 3, sandboxId: "sandbox-1", userId: "user-1",
+    };
+    const record = startingRecord({ generation: 3, capacityLease, instanceTier: "standard-2" });
+    const { registry, kv } = createRegistryWith(record);
+    const activation = deferred<typeof capacityLease>();
+    (registry as typeof registry & { env: Record<string, unknown> }).env = {
+      SESSION_CAPACITY: { getByName: () => ({ activate: () => activation.promise }) },
+    };
+    const completion = registry.startupSucceeded("session-1", 3, "sandbox-1", "term-primary");
+    const replacement = kind === "stop" ? { ...record, status: "stopping" }
+      : kind === "restart" ? { ...record, generation: 4, sandboxId: "sandbox-2" }
+      : { ...record, status: "running", terminalId: "term-primary" };
+    kv.put("session:session-1", replacement);
+    kv.put.mockClear();
+    activation.resolve(capacityLease);
+    expect(await completion).toBe(kind === "duplicate");
+    expect(kv.get("session:session-1")).toEqual(replacement);
+    expect(kv.put).not.toHaveBeenCalled();
+  });
+
   it("does not retry successful startup work when the advisory progress mirror fails", async () => {
     const { policy, kv, registry } = createPolicy();
     const sandbox = createStartupSandbox();
