@@ -62,12 +62,12 @@ function createApi(runtime: CodingSessionSummary['runtime'] = 'opencode') {
     codingSessionEditorAvailable: vi.fn<() => Promise<boolean>>(async () => false),
     mintCodingSessionEditorCapability: vi.fn<(id: string) => Promise<{ url: string; expiresAt: Date }>>(async (_id) => ({ url: 'https://editor.example/session', expiresAt: new Date(Date.now() + 60_000) })),
     mintCodingSessionOpenCodeCapability: vi.fn<() => Promise<{ url: string; expiresAt: Date }>>(async () => ({ url: `${window.location.origin}/opencode/`, expiresAt: new Date(Date.now() + 60_000) })),
-    connectCodingSessionPi: vi.fn<() => Promise<CodingSessionPiConnection>>(async () => ({ mode: 'rpc', version: 1, connectionId: 'handle', expiresAt: new Date(Date.now() + 60_000) })),
+    connectCodingSessionPi: vi.fn<() => Promise<CodingSessionPiConnection>>(async () => ({ mode: 'rpc', runtime: runtime === 'prime-agent' ? 'prime' : 'pi', capabilities: { messages: 'current-context', history: runtime === 'pi' ? 'persisted-entries' : 'unavailable', tree: runtime === 'pi', settlement: runtime === 'pi' ? 'agent_settled' : 'unavailable', messageUpdates: runtime === 'pi' ? 'delta' : 'cumulative' }, version: 1, connectionId: 'handle', expiresAt: new Date(Date.now() + 60_000) })),
     callCodingSessionPi: vi.fn<(id: string, handle: string, command: CodingSessionPiCommand) => Promise<{ json: string }>>(async (_id, _handle, command) => ({ json: JSON.stringify(
       command.type === 'events' ? { cursor: 0, truncated: false, dead: false, events: [], dialogs: [] }
-        : command.type === 'get_entries' ? { entries: [] } : command.type === 'get_tree' ? { tree: [] } : { isStreaming: false },
+        : command.type === 'get_messages' ? { messages: [] } : command.type === 'get_entries' ? { entries: [] } : command.type === 'get_tree' ? { tree: [] } : { isStreaming: false },
     ) })),
-    createCodingSession: vi.fn<() => Promise<CodingSessionSummary>>(async () => session),
+    createCodingSession: vi.fn<() => Promise<CodingSessionSummary>>(async () => ({ ...session, runtime })),
     stopCodingSession: vi.fn<() => Promise<void>>(async () => {}),
     restartCodingSession: vi.fn<() => Promise<CodingSessionSummary>>(async () => session),
     archiveCodingSession: vi.fn<() => Promise<void>>(async () => {}),
@@ -474,8 +474,8 @@ describe('authenticated session workbench transitions', () => {
     expect(container.querySelector<HTMLSelectElement>('[aria-label="OpenCode transcript"]')!.value).toBe('newer')
   })
 
-  it('preserves the actual Pi draft, stops its polling while checking, and resets it for a new owner', async () => {
-    const first = createApi('pi')
+  it.each(['pi', 'prime-agent'] as const)('preserves the actual %s draft, stops its polling while checking, and resets it for a new owner', async (runtime) => {
+    const first = createApi(runtime)
     await render(first)
     await act(async () => first.identity.resolve(owner()))
     await first.github()
@@ -488,7 +488,7 @@ describe('authenticated session workbench transitions', () => {
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
     const count = first.api.callCodingSessionPi.mock.calls.length
-    const next = createApi('pi')
+    const next = createApi(runtime)
     const required = deferred<RequiredConnectionStatus[]>()
     next.api.getRequiredConnectionStatuses.mockReturnValue(required.promise)
     await render(next)
@@ -502,13 +502,36 @@ describe('authenticated session workbench transitions', () => {
     expect(container.querySelector('textarea')!.value).toBe('Private Pi draft')
     expect(next.api.connectCodingSessionPi).toHaveBeenCalledOnce()
     expect(next.api.callCodingSessionPi.mock.calls.some(([, , command]) => command.type === 'prompt')).toBe(false)
-    const other = createApi('pi')
+    const other = createApi(runtime)
     await render(other)
     await act(async () => other.identity.resolve(owner('bob')))
     await other.github()
     expect(context.activeId).toBeUndefined()
     await selectSession()
     expect(container.querySelector('textarea')!.value).toBe('')
+  })
+
+  it('creates an opted-in Prime session through the real provider then attaches and sends only explicitly', async () => {
+    const first = createApi('prime-agent')
+    await render(first)
+    await act(async () => first.identity.resolve(owner()))
+    await first.github()
+    await act(async () => {
+      context.setRuntime('prime-agent')
+      context.setRepositories(['jarvis'])
+      context.prepareSession('Prime task', 'Prepared Prime input')
+    })
+    await act(async () => context.create())
+    await act(async () => { await import('../components/sessions/PiWorkbench') })
+    expect(first.api.createCodingSession).toHaveBeenCalledWith({ title: 'Prime task', repositories: ['jarvis'], runtime: 'prime-agent', piWorkbench: true })
+    expect(first.api.connectCodingSessionPi).toHaveBeenCalledWith(session.id)
+    expect(container.querySelector('[aria-label="Prime workbench"]')).not.toBeNull()
+    expect(container.querySelector('textarea')!.value).toBe('Prepared Prime input')
+    expect(first.api.callCodingSessionPi.mock.calls.some(([, , command]) => command.type === 'prompt')).toBe(false)
+    const send = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Send to Prime')!
+    await act(async () => send.click())
+    expect(first.api.callCodingSessionPi).toHaveBeenCalledWith(session.id, 'handle', { type: 'prompt', message: 'Prepared Prime input' })
+    expect(first.api.createCodingSession).toHaveBeenCalledOnce()
   })
 
   it.each(['alice', 'bob'])('aborts pending transport on hide and only resumes prepared input for its owner (%s)', async (nextOwner) => {

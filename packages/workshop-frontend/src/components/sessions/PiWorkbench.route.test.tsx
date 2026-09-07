@@ -8,10 +8,10 @@ import type { CodingSessionPiCommand, CodingSessionPiConnection, CodingSessionRu
 const mocks = vi.hoisted(() => ({
   api: {
     codingSessionEditorAvailable: vi.fn<() => Promise<boolean>>(async () => false),
-    connectCodingSessionPi: vi.fn<() => Promise<CodingSessionPiConnection>>(async () => ({ mode: 'rpc', version: 1, connectionId: 'handle', expiresAt: new Date(Date.now() + 300_000) })),
+    connectCodingSessionPi: vi.fn<() => Promise<CodingSessionPiConnection>>(),
     callCodingSessionPi: vi.fn<(id: string, handle: string, command: CodingSessionPiCommand) => Promise<{ json: string }>>(async (_id, _handle, command) => ({ json: JSON.stringify(
       command.type === 'events' ? { cursor: 0, dead: false, truncated: false, events: [], dialogs: [] }
-        : command.type === 'get_entries' ? { entries: [] } : command.type === 'get_tree' ? { tree: [] } : { isStreaming: false },
+        : command.type === 'get_messages' ? { messages: [] } : command.type === 'get_entries' ? { entries: [] } : command.type === 'get_tree' ? { tree: [] } : { isStreaming: false },
     ) })),
   },
   terminal: vi.fn<(props: { terminalKind: string; runtime: string }) => void>(),
@@ -42,6 +42,10 @@ describe('Pi workbench route integration', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     mocks.context.activeSession.runtime = 'pi'
+    mocks.api.connectCodingSessionPi.mockImplementation(async () => {
+      const pi = mocks.context.activeSession.runtime === 'pi'
+      return { mode: 'rpc', runtime: pi ? 'pi' : 'prime', capabilities: { messages: 'current-context', history: pi ? 'persisted-entries' : 'unavailable', tree: pi, settlement: pi ? 'agent_settled' : 'unavailable', messageUpdates: pi ? 'delta' : 'cumulative' }, version: 1, connectionId: 'handle', expiresAt: new Date(Date.now() + 300_000) }
+    })
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
@@ -54,12 +58,12 @@ describe('Pi workbench route integration', () => {
   })
   async function render() {
     await act(async () => root.render(<SessionsPage />))
-    if (mocks.context.activeSession.runtime === 'pi') await waitForPi()
+    await waitForPi()
   }
   async function waitForPi() {
     await vi.waitFor(async () => {
       await act(async () => {})
-      expect(container.querySelector('[aria-label="Pi workbench"]')).not.toBeNull()
+      expect(container.querySelector('[aria-label$="workbench"]')).not.toBeNull()
     }, { timeout: 5000 })
   }
   async function tab(name: string) {
@@ -67,9 +71,10 @@ describe('Pi workbench route integration', () => {
     await act(async () => button.click())
   }
 
-  it('attaches Pi once, opens only a shell on Terminal, and keeps Workshop approvals on every surface', async () => {
+  it.each(['pi', 'prime-agent'] as const)('attaches %s once, opens only a shell on Terminal, and keeps Workshop approvals on every surface', async (runtime) => {
+    mocks.context.activeSession.runtime = runtime
     await render()
-    expect(container.querySelector('[aria-label="Pi workbench"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label$="workbench"]')).not.toBeNull()
     expect(mocks.terminal).not.toHaveBeenCalled()
     for (const name of ['Terminal', 'Changes', 'Agent']) {
       await tab(name)
@@ -88,12 +93,13 @@ describe('Pi workbench route integration', () => {
     expect(mocks.api.connectCodingSessionPi).toHaveBeenCalledOnce()
   })
 
-  it('keeps Prime terminal-only with an accurate adapter limitation', async () => {
+  it('uses the Prime terminal only on an explicit legacy fallback', async () => {
     mocks.context.activeSession.runtime = 'prime-agent'
-    await render()
-    expect(container.textContent).toContain('Its stdio protocol exists')
-    expect(container.textContent).toContain('separate owner adapter')
+    mocks.api.connectCodingSessionPi.mockResolvedValue({ mode: 'terminal', reason: 'Legacy Prime session has no owner bridge' })
+    await act(async () => root.render(<SessionsPage />))
+    expect(container.textContent).toContain('Legacy Prime session has no owner bridge')
     expect(mocks.terminal).toHaveBeenCalledWith(expect.objectContaining({ terminalKind: 'opencode', runtime: 'prime-agent' }))
-    expect(mocks.api.connectCodingSessionPi).not.toHaveBeenCalled()
+    expect(mocks.api.connectCodingSessionPi).toHaveBeenCalledOnce()
+    expect(mocks.api.callCodingSessionPi).not.toHaveBeenCalled()
   })
 })

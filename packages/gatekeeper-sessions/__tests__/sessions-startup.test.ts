@@ -67,7 +67,7 @@ function createPolicy() {
   const kv = createKv();
   const setAlarm = vi.fn(async () => undefined);
   const deleteAlarm = vi.fn(async () => undefined);
-  const registry = { startupSucceeded: vi.fn(async () => true), startupFailed: vi.fn(() => true), startupProgressed: vi.fn(async () => true) };
+  const registry = { prestartOpenCodeServer: vi.fn(async (..._args: unknown[]) => undefined), startupSucceeded: vi.fn(async () => true), startupFailed: vi.fn(() => true), startupProgressed: vi.fn(async () => true) };
   const namespace = { idFromName: vi.fn((name: string) => name), get: vi.fn(() => registry) };
   const tools = {
     prepareSessionStartup: vi.fn(async (): Promise<OpenCodeUserCustomization> => ({ plugins: [], skills: [] })),
@@ -342,6 +342,9 @@ describe("coding session asynchronous startup", () => {
     { runtime: "opencode" as const, piWorkbench: undefined },
     { runtime: "pi" as const, piWorkbench: undefined },
     { runtime: "pi" as const, piWorkbench: true as const },
+    { runtime: "prime-agent" as const, piWorkbench: undefined },
+    { runtime: "prime-agent" as const, piWorkbench: false },
+    { runtime: "prime-agent" as const, piWorkbench: true },
   ])("create persists the $runtime interface opt-in ($piWorkbench) before deferred startup", async options => {
     const kv = createKv();
     const scheduled = vi.fn(async () => undefined);
@@ -370,8 +373,8 @@ describe("coding session asynchronous startup", () => {
     );
 
     expect(summary.status).toBe("starting");
-    expect(kv.get<{piWorkbench?: true}>(`session:${summary.id}`)?.piWorkbench).toBe(options.piWorkbench);
-    expect(policy.configure.mock.calls[0][0].piWorkbench).toBe(options.piWorkbench);
+    expect(kv.get<{piWorkbench?: true}>(`session:${summary.id}`)?.piWorkbench).toBe(options.piWorkbench || undefined);
+    expect(policy.configure.mock.calls[0][0].piWorkbench).toBe(options.piWorkbench || undefined);
     expect(summary).not.toHaveProperty("piWorkbench");
     expect(kv.get<StoredRecord>(`session:${summary.id}`)?.status).toBe("starting");
     expect(scheduled).toHaveBeenCalledOnce();
@@ -2210,6 +2213,153 @@ describe("coding session asynchronous startup", () => {
     expect(registry.getDevelopmentStatus("session-1").generation).toBe(2);
   });
 
+  it("authorizes and waits for OpenCode prestart before launching the standalone primary TUI", async () => {
+    const p = createPolicy();
+    const f = openCodeAttachFixture({ status: "starting", terminalId: undefined, generation: 0 });
+    const sandbox = createStartupSandbox();
+    sandbox.exec.mockImplementation(f.sandbox.exec);
+    sandbox.getProcess.mockImplementation(f.sandbox.getProcess);
+    p.registry.prestartOpenCodeServer.mockImplementation(async () =>
+      f.registry.prestartOpenCodeServer("session-1", 0, "sandbox-1", f.customization));
+    p.kv.put("startup", startupRecord({ phase: "terminal" }));
+    const entered = deferred<void>();
+    const ready = deferred<void>();
+    f.process.waitForPort.mockImplementationOnce(() => { entered.resolve(); return ready.promise; });
+    const alarm = p.policy.alarm();
+    await entered.promise;
+    expect(p.tools.prepareSessionStartup).toHaveBeenCalledOnce();
+    expect(f.kv.get<StoredRecord>("session:session-1")?.opencodeServerProcessId).toBe(f.process.id);
+    expect(sandbox.createTerminal).not.toHaveBeenCalled();
+    expect(p.registry.startupSucceeded).not.toHaveBeenCalled();
+    ready.resolve();
+    await alarm;
+    expect(sandbox.createTerminal).toHaveBeenCalledWith(expect.objectContaining({ command: OPENCODE_COMMAND }));
+    expect(p.registry.startupSucceeded).toHaveBeenCalledOnce();
+    expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
+  });
+
+  it("does not prestart or launch a terminal after startup authorization fails", async () => {
+    const p = createPolicy();
+    const sandbox = createStartupSandbox();
+    p.kv.put("startup", startupRecord({ phase: "terminal" }));
+    p.tools.prepareSessionStartup.mockRejectedValueOnce(new Error("revoked"));
+    await p.policy.alarm();
+    expect(p.registry.prestartOpenCodeServer).not.toHaveBeenCalled();
+    expect(sandbox.createTerminal).not.toHaveBeenCalled();
+  });
+
+  it("replays a failed readiness alarm without declaring startup successful", async () => {
+    const p = createPolicy();
+    const sandbox = createStartupSandbox();
+    p.kv.put("startup", startupRecord({ phase: "terminal" }));
+    p.registry.prestartOpenCodeServer.mockRejectedValueOnce(new Error("not ready"));
+    await p.policy.alarm();
+    expect(sandbox.createTerminal).not.toHaveBeenCalled();
+    expect(p.registry.startupSucceeded).not.toHaveBeenCalled();
+    await p.policy.alarm();
+    expect(p.tools.prepareSessionStartup).toHaveBeenCalledTimes(2);
+    expect(p.registry.startupSucceeded).toHaveBeenCalledOnce();
+  });
+
+  it("adopts a checkpointed startup server after registry replay and rechecks readiness", async () => {
+    const f = openCodeAttachFixture({ status: "starting", terminalId: undefined });
+    await f.registry.prestartOpenCodeServer("session-1", 3, "sandbox-1", f.customization);
+    const replay = new CodingSessionRegistry() as typeof f.registry & { env: unknown };
+    replay.ctx = f.registry.ctx;
+    replay.env = (f.registry as typeof replay).env;
+    await replay.prestartOpenCodeServer("session-1", 3, "sandbox-1", f.customization);
+    expect(f.sandbox.exec).toHaveBeenCalledOnce();
+    expect(f.process.waitForPort).toHaveBeenCalledTimes(2);
+    expect(f.process.waitForPort).toHaveBeenLastCalledWith(40_913, expect.objectContaining({ timeout: 30_000 }));
+  });
+
+  it.each(["generation", "status", "archivedAt"])("fences startup server readiness against changed %s", async field => {
+    const f = openCodeAttachFixture({ status: "starting", terminalId: undefined });
+    f.process.waitForPort.mockImplementationOnce(async () => {
+      f.kv.put("session:session-1", { ...f.running, [field]: field === "generation" ? 4 : field === "status" ? "stopping" : new Date() });
+    });
+    await expect(f.registry.prestartOpenCodeServer("session-1", 3, "sandbox-1", f.customization)).rejects.toThrow("not running");
+    expect(f.process.kill).toHaveBeenCalled();
+  });
+
+  it("recovers a lost exec response only by exact command and cwd, with no duplicate launch", async () => {
+    const f = openCodeAttachFixture({ status: "starting", terminalId: undefined });
+    const command = ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "40913", "--mdns", "false"];
+    const listProcesses = vi.fn(async () => [
+      { id: "foreign", state: "running", command, cwd: "/workspace/other" },
+      { id: "tui", state: "running", command: ["opencode"], cwd: "/workspace/jarvis" },
+      { id: f.process.id, state: "running", command, cwd: "/workspace/jarvis" },
+    ]);
+    Object.assign(f.sandbox, { listProcesses });
+    f.sandbox.exec.mockRejectedValueOnce(new Error("response lost"));
+    await f.registry.prestartOpenCodeServer("session-1", 3, "sandbox-1", f.customization);
+    expect(listProcesses).toHaveBeenCalledOnce();
+    expect(f.sandbox.getProcess).toHaveBeenCalledWith(f.process.id);
+    expect(f.sandbox.exec).toHaveBeenCalledOnce();
+    expect(f.kv.get<StoredRecord>("session:session-1")?.opencodeServerProcessId).toBe(f.process.id);
+  });
+
+  it("adopts a launch that becomes inspectable on the next authorized alarm after DO replay", async () => {
+    const f = openCodeAttachFixture({ status: "starting", terminalId: undefined, generation: 0 });
+    const p = createPolicy();
+    const sandbox = createStartupSandbox();
+    sandbox.exec.mockImplementation(f.sandbox.exec);
+    sandbox.getProcess.mockImplementation(f.sandbox.getProcess);
+    const listProcesses = vi.fn()
+      .mockRejectedValueOnce(new Error("inspection unavailable"))
+      .mockResolvedValueOnce([{
+        id: f.process.id, state: "running", cwd: "/workspace/jarvis",
+        command: ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "40913", "--mdns", "false"],
+      }]);
+    Object.assign(sandbox, { listProcesses });
+    f.sandbox.exec.mockRejectedValueOnce(new Error("response lost"));
+    p.registry.prestartOpenCodeServer.mockImplementation(async () =>
+      f.registry.prestartOpenCodeServer("session-1", 0, "sandbox-1", f.customization));
+    p.kv.put("startup", startupRecord({ phase: "terminal" }));
+    await p.policy.alarm();
+    expect(sandbox.createTerminal).not.toHaveBeenCalled();
+    const replay = new CodingSessionRegistry() as typeof f.registry & { env: unknown };
+    replay.ctx = f.registry.ctx;
+    replay.env = (f.registry as typeof replay).env;
+    p.registry.prestartOpenCodeServer.mockImplementation(async () =>
+      replay.prestartOpenCodeServer("session-1", 0, "sandbox-1", f.customization));
+    await p.policy.alarm();
+    expect(p.tools.prepareSessionStartup).toHaveBeenCalledTimes(2);
+    expect(f.sandbox.exec).toHaveBeenCalledOnce();
+    expect(f.process.waitForPort).toHaveBeenCalledOnce();
+    expect(p.registry.startupSucceeded).toHaveBeenCalledOnce();
+  });
+
+  it("keeps attach authorization independent of a prestarted server", async () => {
+    const f = openCodeAttachFixture({ status: "starting", terminalId: undefined });
+    await f.registry.prestartOpenCodeServer("session-1", 3, "sandbox-1", f.customization);
+    const record = f.kv.get<StoredRecord>("session:session-1")!;
+    f.kv.put("session:session-1", { ...record, status: "running", terminalId: "term-primary" });
+    f.tools.prepareSessionStartup.mockRejectedValueOnce(new Error("membership revoked"));
+    await expect(f.attach()).rejects.toThrow("membership revoked");
+    expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
+    await f.attach();
+    expect(f.tools.prepareSessionStartup).toHaveBeenCalledTimes(2);
+    expect(f.sandbox.exec).toHaveBeenCalledOnce();
+  });
+
+  it.each([0, 2])("never retries an ambiguous launch with %s exact live matches, including DO replay", async count => {
+    const f = openCodeAttachFixture({ status: "starting", terminalId: undefined });
+    const listProcesses = vi.fn(async () => Array.from({ length: count }, (_, i) => ({
+      id: `server-${i}`, state: "running", cwd: "/workspace/jarvis",
+      command: ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "40913", "--mdns", "false"],
+    })));
+    Object.assign(f.sandbox, { listProcesses });
+    f.sandbox.exec.mockRejectedValueOnce(new Error("response lost"));
+    await expect(f.registry.prestartOpenCodeServer("session-1", 3, "sandbox-1", f.customization)).rejects.toThrow("unresolved");
+    const replay = new CodingSessionRegistry() as typeof f.registry & { env: unknown };
+    replay.ctx = f.registry.ctx;
+    replay.env = (f.registry as typeof replay).env;
+    await expect(replay.prestartOpenCodeServer("session-1", 3, "sandbox-1", f.customization)).rejects.toThrow("unresolved");
+    expect(f.sandbox.exec).toHaveBeenCalledOnce();
+    expect(f.process.waitForPort).not.toHaveBeenCalled();
+  });
+
   it("starts and reuses one OpenCode server per running OpenCode generation with startup env parity", async () => {
     const running = startingRecord({ status: "running", terminalId: "term-primary", generation: 3 });
     const { registry, kv } = createRegistryWith(running);
@@ -2538,11 +2688,15 @@ describe("coding session asynchronous startup", () => {
 
   it("cleans up readiness timeouts, clears singleflight, and retries with fresh authorization", async () => {
     const f = openCodeAttachFixture();
+    f.process.waitForExit.mockImplementationOnce(async () => {
+      f.process.status.mockResolvedValue({ state: "exited", exit: { code: 0, timedOut: false } });
+      return { code: 0, timedOut: false };
+    });
     f.process.waitForPort.mockRejectedValueOnce(new Error("readiness timed out"));
     await expect(f.attach()).rejects.toThrow("readiness timed out");
     expect(f.process.kill).toHaveBeenCalledWith(15);
     expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
-    expect(f.kv.get<StoredRecord>("session:session-1")?.opencodeServerProcessId).toBeUndefined();
+    expect(f.kv.get<StoredRecord>("session:session-1")?.opencodeServerProcessId).toBe(f.process.id);
     await f.attach();
     expect(f.tools.prepareSessionStartup).toHaveBeenCalledTimes(2);
     expect(f.sandbox.exec).toHaveBeenCalledTimes(2);
@@ -2670,6 +2824,10 @@ describe("coding session asynchronous startup", () => {
 
   it("shares one deferred readiness failure across independently authorized waiters and retries freshly", async () => {
     const f = openCodeAttachFixture();
+    f.process.waitForExit.mockImplementationOnce(async () => {
+      f.process.status.mockResolvedValue({ state: "exited", exit: { code: 0, timedOut: false } });
+      return { code: 0, timedOut: false };
+    });
     const authorizations = Array.from({ length: 3 }, () => deferred<OpenCodeUserCustomization>());
     for (const auth of authorizations) f.tools.prepareSessionStartup.mockReturnValueOnce(auth.promise);
     const readiness = deferred<void>();
@@ -2696,7 +2854,7 @@ describe("coding session asynchronous startup", () => {
     expect(f.process.waitForExit).toHaveBeenCalledOnce();
     expect(f.sandbox.destroy).not.toHaveBeenCalled();
     expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
-    expect(f.kv.get<StoredRecord>("session:session-1")?.opencodeServerProcessId).toBeUndefined();
+    expect(f.kv.get<StoredRecord>("session:session-1")?.opencodeServerProcessId).toBe(f.process.id);
 
     await expect(f.attach()).resolves.toHaveProperty("url");
     expect(f.tools.prepareSessionStartup).toHaveBeenCalledTimes(4);

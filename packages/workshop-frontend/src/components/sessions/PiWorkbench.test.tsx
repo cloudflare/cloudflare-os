@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
-import { act } from 'react'
+import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CodingSessionPiCommand, CodingSessionPiConnection } from '@gadgets/workshop-shared/api'
@@ -9,7 +9,9 @@ import { PiWorkbenchInner } from './PiWorkbench'
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 vi.mock('./LazySessionTerminal', () => ({ default: (props: { initialInput?: string }) => <div data-terminal="true">Legacy terminal {props.initialInput}</div> }))
 
-const rpc = (): CodingSessionPiConnection => ({ mode: 'rpc', version: 1, connectionId: 'handle', expiresAt: new Date(Date.now() + 300_000) })
+const rpc = (runtime: 'pi' | 'prime' = 'pi'): Extract<CodingSessionPiConnection, { mode: 'rpc' }> => ({ mode: 'rpc', runtime, capabilities: { messages: 'current-context', history: runtime === 'pi' ? 'persisted-entries' : 'unavailable', tree: runtime === 'pi', settlement: runtime === 'pi' ? 'agent_settled' : 'unavailable', messageUpdates: runtime === 'pi' ? 'delta' : 'cumulative' }, version: 1, connectionId: 'handle', expiresAt: new Date(Date.now() + 300_000) })
+type Connect = ComponentProps<typeof PiWorkbenchInner>['authenticatedApi']['connectCodingSessionPi']
+const legacyRpc = (): Omit<Extract<CodingSessionPiConnection, { mode: 'rpc' }>, 'runtime' | 'capabilities'> => ({ mode: 'rpc', version: 1, connectionId: 'legacy-handle', expiresAt: new Date(Date.now() + 300_000) })
 const json = (value: unknown) => ({ json: JSON.stringify(value) })
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -22,7 +24,7 @@ describe('PiWorkbench owner adapter', () => {
   let container: HTMLDivElement
   let events: unknown
   let initialSent: ReturnType<typeof vi.fn<() => void>>
-  let connect: ReturnType<typeof vi.fn<(id: string) => Promise<CodingSessionPiConnection>>>
+  let connect: ReturnType<typeof vi.fn<Connect>>
   let call: ReturnType<typeof vi.fn<(id: string, handle: string, command: CodingSessionPiCommand) => Promise<{ json: string }>>>
   let handle: (command: CodingSessionPiCommand) => Promise<{ json: string }>
 
@@ -33,10 +35,11 @@ describe('PiWorkbench owner adapter', () => {
     root = createRoot(container)
     initialSent = vi.fn<() => void>()
     events = { cursor: 0, truncated: false, dead: false, events: [], dialogs: [] }
-    connect = vi.fn<(id: string) => Promise<CodingSessionPiConnection>>(async () => rpc())
+    connect = vi.fn<Connect>(async () => rpc())
     handle = async (command) => {
       if (command.type === 'events') return json(events)
       if (command.type === 'get_state') return json({ isStreaming: false, sessionId: 'existing-pi' })
+      if (command.type === 'get_messages') return json({ messages: [{ role: 'assistant', content: 'Current Prime context' }, { role: 'toolResult', toolName: 'python', content: 'Tool result' }] })
       if (command.type === 'get_entries') return json({ entries: [
         { id: 'old', type: 'message', message: { role: 'user', content: '<script>bad()</script> old persisted message' } },
         { id: 'compact', type: 'compaction', summary: 'compaction record' },
@@ -59,10 +62,10 @@ describe('PiWorkbench owner adapter', () => {
 
   // Keep the API object stable, just as AuthContext does.
   let api: { connectCodingSessionPi: typeof connect; callCodingSessionPi: typeof call }
-  async function render(id = 'session', draft = 'prepared draft') {
+  async function render(id = 'session', draft = 'prepared draft', runtime: 'pi' | 'prime-agent' = 'pi') {
     api ??= { connectCodingSessionPi: connect, callCodingSessionPi: call }
     if (api.connectCodingSessionPi !== connect) api = { connectCodingSessionPi: connect, callCodingSessionPi: call }
-    await act(async () => root.render(<PiWorkbenchInner authenticatedApi={api} sessionId={id} initialInput={draft} onInitialInputSent={initialSent} />))
+    await act(async () => root.render(<PiWorkbenchInner authenticatedApi={api} sessionId={id} runtime={runtime} initialInput={draft} onInitialInputSent={initialSent} />))
   }
   async function click(label: string) {
     const button = [...container.querySelectorAll('button')].find((item) => item.textContent === label)
@@ -70,6 +73,153 @@ describe('PiWorkbench owner adapter', () => {
     await act(async () => button!.click())
   }
   const commands = () => call.mock.calls.map((args) => args[2])
+
+  it('normalizes the original Pi v1 wire shape without sending or replaying input on reconnect', async () => {
+    connect.mockImplementation(async () => legacyRpc())
+    await render()
+    expect(commands().map((command) => command.type)).toEqual(['events', 'get_state', 'get_entries', 'get_tree'])
+    expect(container.textContent).toContain('Full persisted Pi history')
+    expect(container.textContent).toContain('deltas are not full messages')
+    expect(initialSent).not.toHaveBeenCalled()
+    events = null
+    await act(async () => vi.advanceTimersByTimeAsync(3000))
+    events = { cursor: 0, truncated: false, dead: false, events: [], dialogs: [] }
+    await click('Reconnect reads')
+    expect(container.querySelector('textarea')?.value).toBe('prepared draft')
+    expect(commands().some((command) => command.type === 'prompt')).toBe(false)
+    const normal = handle
+    handle = async (command) => {
+      if (command.type === 'prompt') throw new Error('dispatch outcome unknown')
+      return normal(command)
+    }
+    await click('Cancel turn')
+    expect(call).toHaveBeenCalledWith('session', 'legacy-handle', { type: 'abort' })
+    await click('Send to Pi')
+    events = null
+    await act(async () => vi.advanceTimersByTimeAsync(3000))
+    events = { cursor: 0, truncated: false, dead: false, events: [], dialogs: [] }
+    await click('Reconnect reads')
+    expect(commands().filter((command) => command.type === 'prompt')).toHaveLength(1)
+    expect(container.textContent).toContain('Outcome unknown')
+    expect(container.querySelector('[data-terminal]')).toBeNull()
+  })
+
+  it.each([
+    ['expected Prime', () => legacyRpc(), 'prime-agent'],
+    ['runtime only', () => ({ ...legacyRpc(), runtime: 'pi' as const }), 'pi'],
+    ['capabilities only', () => ({ ...legacyRpc(), capabilities: rpc().capabilities }), 'pi'],
+    ['explicit undefined metadata', () => ({ ...legacyRpc(), runtime: undefined, capabilities: undefined }), 'pi'],
+    ['malformed capabilities', () => ({ ...rpc(), capabilities: { ...rpc().capabilities, tree: undefined! } }), 'pi'],
+    ['expired legacy handle', () => ({ ...legacyRpc(), expiresAt: new Date(0) }), 'pi'],
+    ['empty legacy handle', () => ({ ...legacyRpc(), connectionId: '' }), 'pi'],
+  ] as const)('rejects %s without reads, writes or terminal fallback', async (_name, response, runtime) => {
+    connect.mockImplementation(async () => response())
+    await render('session', 'prepared draft', runtime)
+    expect(container.textContent).toContain('Read failed')
+    await click(runtime === 'pi' ? 'Send to Pi' : 'Send to Prime')
+    await click('Cancel turn')
+    await act(async () => vi.advanceTimersByTimeAsync(6000))
+    expect(call).not.toHaveBeenCalled()
+    expect(connect).toHaveBeenCalledOnce()
+    expect(container.querySelector('[data-terminal]')).toBeNull()
+  })
+
+  it('renders returned Prime semantics, reads only context, retains cumulative event shapes and never verifies settlement', async () => {
+    connect.mockResolvedValue(rpc('prime'))
+    events = { cursor: 3, truncated: true, dead: false, events: [
+      { cursor: 1, data: { type: 'message_update', message: { role: 'assistant', content: 'Cumulative text' } } },
+      { cursor: 2, data: { type: 'tool_execution_end', result: 'python result' } },
+      { cursor: 3, data: { type: 'agent_settled' } },
+    ], dialogs: [] }
+    await render()
+    expect(container.querySelector('[aria-label="Prime workbench"]')).not.toBeNull()
+    expect(commands().map((command) => command.type)).toEqual(['events', 'get_state', 'get_messages'])
+    for (const text of ['Current Prime context', 'Tool result', 'Full persisted history unavailable', 'Branch tree unavailable', 'Whole-tree settlement unavailable', 'cumulative updates, not deltas', 'Cumulative text', 'python result', 'Event gap detected']) expect(container.textContent).toContain(text)
+    expect(container.textContent).not.toContain('Verified Pi settlement')
+    await click('Send to Prime')
+    await click('Cancel turn')
+    expect(commands()).toContainEqual({ type: 'prompt', message: 'prepared draft' })
+    expect(commands()).toContainEqual({ type: 'abort' })
+  })
+
+  it('preserves an unsent Prime draft on read reconnect and isolates context failures from controls and dialogs', async () => {
+    connect.mockResolvedValue(rpc('prime'))
+    const normal = handle
+    handle = async (command) => {
+      if (command.type === 'get_messages') throw new Error('context unavailable')
+      return normal(command)
+    }
+    events = { cursor: 0, truncated: false, dead: false, events: [], dialogs: [{ id: 'prime-dialog', method: 'confirm' }] }
+    await render()
+    expect(container.textContent).toContain('Current model context unavailable')
+    await click('Decline Prime dialog')
+    await click('Cancel turn')
+    events = null
+    await act(async () => vi.advanceTimersByTimeAsync(3000))
+    events = { cursor: 0, truncated: false, dead: false, events: [], dialogs: [] }
+    handle = normal
+    await click('Reconnect reads')
+    expect(container.querySelector('textarea')?.value).toBe('prepared draft')
+    expect(container.textContent).toContain('Current Prime context')
+    expect(commands().some((command) => command.type === 'prompt')).toBe(false)
+    expect(commands().filter((command) => command.type === 'abort')).toHaveLength(1)
+    expect(commands().filter((command) => command.type === 'extension_ui_response')).toEqual([{ type: 'extension_ui_response', id: 'prime-dialog', confirmed: false }])
+    expect(connect).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['prompt', 'steer', 'follow_up', 'abort', 'extension_ui_response', 'export_html'] as const)('never replays an ambiguous Prime %s after reconnect', async (type) => {
+    connect.mockResolvedValue(rpc('prime'))
+    const normal = handle
+    handle = async (command) => {
+      if (command.type === type) throw new Error('Connection lost after dispatch')
+      return normal(command)
+    }
+    events = { cursor: 0, truncated: false, dead: false, events: [], dialogs: [{ id: 'ambiguous', method: 'confirm' }] }
+    await render()
+    if (type === 'steer' || type === 'follow_up') await act(async () => {
+      const select = container.querySelector('select')!
+      select.value = type
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await click(type === 'abort' ? 'Cancel turn' : type === 'export_html' ? 'Download HTML' : type === 'extension_ui_response' ? 'Confirm Prime dialog' : 'Send to Prime')
+    expect(container.textContent).toContain('Outcome unknown')
+    events = null
+    await act(async () => vi.advanceTimersByTimeAsync(3000))
+    events = { cursor: 0, truncated: false, dead: false, events: [], dialogs: [{ id: 'ambiguous', method: 'confirm' }] }
+    await click('Reconnect reads')
+    if (type === 'extension_ui_response') await click('Confirm Prime dialog')
+    expect(commands().filter((command) => command.type === type)).toHaveLength(1)
+    expect(container.querySelector('[data-terminal]')).toBeNull()
+    expect(container.querySelector('textarea')?.value).toBe(['prompt', 'steer', 'follow_up'].includes(type) ? '' : 'prepared draft')
+    expect(container.textContent).toContain('Outcome unknown')
+  })
+
+  it('downloads Prime HTML without embedding it or sending a caller path', async () => {
+    connect.mockResolvedValue(rpc('prime'))
+    const normal = handle
+    handle = async (command) => command.type === 'export_html' ? json({ filename: 'prime-session.html', mediaType: 'text/html', base64: btoa('<script>untrusted()</script>') }) : normal(command)
+    const create = vi.fn<(blob: Blob) => string>(() => 'blob:prime-download')
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn<(url: string) => void>() })
+    const links: string[] = []
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { links.push(this.download) })
+    await render()
+    await click('Download HTML')
+    expect(links).toEqual(['prime-session.html'])
+    expect(commands().filter((command) => command.type === 'export_html')).toEqual([{ type: 'export_html' }])
+    expect(container.querySelector('script, iframe, object, embed')).toBeNull()
+  })
+
+  it('honors unavailable capabilities even for Pi and rejects missing capability metadata', async () => {
+    connect.mockResolvedValue({ ...rpc('prime'), runtime: 'pi' })
+    await render()
+    expect(commands().some((command) => command.type === 'get_entries' || command.type === 'get_tree')).toBe(false)
+    expect(container.textContent).toContain('Whole-tree settlement unavailable')
+    connect.mockResolvedValue({ ...rpc(), capabilities: undefined! })
+    await render('other')
+    expect(container.textContent).toContain('Invalid workbench capabilities')
+    expect(container.querySelector('[data-terminal]')).toBeNull()
+  })
 
   it('reads full persisted entries and tree, escapes content, and only drafts initial input', async () => {
     await render()
@@ -156,11 +306,12 @@ describe('PiWorkbench owner adapter', () => {
     expect(commands().filter((command) => command.type === 'get_entries')).toHaveLength(2)
   })
 
-  it('requires explicit restart when dead, stopping reads and writes', async () => {
+  it.each(['pi', 'prime'] as const)('requires explicit restart when %s is dead, stopping reads and writes', async (runtime) => {
+    connect.mockResolvedValue(rpc(runtime))
     events = { cursor: 0, truncated: false, dead: true, events: [], dialogs: [] }
     await render()
     expect(container.textContent).toContain('Explicit environment restart required')
-    await click('Send to Pi')
+    await click(runtime === 'pi' ? 'Send to Pi' : 'Send to Prime')
     await act(async () => vi.advanceTimersByTimeAsync(60_000))
     expect(commands()).toEqual([{ type: 'events', after: 0 }])
     expect(container.querySelector('[data-terminal]')).toBeNull()
@@ -241,9 +392,10 @@ describe('PiWorkbench owner adapter', () => {
     expect(connect).toHaveBeenCalledOnce()
   })
 
-  it('rejects oversized UTF-8 drafts before dispatch', async () => {
+  it.each(['pi', 'prime'] as const)('rejects oversized UTF-8 %s drafts before dispatch', async (runtime) => {
+    connect.mockResolvedValue(rpc(runtime))
     await render('session', '😀'.repeat(8193))
-    await click('Send to Pi')
+    await click(runtime === 'pi' ? 'Send to Pi' : 'Send to Prime')
     expect(commands().some((command) => command.type === 'prompt')).toBe(false)
   })
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PI_BRIDGE_COMMAND } from "../src/pi-backbone.js";
-import { piCommand } from "../src/runtime.js";
+import { PI_BRIDGE_COMMAND, PRIME_BRIDGE_COMMAND } from "../src/pi-backbone.js";
+import { piCommand, primeAgentCommand } from "../src/runtime.js";
 
 const state = vi.hoisted(() => ({sandbox: {} as any}));
 vi.mock("@cloudflare/sandbox", () => ({
@@ -9,9 +9,9 @@ vi.mock("@cloudflare/sandbox", () => ({
 const { CodingSessionRegistry, CodingSessionPolicy } = await import("../src/sessions.js");
 const owner = {userId:"owner",email:"owner@example.test"};
 
-function fixture(command = PI_BRIDGE_COMMAND) {
+function makeFixture(command: string[], runtime: "pi" | "prime-agent") {
   const values = new Map<string, any>();
-  const record = {id:"s",sandboxId:"box",generation:3,terminalId:"t",runtime:"pi",status:"running",repositories:["jarvis"],createdAt:new Date(),lastActiveAt:new Date()};
+  const record = {id:"s",sandboxId:"box",generation:3,terminalId:"t",runtime,status:"running",repositories:["jarvis"],createdAt:new Date(),lastActiveAt:new Date()};
   values.set("session:s", record);
   const configure = vi.fn(async () => {});
   const registry = new CodingSessionRegistry() as any;
@@ -36,13 +36,13 @@ function fixture(command = PI_BRIDGE_COMMAND) {
   return {registry,record,values,configure,sandbox:state.sandbox};
 }
 
-function replayFixture(command: string[], status: string) {
-  const f = fixture();
+function makeReplayFixture(command: string[], status: string, runtime: "pi" | "prime-agent") {
+  const f = makeFixture(command, runtime);
   const startupSucceeded = vi.fn(async () => true);
   const policy = new CodingSessionPolicy() as any;
   const values = new Map<string, any>([
-    ["policy", {sessionId:"s",sandboxId:"box",generation:3,runtime:"pi",piWorkbench:true,owner,repositories:["jarvis"]}],
-    ["startup", {phase:"terminal",sessionId:"s",sandboxId:"box",generation:3,runtime:"pi",attempt:0,nextRepositoryIndex:1,createdAt:Date.now(),updatedAt:Date.now()}],
+    ["policy", {sessionId:"s",sandboxId:"box",generation:3,runtime,piWorkbench:true,owner,repositories:["jarvis"]}],
+    ["startup", {phase:"terminal",sessionId:"s",sandboxId:"box",generation:3,runtime,attempt:0,nextRepositoryIndex:1,createdAt:Date.now(),updatedAt:Date.now()}],
   ]);
   policy.ctx = {
     id:{toString:() => "box"},
@@ -55,12 +55,16 @@ function replayFixture(command: string[], status: string) {
   return {f, policy, values, startupSucceeded};
 }
 
-describe("Pi generation lifecycle", () => {
+describe.each(["pi", "prime-agent"] as const)("%s generation lifecycle", runtime => {
+  const bridgeCommand = runtime === "pi" ? PI_BRIDGE_COMMAND : PRIME_BRIDGE_COMMAND;
+  const terminalCommand = runtime === "pi" ? piCommand() : primeAgentCommand();
+  const fixture = (command = bridgeCommand) => makeFixture(command, runtime);
+  const replayFixture = (command: string[], status: string) => makeReplayFixture(command, status, runtime);
   afterEach(() => vi.useRealTimers());
   it.each([
-    {status:"running",command:["/usr/local/bin/pi","--model","saved-selection"]},
-    {status:"exited",command:PI_BRIDGE_COMMAND},
-    {status:"exited",command:["/usr/local/bin/pi"]},
+    {status:"running",command:[terminalCommand[0],"--model","saved-selection"]},
+    {status:"exited",command:bridgeCommand},
+    {status:"exited",command:[terminalCommand[0]]},
   ])("does not replace a $status primary process on startup replay ($command)", async ({status,command}) => {
     const {f, policy, values, startupSucceeded} = replayFixture(command,status);
     await policy.alarm();
@@ -76,7 +80,7 @@ describe("Pi generation lifecycle", () => {
   });
 
   it("destroys the sandbox when startup completion loses its generation race", async () => {
-    const {f, policy, values, startupSucceeded} = replayFixture(PI_BRIDGE_COMMAND,"running");
+    const {f, policy, values, startupSucceeded} = replayFixture(bridgeCommand,"running");
     startupSucceeded.mockResolvedValueOnce(false);
     await policy.alarm();
     expect(f.sandbox.destroy).toHaveBeenCalledTimes(1);
@@ -99,7 +103,7 @@ describe("Pi generation lifecycle", () => {
     const startupSucceeded = vi.fn(async () => true);
     const policy = new CodingSessionPolicy() as any;
     const values = new Map<string, any>([
-      ["policy", {sessionId:"s",sandboxId:"box",generation:3,runtime:"pi",owner,repositories:["jarvis"],...(piWorkbench ? {piWorkbench:true} : {})}],
+      ["policy", {sessionId:"s",sandboxId:"box",generation:3,runtime,owner,repositories:["jarvis"],...(piWorkbench ? {piWorkbench:true} : {})}],
     ]);
     policy.ctx = {
       id:{toString:() => "box"},
@@ -107,17 +111,17 @@ describe("Pi generation lifecycle", () => {
       exports:{CodingSessionRegistry:{idFromName:(id: string) => id,get:() => ({startupSucceeded})}},
     };
     policy.env = {...f.registry.env,WORKSHOP_TOOLS:{prepareSessionStartup:async () => ({plugins:[],skills:[]})}};
-    const command = piWorkbench ? PI_BRIDGE_COMMAND : piCommand();
+    const command = piWorkbench ? bridgeCommand : terminalCommand;
     const terminal = {id:"t",getSnapshot:async () => ({status:"running",command,cwd:"/workspace/jarvis"})};
     let terminals: typeof terminal[] = [];
     f.sandbox.listTerminals = vi.fn(async () => terminals);
     f.sandbox.writeFile = vi.fn(async () => {});
     f.sandbox.createTerminal.mockImplementation(async () => {terminals = [terminal]; return terminal;});
-    const checkpoint = {phase:"terminal",sessionId:"s",sandboxId:"box",generation:3,runtime:"pi",attempt:0,nextRepositoryIndex:1,createdAt:Date.now(),updatedAt:Date.now()};
+    const checkpoint = {phase:"terminal",sessionId:"s",sandboxId:"box",generation:3,runtime,attempt:0,nextRepositoryIndex:1,createdAt:Date.now(),updatedAt:Date.now()};
     values.set("startup", checkpoint);
     await policy.alarm();
     expect(f.sandbox.writeFile.mock.calls).toEqual(piWorkbench
-      ? [["/workspace/.odie-pi/owner-bridge-v1.mjs", expect.stringContaining("--mode")]] : []);
+      ? [[bridgeCommand[1], expect.stringContaining("--mode")]] : []);
     expect(f.sandbox.createTerminal).toHaveBeenCalledWith(expect.objectContaining({command}));
     expect(startupSucceeded).toHaveBeenCalledWith("s",3,"box","t");
     values.set("startup", checkpoint);
@@ -129,6 +133,9 @@ describe("Pi generation lifecycle", () => {
     const f = fixture();
     const connection = await f.registry.connectPi(owner,"s");
     expect(connection.mode).toBe("rpc");
+    expect(connection.runtime).toBe(runtime === "pi" ? "pi" : "prime");
+    expect(connection.capabilities).toEqual({messages:"current-context", history:runtime === "pi" ? "persisted-entries" : "unavailable",
+      tree:runtime === "pi",settlement:runtime === "pi" ? "agent_settled" : "unavailable",messageUpdates:runtime === "pi" ? "delta" : "cumulative"});
     expect(await f.registry.connectPi(owner,"s")).toEqual(connection);
     expect(await f.registry.callPi(owner,"s",connection.connectionId,{type:"get_state"})).toEqual({json:'{"isStreaming":false}'});
     expect(f.sandbox.containerFetch).toHaveBeenCalledExactlyOnceWith(
@@ -139,12 +146,38 @@ describe("Pi generation lifecycle", () => {
   });
 
   it("keeps a legacy TUI terminal-only and gives Prime an explicit limitation", async () => {
-    const f = fixture(["/usr/local/bin/pi"]);
+    const f = fixture([terminalCommand[0]]);
     expect((await f.registry.connectPi(owner,"s")).mode).toBe("terminal");
     f.values.set("session:s",{...f.record,primeAgent:true});
     expect((await f.registry.connectPi(owner,"s")).reason).toContain("Prime");
     expect(f.sandbox.exec).not.toHaveBeenCalled();
     expect(f.sandbox.createTerminal).not.toHaveBeenCalled();
+  });
+
+  it("refreshes an expired handle without creating a conversation or replaying an input", async () => {
+    const f = fixture();
+    const first = await f.registry.connectPi(owner,"s");
+    f.values.get("pi-connection:s").expiresAt = Date.now() - 1;
+    const next = await f.registry.connectPi(owner,"s");
+    expect(next.connectionId).not.toBe(first.connectionId);
+    await expect(f.registry.callPi(owner,"s",first.connectionId,{type:"prompt",message:"hello"})).rejects.toThrow("expired");
+    expect(f.sandbox.containerFetch).not.toHaveBeenCalled();
+    await expect(f.registry.callPi(owner,"s",next.connectionId,{type:"get_state"})).resolves.toEqual({json:'{"isStreaming":false}'});
+    expect(f.sandbox.createTerminal).not.toHaveBeenCalled();
+    expect(f.sandbox.exec).not.toHaveBeenCalled();
+  });
+
+  it("fences a changed wire runtime and refuses Prime full-history reads before transport", async () => {
+    const f = fixture();
+    const connection = await f.registry.connectPi(owner,"s");
+    if (runtime === "prime-agent") {
+      for (const type of ["get_entries", "get_tree"]) {
+        await expect(f.registry.callPi(owner,"s",connection.connectionId,{type})).rejects.toThrow("unavailable");
+      }
+    }
+    f.values.set("session:s",{...f.record,runtime:runtime === "pi" ? "prime-agent" : "pi"});
+    await expect(f.registry.callPi(owner,"s",connection.connectionId,{type:"abort"})).rejects.toThrow("expired");
+    expect(f.sandbox.containerFetch).not.toHaveBeenCalled();
   });
 
   it.each(["sandbox", "generation", "terminal", "runtime", "stop", "archive", "expiry", "version", "handle"])("rejects %s invalidation before dispatch", async kind => {

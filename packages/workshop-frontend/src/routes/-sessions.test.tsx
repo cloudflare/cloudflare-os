@@ -15,7 +15,7 @@ const testState = vi.hoisted(() => ({
   workbenchMounts: 0,
   workbenchProps: vi.fn<(props: unknown) => void>(),
   authenticatedApi: {
-    connectCodingSessionPi: vi.fn<(id: string) => Promise<CodingSessionPiConnection>>(async () => ({ mode: 'rpc', version: 1, connectionId: 'pi-handle', expiresAt: new Date(Date.now() + 300_000) })),
+    connectCodingSessionPi: vi.fn<(id: string) => Promise<CodingSessionPiConnection>>(async () => ({ mode: 'rpc', runtime: 'pi', capabilities: { messages: 'current-context', history: 'persisted-entries', tree: true, settlement: 'agent_settled', messageUpdates: 'delta' }, version: 1, connectionId: 'pi-handle', expiresAt: new Date(Date.now() + 300_000) })),
     callCodingSessionPi: vi.fn<(id: string, handle: string, command: CodingSessionPiCommand) => Promise<{ json: string }>>(async (_id, _handle, command) => ({ json: JSON.stringify(
       command.type === 'events' ? { cursor: 0, truncated: false, dead: false, events: [], dialogs: [] }
         : command.type === 'get_entries' ? { entries: [] } : command.type === 'get_tree' ? { tree: [] } : { isStreaming: false },
@@ -118,7 +118,7 @@ describe('SessionsPage locked Code setup', () => {
     document.body.append(container)
     root = createRoot(container)
     await act(async () => root!.render(<SessionsPage />))
-    if (testState.context.activeSession?.runtime === 'pi' && testState.context.activeSession.status === 'running') {
+    if (testState.context.activeSession && testState.context.activeSession.runtime !== 'opencode' && testState.context.activeSession.status === 'running') {
       await waitForPi()
     }
     return container
@@ -128,7 +128,7 @@ describe('SessionsPage locked Code setup', () => {
     await vi.waitFor(async () => {
       await act(async () => {})
       expect(testState.authenticatedApi.connectCodingSessionPi).toHaveBeenCalled()
-      expect(container!.textContent).not.toContain('Loading Pi workbench…')
+      expect(container!.textContent).not.toContain('Loading agent workbench…')
     }, { timeout: 5000 })
   }
 
@@ -268,6 +268,7 @@ describe('SessionsPage locked Code setup', () => {
   })
 
   it('labels the primary terminal for a persisted Prime Agent session', async () => {
+    testState.authenticatedApi.connectCodingSessionPi.mockResolvedValueOnce({ mode: 'terminal', reason: 'Legacy Prime TUI' })
     testState.context.github = { state: 'connected', accountId: 42, label: 'octo@example.com' }
     testState.context.activeSession = {
       id: 'session-prime',
@@ -380,7 +381,7 @@ describe('SessionsPage locked Code setup', () => {
       expect(testState.workbenchProps).not.toHaveBeenCalled()
       expect(rendered.textContent).toContain(label === 'Changes' ? 'do not expose structured diff data' : 'Tool approvals')
     }
-    expect(testState.terminalMounts).toBe(runtime === 'pi' ? 1 : 2) // Structured Pi needs only the shell; Prime also has an agent terminal.
+    expect(testState.terminalMounts).toBe(1) // Structured runtimes need only the shell terminal.
     const reject = Array.from(rendered.querySelectorAll('button')).find((button) => button.textContent?.includes('Reject'))!
     await act(async () => reject.click())
     expect(testState.context.resolveActivity).toHaveBeenCalledExactlyOnceWith('approval', 'reject')
