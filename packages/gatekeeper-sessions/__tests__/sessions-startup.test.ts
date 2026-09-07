@@ -2707,6 +2707,53 @@ describe("coding session asynchronous startup", () => {
     expect(f.policy.storeOpenCodeTicket).toHaveBeenCalledOnce();
   });
 
+  it("preserves a same-generation server replacement while an earlier attach awaits ticket storage", async () => {
+    const f = openCodeAttachFixture();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    f.policy.storeOpenCodeTicket.mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const delayed = f.attach();
+    await entered.promise;
+    expect(f.kv.get<StoredRecord>("session:session-1")?.opencodeServerProcessId).toBe(f.process.id);
+
+    // A has persisted P1 and cleared singleflight, but is still storing its ticket.
+    f.process.waitForPort.mockRejectedValueOnce(new Error("warm readiness timed out"));
+    f.process.waitForExit.mockImplementationOnce(async () => {
+      f.process.status.mockResolvedValue({ state: "exited", exit: { code: 0, timedOut: false } });
+      return { code: 0, timedOut: false };
+    });
+    await expect(f.attach()).rejects.toThrow("warm readiness timed out");
+    expect(f.process.kill).toHaveBeenCalledExactlyOnceWith(15);
+    expect(f.process.waitForExit).toHaveBeenCalledOnce();
+
+    // B's retry creates and persists P2 through the real attach path, without a restart.
+    const replacement = processHandle("opencode-server-2", "running");
+    f.sandbox.exec.mockResolvedValue(replacement);
+    f.sandbox.getProcess.mockImplementation(async (...[id]: unknown[]) =>
+      id === replacement.id ? replacement : f.process);
+    await expect(f.attach()).resolves.toHaveProperty("url");
+    expect(f.sandbox.exec).toHaveBeenCalledTimes(2);
+    expect(f.kv.get("session:session-1")).toMatchObject({
+      generation: 3, sandboxId: "sandbox-1", terminalId: "term-primary",
+      opencodeServerProcessId: replacement.id, opencodeServerVersion: 1,
+    });
+
+    release.resolve();
+    await expect(delayed).resolves.toHaveProperty("url");
+    expect(f.kv.get<StoredRecord>("session:session-1")?.opencodeServerProcessId).toBe(replacement.id);
+
+    await expect(f.attach()).resolves.toHaveProperty("url");
+    expect(f.sandbox.getProcess).toHaveBeenLastCalledWith(replacement.id);
+    expect(replacement.waitForPort).toHaveBeenCalledTimes(2);
+    expect(f.sandbox.exec).toHaveBeenCalledTimes(2);
+    expect(f.tools.prepareSessionStartup).toHaveBeenCalledTimes(4);
+    expect(f.policy.storeOpenCodeTicket).toHaveBeenCalledTimes(3);
+    expect(f.sandbox.destroy).not.toHaveBeenCalled();
+  });
+
   it("rejects a capability when its generation is replaced during ticket storage without overwriting the replacement", async () => {
     const f = openCodeAttachFixture();
     const entered = deferred<void>();

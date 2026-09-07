@@ -1,14 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { request, type ClientRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { piBridgeSource, validatePiCommand } from "../src/pi-backbone.js";
 
 // A real local subprocess with only a mocked JSONL child. No runtime, model, or production connection.
-async function bridge(options: { largeHistory?: boolean; dialogTimeout?: number; drainTimeout?: number } = {}) {
+async function bridge(options: { largeHistory?: boolean; dialogTimeout?: number; drainTimeout?: number; ignoreTerm?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "pi-bridge-test-"));
-  const mock = `const largeHistory = ${options.largeHistory === true};\n` + String.raw`
+  const ledger = join(dir, "spawns");
+  const beforeExit = join(dir, "before-exit");
+  const mock = `const largeHistory = ${options.largeHistory === true};
+    require('node:fs').appendFileSync(${JSON.stringify(ledger)}, process.pid+'\\n');
+    ${options.ignoreTerm ? "process.on('SIGTERM', () => {});" : ""}\n` + String.raw`
     const {createInterface} = require('node:readline');
     const {writeFileSync,writeSync,closeSync} = require('node:fs');
     function emit(value) {process.stdout.write(JSON.stringify(value)+'\n');}
@@ -81,8 +86,11 @@ async function bridge(options: { largeHistory?: boolean; dialogTimeout?: number;
     .replace("const DIALOG_TIMEOUT = 30000;", `const DIALOG_TIMEOUT = ${options.dialogTimeout ?? 30000};`)
     .replace("const DRAIN_TIMEOUT = 5000;", `const DRAIN_TIMEOUT = ${options.drainTimeout ?? 5000};`)
     .replace("server.listen(4097", "server.listen(0")
-    .replace("'Pi owner bridge ready\\n'", "String(server.address().port)+'\\n'");
+    .replace("'Pi owner bridge ready\\n'", "String(server.address().port)+'\\n'")
+    + `\nprocess.once('beforeExit', () => { writeFileSync(${JSON.stringify(beforeExit)}, 'natural'); });
+       import { writeFileSync } from 'node:fs';`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", source], {stdio:["pipe", "pipe", "pipe"]});
+  child.stderr.resume();
   const port = await new Promise<number>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Bridge startup timeout")), 5000);
     child.once("error", reject);
@@ -90,22 +98,82 @@ async function bridge(options: { largeHistory?: boolean; dialogTimeout?: number;
     child.stdout.once("data", data => {clearTimeout(timer); resolve(Number(data.toString().trim()));});
   });
   return {
+    child, port,
+    async spawnPids() { return (await readFile(ledger, "utf8")).trim().split("\n").map(Number); },
+    async naturalExit() { return readFile(beforeExit, "utf8"); },
     async duplicate() {
       const duplicate = spawn(process.execPath, ["--input-type=module", "-e", source], {stdio:"ignore"});
-      return new Promise<number | null>(resolve => duplicate.once("exit", resolve));
+      try {
+        await vi.waitFor(() => expect(duplicate.exitCode !== null || duplicate.signalCode !== null).toBe(true), {timeout:2000});
+        return duplicate.exitCode;
+      } finally {
+        if (duplicate.exitCode === null && duplicate.signalCode === null) duplicate.kill("SIGKILL");
+        await vi.waitFor(() => expect(duplicate.exitCode !== null || duplicate.signalCode !== null).toBe(true), {timeout:1000});
+      }
     },
     async call(command: Record<string, unknown>) {
       const response = await fetch(`http://127.0.0.1:${port}/`, {method:"POST", body:JSON.stringify(command)});
       return {status:response.status, data:await response.json() as any};
     },
     async close() {
-      const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
-      child.kill("SIGTERM"); await exited; await rm(dir, {recursive:true,force:true});
+      try {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+        await vi.waitFor(() => expect(child.exitCode !== null || child.signalCode !== null).toBe(true), {timeout:2500});
+      } finally {
+        // Emergency cleanup only: assertions in shutdown tests run before this teardown.
+        for (const pid of (await readFile(ledger, "utf8")).trim().split("\n").map(Number)) {
+          try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+        }
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        await vi.waitFor(() => expect(child.exitCode !== null || child.signalCode !== null).toBe(true), {timeout:1000});
+        await rm(dir, {recursive:true,force:true});
+      }
     },
   };
 }
 
 describe("Pi owner bridge subprocess", () => {
+  it.each([false, true])("exits naturally with open stdin and an active partial HTTP request (ignore SIGTERM: %s)", async ignoreTerm => {
+    const b = await bridge({ignoreTerm});
+    let partial: ClientRequest | undefined;
+    try {
+      const pid = (await b.call({type:"get_state"})).data.pid;
+      expect(() => process.kill(pid, 0)).not.toThrow();
+      expect(await b.duplicate()).toBe(1);
+      expect(await b.spawnPids()).toEqual([pid]);
+      partial = request({host:"127.0.0.1",port:b.port,path:"/",method:"POST",agent:false,
+        headers:{Expect:"100-continue","Content-Length":"100"}});
+      let accepted = false, closed = false;
+      partial.on("continue", () => { accepted = true; });
+      partial.on("close", () => { closed = true; });
+      partial.on("error", () => {}); // Expected reset at the shutdown deadline.
+      partial.flushHeaders();
+      await vi.waitFor(() => expect(accepted).toBe(true));
+      partial.write('{'); // Never finish the accepted request or close the parent stdin pipe.
+      expect(closed).toBe(false);
+      expect(b.child.stdin.writableEnded).toBe(false);
+      b.child.kill("SIGTERM");
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(b.child.exitCode).toBeNull();
+      expect(b.child.signalCode).toBeNull();
+      expect(closed).toBe(false);
+      if (ignoreTerm) expect(() => process.kill(pid, 0)).not.toThrow();
+      else await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), {timeout:500});
+      b.child.kill("SIGTERM"); // Repeated signals must not reset the deadline.
+      await vi.waitFor(() => {
+        expect(b.child.exitCode).toBe(0);
+        expect(b.child.signalCode).toBeNull();
+        expect(closed).toBe(true);
+        expect(() => process.kill(b.child.pid!, 0)).toThrow();
+        expect(() => process.kill(pid, 0)).toThrow();
+      }, {timeout:2000});
+      expect(b.child.stdin.writableEnded).toBe(false);
+      expect(await b.naturalExit()).toBe("natural");
+      expect(await b.duplicate()).toBe(1);
+      expect(await b.spawnPids()).toEqual([pid]);
+    } finally {partial?.destroy(); await b.close();}
+  });
+
   it("serves real correlated history/state/input/cancel, settlement, dialogs and untrusted exports", async () => {
     const b = await bridge();
     try {

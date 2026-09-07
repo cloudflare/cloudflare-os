@@ -1970,7 +1970,7 @@ export class CodingSessionRegistry extends DurableObject<Env> {
       throw new Error("Coding session is not running.");
     }
     const baseUrl = this.env.BASE_URL!.replace(/\/$/, "");
-    this.#put({ ...latest, opencodeServerProcessId: processId, lastActiveAt: new Date() });
+    this.#put({ ...latest, lastActiveAt: new Date() });
     return { url: `${baseUrl}/opencode/${token}/`, expiresAt };
   }
 

@@ -203,7 +203,16 @@ server.requestTimeout = 30000; server.headersTimeout = 10000; server.maxConnecti
 server.on('error', () => { child.kill('SIGKILL'); process.exitCode = 1; });
 server.listen(4097, '0.0.0.0', () => process.stdout.write('Pi owner bridge ready\n'));
 // Signal shutdown intentionally terminates the sandbox child, with bounded SIGKILL escalation.
-function shutdown() { fail(); server.close(); child.kill('SIGTERM'); setTimeout(() => {child.kill('SIGKILL'); process.exit(0);}, 1000).unref(); }
+let shuttingDown = false;
+function shutdown() {
+  if (shuttingDown) return; shuttingDown = true;
+  fail(); process.stdin.pause(); server.close(); child.kill('SIGTERM');
+  // Keep the HTTP deadline even if Pi exits first; child handles remain referenced until closed.
+  setTimeout(() => {
+    server.closeAllConnections();
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }, 1000).unref();
+}
 for (const signal of ['SIGTERM','SIGINT','SIGHUP']) process.on(signal, shutdown);
 process.stdin.resume(); // Terminal input never becomes agent input.
 `;
