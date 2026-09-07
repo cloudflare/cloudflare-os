@@ -1,0 +1,37 @@
+packages/gadget-libraries/page/__tests__/colors.test.ts
+  s_f74476d0cbb433::t_bd0a24c8d28b57 1-145
+packages/gadget-libraries/page/__tests__/serialize.test.ts
+  s_f74476d0cbb433::t_db9de0525e42a6 7,72,315-329
+packages/gadget-libraries/page/library.json
+  s_f74476d0cbb433::t_3730f6648d7aea 3-4
+packages/gadget-libraries/page/src/colors.ts
+  s_f74476d0cbb433::t_10e16ce15fee37 1-240
+packages/gadget-libraries/page/__tests__/blocks.test.ts
+  s_f74476d0cbb433::t_c173ef51c72a72 52-64,198-218
+packages/gadget-libraries/page/__tests__/mini-dom.test.ts
+  s_f74476d0cbb433::t_503aaae9cb953f 66-71
+packages/gadget-libraries/page/__tests__/paste.test.ts
+  s_f74476d0cbb433::t_601c05c17dad98 79,212-233
+packages/gadget-libraries/page/src/blocks.ts
+  s_f74476d0cbb433::t_ef65007be4fd52 28-32,35-45,65,74-94,493,585,864-867,966-977,1045-1046,1050-1083
+packages/gadget-libraries/page/src/paste.ts
+  s_f74476d0cbb433::t_a40cc6829b495f 22-23,102-111,259-265,268-286,292-294,302-313,315-316,318-345,347,1216-1217,1219,1221
+packages/gadget-libraries/page/src/serialize.ts
+  s_f74476d0cbb433::t_8db1795a2b0951 32,137-141,163-171
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d26b64f1515bc8e9d0aa861f802372c746b3588f",
+  "prompts": {},
+  "sessions": {
+    "s_f74476d0cbb433": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbbaec07-89a3-4c4a-84e7-31df83ae61b4",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
