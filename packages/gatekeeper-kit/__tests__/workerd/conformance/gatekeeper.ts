@@ -7,7 +7,7 @@
  * abstracted, because the point is to show what a consumer must write.
  */
 
-import { DurableObject, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { ActionDescription, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import {
   ActionOutcomeUnknownError,
@@ -15,16 +15,19 @@ import {
   defineActions,
   type TaggedAction,
 } from "../../../src/actions";
+import type { ActionFence } from "../../../src/action-journal";
 import { KvTtlCache } from "../../../src/cache";
 import { advanceToOAuth, claimOAuth, putInitiation } from "../../../src/connect-handshake";
 import {
   CredentialCoordinator,
   CredentialSource,
+  CredentialsExpiredError,
   isConnectionSuperseded,
   type CredentialRead,
   type RejectionVerdict,
 } from "../../../src/credentials";
 import { TokenCursor } from "../../../src/cursors";
+import { ProvisionalIds } from "../../../src/simulation";
 import { ObservationGate, trackedCollectionObservers } from "../../../src/observers";
 import {
   FakeProvider,
@@ -47,9 +50,6 @@ export const submissions: [number, ActionDescription][] = [];
 /** Commit ids advertised through the gate's git cache. */
 export const advertised: string[] = [];
 
-// Provisional ids the agent can name before the provider has minted a real one.
-const resolvedRefs = new Map<string, string>();
-
 /** Resets shared state between tests, since these module instances outlive one. */
 export function resetProvider(): void {
   provider.controls.rejectCredentials = false;
@@ -62,7 +62,6 @@ export function resetProvider(): void {
   observations.length = 0;
   submissions.length = 0;
   advertised.length = 0;
-  resolvedRefs.clear();
 }
 
 /** The slice of `GitCache` this consumer touches. */
@@ -79,7 +78,7 @@ class FixtureGitCache extends RpcTarget {
  * object's methods cross an RPC boundary as call-scoped stubs that are disposed when that call
  * returns, so a gate built from one is dead by its first use.
  */
-export class FixtureQueue extends WorkerEntrypoint {
+export class FixtureQueue extends RpcTarget {
   async authorizeObservation(description: ObservationDescription): Promise<void> {
     observations.push(description);
   }
@@ -100,7 +99,33 @@ type Actions = {
   renameProject: { target: string; name: string };
 };
 
-const actions = defineActions<ConformanceResource, Actions>({
+/**
+ * Closes the window apply's entry check cannot: a reconnect landing between that check and the
+ * provider call. Compared against the read the call itself runs under.
+ * @param fence The action's captured authority, absent for an unfenced action.
+ * @param read The credential read this provider call runs under.
+ */
+function requireFence(
+  fence: ActionFence | undefined,
+  read: CredentialRead,
+  subject = "This action was approved",
+): void {
+  if (fence && fence.generation !== read.generation) {
+    throw new Error(`${subject} under a connection that has since been replaced.`);
+  }
+}
+
+/**
+ * What the action handlers may do. Deliberately not the Durable Object: exporting provider
+ * mutators on the DO would let any stub holder bypass the staged-approval path entirely.
+ */
+type ProviderHost = {
+  createProject(name: string, spaceId: string, fence?: ActionFence): Promise<string>;
+  renameProject(id: string, name: string, fence?: ActionFence): Promise<void>;
+  refs: ProvisionalIds<string>;
+};
+
+const actions = defineActions<ProviderHost, Actions>({
   createProject: {
     kind: { tag: "create-project", label: "Create a project" },
     delivery: "continue-with-simulation",
@@ -112,9 +137,9 @@ const actions = defineActions<ConformanceResource, Actions>({
       implementsRevert: false,
     }),
     provides: payload => [payload.ref],
-    apply: async (payload, host) => {
-      const id = await host.createProject(payload.name, payload.spaceId);
-      resolvedRefs.set(payload.ref, id);
+    apply: async (payload, host, { fence }) => {
+      const id = await host.createProject(payload.name, payload.spaceId, fence);
+      host.refs.bind(payload.ref, id);
     },
   },
   renameProject: {
@@ -127,15 +152,17 @@ const actions = defineActions<ConformanceResource, Actions>({
       implementsRevert: false,
     }),
     dependsOn: payload => [payload.target],
-    apply: async (payload, host) => {
-      await host.renameProject(resolvedRefs.get(payload.target) ?? payload.target, payload.name);
+    apply: async (payload, host, { fence }) => {
+      // Resolved, never defaulted: apply already refused an unresolved reference, so a
+      // provisional string reaching the provider would be a kit bug rather than a fallback.
+      await host.renameProject(host.refs.requireResolved(payload.target), payload.name, fence);
     },
   },
 }, {
   // Both kinds name a project in one provider account, so neither means anything under another
   // connection. Declaring it here is what makes `submit` refuse a call that forgot the fence.
   fence: "authority",
-  isResolvedReference: ref => resolvedRefs.has(ref),
+  isResolvedReference: (host, ref) => host.refs.isResolved(ref),
 });
 
 /**
@@ -173,11 +200,13 @@ export class ConformanceAccount extends DurableObject {
    * @param oauthNonce Nonce the provider returned.
    * @returns Whether the connection was stored.
    */
-  async completeConnect(oauthNonce: string): Promise<boolean> {
+  async completeConnect(oauthNonce: string, revokeDuringExchange = false): Promise<boolean> {
     const claim = claimOAuth<{ startedUnder: string }>(this.ctx.storage.kv, oauthNonce, Date.now());
     if (claim === null) return false;
     // The exchange is the window `claimOAuth` cannot cover; `ifGeneration` fences it.
     const grant = await Promise.resolve(provider.mint());
+    // A revoke landing inside that window, which is the case the fence exists for.
+    if (revokeDuringExchange) this.#creds.clear();
     try {
       this.#creds.connect(grant, { ifGeneration: claim.startedUnder });
     } catch (error) {
@@ -188,6 +217,11 @@ export class ConformanceAccount extends DurableObject {
       return false;
     }
     return true;
+  }
+
+  /** @returns Whether credentials are stored, so a test can see which write won. */
+  isConnected(): boolean {
+    return this.#creds.stored() !== undefined;
   }
 
   /** Disconnects, as a user revoke does. */
@@ -221,10 +255,34 @@ export class ConformanceAccount extends DurableObject {
    * @returns The complete replacement record.
    */
   async #refresh(current: Grant): Promise<Grant> {
-    const response = await Promise.resolve(provider.refresh(current));
+    let response;
+    try {
+      response = await Promise.resolve(provider.refresh(current));
+    } catch (error) {
+      // The token endpoint refusing the refresh token is the grant's death, and only this frame
+      // can say so: to every layer above it is an ordinary 401 from an unknown cause.
+      if (error instanceof ProviderAuthError && /invalid_grant/.test(error.message)) {
+        throw new CredentialsExpiredError("This connection was revoked at the provider.",
+          { cause: error });
+      }
+      throw error;
+    }
     return { ...current, ...response, refreshToken: response.refreshToken ?? current.refreshToken };
   }
 }
+
+/**
+ * The collaborator ACL oracle as a capability, not a value: a `WorkerEntrypoint` behind
+ * `ctx.exports` is what the overseer hands a gatekeeper, and the only kind of stub Durable Object
+ * storage will persist.
+ */
+export class ConformanceVerifier extends WorkerEntrypoint<unknown, { user: string }> {
+  async hasSpaces(spaceIds: readonly string[]): Promise<boolean[]> {
+    return spaceIds.map(spaceId => provider.hasAccess(this.ctx.props.user, spaceId));
+  }
+}
+
+type SpaceVerifier = { hasSpaces(spaceIds: readonly string[]): Promise<boolean[]> };
 
 /** What the conformance suite drives; a real gatekeeper would expose this over RPC. */
 export class ConformanceResource extends DurableObject {
@@ -237,10 +295,9 @@ export class ConformanceResource extends DurableObject {
     vendorId: "conformance",
   });
 
-  readonly #observers = trackedCollectionObservers<{ user: string }>({
+  readonly #observers = trackedCollectionObservers<SpaceVerifier>({
     kv: this.ctx.storage.kv,
-    hasCollectionAccess: async (verifier, spaceIds) =>
-      spaceIds.map(spaceId => provider.hasAccess(verifier.user, spaceId)),
+    hasCollectionAccess: (verifier, spaceIds) => verifier.hasSpaces(spaceIds),
   });
 
   // Named, so it cannot collide with another cache over this same storage.
@@ -250,7 +307,19 @@ export class ConformanceResource extends DurableObject {
     namespace: "projects",
   });
 
+  readonly #refs = new ProvisionalIds<string>(this.ctx.storage.kv, {
+    namespace: "projects",
+    isProvisional: ref => ref.startsWith("~"),
+  });
+
+  readonly #host: ProviderHost = {
+    createProject: (name, spaceId, fence) => this.#createProject(name, spaceId, fence),
+    renameProject: (id, name, fence) => this.#renameProject(id, name, fence),
+    refs: this.#refs,
+  };
+
   #gate?: ObservationGate;
+  #reconnectMidApply = false;
 
   /**
    * Binds the account this resource answers for and opens its queue capability.
@@ -259,12 +328,20 @@ export class ConformanceResource extends DurableObject {
   bind(account: DurableObjectStub<ConformanceAccount>): void {
     this.#account = account;
     // The gate owns this stub for the resource's lifetime, as a session's `queue.dup()` would.
-    this.#gate = new ObservationGate(this.ctx.exports.FixtureQueue({}) as never, this.#observers);
+    this.#gate = new ObservationGate(new RpcStub(new FixtureQueue()) as never, this.#observers);
   }
 
   #requireAccount(): DurableObjectStub<ConformanceAccount> {
     if (!this.#account) throw new Error("resource is not bound");
     return this.#account;
+  }
+
+  /** Replaces the connection underneath an in-flight operation. */
+  async #reconnect(): Promise<void> {
+    this.#reconnectMidApply = false;
+    const account = this.#requireAccount();
+    await account.disconnect();
+    await account.completeConnect(await account.beginOAuth(await account.beginConnect()) ?? "");
   }
 
   #requireGate(): ObservationGate {
@@ -278,26 +355,35 @@ export class ConformanceResource extends DurableObject {
    * @param user Provider-side user the collaborator maps to.
    */
   addObserver(id: string, user: string): Promise<void> {
-    return this.#observers.addObserver(id, { user } as never);
+    return this.#observers.addObserver(id, this.ctx.exports.ConformanceVerifier({ props: { user } }));
   }
 
   /** @returns Every project, paged, with each page authorized before it is returned. */
-  listProjects(): TokenCursor<Project> {
-    const gate = this.#requireGate();
+  async listProjects(): Promise<TokenCursor<Project>> {
+    // The cursor is returned to the caller and walked later, so it takes its own lease rather than
+    // borrowing the session's stub, and releases it when the walk is dropped.
+    const walk = this.#requireGate().lease();
+    // Pinned to the connection the walk opened under: a continuation token is provider state
+    // scoped to one account, so presenting it under the next one mixes or skips rows.
+    const opened = await this.#creds.read();
     return new TokenCursor<Project>({
+      dispose: () => walk[Symbol.dispose](),
       pageSize: 2,
       remotePageSize: 2,
       fetchPage: token => this.#creds.run(
-        async creds => provider.listProjects(creds, token),
+        async (creds, read) => {
+          requireFence(opened, read, "This walk was started");
+          return provider.listProjects(creds, token);
+        },
         { replayable: true }),
       authorizePage: (projects, { terminal }) => projects.length === 0
-        ? gate.authorize(
+        ? walk.authorize(
           {
             title: "Projects",
             description: terminal ? "Listed projects; there were none." : "Scanned an empty window.",
           },
           { kind: "baseline" })
-        : gate.authorize(
+        : walk.authorize(
           { title: "Projects", description: `Read ${projects.length} projects.` },
           { kind: "collections", ids: [...new Set(projects.map(project => project.spaceId))] }),
     });
@@ -363,8 +449,12 @@ export class ConformanceResource extends DurableObject {
    * @param spaceId Owning space.
    * @returns The new project id.
    */
-  async createProject(name: string, spaceId: string): Promise<string> {
-    return this.#creds.run(async creds => {
+  async #createProject(name: string, spaceId: string, fence?: ActionFence): Promise<string> {
+    // Apply's entry check has already passed, so a reconnect landing before this fetch is
+    // invisible to it -- the operation would run under the new connection.
+    if (this.#reconnectMidApply) await this.#reconnect();
+    return this.#creds.run(async (creds, read) => {
+      requireFence(fence, read);
       try {
         return provider.createProject(creds, name, spaceId);
       } catch (error) {
@@ -383,8 +473,11 @@ export class ConformanceResource extends DurableObject {
    * @param id Provider project id.
    * @param name New name.
    */
-  async renameProject(id: string, name: string): Promise<void> {
-    await this.#creds.run(async creds => provider.renameProject(creds, id, name));
+  async #renameProject(id: string, name: string, fence?: ActionFence): Promise<void> {
+    await this.#creds.run(async (creds, read) => {
+      requireFence(fence, read);
+      provider.renameProject(creds, id, name);
+    });
   }
 
   /**
@@ -398,7 +491,7 @@ export class ConformanceResource extends DurableObject {
     // Both kinds are declared connection-fenced, so the set refuses this call without a fence.
     // It rides this operation's own read, never a second one taken later.
     const fence = await this.#creds.read();
-    return actions.bind(this.#journal, this)
+    return actions.bind(this.#journal, this.#host)
       .submit(this.#requireGate().actions, kind, payload, { fence });
   }
 
@@ -406,9 +499,14 @@ export class ConformanceResource extends DurableObject {
    * Applies a staged action.
    * @param id Action id.
    */
-  async apply(id: number): Promise<void> {
+  async apply(id: number, reconnectMidApply = false): Promise<void> {
     const { generation } = await this.#creds.read();
-    await actions.bind(this.#journal, this).apply(id, { generation });
+    this.#reconnectMidApply = reconnectMidApply;
+    try {
+      await actions.bind(this.#journal, this.#host).apply(id, { generation });
+    } finally {
+      this.#reconnectMidApply = false;
+    }
   }
 
   /**

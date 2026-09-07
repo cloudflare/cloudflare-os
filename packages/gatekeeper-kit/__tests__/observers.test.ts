@@ -940,20 +940,22 @@ describe("ObservationGate", () => {
     await expect(strategy.addObserver("late", someUser)).resolves.toBeUndefined();
   });
 
-  it("keeps admission closed when a withheld read's outcome is unknown", async () => {
-    // The overseer may already hold the record, so an unmarked failure leaves the fence standing --
-    // as the permanent latch, since the marker's activation can no longer learn the outcome.
+  it("latches the fence at once when a withheld read's outcome is unknown", async () => {
+    // The overseer may already hold the record, so the fence is permanent from that moment. It is
+    // written now rather than left as a marker for the next admission: with no admission the
+    // markers would accumulate, one per ambiguous failure, for the life of the binding.
     const kv = fakeKv();
     const strategy = trackedCollectionObservers<V>({ kv, hasCollectionAccess: async () => [] });
     const failing = fakeQueue(vi.fn(async () => { throw new Error("connection lost"); }));
 
-    await expect(new ObservationGate(failing, strategy)
-      .authorize(read, { kind: "withholdFromObservers" })).rejects.toThrow("connection lost");
+    for (const _attempt of [1, 2, 3]) {
+      await expect(new ObservationGate(failing, strategy)
+        .authorize(read, { kind: "withholdFromObservers" })).rejects.toThrow("connection lost");
+    }
 
-    expect(withholdMarkers(kv)).toHaveLength(1);
-    await expect(strategy.addObserver("late", someUser)).rejects.toThrow(OBSERVER_WITHHELD);
     expect(withholdMarkers(kv)).toEqual([]);
     expect(kv.get("observer-withheld")).toBe(true);
+    await expect(strategy.addObserver("late", someUser)).rejects.toThrow(OBSERVER_WITHHELD);
   });
 
   it("fences admission while a withheld read is still awaiting the overseer", async () => {

@@ -137,6 +137,9 @@ export class KvTtlCache {
     const loadKey = JSON.stringify([entryKey, generation, authority]);
     return loads(this.#kv).run(loadKey, async () => {
       const value = await load();
+      // Stamped now, not after the fence read: that read is a live account round trip, and dating
+      // the entry from its completion would extend the caller's TTL by however long it took.
+      const fetchedAt = Date.now();
       let current: string | undefined;
       try {
         current = await this.#authority();
@@ -147,8 +150,7 @@ export class KvTtlCache {
       // The generation read is the last synchronous act before the write, so an `invalidateAll()`
       // landing during the authority read cannot be written past.
       if (this.#generation() === generation && current === authority) {
-        this.#kv.put<CacheEntry<T>>(entryKey,
-          { value, fetchedAt: Date.now(), generation, authority });
+        this.#kv.put<CacheEntry<T>>(entryKey, { value, fetchedAt, generation, authority });
       }
       return value;
     });

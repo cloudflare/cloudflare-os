@@ -956,8 +956,9 @@ export class CredentialSource<Creds> {
     // "" is reserved for a never-connected read: adopting live credentials under it would wedge
     // every rejection as retryable, since "" always adjudicates superseded.
     if (current.identity === "") {
-      // Fail closed: an account that cannot fence this read cannot vouch for the partition either.
-      this.#supersede();
+      // Fail closed, but only over state this read still owns: fenced like adoption and like the
+      // rejection above, so a straggler's malformed answer cannot clear a revival that overtook it.
+      if (fence === this.#clearFence) this.#supersede();
       throw new Error(
         'The account served credentials under the reserved "" identity; '
         + "getCredentials must fence every read.");

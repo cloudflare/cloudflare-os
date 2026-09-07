@@ -95,11 +95,18 @@ abstract class BufferedCursor<T> extends RpcTarget implements Cursor<T>, Disposa
    */
   constructor(options: CursorShape<T>) {
     super();
-    this.#pageSize = requirePositiveInt("pageSize", options.pageSize);
-    this.remotePageSize =
-      requirePositiveInt("remotePageSize", options.remotePageSize ?? DEFAULT_REMOTE_PAGE_SIZE);
     this.#dispose = options.dispose;
     this.#authorizePage = options.authorizePage;
+    // Assigned first, so a rejected page size releases what the caller already acquired for this
+    // cursor -- the documented pattern leases a gate before constructing one.
+    try {
+      this.#pageSize = requirePositiveInt("pageSize", options.pageSize);
+      this.remotePageSize =
+        requirePositiveInt("remotePageSize", options.remotePageSize ?? DEFAULT_REMOTE_PAGE_SIZE);
+    } catch (error) {
+      this[Symbol.dispose]();
+      throw error;
+    }
   }
 
   /**
@@ -282,19 +289,23 @@ export type TokenCursorOptions<T> = CursorShape<T> & {
  *
  * @example
  * ```ts
+ * // The cursor is walked after this call returns, so it takes its own lease rather than
+ * // borrowing the session's stub, and releases it when the walk is dropped.
+ * const walk = this.#gate.lease();
  * return new TokenCursor<Project>({
  *   pageSize: 50,
+ *   dispose: () => walk[Symbol.dispose](),
  *   fetchPage: async (token, perPage) => {
  *     const page = await api.listProjects({ cursor: token, limit: perPage });
  *     return { items: page.projects, nextToken: page.nextCursor };
  *   },
  *   // Branch on emptiness, not on `terminal`: a spent mid-walk window is also empty, and a
- *   // `sets` scope naming no set is refused.
+ *   // `collections` scope naming no collection is refused.
  *   authorizePage: (items, { terminal }) => items.length === 0
- *     ? gate.authorize(
+ *     ? walk.authorize(
  *       { title: "Projects", description: terminal ? "Listed the projects; there were none" : "Scanned a window of projects; none were visible" },
  *       { kind: "baseline" })
- *     : gate.authorize(
+ *     : walk.authorize(
  *       { title: "Projects", description: `Read ${items.length} projects` },
  *       { kind: "collections", ids: items.map(project => project.id) }),
  * });

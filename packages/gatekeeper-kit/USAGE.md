@@ -27,14 +27,15 @@ The `CredentialSource over a CredentialCoordinator` suite in
 
 ### 1. Create the coordinator in the account Durable Object
 
-Use the stable `ctx.storage.kv` object so refreshes coalesce across coordinator instances:
+Use the stable `ctx.storage.kv` object so refreshes coalesce across coordinator instances.
+`discardMint` is deliberately absent: whether a fenced-out mint can be revoked without killing the
+surviving connection is provider-specific — see "Revoke discarded token rotations" below.
 
 ```ts
 #creds = new CredentialCoordinator<Grant>(this.ctx.storage.kv, {
   expiresAt: grant => grant.expiresAt,
   legacyKeys: ["accessToken", "refreshToken"],
   upgrade: kv => readLegacyGrant(kv),
-  discardMint: grant => revokeAtProvider(grant),
   vendorId: VENDOR_ID,
 });
 ```
@@ -128,7 +129,8 @@ try {
   this.#creds.connect(grant, { ifGeneration: claim.startedUnder });
 } catch (error) {
   if (!isConnectionSuperseded(error)) throw error;
-  // Never stored, so this mint is yours to dispose — subject to the `discardMint` caution above.
+  // Never stored, so this mint is yours to dispose — but only where revoking one token cannot
+  // revoke the whole grant; see "Revoke discarded token rotations" below.
   await revokeAtProvider(grant);
   // A `clear()` also moves the generation, so report the outcome rather than a bare success.
   throw new Error("This account was disconnected while connecting. Try again.");
@@ -220,7 +222,10 @@ The read has to be the operation's own. A second `read()` taken inside the submi
 after a reconnect and would pin old-connection data to the new connection — which is why the kit
 cannot capture the fence for you.
 
-Apply then compares: pass `apply(id, { generation })` from `CredentialSource.read()`. That is an
+Apply then compares whatever was staged, by opaque equality. For a connection fence pass
+`apply(id, { generation })` from `CredentialSource.read()`; for a custom fence pass that same
+stable value instead — a connection generation and an account id can never match, and an action
+staged under one and applied under the other fails terminally on every attempt. That is an
 entry check, so a reconnect may still land between it and the provider call. A handler that must
 not run under a replaced connection compares `ctx.fence` with the `CredentialRead` passed to the
 same `run` callback that issues the request.
@@ -446,6 +451,24 @@ return new TokenCursor<Project>({
       { kind: "collections", ids: projects.map(project => project.id) }),
 });
 ```
+
+A cursor is handed to the gadget and walked later, so it outlives the call that made it. Give it
+its own gate with `lease()` and release that from `dispose`, or the first `next()` after the
+session releases its stub fails on the authorization rather than the data:
+
+```ts
+const walk = this.#gate.lease();
+return new TokenCursor<Project>({
+  authorizePage: projects => walk.authorize(/* … */),
+  dispose: () => walk[Symbol.dispose](),
+  // …
+});
+```
+
+Both gates share the binding's strategy, so exclusions stay one decision; only the queue stub is
+duplicated, and either side can be released without disturbing the other. `lease()` needs a real
+`RpcStub` — the overseer hands one over, but a gate built from a service binding cannot duplicate
+it, since `dup` is reserved over RPC.
 
 Every page is authorized, including an empty one from a spent fetch window. So is the end of a walk
 that disclosed nothing: `searchUsers(email) → no matches` answers a question about provider data,

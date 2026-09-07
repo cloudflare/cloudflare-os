@@ -198,6 +198,18 @@ describe("PageNumberCursor", () => {
     expect(() => new PageNumberCursor<Issue>({ fetchPage, authorizePage, pageSize: 2.5 }))
       .toThrow(/positive safe integer/);
   });
+
+  it("releases what the caller acquired when it rejects the page size", () => {
+    // The documented pattern leases a gate *before* constructing the cursor, so a throw that
+    // skipped `dispose` would leak the duplicated stub on every rejected call.
+    const dispose = vi.fn();
+
+    expect(() => new PageNumberCursor<Issue>(
+      { fetchPage: pagedApi([]), authorizePage, pageSize: 0, dispose }))
+      .toThrow(/positive safe integer/);
+
+    expect(dispose).toHaveBeenCalledOnce();
+  });
 });
 
 describe("OffsetCursor", () => {
@@ -530,6 +542,80 @@ describe("TokenCursor", () => {
     expect(await cursor.next()).toBeNull();
     expect(authorizeObservation.mock.calls.map(([sent]) => sent.description))
       .toEqual(["Read 1 issues."]);
+  });
+
+  it("keeps authorizing after the session that made it is gone", async () => {
+    // A cursor is returned to the gadget and walked later, so it outlives the call that made it.
+    // Built on the session's own gate, the first `next()` after the session releases its stub
+    // fails -- and what fails is the authorization, not the data.
+    // Modelled on a real stub: `dup` refcounts, and only the last release closes it.
+    let handles = 1;
+    const authorizeObservation = vi.fn(async (_sent: { description: string }) => {
+      if (handles === 0) throw new Error("RPC stub used after being disposed.");
+    });
+    const makeHandle = () => {
+      handles += 1;
+      let released = false;
+      return {
+        authorizeObservation,
+        dup: makeHandle,
+        [Symbol.dispose]: () => { if (!released) { released = true; handles -= 1; } },
+      };
+    };
+    const queue = {
+      authorizeObservation,
+      dup: makeHandle,
+      [Symbol.dispose]: () => { handles -= 1; },
+    } as unknown as RpcStub<ApprovalQueue>;
+    const session = new ObservationGate(
+      queue, trackedCollectionObservers({ kv: fakeKv(), hasCollectionAccess: async () => [] }));
+    const walk = session.lease();
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([
+        { items: [{ id: 1, open: true }], nextToken: "n" },
+        { items: [{ id: 2, open: true }] },
+      ]),
+      pageSize: 1,
+      remotePageSize: 1,
+      // The cursor takes its own lease and releases it when the walk is dropped.
+      authorizePage: items => walk.authorize(
+        { title: "Issues", description: `Read ${items.length} issues.` },
+        { kind: "collections", ids: items.map(issue => issue.id.toString()) }),
+      dispose: () => walk[Symbol.dispose](),
+    });
+
+    expect(ids(await cursor.next())).toEqual([1]);
+    session[Symbol.dispose]();
+
+    // The walk must neither continue unaudited nor become unusable.
+    expect(ids(await cursor.next())).toEqual([2]);
+    expect(authorizeObservation).toHaveBeenCalledTimes(2);
+  });
+
+  it("releases a lease without disturbing the session that opened it", async () => {
+    let handles = 1;
+    const authorizeObservation = vi.fn(async (_sent: { description: string }) => {
+      if (handles === 0) throw new Error("RPC stub used after being disposed.");
+    });
+    const makeHandle = () => {
+      handles += 1;
+      let released = false;
+      return {
+        authorizeObservation,
+        dup: makeHandle,
+        [Symbol.dispose]: () => { if (!released) { released = true; handles -= 1; } },
+      };
+    };
+    const session = new ObservationGate(
+      { authorizeObservation, dup: makeHandle } as unknown as RpcStub<ApprovalQueue>,
+      trackedCollectionObservers({ kv: fakeKv(), hasCollectionAccess: async () => [] }));
+
+    const walk = session.lease();
+    walk[Symbol.dispose]();
+
+    // The session still holds its own handle, so the walk ending does not end the session.
+    await session.authorize({ title: "After", description: "Still open." }, { kind: "baseline" });
+    expect(authorizeObservation).toHaveBeenCalledOnce();
   });
 
   it("rejects page sizes that would never terminate", () => {

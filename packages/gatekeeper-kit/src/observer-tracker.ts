@@ -344,27 +344,26 @@ export class ObserverTracker<V> {
     const markerKey = `${OBSERVER_WITHHOLD_PREFIX}${generateNonce()}`;
     kv.put(markerKey, true);
     activeWithholds(kv).add(markerKey);
+    // Commit and an unknown outcome reach the same durable state: the overseer may hold the
+    // record, so sharing is fenced for good. Latch before delete, so no instant fences neither.
+    const fenceForGood = () => {
+      kv.put(OBSERVER_WITHHELD_KEY, true);
+      kv.delete(markerKey);
+      activeWithholds(kv).delete(markerKey);
+    };
     return {
       excludeObservers,
-      // Latch before the marker goes: no state where neither fences. A failed latch write leaves
-      // the marker -- the overseer may already hold the record, so the fence must outlive the read.
-      commit: () => {
-        kv.put(OBSERVER_WITHHELD_KEY, true);
-        kv.delete(markerKey);
-        activeWithholds(kv).delete(markerKey);
-      },
+      commit: fenceForGood,
+      abandon: fenceForGood,
       // A marked refusal proves the overseer recorded nothing, so the fence can go.
       discard: () => {
         kv.delete(markerKey);
         activeWithholds(kv).delete(markerKey);
       },
-      // Ownership only: the durable marker stays and the next admission promotes it, so an unknown
-      // outcome still fences sharing permanently.
-      abandon: () => void activeWithholds(kv).delete(markerKey),
     };
   }
 
-  /** Promotes withhold markers this activation no longer owns into the permanent latch. */
+  /** Latches markers stranded by an activation that died before settling one. */
   #compactWithholds(): void {
     const { kv } = this.#options;
     const active = activeWithholds(kv);

@@ -1423,6 +1423,25 @@ describe("defineActions", () => {
     expect(journal.get(id)).toMatchObject({ state: "failed", undispatched: true });
   });
 
+  it("does not let a kind named after an Object member inherit a fence policy", async () => {
+    // `fenceOverrides.toString` on a plain object is `Object.prototype.toString` -- truthy, so a
+    // raw lookup would skip the set's own policy and read as neither "authority" nor "none",
+    // silently staging the action unfenced.
+    const set = defineActions<{ ran: string[] }, { toString: Sql }>({
+      toString: {
+        delivery: "await-decision",
+        describe: () => presentation,
+        apply: async () => {},
+      },
+    }, { fence: "authority", fenceOverrides: {} });
+    const journal = new ActionJournal<TaggedAction<{ toString: Sql }>>(
+      makeKv(), { namespace: "pending" });
+
+    await expect(set.bind(journal, { ran: [] })
+      .submit(fakeQueue(), "toString", { sql: "one" }))
+      .rejects.toThrow(/is authority-fenced/);
+  });
+
   it("releases a mismatched action's staging artifacts when the user rejects it", async () => {
     const { actions, journal, host, outcomes } = bind({ fence: "authority" });
     const id = await actions.submit(
@@ -1439,13 +1458,14 @@ describe("defineActions", () => {
 
   it("leaves a dispatched failure's cleanup to the handler that already ran", async () => {
     const { actions, journal, host } = bind({
-      apply: async () => { throw new ActionApplyError("half applied") },
+      // `ActionApplyError` means the effect is known absent, so the handler had already undone
+      // whatever it started -- it owns that cleanup, and reject only clears the record.
+      apply: async () => { throw new ActionApplyError("rolled back at the provider") },
     });
     const id = await actions.submit(fakeQueue(), "execute", { sql: "one" });
 
-    await expect(actions.apply(id)).rejects.toThrow("half applied");
+    await expect(actions.apply(id)).rejects.toThrow("rolled back at the provider");
     await actions.reject(id);
-    // Clearing the record, not undoing it: the handler owns whatever its partial effect left.
     expect(host.ran).toEqual([]);
     expect(journal.get(id)).toBeUndefined();
   });
@@ -1538,6 +1558,44 @@ describe("defineActions", () => {
       .rejects.toThrow(/has since been replaced/);
     expect(journal.get(id)?.state).toBe("failed");
   });
+
+  it("records an unknown outcome from an unclaimed definition, and says the guarantee was not held",
+    async () => {
+      // Non-replay rests on the pre-dispatch claim. Without one the record is still pending when
+      // the handler throws, so a dying activation leaves it replayable -- record the outcome, but
+      // do not let the gap pass silently.
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { actions, journal } = bind({
+          claimBeforeApply: false,
+          apply: async () => { throw new ActionOutcomeUnknownError("the request timed out"); },
+        });
+        const id = await actions.submit(fakeQueue(), "execute", { sql: "one" });
+
+        await expect(actions.apply(id)).rejects.toThrow("the request timed out");
+
+        expect(journal.get(id)).toMatchObject({ state: "failed", outcome: "unknown" });
+        expect(logged).toHaveBeenCalled();
+      } finally {
+        logged.mockRestore();
+      }
+    });
+
+  it("stays quiet when the definition claimed before dispatch", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { actions } = bind({
+        claimBeforeApply: true,
+        apply: async () => { throw new ActionOutcomeUnknownError("the request timed out"); },
+      });
+      const id = await actions.submit(fakeQueue(), "execute", { sql: "one" });
+
+      await expect(actions.apply(id)).rejects.toThrow("the request timed out");
+      expect(logged).not.toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+    }
+  });
 });
 
 describe("dependent actions", () => {
@@ -1546,7 +1604,7 @@ describe("dependent actions", () => {
 
   function bind(overrides: {
     apply?: () => Promise<void>;
-    isResolvedReference?: (ref: string) => boolean;
+    isResolvedReference?: (host: Host, ref: string) => boolean;
   } = {}) {
     const host: Host = { ran: [] };
     const journal = new ActionJournal<TaggedAction<Actions>>(makeKv(), { namespace: "pending" });
@@ -1580,7 +1638,7 @@ describe("dependent actions", () => {
 
   it("refuses to apply an action whose provisional reference is unresolved", async () => {
     const bound = new Set<string>();
-    const { actions, journal } = bind({ isResolvedReference: ref => bound.has(ref) });
+    const { actions, journal } = bind({ isResolvedReference: (_, ref) => bound.has(ref) });
     const create = queued(journal, { kind: "create", payload: { ref: "~1" } });
     const edit = queued(journal, { kind: "edit", payload: { target: "~1" } });
 
@@ -1645,7 +1703,7 @@ describe("dependent actions", () => {
     // exists, so the dependent is applicable -- retiring it would destroy viable work.
     const bound = new Set<string>();
     const { actions, journal } = bind({
-      isResolvedReference: ref => bound.has(ref),
+      isResolvedReference: (_, ref) => bound.has(ref),
       apply: async () => {
         bound.add("~1");
         throw new ActionApplyError("created, then failed to configure");
@@ -1663,7 +1721,7 @@ describe("dependent actions", () => {
     // "child-~1" was bound by an apply that then failed retryably, so its record is pending again
     // while the entity exists. Retiring "~1" must not reach the grandchild through it.
     const bound = new Set(["child-~1"]);
-    const { actions, journal } = bind({ isResolvedReference: ref => bound.has(ref) });
+    const { actions, journal } = bind({ isResolvedReference: (_, ref) => bound.has(ref) });
     const create = queued(journal, { kind: "create", payload: { ref: "~1" } });
     const child = queued(journal, { kind: "create", payload: { ref: "child-~1" } });
     const grandchild = queued(journal, { kind: "edit", payload: { target: "child-~1" } });
