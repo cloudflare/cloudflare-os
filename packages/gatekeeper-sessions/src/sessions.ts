@@ -2096,10 +2096,51 @@ export class CodingSessionRegistry extends DurableObject<Env> {
       instanceTier: storedSessionTier(record), owner, repositories: record.repositories,
     });
     assertCurrent();
-    const response = await sandboxFor(this.env, storedSessionTier(record), record.sandboxId).containerFetch(new Request(
-      `http://127.0.0.1:${PI_BRIDGE_PORT}/`, { method: "POST", body: JSON.stringify(command), redirect: "manual", signal: AbortSignal.timeout(30_000) },
-    ), PI_BRIDGE_PORT);
-    const body = await readBoundedBody(response.body, 2 * 1024 * 1024);
+    let timedOut = false;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(new Error("Pi operation timed out; outcome unknown. Do not retry writes automatically."));
+      }, 30_000);
+    });
+    const fetchBody = async () => {
+      // Normal SDK RPC must carry serializable arguments, not a Request/AbortSignal.
+      const response = await sandboxFor(this.env, storedSessionTier(record), record.sandboxId).containerFetch(
+        `http://127.0.0.1:${PI_BRIDGE_PORT}/`, { method: "POST", body: JSON.stringify(command), redirect: "manual" }, PI_BRIDGE_PORT,
+      );
+      if (timedOut) {
+        void response.body?.cancel().catch(() => undefined);
+        return { response, body: null };
+      }
+      if (!response.body) return { response, body: new Uint8Array() };
+      reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        length += value.byteLength;
+        if (length > 2 * 1024 * 1024) return { response, body: null };
+        chunks.push(value);
+      }
+      const body = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        body.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return { response, body };
+    };
+    const { response, body } = await Promise.race([fetchBody(), deadline]).finally(() => {
+      clearTimeout(timer);
+      // Cancellation must not extend the deadline, even if the remote source stalls.
+      if (reader) {
+        void reader.cancel().catch(() => undefined);
+        reader.releaseLock();
+      }
+    });
     assertCurrent();
     if (!response.ok || !body || response.headers.has("Location")) throw new Error("Pi operation failed or timed out; outcome may be unknown. Do not retry writes automatically.");
     const json = new TextDecoder().decode(body);
