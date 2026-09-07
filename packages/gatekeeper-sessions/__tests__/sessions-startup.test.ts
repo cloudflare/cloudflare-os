@@ -229,12 +229,18 @@ describe("coding session asynchronous startup", () => {
     expect(attempts).toEqual([{
       component: "gatekeeper.sessions",
       event: "coding.session.startup.attempt",
+      sessionId: "session-1",
+      sandboxId: "sandbox-1",
+      generation: 0,
+      startedAtMs: expect.any(Number),
+      checkpointAgeMs: expect.any(Number),
       phase: "authorize",
       durationMs: expect.any(Number),
       outcome: "success",
       message: "coding session startup attempt completed",
     }]);
     expect(attempts[0].durationMs).toBeGreaterThanOrEqual(0);
+    expect(attempts[0].checkpointAgeMs).toBeGreaterThanOrEqual(0);
   });
 
   it("mirrors progress without letting stale callbacks replace a newer generation or phase", () => {
@@ -2631,9 +2637,16 @@ describe("coding session asynchronous startup", () => {
     ]));
     for (const event of events) {
       expect(event.durationMs).toBeGreaterThanOrEqual(0);
+      expect(event.startedAtMs).toEqual(expect.any(Number));
       expect(Object.keys(event).toSorted()).toEqual([
-        "attachPhase", "component", "durationMs", "event", "message", "outcome",
+        "attachPhase", "component", "durationMs", "event", "generation", "message", "operationId", "outcome", "sandboxId", "sessionId", "startedAtMs",
       ]);
+    }
+    const totals = events.filter(event => event.attachPhase === "total");
+    expect(new Set(totals.map(event => event.operationId)).size).toBe(2);
+    for (const total of totals) {
+      const authorization = events.find(event => event.operationId === total.operationId && event.attachPhase === "authorization");
+      expect(authorization).toEqual(expect.objectContaining({ outcome: total.outcome, sessionId: total.sessionId, sandboxId: total.sandboxId, generation: total.generation }));
     }
     expect(JSON.stringify(events)).not.toMatch(/private-token|\/workspace|prompt|headers|body|editor-test-secret/);
   });
