@@ -4,7 +4,11 @@ import { useAuthenticatedApi } from '../../AuthContext'
 import { WorkshopButton } from '../WorkshopControls'
 import LazySessionTerminal from './LazySessionTerminal'
 
-type Api = Pick<AuthenticatedApi, 'connectCodingSessionPi' | 'callCodingSessionPi'>
+type Api = Pick<AuthenticatedApi, 'callCodingSessionPi'> & {
+  connectCodingSessionPi: (...args: Parameters<AuthenticatedApi['connectCodingSessionPi']>) => Promise<
+    Exclude<CodingSessionPiConnection, { mode: 'rpc' }> | (Omit<Connection, 'runtime' | 'capabilities'> & Partial<Pick<Connection, 'runtime' | 'capabilities'>>)
+  >
+}
 type Props = { sessionId: string; runtime?: 'pi' | 'prime-agent'; initialInput?: string; onInitialInputSent?: () => void; onSessionUnavailable?: () => void }
 type Connection = Extract<CodingSessionPiConnection, { mode: 'rpc' }>
 type RecordValue = Record<string, unknown>
@@ -145,17 +149,21 @@ function PiSession({ authenticatedApi, sessionId, runtime = 'pi', initialInput, 
         if (!alive || stopped) return
         if (!connection || connection.expiresAt.valueOf() <= Date.now()) {
           setReady(false)
-          const attached = await authenticatedApi.connectCodingSessionPi(sessionId)
+          let attached = await authenticatedApi.connectCodingSessionPi(sessionId)
           if (!alive) return
           if (attached.mode === 'terminal') {
             stopped = true
             setTerminalReason(attached.reason)
             return
           }
-          if (attached.mode !== 'rpc' || attached.version !== 1 || !attached.connectionId || !(attached.expiresAt instanceof Date) || !Number.isFinite(attached.expiresAt.valueOf()) || attached.expiresAt.valueOf() <= Date.now()) throw new Error('Invalid Pi connection.')
-          if (!['pi', 'prime'].includes(attached.runtime) || !attached.capabilities || attached.capabilities.messages !== 'current-context' || !['persisted-entries', 'unavailable'].includes(attached.capabilities.history) || typeof attached.capabilities.tree !== 'boolean' || !['agent_settled', 'unavailable'].includes(attached.capabilities.settlement) || !['delta', 'cumulative'].includes(attached.capabilities.messageUpdates)) throw new Error('Invalid workbench capabilities.')
-          connection = attached
-          setTransport(attached)
+          if (attached.mode !== 'rpc' || attached.version !== 1 || typeof attached.connectionId !== 'string' || !attached.connectionId || !(attached.expiresAt instanceof Date) || !Number.isFinite(attached.expiresAt.valueOf()) || attached.expiresAt.valueOf() <= Date.now()) throw new Error('Invalid Pi connection.')
+          // Deployed Pi v1 predates metadata. Never infer Prime support or repair partial metadata.
+          if (runtime === 'pi' && !('runtime' in attached) && !('capabilities' in attached)) {
+            attached = { ...attached, runtime: 'pi', capabilities: { messages: 'current-context', history: 'persisted-entries', tree: true, settlement: 'agent_settled', messageUpdates: 'delta' } }
+          }
+          if ((attached.runtime !== 'pi' && attached.runtime !== 'prime') || !attached.capabilities || attached.capabilities.messages !== 'current-context' || !['persisted-entries', 'unavailable'].includes(attached.capabilities.history) || typeof attached.capabilities.tree !== 'boolean' || !['agent_settled', 'unavailable'].includes(attached.capabilities.settlement) || !['delta', 'cumulative'].includes(attached.capabilities.messageUpdates)) throw new Error('Invalid workbench capabilities.')
+          connection = { ...attached, runtime: attached.runtime, capabilities: attached.capabilities }
+          setTransport(connection)
         }
         const events = await call({ type: 'events', after: cursor })
         if (!record(events) || typeof events.cursor !== 'number' || !Number.isSafeInteger(events.cursor) || events.cursor < cursor || typeof events.truncated !== 'boolean' || typeof events.dead !== 'boolean' || !Array.isArray(events.events)) throw new Error('Invalid Pi event response.')
@@ -243,7 +251,7 @@ function PiSession({ authenticatedApi, sessionId, runtime = 'pi', initialInput, 
       // API returns plain data, not an RPC stub. In-flight reads cannot be cancelled,
       // but their continuations cannot update state, download or issue more reads.
     }
-  }, [authenticatedApi, sessionId, revision])
+  }, [authenticatedApi, sessionId, runtime, revision])
 
   if (terminalReason !== undefined) return (
     <div className="flex h-full min-h-0 flex-col">
