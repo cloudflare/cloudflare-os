@@ -89,6 +89,16 @@ refresh token, or provider-specific evidence of the same. Let transport, malform
 presented access token, which a refresh recovers. Treating either an outage or a recoverable token
 rejection as grant death destroys healthy authority and prompts an unnecessary reconnect.
 
+It also owes the *complete* canonical record, not the provider's response. Providers routinely omit
+values that did not change — an unchanged rotating refresh token, granted scopes, provider metadata
+— and the coordinator replaces the stored record wholesale, so anything absent is lost and the next
+refresh fails after the first successful rotation:
+
+```ts
+const response = await exchangeRefreshToken(grant);
+return { ...grant, ...response, refreshToken: response.refreshToken ?? grant.refreshToken };
+```
+
 Omit `adjudicateRejection`'s `refresh` callback when rejection of a current credential proves the
 whole grant is dead. A heal cannot recover that provider model and would suppress the expiry
 notification.
@@ -97,6 +107,12 @@ Every credential replacement re-arms the expiry latch. This includes `connect()`
 refresh, and rejection healing. A legacy-layout migration does not re-arm it because it replaces no
 credentials. `clearCredentialExpiryLatch` remains available for accounts that manage credentials
 without `CredentialCoordinator`.
+
+`connect()` writes unconditionally: it rotates the connection generation and replaces the stored
+record whatever is there. If the connect flow awaits a provider token exchange between
+`claimOAuth()` and `connect()`, fence that window yourself, or a revoke or newer reconnect landing
+inside it is overwritten by the older completion. `ConnectHandshake` covers the initiation and its
+OAuth nonces only; the completion is the account's own to order.
 
 ### 3. Run facet calls through `CredentialSource`
 
@@ -137,9 +153,15 @@ not an expired grant.
 
 ### 5. Revoke discarded token rotations
 
-A provider that rotates refresh tokens must implement `discardMint`. A reconnect or revoke can win
+A provider that rotates refresh tokens should implement `discardMint`. A reconnect or revoke can win
 while refresh is in flight, leaving the completed mint fenced out of storage. Revoke that grant at
 the provider so no live credential chain remains without a stored handle.
+
+Do this only where revoking the discarded mint cannot invalidate the grant the surviving connection
+uses. RFC 7009 lets a provider treat revoking one refresh token as revoking the whole authorization
+grant, so where a reconnect reuses one grant per (user, client) the disposal kills the connection
+that just won. For such a provider omit `discardMint` and order refresh against connect and clear in
+the account itself — the kit supplies no primitive for that.
 
 Errors from `discardMint` are logged and do not replace the winning operation. It cannot recover a
 crash between provider rotation and storage; the user must reconnect in that case.
@@ -154,7 +176,8 @@ reconnect may still land between the entry check and the provider call. A handle
 under a replaced connection compares `ctx.fence` with the `CredentialRead` passed to the same `run`
 callback that issues the request.
 
-`authority()` is for cache partitioning only. A concurrent fetch can change it during an operation.
+`lastSeenGeneration()` is a diagnostic. A concurrent fetch can change it during an operation, and
+it names the previous connection until the next fetch, so never partition provider data on it.
 
 ## Storage
 
@@ -170,11 +193,21 @@ Pass the same `ctx.storage.kv` object on every access. Credential refreshes, exp
 and observer claim counts key process-local coordination by storage-object identity. Wrapping the
 storage for every call defeats coalescing and can spend a single-use refresh token twice.
 
+### Name every keyspace
+
+`ActionJournal` takes a `namespace` and `KvTtlCache` a `name`; both derive every key from it. Two
+journals sharing a keyspace share ids and capacity while each bound action set serializes apply and
+reject on its own in-memory queue, so nothing orders their provider calls against each other. Two
+caches sharing one serve each other's values for colliding keys, and either one's `invalidateAll()`
+clears both.
+
 ### Treat storage layout as compatibility
 
 Shipped key names and prefixes are compatibility surfaces. Renaming one silently orphans live
-records. When a port must preserve different keys, use the available options on
-`ActionJournalOptions`, `ObserverTrackerOptions`, or `KvTtlCache` rather than migrating by accident.
+records. A port that must keep reading records it already wrote passes `legacyKeys` (journal) or
+`legacyUnnamed` (cache) instead of a namespace — mutually exclusive with it, so the unsafe shared
+layout is always an explicit choice. `ObserverTrackerOptions` has its own key options for the same
+reason.
 
 ### Fake the surface, not the runtime
 
@@ -196,13 +229,14 @@ Those suites live under [`__tests__/workerd/`](__tests__/workerd/) and load
 
 ## Caching
 
-Give each logical `KvTtlCache` family a `name`. Unnamed cache instances over one KV object share the
-`cache:entry:` and `cache:generation` namespaces. Colliding keys can then serve another cache's
-values, and either instance's `invalidateAll()` clears both.
+Give each `KvTtlCache` a `name`, which gives it its own keys and generation.
 
-The authority is the last-seen connection generation. A cached value from the previous connection
-can remain available until its TTL, so call `invalidateAll()` during reconnect when that distinction
-matters.
+`partitionedBy` asks the source for a live connection fence on every hit, so a reconnect
+repartitions before the next hit rather than at the next provider call. That costs one account
+credential read per hit — which may itself run a normal credential refresh — and still avoids the
+provider request the entry exists to cache. A disconnected account propagates its own error; a
+source that cannot vouch for the credentials bypasses the cache. Compose an authority on the raw
+constructor only where it is genuinely local.
 
 ## Actions and files
 
@@ -211,12 +245,22 @@ submit, approve, apply, and retire lifecycle, including retryable versus termina
 dependency stranding, and connection fences.
 
 `retainApplied: true` opts out of retirement: applied records move to a retained tier the kit never
-bounds, so the binding must retire them under its own policy through `runExclusive()`.
+bounds. Enforce the binding's retention policy inside `runExclusive()`: walk storage-bounded pages
+with `journal.listRetained({ limit, cursor })`, pass each `nextCursor` back until it is absent, and
+call `journal.retire(id)` for each expired record.
 
-`claimBeforeApply` turns a lost activation into a terminal unknown outcome. It cannot classify an
-ambiguous failure returned by the provider after dispatch. For that case, throw `ActionApplyError`
-when the failure is known terminal, or use a provider idempotency key derived from the stable
-`ActionContext.id`.
+An apply failure has three outcomes, and the handler picks by what it throws. An ordinary error is
+retryable: the record returns to pending and the overseer may apply it again, so use it only when a
+second attempt is safe. `ActionApplyError` is terminal and asserts the provider effect is **known
+absent** — it retires the dependents waiting on references this action was to provide.
+`ActionOutcomeUnknownError` is terminal and asserts nothing: use it for a timeout, an aborted
+request, or any failure after the provider was reached. That record is never replayed and never
+pruned, strands no dependent, and holds a slot until the user rejects it, so the "check the
+provider" warning survives.
+
+`claimBeforeApply` produces that same unknown outcome when an activation dies mid-dispatch. Neither
+substitutes for a provider idempotency key derived from the stable `ActionContext.id`, which is
+what makes a retry safe in the first place.
 
 Store action file bytes with `ActionFileStore`. Put only the bounded `ActionFileReference` in the
 action payload. Journal records must stay small, and approval text must describe the same bytes that
@@ -224,8 +268,9 @@ will be applied.
 
 Release those bytes yourself — the kit never collects them, and every capture counts against
 `maxTotalBytes` until it is deleted. Call `delete(reference)` when the action's record goes away:
-on resolution normally, but only at retirement under `retainApplied: true`, where the retained
-record is what a revert reads back. Sweep orphans with `pruneUnreferenced(referenced, createdBefore)`
+on resolution normally, but only when `journal.retire(id)` removes an expired retained record under
+`retainApplied: true`, since that record is what a revert reads back. Sweep orphans with
+`pruneUnreferenced(referenced, createdBefore)`
 before a new capture, passing every handle your pending **and retained** records name, plus a cutoff
 old enough to spare a capture whose submission is still in flight. An orphan outlives a rejected
 action, a terminal failure, and a capture whose `submit` never landed; without a sweep they
@@ -299,10 +344,72 @@ that disclosure with a synthetic set ID instead.
 
 ### Scope describes the disclosure
 
-`ObservationScope` describes what a read reveals: `baseline`, `sets`, or
-`withholdFromObservers`. The selected strategy decides the policy. A `sets` scope under a strategy
-without `prepare` is a deliberate no-op. Do not choose such a strategy for resources whose children
-have separate ACLs.
+`ObservationScope` describes what a read reveals: `baseline`, `sets`, or `withholdFromObservers`.
+
+A **set** is a provider-side access-controlled grouping — a Confluence space, a Jira project, a
+GitHub repo — whose ACL governs the items the read returned. Pass the ids of those groupings, not
+of the individual rows.
+
+Each strategy declares, as `aclChecks`, how thoroughly it verifies observer access to them, and the
+gate refuses a `sets` scope a strategy cannot honour:
+
+| Strategy | `aclChecks` | A `sets` scope |
+| --- | --- | --- |
+| `trackedSetObservers` | `per-read` | checked for every observer, on every read |
+| `privateObservers` | `no-observers` | accepted; nobody is admitted to exclude |
+| `aclObservers` | `unsupported` | **refused** |
+| `openObservers` | `unsupported` | **refused** |
+
+A resource whose children carry their own ACLs needs `trackedSetObservers`. Under the other two,
+set ids would name a check nothing performs, so declare those reads `{ kind: "baseline" }` — and if
+the provider can revoke child access independently, that is the wrong strategy, not the wrong
+scope. A custom strategy declares its own `aclChecks`, and only the `per-read` arm may carry
+`prepare`, so claiming a check it does not implement will not compile.
+
+### A cursor authorizes everything it hands out
+
+A provider-backed cursor returns provider data from `next()`, so it carries the same obligation. The
+session cannot discharge it up front: the pages do not exist yet, and one `next()` may be served
+from the buffer with no provider fetch at all. Pass `authorizePage`, which the cursor calls with the
+exact page it is about to return:
+
+```ts
+return new TokenCursor<Project>({
+  pageSize: 50,
+  fetchPage: (token, perPage) => this.#api.listProjects({ cursor: token, limit: perPage }),
+  authorizePage: (projects, { terminal }) => projects.length === 0
+    ? this.#gate.authorize(
+      {
+        title: "Projects",
+        description: terminal
+          ? "Listed the projects; there were none."
+          : "Scanned a window of projects; none were visible.",
+      },
+      { kind: "baseline" })
+    : this.#gate.authorize(
+      { title: "Projects", description: `Read ${projects.length} projects.` },
+      { kind: "sets", ids: projects.map(project => project.id) }),
+});
+```
+
+Every page is authorized, including an empty one from a spent fetch window. So is the end of a walk
+that disclosed nothing: `searchUsers(email) → no matches` answers a question about provider data,
+and letting that reach the gadget unaudited turns the cursor into an existence oracle. A walk that
+already returned a page does not re-authorize its `null`, and exhaustion is authorized at most once.
+
+Branch on `projects.length`, not on `terminal`. Both an exhausted walk and a spent mid-walk window
+arrive with no items, and `{ kind: "sets", ids: [] }` is refused — naming no set is exactly the
+shape the gate rejects. `terminal` distinguishes the two only for the description: whether the walk
+is over, or the caller should ask again. The `sets` branch above also assumes
+`trackedSetObservers`; under a strategy whose `aclChecks` is `"unsupported"` every branch is
+`baseline`, per the table above.
+
+A refusal holds the outgoing page, so the retry re-offers exactly it with no further provider
+fetch: a page the provider capped short cannot grow between the refusal and the retry, which would
+hand the approver something larger than what they refused. An empty page from a spent window is the
+exception — nothing was disclosed, so the retry opens a fresh window rather than pinning the walk
+on a failure that may have been transient. A refused zero-result answer is likewise re-offered.
+`ArrayCursor` takes no callback: the session that assembled its items authorized them as one read.
 
 ### Refusal and failure have different outcomes
 
@@ -314,8 +421,10 @@ Every other failure has an unknown outcome. The gate releases in-memory bookkeep
 durable fences because a lost reply may have left an observation record. A tracked-set marker is
 reclaimed only after every read that disclosed the set was refused. One unknown result retains it.
 
-The overseer does not yet add the refusal mark, so every failure currently takes the fail-closed
-unknown-outcome path.
+The Workshop overseer does not yet add this code: both pre-recording refusal paths — owner-only
+observations in shared workspaces, and collaborator exclusions — still throw plain errors. Until a
+kernel change marks them, every failure takes the fail-closed unknown-outcome path above, and
+`discard()` never runs.
 
 ## Bounds
 

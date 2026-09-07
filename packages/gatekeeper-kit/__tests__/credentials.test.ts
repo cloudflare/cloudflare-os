@@ -1139,26 +1139,26 @@ describe("CredentialSource", () => {
     const { instance } =
       source({ getCredentials: async () => ({ creds: live, identity, generation }) });
     // Nothing fetched yet: a cache keyed on this must bypass, not hit a props-keyed partition.
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
 
     await instance.get();
-    expect(instance.authority()).toBe("gen-a");
+    expect(instance.lastSeenGeneration()).toBe("gen-a");
 
     // A reported expiry means a reconnect will rotate the generation; forget the old one.
     await expect(instance.run(async () => { throw new Error("401"); }))
       .rejects.toThrow(CredentialsExpiredError);
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
 
     // The account keeps the dead grant until reconnect: refetching the same identity must not
     // restore its partition, or hit-only cache paths would mask the outage for the TTL.
     await instance.get();
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
 
     // A fetch adopting a different identity — refresh or reconnect — re-establishes it.
     identity = "id-b";
     generation = "gen-b";
     await instance.get();
-    expect(instance.authority()).toBe("gen-b");
+    expect(instance.lastSeenGeneration()).toBe("gen-b");
   });
 
   it("reports the rejection against the identity the failed call used", async () => {
@@ -1201,7 +1201,7 @@ describe("CredentialSource", () => {
     // Stale, not terminal: the reconnect the user just completed must not be reported dead, and
     // it keeps the cache partition it adopted.
     await expect(failure).rejects.toThrow(CredentialsChangedError);
-    expect(instance.authority()).toBe("gen-b");
+    expect(instance.lastSeenGeneration()).toBe("gen-b");
   });
 
   it("retries a replayable operation once after the account heals past the rejection", async () => {
@@ -1220,7 +1220,7 @@ describe("CredentialSource", () => {
     expect(getCredentials).toHaveBeenCalledTimes(2);
     // A healed rejection is a stale bearer, not expiry; the connection survives, and the retry's
     // own read re-establishes the authority.
-    expect(instance.authority()).toBe("gen-a");
+    expect(instance.lastSeenGeneration()).toBe("gen-a");
   });
 
   it("reports the identity the retry actually used when its credentials are rejected too", async () => {
@@ -1239,7 +1239,7 @@ describe("CredentialSource", () => {
     expect(operation).toHaveBeenCalledTimes(2);
     expect(reportCredentialsRejected).toHaveBeenNthCalledWith(1, "id-a");
     expect(reportCredentialsRejected).toHaveBeenNthCalledWith(2, "id-b");
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
   });
 
   it("resolves a superseded verdict on a non-replayable operation into a retryable error", async () => {
@@ -1255,7 +1255,7 @@ describe("CredentialSource", () => {
     expect(reportCredentialsRejected).toHaveBeenCalledWith("id-a");
     // The verdict proves this snapshot stale: its authority cannot vouch for the current
     // principal, so caches bypass until the next read re-establishes it.
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
   });
 
   it("surfaces the original rejection when the account cannot adjudicate", async () => {
@@ -1275,7 +1275,7 @@ describe("CredentialSource", () => {
     // No verdict landed: the identity was never marked dead, so the next fetch re-adopts it —
     // only the round-trip window bypassed the cache.
     await instance.get();
-    expect(instance.authority()).toBe("gen-a");
+    expect(instance.lastSeenGeneration()).toBe("gen-a");
   });
 
   it("surfaces the provider error when the verdict is malformed", async () => {
@@ -1294,11 +1294,11 @@ describe("CredentialSource", () => {
     } finally {
       logged.mockRestore();
     }
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
 
     // Never adjudicated: the identity is not dead-marked, so the next read re-adopts.
     await instance.get();
-    expect(instance.authority()).toBe("gen-a");
+    expect(instance.lastSeenGeneration()).toBe("gen-a");
   });
 
   it("surfaces the provider error when the report cannot reach the account", async () => {
@@ -1313,12 +1313,12 @@ describe("CredentialSource", () => {
       // than an expiry no account confirmed.
       await expect(instance.run(async () => { throw rejection })).rejects.toBe(rejection);
       expect(logged).toHaveBeenCalledOnce();
-      expect(instance.authority()).toBeUndefined();
+      expect(instance.lastSeenGeneration()).toBeUndefined();
 
       // A transient outage is not the account's word: the identity is not dead-marked, so the
       // next read re-adopts and caching survives the activation.
       await instance.get();
-      expect(instance.authority()).toBe("gen-a");
+      expect(instance.lastSeenGeneration()).toBe("gen-a");
     } finally {
       logged.mockRestore();
     }
@@ -1331,12 +1331,12 @@ describe("CredentialSource", () => {
     });
 
     await instance.get();
-    expect(instance.authority()).toBe("gen-a");
+    expect(instance.lastSeenGeneration()).toBe("gen-a");
 
     // An account that cannot fence this read cannot vouch for the partition it stamped earlier.
     identity = "";
     await expect(instance.get()).rejects.toThrow('reserved "" identity');
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
   });
 
   it("refuses the retry when the refetch crosses a reconnect", async () => {
@@ -1355,7 +1355,7 @@ describe("CredentialSource", () => {
     // refetch itself adopted the live reconnect, so its authority stands.
     expect(operation).toHaveBeenCalledOnce();
     expect(reportCredentialsRejected).toHaveBeenCalledOnce();
-    expect(instance.authority()).toBe("gen-b");
+    expect(instance.lastSeenGeneration()).toBe("gen-b");
   });
 
   it("refuses the retry when the refetch re-serves the rejected identity", async () => {
@@ -1372,7 +1372,7 @@ describe("CredentialSource", () => {
     expect(reportCredentialsRejected).toHaveBeenCalledOnce();
     // The refetch adopted the very identity the provider rejected, so its vouch is dropped:
     // a cache-first re-entry bypasses instead of serving the partition it failed to defend.
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
   });
 
   it("refuses a retry whose fenced-out refetch an adopted reconnect postdates", async () => {
@@ -1403,7 +1403,7 @@ describe("CredentialSource", () => {
 
     expect(first).toHaveBeenCalledOnce();
     expect(second).toHaveBeenCalledOnce();
-    expect(instance.authority()).toBe("gen-c");
+    expect(instance.lastSeenGeneration()).toBe("gen-c");
   });
 
   it("keeps a reconnect's authority when a fenced-out refetch re-serves the rejected identity", async () => {
@@ -1430,7 +1430,7 @@ describe("CredentialSource", () => {
     reads[1].resolve({ creds: live, identity: "id-a", generation: "gen-a" });
     await expect(runFirst).rejects.toThrow(CredentialsChangedError);
 
-    expect(instance.authority()).toBe("gen-c");
+    expect(instance.lastSeenGeneration()).toBe("gen-c");
   });
 
   it("never runs the retry under a successor already adjudicated dead", async () => {
@@ -1492,7 +1492,7 @@ describe("CredentialSource", () => {
     // caller a freshly reconnected account is expired.
     await expect(runFirst).rejects.toThrow(CredentialsChangedError);
     expect(first).toHaveBeenCalledOnce();
-    expect(instance.authority()).toBe("gen-c");
+    expect(instance.lastSeenGeneration()).toBe("gen-c");
   });
 
   it("makes at most two attempts however many verdicts answer superseded", async () => {
@@ -1616,14 +1616,14 @@ describe("CredentialSource", () => {
 
     // A plain read adopts a reconnect while the operation is still in flight.
     expect(await instance.get()).toEqual(fresh);
-    expect(instance.authority()).toBe("gen-b");
+    expect(instance.lastSeenGeneration()).toBe("gen-b");
 
     // The outcome is already decided: no ask is spent on the superseded read, and a heal or its
     // failure cannot reach a caller who only needs to re-enter.
     stalled.release();
     await expect(stalled.run).rejects.toThrow(CredentialsChangedError);
     expect(reportCredentialsRejected).not.toHaveBeenCalled();
-    expect(instance.authority()).toBe("gen-b");
+    expect(instance.lastSeenGeneration()).toBe("gen-b");
   });
 
   it("skips the second ask when a reconnect is adopted during the retry", async () => {
@@ -1646,7 +1646,7 @@ describe("CredentialSource", () => {
     // A reconnect lands and a plain read adopts it while the retry is out.
     set({ creds: live, identity: "id-c", generation: "gen-c" });
     expect(await instance.get()).toEqual(live);
-    expect(instance.authority()).toBe("gen-c");
+    expect(instance.lastSeenGeneration()).toBe("gen-c");
 
     // The retry ran under credentials the reconnect superseded: the only verdict the account
     // could return is already known, so the caller re-enters without a second ask and the live
@@ -1654,7 +1654,7 @@ describe("CredentialSource", () => {
     replayGate.resolve();
     await expect(call).rejects.toThrow(CredentialsChangedError);
     expect(reportCredentialsRejected).toHaveBeenCalledOnce();
-    expect(instance.authority()).toBe("gen-c");
+    expect(instance.lastSeenGeneration()).toBe("gen-c");
   });
 
   it("passes a retry failure that is not a credential rejection through untouched", async () => {
@@ -1681,7 +1681,7 @@ describe("CredentialSource", () => {
       // A read landing mid-adjudication is served but never adopted: the rejected partition must
       // not come back to cache-first readers while the verdict is out.
       expect(await instance.get()).toEqual(live);
-      expect(instance.authority()).toBeUndefined();
+      expect(instance.lastSeenGeneration()).toBeUndefined();
 
       answer.resolve(verdict);
       await expect(report).rejects.toThrow(error);
@@ -1689,7 +1689,7 @@ describe("CredentialSource", () => {
       // The bypass is the round trip, not the identity: once superseded settles, a fresh read
       // adopts again, while a confirmed-dead identity stays refused.
       await instance.get();
-      expect(instance.authority()).toBe(readopted);
+      expect(instance.lastSeenGeneration()).toBe(readopted);
     });
 
   it("stops vouching for a rejected authority while the verdict is pending", async () => {
@@ -1698,13 +1698,13 @@ describe("CredentialSource", () => {
       source({ reportCredentialsRejected: () => answer.promise });
 
     await instance.get();
-    expect(instance.authority()).toBe("gen-a");
+    expect(instance.lastSeenGeneration()).toBe("gen-a");
 
     // The rejection alone drops the authority: cache-first readers bypass during the round trip
     // rather than serving the partition the provider just rejected.
     const report = instance.run(async () => { throw new Error("401"); });
     await vi.waitFor(() => expect(reportCredentialsRejected).toHaveBeenCalled());
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
 
     answer.resolve("expired");
     await expect(report).rejects.toThrow(CredentialsExpiredError);
@@ -1753,7 +1753,7 @@ describe("CredentialSource", () => {
     // Reporting would expire the grant the user just reconnected, and clearing the authority
     // would drop its live partition; both belong to the grant that actually died.
     expect(reportCredentialsRejected).not.toHaveBeenCalled();
-    expect(instance.authority()).toBe("gen-b");
+    expect(instance.lastSeenGeneration()).toBe("gen-b");
   });
 
   it("passes other failures through untouched", async () => {
@@ -1774,7 +1774,7 @@ describe("CredentialSource", () => {
     });
     reads[0].resolve({ creds: live, identity: "id-a", generation: "gen-a" });
     await expect(fast).rejects.toThrow(CredentialsExpiredError);
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
 
     // A read opens while the authority is unknown, and a second report fences it in flight.
     const pending = instance.get();
@@ -1785,7 +1785,7 @@ describe("CredentialSource", () => {
     // after the report — however its generation compares to the unknown one it opened under.
     reads[1].resolve({ creds: live, identity: "id-b", generation: "gen-a" });
     expect(await pending).toEqual(live);
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
   });
 
   it("never hands a caller the fetch in flight when credentials were reported dead", async () => {
@@ -1843,19 +1843,19 @@ describe("CredentialSource", () => {
     expect(getCredentials).toHaveBeenCalledTimes(2);
     gate.resolve();
     await expect(call).rejects.toThrow(CredentialsExpiredError);
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
 
     // That fetch resolving carries the dead grant's generation; adopting it would put the cache
     // back on the dead partition.
     reads[1].resolve({ creds: live, identity: "id-a", generation: "gen-a" });
     expect(await pending).toEqual(live);
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
 
     // A fetch opened after the clear re-establishes the principal.
     const after = instance.get();
     reads[2].resolve({ creds: live, identity: "id-b", generation: "gen-b" });
     expect(await after).toEqual(live);
-    expect(instance.authority()).toBe("gen-b");
+    expect(instance.lastSeenGeneration()).toBe("gen-b");
   });
 
   it("drops the authority only when a fetch fails with confirmed expiry", async () => {
@@ -1868,18 +1868,18 @@ describe("CredentialSource", () => {
     });
 
     await instance.get();
-    expect(instance.authority()).toBe("gen-a");
+    expect(instance.lastSeenGeneration()).toBe("gen-a");
 
     // An account hiccup is not an expiry: the partition survives and warm reads keep hitting.
     failure = new Error("account unreachable");
     await expect(instance.get()).rejects.toThrow("account unreachable");
-    expect(instance.authority()).toBe("gen-a");
+    expect(instance.lastSeenGeneration()).toBe("gen-a");
 
     // A failed refresh is a confirmed expiry. RPC strips the class, so the name is the contract.
     failure = Object.assign(new Error("grant expired upstream"),
       { name: "CredentialsExpiredError" });
     await expect(instance.get()).rejects.toThrow("grant expired upstream");
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
   });
 
   it("ignores a straggler fetch that rejects with expiry after the partition revived", async () => {
@@ -1898,13 +1898,13 @@ describe("CredentialSource", () => {
     const revived = instance.get();
     reads[2].resolve({ creds: live, identity: "id-b", generation: "gen-a" });
     expect(await revived).toEqual(live);
-    expect(instance.authority()).toBe("gen-a");
+    expect(instance.lastSeenGeneration()).toBe("gen-a");
 
     // The forgotten fetch's stale coalesced refresh finally fails; it must not clear the revival.
     reads[1].reject(
       Object.assign(new Error("grant expired upstream"), { name: "CredentialsExpiredError" }));
     await expect(straggler).rejects.toThrow("grant expired upstream");
-    expect(instance.authority()).toBe("gen-a");
+    expect(instance.lastSeenGeneration()).toBe("gen-a");
   });
 
   it("never adopts a straggler fetch that outlived later expiry reports", async () => {
@@ -1924,19 +1924,19 @@ describe("CredentialSource", () => {
     const callB = instance.run(async () => { throw new Error("401"); });
     reads[2].resolve({ creds: live, identity: "id-b", generation: "gen-b" });
     await expect(callB).rejects.toThrow(CredentialsExpiredError);
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
 
     // The straggler resolves with A, which no longer matches the marker. Adopting it would
     // resurrect a dead partition and misroute genuine B failures as superseded.
     reads[1].resolve({ creds: live, identity: "id-a", generation: "gen-a" });
     expect(await straggler).toEqual(live);
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
 
     // A failure under the still-current dead grant routes to expiry, not "retry".
     const callC = instance.run(async () => { throw new Error("401"); });
     reads[3].resolve({ creds: live, identity: "id-b", generation: "gen-b" });
     await expect(callC).rejects.toThrow(CredentialsExpiredError);
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
   });
 
   it("reports a failure under fenced-out credentials as expiry when nothing live succeeded them", async () => {
@@ -1957,14 +1957,14 @@ describe("CredentialSource", () => {
     reads[1].resolve({ creds: live, identity: "id-b", generation: "gen-a" });
     await expect(callB).rejects.toThrow(CredentialsExpiredError);
     expect(reportCredentialsRejected).toHaveBeenCalledWith("id-b");
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
 
     // The account keeps serving the unrefreshed grant; readopting it would let cache hits mask
     // the expiry it just confirmed.
     const refetch = instance.get();
     reads[2].resolve({ creds: live, identity: "id-b", generation: "gen-a" });
     expect(await refetch).toEqual(live);
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
   });
 
   it("keeps a dead grant refused however many stale failures report after it", async () => {
@@ -1991,7 +1991,7 @@ describe("CredentialSource", () => {
     const refetch = instance.get();
     reads[10].resolve({ creds: live, identity: "id-b", generation: "gen-a" });
     expect(await refetch).toEqual(live);
-    expect(instance.authority()).toBeUndefined();
+    expect(instance.lastSeenGeneration()).toBeUndefined();
   });
 });
 

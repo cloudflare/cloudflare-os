@@ -19,6 +19,31 @@ in [`plans/gatekeeper-kit.md`](../../plans/gatekeeper-kit.md). No gatekeeper con
 The code and tests define the shipped behavior. The plan records the design and the unshipped
 proposal.
 
+## Responsibility boundary
+
+The kit owns provider-independent mechanisms inside each imported module. The gatekeeper owns
+provider facts, policy, and the assembly around those modules. Importing a leaf does not transfer
+the duties in the right-hand column.
+
+| Concern | Kit owns | Gatekeeper owns |
+| --- | --- | --- |
+| Assembly and lifetime | Independent leaf contracts; no Layer 2 assembly is shipped. | Worker, account, and resource-facet RPC surfaces; stub disposal; keeping stateful kit objects stable for one Durable Object activation. |
+| Connect | Nonce generation and comparison, the two-stage handshake, hardened HTML, and browser mutation guards. | Routes, authorization parameters, provider exchange, completion ordering, persistence, rollback, and reconnect or revoke races. |
+| Preview OAuth | Signed state, stable-to-preview callback relay, and return-host validation. | Deployment configuration, provider callback parameters, issuer checks, and retaining the exact redirect URI for code exchange. |
+| Credentials | Atomic credential records, refresh coalescing, identity and connection generations, replay, and rejection adjudication. | Grant shape and projection, token exchange, provider error classification, refresh-field merging, revocation, and display-safe errors. |
+| Credential expiry and simple auth retry | Durable deduplication of expiry notifications and one-refresh/one-replay helpers. | Deciding what proves grant expiry, provider refresh and revoke calls, and choosing the coordinator flow versus the standalone retry helper. |
+| Actions | Durable submission and resolution, serialization, journaling, retention mechanics, connection fences, and dependency tracking. | Approval text, provider calls, idempotency and reconciliation, action-specific simulation, revert semantics, and retention policy. |
+| Action files | Bounded chunk storage, integrity verification, aggregate accounting, deletion, and orphan-pruning mechanics. | Byte limits and key prefixes, keeping references in action records, describing the same bytes that will be applied, and releasing files with their records. |
+| Simulation | Ordered pending-action views, pure replay with explicit incomplete results, and durable provisional-ID allocation and binding. | Target extraction, state transitions, unsupported-effect policy, provider ID syntax, and projecting pending effects onto every affected read. |
+| Observations | Admission strategies, tracked-set fencing, exclusion derivation, and the guarded authorization call. | Calling the gate for every read, truthful escaped descriptions, choosing the matching strategy and scope, ACL oracles, and set canonicalization. |
+| Cursors | Serialized walks, buffering, common page/offset/token continuation, filtering hooks, and per-page authorization callbacks. | Provider page adapters, page limits and termination semantics, resource lifetime, and the observation description for each returned page. |
+| Cache | Authority partitioning, stale-fill fencing, TTL storage, single-flight loads, and invalidation. | Cache families, names and keys, authority dimensions, TTLs, value projection, and deciding which reads are safe to cache. |
+| HTTP endpoints and responses | Operator-supplied endpoint normalization, common no-access probes, and byte-capped text decoding. | Host allowlists, redirect and header policy, response schemas, provider errors, and binary or streaming limits. |
+
+When a provider does not fit a leaf, implement the canonical TypeScript interface directly and keep
+the other leaves that still fit. Bypassing a leaf also means owning its guarantees for that concern;
+do not call around a stateful module while relying on its journal, fence, or lifetime elsewhere.
+
 ## Start here
 
 - For an OAuth-shaped provider, start with the

@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
+import type { RpcStub } from "cloudflare:workers";
 import {
   ArrayCursor,
   OffsetCursor,
@@ -6,6 +8,8 @@ import {
   TokenCursor,
   type TokenPage,
 } from "../../src/cursors";
+import { ObservationGate, trackedSetObservers } from "../../src/observers";
+import { fakeKv } from "../fake-kv";
 
 type Issue = { id: number; open: boolean };
 
@@ -21,6 +25,9 @@ function tokenApi(pages: TokenPage<Issue>[]) {
   return vi.fn(async (_token: string | undefined, _perPage: number) =>
     pages[index++] ?? { items: [] });
 }
+
+// Cursors must authorize the exact page they return; tests that assert on it pass their own.
+const authorizePage = async () => {};
 
 const ids = (page: Issue[] | null) => page?.map(issue => issue.id);
 
@@ -46,7 +53,8 @@ describe("ArrayCursor", () => {
 describe("PageNumberCursor", () => {
   it("fetches only the provider pages a page of results needs", async () => {
     const fetchPage = pagedApi([1, 2, 3, 4, 5].map(id => ({ id, open: true })));
-    const cursor = new PageNumberCursor<Issue>({ fetchPage, pageSize: 2, remotePageSize: 2 });
+    const cursor = new PageNumberCursor<Issue>(
+      { fetchPage, authorizePage, pageSize: 2, remotePageSize: 2 });
 
     expect((await cursor.next())?.map(issue => issue.id)).toEqual([1, 2]);
     expect(fetchPage).toHaveBeenCalledOnce();
@@ -59,7 +67,8 @@ describe("PageNumberCursor", () => {
   it("serializes concurrent callers instead of duplicating and skipping pages", async () => {
     const items = [1, 2, 3, 4, 5, 6].map(id => ({ id, open: true }));
     const fetchPage = pagedApi(items);
-    const cursor = new PageNumberCursor<Issue>({ fetchPage, pageSize: 2, remotePageSize: 2 });
+    const cursor = new PageNumberCursor<Issue>(
+      { fetchPage, authorizePage, pageSize: 2, remotePageSize: 2 });
 
     // A gadget can pipeline these; the provider page counter must not be read twice before it moves.
     const pages = await Promise.all([cursor.next(), cursor.next(), cursor.next()]);
@@ -73,7 +82,8 @@ describe("PageNumberCursor", () => {
     const items = Array.from({ length: 45 }, (_, index) => ({ id: index + 1, open: true }));
     // Answers 20 to a request for 100, as Cloudflare's own /accounts endpoint does.
     const fetchPage = vi.fn(async (page: number) => items.slice((page - 1) * 20, page * 20));
-    const cursor = new PageNumberCursor<Issue>({ fetchPage, pageSize: 100, remotePageSize: 100 });
+    const cursor = new PageNumberCursor<Issue>(
+      { fetchPage, authorizePage, pageSize: 100, remotePageSize: 100 });
 
     // Stopping at the first short page would have returned only the first 20.
     expect((await cursor.next())?.length).toBe(45);
@@ -88,6 +98,7 @@ describe("PageNumberCursor", () => {
         if (++attempt === 1) throw new Error("provider 503");
         return pages[page - 1] ?? [];
       },
+      authorizePage,
       pageSize: 1,
       remotePageSize: 1,
     });
@@ -108,6 +119,7 @@ describe("PageNumberCursor", () => {
         if (++attempt === 1) throw new Error("authorization unavailable");
         return items;
       },
+      authorizePage,
       pageSize: 1,
       remotePageSize: 1,
     });
@@ -120,13 +132,15 @@ describe("PageNumberCursor", () => {
 
   it("exposes no paging method a stub holder could call", () => {
     // capnweb resolves string paths only; reached by name it would skip the queue.
-    const cursor = new PageNumberCursor<Issue>({ fetchPage: async () => [], pageSize: 1 });
+    const cursor = new PageNumberCursor<Issue>(
+      { fetchPage: async () => [], authorizePage, pageSize: 1 });
 
     expect((cursor as unknown as Record<string, unknown>).loadMore).toBeUndefined();
   });
 
   it("reports the end rather than an error when the provider is simply empty", async () => {
-    const cursor = new PageNumberCursor<Issue>({ fetchPage: async () => [], pageSize: 2 });
+    const cursor = new PageNumberCursor<Issue>(
+      { fetchPage: async () => [], authorizePage, pageSize: 2 });
 
     expect(await cursor.next()).toBeNull();
   });
@@ -137,6 +151,7 @@ describe("PageNumberCursor", () => {
     const cursor = new PageNumberCursor<Issue>({
       fetchPage: async page => pages[page - 1] ?? [],
       retain: items => items.filter(issue => issue.open),
+      authorizePage,
       pageSize: 2,
       remotePageSize: 2,
     });
@@ -148,7 +163,7 @@ describe("PageNumberCursor", () => {
   it("bounds one call rather than walking a whole history of dropped pages", async () => {
     const fetchPage = vi.fn(async () => [{ id: 1, open: false }]);
     const cursor = new PageNumberCursor<Issue>(
-      { fetchPage, retain: () => [], pageSize: 2, remotePageSize: 1 });
+      { fetchPage, retain: () => [], authorizePage, pageSize: 2, remotePageSize: 1 });
 
     // `[]` invites another call, where null would claim the list had ended.
     expect(await cursor.next()).toEqual([]);
@@ -162,6 +177,7 @@ describe("PageNumberCursor", () => {
     const cursor = new PageNumberCursor<Issue>({
       fetchPage,
       retain: items => items.filter(issue => issue.open),
+      authorizePage,
       pageSize: 100,
       remotePageSize: 1,
     });
@@ -174,10 +190,12 @@ describe("PageNumberCursor", () => {
 
   it("rejects page sizes that would never terminate", () => {
     const fetchPage = pagedApi([]);
-    expect(() => new PageNumberCursor<Issue>({ fetchPage, pageSize: 0 })).toThrow(/positive safe integer/);
-    expect(() => new PageNumberCursor<Issue>({ fetchPage, pageSize: 2, remotePageSize: 0 }))
+    expect(() => new PageNumberCursor<Issue>(
+      { fetchPage, authorizePage, pageSize: 0 })).toThrow(/positive safe integer/);
+    expect(() => new PageNumberCursor<Issue>(
+      { fetchPage, authorizePage, pageSize: 2, remotePageSize: 0 }))
       .toThrow(/positive safe integer/);
-    expect(() => new PageNumberCursor<Issue>({ fetchPage, pageSize: 2.5 }))
+    expect(() => new PageNumberCursor<Issue>({ fetchPage, authorizePage, pageSize: 2.5 }))
       .toThrow(/positive safe integer/);
   });
 });
@@ -188,7 +206,8 @@ describe("OffsetCursor", () => {
     // Answers 20 to a request for 100, as jira's silent `maxResults` clamp does. Page arithmetic
     // over this shape would request offsets 0, 100, ... and lose rows 20-99 without an error.
     const fetchPage = vi.fn(async (offset: number) => items.slice(offset, offset + 20));
-    const cursor = new OffsetCursor<Issue>({ fetchPage, pageSize: 100, remotePageSize: 100 });
+    const cursor = new OffsetCursor<Issue>(
+      { fetchPage, authorizePage, pageSize: 100, remotePageSize: 100 });
 
     expect((await cursor.next())?.length).toBe(45);
     expect(await cursor.next()).toBeNull();
@@ -202,6 +221,7 @@ describe("OffsetCursor", () => {
     const cursor = new OffsetCursor<Issue>({
       fetchPage,
       retain: page => page.filter(issue => issue.open),
+      authorizePage,
       pageSize: 10,
       remotePageSize: 2,
     });
@@ -220,6 +240,7 @@ describe("OffsetCursor", () => {
         if (++attempt === 1) throw new Error("provider 503");
         return items.slice(offset, offset + 1);
       },
+      authorizePage,
       pageSize: 1,
       remotePageSize: 1,
     });
@@ -240,7 +261,8 @@ describe("TokenCursor", () => {
       { items: [{ id: 3, open: true }], nextToken: "" },
       { items: [{ id: 4, open: true }] },
     ]);
-    const cursor = new TokenCursor<Issue>({ fetchPage, pageSize: 10, remotePageSize: 25 });
+    const cursor = new TokenCursor<Issue>(
+      { fetchPage, authorizePage, pageSize: 10, remotePageSize: 25 });
 
     expect(ids(await cursor.next())).toEqual([1, 2, 3, 4]);
     expect(await cursor.next()).toBeNull();
@@ -255,7 +277,7 @@ describe("TokenCursor", () => {
       ...Array.from({ length: 12 }, (_, index) => ({ items: [], nextToken: `w${index}` })),
       { items: [{ id: 1, open: true }] },
     ]);
-    const cursor = new TokenCursor<Issue>({ fetchPage, pageSize: 2 });
+    const cursor = new TokenCursor<Issue>({ fetchPage, authorizePage, pageSize: 2 });
 
     // `[]` is a legal non-terminal page: only `null` ends a cursor, so the walk survives the cap.
     expect(await cursor.next()).toEqual([]);
@@ -274,6 +296,7 @@ describe("TokenCursor", () => {
         if (++attempt === 2) throw new Error("provider 503");
         return { items: [{ id: attempt, open: true }], nextToken: attempt < 3 ? "t2" : undefined };
       },
+      authorizePage,
       pageSize: 1,
     });
 
@@ -288,7 +311,7 @@ describe("TokenCursor", () => {
       token === undefined
         ? { items: [{ id: 1, open: true }], nextToken: "same" }
         : { items: [{ id: 2, open: true }], nextToken: token });
-    const cursor = new TokenCursor<Issue>({ fetchPage, pageSize: 10 });
+    const cursor = new TokenCursor<Issue>({ fetchPage, authorizePage, pageSize: 10 });
 
     await expect(cursor.next()).rejects.toThrow(/same continuation token/);
     await expect(cursor.next()).rejects.toThrow(/same continuation token/);
@@ -301,7 +324,8 @@ describe("TokenCursor", () => {
       { items: [{ id: 3, open: true }, { id: 4, open: true }], nextToken: "b" },
       { items: [{ id: 5, open: true }] },
     ]);
-    const cursor = new TokenCursor<Issue>({ fetchPage, pageSize: 2, remotePageSize: 2 });
+    const cursor = new TokenCursor<Issue>(
+      { fetchPage, authorizePage, pageSize: 2, remotePageSize: 2 });
 
     const pages = await Promise.all([cursor.next(), cursor.next(), cursor.next()]);
 
@@ -315,6 +339,7 @@ describe("TokenCursor", () => {
     const dispose = vi.fn();
     const cursor = new TokenCursor<Issue>({
       fetchPage: tokenApi([{ items: [{ id: 1, open: true }] }]),
+      authorizePage,
       pageSize: 1,
       dispose,
     });
@@ -325,10 +350,194 @@ describe("TokenCursor", () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
+  it("authorizes the exact page it returns, including one served from the buffer", async () => {
+    const fetchPage = tokenApi([
+      { items: [1, 2, 3, 4, 5].map(id => ({ id, open: true })) },
+    ]);
+    const authorized = vi.fn(async () => {});
+    const cursor = new TokenCursor<Issue>(
+      { fetchPage, authorizePage: authorized, pageSize: 2, remotePageSize: 5 });
+
+    expect(ids(await cursor.next())).toEqual([1, 2]);
+    expect(ids(await cursor.next())).toEqual([3, 4]);
+
+    // The second page came out of the buffer with no provider call, and was still authorized.
+    expect(fetchPage).toHaveBeenCalledOnce();
+    expect(authorized.mock.calls).toEqual([
+      [[{ id: 1, open: true }, { id: 2, open: true }], { terminal: false }],
+      [[{ id: 3, open: true }, { id: 4, open: true }], { terminal: false }],
+    ]);
+  });
+
+  it("re-offers a refused page rather than dropping it or re-fetching", async () => {
+    const fetchPage = tokenApi([
+      { items: [1, 2, 3, 4, 5].map(id => ({ id, open: true })) },
+    ]);
+    let call = 0;
+    const cursor = new TokenCursor<Issue>({
+      fetchPage,
+      authorizePage: async () => {
+        if (++call === 2) throw new Error("authorization unavailable");
+      },
+      pageSize: 2,
+      remotePageSize: 5,
+    });
+
+    expect(ids(await cursor.next())).toEqual([1, 2]);
+    await expect(cursor.next()).rejects.toThrow("authorization unavailable");
+    // The same items, and the provider position never rewound, so it must not be asked again.
+    expect(ids(await cursor.next())).toEqual([3, 4]);
+    expect(fetchPage).toHaveBeenCalledOnce();
+  });
+
+  it("re-offers a capped page unchanged, rather than growing what was refused", async () => {
+    // A heavily filtered provider caps the window before the page is full. Refilling on retry
+    // would hand the approver a larger page than the one they just refused.
+    const fetchPage = vi.fn(async (page: number) => [{ id: page, open: page % 3 === 0 }]);
+    const offered: number[][] = [];
+    let call = 0;
+    const cursor = new PageNumberCursor<Issue>({
+      fetchPage,
+      retain: rows => rows.filter(issue => issue.open),
+      pageSize: 100,
+      remotePageSize: 1,
+      authorizePage: async items => {
+        offered.push(items.map(issue => issue.id));
+        if (++call === 1) throw new Error("authorization unavailable");
+      },
+    });
+
+    await expect(cursor.next()).rejects.toThrow("authorization unavailable");
+    expect(ids(await cursor.next())).toEqual([3, 6, 9]);
+
+    expect(offered).toEqual([[3, 6, 9], [3, 6, 9]]);
+    // The held page is served without asking the provider again.
+    expect(fetchPage).toHaveBeenCalledTimes(10);
+  });
+
+  it("authorizes a spent fetch window, which discloses that the window held nothing", async () => {
+    const authorized = vi.fn(async () => {});
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi(
+        Array.from({ length: 12 }, (_, index) => ({ items: [], nextToken: `w${index}` }))),
+      authorizePage: authorized,
+      pageSize: 2,
+    });
+
+    // Not terminal: the walk continues, so the caller is told to ask again.
+    expect(await cursor.next()).toEqual([]);
+    expect(authorized.mock.calls).toEqual([[[], { terminal: false }]]);
+  });
+
+  it("still authorizes the terminal answer after empty windows disclosed no rows", async () => {
+    // The empty windows were authorized, but none of them answered the query. Treating "authorized
+    // something" as "disclosed something" would let the zero-result answer out unaudited.
+    const seen: string[] = [];
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([
+        ...Array.from({ length: 12 }, (_, index) => ({ items: [], nextToken: `w${index}` })),
+        { items: [] },
+      ]),
+      pageSize: 2,
+      authorizePage: async (items, { terminal }) =>
+        void seen.push(`${terminal ? "terminal" : "window"}:${items.length}`),
+    });
+
+    expect(await cursor.next()).toEqual([]);
+    expect(await cursor.next()).toBeNull();
+
+    expect(seen).toEqual(["window:0", "terminal:0"]);
+    // Still at most once: exhaustion asked again emits no duplicate.
+    expect(await cursor.next()).toBeNull();
+    expect(seen).toHaveLength(2);
+  });
+
+  it("authorizes the zero-result answer a walk that disclosed nothing still gives", async () => {
+    // `searchUsers(email) -> no matches` is an existence oracle: it answers a question about
+    // provider data, so it cannot reach the gadget unaudited just because no row came back.
+    const authorized = vi.fn(async () => {});
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [] }]),
+      authorizePage: authorized,
+      pageSize: 2,
+    });
+
+    expect(await cursor.next()).toBeNull();
+    expect(authorized.mock.calls).toEqual([[[], { terminal: true }]]);
+
+    // Exhaustion is idempotent: asking again repeats no observation.
+    expect(await cursor.next()).toBeNull();
+    expect(authorized).toHaveBeenCalledOnce();
+  });
+
+  it("does not re-authorize exhaustion for a walk that already returned a page", async () => {
+    const authorized = vi.fn(async () => {});
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [{ id: 1, open: true }] }]),
+      authorizePage: authorized,
+      pageSize: 2,
+    });
+
+    expect(ids(await cursor.next())).toEqual([1]);
+    expect(await cursor.next()).toBeNull();
+    // The page was authorized; the `null` that follows discloses nothing new.
+    expect(authorized.mock.calls).toEqual([[[{ id: 1, open: true }], { terminal: false }]]);
+  });
+
+  it("re-authorizes a refused zero-result answer on the next call", async () => {
+    let call = 0;
+    const authorized = vi.fn(async () => {
+      if (++call === 1) throw new Error("authorization unavailable");
+    });
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [] }]),
+      authorizePage: authorized,
+      pageSize: 2,
+    });
+
+    await expect(cursor.next()).rejects.toThrow("authorization unavailable");
+    // The refusal left nothing recorded, so the retry must ask again rather than answer silently.
+    expect(await cursor.next()).toBeNull();
+    expect(authorized).toHaveBeenCalledTimes(2);
+  });
+
+  it("drives a real gate through every empty case the documented pattern must survive", async () => {
+    // The other tests stub `authorizePage`, so they cannot catch a scope the gate itself refuses.
+    // A spent window and an exhausted walk both arrive with no items, and `{ ids: [] }` is refused.
+    const authorizeObservation = vi.fn(async (_sent: { description: string }) => {});
+    const gate = new ObservationGate(
+      { authorizeObservation } as unknown as RpcStub<ApprovalQueue>,
+      // A `sets` scope needs the strategy that actually checks them.
+      trackedSetObservers({ kv: fakeKv(), hasSetAccess: async () => [] }));
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([
+        { items: [], nextToken: "w0" },
+        { items: [{ id: 1, open: true }] },
+      ]),
+      pageSize: 2,
+      remotePageSize: 1,
+      authorizePage: (issues, { terminal }) => issues.length === 0
+        ? gate.authorize(
+          { title: "Issues", description: terminal ? "None left." : "None visible yet." },
+          { kind: "baseline" })
+        : gate.authorize(
+          { title: "Issues", description: `Read ${issues.length} issues.` },
+          { kind: "sets", ids: issues.map(issue => issue.id.toString()) }),
+    });
+
+    // A page, then exhaustion. Neither may throw out of the gate.
+    expect(ids(await cursor.next())).toEqual([1]);
+    expect(await cursor.next()).toBeNull();
+    expect(authorizeObservation.mock.calls.map(([sent]) => sent.description))
+      .toEqual(["Read 1 issues."]);
+  });
+
   it("rejects page sizes that would never terminate", () => {
     const fetchPage = tokenApi([]);
-    expect(() => new TokenCursor<Issue>({ fetchPage, pageSize: 0 })).toThrow(/positive safe integer/);
-    expect(() => new TokenCursor<Issue>({ fetchPage, pageSize: 2, remotePageSize: 1.5 }))
+    expect(() => new TokenCursor<Issue>(
+      { fetchPage, authorizePage, pageSize: 0 })).toThrow(/positive safe integer/);
+    expect(() => new TokenCursor<Issue>(
+      { fetchPage, authorizePage, pageSize: 2, remotePageSize: 1.5 }))
       .toThrow(/positive safe integer/);
   });
 });

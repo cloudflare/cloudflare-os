@@ -18,11 +18,14 @@ import {
   type ObserverStrategy,
   type ObserverTrackerOptions,
 } from "../src/observers";
-import { fakeKv } from "./fake-kv";
+import { fakeKv, type FakeKv } from "./fake-kv";
 
 function makeKv(): ObserverKv {
   return fakeKv();
 }
+
+const withholdMarkers = (kv: FakeKv) =>
+  kv.keys().filter(key => key.startsWith("observer-withhold:"));
 
 // Fixed ACL verifier that records each batched check.
 type V = { allowed: string[]; batches: (readonly string[])[] };
@@ -717,6 +720,7 @@ describe("ObservationGate", () => {
     // authorizes first and awaits the check afterwards -- the ordering would look identical.
     const preparing = Promise.withResolvers<void>();
     const strategy: ObserverStrategy = {
+      aclChecks: "per-read",
       addObserver: async () => {},
       removeObserver: async () => {},
       prepareWithheld: () => ({ commit() {} }),
@@ -769,6 +773,7 @@ describe("ObservationGate", () => {
     const discard = vi.fn();
     const abandon = vi.fn();
     const strategy: ObserverStrategy = {
+      aclChecks: "per-read",
       addObserver: async () => {},
       removeObserver: async () => {},
       prepareWithheld: () => ({ commit() {} }),
@@ -791,6 +796,7 @@ describe("ObservationGate", () => {
     const discard = vi.fn();
     const abandon = vi.fn();
     const strategy: ObserverStrategy = {
+      aclChecks: "per-read",
       addObserver: async () => {},
       removeObserver: async () => {},
       prepareWithheld: () => ({ commit() {} }),
@@ -812,9 +818,40 @@ describe("ObservationGate", () => {
     const description = { title: "Read", description: "Read a row" };
 
     await new ObservationGate(fakeQueue(authorizeObservation), openObservers())
-      .authorize(description, { kind: "sets", ids: ["p1"] });
+      .authorize(description, { kind: "baseline" });
 
     expect(authorizeObservation).toHaveBeenCalledWith(description);
+  });
+
+  it("refuses set ids under a strategy that cannot check them", async () => {
+    // The hierarchical trap: org-level admission, project-level ACLs. Correctly supplying the
+    // project ids used to disclose them with nothing consulted.
+    const authorizeObservation = vi.fn(async () => {});
+    const acl = aclObservers({ hasAccess: async () => true });
+
+    await expect(new ObservationGate(fakeQueue(authorizeObservation), acl)
+      .authorize(read, { kind: "sets", ids: ["p1"] }))
+      .rejects.toThrow(/cannot enforce set ACLs/);
+    expect(authorizeObservation).not.toHaveBeenCalled();
+  });
+
+  it("refuses set ids under an open strategy, which draws no distinction to enforce", async () => {
+    const authorizeObservation = vi.fn(async () => {});
+
+    await expect(new ObservationGate(fakeQueue(authorizeObservation), openObservers())
+      .authorize(read, { kind: "sets", ids: ["p1"] }))
+      .rejects.toThrow(/cannot enforce set ACLs/);
+    expect(authorizeObservation).not.toHaveBeenCalled();
+  });
+
+  it("allows a set scope under a private strategy, where nobody is admitted to exclude", async () => {
+    // Refusing here would force a correct configuration to misdescribe what it read.
+    const authorizeObservation = vi.fn(async () => {});
+
+    await new ObservationGate(fakeQueue(authorizeObservation), privateObservers("no sharing"))
+      .authorize(read, { kind: "sets", ids: ["p1"] });
+
+    expect(authorizeObservation).toHaveBeenCalledWith(read);
   });
 
   it("refuses a sets scope naming no set, which meant two opposite things in the corpus", async () => {
@@ -890,7 +927,7 @@ describe("ObservationGate", () => {
   it("reopens admission when the overseer refuses a withheld read", async () => {
     // The overseer refuses whenever an excluded observer is still a collaborator, so this is the
     // ordinary answer, not an outage. Nothing was disclosed, so nothing may be latched.
-    const kv = makeKv();
+    const kv = fakeKv();
     const strategy = trackedSetObservers<V>({ kv, hasSetAccess: async () => [] });
     const refusing = fakeQueue(vi.fn(async () => { throw refusal(); }));
 
@@ -898,24 +935,31 @@ describe("ObservationGate", () => {
       .authorize(read, { kind: "withholdFromObservers" }))
       .rejects.toThrow("a collaborator may not see this");
 
+    expect(withholdMarkers(kv)).toEqual([]);
+    expect(kv.get("observer-withheld")).toBeUndefined();
     await expect(strategy.addObserver("late", someUser)).resolves.toBeUndefined();
   });
 
   it("keeps admission closed when a withheld read's outcome is unknown", async () => {
-    // The overseer may already hold the record, so an unmarked failure leaves the fence standing.
-    const kv = makeKv();
+    // The overseer may already hold the record, so an unmarked failure leaves the fence standing --
+    // as the permanent latch, since the marker's activation can no longer learn the outcome.
+    const kv = fakeKv();
     const strategy = trackedSetObservers<V>({ kv, hasSetAccess: async () => [] });
     const failing = fakeQueue(vi.fn(async () => { throw new Error("connection lost"); }));
 
     await expect(new ObservationGate(failing, strategy)
       .authorize(read, { kind: "withholdFromObservers" })).rejects.toThrow("connection lost");
 
+    expect(withholdMarkers(kv)).toHaveLength(1);
     await expect(strategy.addObserver("late", someUser)).rejects.toThrow(OBSERVER_WITHHELD);
+    expect(withholdMarkers(kv)).toEqual([]);
+    expect(kv.get("observer-withheld")).toBe(true);
   });
 
   it("fences admission while a withheld read is still awaiting the overseer", async () => {
-    // The exclusion list went out before this candidate existed.
-    const kv = makeKv();
+    // The exclusion list went out before this candidate existed. The marker is still owned, so
+    // admission may not compact it -- the case an age rule would wrongly promote.
+    const kv = fakeKv();
     const strategy = trackedSetObservers<V>({ kv, hasSetAccess: async () => [] });
     const overseer = Promise.withResolvers<void>();
 
@@ -923,6 +967,9 @@ describe("ObservationGate", () => {
       .authorize(read, { kind: "withholdFromObservers" });
 
     await expect(strategy.addObserver("late", someUser)).rejects.toThrow(OBSERVER_WITHHELD);
+    expect(withholdMarkers(kv)).toHaveLength(1);
+    expect(kv.get("observer-withheld")).toBeUndefined();
+
     overseer.resolve();
     await authorizing;
   });
@@ -969,13 +1016,16 @@ describe("ObservationGate", () => {
   it("fences admission durably before the overseer is asked", async () => {
     // The overseer records the description before its reply reaches us, so an activation dying
     // mid-authorize must leave admission closed for whatever isolate comes next.
-    const kv = makeKv();
+    const kv = fakeKv();
     const strategy = trackedSetObservers<V>({ kv, hasSetAccess: async () => [] });
     strategy.prepareWithheld();  // Never settled: the activation died awaiting the overseer.
 
-    // A fresh tracker over another handle on the same storage: only a durable fence reaches it.
+    // A fresh tracker over another handle on the same storage: only a durable fence reaches it,
+    // and the marker it cannot own is promoted rather than scanned forever.
     const revived = trackedSetObservers<V>({ kv: { ...kv }, hasSetAccess: async () => [] });
     await expect(revived.addObserver("late", someUser)).rejects.toThrow(OBSERVER_WITHHELD);
+    expect(withholdMarkers(kv)).toEqual([]);
+    expect(kv.get("observer-withheld")).toBe(true);
   });
 
   it("takes no fence when enumerating observers fails", async () => {
@@ -1013,6 +1063,7 @@ describe("ObservationGate", () => {
   it("leaves the caller's prohibitAllSharing alone, being a gadget-wide escalation", async () => {
     const authorizeObservation = vi.fn(async () => {});
     const strategy: ObserverStrategy = {
+      aclChecks: "per-read",
       addObserver: async () => {},
       removeObserver: async () => {},
       prepareWithheld: () => ({ commit() {} }),
@@ -1027,5 +1078,19 @@ describe("ObservationGate", () => {
       prohibitAllSharing: true,
       excludeObservers: ["limited"],
     });
+  });
+
+  it("reaches the git cache through the gate, without exposing raw authorization", async () => {
+    // A gatekeeper returning commit ids must advertise them. Without this it would have to keep a
+    // raw queue stub, which is the bypass the gate exists to prevent.
+    const cache = { advertiseCommit: vi.fn() };
+    const getGitCache = vi.fn(async () => cache);
+    const gate = new ObservationGate(
+      { getGitCache } as unknown as RpcStub<ApprovalQueue>, openObservers());
+
+    expect(await gate.getGitCache()).toBe(cache);
+    expect(getGitCache).toHaveBeenCalledOnce();
+    // The action surface still hides it: observations may only go through `authorize()`.
+    expect((gate.actions as Record<string, unknown>).authorizeObservation).toBeUndefined();
   });
 });
