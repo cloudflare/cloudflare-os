@@ -265,12 +265,14 @@ describe("assembly", () => {
     const { account, resource } = bind();
     await connect(account);
     await resource.bind(account);
-    const staged = await resource.submitFenced("Fenced", "space-1");
+    const staged = await resource.submit("createProject",
+      { ref: "~fenced", name: "Fenced", spaceId: "space-1" });
 
     await account.disconnect();
     await connect(account);
 
-    await expect(async () => { await resource.applyFenced(staged); }).rejects.toThrow(/has since been replaced/);
+    await expect(async () => { await resource.apply(staged); })
+      .rejects.toThrow(/has since been replaced/);
     expect((await resource.record(staged))?.state).toBe("failed");
   });
 

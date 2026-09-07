@@ -20,11 +20,12 @@ import { advanceToOAuth, claimOAuth, putInitiation } from "../../../src/connect-
 import {
   CredentialCoordinator,
   CredentialSource,
+  isConnectionSuperseded,
   type CredentialRead,
   type RejectionVerdict,
 } from "../../../src/credentials";
 import { TokenCursor } from "../../../src/cursors";
-import { ObservationGate, trackedSetObservers } from "../../../src/observers";
+import { ObservationGate, trackedCollectionObservers } from "../../../src/observers";
 import {
   FakeProvider,
   ProviderAuthError,
@@ -131,6 +132,9 @@ const actions = defineActions<ConformanceResource, Actions>({
     },
   },
 }, {
+  // Both kinds name a project in one provider account, so neither means anything under another
+  // connection. Declaring it here is what makes `submit` refuse a call that forgot the fence.
+  fence: "authority",
   isResolvedReference: ref => resolvedRefs.has(ref),
 });
 
@@ -172,14 +176,17 @@ export class ConformanceAccount extends DurableObject {
   async completeConnect(oauthNonce: string): Promise<boolean> {
     const claim = claimOAuth<{ startedUnder: string }>(this.ctx.storage.kv, oauthNonce, Date.now());
     if (claim === null) return false;
-    // The exchange is the async window this consumer must fence itself.
+    // The exchange is the window `claimOAuth` cannot cover; `ifGeneration` fences it.
     const grant = await Promise.resolve(provider.mint());
-    if (this.#creds.connectionGeneration() !== claim.startedUnder) {
-      // A revoke or newer reconnect won while we were exchanging; this mint is ours to dispose.
+    try {
+      this.#creds.connect(grant, { ifGeneration: claim.startedUnder });
+    } catch (error) {
+      if (!isConnectionSuperseded(error)) throw error;
+      // The mint was never stored, so disposing of it is ours to do. Safe here because this
+      // provider revokes per token; a grant-wide revocation would kill the winning connection.
       provider.revoked.add(grant.refreshToken);
       return false;
     }
-    this.#creds.connect(grant);
     return true;
   }
 
@@ -230,9 +237,9 @@ export class ConformanceResource extends DurableObject {
     vendorId: "conformance",
   });
 
-  readonly #observers = trackedSetObservers<{ user: string }>({
+  readonly #observers = trackedCollectionObservers<{ user: string }>({
     kv: this.ctx.storage.kv,
-    hasSetAccess: async (verifier, spaceIds) =>
+    hasCollectionAccess: async (verifier, spaceIds) =>
       spaceIds.map(spaceId => provider.hasAccess(verifier.user, spaceId)),
   });
 
@@ -292,7 +299,7 @@ export class ConformanceResource extends DurableObject {
           { kind: "baseline" })
         : gate.authorize(
           { title: "Projects", description: `Read ${projects.length} projects.` },
-          { kind: "sets", ids: [...new Set(projects.map(project => project.spaceId))] }),
+          { kind: "collections", ids: [...new Set(projects.map(project => project.spaceId))] }),
     });
   }
 
@@ -309,7 +316,7 @@ export class ConformanceResource extends DurableObject {
       { title: "Search", description: `Searched projects for "${query}".` },
       matches.length === 0
         ? { kind: "baseline" }
-        : { kind: "sets", ids: [...new Set(matches.map(project => project.spaceId))] });
+        : { kind: "collections", ids: [...new Set(matches.map(project => project.spaceId))] });
     return matches;
   }
 
@@ -321,29 +328,6 @@ export class ConformanceResource extends DurableObject {
   async advertiseHead(oid: string): Promise<void> {
     using cache = await this.#requireGate().getGitCache();
     await cache.advertiseCommit(oid);
-  }
-
-  /**
-   * Stages an action pinned to the connection it was prepared under.
-   * @param name Project name.
-   * @param spaceId Owning space.
-   * @returns The staged action id.
-   */
-  async submitFenced(name: string, spaceId: string): Promise<number> {
-    // The fence rides the read this operation ran under, never a shared accessor.
-    const fence = await this.#creds.read();
-    return actions.bind(this.#journal, this).submit(
-      this.#requireGate().actions, "createProject",
-      { ref: `~${name}`, name, spaceId }, { fence });
-  }
-
-  /**
-   * Applies an action under the account's current connection.
-   * @param id Action id.
-   */
-  async applyFenced(id: number): Promise<void> {
-    const { generation } = await this.#creds.read();
-    await actions.bind(this.#journal, this).apply(id, { generation });
   }
 
   /**
@@ -410,9 +394,12 @@ export class ConformanceResource extends DurableObject {
    * @param payload Action payload.
    * @returns The staged action id.
    */
-  submit<K extends keyof Actions>(kind: K, payload: Actions[K]): Promise<number> {
+  async submit<K extends keyof Actions>(kind: K, payload: Actions[K]): Promise<number> {
+    // Both kinds are declared connection-fenced, so the set refuses this call without a fence.
+    // It rides this operation's own read, never a second one taken later.
+    const fence = await this.#creds.read();
     return actions.bind(this.#journal, this)
-      .submit(this.#requireGate().actions, kind, payload);
+      .submit(this.#requireGate().actions, kind, payload, { fence });
   }
 
   /**
@@ -420,7 +407,8 @@ export class ConformanceResource extends DurableObject {
    * @param id Action id.
    */
   async apply(id: number): Promise<void> {
-    await actions.bind(this.#journal, this).apply(id);
+    const { generation } = await this.#creds.read();
+    await actions.bind(this.#journal, this).apply(id, { generation });
   }
 
   /**

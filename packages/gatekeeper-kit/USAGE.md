@@ -108,11 +108,41 @@ refresh, and rejection healing. A legacy-layout migration does not re-arm it bec
 credentials. `clearCredentialExpiryLatch` remains available for accounts that manage credentials
 without `CredentialCoordinator`.
 
-`connect()` writes unconditionally: it rotates the connection generation and replaces the stored
-record whatever is there. If the connect flow awaits a provider token exchange between
-`claimOAuth()` and `connect()`, fence that window yourself, or a revoke or newer reconnect landing
-inside it is overwritten by the older completion. `ConnectHandshake` covers the initiation and its
-OAuth nonces only; the completion is the account's own to order.
+`claimOAuth()` consumes its nonce *before* the provider token exchange, so a revoke or a newer
+reconnect can land while that exchange is in flight. Unfenced, the older completion overwrites it.
+Capture the connection when the attempt starts and hand it back at the end:
+
+```ts
+// Starting the attempt: `advanceToOAuth` carries arbitrary metadata through the callback.
+const state = advanceToOAuth(kv, linkNonce, Date.now(),
+  { startedUnder: this.#creds.connectionGeneration() });
+if (state === null) throw new Error("This connect link has expired. Start again.");
+
+// Completing it. Both handshake calls return null for an expired or replayed nonce, and the claim
+// is checked before the exchange: minting first would leave a live grant nothing here can revoke.
+const claim = claimOAuth<{ startedUnder: string }>(kv, oauthNonce, Date.now());
+if (claim === null) throw new Error("This connect attempt has expired. Start again.");
+
+const grant = await exchangeCode(code);
+try {
+  this.#creds.connect(grant, { ifGeneration: claim.startedUnder });
+} catch (error) {
+  if (!isConnectionSuperseded(error)) throw error;
+  // Never stored, so this mint is yours to dispose — subject to the `discardMint` caution above.
+  await revokeAtProvider(grant);
+  // A `clear()` also moves the generation, so report the outcome rather than a bare success.
+  throw new Error("This account was disconnected while connecting. Try again.");
+}
+```
+
+Without `ifGeneration`, `connect()` writes unconditionally. Fencing is opt-in because a flow with
+no round trip — a pasted token, a form submission — has no window to fence and would have to
+invent a generation to pass.
+
+This closes the window between the claim and the write. It does not order two attempts that both
+reach the exchange: the handshake holds one nonce, so a second attempt reaching `advanceToOAuth`
+invalidates the first's callback, but an attempt that already claimed will still win if it
+completes first.
 
 ### 3. Run facet calls through `CredentialSource`
 
@@ -166,15 +196,34 @@ the account itself — the kit supplies no primitive for that.
 Errors from `discardMint` are logged and do not replace the winning operation. It cannot recover a
 crash between provider rotation and storage; the user must reconnect in that case.
 
-### 6. Fence actions with the operation's credential read
+### 6. Declare each action's fence, and capture it from the operation's own read
 
-`CredentialSource.run()` passes the operation a `CredentialRead` containing its `identity` and
-`generation`. Capture that read when submitting an action.
+`defineActions` requires a `fence` policy for the whole set, with `fenceOverrides` naming the kinds
+that differ. It is required rather than defaulted because an omitted fence is invisible: the
+gatekeeper works, its tests pass, and an action approved under one provider account later applies
+under the next one.
 
-`CredentialSource.read()` can supply the entry fence used by `apply(id, { generation })`, but a
-reconnect may still land between the entry check and the provider call. A handler that must not run
-under a replaced connection compares `ctx.fence` with the `CredentialRead` passed to the same `run`
-callback that issues the request.
+```ts
+defineActions(definitions, {
+  fence: "authority",
+  // Named one at a time, so opting out is always a decision someone made.
+  fenceOverrides: { pingHealthEndpoint: "none" },
+});
+```
+
+An `"authority"` kind must be staged with the authority the operation ran under. For the common
+connection fence that is the `CredentialRead` **the staging operation itself ran under** — `CredentialSource.run()` passes it as the operation's second argument, and it is
+structurally an `ActionFence`, so `{ fence: read }` works verbatim. `submit` refuses the call
+without one, and refuses a fence on a kind declared `"none"`. The kit never interprets the value, so a provider that wants an action to survive re-authorization of the same account stores its own stable account id instead and passes that at apply.
+
+The read has to be the operation's own. A second `read()` taken inside the submit path can land
+after a reconnect and would pin old-connection data to the new connection — which is why the kit
+cannot capture the fence for you.
+
+Apply then compares: pass `apply(id, { generation })` from `CredentialSource.read()`. That is an
+entry check, so a reconnect may still land between it and the provider call. A handler that must
+not run under a replaced connection compares `ctx.fence` with the `CredentialRead` passed to the
+same `run` callback that issues the request.
 
 `lastSeenGeneration()` is a diagnostic. A concurrent fetch can change it during an operation, and
 it names the previous connection until the next fetch, so never partition provider data on it.
@@ -297,7 +346,7 @@ async getPage(id: string) {
   const title = escapeObservationValue(page.title);
   await this.#gate.authorize(
     { title: `Page: ${title}`, description: `Read page **${title}**.` },
-    { kind: "sets", ids: [page.spaceId] },
+    { kind: "collections", ids: [page.spaceId] },
   );
   return project(page);
 }
@@ -324,17 +373,17 @@ forward disposal to it or leak one stub per session:
 ```
 
 Every gatekeeper must implement the three observer methods, and `GatekeeperUser.getVerifier()`
-alongside them — that capability is what `aclObservers` and `trackedSetObservers` call to check a
+alongside them — that capability is what `aclObservers` and `trackedCollectionObservers` call to check a
 collaborator, and `asVerifier` casts it to the vendor's own interface. Select one strategy:
 
 - `privateObservers` rejects collaborators.
 - `aclObservers` checks baseline resource access when a collaborator is admitted.
-- `trackedSetObservers` tracks disclosed sets and rechecks each observer for every set-scoped read.
+- `trackedCollectionObservers` tracks disclosed collections and rechecks each observer for every collection-scoped read.
 - `openObservers` admits every observer without consulting the provider. Choose it only where the
   data carries no provider-side access distinction, since a collaborator the provider itself would
   refuse still observes everything the binding reads.
 
-`trackedSetObservers` persists verifier stubs. Its Worker needs the
+`trackedCollectionObservers` persists verifier stubs. Its Worker needs the
 `allow_irrevocable_stub_storage` compatibility flag; without it, the first `addObserver` fails with
 `DataCloneError`.
 
@@ -343,31 +392,31 @@ collaborator, and `asVerifier` casts it to the vendor's own interface. Select on
 `verifyBaseline` and `aclObservers.hasAccess` run when a collaborator is admitted. The overseer
 re-admits on every open, so losing Workshop membership is the revocation path.
 
-Only `trackedSetObservers` continuously runs its oracle. It calls `hasSetAccess` for every observer
+Only `trackedCollectionObservers` continuously runs its oracle. It calls `hasCollectionAccess` for every observer
 on every set-scoped read. If the provider can revoke binding-level access independently of Workshop
 membership, a `{ kind: "baseline" }` read is insufficient because it consults no oracle. Represent
-that disclosure with a synthetic set ID instead.
+that disclosure with a synthetic collection ID instead.
 
 ### Scope describes the disclosure
 
-`ObservationScope` describes what a read reveals: `baseline`, `sets`, or `withholdFromObservers`.
+`ObservationScope` describes what a read reveals: `baseline`, `collections`, or `withholdFromObservers`.
 
-A **set** is a provider-side access-controlled grouping — a Confluence space, a Jira project, a
+A **collection** is a provider-side access-controlled grouping — a Confluence space, a Jira project, a
 GitHub repo — whose ACL governs the items the read returned. Pass the ids of those groupings, not
 of the individual rows.
 
 Each strategy declares, as `aclChecks`, how thoroughly it verifies observer access to them, and the
-gate refuses a `sets` scope a strategy cannot honour:
+gate refuses a `collections` scope a strategy cannot honour:
 
-| Strategy | `aclChecks` | A `sets` scope |
+| Strategy | `aclChecks` | A `collections` scope |
 | --- | --- | --- |
-| `trackedSetObservers` | `per-read` | checked for every observer, on every read |
+| `trackedCollectionObservers` | `per-read` | checked for every observer, on every read |
 | `privateObservers` | `no-observers` | accepted; nobody is admitted to exclude |
 | `aclObservers` | `unsupported` | **refused** |
 | `openObservers` | `unsupported` | **refused** |
 
-A resource whose children carry their own ACLs needs `trackedSetObservers`. Under the other two,
-set ids would name a check nothing performs, so declare those reads `{ kind: "baseline" }` — and if
+A resource whose children carry their own ACLs needs `trackedCollectionObservers`. Under the other two,
+collection ids would name a check nothing performs, so declare those reads `{ kind: "baseline" }` — and if
 the provider can revoke child access independently, that is the wrong strategy, not the wrong
 scope. A custom strategy declares its own `aclChecks`, and only the `per-read` arm may carry
 `prepare`, so claiming a check it does not implement will not compile.
@@ -394,7 +443,7 @@ return new TokenCursor<Project>({
       { kind: "baseline" })
     : this.#gate.authorize(
       { title: "Projects", description: `Read ${projects.length} projects.` },
-      { kind: "sets", ids: projects.map(project => project.id) }),
+      { kind: "collections", ids: projects.map(project => project.id) }),
 });
 ```
 
@@ -404,10 +453,10 @@ and letting that reach the gadget unaudited turns the cursor into an existence o
 already returned a page does not re-authorize its `null`, and exhaustion is authorized at most once.
 
 Branch on `projects.length`, not on `terminal`. Both an exhausted walk and a spent mid-walk window
-arrive with no items, and `{ kind: "sets", ids: [] }` is refused — naming no set is exactly the
+arrive with no items, and `{ kind: "collections", ids: [] }` is refused — naming no collection is exactly the
 shape the gate rejects. `terminal` distinguishes the two only for the description: whether the walk
-is over, or the caller should ask again. The `sets` branch above also assumes
-`trackedSetObservers`; under a strategy whose `aclChecks` is `"unsupported"` every branch is
+is over, or the caller should ask again. The `collections` branch above also assumes
+`trackedCollectionObservers`; under a strategy whose `aclChecks` is `"unsupported"` every branch is
 `baseline`, per the table above.
 
 A refusal holds the outgoing page, so the retry re-offers exactly it with no further provider
@@ -442,7 +491,7 @@ The kit supplies defaults where they apply across consumers:
 | Option | Default |
 | --- | ---: |
 | `maxPending` | 50 |
-| `maxTrackedSets` | 1000 |
+| `maxTrackedCollections` | 1000 |
 | `maxObservers` | 10 |
 | `remotePageSize` | 100 |
 
@@ -451,10 +500,10 @@ The kit requires values where no general default is safe:
 - Every cursor's `pageSize`.
 - `ActionFileStore`'s `maxFileBytes` and `maxTotalBytes`.
 
-Size limits from the provider and the disclosure shape. `maxTrackedSets` is a cumulative budget: it
-bounds the distinct sets this binding has *ever* disclosed, including markers a fail-closed read
+Size limits from the provider and the disclosure shape. `maxTrackedCollections` is a cumulative budget: it
+bounds the distinct collections this binding has *ever* disclosed, including markers a fail-closed read
 left behind, so size it from the whole resource rather than one page — a per-page value starts
-refusing valid reads once later pages reveal new sets. `maxObservers` must account for the Workers
+refusing valid reads once later pages reveal new collections. `maxObservers` must account for the Workers
 subrequest ceiling because every observer costs a verifier call on each read. `remotePageSize`
 cannot exceed the provider's page cap.
 
