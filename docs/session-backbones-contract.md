@@ -1,21 +1,21 @@
 # Session backbone integration contract
 
-## Integration blocker
+## Integration status
 
-At the start of this lane, the existing runtime state, server process, and browser proxy in
-`packages/gatekeeper-sessions/src/sessions.ts` are OpenCode-specific. Pi and Prime
-must not be attached to that server or exposed by expanding its route allowlist.
-This lane owns only runtime helpers, image helpers, and disjoint tests/docs. It
-does not change session authority, frontend, or shared APIs.
+The browser proxy in `packages/gatekeeper-sessions/src/sessions.ts` remains
+OpenCode-specific. Pi and Prime must not be attached to that server or exposed by
+expanding its route allowlist. New Pi sessions have a separate owner-authorized
+bridge and structured workbench; see [owner-pi-backbone.md](owner-pi-backbone.md).
+Legacy Pi sessions and Prime retain the explicit terminal fallback.
 
-Concrete handoff: `src/runtime.ts:harnessRpcCommand()` generates verified stdio
+`src/runtime.ts:harnessRpcCommand()` generates verified stdio
 launches. `pi-image/harness-rpc.mjs:createHarnessRpc()` consumes injected Node
 binary streams with version-specific command allowlists, bounded framing,
 request correlation, dialog replies, and owner-allocated HTML export paths.
 The helper has no listener, authority, process creation, or automatic approval.
-It is not yet packaged by Dockerfile.pi or consumed by the independently owned
-Worker bridge; do not assume the fixture-tested helper protects another bridge's
-separate parser. That integration and image packaging remain with the owner.
+It is not packaged by Dockerfile.pi or consumed by the Worker bridge. The Worker
+materializes its own bridge, whose parser has separate subprocess tests; tests
+of this helper do not establish the production bridge's behavior.
 
 The session owner must supply a generation-fenced process/stdin/stdout transport
 for the selected runtime, terminate it on session cleanup, and authorize each
@@ -83,9 +83,9 @@ The adapter must not infer daemon or ACP commands from stdio command names.
   notification. A command timeout does not prove an accepted action did not run.
 - Expose distinct current-context/full-history/status/dialog/artifact operations;
   advertise unsupported operations instead of fabricating OpenCode responses.
-- Until the machine transport is connected, label Pi/Prime surfaces terminal-only
-  in the application. Prime is not terminal-only upstream; this is an application
-  integration limit, not lack of a verified protocol.
+- Pi's owner transport is implemented for newly opted-in sessions. Prime remains
+  terminal-only in the application. Prime is not terminal-only upstream; this is
+  an application integration limit, not lack of a verified protocol.
 - Preserve explicit saved model selections. Generated OpenCode `model` and
   `small_model`, and Pi/Prime CLI defaults, already use Astra. Local user config
   and saved settings are outside this lane. Subagents should inherit rather than
