@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/components/AppShell/SidebarWorkspaces.test.tsx
+  s_4a30a440cc2138::t_828b7d0959e081 1-99
+packages/workshop-frontend/src/components/AppShell/SidebarWorkspaces.tsx
+  s_4a30a440cc2138::t_22adf8f535184c 70-72,78,134,144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7ae1c942cb91533a5b7f66aacde71608d3a77487",
+  "prompts": {},
+  "sessions": {
+    "s_4a30a440cc2138": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8775eb53-edf4-4778-8216-f263267a5316",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
