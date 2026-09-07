@@ -1,0 +1,43 @@
+packages/gadget-libraries/page/__tests__/diagrams.test.ts
+  s_c6057c10ed1db5::t_23ca9d1d617217 3,62-87
+packages/gadget-libraries/page/__tests__/host-services.test.ts
+  s_c6057c10ed1db5::t_8bbbfb0647d5c1 12,37-44
+packages/gadget-libraries/page/__tests__/links.test.ts
+  s_c6057c10ed1db5::t_9297c263ac79bd 212-222
+packages/gadget-libraries/page/__tests__/presence.test.ts
+  s_c6057c10ed1db5::t_4a6798e168e30c 73,86,94-110
+packages/gadget-libraries/page/__tests__/sync.test.ts
+  s_c6057c10ed1db5::t_c20c32e7324b8b 240-264
+packages/gadget-libraries/page/__tests__/theme.test.ts
+  s_c6057c10ed1db5::t_b547705fa146e0 1-32
+packages/gadget-libraries/page/client.ts
+  s_c6057c10ed1db5::t_5bfbf173bcf87c 6-8,12-14,16-25,34,43,80,121-124,129,134-153,189-190,208,222-224,241-242,250,263-296,311,323-324,326,352,440-442,463
+packages/gadget-libraries/page/src/diagrams.ts
+  s_c6057c10ed1db5::t_92c0fbbc0044e7 17-20,51,53-54,71,78-84,101,103,109,115,118-119,123,129,134,137
+packages/gadget-libraries/page/src/host-services.ts
+  s_c6057c10ed1db5::t_e19cdcbb25e5de 3-6,20-21,32-38,53-58,89,97-98
+packages/gadget-libraries/page/src/presence.ts
+  s_c6057c10ed1db5::t_260f747463daf3 119,121-122,126-138
+packages/gadget-libraries/page/src/styles.ts
+  s_c6057c10ed1db5::t_d3c9882960256d 8-11,17,22-33,38,51,58,64,121,151-152,177,181-182,185,195
+packages/gadget-libraries/page/src/sync.ts
+  s_c6057c10ed1db5::t_3726dcce82a8a9 57-59,135-139
+packages/gadget-libraries/page/src/theme.ts
+  s_c6057c10ed1db5::t_cfcf851b4f6536 1-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b62f37e2b3d42f7ecaf22e32caa02635ac93c067",
+  "prompts": {},
+  "sessions": {
+    "s_c6057c10ed1db5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6f727234-2a81-45e1-9b19-084244971b57",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
