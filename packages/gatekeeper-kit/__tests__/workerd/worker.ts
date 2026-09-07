@@ -12,13 +12,13 @@ type VerifierProps = { allowed: readonly string[]; dropVerdicts?: number };
  * Object storage refuses it outright, flag or no flag.
  */
 export class FixtureVerifier extends WorkerEntrypoint<unknown, VerifierProps> {
-  async hasSets(setIds: readonly string[]): Promise<boolean[]> {
-    const verdicts = setIds.map(setId => this.ctx.props.allowed.includes(setId));
+  async hasSets(collectionIds: readonly string[]): Promise<boolean[]> {
+    const verdicts = collectionIds.map(collectionId => this.ctx.props.allowed.includes(collectionId));
     return verdicts.slice(0, verdicts.length - (this.ctx.props.dropVerdicts ?? 0));
   }
 }
 
-type Verifier = { hasSets(setIds: readonly string[]): Promise<boolean[]> };
+type Verifier = { hasSets(collectionIds: readonly string[]): Promise<boolean[]> };
 
 /** Drives a tracker whose storage is a real DO's, so a persisted stub is a persisted stub. */
 export class TrackerHost extends DurableObject {
@@ -29,7 +29,7 @@ export class TrackerHost extends DurableObject {
   #newTracker(): ObserverTracker<Verifier> {
     return new ObserverTracker<Verifier>({
       kv: this.ctx.storage.kv,
-      hasSetAccess: (verifier, setIds) => verifier.hasSets(setIds),
+      hasCollectionAccess: (verifier, collectionIds) => verifier.hasSets(collectionIds),
     });
   }
 
@@ -54,17 +54,17 @@ export class TrackerHost extends DurableObject {
     return this.#tracker.observerIds();
   }
 
-  /** Reveals `setIds`, commits, and reports who the read had to be hidden from. */
-  async reveal(setIds: string[]): Promise<string[]> {
-    const check = await this.#tracker.prepareObservation(setIds);
+  /** Reveals `collectionIds`, commits, and reports who the read had to be hidden from. */
+  async reveal(collectionIds: string[]): Promise<string[]> {
+    const check = await this.#tracker.prepareObservation(collectionIds);
     const excluded = [...(check.excludeObservers ?? [])];
     check.commit();
     return excluded;
   }
 
   /** Proves the stub survived the write: re-read from storage and call it. */
-  async askStored(id: string, setIds: string[]): Promise<boolean[] | undefined> {
-    return await this.ctx.storage.kv.get<Verifier>(`observer:${id}`)?.hasSets(setIds);
+  async askStored(id: string, collectionIds: string[]): Promise<boolean[] | undefined> {
+    return await this.ctx.storage.kv.get<Verifier>(`observer:${id}`)?.hasSets(collectionIds);
   }
 }
 

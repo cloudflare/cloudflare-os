@@ -296,7 +296,7 @@ export type TokenCursorOptions<T> = CursorShape<T> & {
  *       { kind: "baseline" })
  *     : gate.authorize(
  *       { title: "Projects", description: `Read ${items.length} projects` },
- *       { kind: "sets", ids: items.map(project => project.id) }),
+ *       { kind: "collections", ids: items.map(project => project.id) }),
  * });
  * ```
  */

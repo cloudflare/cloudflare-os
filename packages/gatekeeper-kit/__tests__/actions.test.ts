@@ -3,6 +3,7 @@ import type { ApprovalQueue, GitCache } from "@gadgets/workshop-shared/gatekeepe
 import type { RpcStub } from "cloudflare:workers";
 import {
   ActionApplyError,
+  type FencePolicy,
   ActionOutcomeUnknownError,
   ActionJournal,
   APPLY_OUTCOME_UNKNOWN_MESSAGE,
@@ -646,6 +647,7 @@ describe("defineActions", () => {
     retainApplied?: boolean;
     afterResolve?: (host: Host, outcome: ResolveOutcome) => void | Promise<void>;
     claimBeforeApply?: boolean;
+    fence?: FencePolicy;
     maxPending?: number;
     /** Share one journal between two binds, which is how a dead activation is simulated. */
     journal?: ActionJournal<TaggedAction<Actions>>;
@@ -673,6 +675,8 @@ describe("defineActions", () => {
         apply: async (payload, target) => void target.ran.push(payload.page),
       },
     }, {
+      // Most tests here stage unfenced actions; the fence suite opts its own set into pinning.
+      fence: overrides.fence ?? "none",
       retainApplied: overrides.retainApplied,
       afterResolve: overrides.afterResolve
         ?? ((_host, outcome) => void outcomes.push(outcome)),
@@ -849,7 +853,7 @@ describe("defineActions", () => {
         describe: () => presentation,
         apply: async () => {},
       },
-    })).toThrow(/autoApprovable without a kind/);
+    }, { fence: "none" })).toThrow(/autoApprovable without a kind/);
   });
 
   it("refuses a tag whose siblings disagree about the label shown for it", () => {
@@ -866,7 +870,7 @@ describe("defineActions", () => {
         describe: () => presentation,
         apply: async () => {},
       },
-    })).toThrow(/tag "sql" is declared with two labels, "Run SQL" and "Publish"/);
+    }, { fence: "none" })).toThrow(/tag "sql" is declared with two labels, "Run SQL" and "Publish"/);
   });
 
   it("auto-approves only the kinds that declared it, not their tag siblings", async () => {
@@ -1336,7 +1340,7 @@ describe("defineActions", () => {
         describe: () => presentation,
         apply: async (payload, target) => void target.ran.push(payload.sql),
       },
-    }).bind(journal, host);
+    }, { fence: "none" }).bind(journal, host);
 
     const id = journal.allocate({ kind: 7, payload: { sql: "one" } });
     journal.markSubmitted(id);
@@ -1354,7 +1358,7 @@ describe("defineActions", () => {
         describe: () => presentation,
         apply: async (payload, target) => void target.ran.push(payload.sql),
       },
-    });
+    }, { fence: "none" });
 
     const actions = set.bind(journal, host);
     expect(set.bind(journal, host)).toBe(actions);
@@ -1370,7 +1374,7 @@ describe("defineActions", () => {
   });
 
   it("applies a fenced action under the connection that staged it", async () => {
-    const { actions, journal, host } = bind();
+    const { actions, journal, host } = bind({ fence: "authority" });
     // A `CredentialRead` is structurally an `ActionFence`, so the staging read passes verbatim.
     const read: CredentialRead = { identity: "id-a", generation: "gen-a" };
     const id = await actions.submit(fakeQueue(), "execute", { sql: "one" }, { fence: read });
@@ -1381,7 +1385,7 @@ describe("defineActions", () => {
   });
 
   it("terminally fails a fenced action whose connection was replaced", async () => {
-    const { actions, journal, host, outcomes } = bind();
+    const { actions, journal, host, outcomes } = bind({ fence: "authority" });
     const id = await actions.submit(
       fakeQueue(), "execute", { sql: "one" }, { fence: { generation: "gen-a" } });
 
@@ -1399,15 +1403,28 @@ describe("defineActions", () => {
   });
 
   it("stores only the generation a fence declares, never the whole read", async () => {
-    const { actions, journal } = bind();
+    const { actions, journal } = bind({ fence: "authority" });
     const read: CredentialRead = { identity: "id-a", generation: "gen-a" };
     const id = await actions.submit(fakeQueue(), "execute", { sql: "one" }, { fence: read });
 
     expect(journal.get(id)?.fence).toEqual({ generation: "gen-a" });
   });
 
+  it("terminally fails an unfenced record under an authority policy", async () => {
+    // Only a port reaches this: `submit` refuses an unfenced authority kind, but `upgradeRecord`
+    // cannot know what staged the rows it converts. Applying one would pin it to nothing.
+    const { actions, journal, host } = bind({ fence: "authority" });
+    const id = journal.allocate({ kind: "execute", payload: { sql: "ported" } });
+
+    await expect(actions.apply(id, { generation: "gen-a" }))
+      .rejects.toThrow(/before this gatekeeper pinned actions to an account/);
+
+    expect(host.ran).toEqual([]);
+    expect(journal.get(id)).toMatchObject({ state: "failed", undispatched: true });
+  });
+
   it("releases a mismatched action's staging artifacts when the user rejects it", async () => {
-    const { actions, journal, host, outcomes } = bind();
+    const { actions, journal, host, outcomes } = bind({ fence: "authority" });
     const id = await actions.submit(
       fakeQueue(), "execute", { sql: "one" }, { fence: { generation: "gen-a" } });
 
@@ -1434,7 +1451,7 @@ describe("defineActions", () => {
   });
 
   it("refuses a fenced action with no generation to compare, leaving it pending", async () => {
-    const { actions, journal, host } = bind();
+    const { actions, journal, host } = bind({ fence: "authority" });
     const id = await actions.submit(
       fakeQueue(), "execute", { sql: "one" }, { fence: { generation: "gen-a" } });
 
@@ -1456,6 +1473,70 @@ describe("defineActions", () => {
     await actions.apply(id, { gitCache });
     expect(seen[0]?.gitCache).toBe(gitCache);
     expect(seen[0]?.fence).toBeUndefined();
+  });
+
+  it("refuses to stage a connection-fenced kind with no fence", async () => {
+    // The silent omission this policy exists to catch: unfenced, an action approved under one
+    // provider account applies cleanly under the next one.
+    const { actions, journal } = bind({ fence: "authority" });
+
+    await expect(actions.submit(fakeQueue(), "execute", { sql: "one" }))
+      .rejects.toThrow(/authority-fenced; stage it with/);
+    // Nothing staged, so no record is left behind for a later approval to find.
+    expect(journal.listPending()).toEqual([]);
+  });
+
+  it("refuses a fence on a kind declared authority-independent", async () => {
+    // Pinning an action nothing needed pinned makes it fail after an unrelated reconnect.
+    const { actions } = bind({ fence: "none" });
+
+    await expect(actions.submit(
+      fakeQueue(), "execute", { sql: "one" }, { fence: { generation: "gen-a" } }))
+      .rejects.toThrow(/declared authority-independent/);
+  });
+
+  it("lets one kind opt out of the set's policy, and holds every other to it", async () => {
+    const host: Host = { ran: [] };
+    const journal = new ActionJournal<TaggedAction<Actions>>(makeKv(), { namespace: "pending" });
+    const actions = defineActions<Host, Actions>({
+      execute: {
+        delivery: "continue-with-simulation",
+        describe: () => presentation,
+        apply: async (payload, target) => void target.ran.push(payload.sql),
+      },
+      publish: {
+        delivery: "await-decision",
+        describe: () => presentation,
+        apply: async (payload, target) => void target.ran.push(payload.page),
+      },
+    }, { fence: "authority", fenceOverrides: { publish: "none" } }).bind(journal, host);
+
+    // The override is named one kind at a time, so opting out is always a visible decision.
+    await expect(actions.submit(fakeQueue(), "publish", { page: "p" })).resolves.toBeGreaterThan(0);
+    await expect(actions.submit(fakeQueue(), "execute", { sql: "one" }))
+      .rejects.toThrow(/authority-fenced/);
+  });
+
+  it("fences on whatever authority the provider chose, not just a connection", async () => {
+    // The comparison is opaque equality, so a provider whose actions should survive
+    // re-authorization of the same account fences on a stable account id instead. Under a
+    // connection generation this action would have died at the re-auth.
+    const { actions, host } = bind({ fence: "authority" });
+    const id = await actions.submit(
+      fakeQueue(), "execute", { sql: "one" }, { fence: { generation: "account-42" } });
+
+    await actions.apply(id, { generation: "account-42" });
+    expect(host.ran).toEqual(["one"]);
+  });
+
+  it("refuses that same action once the account itself changes", async () => {
+    const { actions, journal } = bind({ fence: "authority" });
+    const id = await actions.submit(
+      fakeQueue(), "execute", { sql: "one" }, { fence: { generation: "account-42" } });
+
+    await expect(actions.apply(id, { generation: "account-99" }))
+      .rejects.toThrow(/has since been replaced/);
+    expect(journal.get(id)?.state).toBe("failed");
   });
 });
 
@@ -1486,7 +1567,7 @@ describe("dependent actions", () => {
         apply: overrides.apply ?? (async () => {}),
         reject: async payload => void host.ran.push(`released edit ${payload.target}`),
       },
-    }, { isResolvedReference: overrides.isResolvedReference });
+    }, { fence: "none", isResolvedReference: overrides.isResolvedReference });
     return { host, journal, actions: set.bind(journal, host) };
   }
 

@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  ConnectionSupersededError,
   CredentialCoordinator,
   CredentialsChangedError,
   CredentialsExpiredError,
   CredentialSource,
+  isConnectionSuperseded,
   isCredentialsChanged,
   isCredentialsExpired,
   type CredentialCoordinatorOptions,
@@ -189,6 +191,60 @@ describe("CredentialCoordinator", () => {
 
     instance.clear();
     expect(instance.connectionGeneration()).not.toBe(connected);
+  });
+
+  it("stores a fenced connect while the attempt's connection still stands", async () => {
+    const instance = coordinator(makeKv());
+    const startedUnder = instance.connectionGeneration();
+
+    instance.connect(live, { ifGeneration: startedUnder });
+
+    expect(instance.stored()).toEqual(live);
+    // Still rotates: the attempt that won defines the new connection.
+    expect(instance.connectionGeneration()).not.toBe(startedUnder);
+  });
+
+  it("refuses a fenced connect the account moved past, storing nothing", async () => {
+    // The window `claimOAuth` cannot cover: the nonce is consumed, then the provider exchange runs,
+    // and a revoke lands inside it. Unfenced, the older completion overwrites the revoke.
+    const instance = coordinator(makeKv());
+    instance.connect(stale);
+    const startedUnder = instance.connectionGeneration();
+    instance.clear();
+
+    expect(() => instance.connect(live, { ifGeneration: startedUnder }))
+      .toThrow(ConnectionSupersededError);
+    expect(instance.stored()).toBeUndefined();
+  });
+
+  it("refuses a fenced connect a newer reconnect already completed", async () => {
+    const instance = coordinator(makeKv());
+    const startedUnder = instance.connectionGeneration();
+    // A second attempt started later and finished first.
+    instance.connect(live);
+
+    expect(() => instance.connect(stale, { ifGeneration: startedUnder }))
+      .toThrow(ConnectionSupersededError);
+    // The winner's credentials stand; the straggler's are the caller's to dispose.
+    expect(instance.stored()).toEqual(live);
+  });
+
+  it("marks the refusal so it survives a transport that rebuilds errors", () => {
+    const instance = coordinator(makeKv());
+    instance.connect(stale);
+
+    let thrown: unknown;
+    try {
+      instance.connect(live, { ifGeneration: "never-was" });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(isConnectionSuperseded(thrown)).toBe(true);
+    // Rebuilt the way capnweb delivers it: the class and the name are gone, the own `code` rides.
+    const rebuilt = Object.assign(new Error("superseded"), { code: "ConnectionSupersededError" });
+    expect(isConnectionSuperseded(rebuilt)).toBe(true);
+    expect(isConnectionSuperseded(new Error("unrelated"))).toBe(false);
   });
 
   it("lets a reconnect landing mid-refresh win", async () => {

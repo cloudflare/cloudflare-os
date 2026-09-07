@@ -82,7 +82,7 @@ type ObserverStrategyBase = {
 /**
  * Defines collaborator admission and per-observation exclusion. Baseline access is verified at
  * admission only -- losing Workshop membership is the revocation path -- and only
- * `trackedSetObservers` re-runs its ACL oracle for every observer on every scoped read.
+ * `trackedCollectionObservers` re-runs its ACL oracle for every observer on every scoped read.
  *
  * `aclChecks` is part of the contract, not a hint: only the `"per-read"` arm may carry `prepare`,
  * so a strategy cannot claim a check it does not implement.
@@ -92,10 +92,10 @@ export type ObserverStrategy =
     aclChecks: "per-read";
     /**
      * Prepares exclusions for the groupings a read disclosed.
-     * @param setIds Provider grouping IDs disclosed by the read.
+     * @param collectionIds Provider grouping IDs disclosed by the read.
      * @returns Prepared observer state.
      */
-    prepare(setIds: readonly string[]): Promise<ObservationCheck>;
+    prepare(collectionIds: readonly string[]): Promise<ObservationCheck>;
   })
   | (ObserverStrategyBase & {
     aclChecks: "no-observers" | "unsupported";
@@ -106,7 +106,7 @@ export type ObserverStrategy =
 function cannotWithhold(): never {
   throw new Error(
     "This binding's strategy shares every read with admitted observers; use a baseline scope, " +
-    "or track observed sets to withhold a read.");
+    "or track observed collections to withhold a read.");
 }
 
 /**
@@ -142,7 +142,7 @@ export function aclObservers<V>(options: {
   denyMessage?: string;
 }): ObserverStrategy {
   return {
-    // Admission is resource-level, so child set ids would be accepted and discarded.
+    // Admission is resource-level, so child collection ids would be accepted and discarded.
     aclChecks: "unsupported",
     addObserver: async (_id, user) => {
       // Only `true` admits, as in C: a malformed answer from a hand-written oracle denies rather
@@ -157,17 +157,17 @@ export function aclObservers<V>(options: {
 }
 
 /**
- * Creates a strategy that tracks observed set ACLs.
+ * Creates a strategy that tracks observed collection ACLs.
  * @param options Observer-tracker storage and ACL policy.
  * @returns A tracked-set observer strategy.
  */
-export function trackedSetObservers<V>(options: ObserverTrackerOptions<V>): ObserverStrategy {
+export function trackedCollectionObservers<V>(options: ObserverTrackerOptions<V>): ObserverStrategy {
   const tracker = new ObserverTracker<V>(options);
   return {
     aclChecks: "per-read",
     addObserver: (id, user) => tracker.addObserver(id, asVerifier<V>(user)),
     removeObserver: async id => tracker.removeObserver(id),
-    prepare: setIds => tracker.prepareObservation(setIds),
+    prepare: collectionIds => tracker.prepareObservation(collectionIds),
     observerIds: () => tracker.observerIds(),
     prepareWithheld: () => tracker.prepareWithheld(),
   };
@@ -181,7 +181,7 @@ export function trackedSetObservers<V>(options: ObserverTrackerOptions<V>): Obse
  */
 export function openObservers(): ObserverStrategy {
   return {
-    // Every observer sees every read, so set ids would describe a distinction that is
+    // Every observer sees every read, so collection ids would describe a distinction that is
     // not being made. Declare such a read `baseline`.
     aclChecks: "unsupported",
     addObserver: async () => {},
@@ -206,13 +206,13 @@ export function escapeObservationValue(value: string): string {
  * A `sets` scope names provider-side access-controlled groupings — a space, a project, a repo —
  * not the individual rows returned. The gate refuses one under a strategy whose `aclChecks` is
  * `"unsupported"`, since ids nothing verifies would describe a check that never ran; pick
- * `trackedSetObservers` for a resource whose children carry their own ACLs, and `baseline` where
- * admission already covers the read. It also refuses a `sets` scope naming no set, so a read that
+ * `trackedCollectionObservers` for a resource whose children carry their own ACLs, and `baseline` where
+ * admission already covers the read. It also refuses a `collections` scope naming no set, so a read that
  * returned nothing describes itself as `baseline`.
  */
 export type ObservationScope =
   | { kind: "baseline" }
-  | { kind: "sets"; ids: readonly string[] }
+  | { kind: "collections"; ids: readonly string[] }
   | { kind: "withholdFromObservers" };
 
 /** Observation text completed by the gate with derived exclusions. */
@@ -232,7 +232,7 @@ export type ActionQueue = Pick<RpcStub<ApprovalQueue>, "submitAction" | "bindHoo
  *   const projects = await this.#api.listProjects();
  *   await this.#observations.authorize(
  *     describeProjects(projects),
- *     { kind: "sets", ids: projects.map(project => project.id) },
+ *     { kind: "collections", ids: projects.map(project => project.id) },
  *   );
  *   return projects;
  * }
@@ -318,18 +318,18 @@ export class ObservationGate implements Disposable {
         return NOTHING_TO_RESOLVE;
       case "withholdFromObservers":
         return this.#strategy.prepareWithheld();
-      case "sets":
+      case "collections":
         if (scope.ids.length === 0) {
           throw new Error(
-            'An observation scope of kind "sets" needs at least one set id; use ' +
+            'An observation scope of kind "collections" needs at least one collection id; use ' +
             '{ kind: "baseline" } for a read the admission baseline covers.');
         }
         // Fail closed, as `prepareWithheld` already does for the mirror-image mismatch. Accepting
-        // ids this strategy cannot check would report a per-set decision nothing made.
+        // ids this strategy cannot check would report a per-collection decision nothing made.
         if (this.#strategy.aclChecks === "unsupported") {
           throw new Error(
-            "This binding's strategy cannot enforce set ACLs, so it must not be handed set ids. " +
-            'Track observed sets to enforce them, or declare the read { kind: "baseline" }.');
+            "This binding's strategy cannot enforce collection ACLs, so it must not be handed collection ids. " +
+            'Track observed collections to enforce them, or declare the read { kind: "baseline" }.');
         }
         return (await this.#strategy.prepare?.(scope.ids)) ?? NOTHING_TO_RESOLVE;
     }

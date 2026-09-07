@@ -39,10 +39,14 @@ export type JournalKeys =
 type JournalState = "staged" | "pending" | "claimed" | "failed" | "applied";
 
 /**
- * An opaque, equality-only connection generation captured when an action was staged. Nothing may
- * be inferred from its content or ordering, and the journal never interprets it: a consumer
- * wanting account-scoped rather than connection-scoped fencing stores its own stable provider
- * account id here instead, and compares that at apply.
+ * The authority an action was staged under, opaque and equality-only. Nothing may be inferred from
+ * its content or ordering, and the journal never interprets it: a kind the set declares
+ * `"authority"` is staged with one and apply refuses a record whose value has changed.
+ *
+ * The field is named `generation` because the common fence is the connection generation, which
+ * makes a `CredentialRead` structurally an `ActionFence`. A consumer wanting account-scoped rather
+ * than connection-scoped fencing stores its own stable provider account id here instead, and
+ * passes that same id at apply.
  */
 export type ActionFence = { generation: string };
 

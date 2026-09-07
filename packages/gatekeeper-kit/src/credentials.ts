@@ -63,6 +63,27 @@ export class CredentialsChangedError extends MarkedError {
   }
 }
 
+/**
+ * A connect completion lost its race: the connection it started under was replaced by a revoke or
+ * a newer reconnect while the provider token exchange was in flight, so the mint was **not**
+ * stored.
+ *
+ * The caller owns that orphaned mint and should dispose of it — subject to the same caution as
+ * `discardMint`: revoke it only where doing so cannot invalidate the grant the winning connection
+ * now uses.
+ */
+export class ConnectionSupersededError extends MarkedError {
+  /**
+   * Creates a superseded-connection error.
+   * @param options Optional error cause.
+   */
+  constructor(options?: { cause?: unknown }) {
+    super("ConnectionSupersededError",
+      "This account was reconnected or disconnected while the connect flow was completing; "
+      + "the credentials it produced were discarded. Start the connection again.", options);
+  }
+}
+
 /** @returns Whether the error carries the mark as its `name` or its transport-surviving `code`. */
 function marked(error: unknown, mark: string): boolean {
   return error instanceof Error
@@ -88,6 +109,16 @@ export function isCredentialsExpired(error: unknown): boolean {
  */
 export function isCredentialsChanged(error: unknown): boolean {
   return marked(error, "CredentialsChangedError");
+}
+
+/**
+ * Matches a connect completion that lost its race, by `name` or `code`. The credentials it minted
+ * were not stored, so the caller still owns them.
+ * @param error Caught error.
+ * @returns Whether the connection was replaced mid-completion.
+ */
+export function isConnectionSuperseded(error: unknown): boolean {
+  return marked(error, "ConnectionSupersededError");
 }
 
 /**
@@ -240,14 +271,29 @@ export class CredentialCoordinator<Creds> {
   }
 
   /**
-   * Installs credentials from a connect flow, unconditionally: it rotates the connection
-   * generation and replaces the stored record whatever is there. A consumer awaiting a provider
-   * token exchange between `claimOAuth()` and this call must fence that window itself, or a revoke
-   * or newer reconnect landing inside it is overwritten by the older completion. The kit's
-   * handshake covers the initiation and its OAuth nonces only.
+   * Installs credentials from a connect flow, rotating the connection generation.
+   *
+   * Pass `ifGeneration` to fence the asynchronous window a connect flow cannot avoid: `claimOAuth`
+   * consumes its nonce *before* the provider token exchange, so a revoke or a newer reconnect can
+   * land while that exchange is in flight, and an unfenced write lets the older completion
+   * overwrite it. Capture `connectionGeneration()` when the attempt starts — `advanceToOAuth`
+   * takes arbitrary metadata for exactly this, and `claimOAuth` hands it back — and this call
+   * throws `ConnectionSupersededError` rather than storing a mint the account has moved past.
+   *
+   * Fencing is opt-in because an account with no such window (a pasted token, a form submission
+   * with no round trip) has nothing to fence, and would then have to invent a generation to pass.
    * @param credentials New credentials.
+   * @param options `ifGeneration` refuses the write unless the connection is still the one the
+   * attempt started under.
+   * @throws `ConnectionSupersededError` when `ifGeneration` no longer matches. The credentials are
+   * not stored, and disposing of them is the caller's to do.
    */
-  connect(credentials: Creds): void {
+  connect(credentials: Creds, options: { ifGeneration?: string } = {}): void {
+    const { ifGeneration } = options;
+    // Read and compare with no await between them and the write, so nothing can land inside.
+    if (ifGeneration !== undefined && this.connectionGeneration() !== ifGeneration) {
+      throw new ConnectionSupersededError();
+    }
     this.#kv.put(CONNECTION_KEY, generateNonce());
     this.#commit(credentials);
   }

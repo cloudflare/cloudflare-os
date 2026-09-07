@@ -1,4 +1,4 @@
-/** Durable collaborator admission and per-set observer exclusion. */
+/** Durable collaborator admission and per-collection observer exclusion. */
 
 import { createLogger } from "@gadgets/backend-utils/logger";
 import { generateNonce } from "./connect-nonce";
@@ -33,7 +33,7 @@ export const OBSERVER_WITHHELD =
 /** The Durable Object KV surface used by observer tracking. */
 export type ObserverKv = KvScannable;
 
-type SetState = "pending" | "observed";
+type CollectionState = "pending" | "observed";
 
 /**
  * Prepared observation state. Exactly one of `commit`, `discard`, or `abandon` runs, synchronously:
@@ -50,7 +50,7 @@ export type ObservationCheck = {
   abandon?(): void;
 };
 
-/** Internal: the check for a read that reveals no tracked set. */
+/** Internal: the check for a read that reveals no tracked collection. */
 export const NOTHING_TO_RESOLVE: ObservationCheck = {
   /** Commits the empty observation check. */
   commit() {},
@@ -85,13 +85,13 @@ const DEFAULT_MAX_OBSERVERS = 10;
 
 const DEFAULT_CONCURRENCY = 6;
 
-// What the reads disclosing one set marker still owe it. A marker may be reclaimed only once every
+// What the reads disclosing one collection marker still owe it. A marker may be reclaimed only once every
 // claimant settled and all of them settled as proven refusals -- one unknown outcome fences it for
 // good, since a lost reply may have followed a durable record. A DO runs in one isolate, so
 // in-memory tracking is sound; `perStorage` shares it across trackers over the same storage.
-type SetClaim = { held: number; created: boolean; refusedOnly: boolean };
+type CollectionClaim = { held: number; created: boolean; refusedOnly: boolean };
 
-const setClaims = perStorage(() => new Map<string, SetClaim>());
+const collectionClaims = perStorage(() => new Map<string, CollectionClaim>());
 
 // Withhold markers this activation still owns. A durable marker missing here belongs to an
 // operation whose outcome can no longer be learned -- a lost reply, or a restart that emptied this
@@ -102,12 +102,12 @@ const activeWithholds = perStorage(() => new Set<string>());
 type Outcome = "committed" | "refused" | "unknown";
 
 /**
- * Claims the set markers one read discloses.
+ * Claims the collection markers one read discloses.
  * @param claims Per-storage claim records.
  * @param keys Set storage keys the read discloses.
  * @param created Keys whose markers this read wrote.
  */
-function claimSets(claims: Map<string, SetClaim>, keys: readonly string[], created: Set<string>) {
+function claimSets(claims: Map<string, CollectionClaim>, keys: readonly string[], created: Set<string>) {
   for (const key of keys) {
     const claim = claims.get(key) ?? { held: 0, created: false, refusedOnly: true };
     claim.held += 1;
@@ -124,7 +124,7 @@ function claimSets(claims: Map<string, SetClaim>, keys: readonly string[], creat
  * @returns The keys whose markers every claimant has now refused, and nothing else accounts for.
  */
 function settleSets(
-  claims: Map<string, SetClaim>,
+  claims: Map<string, CollectionClaim>,
   keys: readonly string[],
   outcome: Outcome,
 ): string[] {
@@ -172,39 +172,39 @@ export type ObserverTrackerOptions<V> = {
    */
   kv: ObserverKv;
   /** Key prefix for observed-set records; observers always live under `"observer:"`. */
-  setPrefix?: string;
+  collectionPrefix?: string;
   /**
-   * Canonicalizes a provider set ID so equivalent spellings share one stored ACL record.
-   * @param setId Provider set ID.
-   * @returns Canonical set ID for storage and ACL checks.
+   * Canonicalizes a provider collection ID so equivalent spellings share one stored ACL record.
+   * @param collectionId Provider collection ID.
+   * @returns Canonical collection ID for storage and ACL checks.
    */
-  canonicalSetId?(setId: string): string;
+  canonicalCollectionId?(collectionId: string): string;
   /**
-   * Checks admission-level access before set ACLs, at admission only: losing Workshop membership
+   * Checks admission-level access before collection ACLs, at admission only: losing Workshop membership
    * is the revocation path. A provider needing per-read baseline freshness folds that check into
-   * `hasSetAccess`.
+   * `hasCollectionAccess`.
    * @param verifier Vendor-specific verifier capability.
    */
   verifyBaseline?(verifier: V): Promise<void>;
   /**
    * Checks access to canonical provider sets.
    * @param verifier Vendor-specific verifier capability.
-   * @param setIds Canonical set IDs.
-   * @returns Exactly one verdict per set ID; only literal `true` grants access.
+   * @param collectionIds Canonical collection IDs.
+   * @returns Exactly one verdict per collection ID; only literal `true` grants access.
    */
-  hasSetAccess(verifier: V, setIds: readonly string[]): Promise<boolean[]>;
+  hasCollectionAccess(verifier: V, collectionIds: readonly string[]): Promise<boolean[]>;
   /**
    * Builds a generic denial message.
-   * @param setId Inaccessible canonical set ID.
-   * @returns A message that does not disclose the set ID.
+   * @param collectionId Inaccessible canonical collection ID.
+   * @returns A message that does not disclose the collection ID.
    */
-  denyMessage?(setId: string): string;
+  denyMessage?(collectionId: string): string;
   /**
    * Caps distinct sets before disclosure, so existing observers never become unverifiable. Size it
    * from the provider's read fan-out: a refused read reclaims its slots, but a marker stranded by
    * a crash is kept permanently, since a lost reply may still have recorded the observation.
    */
-  maxTrackedSets?: number;
+  maxTrackedCollections?: number;
   /** Caps fan-out before reads can exceed Worker invocation limits. */
   maxObservers?: number;
   /** Concurrent verifier round trips. */
@@ -213,7 +213,7 @@ export type ObserverTrackerOptions<V> = {
   vendorId?: string;
 };
 
-// Brands set IDs after canonicalization so internal helpers cannot accept raw IDs.
+// Brands collection IDs after canonicalization so internal helpers cannot accept raw IDs.
 type CanonicalSetId = string & { readonly __canonical: true };
 
 /**
@@ -224,16 +224,16 @@ type CanonicalSetId = string & { readonly __canonical: true };
  * ```ts
  * #observers = new ObserverTracker<VendorVerifier>({
  *   kv: this.ctx.storage.kv,
- *   setPrefix: "observedProject:",
- *   hasSetAccess: (verifier, projectIds) => verifier.hasProjects(projectIds),
+ *   collectionPrefix: "observedProject:",
+ *   hasCollectionAccess: (verifier, projectIds) => verifier.hasProjects(projectIds),
  * });
  * ```
  */
 export class ObserverTracker<V> {
   readonly #options: ObserverTrackerOptions<V>;
-  readonly #setPrefix: string;
-  readonly #canonicalSetId: (setId: string) => CanonicalSetId;
-  readonly #maxTrackedSets: number;
+  readonly #collectionPrefix: string;
+  readonly #canonicalCollectionId: (collectionId: string) => CanonicalSetId;
+  readonly #maxTrackedCollections: number;
   readonly #maxObservers: number;
   readonly #concurrency: number;
   readonly #logger: typeof logger;
@@ -245,26 +245,26 @@ export class ObserverTracker<V> {
   constructor(options: ObserverTrackerOptions<V>) {
     this.#options = options;
     this.#logger = options.vendorId ? logger.with({ vendorId: options.vendorId }) : logger;
-    this.#setPrefix = options.setPrefix ?? "observed:";
+    this.#collectionPrefix = options.collectionPrefix ?? "observed:";
     // The brand is asserted here and nowhere else on this path: whatever the caller's function
     // returns *is* the canonical spelling, by definition of the option.
-    this.#canonicalSetId =
-      (options.canonicalSetId ?? (setId => setId)) as (setId: string) => CanonicalSetId;
+    this.#canonicalCollectionId =
+      (options.canonicalCollectionId ?? (collectionId => collectionId)) as (collectionId: string) => CanonicalSetId;
     // A cap of zero refuses every read, and a window of zero never advances.
-    this.#maxTrackedSets = requirePositiveInt(
-      "maxTrackedSets", options.maxTrackedSets ?? DEFAULT_MAX_TRACKED_SETS);
+    this.#maxTrackedCollections = requirePositiveInt(
+      "maxTrackedCollections", options.maxTrackedCollections ?? DEFAULT_MAX_TRACKED_SETS);
     this.#maxObservers = requirePositiveInt(
       "maxObservers", options.maxObservers ?? DEFAULT_MAX_OBSERVERS);
     this.#concurrency = requirePositiveInt(
       "concurrency", options.concurrency ?? DEFAULT_CONCURRENCY);
 
-    // Overlapping families scan into each other: set ids would come back as verifier keys, and
-    // stored verifiers would be handed to `hasSetAccess` as set ids. An empty prefix overlaps by
+    // Overlapping families scan into each other: collection ids would come back as verifier keys, and
+    // stored verifiers would be handed to `hasCollectionAccess` as collection ids. An empty prefix overlaps by
     // scanning everything, and the same check rejects it.
     for (const reserved of RESERVED_PREFIXES) {
-      if (this.#setPrefix.startsWith(reserved) || reserved.startsWith(this.#setPrefix)) {
+      if (this.#collectionPrefix.startsWith(reserved) || reserved.startsWith(this.#collectionPrefix)) {
         throw new Error(
-          `Set prefix "${this.#setPrefix}" overlaps the reserved prefix "${reserved}".`);
+          `Set prefix "${this.#collectionPrefix}" overlaps the reserved prefix "${reserved}".`);
       }
     }
   }
@@ -276,7 +276,7 @@ export class ObserverTracker<V> {
    * @returns A promise that resolves after admission is durable.
    */
   async addObserver(id: string, verifier: V): Promise<void> {
-    const { kv, verifyBaseline, hasSetAccess, denyMessage } = this.#options;
+    const { kv, verifyBaseline, hasCollectionAccess, denyMessage } = this.#options;
     this.#compactWithholds();
     // A withheld read registers no set, so nothing here can establish this candidate was entitled
     // to it. One still in flight counts: this candidate is absent from the exclusion list it sent.
@@ -304,8 +304,8 @@ export class ObserverTracker<V> {
 
       const checked = new Set<string>();
       for (;;) {
-        const setIds = this.#trackedSets().filter(setId => !checked.has(setId));
-        if (setIds.length === 0) {
+        const collectionIds = this.#trackedCollections().filter(collectionId => !checked.has(collectionId));
+        if (collectionIds.length === 0) {
           this.#requireCurrentAttempt(id, nonceKey, nonce);
           // Promotion and retirement in one awaitless run: the id is never both, and never neither.
           kv.put(`${OBSERVER_PREFIX}${id}`, verifier);
@@ -315,16 +315,16 @@ export class ObserverTracker<V> {
         }
         // Copied per call: the oracle may chunk destructively, and the length check below plus the
         // `checked` bookkeeping read this array afterwards.
-        const access = await hasSetAccess(verifier, setIds.slice());
+        const access = await hasCollectionAccess(verifier, collectionIds.slice());
         this.#requireCurrentAttempt(id, nonceKey, nonce);
         // A ragged answer denies rather than admits, in either direction. Short already denied
         // (`undefined !== true`); an answer *longer* than the question used to admit, which is the
         // worse half -- index alignment is the only thing tying a verdict to a set, so a length the
         // oracle disagrees about invalidates every verdict in the array rather than just the extras.
-        if (access.length !== setIds.length) throw new Error(OBSERVER_DENIED);
-        const denied = setIds.findIndex((_, index) => access[index] !== true);
-        if (denied >= 0) throw new Error(denyMessage?.(setIds[denied]!) ?? OBSERVER_DENIED);
-        for (const setId of setIds) checked.add(setId);
+        if (access.length !== collectionIds.length) throw new Error(OBSERVER_DENIED);
+        const denied = collectionIds.findIndex((_, index) => access[index] !== true);
+        if (denied >= 0) throw new Error(denyMessage?.(collectionIds[denied]!) ?? OBSERVER_DENIED);
+        for (const collectionId of collectionIds) checked.add(collectionId);
       }
     } catch (error) {
       // Only this attempt's records: whatever rotated the nonce owns them now.
@@ -427,36 +427,36 @@ export class ObserverTracker<V> {
   }
 
   /**
-   * Prepares a set-scoped observation.
-   * @param setIds Provider set IDs disclosed by the read.
+   * Prepares a collection-scoped observation.
+   * @param collectionIds Provider collection IDs disclosed by the read.
    * @returns A check naming observers that lack access.
    */
-  async prepareObservation(setIds: readonly string[]): Promise<ObservationCheck> {
-    const { kv, hasSetAccess } = this.#options;
+  async prepareObservation(collectionIds: readonly string[]): Promise<ObservationCheck> {
+    const { kv, hasCollectionAccess } = this.#options;
     // Canonicalized up front, so the keys written, the state compared, and the ids the oracle is
     // asked about are all the same spelling.
-    const canonical = [...new Set(setIds.map(setId => this.#canonicalSetId(setId)))];
+    const canonical = [...new Set(collectionIds.map(collectionId => this.#canonicalCollectionId(collectionId)))];
     // Both partitions come from one state read per set, before the first await, so the "pending"
     // writes below reflect storage as a concurrent addObserver will scan it.
-    const states = canonical.map(setId => [setId, this.#state(setId)] as const);
+    const states = canonical.map(collectionId => [collectionId, this.#state(collectionId)] as const);
     const promote = states
       .filter(([, state]) => state !== "observed")
-      .map(([setId]) => setId);
-    const untracked = states.filter(([, state]) => state === undefined).map(([setId]) => setId);
+      .map(([collectionId]) => collectionId);
+    const untracked = states.filter(([, state]) => state === undefined).map(([collectionId]) => collectionId);
     if (untracked.length > 0) {
-      const tracked = this.#trackedSets().length;
-      if (tracked + untracked.length > this.#maxTrackedSets) {
+      const tracked = this.#trackedCollections().length;
+      if (tracked + untracked.length > this.#maxTrackedCollections) {
         throw new Error(
           `This binding has read ${tracked} distinct items, the most it can track while remaining ` +
           "shareable. Bind a narrower scope.");
       }
-      for (const setId of untracked) kv.put<SetState>(this.#setKey(setId), "pending");
+      for (const collectionId of untracked) kv.put<CollectionState>(this.#collectionKey(collectionId), "pending");
     }
     // Claimed after the capacity throw and before the first await, like the markers themselves, so
     // no concurrent read can reclaim a marker this one still depends on.
-    const claims = setClaims(kv);
-    const claimed = canonical.map(setId => this.#setKey(setId));
-    claimSets(claims, claimed, new Set(untracked.map(setId => this.#setKey(setId))));
+    const claims = collectionClaims(kv);
+    const claimed = canonical.map(collectionId => this.#collectionKey(collectionId));
+    claimSets(claims, claimed, new Set(untracked.map(collectionId => this.#collectionKey(collectionId))));
 
     const observers = [...this.#observers()];
     const access = await mapLimit(observers, this.#concurrency, async ([id, verifier]) => {
@@ -464,7 +464,7 @@ export class ObserverTracker<V> {
         // Copied per verifier: the oracle may chunk destructively, and the exclusion check below
         // compares against this array. Shared, an emptied batch would make that check vacuous and
         // admit every later observer to sets no oracle ever verified.
-        return await hasSetAccess(verifier, canonical.slice());
+        return await hasCollectionAccess(verifier, canonical.slice());
       } catch {
         // A throw excludes, like a denial: rejecting the batch would let one dead stub fail every
         // observation this binding makes. The caught value is deliberately not logged -- provider
@@ -484,7 +484,7 @@ export class ObserverTracker<V> {
         const verdicts = access[observer];
         return verdicts === undefined
           || verdicts.length !== canonical.length
-          || canonical.some((_setId, index) => verdicts[index] !== true);
+          || canonical.some((_collectionId, index) => verdicts[index] !== true);
       })
       .map(([id]) => id);
 
@@ -492,14 +492,14 @@ export class ObserverTracker<V> {
       excludeObservers: excluded.length > 0 ? excluded : undefined,
       commit: () => {
         settleSets(claims, claimed, "committed");
-        for (const setId of promote) kv.put<SetState>(this.#setKey(setId), "observed");
+        for (const collectionId of promote) kv.put<CollectionState>(this.#collectionKey(collectionId), "observed");
       },
       abandon: () => void settleSets(claims, claimed, "unknown"),
       discard: () => {
         // Reclaimed by whichever claimant settles last, so a set two refused reads disclosed does
         // not keep a slot -- and a marker anything promoted or left unaccounted for stays.
         for (const key of settleSets(claims, claimed, "refused")) {
-          if (kv.get<SetState | true>(key) === "pending") kv.delete(key);
+          if (kv.get<CollectionState | true>(key) === "pending") kv.delete(key);
         }
       },
     };
@@ -507,29 +507,29 @@ export class ObserverTracker<V> {
 
   /**
    * Builds an observed-set storage key.
-   * @param setId Canonical set ID.
+   * @param collectionId Canonical collection ID.
    * @returns Storage key for the set.
    */
-  #setKey(setId: CanonicalSetId): string {
-    return `${this.#setPrefix}${setId}`;
+  #collectionKey(collectionId: CanonicalSetId): string {
+    return `${this.#collectionPrefix}${collectionId}`;
   }
 
   /**
-   * Reads an observed set's state.
-   * @param setId Canonical set ID.
+   * Reads an observed collection's state.
+   * @param collectionId Canonical collection ID.
    * @returns Current state, including normalized legacy values.
    */
-  #state(setId: CanonicalSetId): SetState | undefined {
+  #state(collectionId: CanonicalSetId): CollectionState | undefined {
     // `true` is the legacy encoding of "observed" some gatekeepers already have in storage. The kit
     // never writes it, and normalizing it here keeps the two spellings out of every other line.
-    const stored = this.#options.kv.get<SetState | true>(this.#setKey(setId));
+    const stored = this.#options.kv.get<CollectionState | true>(this.#collectionKey(collectionId));
     return stored === true ? "observed" : stored;
   }
 
-  /** @returns Every canonical set ID retained by this tracker. */
-  #trackedSets(): CanonicalSetId[] {
-    return [...this.#options.kv.list<unknown>({ prefix: this.#setPrefix })].map(([key]) =>
-      key.slice(this.#setPrefix.length) as CanonicalSetId,
+  /** @returns Every canonical collection ID retained by this tracker. */
+  #trackedCollections(): CanonicalSetId[] {
+    return [...this.#options.kv.list<unknown>({ prefix: this.#collectionPrefix })].map(([key]) =>
+      key.slice(this.#collectionPrefix.length) as CanonicalSetId,
     );
   }
 

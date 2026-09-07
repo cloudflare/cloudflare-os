@@ -8,7 +8,7 @@ import {
   TokenCursor,
   type TokenPage,
 } from "../../src/cursors";
-import { ObservationGate, trackedSetObservers } from "../../src/observers";
+import { ObservationGate, trackedCollectionObservers } from "../../src/observers";
 import { fakeKv } from "../fake-kv";
 
 type Issue = { id: number; open: boolean };
@@ -508,7 +508,7 @@ describe("TokenCursor", () => {
     const gate = new ObservationGate(
       { authorizeObservation } as unknown as RpcStub<ApprovalQueue>,
       // A `sets` scope needs the strategy that actually checks them.
-      trackedSetObservers({ kv: fakeKv(), hasSetAccess: async () => [] }));
+      trackedCollectionObservers({ kv: fakeKv(), hasCollectionAccess: async () => [] }));
     const cursor = new TokenCursor<Issue>({
       fetchPage: tokenApi([
         { items: [], nextToken: "w0" },
@@ -522,7 +522,7 @@ describe("TokenCursor", () => {
           { kind: "baseline" })
         : gate.authorize(
           { title: "Issues", description: `Read ${issues.length} issues.` },
-          { kind: "sets", ids: issues.map(issue => issue.id.toString()) }),
+          { kind: "collections", ids: issues.map(issue => issue.id.toString()) }),
     });
 
     // A page, then exhaustion. Neither may throw out of the gate.
