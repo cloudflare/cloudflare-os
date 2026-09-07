@@ -5,7 +5,7 @@ import { AuthenticatedApi, AiChatAuthorInfo } from '@gadgets/workshop-shared/api
 interface AuthContextType {
   authenticatedApi: RpcStub<AuthenticatedApi>
   logout: () => void
-  /** Current user info, fetched once on mount. Null while loading. */
+  /** Current user verified by this exact API. Null while its identity is unresolved. */
   currentUser: AiChatAuthorInfo | null
   /** Whether the current user is a deployment admin. False while loading / for non-admins. */
   isAdmin: boolean
@@ -20,13 +20,14 @@ interface AuthProviderProps {
 }
 
 export function AuthProvider({ children, authenticatedApi, onLogout }: AuthProviderProps) {
-  const [currentUser, setCurrentUser] = useState<AiChatAuthorInfo | null>(null)
+  const [identity, setIdentity] = useState<{ api: RpcStub<AuthenticatedApi>; user: AiChatAuthorInfo }>()
+  const currentUser = identity?.api === authenticatedApi ? identity.user : null
   const [isAdmin, setIsAdmin] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     authenticatedApi.whoami().then((info) => {
-      if (!cancelled) setCurrentUser(info)
+      if (!cancelled) setIdentity({ api: authenticatedApi, user: info })
     }).catch(() => {})
     return () => { cancelled = true }
   }, [authenticatedApi])

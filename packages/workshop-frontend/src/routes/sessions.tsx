@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { Activity, lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   Archive,
   ArrowClockwise,
@@ -38,10 +38,22 @@ type WorkbenchTab = 'agent' | 'terminal' | 'changes'
 
 export function SessionsPage() {
   useDocumentTitle('Code')
+  const { github } = useSessionsContext()
+  if (github.state === 'missing' || github.state === 'expired') return <CodeSetupScreen />
+  return (
+    <>
+      {github.state === 'loading' && <CenteredMessage>Checking GitHub connection…</CenteredMessage>}
+      <Activity mode={github.state === 'connected' ? 'visible' : 'hidden'}>
+        <SessionsPageBody />
+      </Activity>
+    </>
+  )
+}
+
+function SessionsPageBody() {
   const { authenticatedApi } = useAuthenticatedApi()
   const sessions = useSessionsContext()
   const {
-    github,
     activeSession,
     error,
     activity,
@@ -59,6 +71,20 @@ export function SessionsPage() {
   const [editorAvailable, setEditorAvailable] = useState(false)
   const [editorBusy, setEditorBusy] = useState(false)
   const [editorError, setEditorError] = useState<string>()
+  const surfaceSessionRef = useRef<string | undefined>(undefined)
+  const editorLifecycle = useRef<{ popup: Window | null } | null>(null)
+
+  useLayoutEffect(() => {
+    const lifecycle: { popup: Window | null } = { popup: null }
+    editorLifecycle.current = lifecycle
+    setEditorBusy(false)
+    setEditorError(undefined)
+    // Activity preserves state, but pending editor requests must not survive hiding.
+    return () => {
+      editorLifecycle.current = null
+      lifecycle.popup?.close()
+    }
+  }, [authenticatedApi, activeSession?.id, activeSession?.runtime, activeSession?.status, sessions.github.state])
 
   useEffect(() => {
     let cancelled = false
@@ -69,35 +95,41 @@ export function SessionsPage() {
   }, [authenticatedApi])
 
   useEffect(() => {
-    if (!activeSession || activeSession.status !== 'running') return
+    const key = activeSession?.status === 'running' ? `${activeSession.id}:${activeSession.runtime}` : undefined
+    if (surfaceSessionRef.current === key) return
+    surfaceSessionRef.current = key
+    if (!key) return
     setSurface('agent')
     setOpenedTerminalSessionId(undefined)
   }, [activeSession?.id, activeSession?.runtime, activeSession?.status])
   const terminalOpened = activeSession?.id !== undefined && openedTerminalSessionId === activeSession.id
 
   const openEditor = async (sessionId: string) => {
-    if (editorBusy) return
+    const lifecycle = editorLifecycle.current
+    if (!lifecycle || lifecycle.popup || editorBusy || sessions.github.state !== 'connected' || activeSession?.id !== sessionId || activeSession.status !== 'running') return
     const popup = window.open('about:blank', '_blank')
     if (!popup) {
       setEditorError('Allow pop-ups to open browser VS Code.')
       return
     }
     popup.opener = null
+    lifecycle.popup = popup
     setEditorBusy(true)
     setEditorError(undefined)
     try {
       const capability = await authenticatedApi.mintCodingSessionEditorCapability(sessionId)
+      if (editorLifecycle.current !== lifecycle) return
       popup.location.replace(capability.url)
     } catch (caught) {
       popup.close()
-      setEditorError(caught instanceof Error ? caught.message : 'Could not open browser VS Code.')
+      if (editorLifecycle.current === lifecycle) setEditorError(caught instanceof Error ? caught.message : 'Could not open browser VS Code.')
     } finally {
-      setEditorBusy(false)
+      if (editorLifecycle.current === lifecycle) {
+        lifecycle.popup = null
+        setEditorBusy(false)
+      }
     }
   }
-
-  if (github.state === 'loading') return <CenteredMessage>Checking GitHub connection…</CenteredMessage>
-  if (github.state === 'missing' || github.state === 'expired') return <CodeSetupScreen />
 
   if (activeSession) {
     const sessionActivity = activity.filter((entry) => entry.sessionId === activeSession.id)

@@ -9,7 +9,8 @@ import { WorkshopButton, WorkshopIconButton } from '../WorkshopControls'
 
 const POLL_INTERVAL_MS = 4_000
 const EXPIRY_REFRESH_WINDOW_MS = 10_000
-const CAPABILITY_TIMEOUT_MS = 30_000
+// Total mint budget includes auth/policy startup before the backend's readiness-only wait.
+const CAPABILITY_TIMEOUT_MS = 60_000
 const REQUEST_TIMEOUT_MS = 20_000
 const MAX_MESSAGE_COUNT = 80
 const MAX_TEXT_LENGTH = 16_000
@@ -183,6 +184,7 @@ export function OpenCodeWorkbenchInner({
   const [metadata, setMetadata] = useState<MetadataState>({})
   const [statusReady, setStatusReady] = useState(false)
   const [startupPhase, setStartupPhase] = useState('Connecting to the coding session…')
+  const draftSessionIdRef = useRef(sessionId)
 
   useEffect(() => {
     mountedRef.current = true
@@ -195,6 +197,10 @@ export function OpenCodeWorkbenchInner({
   }, [])
 
   useEffect(() => {
+    // Activity re-creates effects on resume; only a different session discards local input.
+    if (draftSessionIdRef.current === sessionId) return
+    draftSessionIdRef.current = sessionId
+    selectedOpenCodeSessionIdRef.current = undefined
     initialSendKeyRef.current = undefined
     setPrompt('')
     setAttachments([])
@@ -208,7 +214,6 @@ export function OpenCodeWorkbenchInner({
     abortsRef.current.clear()
     capabilityRef.current = undefined
     capabilityPromiseRef.current = undefined
-    selectedOpenCodeSessionIdRef.current = undefined
     pendingTurnNotificationRef.current = undefined
     sendingRef.current = false
     setSnapshot({ sessions: [], messages: [], running: false, statusText: 'Connecting…' })
@@ -535,7 +540,7 @@ export function OpenCodeWorkbenchInner({
     const selectedId = selectedOpenCodeSessionIdRef.current
     const trimmed = text.trim()
     const fileParts = options.attachments ?? []
-    if (!selectedId || !statusReady || loading || refreshing || error || (!trimmed && fileParts.length === 0) || sendingRef.current || snapshot.running) return
+    if (!mountedRef.current || !selectedId || !statusReady || loading || refreshing || error || (!trimmed && fileParts.length === 0) || sendingRef.current || snapshot.running) return
     sendingRef.current = true
     const parts: OpenCodePromptPart[] = [...(trimmed ? [{ type: 'text' as const, text: trimmed }] : []), ...fileParts]
     const command = parseCommandPrompt(trimmed)
@@ -580,7 +585,7 @@ export function OpenCodeWorkbenchInner({
   }, [error, loading, refreshing, statusReady, fetchJson, onInitialInputSent, refreshWorkbench, snapshot.messages, snapshot.running])
 
   const submitComposer = useCallback(() => {
-    if (!canSend) return
+    if (!mountedRef.current || !canSend) return
     void getWorkshopRuntime().requestNotificationPermission()
     void sendPrompt(prompt, { attachments: readyAttachments.map(({ type, mime, filename, url }) => ({ type, mime, filename, url })) })
   }, [canSend, prompt, readyAttachments, sendPrompt])

@@ -841,25 +841,76 @@ describe('OpenCodeWorkbench', () => {
     expect(container.textContent).toContain('OpenCode request failed (410).')
   })
 
+  it('loads the transcript when capability startup succeeds after 45 seconds', async () => {
+    const capability = deferred<{ url: string; expiresAt: Date }>()
+    mint.mockImplementationOnce(() => capability.promise)
+
+    await render()
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+
+    expect(container.textContent).toContain('Connecting to the coding session…')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000)
+      capability.resolve({ url: `${window.location.origin}/gatekeeper/sessions/opencode/token/`, expiresAt: new Date(Date.now() + 60_000) })
+    })
+
+    expect(mint).toHaveBeenCalledOnce()
+    expect(container.textContent).toContain('Please fix it')
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="OpenCode transcript"]')?.value).toBe('newer')
+    expect(container.textContent).not.toContain('Connecting to the coding session…')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+  })
+
   it('bounds capability startup and can retry after it times out', async () => {
-    mint.mockImplementationOnce(() => new Promise(() => {}))
+    const capability = deferred<{ url: string; expiresAt: Date }>()
+    mint.mockImplementationOnce(() => capability.promise)
 
     await act(async () => {
       root.render(<OpenCodeWorkbenchInner authenticatedApi={{ mintCodingSessionOpenCodeCapability: mint }} sessionId="odie-session" sessionTitle="Repair" />)
     })
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(59_999) })
+
+    expect(container.textContent).toContain('Connecting to the coding session…')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
 
     expect(container.textContent).toContain('OpenCode took too long to start.')
+    expect(container.querySelector('[role="alert"]')).not.toBeNull()
+    const timedOutUi = container.innerHTML
+    await act(async () => {
+      capability.resolve({ url: `${window.location.origin}/gatekeeper/sessions/opencode/stale/`, expiresAt: new Date(Date.now() + 60_000) })
+    })
+
+    expect(fetch).not.toHaveBeenCalled()
+    expect(container.innerHTML).toBe(timedOutUi)
+    expect(mint).toHaveBeenCalledOnce()
     const retry = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Retry')!
 
     defaultOpenCodeResponses()
-    mint.mockResolvedValue({ url: `${window.location.origin}/gatekeeper/sessions/opencode/token/`, expiresAt: new Date(Date.now() + 60_000) })
+    mint.mockResolvedValue({ url: `${window.location.origin}/gatekeeper/sessions/opencode/fresh/`, expiresAt: new Date(Date.now() + 60_000) })
     await act(async () => retry.click())
     await act(async () => {})
 
     expect(mint).toHaveBeenCalledTimes(2)
     expect(container.textContent).toContain('Please fix it')
     expect(container.textContent).not.toContain('OpenCode took too long to start.')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+    expect(fetchCalls.length).toBeGreaterThan(0)
+    expect(fetchCalls.every((call) => call.url.startsWith('/gatekeeper/sessions/opencode/fresh/'))).toBe(true)
+
+    const callsBeforeRefresh = fetchCalls.length
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Refresh OpenCode"]')!.click())
+
+    expect(mint).toHaveBeenCalledTimes(2)
+    expect(fetchCalls.length).toBeGreaterThan(callsBeforeRefresh)
+    expect(fetchCalls.every((call) => call.url.startsWith('/gatekeeper/sessions/opencode/fresh/'))).toBe(true)
+    expect(container.textContent).toContain('Please fix it')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
   })
 
   it('aborts an OpenCode HTTP request that does not respond', async () => {

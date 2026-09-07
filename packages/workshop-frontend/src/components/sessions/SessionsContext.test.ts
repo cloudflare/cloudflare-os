@@ -17,7 +17,7 @@ const testState = vi.hoisted(() => ({
 }))
 
 vi.mock('../../AuthContext', () => ({
-  useAuthenticatedApi: () => ({ authenticatedApi: testState.authenticatedApi }),
+  useAuthenticatedApi: () => ({ authenticatedApi: testState.authenticatedApi, currentUser: { type: 'user', id: 'owner', name: 'Owner' } }),
 }))
 
 vi.mock('../../hooks/useGitHubConnection', () => ({
