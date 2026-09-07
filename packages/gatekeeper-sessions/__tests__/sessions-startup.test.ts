@@ -67,7 +67,7 @@ function createPolicy() {
   const kv = createKv();
   const setAlarm = vi.fn(async () => undefined);
   const deleteAlarm = vi.fn(async () => undefined);
-  const registry = { startupSucceeded: vi.fn(async () => true), startupFailed: vi.fn(() => true) };
+  const registry = { startupSucceeded: vi.fn(async () => true), startupFailed: vi.fn(() => true), startupProgressed: vi.fn(async () => true) };
   const namespace = { idFromName: vi.fn((name: string) => name), get: vi.fn(() => registry) };
   const tools = {
     prepareSessionStartup: vi.fn(async (): Promise<OpenCodeUserCustomization> => ({ plugins: [], skills: [] })),
@@ -144,6 +144,40 @@ function processHandle(id: string, state: "running" | "exited" = "exited", code 
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+function openCodeAttachFixture(overrides: Partial<StoredRecord> = {}) {
+  const running = startingRecord({ status: "running", terminalId: "term-primary", generation: 3, ...overrides });
+  const state = createRegistryWith(running);
+  const policy = { configure: vi.fn(async () => undefined), storeOpenCodeTicket: vi.fn(async () => undefined) };
+  const customization: OpenCodeUserCustomization = { plugins: [], skills: [] };
+  const tools = { prepareSessionStartup: vi.fn(async () => customization) };
+  (state.registry as typeof state.registry & { env: Record<string, unknown> }).env = {
+    BASE_URL: "https://workshop.example.test",
+    EDITOR_CAPABILITY_HMAC_SECRET: "editor-test-secret",
+    SESSION_SANDBOX: { idFromName: (id: string) => ({ toString: () => id }) },
+    SESSION_POLICIES: { idFromName: (id: string) => id, get: () => policy },
+    WORKSHOP_TOOLS: tools,
+  };
+  const process = processHandle("opencode-server-1", "running");
+  const terminal = { getSnapshot: vi.fn(async () => ({ status: "running" })) };
+  const sandbox = {
+    getTerminal: vi.fn(async (): Promise<typeof terminal | null> => terminal),
+    getProcess: vi.fn(async () => process),
+    exec: vi.fn(async () => process),
+    destroy: vi.fn(async () => undefined),
+  };
+  sandboxState.sandboxes.set("sandbox-1", sandbox);
+  const attach = () => state.registry.mintOpenCodeCapability(
+    { userId: "user-1", email: "user@example.com" }, "session-1");
+  return { ...state, running, policy, tools, customization, process, terminal, sandbox, attach };
+}
+
 function createStartupSandbox() {
   const processes = new Map<string, ReturnType<typeof processHandle>>();
   let ready = false;
@@ -180,6 +214,51 @@ describe("coding session asynchronous startup", () => {
     vi.restoreAllMocks();
     sandboxState.sandboxes.clear();
     vi.clearAllMocks();
+  });
+
+  it("records bounded cold-start attempt timings without session authority or content", async () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const { policy, kv } = createPolicy();
+    createStartupSandbox();
+    kv.put("startup", startupRecord());
+
+    await policy.alarm();
+
+    const attempts = debug.mock.calls.map(([entry]) => entry).filter(entry =>
+      entry.event === "coding.session.startup.attempt");
+    expect(attempts).toEqual([{
+      component: "gatekeeper.sessions",
+      event: "coding.session.startup.attempt",
+      phase: "authorize",
+      durationMs: expect.any(Number),
+      outcome: "success",
+      message: "coding session startup attempt completed",
+    }]);
+    expect(attempts[0].durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("mirrors progress without letting stale callbacks replace a newer generation or phase", () => {
+    const record = startingRecord({ generation: 3 });
+    const { registry, kv } = createRegistryWith(record);
+    expect(registry.startupProgressed(record.id, 2, record.sandboxId, "clone")).toBe(false);
+    expect(registry.startupProgressed(record.id, 3, "other-sandbox", "clone")).toBe(false);
+    expect(registry.startupProgressed(record.id, 3, record.sandboxId, "materialize")).toBe(true);
+    expect(registry.startupProgressed(record.id, 3, record.sandboxId, "clone")).toBe(false);
+    expect(kv.get<StoredRecord>(`session:${record.id}`)?.startupPhase).toBe("materialize");
+    kv.put(`session:${record.id}`, { ...record, status: "running" });
+    expect(registry.startupProgressed(record.id, 3, record.sandboxId, "terminal")).toBe(false);
+  });
+
+  it("does not retry successful startup work when the advisory progress mirror fails", async () => {
+    const { policy, kv, registry } = createPolicy();
+    const sandbox = createStartupSandbox();
+    registry.startupProgressed.mockRejectedValueOnce(new Error("mirror unavailable"));
+    kv.put("startup", startupRecord());
+    await policy.alarm();
+    expect(kv.get("startup")).toMatchObject({ phase: "clone", attempt: 0 });
+    expect(sandbox.configureGitHubAuth).toHaveBeenCalledOnce();
+    expect(registry.startupProgressed).toHaveBeenCalledWith("session-1", 0, "sandbox-1", "clone");
+    expect(registry.startupFailed).not.toHaveBeenCalled();
   });
 
   it("accepts omitted legacy preflight but rejects an explicitly empty development selection before create", async () => {
@@ -236,7 +315,11 @@ describe("coding session asynchronous startup", () => {
     expect(kv.values.size).toBe(0);
   });
 
-  it("create returns a persisted starting session before deferred startup work runs", async () => {
+  it.each([
+    { runtime: "opencode" as const, piWorkbench: undefined },
+    { runtime: "pi" as const, piWorkbench: undefined },
+    { runtime: "pi" as const, piWorkbench: true as const },
+  ])("create persists the $runtime interface opt-in ($piWorkbench) before deferred startup", async options => {
     const kv = createKv();
     const scheduled = vi.fn(async () => undefined);
     const registry = new CodingSessionRegistry() as InstanceType<typeof CodingSessionRegistry> & {
@@ -246,6 +329,9 @@ describe("coding session asynchronous startup", () => {
     const policy = { configure: vi.fn(), startSessionStartup: scheduled };
     const tools = { prepareSessionStartup: vi.fn() };
     registry.env = {
+      CODING_SESSION_PI_RUNTIME_ENABLED: "true",
+      TEAM_PI_CODEX_BASE_URL: "https://model.example.test",
+      TEAM_PI_CODEX_HMAC_SECRET: "fixture-secret",
       SESSION_SANDBOX: { idFromName: (id: string) => ({ toString: () => id }) },
       SESSION_POLICIES: { idFromName: (id: string) => id, get: () => policy },
       WORKSHOP_TOOLS: tools,
@@ -257,10 +343,13 @@ describe("coding session asynchronous startup", () => {
 
     const summary = await registry.createSession(
       { userId: "user-1", email: "user@example.com" },
-      { title: "Repair", repositories: ["jarvis"] },
+      { title: "Repair", repositories: ["jarvis"], ...options },
     );
 
     expect(summary.status).toBe("starting");
+    expect(kv.get<{piWorkbench?: true}>(`session:${summary.id}`)?.piWorkbench).toBe(options.piWorkbench);
+    expect(policy.configure.mock.calls[0][0].piWorkbench).toBe(options.piWorkbench);
+    expect(summary).not.toHaveProperty("piWorkbench");
     expect(kv.get<StoredRecord>(`session:${summary.id}`)?.status).toBe("starting");
     expect(scheduled).toHaveBeenCalledOnce();
     expect(kv.get(`start:${summary.id}`)).toBeUndefined();
@@ -2194,7 +2283,7 @@ describe("coding session asynchronous startup", () => {
     });
   });
 
-  it("stops a freshly-created OpenCode server when the session generation goes stale", async () => {
+  it.each(["generation", "terminal"])("stops a freshly-created OpenCode server when the session %s goes stale", async fence => {
     const running = startingRecord({ status: "running", terminalId: "term-primary", generation: 1 });
     const { registry, kv } = createRegistryWith(running);
     const policy = { configure: vi.fn(), storeOpenCodeTicket: vi.fn() };
@@ -2207,7 +2296,9 @@ describe("coding session asynchronous startup", () => {
     };
     const process = processHandle("opencode-server-stale", "running");
     process.waitForPort.mockImplementation(async () => {
-      kv.put("session:session-1", { ...running, generation: 2, sandboxId: "sandbox-2" });
+      kv.put("session:session-1", fence === "generation"
+        ? { ...running, generation: 2, sandboxId: "sandbox-2" }
+        : { ...running, terminalId: "replacement" });
     });
     sandboxState.sandboxes.set("sandbox-1", {
       getTerminal: vi.fn(async () => ({ getSnapshot: vi.fn(async () => ({ status: "running" })) })),
@@ -2221,6 +2312,323 @@ describe("coding session asynchronous startup", () => {
     )).rejects.toThrow("Coding session is not running.");
     expect(process.kill.mock.calls).toEqual([[15]]);
     expect(policy.storeOpenCodeTicket).not.toHaveBeenCalled();
+  });
+
+  it("overlaps warm terminal liveness with independent authorization in a fresh registry", async () => {
+    const f = openCodeAttachFixture({ opencodeServerProcessId: "opencode-server-1", opencodeServerVersion: 1 });
+    const auth = deferred<OpenCodeUserCustomization>();
+    const snapshot = deferred<{ status: string }>();
+    const probeStarted = deferred<void>();
+    f.tools.prepareSessionStartup.mockReturnValue(auth.promise);
+    f.terminal.getSnapshot.mockImplementation(() => { probeStarted.resolve(); return snapshot.promise; });
+    const result = f.attach();
+    await probeStarted.promise;
+    expect(f.tools.prepareSessionStartup).toHaveBeenCalledOnce();
+    expect(f.policy.configure).not.toHaveBeenCalled();
+    expect(f.sandbox.getProcess).not.toHaveBeenCalled();
+    auth.resolve(f.customization);
+    await auth.promise;
+    expect(f.policy.configure).not.toHaveBeenCalled();
+    snapshot.resolve({ status: "running" });
+    await result;
+    expect(f.sandbox.getTerminal).toHaveBeenCalledOnce();
+    expect(f.terminal.getSnapshot).toHaveBeenCalledOnce();
+    expect(f.sandbox.getProcess).toHaveBeenCalledOnce();
+    expect(f.sandbox.exec).not.toHaveBeenCalled();
+    expect(f.process.waitForPort).not.toHaveBeenCalled();
+    expect(f.policy.storeOpenCodeTicket).toHaveBeenCalledOnce();
+  });
+
+  it("does not let a delayed independent authorization relaunch a server another attach persisted", async () => {
+    const f = openCodeAttachFixture();
+    const auth = deferred<OpenCodeUserCustomization>();
+    f.tools.prepareSessionStartup.mockReturnValueOnce(auth.promise);
+    const delayed = f.attach();
+    await f.attach();
+    expect(f.sandbox.exec).toHaveBeenCalledOnce();
+    expect(f.sandbox.getProcess).not.toHaveBeenCalled(); // No extra cold probe.
+    auth.resolve(f.customization);
+    await delayed;
+    expect(f.sandbox.exec).toHaveBeenCalledOnce();
+    expect(f.sandbox.getProcess).toHaveBeenCalledOnce();
+    expect(f.tools.prepareSessionStartup).toHaveBeenCalledTimes(2);
+    expect(f.policy.storeOpenCodeTicket).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps concurrent authorization denial independent and emits only sanitized failure telemetry", async () => {
+    const logs = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const f = openCodeAttachFixture();
+    const auth = deferred<OpenCodeUserCustomization>();
+    f.tools.prepareSessionStartup.mockReturnValueOnce(auth.promise);
+    const denied = f.attach();
+    const failure = expect(denied).rejects.toThrow("private-token");
+    await f.attach();
+    auth.reject(new Error("private-token /workspace/private prompt headers body"));
+    await failure;
+    expect(f.tools.prepareSessionStartup).toHaveBeenCalledTimes(2);
+    expect(f.policy.configure).toHaveBeenCalledOnce();
+    expect(f.policy.storeOpenCodeTicket).toHaveBeenCalledOnce();
+    expect(f.sandbox.exec).toHaveBeenCalledOnce();
+    const events = logs.mock.calls.map(([entry]) => entry).filter(entry =>
+      entry.event === "coding.session.opencode.attach.phase");
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ attachPhase: "authorization", outcome: "failure", durationMs: expect.any(Number) }),
+      expect.objectContaining({ attachPhase: "total", outcome: "failure" }),
+    ]));
+    for (const event of events) {
+      expect(event.durationMs).toBeGreaterThanOrEqual(0);
+      expect(Object.keys(event).toSorted()).toEqual([
+        "attachPhase", "component", "durationMs", "event", "message", "outcome",
+      ]);
+    }
+    expect(JSON.stringify(events)).not.toMatch(/private-token|\/workspace|prompt|headers|body|editor-test-secret/);
+  });
+
+  it.each(["authorization", "terminal", "policy", "process-inspect"] as const)(
+    "fences restart during %s before any process mutation", async phase => {
+      const f = openCodeAttachFixture({ opencodeServerProcessId: "opencode-server-1", opencodeServerVersion: 0 });
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      const pause = async () => { entered.resolve(); await release.promise; };
+      if (phase === "authorization") f.tools.prepareSessionStartup.mockImplementation(async () => {
+        await pause(); return f.customization;
+      });
+      if (phase === "terminal") f.terminal.getSnapshot.mockImplementation(async () => {
+        await pause(); return { status: "running" };
+      });
+      if (phase === "policy") f.policy.configure.mockImplementation(pause);
+      if (phase === "process-inspect") f.process.status.mockImplementation(async () => {
+        await pause(); return { state: "running" };
+      });
+      const result = f.attach();
+      const failure = expect(result).rejects.toThrow("Coding session is not running.");
+      await entered.promise;
+      const replacement = { ...f.running, generation: 4, sandboxId: "sandbox-2", terminalId: "replacement" };
+      f.kv.put("session:session-1", replacement);
+      release.resolve();
+      await failure;
+      expect(f.process.kill).not.toHaveBeenCalled();
+      expect(f.sandbox.exec).not.toHaveBeenCalled();
+      expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
+      expect(f.kv.get("session:session-1")).toEqual(replacement);
+      if (phase === "authorization" || phase === "terminal") expect(f.policy.configure).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not mark a replacement terminal unavailable when an overlapping old probe exits", async () => {
+    const f = openCodeAttachFixture();
+    const entered = deferred<void>();
+    const snapshot = deferred<{ status: string }>();
+    f.terminal.getSnapshot.mockImplementation(() => { entered.resolve(); return snapshot.promise; });
+    const result = f.attach();
+    const failure = expect(result).rejects.toThrow("environment expired");
+    await entered.promise;
+    const replacement = { ...f.running, terminalId: "replacement" };
+    f.kv.put("session:session-1", replacement);
+    snapshot.resolve({ status: "exited" });
+    await failure;
+    expect(f.kv.get("session:session-1")).toEqual(replacement);
+    expect(f.policy.configure).not.toHaveBeenCalled();
+    expect(f.sandbox.exec).not.toHaveBeenCalled();
+  });
+
+  it("cleans up readiness timeouts, clears singleflight, and retries with fresh authorization", async () => {
+    const f = openCodeAttachFixture();
+    f.process.waitForPort.mockRejectedValueOnce(new Error("readiness timed out"));
+    await expect(f.attach()).rejects.toThrow("readiness timed out");
+    expect(f.process.kill).toHaveBeenCalledWith(15);
+    expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
+    expect(f.kv.get<StoredRecord>("session:session-1")?.opencodeServerProcessId).toBeUndefined();
+    await f.attach();
+    expect(f.tools.prepareSessionStartup).toHaveBeenCalledTimes(2);
+    expect(f.sandbox.exec).toHaveBeenCalledTimes(2);
+    expect(f.policy.storeOpenCodeTicket).toHaveBeenCalledOnce();
+  });
+
+  it("destroys the sandbox when readiness-timeout cleanup cannot stop the process", async () => {
+    const f = openCodeAttachFixture();
+    f.process.waitForPort.mockRejectedValueOnce(new Error("readiness timed out"));
+    f.process.waitForExit.mockResolvedValue({ code: 0, timedOut: true });
+    await expect(f.attach()).rejects.toThrow("readiness timed out");
+    expect(f.sandbox.destroy).toHaveBeenCalledOnce();
+    expect(f.kv.get<StoredRecord>("session:session-1")).toMatchObject({ status: "failed", terminalId: undefined });
+    expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
+  });
+
+  it.each(["terminal", "policy", "process-readiness", "ticket-store"] as const)(
+    "logs sanitized %s failures and total failure", async phase => {
+      const logs = vi.spyOn(console, "info").mockImplementation(() => undefined);
+      const f = openCodeAttachFixture();
+      const error = new Error("sensitive /workspace/path prompt token header body");
+      if (phase === "terminal") f.terminal.getSnapshot.mockRejectedValueOnce(error);
+      if (phase === "policy") f.policy.configure.mockRejectedValueOnce(error);
+      if (phase === "process-readiness") f.process.waitForPort.mockRejectedValueOnce(error);
+      if (phase === "ticket-store") f.policy.storeOpenCodeTicket.mockRejectedValueOnce(error);
+      await expect(f.attach()).rejects.toBe(error);
+      const events = logs.mock.calls.map(([entry]) => entry);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ attachPhase: phase, outcome: "failure", durationMs: expect.any(Number) }),
+        expect.objectContaining({ attachPhase: "total", outcome: "failure", durationMs: expect.any(Number) }),
+      ]));
+      expect(JSON.stringify(events)).not.toMatch(/sensitive|\/workspace|prompt|token|header|body|stack/);
+      if (phase === "terminal" || phase === "policy") expect(f.sandbox.exec).not.toHaveBeenCalled();
+    },
+  );
+
+  it("observes both overlapping failures without allowing mutation", async () => {
+    const f = openCodeAttachFixture();
+    const auth = deferred<OpenCodeUserCustomization>();
+    const snapshot = deferred<{ status: string }>();
+    const entered = deferred<void>();
+    f.tools.prepareSessionStartup.mockReturnValue(auth.promise);
+    f.terminal.getSnapshot.mockImplementation(() => { entered.resolve(); return snapshot.promise; });
+    const result = f.attach();
+    const failure = expect(result).rejects.toThrow("authorization denied");
+    await entered.promise;
+    auth.reject(new Error("authorization denied"));
+    await failure;
+    snapshot.reject(new Error("probe timed out"));
+    await expect(snapshot.promise).rejects.toThrow("probe timed out");
+    expect(f.policy.configure).not.toHaveBeenCalled();
+    expect(f.sandbox.exec).not.toHaveBeenCalled();
+    expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { probe: "exited", replacement: false },
+    { probe: "missing", replacement: false },
+    { probe: "exited", replacement: true },
+    { probe: "missing", replacement: true },
+  ])("retains fenced unavailable updates after auth denial: $probe, replacement=$replacement", async ({ probe, replacement }) => {
+    const f = openCodeAttachFixture({ opencodeServerProcessId: "opencode-server-1", opencodeServerVersion: 1 });
+    const auth = deferred<OpenCodeUserCustomization>();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const marked = deferred<void>();
+    const markUnavailable = f.registry.markTerminalUnavailable.bind(f.registry);
+    const mark = vi.spyOn(f.registry, "markTerminalUnavailable").mockImplementation((...args) => {
+      markUnavailable(...args);
+      marked.resolve();
+    });
+    f.tools.prepareSessionStartup.mockReturnValue(auth.promise);
+    if (probe === "missing") {
+      f.sandbox.getTerminal.mockImplementation(async () => {
+        entered.resolve();
+        await release.promise;
+        return null;
+      });
+    } else {
+      f.terminal.getSnapshot.mockImplementation(async () => {
+        entered.resolve();
+        await release.promise;
+        return { status: "exited" };
+      });
+    }
+    const result = f.attach();
+    const failure = expect(result).rejects.toThrow("authorization denied");
+    await entered.promise;
+    auth.reject(new Error("authorization denied"));
+    await failure;
+    expect(mark).not.toHaveBeenCalled();
+    expect(f.kv.get("session:session-1")).toEqual(f.running);
+
+    // Keep sandbox/terminal IDs identical to isolate the generation fence itself.
+    const current = replacement ? { ...f.running, generation: 4 } : f.running;
+    if (replacement) f.kv.put("session:session-1", current);
+    f.kv.put.mockClear();
+    release.resolve();
+    await marked.promise;
+    expect(mark).toHaveBeenCalledExactlyOnceWith(
+      "session-1", "sandbox-1", "term-primary",
+      probe === "missing"
+        ? "Coding session environment expired. Restart the session to continue."
+        : "Coding session terminal exited. Restart the session to continue.",
+      3,
+    );
+    if (replacement) {
+      expect(f.kv.get("session:session-1")).toEqual(current);
+      expect(f.kv.put).not.toHaveBeenCalled();
+    } else {
+      expect(f.kv.get("session:session-1")).toMatchObject({
+        generation: 3, status: "failed", terminalId: undefined,
+        opencodeServerProcessId: undefined, opencodeServerVersion: undefined,
+      });
+      expect(f.kv.put).toHaveBeenCalledOnce();
+    }
+    expect(f.tools.prepareSessionStartup).toHaveBeenCalledOnce();
+    expect(f.policy.configure).not.toHaveBeenCalled();
+    expect(f.sandbox.getProcess).not.toHaveBeenCalled();
+    expect(f.sandbox.exec).not.toHaveBeenCalled();
+    expect(f.process.kill).not.toHaveBeenCalled();
+    expect(f.sandbox.destroy).not.toHaveBeenCalled();
+    expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
+  });
+
+  it("shares one deferred readiness failure across independently authorized waiters and retries freshly", async () => {
+    const f = openCodeAttachFixture();
+    const authorizations = Array.from({ length: 3 }, () => deferred<OpenCodeUserCustomization>());
+    for (const auth of authorizations) f.tools.prepareSessionStartup.mockReturnValueOnce(auth.promise);
+    const readiness = deferred<void>();
+    const entered = deferred<void>();
+    f.process.waitForPort.mockImplementationOnce(() => {
+      entered.resolve();
+      return readiness.promise;
+    });
+    const failure = new Error("shared readiness timeout");
+    const results = Promise.allSettled(authorizations.map(() => f.attach()));
+    expect(f.tools.prepareSessionStartup).toHaveBeenCalledTimes(3);
+    expect(f.policy.configure).not.toHaveBeenCalled();
+    for (const auth of authorizations) auth.resolve(f.customization);
+    await entered.promise;
+    expect(f.policy.configure).toHaveBeenCalledTimes(3);
+    expect(f.sandbox.exec).toHaveBeenCalledOnce();
+    expect(f.process.waitForPort).toHaveBeenCalledOnce();
+    expect(f.process.kill).not.toHaveBeenCalled();
+    expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
+    readiness.reject(failure);
+    expect(await results).toEqual(authorizations.map(() => ({ status: "rejected", reason: failure })));
+    expect(f.sandbox.exec).toHaveBeenCalledOnce();
+    expect(f.process.kill).toHaveBeenCalledExactlyOnceWith(15);
+    expect(f.process.waitForExit).toHaveBeenCalledOnce();
+    expect(f.sandbox.destroy).not.toHaveBeenCalled();
+    expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
+    expect(f.kv.get<StoredRecord>("session:session-1")?.opencodeServerProcessId).toBeUndefined();
+
+    await expect(f.attach()).resolves.toHaveProperty("url");
+    expect(f.tools.prepareSessionStartup).toHaveBeenCalledTimes(4);
+    expect(f.policy.configure).toHaveBeenCalledTimes(4);
+    expect(f.sandbox.exec).toHaveBeenCalledTimes(2);
+    expect(f.process.waitForPort).toHaveBeenCalledTimes(2);
+    expect(f.process.kill).toHaveBeenCalledOnce();
+    expect(f.policy.storeOpenCodeTicket).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a capability when its generation is replaced during ticket storage without overwriting the replacement", async () => {
+    const f = openCodeAttachFixture();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    f.policy.storeOpenCodeTicket.mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const result = f.attach();
+    const failure = expect(result).rejects.toThrow("Coding session is not running.");
+    await entered.promise;
+    const replacement = {
+      ...f.running, generation: 4, sandboxId: "sandbox-2", terminalId: "replacement",
+      opencodeServerProcessId: "replacement-process", opencodeServerVersion: 1,
+    };
+    f.kv.put("session:session-1", replacement);
+    f.kv.put.mockClear();
+    release.resolve();
+    await failure;
+    expect(f.policy.storeOpenCodeTicket).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      generation: 3, sandboxId: "sandbox-1", sessionId: "session-1",
+    }));
+    expect(f.kv.get("session:session-1")).toEqual(replacement);
+    expect(f.kv.put).not.toHaveBeenCalled();
+    expect(f.process.kill).not.toHaveBeenCalled();
+    expect(f.sandbox.destroy).not.toHaveBeenCalled();
   });
 
   it("deletes expired OpenCode capability tickets on the policy alarm", async () => {

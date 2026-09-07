@@ -578,6 +578,18 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#user.mintCodingSessionOpenCodeCapability(sessionId);
   }
 
+  /** Attaches to the authenticated owner's existing Pi bridge without launching a process. */
+  async connectCodingSessionPi(sessionId: string): Promise<import('@gadgets/workshop-shared/api').CodingSessionPiConnection> {
+    await this.#assertRequiredConnectionsHealthy();
+    return this.#user.connectCodingSessionPi(sessionId);
+  }
+
+  /** Rechecks the required-connection gate before dispatching an owner Pi operation. */
+  async callCodingSessionPi(sessionId: string, connectionId: string, command: import('@gadgets/workshop-shared/api').CodingSessionPiCommand): Promise<import('@gadgets/workshop-shared/api').CodingSessionPiResult> {
+    await this.#assertRequiredConnectionsHealthy();
+    return this.#user.callCodingSessionPi(sessionId, connectionId, command);
+  }
+
   async mintCodingSessionApplicationCapability(
     sessionId: string,
     applicationId: string,
