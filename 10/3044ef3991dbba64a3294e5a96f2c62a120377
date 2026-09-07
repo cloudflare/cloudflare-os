@@ -1,0 +1,29 @@
+packages/workshop-frontend/src/components/GadgetList.tsx
+  s_4a30a440cc2138::t_30e3ec155405bb 16
+packages/workshop-frontend/src/features/wiki/PageView.test.tsx
+  s_4a30a440cc2138::t_be49c69d60b471 263-291
+packages/workshop-frontend/src/features/wiki/PageView.tsx
+  s_4a30a440cc2138::t_6638bea0e2fae7 24,181-188
+packages/workshop-frontend/src/features/wiki/SpaceHome.test.tsx
+  s_4a30a440cc2138::t_1b70bfd89fba24 1-46
+packages/workshop-frontend/src/features/wiki/SpaceHome.tsx
+  s_4a30a440cc2138::t_c43a31b9f4bc56 8,87,89-99
+packages/workshop-frontend/src/utils/formatTimestamp.ts
+  s_4a30a440cc2138::t_73449cb2172c9d 30-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "103044ef3991dbba64a3294e5a96f2c62a120377",
+  "prompts": {},
+  "sessions": {
+    "s_4a30a440cc2138": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8775eb53-edf4-4778-8216-f263267a5316",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
