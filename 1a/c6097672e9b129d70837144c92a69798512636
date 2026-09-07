@@ -1,0 +1,29 @@
+packages/gadget-libraries/page/README.md
+  s_4a30a440cc2138::t_9aaccaaf92f95d 509-513
+packages/gadget-libraries/page/__tests__/comment-bubble.test.ts
+  s_4a30a440cc2138::t_5f901f11983daa 1-221
+packages/gadget-libraries/page/__tests__/links.test.ts
+  s_4a30a440cc2138::t_14c8d96146263c 198-201
+packages/gadget-libraries/page/client.ts
+  s_4a30a440cc2138::t_a0f5704d39a0e4 39,165,276-284,288,315,344,361-364,366,398,419,480
+packages/gadget-libraries/page/src/styles.ts
+  s_4a30a440cc2138::t_1f29f45023826c 250-255,263
+packages/gadget-libraries/page/src/comment-bubble.ts
+  s_4a30a440cc2138::t_37b3b9f10d2312 1-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1ac6097672e9b129d70837144c92a69798512636",
+  "prompts": {},
+  "sessions": {
+    "s_4a30a440cc2138": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8775eb53-edf4-4778-8216-f263267a5316",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
