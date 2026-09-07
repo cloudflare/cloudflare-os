@@ -30,6 +30,17 @@ async function bridge(options: { largeHistory?: boolean; dialogTimeout?: number;
         return; // Upstream cannot finish this command until an actual dialog response arrives.
       }
       if(c.message==='die') {process.exit(1); return;}
+      if(c.message==='stdin-close') {
+        setInterval(() => {}, 1000); // Keep the child and stdout alive after closing stdin.
+        process.stdin.once('close', () => {
+          // Standard input can retain fd 0 after destroy(); ensure the pipe reader is gone.
+          try {closeSync(0);} catch (error) {if(error.code!=='EBADF') throw error;}
+          emit({type:'stdin_closed'});
+          emit({type:'response',id:c.id,command:c.type,success:true,data:{closed:true}});
+        });
+        process.stdin.destroy();
+        return;
+      }
       if(c.message==='malformed') {process.stdout.write('not-json\n'); return;}
       if(c.message==='oversize-stall' || c.message==='oversize-trickle' || c.message==='oversize-eof') {
         process.stdout.write('{"text":"'+'x'.repeat(3*1024*1024), () => {
@@ -188,6 +199,26 @@ describe("Pi owner bridge subprocess", () => {
         expect(() => process.kill(pid,0)).toThrow();
       }, {timeout:1000});
       expect((await b.call({type:"get_state"})).status).toBe(409);
+    } finally {await b.close();}
+  });
+
+  it("kills an alive child on stdin write error before bridge teardown", async () => {
+    const b = await bridge();
+    try {
+      const pid = (await b.call({type:"get_state"})).data.pid;
+      expect(await b.call({type:"prompt",message:"stdin-close"})).toEqual({status:200,data:{closed:true}});
+      const closed = (await b.call({type:"events",after:0})).data;
+      expect(closed.events.map((e: any) => e.data.type)).toContain("stdin_closed");
+      expect(closed.dead).toBe(false);
+      expect(() => process.kill(pid,0)).not.toThrow();
+
+      expect((await b.call({type:"get_state"})).status).toBe(409);
+      const failed = (await b.call({type:"events",after:0})).data;
+      expect(failed.dead).toBe(true);
+      expect(failed.events.map((e: any) => e.data.type)).toContain("bridge_exit");
+      await vi.waitFor(() => {
+        expect(() => process.kill(pid,0)).toThrow();
+      }, {timeout:1000});
     } finally {await b.close();}
   });
 

@@ -149,7 +149,7 @@ function send(command) {
   if (dead || !child.stdin.writable || child.stdin.writableLength + size > 2 * REQUEST_LIMIT) throw new Error('Pi unavailable or busy.');
   child.stdin.write(frame);
 }
-child.stdin.on('error', fail);
+child.stdin.on('error', failTransport);
 function rpc(command) {
   if (draining) return Promise.reject(new Error('Pi is draining an oversized frame; command was not sent.'));
   if (pending.size >= 16) return Promise.reject(new Error('Pi is busy.'));
@@ -202,6 +202,7 @@ const server = createServer(async (req,res) => {
 server.requestTimeout = 30000; server.headersTimeout = 10000; server.maxConnections = 32;
 server.on('error', () => { child.kill('SIGKILL'); process.exitCode = 1; });
 server.listen(4097, '0.0.0.0', () => process.stdout.write('Pi owner bridge ready\n'));
+// Signal shutdown intentionally terminates the sandbox child, with bounded SIGKILL escalation.
 function shutdown() { fail(); server.close(); child.kill('SIGTERM'); setTimeout(() => {child.kill('SIGKILL'); process.exit(0);}, 1000).unref(); }
 for (const signal of ['SIGTERM','SIGINT','SIGHUP']) process.on(signal, shutdown);
 process.stdin.resume(); // Terminal input never becomes agent input.

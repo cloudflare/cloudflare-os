@@ -2277,7 +2277,9 @@ describe("coding session asynchronous startup", () => {
     });
     expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!).provider.openai.models["gpt-6-astra"].cost)
       .not.toHaveProperty("context_over_200k");
-    expect(process.waitForPort).toHaveBeenCalledWith(40_913, expect.objectContaining({ path: "/global/health" }));
+    expect(process.waitForPort).toHaveBeenCalledWith(40_913, {
+      mode: "http", path: "/global/health", status: { min: 200, max: 200 }, timeout: 30_000,
+    });
     expect(tools.prepareSessionStartup).toHaveBeenCalledTimes(2);
     expect(policy.storeOpenCodeTicket).toHaveBeenCalledTimes(2);
     expect(kv.get<StoredRecord>("session:session-1")?.opencodeServerProcessId).toBe("opencode-server-1");
@@ -2358,9 +2360,88 @@ describe("coding session asynchronous startup", () => {
     expect(f.terminal.getSnapshot).toHaveBeenCalledOnce();
     expect(f.sandbox.getProcess).toHaveBeenCalledOnce();
     expect(f.sandbox.exec).not.toHaveBeenCalled();
-    expect(f.process.waitForPort).not.toHaveBeenCalled();
+    expect(f.process.waitForPort).toHaveBeenCalledExactlyOnceWith(40_913, {
+      mode: "http", path: "/global/health", status: { min: 200, max: 200 }, timeout: 30_000,
+    });
     expect(f.policy.storeOpenCodeTicket).toHaveBeenCalledOnce();
   });
+
+  it("waits for warm HTTP readiness before minting a ticket and preserves reuse telemetry", async () => {
+    const logs = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const f = openCodeAttachFixture({ opencodeServerProcessId: "opencode-server-1", opencodeServerVersion: 1 });
+    const entered = deferred<void>();
+    const readiness = deferred<void>();
+    f.process.waitForPort.mockImplementationOnce(() => { entered.resolve(); return readiness.promise; });
+    const result = f.attach();
+    await entered.promise;
+    expect(f.sandbox.exec).not.toHaveBeenCalled();
+    expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
+    expect(logs.mock.calls.map(([entry]) => entry)).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ attachPhase: "ticket-mint" }),
+    ]));
+    readiness.resolve();
+    await expect(result).resolves.toHaveProperty("url");
+    expect(f.policy.storeOpenCodeTicket).toHaveBeenCalledOnce();
+    expect(logs.mock.calls.map(([entry]) => entry)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ attachPhase: "process-reuse", outcome: "success" }),
+      expect.objectContaining({ attachPhase: "process-readiness", outcome: "success" }),
+      expect.objectContaining({ attachPhase: "ticket-mint", outcome: "success" }),
+    ]));
+  });
+
+  it("stops a warm server on readiness timeout and re-inspects its exited state on retry", async () => {
+    const f = openCodeAttachFixture({ opencodeServerProcessId: "opencode-server-1", opencodeServerVersion: 1 });
+    f.process.waitForPort.mockRejectedValueOnce(new Error("warm readiness timed out"));
+    f.process.waitForExit.mockImplementationOnce(async () => {
+      f.process.status.mockResolvedValue({ state: "exited", exit: { code: 0, timedOut: false } });
+      return { code: 0, timedOut: false };
+    });
+    const replacement = processHandle("opencode-server-2", "running");
+    f.sandbox.exec.mockResolvedValueOnce(replacement);
+    await expect(f.attach()).rejects.toThrow("warm readiness timed out");
+    expect(f.process.kill).toHaveBeenCalledExactlyOnceWith(15);
+    expect(f.process.waitForExit).toHaveBeenCalledOnce();
+    expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
+    expect(f.sandbox.exec).not.toHaveBeenCalled();
+    expect(f.kv.get("session:session-1")).toEqual(f.running);
+
+    await expect(f.attach()).resolves.toHaveProperty("url");
+    expect(f.tools.prepareSessionStartup).toHaveBeenCalledTimes(2);
+    expect(f.sandbox.getProcess).toHaveBeenCalledTimes(2);
+    expect(f.process.status).toHaveBeenCalledTimes(2);
+    expect(f.sandbox.exec).toHaveBeenCalledOnce();
+    expect(replacement.waitForPort).toHaveBeenCalledExactlyOnceWith(40_913, {
+      mode: "http", path: "/global/health", status: { min: 200, max: 200 }, timeout: 30_000,
+    });
+    expect(f.policy.storeOpenCodeTicket).toHaveBeenCalledOnce();
+    expect(f.kv.get<StoredRecord>("session:session-1")?.opencodeServerProcessId).toBe(replacement.id);
+  });
+
+  it.each(["generation", "terminal"] as const)(
+    "does not mint or overwrite a replacement %s after warm readiness", async fence => {
+      const f = openCodeAttachFixture({ opencodeServerProcessId: "opencode-server-1", opencodeServerVersion: 1 });
+      const entered = deferred<void>();
+      const readiness = deferred<void>();
+      f.process.waitForPort.mockImplementationOnce(() => { entered.resolve(); return readiness.promise; });
+      const result = f.attach();
+      const failure = expect(result).rejects.toThrow("Coding session is not running.");
+      await entered.promise;
+      const replacement = {
+        ...f.running,
+        ...(fence === "generation" ? { generation: 4 } : { terminalId: "replacement" }),
+        opencodeServerProcessId: "replacement-process",
+      };
+      f.kv.put("session:session-1", replacement);
+      f.kv.put.mockClear();
+      readiness.resolve();
+      await failure;
+      expect(f.process.kill).toHaveBeenCalledExactlyOnceWith(15);
+      expect(f.sandbox.exec).not.toHaveBeenCalled();
+      expect(f.policy.storeOpenCodeTicket).not.toHaveBeenCalled();
+      expect(f.kv.put).not.toHaveBeenCalled();
+      expect(f.kv.get("session:session-1")).toEqual(replacement);
+    },
+  );
 
   it("does not let a delayed independent authorization relaunch a server another attach persisted", async () => {
     const f = openCodeAttachFixture();

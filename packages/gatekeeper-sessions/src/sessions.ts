@@ -1985,34 +1985,36 @@ export class CodingSessionRegistry extends DurableObject<Env> {
       return { existing: inspectedProcess, existingStatus: inspectedProcess ? await inspectedProcess.status() : null };
     });
     this.#currentOpenCodeGeneration(record);
+    let process: StartupProcess;
     if (persistedProcessId && existing && existingStatus?.state === "running" &&
         record.opencodeServerVersion === OPENCODE_SERVER_VERSION) {
-      return attachPhase("process-reuse", async () => persistedProcessId);
+      process = await attachPhase("process-reuse", async () => existing);
+    } else {
+      if (existing && existingStatus?.state === "running" && !(await stopProcess(existing))) {
+        await sandbox.destroy().catch(() => undefined);
+        this.markTerminalUnavailable(
+          record.id,
+          record.sandboxId,
+          record.terminalId,
+          "OpenCode server failed to stop. Restart the session to continue.",
+          storedSessionGeneration(record),
+        );
+        throw new Error("OpenCode server failed to stop. Restart the session to continue.");
+      }
+      this.#currentOpenCodeGeneration(record);
+      process = await attachPhase("process-start", async () => sandbox.exec([
+        "opencode", "serve",
+        "--hostname", "0.0.0.0",
+        "--port", String(OPENCODE_SERVER_PORT),
+        "--mdns", "false",
+      ], {
+        cwd: `/workspace/${record.repositories[0]}`,
+        env: opencodeEnvironment(this.env, customization),
+      }));
     }
-    if (existing && existingStatus?.state === "running" && !(await stopProcess(existing))) {
-      await sandbox.destroy().catch(() => undefined);
-      this.markTerminalUnavailable(
-        record.id,
-        record.sandboxId,
-        record.terminalId,
-        "OpenCode server failed to stop. Restart the session to continue.",
-        storedSessionGeneration(record),
-      );
-      throw new Error("OpenCode server failed to stop. Restart the session to continue.");
-    }
-    this.#currentOpenCodeGeneration(record);
-    const process = await attachPhase("process-start", async () => sandbox.exec([
-      "opencode", "serve",
-      "--hostname", "0.0.0.0",
-      "--port", String(OPENCODE_SERVER_PORT),
-      "--mdns", "false",
-    ], {
-      cwd: `/workspace/${record.repositories[0]}`,
-      env: opencodeEnvironment(this.env, customization),
-    }));
     try {
       await attachPhase("process-readiness", async () => process.waitForPort(OPENCODE_SERVER_PORT, {
-        mode: "http", path: "/global/health", status: { min: 200, max: 399 }, timeout: 30_000,
+        mode: "http", path: "/global/health", status: { min: 200, max: 200 }, timeout: 30_000,
       }));
     } catch (error) {
       if (!(await stopProcess(process))) {
