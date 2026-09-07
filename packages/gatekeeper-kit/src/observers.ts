@@ -4,6 +4,7 @@ import type { RpcStub } from "cloudflare:workers";
 import type {
   ApprovalQueue,
   GatekeeperUserVerifier,
+  GitCache,
   ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
@@ -48,11 +49,16 @@ export function isObservationRefused(error: unknown): boolean {
 }
 
 /**
- * Defines collaborator admission and per-observation exclusion. Baseline access is verified at
- * admission only -- losing Workshop membership is the revocation path -- and only
- * `trackedSetObservers` re-runs its ACL oracle for every observer on every set-scoped read.
+ * How thoroughly a strategy checks observer access to the provider groupings a read discloses.
+ *
+ * - `"per-read"` — an ACL oracle runs for every observer on every scoped read.
+ * - `"no-observers"` — nobody is ever admitted, so there is no observer to check.
+ * - `"unsupported"` — observers exist and nothing checks them per grouping. A scoped read is
+ *   refused, since ids that are silently discarded describe a check nothing performed.
  */
-export interface ObserverStrategy {
+export type AclChecks = "per-read" | "no-observers" | "unsupported";
+
+type ObserverStrategyBase = {
   /**
    * Attempts to admit an observer.
    * @param id Observer ID.
@@ -64,12 +70,6 @@ export interface ObserverStrategy {
    * @param id Observer ID.
    */
   removeObserver(id: string): Promise<void>;
-  /**
-   * Prepares exclusions for observed sets.
-   * @param setIds Provider set IDs disclosed by the read.
-   * @returns Prepared observer state.
-   */
-  prepare?(setIds: readonly string[]): Promise<ObservationCheck>;
   /** @returns Retained observer IDs without fencing concurrent admission. */
   observerIds?(): string[];
   /**
@@ -77,7 +77,30 @@ export interface ObserverStrategy {
    * @returns A check that fences admission until settled.
    */
   prepareWithheld(): ObservationCheck;
-}
+};
+
+/**
+ * Defines collaborator admission and per-observation exclusion. Baseline access is verified at
+ * admission only -- losing Workshop membership is the revocation path -- and only
+ * `trackedSetObservers` re-runs its ACL oracle for every observer on every scoped read.
+ *
+ * `aclChecks` is part of the contract, not a hint: only the `"per-read"` arm may carry `prepare`,
+ * so a strategy cannot claim a check it does not implement.
+ */
+export type ObserverStrategy =
+  | (ObserverStrategyBase & {
+    aclChecks: "per-read";
+    /**
+     * Prepares exclusions for the groupings a read disclosed.
+     * @param setIds Provider grouping IDs disclosed by the read.
+     * @returns Prepared observer state.
+     */
+    prepare(setIds: readonly string[]): Promise<ObservationCheck>;
+  })
+  | (ObserverStrategyBase & {
+    aclChecks: "no-observers" | "unsupported";
+    prepare?: never;
+  });
 
 // Baseline and public strategies cannot support owner-only reads.
 function cannotWithhold(): never {
@@ -93,9 +116,11 @@ function cannotWithhold(): never {
  */
 export function privateObservers(message: string): ObserverStrategy {
   return {
+    // Nobody is ever admitted, so a set scope has no observer to exclude.
+    aclChecks: "no-observers",
     addObserver: async () => { throw new Error(message); },
     removeObserver: async () => {},
-    // Vacuously owner-only: no observer is ever admitted, so there is nobody to exclude.
+    // Owner-only by construction: no observer is ever admitted, so there is nobody to exclude.
     prepareWithheld: () => NOTHING_TO_RESOLVE,
   };
 }
@@ -117,6 +142,8 @@ export function aclObservers<V>(options: {
   denyMessage?: string;
 }): ObserverStrategy {
   return {
+    // Admission is resource-level, so child set ids would be accepted and discarded.
+    aclChecks: "unsupported",
     addObserver: async (_id, user) => {
       // Only `true` admits, as in C: a malformed answer from a hand-written oracle denies rather
       // than admits, and the two strategies must not disagree on what counts as access.
@@ -137,6 +164,7 @@ export function aclObservers<V>(options: {
 export function trackedSetObservers<V>(options: ObserverTrackerOptions<V>): ObserverStrategy {
   const tracker = new ObserverTracker<V>(options);
   return {
+    aclChecks: "per-read",
     addObserver: (id, user) => tracker.addObserver(id, asVerifier<V>(user)),
     removeObserver: async id => tracker.removeObserver(id),
     prepare: setIds => tracker.prepareObservation(setIds),
@@ -153,6 +181,9 @@ export function trackedSetObservers<V>(options: ObserverTrackerOptions<V>): Obse
  */
 export function openObservers(): ObserverStrategy {
   return {
+    // Every observer sees every read, so set ids would describe a distinction that is
+    // not being made. Declare such a read `baseline`.
+    aclChecks: "unsupported",
     addObserver: async () => {},
     removeObserver: async () => {},
     prepareWithheld: cannotWithhold,
@@ -169,10 +200,15 @@ export function escapeObservationValue(value: string): string {
 }
 
 /**
- * Describes whether a read uses baseline access, set ACLs, or owner-only disclosure. The scope
- * describes the disclosure and the strategy decides the policy: declaring `sets` under a strategy
- * with no `prepare` is a deliberate no-op, and choosing an ACL strategy for a resource whose
- * children carry their own ACLs is the unsafe act.
+ * Describes what a read discloses: the admission baseline, a set of provider groupings whose ACLs
+ * govern it, or nothing shareable at all.
+ *
+ * A `sets` scope names provider-side access-controlled groupings — a space, a project, a repo —
+ * not the individual rows returned. The gate refuses one under a strategy whose `aclChecks` is
+ * `"unsupported"`, since ids nothing verifies would describe a check that never ran; pick
+ * `trackedSetObservers` for a resource whose children carry their own ACLs, and `baseline` where
+ * admission already covers the read. It also refuses a `sets` scope naming no set, so a read that
+ * returned nothing describes itself as `baseline`.
  */
 export type ObservationScope =
   | { kind: "baseline" }
@@ -227,6 +263,20 @@ export class ObservationGate implements Disposable {
   }
 
   /**
+   * Reaches the workspace git cache through the gate, so a gatekeeper whose API returns commit ids
+   * can advertise them without holding a raw queue stub of its own. Observations still go only
+   * through `authorize()`.
+   *
+   * The returned stub is **caller-owned**: dispose it when the read is done, or use `using`. The
+   * gate keeps its own queue stub either way. The promise pipelines, so a call on it need not be
+   * awaited first.
+   * @returns The gatekeeper-scoped git cache.
+   */
+  getGitCache(): Promise<GitCache> {
+    return this.#queue.getGitCache();
+  }
+
+  /**
    * Releases the duplicated approval-queue stub. Disposing during isolate shutdown trips a fatal
    * workerd assertion; shipped gatekeepers leave the release to RPC connection teardown.
    */
@@ -272,6 +322,13 @@ export class ObservationGate implements Disposable {
           throw new Error(
             'An observation scope of kind "sets" needs at least one set id; use ' +
             '{ kind: "baseline" } for a read the admission baseline covers.');
+        }
+        // Fail closed, as `prepareWithheld` already does for the mirror-image mismatch. Accepting
+        // ids this strategy cannot check would report a per-set decision nothing made.
+        if (this.#strategy.aclChecks === "unsupported") {
+          throw new Error(
+            "This binding's strategy cannot enforce set ACLs, so it must not be handed set ids. " +
+            'Track observed sets to enforce them, or declare the read { kind: "baseline" }.');
         }
         return (await this.#strategy.prepare?.(scope.ids)) ?? NOTHING_TO_RESOLVE;
     }

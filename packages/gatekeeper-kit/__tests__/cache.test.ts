@@ -7,12 +7,30 @@ function makeKv(): CacheKv {
   return fakeKv();
 }
 
+function connectedSource() {
+  const account = { identity: "id-a", generation: "gen-a", connected: true };
+  const getCredentials = vi.fn(async () => {
+    if (!account.connected) throw new Error("account not connected");
+    return {
+      creds: { token: "live" },
+      identity: account.identity,
+      generation: account.generation,
+    };
+  });
+  const source = new CredentialSource<{ token: string }>({
+    account: () => ({ getCredentials, reportCredentialsRejected: async () => "expired" as const }),
+    isAuthError: error => error instanceof Error && error.message === "401",
+    expiredMessage: "Reconnect.",
+  });
+  return { source, account, getCredentials };
+}
+
 afterEach(() => void vi.useRealTimers());
 
 describe("KvTtlCache", () => {
   it("loads once, then serves the entry until its TTL elapses", async () => {
     vi.useFakeTimers();
-    const cache = new KvTtlCache(makeKv(), () => "authority");
+    const cache = new KvTtlCache(makeKv(), () => "authority", { legacyUnnamed: true });
     const load = vi.fn(async () => ({ name: "acme" }));
 
     expect(await cache.cached("project", 1000, load)).toEqual({ name: "acme" });
@@ -25,8 +43,36 @@ describe("KvTtlCache", () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
+  it("coalesces one key across instances over the same storage", async () => {
+    // A facet that builds its cache per call has two instances over one namespace. Coalescing per
+    // instance would let both load, and the slower one overwrite the newer entry afterwards.
+    const kv = makeKv();
+    const cache = () => new KvTtlCache(kv, () => "authority", { name: "projects" });
+    const load = vi.fn(async () => "loaded");
+
+    const both = await Promise.all([
+      cache().cached("project", 60_000, load),
+      cache().cached("project", 60_000, load),
+    ]);
+
+    expect(both).toEqual(["loaded", "loaded"]);
+    expect(load).toHaveBeenCalledOnce();
+  });
+
+  it("keeps two named caches over one storage from sharing a load", async () => {
+    const kv = makeKv();
+    const projects = new KvTtlCache(kv, () => "authority", { name: "projects" });
+    const issues = new KvTtlCache(kv, () => "authority", { name: "issues" });
+
+    // Concurrent, so a load key missing the cache's own prefix would collapse them into one.
+    expect(await Promise.all([
+      projects.cached("a", 60_000, async () => "from projects"),
+      issues.cached("a", 60_000, async () => "from issues"),
+    ])).toEqual(["from projects", "from issues"]);
+  });
+
   it("reloads every entry after invalidating all", async () => {
-    const cache = new KvTtlCache(makeKv(), () => "authority");
+    const cache = new KvTtlCache(makeKv(), () => "authority", { legacyUnnamed: true });
     await cache.cached("a", 60_000, async () => 1);
     await cache.cached("b", 60_000, async () => 2);
 
@@ -39,10 +85,14 @@ describe("KvTtlCache", () => {
   });
 
   it("does not store a value invalidated during a load", async () => {
-    const cache = new KvTtlCache(makeKv(), () => "authority");
+    const cache = new KvTtlCache(makeKv(), () => "authority", { legacyUnnamed: true });
     const { promise, resolve } = Promise.withResolvers<number>();
+    const load = vi.fn(() => promise);
 
-    const loading = cache.cached("schema", 60_000, () => promise);
+    const loading = cache.cached("schema", 60_000, load);
+    // Inside the load, not before it: the authority read precedes it, so an invalidation landing
+    // earlier is one this load already reflects.
+    await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
     cache.invalidateAll();
     resolve(1);
 
@@ -56,7 +106,7 @@ describe("KvTtlCache", () => {
     // Pre-first-credential-fetch: serving or storing here could cross principals.
     const kv = makeKv();
     let authority: string | undefined = "a";
-    const cache = new KvTtlCache(kv, () => authority);
+    const cache = new KvTtlCache(kv, () => authority, { legacyUnnamed: true });
     await cache.cached("project", 60_000, async () => "from a");
 
     authority = undefined;
@@ -74,7 +124,7 @@ describe("KvTtlCache", () => {
   it("does not store a load whose authority became unknown mid-flight", async () => {
     const kv = makeKv();
     let authority: string | undefined = "a";
-    const cache = new KvTtlCache(kv, () => authority);
+    const cache = new KvTtlCache(kv, () => authority, { legacyUnnamed: true });
     const { promise, resolve } = Promise.withResolvers<string>();
 
     const loading = cache.cached("project", 60_000, () => promise);
@@ -88,8 +138,8 @@ describe("KvTtlCache", () => {
 
   it("does not serve an entry written under another authority", async () => {
     const kv = makeKv();
-    const authorityA = new KvTtlCache(kv, () => "a");
-    const authorityB = new KvTtlCache(kv, () => "b");
+    const authorityA = new KvTtlCache(kv, () => "a", { legacyUnnamed: true });
+    const authorityB = new KvTtlCache(kv, () => "b", { legacyUnnamed: true });
     await authorityA.cached("project", 60_000, async () => "from a");
     const load = vi.fn(async () => "from b");
 
@@ -114,7 +164,7 @@ describe("KvTtlCache", () => {
 
   it("keeps a named cache clear of the unnamed layout ports already have in storage", async () => {
     const kv = makeKv();
-    const ported = new KvTtlCache(kv, () => "authority");
+    const ported = new KvTtlCache(kv, () => "authority", { legacyUnnamed: true });
     // "entry" is the name that would collide without the sigil: `cache:entry:generation` is the
     // unnamed cache's own entry for the key "generation", and `cache:entry:entry:home` is its
     // entry for "entry:home".
@@ -144,7 +194,7 @@ describe("KvTtlCache", () => {
     // reconnect, which replaces the grant while this cache stays alive, does not.
     const kv = makeKv();
     let authority = "a";
-    const cache = new KvTtlCache(kv, () => authority);
+    const cache = new KvTtlCache(kv, () => authority, { legacyUnnamed: true });
     await cache.cached("project", 60_000, async () => "from a");
 
     authority = "b";
@@ -158,7 +208,7 @@ describe("KvTtlCache", () => {
   it("discards a value whose authority was replaced during the load", async () => {
     const kv = makeKv();
     let authority = "a";
-    const cache = new KvTtlCache(kv, () => authority);
+    const cache = new KvTtlCache(kv, () => authority, { legacyUnnamed: true });
     const { promise, resolve } = Promise.withResolvers<string>();
 
     const loading = cache.cached("project", 60_000, () => promise);
@@ -176,7 +226,7 @@ describe("KvTtlCache", () => {
   it("does not share an in-flight load across a reconnect", async () => {
     const kv = makeKv();
     let authority = "a";
-    const cache = new KvTtlCache(kv, () => authority);
+    const cache = new KvTtlCache(kv, () => authority, { legacyUnnamed: true });
     const { promise, resolve } = Promise.withResolvers<string>();
 
     const underA = cache.cached("project", 60_000, () => promise);
@@ -190,20 +240,20 @@ describe("KvTtlCache", () => {
   });
 
   it("coalesces concurrent loads for one key", async () => {
-    const cache = new KvTtlCache(makeKv(), () => "authority");
+    const cache = new KvTtlCache(makeKv(), () => "authority", { legacyUnnamed: true });
     const { promise, resolve } = Promise.withResolvers<number>();
     const load = vi.fn(() => promise);
 
     const first = cache.cached("project", 60_000, load);
     const second = cache.cached("project", 60_000, load);
-    expect(load).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
     resolve(1);
 
     await expect(Promise.all([first, second])).resolves.toEqual([1, 1]);
   });
 
   it("refuses a ttl that would silently disable or freeze the entry", async () => {
-    const cache = new KvTtlCache(makeKv(), () => "authority");
+    const cache = new KvTtlCache(makeKv(), () => "authority", { legacyUnnamed: true });
     const load = vi.fn(async () => 1);
 
     // `Infinity` is the dangerous one: it never expires, so a stale entry is served for good.
@@ -215,97 +265,126 @@ describe("KvTtlCache", () => {
 });
 
 describe("KvTtlCache.partitionedBy", () => {
-  it("follows the source's authority: hit, bypass while unknown, miss after a change", async () => {
-    let authority: string | undefined = "gen-a";
-    const source: AuthoritySource = { authority: () => authority };
-    const cache = KvTtlCache.partitionedBy(makeKv(), source);
+  it("repartitions on a reconnect no fetch has observed yet", async () => {
+    let generation = "gen-a";
+    const source: AuthoritySource = { cacheAuthority: async () => generation };
+    const cache = KvTtlCache.partitionedBy(makeKv(), source, { legacyUnnamed: true });
     const load = vi.fn(async () => "from a");
 
     expect(await cache.cached("project", 60_000, load)).toBe("from a");
     expect(await cache.cached("project", 60_000, load)).toBe("from a");
     expect(load).toHaveBeenCalledOnce();
 
-    authority = undefined;
-    expect(await cache.cached("project", 60_000, async () => "unpartitioned"))
-      .toBe("unpartitioned");
-
-    authority = "gen-b";
+    // A last-seen partition would have served "from a" for the rest of the entry's TTL.
+    generation = "gen-b";
     expect(await cache.cached("project", 60_000, async () => "from b")).toBe("from b");
   });
 
-  function connectedSource() {
-    const account = { identity: "id-a", generation: "gen-a" };
-    const source = new CredentialSource<{ token: string }>({
-      account: () => ({
-        getCredentials: async () =>
-          ({ creds: { token: "live" }, identity: account.identity, generation: account.generation }),
-        reportCredentialsRejected: async () => "expired" as const,
-      }),
-      isAuthError: error => error instanceof Error && error.message === "401",
-      expiredMessage: "Reconnect.",
+  it("returns a load whose fence moved during it, without caching the value", async () => {
+    let generation = "gen-a";
+    const kv = fakeKv();
+    const cache = KvTtlCache.partitionedBy(kv, { cacheAuthority: async () => generation }, { legacyUnnamed: true });
+    const { promise, resolve } = Promise.withResolvers<string>();
+
+    const loading = cache.cached("project", 60_000, () => promise);
+    generation = "gen-b";
+    resolve("from a");
+
+    expect(await loading).toBe("from a");
+    expect(kv.keys()).toEqual([]);
+  });
+
+  it("caches nothing when an invalidation lands during the post-load fence read", async () => {
+    // The generation must be read after that await. Read before it, this value would be written
+    // under a generation the invalidation had already retired.
+    const kv = fakeKv();
+    const parked = Promise.withResolvers<void>();
+    let reads = 0;
+    const cache = KvTtlCache.partitionedBy(kv, {
+      cacheAuthority: async () => {
+        if (++reads === 2) await parked.promise;
+        return "gen-a";
+      },
+    }, { legacyUnnamed: true });
+
+    const loading = cache.cached("project", 60_000, async () => "loaded");
+    await vi.waitFor(() => expect(reads).toBe(2));
+    cache.invalidateAll();
+    parked.resolve();
+
+    expect(await loading).toBe("loaded");
+    expect(kv.keys()).toEqual(["cache:generation"]);
+  });
+
+  it("partitions a real source by the connection its account fences reads under", async () => {
+    const { source, account } = connectedSource();
+    const cache = KvTtlCache.partitionedBy(makeKv(), source, { legacyUnnamed: true });
+    const load = vi.fn(async () => "from a");
+
+    expect(await cache.cached("project", 60_000, load)).toBe("from a");
+    expect(await cache.cached("project", 60_000, load)).toBe("from a");
+    expect(load).toHaveBeenCalledOnce();
+
+    // An in-place reconnect with no fetch in between: the hit reads the fence, so it misses.
+    account.identity = "id-b";
+    account.generation = "gen-b";
+    expect(await cache.cached("project", 60_000, async () => "from b")).toBe("from b");
+  });
+
+  it("shares one account credential read between concurrent hits", async () => {
+    const { source, getCredentials } = connectedSource();
+    const cache = KvTtlCache.partitionedBy(makeKv(), source, { legacyUnnamed: true });
+    await cache.cached("project", 60_000, async () => "from a");
+    getCredentials.mockClear();
+    const load = vi.fn(async () => "reloaded");
+
+    expect(await Promise.all([
+      cache.cached("project", 60_000, load),
+      cache.cached("project", 60_000, load),
+    ])).toEqual(["from a", "from a"]);
+    expect(getCredentials).toHaveBeenCalledOnce();
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("bypasses cached data while the source refuses to vouch for an expired grant", async () => {
+    const { source, account } = connectedSource();
+    const cache = KvTtlCache.partitionedBy(makeKv(), source, { legacyUnnamed: true });
+    expect(await cache.cached("project", 60_000, async () => "from a")).toBe("from a");
+
+    // The account may keep serving a dead grant until reconnect. The source already knows that
+    // identity is dead, so a cache hit must not hide the outage for the rest of the entry's TTL.
+    await expect(source.run(async () => { throw new Error("401"); }))
+      .rejects.toThrow(CredentialsExpiredError);
+    const load = vi.fn(async () => "reloaded");
+    expect(await cache.cached("project", 60_000, load)).toBe("reloaded");
+    expect(load).toHaveBeenCalledOnce();
+
+    account.identity = "id-b";
+    account.generation = "gen-b";
+    expect(await cache.cached("project", 60_000, async () => "from b")).toBe("from b");
+  });
+
+  it("propagates a disconnected account rather than serving or bypassing", async () => {
+    const { source, account } = connectedSource();
+    const cache = KvTtlCache.partitionedBy(makeKv(), source, { legacyUnnamed: true });
+    const load = vi.fn(async () => "from a");
+
+    account.connected = false;
+    await expect(cache.cached("project", 60_000, load)).rejects.toThrow("account not connected");
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("returns a load the account can no longer vouch for, uncached", async () => {
+    const { source, account } = connectedSource();
+    const kv = fakeKv();
+    const cache = KvTtlCache.partitionedBy(kv, source, { legacyUnnamed: true });
+
+    const loaded = await cache.cached("project", 60_000, async () => {
+      account.connected = false;
+      return "from a";
     });
-    return { source, account };
-  }
 
-  it("partitions by a real source's connection across expiry and reconnect", async () => {
-    const { source, account } = connectedSource();
-    const cache = KvTtlCache.partitionedBy(makeKv(), source);
-    const load = vi.fn(async () => "from a");
-
-    // A fetch establishes the partition, and reads under it hit.
-    await source.get();
-    expect(await cache.cached("project", 60_000, load)).toBe("from a");
-    expect(await cache.cached("project", 60_000, load)).toBe("from a");
-    expect(load).toHaveBeenCalledOnce();
-
-    // A reported expiry drops the partition: the cache bypasses rather than serves the dead grant.
-    await expect(source.run(async () => { throw new Error("401"); }))
-      .rejects.toThrow(CredentialsExpiredError);
-    expect(await cache.cached("project", 60_000, async () => "unpartitioned"))
-      .toBe("unpartitioned");
-
-    // The account rotates on reconnect; the next fetch moves the cache to the new partition, so
-    // the old principal's entries are misses.
-    account.identity = "id-b";
-    account.generation = "gen-b";
-    await source.get();
-    expect(await cache.cached("project", 60_000, async () => "from b")).toBe("from b");
-  });
-
-  it("keeps bypassing when a refetch returns the dead grant", async () => {
-    const { source, account } = connectedSource();
-    const cache = KvTtlCache.partitionedBy(makeKv(), source);
-
-    await source.get();
-    expect(await cache.cached("project", 60_000, async () => "from a")).toBe("from a");
-    await expect(source.run(async () => { throw new Error("401"); }))
-      .rejects.toThrow(CredentialsExpiredError);
-
-    // The account keeps the grant until reconnect, so the refetch returns the same identity;
-    // adopting its generation would let hit-only paths serve the dead partition unchecked.
-    await source.get();
-    expect(await cache.cached("project", 60_000, async () => "bypassed")).toBe("bypassed");
-
-    account.identity = "id-b";
-    account.generation = "gen-b";
-    await source.get();
-    expect(await cache.cached("project", 60_000, async () => "from b")).toBe("from b");
-  });
-
-  it("serves the last-seen partition until a fetch observes a reconnect", async () => {
-    const { source, account } = connectedSource();
-    const cache = KvTtlCache.partitionedBy(makeKv(), source);
-
-    await source.get();
-    expect(await cache.cached("project", 60_000, async () => "from a")).toBe("from a");
-
-    // A silent in-place reconnect with no fetch since: the authority is last-seen, so the old
-    // partition keeps hitting until the next credential read — the accepted TTL-bounded window.
-    account.identity = "id-b";
-    account.generation = "gen-b";
-    expect(await cache.cached("project", 60_000, async () => "unseen")).toBe("from a");
-
-    await source.get();
-    expect(await cache.cached("project", 60_000, async () => "from b")).toBe("from b");
+    expect(loaded).toBe("from a");
+    expect(kv.keys()).toEqual([]);
   });
 });

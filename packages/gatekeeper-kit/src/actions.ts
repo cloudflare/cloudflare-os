@@ -19,6 +19,7 @@ export {
   type JournalEntry,
   type JournalKeys,
   type JournalRecord,
+  type RetainedActionPage,
 } from "./action-journal";
 
 /** The queue surface staging needs; `gate.actions` and a full stub both satisfy it. */
@@ -70,18 +71,41 @@ export function stageAction<A>(
 }
 
 /**
- * Marks an apply failure as terminal and safe to show. Ordinary apply errors remain retryable; in a
- * reject handler this class has no special meaning.
+ * Marks an apply failure as terminal, safe to show, and **known** to have left no usable provider
+ * effect. Dependents whose references this action was to provide are retired with it. Ordinary
+ * apply errors remain retryable; in a reject handler this class has no special meaning.
+ *
+ * Throw `ActionOutcomeUnknownError` instead whenever the provider may have committed the effect.
  */
 export class ActionApplyError extends Error {}
+
+/**
+ * Marks an apply failure as terminal with an **unknown** provider outcome: the call may already
+ * have taken effect. The record is never replayed and never pruned, and no dependent is retired on
+ * its account -- a reference it was to provide may in fact exist at the provider. It stays until
+ * the user rejects it, so the reconciliation warning survives.
+ *
+ * This is the honest classification for a timeout, an aborted request, or any failure after the
+ * provider was reached. Use `ActionApplyError` only when the effect is known absent.
+ */
+export class ActionOutcomeUnknownError extends Error {}
 
 /** Message stored when a dispatched action's outcome is unknown. */
 export const APPLY_OUTCOME_UNKNOWN_MESSAGE = "This action was interrupted after it was dispatched, "
   + "so it may or may not have taken effect. Check the provider before submitting it again.";
 
-/** The approver-facing text for one action; its policy fields come from the declaration. */
-export type ActionPresentation =
-  Pick<ActionDescription, "title" | "description" | "implementsRevert">;
+type KitOwnedField = "awaitDecision" | "autoApprovable" | "actionKind";
+type ProviderOwnedField = "title" | "description" | "pushedCommits" | "implementsRevert";
+type Unclassified = Exclude<keyof ActionDescription, KitOwnedField | ProviderOwnedField>;
+
+/**
+ * The approver-facing description for one action; policy fields come from the declaration. A field
+ * added to `ActionDescription` must join one of the two classifications above, or this resolves to
+ * the error object and every `describe` implementation fails to compile.
+ */
+export type ActionPresentation = [Unclassified] extends [never]
+  ? Pick<ActionDescription, ProviderOwnedField>
+  : { CLASSIFY_NEW_ActionDescription_FIELD: Unclassified };
 
 /**
  * Durable action ID and apply-time context available to handlers. The ID is stable across retries
@@ -262,8 +286,13 @@ export type ActionSet<Host, M extends Record<string, unknown>> = {
 // Pending action references used to find stranded dependents.
 type ActionRefs = { id: number; provides: readonly string[]; dependsOn: readonly string[] };
 
-// Find actions transitively stranded by unresolved provisional references.
-function strandedBy(dead: readonly string[], pending: readonly ActionRefs[]): number[] {
+// Find actions transitively stranded by unresolved provisional references. `isDead` prunes the
+// walk: a reference it clears still resolves for dependents, however its provider ended.
+function strandedBy(
+  dead: readonly string[],
+  pending: readonly ActionRefs[],
+  isDead: (ref: string) => boolean = () => true,
+): number[] {
   const dependents = new Map<string, number[]>();
   const provides = new Map<number, readonly string[]>();
   for (const entry of pending) {
@@ -282,7 +311,7 @@ function strandedBy(dead: readonly string[], pending: readonly ActionRefs[]): nu
     for (const id of dependents.get(ref) ?? []) {
       if (stranded.has(id)) continue;
       stranded.add(id);
-      unresolved.push(...(provides.get(id) ?? []));
+      unresolved.push(...(provides.get(id) ?? []).filter(isDead));
     }
   }
   return [...stranded];
@@ -304,6 +333,7 @@ function strandedBy(dead: readonly string[], pending: readonly ActionRefs[]): nu
  *     describe: task => ({
  *       title: `Create task "${task.title}"`,
  *       description: `Creates the task in project ${task.projectId}.`,
+ *       implementsRevert: false,
  *     }),
  *     apply: (task, api) => api.createTask(task),
  *   },
@@ -389,10 +419,15 @@ export function defineActions<Host, M extends Record<string, unknown>>(
       // Retire dependents whose provisional references can no longer resolve.
       const strandDependents = (id: number, action: TaggedAction<M>): void => {
         try {
-          const dead = definitionFor(action)?.provides?.(action.payload) ?? [];
+          // A reference the provider already bound is not dead, however this action ended: apply
+          // consults the same oracle before dispatching a handler, and a cascade that ignored it
+          // would retire dependents whose reference demonstrably exists.
+          const unbound = (ref: string) => options.isResolvedReference?.(ref) !== true;
+          const dead = (definitionFor(action)?.provides?.(action.payload) ?? []).filter(unbound);
           if (dead.length === 0) return;
 
-          // A staged dependent can race this scan; apply rejects its unresolved reference later.
+          // The walk itself prunes through `unbound`, so a stranded action's bound references stop
+          // the cascade. A staged dependent can race this scan; apply rejects it later.
           const stranded = strandedBy(dead, journal.listUndecided().map(record => {
             const definition = definitionFor(record.action);
             return {
@@ -400,12 +435,13 @@ export function defineActions<Host, M extends Record<string, unknown>>(
               provides: definition?.provides?.(record.action.payload) ?? [],
               dependsOn: definition?.dependsOn?.(record.action.payload) ?? [],
             };
-          }));
+          }), unbound);
           // Undispatched: a stranded dependent never reached its handler, so its rejection still
-          // owes the cleanup.
+          // owes the cleanup. The reason states only what this scan established -- the reference
+          // was never bound -- rather than asserting anything about the provider call.
           for (const strandedId of stranded) {
             journal.markFailed(
-              strandedId, `This action needed action ${id}, which was not applied.`,
+              strandedId, `This action needed action ${id}, which did not complete.`,
               { undispatched: true });
           }
           if (stranded.length > 0) {
@@ -426,9 +462,9 @@ export function defineActions<Host, M extends Record<string, unknown>>(
 
       // Preserve orphaned claims because the provider outcome is unknown.
       const failOrphanedClaim = async (id: number): Promise<never> => {
-        journal.markFailed(id, APPLY_OUTCOME_UNKNOWN_MESSAGE);
+        journal.markFailed(id, APPLY_OUTCOME_UNKNOWN_MESSAGE, { outcome: "unknown" });
         await resolved("failed");
-        throw new Error(APPLY_OUTCOME_UNKNOWN_MESSAGE);
+        throw new ActionOutcomeUnknownError(APPLY_OUTCOME_UNKNOWN_MESSAGE);
       };
 
       const applyRecord = async (id: number, context?: ActionApplyContext): Promise<void> => {
@@ -516,10 +552,14 @@ export function defineActions<Host, M extends Record<string, unknown>>(
               ...(record.fence ? { fence: record.fence } : {}),
             });
           } catch (error) {
-            // Terminal handler failures stop retry; ordinary failures restore the pending claim.
+            // Three outcomes, not two. A known-empty failure is terminal and cascades; an unknown
+            // one is terminal and does not, since the reference it owed may exist at the provider;
+            // anything else is retryable and restores the pending claim.
             if (error instanceof ActionApplyError) {
               journal.markFailed(id, error.message);
               strandDependents(id, action);
+            } else if (error instanceof ActionOutcomeUnknownError) {
+              journal.markFailed(id, error.message, { outcome: "unknown" });
             } else journal.restorePending(id);
             await resolved("failed");
             throw error;
@@ -583,16 +623,19 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           // fence the connection this call staged under.
           payload = structuredClone(payload);
           const staged = fence && { generation: fence.generation };
-          const { title, description, implementsRevert } = await definition.describe(payload, host);
+          const { title, description, pushedCommits, implementsRevert } =
+            await definition.describe(payload, host);
           const action = { kind, payload } as TaggedAction<M>;
           return stageAction(journal, queue, action, {
-            // Projected, not spread: a port returning a full `ActionDescription` here would
+            // Destructured, not spread: a port returning a full `ActionDescription` here would
             // otherwise carry its own `awaitDecision` past the delivery the definition declares.
             title,
             description,
             implementsRevert,
+            // Spread, so an action with no git, no kind, or no awaited decision puts no key on the
+            // wire at all.
+            ...(pushedCommits ? { pushedCommits } : {}),
             autoApprovable: definition.autoApprovable === true,
-            // Spread, so a kindless or simulating action puts no key on the wire at all.
             ...(definition.kind ? { actionKind: definition.kind } : {}),
             ...(definition.delivery === "await-decision" ? { awaitDecision: true } : {}),
           }, staged);

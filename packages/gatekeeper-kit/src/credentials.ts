@@ -116,6 +116,21 @@ const OWNED_KEYS: readonly string[] =
 // Coalesce refreshes across coordinators sharing the same storage object.
 const refreshes = perStorage(() => new SingleFlight());
 
+/**
+ * Refreshes credentials at the provider.
+ *
+ * Must return the **complete** canonical record, not the provider's response. Providers routinely
+ * omit values that did not change — an unchanged rotating refresh token, granted scopes, provider
+ * metadata — and the coordinator replaces the stored record wholesale, so anything absent is lost
+ * and the *next* refresh fails after the first successful rotation. Merge from `current`:
+ * `{ ...current, ...response, refreshToken: response.refreshToken ?? current.refreshToken }`.
+ *
+ * Throw `CredentialsExpiredError` only when the provider proves the grant is dead.
+ * @param current The stored grant being refreshed.
+ * @returns The complete replacement record.
+ */
+export type RefreshCredentials<Creds> = (current: Creds) => Promise<Creds>;
+
 /** Provider-specific expiry and migration policy. */
 export type CredentialCoordinatorOptions<Creds> = {
   /**
@@ -137,9 +152,13 @@ export type CredentialCoordinatorOptions<Creds> = {
   upgrade?(kv: Pick<CredentialsKv, "get">): Creds | undefined;
   /**
    * Disposes of a provider mint that lost its identity fence -- a reconnect or revoke won while
-   * the refresh was in flight -- and will never be stored. Revoke it provider-side; a provider
-   * that rotates refresh tokens must treat this as required, since the discarded grant chain
-   * otherwise stays live with no stored handle. Errors are logged, never rethrown.
+   * the refresh was in flight -- and will never be stored. Revoke it provider-side, but only where
+   * revoking the discarded mint cannot invalidate the grant the surviving connection uses: RFC 7009
+   * lets a provider treat revocation of one refresh token as revocation of the whole authorization
+   * grant, so where a reconnect reuses one grant per (user, client) the disposal would kill the
+   * connection that just won. For such a provider omit `discardMint` entirely and order refresh
+   * against connect and clear in the account itself -- the kit supplies no primitive for that.
+   * Errors are logged, never rethrown.
    * @param mint Credentials the coordinator is dropping.
    */
   discardMint?(mint: Creds): void | Promise<void>;
@@ -221,7 +240,11 @@ export class CredentialCoordinator<Creds> {
   }
 
   /**
-   * Installs credentials from a connect flow.
+   * Installs credentials from a connect flow, unconditionally: it rotates the connection
+   * generation and replaces the stored record whatever is there. A consumer awaiting a provider
+   * token exchange between `claimOAuth()` and this call must fence that window itself, or a revoke
+   * or newer reconnect landing inside it is overwritten by the older completion. The kit's
+   * handshake covers the initiation and its OAuth nonces only.
    * @param credentials New credentials.
    */
   connect(credentials: Creds): void {
@@ -292,10 +315,10 @@ export class CredentialCoordinator<Creds> {
 
   /**
    * Returns usable credentials, refreshing after the expiry boundary.
-   * @param refresh Provider refresh operation.
+   * @param refresh Provider refresh, under the `RefreshCredentials` contract.
    * @returns Current or refreshed credentials.
    */
-  async fresh(refresh: (current: Creds) => Promise<Creds>): Promise<Creds> {
+  async fresh(refresh: RefreshCredentials<Creds>): Promise<Creds> {
     const current = this.#connected();
     const expiresAt = this.#options.expiresAt?.(current);
     if (expiresAt !== undefined && !Number.isFinite(expiresAt)) {
@@ -308,10 +331,10 @@ export class CredentialCoordinator<Creds> {
 
   /**
    * Refreshes credentials immediately.
-   * @param refresh Provider refresh operation.
+   * @param refresh Provider refresh, under the `RefreshCredentials` contract.
    * @returns Current or refreshed credentials.
    */
-  async rotate(refresh: (current: Creds) => Promise<Creds>): Promise<Creds> {
+  async rotate(refresh: RefreshCredentials<Creds>): Promise<Creds> {
     return this.#coalesced(this.#connected(), refresh);
   }
 
@@ -325,10 +348,10 @@ export class CredentialCoordinator<Creds> {
   /**
    * Coalesces refreshes behind the current identity fence.
    * @param current Credentials being refreshed.
-   * @param refresh Provider refresh operation.
+   * @param refresh Provider refresh, under the `RefreshCredentials` contract.
    * @returns Current, refreshed, or concurrently replaced credentials.
    */
-  #coalesced(current: Creds, refresh: (current: Creds) => Promise<Creds>): Promise<Creds> {
+  #coalesced(current: Creds, refresh: RefreshCredentials<Creds>): Promise<Creds> {
     // Keyed by the identity fence, so a caller arriving after a reconnect starts its own refresh
     // rather than riding one whose result is already fenced out.
     const fence = this.identity();
@@ -339,13 +362,13 @@ export class CredentialCoordinator<Creds> {
    * Runs one fenced provider refresh.
    * @param current Credentials being refreshed.
    * @param fence Identity captured before refresh.
-   * @param refresh Provider refresh operation.
+   * @param refresh Provider refresh, under the `RefreshCredentials` contract.
    * @returns Refreshed credentials unless a newer connection won.
    */
   async #refresh(
     current: Creds,
     fence: string,
-    refresh: (current: Creds) => Promise<Creds>,
+    refresh: RefreshCredentials<Creds>,
   ): Promise<Creds> {
     let refreshed: Creds;
     try {
@@ -398,7 +421,7 @@ export class CredentialCoordinator<Creds> {
    * hand-written `getCredentials` owns it itself. The triple carries the stored grant: a surface
    * whose public credentials differ projects `creds` before returning, so refresh material never
    * crosses the RPC boundary.
-   * @param refresh Provider refresh operation.
+   * @param refresh Provider refresh, under the `RefreshCredentials` contract.
    * @param options `notify` announces confirmed grant death to the Workshop before the rethrow.
    * @returns Current credentials with their identity and connection generation.
    * @throws `CredentialsExpiredError` on confirmed expiry, after awaiting `notify` when the dead
@@ -407,7 +430,7 @@ export class CredentialCoordinator<Creds> {
    * A disconnect landing there reads as not connected, carrying the death as its cause.
    */
   async snapshot(
-    refresh: (current: Creds) => Promise<Creds>,
+    refresh: RefreshCredentials<Creds>,
     options: { notify?: () => Promise<void> } = {},
   ): Promise<CredentialsWithIdentity<Creds>> {
     try {
@@ -442,13 +465,14 @@ export class CredentialCoordinator<Creds> {
    * deduped by `notifyCredentialsExpiredOnce`'s latch. A port that measures mint spam adds a
    * cooldown inside its `refresh` callback.
    * @param identity Credential identity the consumer saw rejected.
-   * @param options `refresh` mints past a stale credential (grant-death providers leave it unset);
+   * @param options `refresh` mints past a stale credential under the `RefreshCredentials` contract
+   * (grant-death providers leave it unset);
    * `notify` announces confirmed grant death to the Workshop.
    * @returns The verdict on the rejected identity.
    */
   async adjudicateRejection(
     identity: string,
-    options: { refresh?: (current: Creds) => Promise<Creds>; notify: () => Promise<void> },
+    options: { refresh?: RefreshCredentials<Creds>; notify: () => Promise<void> },
   ): Promise<RejectionVerdict> {
     // "" — a never-connected read — must not match a never-connected account's own "".
     if (identity === "") return "superseded";
@@ -530,9 +554,9 @@ export type CredentialsWithIdentity<Creds> = CredentialRead & { creds: Creds };
 /**
  * The identity and generation of the read a `run` operation executes under — the values to
  * capture in an action fence, since a retry runs under a different read than the first attempt
- * and a shared accessor like `authority()` can move mid-operation. A fresh object per attempt,
- * never the source's internal state. An identity of `""` is reserved for a never-connected read:
- * it always adjudicates `"superseded"`, and no read serving credentials may carry it.
+ * and a shared accessor like `lastSeenGeneration()` can move mid-operation. A fresh object per
+ * attempt, never the source's internal state. An identity of `""` is reserved for a never-connected
+ * read: it always adjudicates `"superseded"`, and no read serving credentials may carry it.
  */
 export type CredentialRead = { identity: string; generation: string };
 
@@ -654,19 +678,31 @@ export class CredentialSource<Creds> {
   }
 
   /**
-   * The cache authority for data fetched through this source (`KvTtlCache.partitionedBy`): mirrors
-   * the connection generation of the last successful fetch rather than reading the account live, so
-   * a reconnect repartitions at the next fetch and a token refresh never does. A shared last-seen
-   * value a concurrent fetch can move — action-fence capture must ride the `CredentialRead` handed
-   * to its own `run` operation (or the `generation` of its own `getCredentials()` read), never
-   * this accessor. Direct callers compose custom authorities for the raw cache constructor.
+   * Returns the live connection generation only while this source vouches for the fetched
+   * credentials. The account is read on every call, so reconnects are visible before a cache hit;
+   * a dead, pending, or fenced-out identity returns `undefined` and therefore bypasses caching.
+   * @returns The current cache authority, or `undefined` when this source cannot vouch for one.
+   */
+  async cacheAuthority(): Promise<string | undefined> {
+    const current = await this.#current();
+    return this.#generation === current.generation && this.#identity === current.identity
+      ? current.generation
+      : undefined;
+  }
+
+  /**
+   * The connection generation of the last successful fetch, for diagnostics and for composing a
+   * *non-security* partition on the raw `KvTtlCache` constructor. Never partition provider data on
+   * it: it is a last-seen value, so a reconnect leaves it naming the previous connection until the
+   * next fetch. `KvTtlCache.partitionedBy` reads `cacheAuthority()` instead. Action-fence capture
+   * must ride the `CredentialRead` handed to its own `run` operation (or the `generation` of its own
+   * `getCredentials()` read), never this accessor, which a concurrent fetch can move.
    * @returns The last-seen connection generation; `undefined` (principal unknown) until a fetch
    * succeeds, and from a reported — or account-refused — expiry until a fetch started after the
    * report adopts an identity neither adjudicated dead nor still under adjudication. A refetch
-   * that re-serves the identity a
-   * `"superseded"` verdict promised to replace drops it again.
+   * that re-serves the identity a `"superseded"` verdict promised to replace drops it again.
    */
-  authority(): string | undefined {
+  lastSeenGeneration(): string | undefined {
     return this.#generation;
   }
 
@@ -675,7 +711,7 @@ export class CredentialSource<Creds> {
    * verdict on the identity the operation used. The account heals past a rejected-but-current
    * credential inside that ask, so recovery stays invisible here except through the verdict.
    * @param operation Provider call using current credentials. Its second argument is the read the
-   * attempt runs under — capture action fences from it, not from `authority()`, which a
+   * attempt runs under — capture action fences from it, not from `lastSeenGeneration()`, which a
    * concurrent fetch can move mid-operation.
    * @param options `replayable` marks the operation safe to execute twice: a `"superseded"`
    * verdict — the rejected credential was already replaced, or the account just healed past it —

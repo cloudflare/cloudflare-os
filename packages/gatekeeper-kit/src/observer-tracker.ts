@@ -93,6 +93,11 @@ type SetClaim = { held: number; created: boolean; refusedOnly: boolean };
 
 const setClaims = perStorage(() => new Map<string, SetClaim>());
 
+// Withhold markers this activation still owns. A durable marker missing here belongs to an
+// operation whose outcome can no longer be learned -- a lost reply, or a restart that emptied this
+// set -- so it is promoted to the permanent latch rather than left to accumulate.
+const activeWithholds = perStorage(() => new Set<string>());
+
 /** How a prepared observation settled, per the overseer's answer. */
 type Outcome = "committed" | "refused" | "unknown";
 
@@ -272,6 +277,7 @@ export class ObserverTracker<V> {
    */
   async addObserver(id: string, verifier: V): Promise<void> {
     const { kv, verifyBaseline, hasSetAccess, denyMessage } = this.#options;
+    this.#compactWithholds();
     // A withheld read registers no set, so nothing here can establish this candidate was entitled
     // to it. One still in flight counts: this candidate is absent from the exclusion list it sent.
     if (kv.get<boolean>(OBSERVER_WITHHELD_KEY) || this.#withholdInFlight()) {
@@ -337,6 +343,7 @@ export class ObserverTracker<V> {
     const excludeObservers = this.observerIds();
     const markerKey = `${OBSERVER_WITHHOLD_PREFIX}${generateNonce()}`;
     kv.put(markerKey, true);
+    activeWithholds(kv).add(markerKey);
     return {
       excludeObservers,
       // Latch before the marker goes: no state where neither fences. A failed latch write leaves
@@ -344,11 +351,29 @@ export class ObserverTracker<V> {
       commit: () => {
         kv.put(OBSERVER_WITHHELD_KEY, true);
         kv.delete(markerKey);
+        activeWithholds(kv).delete(markerKey);
       },
-      // Refusal-only: the overseer proved it recorded nothing, so the fence can go. An unknown
-      // outcome leaves the marker, which keeps `addObserver` closed (no `abandon`).
-      discard: () => kv.delete(markerKey),
+      // A marked refusal proves the overseer recorded nothing, so the fence can go.
+      discard: () => {
+        kv.delete(markerKey);
+        activeWithholds(kv).delete(markerKey);
+      },
+      // Ownership only: the durable marker stays and the next admission promotes it, so an unknown
+      // outcome still fences sharing permanently.
+      abandon: () => void activeWithholds(kv).delete(markerKey),
     };
+  }
+
+  /** Promotes withhold markers this activation no longer owns into the permanent latch. */
+  #compactWithholds(): void {
+    const { kv } = this.#options;
+    const active = activeWithholds(kv);
+    for (const [key] of kv.list({ prefix: OBSERVER_WITHHOLD_PREFIX })) {
+      if (active.has(key)) continue;
+      // Latch before delete, as `commit` does: no instant where neither fences.
+      kv.put(OBSERVER_WITHHELD_KEY, true);
+      kv.delete(key);
+    }
   }
 
   /** @returns Whether any owner-only read remains unsettled. */
