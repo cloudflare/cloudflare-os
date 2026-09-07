@@ -52,9 +52,12 @@ async function storeLocal(impl: any, type: string, payload: Uint8Array): Promise
   return oid;
 }
 
-// Seeds the standard scenario: the gatekeeper has proven a base commit (empty tree), and a
-// locally-authored commit sits on top of it. Returns both oids.
+// Seeds the standard scenario: the gatekeeper record exists (submitAction refuses to queue
+// against a removed one), it has proven a base commit (empty tree), and a locally-authored
+// commit sits on top of it. Returns both oids.
 async function seedPushableHistory(impl: any): Promise<{ base: string, head: string }> {
+  impl.storage.gatekeepers.put(
+      { id: GATEKEEPER, class: { type: "vendor", vendorId: "test", accountId: 1 } });
   let treeOid = await impl.gitCache.putFromGatekeeper(GATEKEEPER, "tree", new Uint8Array(0));
   let base = await impl.gitCache.putFromGatekeeper(
       GATEKEEPER, "commit", commitPayload(treeOid, [], "base"));
