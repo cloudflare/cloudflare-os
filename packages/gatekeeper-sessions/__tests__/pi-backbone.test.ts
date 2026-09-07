@@ -7,11 +7,11 @@ import { join } from "node:path";
 import { piBridgeSource, validatePiCommand } from "../src/pi-backbone.js";
 
 // A real local subprocess with only a mocked JSONL child. No runtime, model, or production connection.
-async function bridge(options: { largeHistory?: boolean; dialogTimeout?: number; drainTimeout?: number; ignoreTerm?: boolean } = {}) {
+async function makeBridge(runtime: "pi" | "prime-agent", options: { largeHistory?: boolean; dialogTimeout?: number; drainTimeout?: number; ignoreTerm?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "pi-bridge-test-"));
   const ledger = join(dir, "spawns");
   const beforeExit = join(dir, "before-exit");
-  const mock = `const largeHistory = ${options.largeHistory === true};
+  const mock = `const largeHistory = ${options.largeHistory === true}, prime = ${runtime === "prime-agent"};
     require('node:fs').appendFileSync(${JSON.stringify(ledger)}, process.pid+'\\n');
     ${options.ignoreTerm ? "process.on('SIGTERM', () => {});" : ""}\n` + String.raw`
     const {createInterface} = require('node:readline');
@@ -60,7 +60,7 @@ async function bridge(options: { largeHistory?: boolean; dialogTimeout?: number;
         setInterval(() => {}, 1000); // EOF must clean up a live child, not await its exit.
         return;
       }
-      if(largeHistory && c.type==='get_entries') {
+      if(largeHistory && c.type===(prime ? 'get_messages' : 'get_entries')) {
         process.stdout.write(JSON.stringify({type:'response',id:c.id,command:c.type,success:true,
           data:{entries:[{text:'x'.repeat(8*1024*1024)}]}})+'\n'+JSON.stringify({type:'history_drained'})+'\n');
         return;
@@ -70,7 +70,8 @@ async function bridge(options: { largeHistory?: boolean; dialogTimeout?: number;
       if(c.type==='prompt') {
         emit({type:'extension_ui_request',id:'d1',method:'confirm',title:'Continue?'});
         emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text:c.message}]}});
-        emit({type:'agent_end'}); emit({type:'agent_settled'});
+        if(prime) emit({type:'message_update',message:{role:'assistant',content:[{type:'text',text:c.message}]}});
+        emit({type:'agent_end'}); if(!prime) emit({type:'agent_settled'});
       }
       const data = c.type==='get_entries' ? {entries:[{id:'entry',type:'message'}]} :
         c.type==='get_messages' ? {messages:[{role:'user',content:'hello'}]} :
@@ -80,9 +81,10 @@ async function bridge(options: { largeHistory?: boolean; dialogTimeout?: number;
       process.stdout.write(frame.slice(0,8)); process.stdout.write(frame.slice(8));
       process.stderr.write('not protocol\n');
     });`;
-  const source = piBridgeSource().replace(/^const argv = .*;\n/, `const argv = ${JSON.stringify([process.execPath, "-e", mock])};\n`)
+  const source = piBridgeSource(runtime).replace(/^const argv = .*;\n/, `const argv = ${JSON.stringify([process.execPath, "-e", mock])};\n`)
     .replace(/^if \(JSON.parse\(readFileSync.*\n/m, "") // The only executable here is the local mock above.
     .replace("/workspace/.odie-pi/owner-bridge.lock", join(dir, "lock"))
+    .replace("/workspace/.odie-prime-agent/owner-bridge.lock", join(dir, "lock"))
     .replace("const DIALOG_TIMEOUT = 30000;", `const DIALOG_TIMEOUT = ${options.dialogTimeout ?? 30000};`)
     .replace("const DRAIN_TIMEOUT = 5000;", `const DRAIN_TIMEOUT = ${options.drainTimeout ?? 5000};`)
     .replace("server.listen(4097", "server.listen(0")
@@ -137,7 +139,21 @@ async function bridge(options: { largeHistory?: boolean; dialogTimeout?: number;
   };
 }
 
-describe("Pi owner bridge subprocess", () => {
+describe.each(["pi", "prime-agent"] as const)("%s owner bridge subprocess", runtime => {
+  const bridge = (options?: Parameters<typeof makeBridge>[1]) => makeBridge(runtime, options);
+  it("pins the published runtime and retains generation-owned session storage without resume-on-attach", () => {
+    const source = piBridgeSource(runtime);
+    const argv = JSON.parse(source.split("\n")[0]!.slice("const argv = ".length, -1)) as string[];
+    expect(argv).toContain("--mode");
+    expect(argv).toContain("rpc");
+    expect(argv).not.toContain("--resume");
+    expect(source).toContain('const version = ' + JSON.stringify(runtime === "pi" ? "0.84.2" : "0.8.0"));
+    if (runtime === "prime-agent") {
+      expect(argv.slice(-2)).toEqual(["--session-dir","/workspace/.odie-prime-agent/owner/sessions"]);
+      expect(argv).toContain("/workspace/.odie-prime-agent/odie-runtime.ts");
+      expect(source).toContain("/opt/odie-pi/node_modules/prime-agent/package.json");
+    } else expect(argv.slice(-2)).toEqual(["--session","/workspace/.odie-pi/owner-session.jsonl"]);
+  });
   it.each([false, true])("exits naturally with open stdin and an active partial HTTP request (ignore SIGTERM: %s)", async ignoreTerm => {
     const b = await bridge({ignoreTerm});
     let partial: ClientRequest | undefined;
@@ -184,19 +200,26 @@ describe("Pi owner bridge subprocess", () => {
     try {
       expect((await b.call({type:"get_state"})).data.sessionId).toBe("mock-session");
       expect(await b.duplicate()).toBe(1); // Exclusive retained lock, before spawning the mock brain.
-      expect((await b.call({type:"get_entries"})).data.entries[0].id).toBe("entry");
+      if (runtime === "pi") expect((await b.call({type:"get_entries"})).data.entries[0].id).toBe("entry");
+      else {
+        for (const type of ["get_entries", "get_tree"]) {
+          expect(await b.call({type})).toEqual({status:409,data:{error:expect.stringContaining("unavailable")}});
+        }
+      }
       expect((await b.call({type:"get_messages"})).data.messages).toHaveLength(1);
       expect((await b.call({type:"prompt",message:"hello 世界"})).status).toBe(200);
       const events = (await b.call({type:"events",after:0})).data;
-      expect(events.events.map((e: any) => e.data.type)).toContain("agent_settled");
+      expect(events.events.some((e: any) => e.data.type === "agent_settled")).toBe(runtime === "pi");
+      if (runtime === "prime-agent") expect(events.events.find((e: any) => e.data.type === "message_update").data.message.content[0].text).toBe("hello 世界");
       expect(events.events.find((e: any) => e.data.type === "message_end").data.message.content[0].text).toBe("hello 世界");
       expect(events.dialogs).toHaveLength(1);
       expect((await b.call({type:"extension_ui_response",id:"unknown",confirmed:true})).status).toBe(409);
       expect((await b.call({type:"extension_ui_response",id:"d1",confirmed:false})).status).toBe(200);
       expect((await b.call({type:"abort"})).status).toBe(200);
+      for (const type of ["steer", "follow_up"]) expect((await b.call({type,message:"next"})).data.received).toBe("next");
       const artifact = (await b.call({type:"export_html"})).data;
       expect(Buffer.from(artifact.base64,"base64").toString()).toContain("<script>");
-      expect(artifact.filename).toBe("pi-session.html");
+      expect(artifact.filename).toBe(runtime === "pi" ? "pi-session.html" : "prime-session.html");
       await b.call({type:"prompt",message:"overflow"});
       expect((await b.call({type:"events",after:0})).data.truncated).toBe(true);
       expect((await b.call({type:"prompt",message:"die"})).status).toBe(409);
@@ -230,7 +253,7 @@ describe("Pi owner bridge subprocess", () => {
     const b = await bridge({largeHistory:true,drainTimeout:1000});
     try {
       const pid = (await b.call({type:"get_state"})).data.pid;
-      const history = await b.call({type:"get_entries"});
+      const history = await b.call({type:runtime === "pi" ? "get_entries" : "get_messages"});
       expect(history.status).toBe(409);
       expect(history.data.error).toMatch(/too large.*outcomes unknown/);
       await vi.waitFor(async () => {

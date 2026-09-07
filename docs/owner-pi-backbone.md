@@ -1,4 +1,4 @@
-# Owner Pi workbench integration
+# Owner Pi/Prime workbench integration
 
 ## Frontend API (implemented)
 
@@ -14,7 +14,7 @@ Contracts are in `packages/workshop-shared/src/pi-backbone.ts`, re-exported by
 `@gadgets/workshop-shared/api`. Kernel delegation is in `server.ts` and `user.ts`;
 the service/registry methods are `connectPi` and `callPi`.
 
-Connect returns either `{mode:"rpc", connectionId, expiresAt, version:1}` or
+Connect returns either `{mode:"rpc", runtime:"pi"|"prime", capabilities, connectionId, expiresAt, version:1}` or
 `{mode:"terminal", reason}`. A handle lasts five minutes and belongs to the current
 owner registry, sandbox, generation and primary terminal. It is **not** a proxy URL
 or standalone authority: every call goes through authenticated kernel checks.
@@ -53,6 +53,55 @@ answers clear the expiry timer. If cancellation cannot be sent, the bridge fails
 closed rather than leaving Pi silently waiting. Expired/stale replies fail closed.
 The UI must distinguish these dialogs from Workshop approvals.
 
+## Prime structured opt-in
+
+The same APIs now support new `runtime:"prime-agent", piWorkbench:true` sessions.
+Omitted/false keeps the terminal fallback; the stored opt-in remains `true` or
+absent. Create/select uses the existing coding-session APIs, not upstream
+`new_session`, `switch_session`, fork or a caller-selected path. RPC responses
+discriminate Prime as `runtime:"prime"` (not the creation spelling `prime-agent`).
+The required `capabilities` object is:
+
+| Field | Pi | Prime |
+| --- | --- | --- |
+| `messages` | `"current-context"` | `"current-context"` |
+| `history` | `"persisted-entries"` | `"unavailable"` |
+| `tree` | `true` | `false` |
+| `settlement` | `"agent_settled"` | `"unavailable"` |
+| `messageUpdates` | `"delta"` | `"cumulative"` |
+
+Prime supports `get_state`, `get_messages`, bounded `events`, `prompt`, `steer`,
+`follow_up`, `abort`, explicit `extension_ui_response`, and `export_html` with the
+same bounds and unknown-write-outcome rules. Its export filename is
+`prime-session.html`, always download-only. `get_entries` and `get_tree` fail
+explicitly before transport, and the supervisor independently rejects them.
+Neither current context nor retained events is full persisted history. Prime
+updates retain their cumulative upstream shape. `agent_end`, `isStreaming:false`
+and `sessionActions` never prove whole-tree settlement. Read failures and event
+gaps remain unavailable/incomplete, not fabricated empty histories.
+
+Prime's supervisor is `/workspace/.odie-prime-agent/owner-bridge-v1.mjs`, with an
+exclusive retained `owner-bridge.lock` in that directory. It verifies installed
+`/opt/odie-pi/node_modules/prime-agent/package.json` is exactly `0.8.0`, then uses
+the existing configured Prime command plus `--mode rpc --session-dir
+/workspace/.odie-prime-agent/owner/sessions`. Prime allocates UUID JSONL files
+there; `get_state.sessionId/sessionFile` reports the live identity. Its associated
+artifacts remain under `/workspace/.odie-prime-agent/owner/session-artifacts`.
+The host never reads/deserializes those snapshots or claims complete history.
+Attach and reconnect reuse the same live supervisor without resuming a file,
+spawning a process or creating another conversation. Expired handles refresh on
+connect; still-valid handles may be reused. Handles now also fence the runtime;
+old persisted handles without that field require a fresh connect.
+
+Published Prime CLI source routes ordinary RPC through its own daemon-backed,
+client-owned session (`main.js:117-138,841-848,1160-1205`). We use only the stdio
+interface, not a fabricated daemon API. Graceful CLI disconnect delegates session
+cleanup to upstream; force-killing the CLI is not a verified whole-daemon/tree
+shutdown. A dead bridge requires explicit lifecycle restart. Workshop stop,
+archive and destructive restart still destroy the exact generation sandbox,
+including its daemon, kernels and artifacts. Retention is within that sandbox,
+not a promise to survive destructive restart.
+
 ## Approvals and artifacts
 
 The bridge launches the existing configured Pi command with the same provider,
@@ -72,7 +121,7 @@ There is no notebook export or host deserialization of runtime snapshots.
 
 ## Lifecycle and security
 
-- New clients explicitly request `piWorkbench: true` when creating Pi sessions.
+- New clients explicitly request `piWorkbench: true` when creating Pi or Prime sessions.
   Omitted requests from older web/native clients retain the terminal interface.
   The selected interface is persisted across restarts; existing terminal sessions
   are not silently upgraded. Structured Pi generations materialize the Node bridge from the Worker and run it as
@@ -114,16 +163,20 @@ There is no notebook export or host deserialization of runtime snapshots.
   and kills the child instead of leaving a live but unusable transport. This also
   covers EOF inside an ordinary incomplete frame. Malformed bounded JSON still fails closed. Larger
   history never masquerades as current context or silently kills the agent.
-- Prime remains terminal-only in this application: its stdio protocol exists,
-  but its full-history storage and whole-tree settlement need a separate owner
-  adapter. No claim is made that upstream Prime lacks RPC.
+- Prime shares the bounded supervisor transport but explicitly lacks full-history,
+  tree and settlement capabilities; see the Prime semantics above. Legacy Prime
+  terminals are never silently upgraded.
 
 ## Verification and remaining release work
 
-`pi-backbone.test.ts` runs a real local Node supervisor with a mocked JSONL child,
+`pi-backbone.test.ts` runs both runtime variants of a real local Node supervisor with a mocked JSONL child,
 never Pi/model/production traffic. `pi-backbone-lifecycle.test.ts` drives the real
 policy startup checkpoint and registry methods with mocked sandbox capabilities.
 The published-protocol verification remains in `session-backbones-contract.md`.
+Both runtime lifecycle suites cover replay without duplicate launch, terminal
+fallback, stop/generation/runtime fencing, expired-handle refresh, policy failure,
+bounded response handling and unknown outcomes. Prime additionally rejects full
+history/tree reads. These are protocol fixtures, not a running Prime daemon/model.
 Frontend integration is implemented in `PiWorkbench.tsx`, with focused component
 and route tests using mocked owner APIs. Control polling commits events, dialogs
 and state independently of bounded full-history/tree reads; a large-read failure

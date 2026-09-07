@@ -6,7 +6,8 @@ The browser proxy in `packages/gatekeeper-sessions/src/sessions.ts` remains
 OpenCode-specific. Pi and Prime must not be attached to that server or exposed by
 expanding its route allowlist. New Pi sessions have a separate owner-authorized
 bridge and structured workbench; see [owner-pi-backbone.md](owner-pi-backbone.md).
-Legacy Pi sessions and Prime retain the explicit terminal fallback.
+New Prime sessions can explicitly opt into the same owner bridge using
+`piWorkbench:true`; legacy Pi/Prime sessions retain the explicit terminal fallback.
 
 `src/runtime.ts:harnessRpcCommand()` generates verified stdio
 launches. `pi-image/harness-rpc.mjs:createHarnessRpc()` consumes injected Node
@@ -83,9 +84,10 @@ The adapter must not infer daemon or ACP commands from stdio command names.
   notification. A command timeout does not prove an accepted action did not run.
 - Expose distinct current-context/full-history/status/dialog/artifact operations;
   advertise unsupported operations instead of fabricating OpenCode responses.
-- Pi's owner transport is implemented for newly opted-in sessions. Prime remains
-  terminal-only in the application. Prime is not terminal-only upstream; this is
-  an application integration limit, not lack of a verified protocol.
+- Pi and Prime owner transports are implemented for newly opted-in sessions via
+  the existing `connectCodingSessionPi`/`callCodingSessionPi` APIs. Returned runtime
+  and capabilities distinguish current context, full history, tree and settlement.
+  Prime full persisted history/tree/whole-tree settlement remain unavailable.
 - Preserve explicit saved model selections. Generated OpenCode `model` and
   `small_model`, and Pi/Prime CLI defaults, already use Astra. Local user config
   and saved settings are outside this lane. Subagents should inherit rather than
@@ -108,7 +110,37 @@ Release evidence: Pi `docs/rpc.md`, `dist/modes/rpc/rpc-mode.js`,
 `dist/bundle/chunk-ELSMXMAM.js`. Static protocol verification is not an end-to-end
 model, MCP, kernel, or deployed sandbox test.
 
+Prime owner implementation re-inspected that same archive and extracted source
+on 2026-09-07, including its package manifest and matching SHA-256 above. Specific
+evidence: `dist/modes/rpc/rpc-mode.js:160-270` and the shipped CLI's bundled
+`dist/bundle/chunk-ELSMXMAM.js:65560-65670` implement common input/state/context,
+abort and HTML export, not `get_entries`/`get_tree`. The internal tree call used
+by `clone` is not an exposed read protocol and is not repurposed. Dialog cancellation
+is verified in `dist/modes/rpc/rpc-extension-ui-context.js:6-47,79-83,98-112`.
+`dist/cli/args.js:102-104`, `dist/main.js:283-318`, and
+`dist/core/session-manager.js:53-73` establish fresh UUID JSONL creation with
+`--session-dir` and sibling `session-artifacts/<id>` retention. Consequently the
+owner uses a generation-local directory, not `--resume` against a fabricated new
+file or host snapshot deserialization.
+
+The published CLI normally uses its own daemon even in RPC mode
+(`dist/main.js:117-138,841-848,1160-1205`); RPC sessions are client-owned. No daemon
+protocol endpoint is exposed by Workshop. Bridge death fails closed without a
+replacement launch. Only exact sandbox destruction is the Workshop guarantee for
+cleanup of all daemon/kernel descendants, not a CLI exit or stdio abort result.
+
 ## Validation evidence
+
+Prime structured owner implementation verification (2026-09-07):
+
+- `pnpm --filter @gadgets/gatekeeper-sessions test`: 37 files, 596 tests passed.
+- `pnpm --filter @gadgets/gatekeeper-sessions exec vitest run __tests__/pi-backbone.test.ts __tests__/pi-backbone-lifecycle.test.ts __tests__/sessions-startup.test.ts`: 3 files, 242 tests passed.
+- `pnpm --filter @gadgets/gatekeeper-sessions types:check`: passed package and canary configurations.
+- `pnpm --filter @gadgets/workshop-shared build`: passed.
+- Targeted `pnpm exec vp lint` on the changed package/shared TypeScript files:
+  passed with four pre-existing empty-class mock warnings. `git diff --check` passed.
+
+Prior protocol-helper verification:
 
 - `pnpm --filter @gadgets/gatekeeper-sessions test`: 36 files, 483 tests passed
   after the dialog timeout fix, including concurrently authored owner tests.

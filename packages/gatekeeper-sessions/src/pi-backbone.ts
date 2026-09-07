@@ -4,6 +4,8 @@ import { harnessRpcCommand } from "./runtime.js";
 export const PI_BRIDGE_PORT = 4097;
 export const PI_BRIDGE_PATH = "/workspace/.odie-pi/owner-bridge-v1.mjs";
 export const PI_BRIDGE_COMMAND: [string, ...string[]] = ["node", PI_BRIDGE_PATH];
+export const PRIME_BRIDGE_PATH = "/workspace/.odie-prime-agent/owner-bridge-v1.mjs";
+export const PRIME_BRIDGE_COMMAND: [string, ...string[]] = ["node", PRIME_BRIDGE_PATH];
 
 /** Reject unknown fields as well as unknown commands before crossing the sandbox boundary. */
 export function validatePiCommand(command: CodingSessionPiCommand): CodingSessionPiCommand {
@@ -34,10 +36,16 @@ export function validatePiCommand(command: CodingSessionPiCommand): CodingSessio
 }
 
 /** The bridge is materialized by the Worker; its child uses pipes, never a PTY. */
-export function piBridgeSource(): string {
-  const argv = harnessRpcCommand("pi");
-  argv.push("--session", "/workspace/.odie-pi/owner-session.jsonl");
-  return `const argv = ${JSON.stringify(argv)};\n` + String.raw`
+export function piBridgeSource(runtime: "pi" | "prime-agent" = "pi"): string {
+  const argv = harnessRpcCommand(runtime);
+  // Prime allocates its own UUID JSONL; its artifacts are siblings of this directory.
+  argv.push(...(runtime === "pi" ? ["--session", "/workspace/.odie-pi/owner-session.jsonl"]
+    : ["--session-dir", "/workspace/.odie-prime-agent/owner/sessions"]));
+  const prime = runtime === "prime-agent";
+  const packageName = prime ? "prime-agent" : "@earendil-works/pi-coding-agent";
+  const version = prime ? "0.8.0" : "0.84.2";
+  return `const argv = ${JSON.stringify(argv)};\nconst prime = ${prime};\n` +
+    `const packagePath = ${JSON.stringify(`/opt/odie-pi/node_modules/${packageName}/package.json`)};\nconst version = ${JSON.stringify(version)};\n` + String.raw`
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtemp, open, realpath, rm } from 'node:fs/promises';
@@ -47,10 +55,10 @@ const LIMIT = 2 * 1024 * 1024;
 const REQUEST_LIMIT = 6 * 32768 + 4096;
 const DIALOG_TIMEOUT = 30000;
 const DRAIN_TIMEOUT = 5000;
-if (JSON.parse(readFileSync('/opt/odie-pi/node_modules/@earendil-works/pi-coding-agent/package.json', 'utf8')).version !== '0.84.2') throw new Error('Unsupported Pi version; expected 0.84.2.');
+if (JSON.parse(readFileSync(packagePath, 'utf8')).version !== version) throw new Error('Unsupported owner runtime version; expected ' + version);
 // A crashed bridge must not silently spawn another brain against the same history.
 // The lock is intentionally retained until explicit sandbox destruction/restart.
-closeSync(openSync('/workspace/.odie-pi/owner-bridge.lock', 'wx', 0o600));
+closeSync(openSync(prime ? '/workspace/.odie-prime-agent/owner-bridge.lock' : '/workspace/.odie-pi/owner-bridge.lock', 'wx', 0o600));
 const child = spawn(argv[0], argv.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] });
 let pending = new Map(), dialogs = new Map(), dialogTimers = new Map(), events = [], bytes = 0, seq = 0, dead = false;
 const buffer = Buffer.alloc(LIMIT);
@@ -181,11 +189,12 @@ async function execute(command) {
         if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error('Artifact too large.');
         const data = Buffer.alloc(1024 * 1024 + 1); const {bytesRead} = await file.read(data, 0, data.length, 0);
         if (bytesRead > 1024 * 1024) throw new Error('Artifact too large.');
-        return {filename:'pi-session.html', mediaType:'text/html', base64:data.subarray(0,bytesRead).toString('base64')};
+        return {filename:prime ? 'prime-session.html' : 'pi-session.html', mediaType:'text/html', base64:data.subarray(0,bytesRead).toString('base64')};
       } finally { await file.close(); }
     } finally { await rm(dir, {recursive:true,force:true}); }
   }
-  if (!['get_state','get_messages','get_entries','get_tree','prompt','steer','follow_up','abort'].includes(command.type)) throw new Error('Unsupported operation.');
+   if (prime && ['get_entries','get_tree'].includes(command.type)) throw new Error('Prime persisted history and tree are unavailable through stdio RPC.');
+   if (!['get_state','get_messages','get_entries','get_tree','prompt','steer','follow_up','abort'].includes(command.type)) throw new Error('Unsupported operation.');
   return rpc(command);
 }
 const server = createServer(async (req,res) => {

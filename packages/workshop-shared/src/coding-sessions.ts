@@ -307,9 +307,9 @@ export interface CodingSessionsService extends WorkerEntrypoint {
   /** Mints a generation-bound same-origin OpenCode server capability after verifying ownership. */
   mintOpenCodeCapability(owner: CodingSessionOwner, sessionId: string): Promise<CodingSessionOpenCodeCapability>;
 
-  /** Attaches the trusted authenticated owner to an already-running Pi bridge. */
+  /** Attaches the trusted authenticated owner to an already-running Pi/Prime bridge. */
   connectPi(owner: CodingSessionOwner, sessionId: string): Promise<import("./pi-backbone.js").CodingSessionPiConnection>;
-  /** Dispatches a bounded Pi command using an expiring generation-bound connection. */
+  /** Dispatches a bounded Pi/Prime command using an expiring generation-bound connection. */
   callPi(owner: CodingSessionOwner, sessionId: string, connectionId: string, command: import("./pi-backbone.js").CodingSessionPiCommand): Promise<import("./pi-backbone.js").CodingSessionPiResult>;
 
   /** Mints a generation-bound capability for one reviewed application after verifying ownership. */

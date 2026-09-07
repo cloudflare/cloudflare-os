@@ -66,7 +66,7 @@ import {
   type DevelopmentSupervisorState,
 } from "./development-supervisor.js";
 import { validateRepositories } from "./policy.js";
-import { PI_BRIDGE_COMMAND, PI_BRIDGE_PATH, PI_BRIDGE_PORT, piBridgeSource, validatePiCommand } from "./pi-backbone.js";
+import { PI_BRIDGE_COMMAND, PI_BRIDGE_PATH, PI_BRIDGE_PORT, PRIME_BRIDGE_COMMAND, PRIME_BRIDGE_PATH, piBridgeSource, validatePiCommand } from "./pi-backbone.js";
 import type { CodingSessionPiCommand, CodingSessionPiConnection, CodingSessionPiResult } from "@gadgets/workshop-shared/api";
 import {
   CodingSessionApplicationPreview,
@@ -231,6 +231,7 @@ type EditorTicket = {
 type OpenCodeTicket = EditorTicket;
 
 type PiConnectionRecord = {
+  runtime: "pi" | "prime-agent";
   connectionId: string;
   sandboxId: string;
   terminalId: string;
@@ -972,6 +973,10 @@ export class CodingSessionPolicy extends DurableObject<Env> {
 
     const customization = await this.env.WORKSHOP_TOOLS.prepareSessionStartup(
       policy.owner, policy.sessionId, policy.repositories);
+    if (runtime === "opencode") {
+      await this.#registry().prestartOpenCodeServer(
+        policy.sessionId, policy.generation ?? 0, sandboxId, customization);
+    }
     const terminal = await this.#runningOrCreatedPrimaryTerminal(sandboxId, runtime, policy.repositories, customization);
     const applied = await this.#registry().startupSucceeded(policy.sessionId, policy.generation ?? 0, sandboxId, terminal.id);
     if (!applied) {
@@ -1071,17 +1076,19 @@ export class CodingSessionPolicy extends DurableObject<Env> {
   ): Promise<Terminal> {
     const sandbox = sandboxFor(this.env, storedPolicyTier(this.#policy()), sandboxId) as unknown as StartupSandbox;
     const options = primaryTerminalOptions(runtime, repositories[0]!, this.env, customization, this.#policy().piWorkbench === true);
-    if (runtime === "pi") {
+    if (runtime === "pi" || runtime === "prime-agent") {
+      const bridgeCommand = runtime === "pi" ? PI_BRIDGE_COMMAND : PRIME_BRIDGE_COMMAND;
+      const executable = runtime === "pi" ? "/usr/local/bin/pi" : "/usr/local/bin/prime-agent";
       // Never replace a pre-existing TUI or resurrect an exited brain on startup retry.
       for (const terminal of await sandbox.listTerminals()) {
         const snapshot = await terminal.getSnapshot();
         if (snapshot.cwd !== options.cwd) continue;
-        if (arraysEqual(snapshot.command, PI_BRIDGE_COMMAND) || snapshot.command[0] === "/usr/local/bin/pi") {
-          if (snapshot.status !== "running") throw new Error("Pi process exited. Explicit session restart required.");
+        if (arraysEqual(snapshot.command, bridgeCommand) || snapshot.command[0] === executable) {
+          if (snapshot.status !== "running") throw new Error("Pi/Prime process exited. Explicit session restart required.");
           return terminal;
         }
       }
-      if (this.#policy().piWorkbench) await sandbox.writeFile(PI_BRIDGE_PATH, piBridgeSource());
+      if (this.#policy().piWorkbench) await sandbox.writeFile(runtime === "pi" ? PI_BRIDGE_PATH : PRIME_BRIDGE_PATH, piBridgeSource(runtime));
     }
     const existing = await matchingRunningTerminals(sandbox, options.command, options.cwd);
     if (existing.length > 0) {
@@ -1351,8 +1358,8 @@ export class CodingSessionRegistry extends DurableObject<Env> {
       throw new Error(`Session title must be between 1 and ${MAX_TITLE_LENGTH} characters.`);
     }
     const runtime = codingSessionRuntime(request.runtime);
-    if (request.piWorkbench !== undefined && (request.piWorkbench !== true || runtime !== "pi")) {
-      throw new Error("The structured Pi interface requires the Pi runtime.");
+    if (request.piWorkbench !== undefined && (typeof request.piWorkbench !== "boolean" || request.piWorkbench && runtime === "opencode")) {
+      throw new Error("The structured workbench requires the Pi or Prime runtime.");
     }
     assertRuntimeConfigured(this.env, runtime);
 
@@ -1922,23 +1929,7 @@ export class CodingSessionRegistry extends DurableObject<Env> {
       repositories: record.repositories,
     }));
 
-    const prepared = this.#currentOpenCodeGeneration(record);
-    const generationKey = sessionGenerationKey(record);
-    let creation = this.#opencodeServerProcessCreations.get(generationKey);
-    if (!creation) {
-      // Another attach may have finished while this request authorized/configured policy.
-      // Inspect its persisted process, not the pre-authorization snapshot.
-      creation = this.#runningOrCreatedOpenCodeServer(prepared, customization);
-      this.#opencodeServerProcessCreations.set(generationKey, creation);
-    }
-    let processId: string;
-    try {
-      processId = await attachPhase("process", () => creation!);
-    } finally {
-      if (this.#opencodeServerProcessCreations.get(generationKey) === creation) {
-        this.#opencodeServerProcessCreations.delete(generationKey);
-      }
-    }
+    const processId = await this.#ensureOpenCodeServer(record, customization);
 
     const current = this.#get(sessionId);
     if (!current || current.status !== "running" || current.sandboxId !== record.sandboxId ||
@@ -1974,11 +1965,55 @@ export class CodingSessionRegistry extends DurableObject<Env> {
     return { url: `${baseUrl}/opencode/${token}/`, expiresAt };
   }
 
+  /** Prestarts only the policy's freshly authorized OpenCode startup generation; grants no capability. */
+  async prestartOpenCodeServer(
+    sessionId: string, generation: number, sandboxId: string, customization: OpenCodeUserCustomization,
+  ): Promise<void> {
+    const record = this.#get(sessionId);
+    if (!record || record.archivedAt || storedSessionRuntime(record) !== "opencode" ||
+        !["starting", "running"].includes(record.status) || record.sandboxId !== sandboxId ||
+        storedSessionGeneration(record) !== generation) throw new Error("Coding session is not running.");
+    await this.#ensureOpenCodeServer(record, customization);
+  }
+
+  async #ensureOpenCodeServer(record: SessionRecord, customization: OpenCodeUserCustomization): Promise<string> {
+    const prepared = this.#currentOpenCodeGeneration(record);
+    const generationKey = sessionGenerationKey(record);
+    let creation = this.#opencodeServerProcessCreations.get(generationKey);
+    if (!creation) {
+      creation = this.#runningOrCreatedOpenCodeServer(prepared, customization);
+      this.#opencodeServerProcessCreations.set(generationKey, creation);
+    }
+    try {
+      return await attachPhase("process", () => creation!);
+    } finally {
+      if (this.#opencodeServerProcessCreations.get(generationKey) === creation) {
+        this.#opencodeServerProcessCreations.delete(generationKey);
+      }
+    }
+  }
+
   async #runningOrCreatedOpenCodeServer(
     record: SessionRecord,
     customization: OpenCodeUserCustomization,
   ): Promise<string> {
     const sandbox = sandboxFor(this.env, storedSessionTier(record), record.sandboxId);
+    const command = ["opencode", "serve", "--hostname", "0.0.0.0",
+      "--port", String(OPENCODE_SERVER_PORT), "--mdns", "false"] as const;
+    const cwd = `/workspace/${record.repositories[0]}`;
+    const pendingKey = `opencode-launch:${sessionGenerationKey(record)}`;
+    // Exec has no idempotency key. Persist intent before launch and reconcile it on replay.
+    // A missing/ambiguous match must never cause another potentially duplicate exec.
+    const recoverLaunch = async () => {
+      const matches = (await sandbox.listProcesses()).filter(candidate =>
+        candidate.state === "running" && candidate.cwd === cwd &&
+        candidate.command.length === command.length && candidate.command.every((arg, index) => arg === command[index]));
+      this.#currentOpenCodeGeneration(record);
+      if (matches.length !== 1) throw new Error("OpenCode launch is unresolved. Restart the session to continue.");
+      const recovered = await sandbox.getProcess(matches[0]!.id);
+      if (!recovered) throw new Error("OpenCode launch is unresolved. Restart the session to continue.");
+      return recovered;
+    };
     const persistedProcessId = record.opencodeServerProcessId;
     const { existing, existingStatus } = await attachPhase("process-inspect", async () => {
       const inspectedProcess = persistedProcessId ? await sandbox.getProcess(persistedProcessId) : null;
@@ -1986,7 +2021,9 @@ export class CodingSessionRegistry extends DurableObject<Env> {
     });
     this.#currentOpenCodeGeneration(record);
     let process: StartupProcess;
-    if (persistedProcessId && existing && existingStatus?.state === "running" &&
+    if (this.ctx.storage.kv.get<boolean>(pendingKey)) {
+      process = await recoverLaunch();
+    } else if (persistedProcessId && existing && existingStatus?.state === "running" &&
         record.opencodeServerVersion === OPENCODE_SERVER_VERSION) {
       process = await attachPhase("process-reuse", async () => existing);
     } else {
@@ -2002,20 +2039,23 @@ export class CodingSessionRegistry extends DurableObject<Env> {
         throw new Error("OpenCode server failed to stop. Restart the session to continue.");
       }
       this.#currentOpenCodeGeneration(record);
-      process = await attachPhase("process-start", async () => sandbox.exec([
-        "opencode", "serve",
-        "--hostname", "0.0.0.0",
-        "--port", String(OPENCODE_SERVER_PORT),
-        "--mdns", "false",
-      ], {
-        cwd: `/workspace/${record.repositories[0]}`,
-        env: opencodeEnvironment(this.env, customization),
-      }));
+      this.ctx.storage.kv.put(pendingKey, true);
+      process = await attachPhase("process-start", async () => {
+        try {
+          return await sandbox.exec(command, { cwd, env: opencodeEnvironment(this.env, customization) });
+        } catch {
+          return recoverLaunch();
+        }
+      });
     }
     try {
+      const current = this.#currentOpenCodeGeneration(record);
+      this.#put({ ...current, opencodeServerProcessId: process.id, opencodeServerVersion: OPENCODE_SERVER_VERSION });
+      this.ctx.storage.kv.delete(pendingKey);
       await attachPhase("process-readiness", async () => process.waitForPort(OPENCODE_SERVER_PORT, {
         mode: "http", path: "/global/health", status: { min: 200, max: 200 }, timeout: 30_000,
       }));
+      this.#currentOpenCodeGeneration(record);
     } catch (error) {
       if (!(await stopProcess(process))) {
         await sandbox.destroy().catch(() => undefined);
@@ -2029,36 +2069,29 @@ export class CodingSessionRegistry extends DurableObject<Env> {
       }
       throw error;
     }
-    const current = this.#get(record.id);
-    if (!current || current.status !== "running" || current.sandboxId !== record.sandboxId ||
-        storedSessionGeneration(current) !== storedSessionGeneration(record) || current.terminalId !== record.terminalId) {
-      await stopProcess(process);
-      throw new Error("Coding session is not running.");
-    }
-    this.#put({ ...current, opencodeServerProcessId: process.id, opencodeServerVersion: OPENCODE_SERVER_VERSION });
     return process.id;
   }
 
   #currentOpenCodeGeneration(record: SessionRecord): SessionRecord {
     const current = this.#get(record.id);
-    if (!current || current.status !== "running" || current.sandboxId !== record.sandboxId ||
+    if (!current || current.archivedAt || !["starting", "running"].includes(record.status) ||
+        current.status !== record.status || current.sandboxId !== record.sandboxId ||
         storedSessionGeneration(current) !== storedSessionGeneration(record) || current.terminalId !== record.terminalId) {
       throw new Error("Coding session is not running.");
     }
     return current;
   }
 
-  /** Attaches only to the existing owner-side Pi bridge, never creating a process. */
+  /** Attaches only to the existing owner-side Pi/Prime bridge, never creating a process. */
   async connectPi(owner: CodingSessionOwner, sessionId: string): Promise<CodingSessionPiConnection> {
     const record = this.#get(sessionId);
     if (!record || record.archivedAt || record.status !== "running") throw new Error("Coding session is not running.");
-    if (storedSessionRuntime(record) !== "pi") return { mode: "terminal", reason: storedSessionRuntime(record) === "prime-agent"
-      ? "Prime's stdio protocol is not connected to the Workshop owner transport; full history and settlement need a separate adapter."
-      : "Use the OpenCode workbench for this session." };
+    const runtime = storedSessionRuntime(record);
+    if (runtime === "opencode") return { mode: "terminal", reason: "Use the OpenCode workbench for this session." };
     const terminal = await this.#runningPrimaryTerminal(record);
     if (!terminal) throw new Error("Coding session environment expired. Restart explicitly.");
-    if (!arraysEqual((await terminal.getSnapshot()).command, PI_BRIDGE_COMMAND)) {
-      return { mode: "terminal", reason: "This session uses Pi's terminal interface. Create a new Pi session in an updated client to use the structured workbench." };
+    if (!arraysEqual((await terminal.getSnapshot()).command, runtime === "pi" ? PI_BRIDGE_COMMAND : PRIME_BRIDGE_COMMAND)) {
+      return { mode: "terminal", reason: `This session uses ${runtime === "pi" ? "Pi" : "Prime"}'s terminal interface. Create a new session with the structured workbench opt-in.` };
     }
     await policyForSandbox(this.env, storedSessionTier(record), record.sandboxId).configure({
       sessionId, sandboxId: record.sandboxId, generation: storedSessionGeneration(record),
@@ -2068,15 +2101,20 @@ export class CodingSessionRegistry extends DurableObject<Env> {
     const key = `pi-connection:${sessionId}`;
     const existing = this.ctx.storage.kv.get<PiConnectionRecord>(key);
     const connection = existing && existing.sandboxId === record.sandboxId && existing.terminalId === record.terminalId &&
-      existing.generation === storedSessionGeneration(record) && existing.expiresAt > Date.now() && existing.version === 1 ? existing : {
+      existing.runtime === runtime && existing.generation === storedSessionGeneration(record) && existing.expiresAt > Date.now() && existing.version === 1 ? existing : {
+        runtime,
         connectionId: crypto.randomUUID(), sandboxId: record.sandboxId, terminalId: record.terminalId!,
         generation: storedSessionGeneration(record), expiresAt: Date.now() + 5 * 60_000, version: 1 as const,
       };
     this.ctx.storage.kv.put(key, connection);
-    return { mode: "rpc", connectionId: connection.connectionId, expiresAt: new Date(connection.expiresAt), version: 1 };
+    return { mode: "rpc", runtime: runtime === "pi" ? "pi" : "prime",
+      capabilities: { messages: "current-context", history: runtime === "pi" ? "persisted-entries" : "unavailable",
+        tree: runtime === "pi", settlement: runtime === "pi" ? "agent_settled" : "unavailable",
+        messageUpdates: runtime === "pi" ? "delta" : "cumulative" },
+      connectionId: connection.connectionId, expiresAt: new Date(connection.expiresAt), version: 1 };
   }
 
-  /** Revalidates an exact expiring Pi generation before and after each bounded transport request. */
+  /** Revalidates an exact expiring Pi/Prime generation before and after each bounded transport request. */
   async callPi(owner: CodingSessionOwner, sessionId: string, connectionId: string, command: CodingSessionPiCommand): Promise<CodingSessionPiResult> {
     validatePiCommand(command);
     const record = this.#get(sessionId);
@@ -2086,10 +2124,13 @@ export class CodingSessionRegistry extends DurableObject<Env> {
       if (!connection || connection.version !== 1 || connection.connectionId !== connectionId ||
           connection.expiresAt <= Date.now() || connection.sandboxId !== record.sandboxId ||
           connection.terminalId !== record.terminalId || connection.generation !== storedSessionGeneration(record) ||
-          storedSessionRuntime(record) !== "pi") throw new Error("Pi connection expired. Reconnect without retrying pending writes.");
+          connection.runtime !== storedSessionRuntime(record)) throw new Error("Pi/Prime connection expired. Reconnect without retrying pending writes.");
       this.#currentPiGeneration(record);
     };
     assertCurrent();
+    if (storedSessionRuntime(record) === "prime-agent" && (command.type === "get_entries" || command.type === "get_tree")) {
+      throw new Error("Prime persisted history and tree are unavailable through stdio RPC.");
+    }
     // The kernel reauthorizes membership, every repository and the required-connection gate per call.
     await policyForSandbox(this.env, storedSessionTier(record), record.sandboxId).configure({
       sessionId, sandboxId: record.sandboxId, generation: storedSessionGeneration(record),
@@ -2152,7 +2193,8 @@ export class CodingSessionRegistry extends DurableObject<Env> {
 
   #currentPiGeneration(record: SessionRecord): SessionRecord {
     const current = this.#get(record.id);
-    if (!current || current.archivedAt || current.status !== "running" || storedSessionRuntime(current) !== "pi" ||
+    if (!current || current.archivedAt || current.status !== "running" || storedSessionRuntime(current) === "opencode" ||
+        storedSessionRuntime(current) !== storedSessionRuntime(record) ||
         current.sandboxId !== record.sandboxId || current.terminalId !== record.terminalId ||
         storedSessionGeneration(current) !== storedSessionGeneration(record)) throw new Error("Pi generation is no longer running.");
     return current;
@@ -3404,7 +3446,7 @@ function primaryTerminalOptions(
     ? openCodeCommand(repository)
     : runtime === "pi"
       ? (piWorkbench ? PI_BRIDGE_COMMAND : piCommand())
-      : primeAgentCommand();
+      : (piWorkbench ? PRIME_BRIDGE_COMMAND : primeAgentCommand());
   const runtimeEnv = runtime === "opencode"
     ? opencodeEnvironment(env, customization)
     : runtime === "pi"

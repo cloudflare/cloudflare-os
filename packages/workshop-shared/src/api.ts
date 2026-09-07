@@ -632,8 +632,8 @@ export interface CreateCodingSessionRequest {
   repositories: CodingSessionRepository[];
   /** Coding agent runtime. Omitted requests retain the historical OpenCode behavior. */
   runtime?: CodingSessionRuntime;
-  /** Opt into the structured Pi interface for this session. Omission preserves terminal support for older clients; only valid with runtime "pi". */
-  piWorkbench?: true;
+  /** Opt into the structured Pi/Prime interface. Omitted/false preserves terminals; true is valid with runtime "pi" or "prime-agent". */
+  piWorkbench?: boolean;
   /** Server-owned development-stack selection. Omission retains terminal-only standard-1 behavior. */
   developmentStack?: CodingSessionStackSelection;
 }
@@ -702,7 +702,7 @@ export interface CodingSessionEditorCapability {
 }
 
 /** Owner-side Pi workbench command, connection, and bounded result contracts. */
-export type { CodingSessionPiCommand, CodingSessionPiConnection, CodingSessionPiResult } from "./pi-backbone.js";
+export type { CodingSessionPiCommand, CodingSessionPiConnection, CodingSessionPiCapabilities, CodingSessionPiResult } from "./pi-backbone.js";
 
 /** Short-lived same-origin capability for the OpenCode HTTP workbench in one session generation. */
 export interface CodingSessionOpenCodeCapability {
@@ -908,9 +908,9 @@ export interface AuthenticatedApi extends RpcTarget {
   /** Mints a generation-bound same-origin OpenCode server capability in an owned running session. */
   mintCodingSessionOpenCodeCapability(sessionId: string): Promise<CodingSessionOpenCodeCapability>;
 
-  /** Attaches to an existing Pi backbone after checking membership, repositories and required connections. Never launches a process. */
+  /** Attaches to an existing Pi/Prime backbone after checking membership, repositories and required connections. Never launches a process. */
   connectCodingSessionPi(sessionId: string): Promise<import("./pi-backbone.js").CodingSessionPiConnection>;
-  /** Executes one bounded Pi operation after rechecking authority and handle generation/expiry. Never automatically retry writes after timeout. */
+  /** Executes one bounded Pi/Prime operation after rechecking authority and handle generation/expiry. Never automatically retry writes after timeout. */
   callCodingSessionPi(sessionId: string, connectionId: string, command: import("./pi-backbone.js").CodingSessionPiCommand): Promise<import("./pi-backbone.js").CodingSessionPiResult>;
 
   /** Mints a generation-bound capability for one catalog application in an owned running session. */
