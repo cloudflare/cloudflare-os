@@ -1,0 +1,111 @@
+packages/gadget-libraries/README.md
+  s_47c456ca6ea293::t_3227b798cd822a 9,13-17
+packages/gadget-libraries/page/README.md
+  s_47c456ca6ea293::t_f61f8e0ed93612 213-224,597-621,650-651
+packages/gadget-libraries/page/__tests__/mini-dom.test.ts
+  s_47c456ca6ea293::t_79f2c7137fe76d 7,59,90-91,165-466
+packages/gadget-libraries/page/src/dom-types.ts
+  s_47c456ca6ea293::t_d7997f87c2e96d 3,5-17,20-23,60-66,70-71,76-79
+packages/gadget-libraries/page/src/mini-dom.ts
+  s_47c456ca6ea293::t_f599d607b41cf7 7-9,13-19,38-39,48,50-53,82-108,117-227,342-347,349,380-381,383,427-430,442-458,636-648,650,652-665,667,709-799,806,817,842-843,846,850,862,865-866,871-873,879,892-893,904-911,958
+packages/wiki-convert/README.md
+  s_47c456ca6ea293::t_eb78954eabf0b1 1-78
+packages/wiki-convert/__tests__/comments.test.ts
+  s_47c456ca6ea293::t_d98d8cabd426e3 1-235
+packages/wiki-convert/__tests__/page-rewrite.test.ts
+  s_47c456ca6ea293::t_be393a30f26acd 1-129
+packages/wiki-convert/__tests__/setup-jsdom.ts
+  s_47c456ca6ea293::t_fe1e38d84563ac 2,4-8,13,15-17
+packages/wiki-convert/__tests__/setup-mini-dom.ts
+  s_47c456ca6ea293::t_58940a55b7d3d8 1-13
+packages/wiki-convert/__tests__/slug.test.ts
+  s_47c456ca6ea293::t_36fb2ae6c8f7d5 3-4,9-10
+packages/wiki-convert/__tests__/storage-dom.test.ts
+  s_47c456ca6ea293::t_c7c8ce831cb177 121-125,127-136
+packages/wiki-convert/__tests__/storage-to-blocks.test.ts
+  s_47c456ca6ea293::t_9e6f25b88de7a4 6-11,19,194-195,1171-1176,1183-1196
+packages/wiki-convert/package.json
+  s_47c456ca6ea293::t_0f5e852c0824e1 1-32
+packages/wiki-convert/src/comments.ts
+  s_47c456ca6ea293::t_745870ace252c3 1-244
+packages/wiki-convert/src/convert-page.ts
+  s_47c456ca6ea293::t_98cfd4442b8c80 1-176
+packages/wiki-convert/src/index.ts
+  s_47c456ca6ea293::t_db45f9b4392e9e 1-157
+packages/wiki-convert/src/page-rewrite.ts
+  s_47c456ca6ea293::t_6cdde43afa2d15 1-145
+packages/wiki-convert/src/plan.ts
+  s_47c456ca6ea293::t_3aa6f6c0819f9e 1-164
+packages/wiki-convert/src/source-types.ts
+  s_47c456ca6ea293::t_c7c9c68d0aa9a7 1-168
+packages/wiki-convert/src/storage-dom.ts
+  s_47c456ca6ea293::t_0bebfcf31c6d0b 25,67-93,96-104
+packages/wiki-convert/src/storage-to-blocks.ts
+  s_47c456ca6ea293::t_09da772dcae909 86,2347-2353,2355-2360
+packages/wiki-convert/src/vocabulary.ts
+  s_47c456ca6ea293::t_f5058354c98179 34-36,38
+packages/wiki-convert/tsconfig.json
+  s_47c456ca6ea293::t_b5a70bf51d0e10 1-38
+packages/wiki-convert/tsconfig.tests.json
+  s_47c456ca6ea293::t_928c73e51a7e0a 1-14
+packages/wiki-convert/vite.config.ts
+  s_47c456ca6ea293::t_ba1b4020381c29 1-7
+packages/wiki-convert/vitest.config.ts
+  s_47c456ca6ea293::t_dd87efb7882173 1-15
+packages/wiki-convert/vitest.mini-dom.config.ts
+  s_47c456ca6ea293::t_b9c0e9e7c4f008 1-14
+packages/wiki-import/README.md
+  s_47c456ca6ea293::t_4e01e0224656fd 7-11,56,351,408-409,430-431,434,442-448,464-465,469,499-500,539-543,551,554-555,559-567,586-587,589-590
+packages/wiki-import/__tests__/entry-point.test.ts
+  s_47c456ca6ea293::t_e1373611ae6400 1-43
+packages/wiki-import/__tests__/identity.test.ts
+  s_47c456ca6ea293::t_cb15841b9be6c8 33
+packages/wiki-import/__tests__/plan.test.ts
+  s_47c456ca6ea293::t_453e5f2be1837c 7-12,81
+packages/wiki-import/__tests__/source-api.test.ts
+  s_47c456ca6ea293::t_a16cf797e8d782 16,676
+packages/wiki-import/package.json
+  s_47c456ca6ea293::t_22e04036c3f639 22
+packages/wiki-import/src/dom.ts
+  s_47c456ca6ea293::t_d77853f834fd73 1-25
+packages/wiki-import/src/import.ts
+  s_47c456ca6ea293::t_290922ffe73483 10-14,25-28,137-143,145-148,151,153-154,156,190-194,635-647,1367-1370,1517,1554
+packages/wiki-import/src/index.ts
+  s_47c456ca6ea293::t_ce92ab4ed0aaf0 4-22,25-30,34,46-48,52
+packages/wiki-import/src/mentions.ts
+  s_47c456ca6ea293::t_77bd3dea7a2026 27-28,32-33
+packages/wiki-import/src/source-api.ts
+  s_47c456ca6ea293::t_d4d8b0b4a99280 4-5,49-75,80,448,678,715-716,769
+packages/wiki-import/tsconfig.json
+  s_47c456ca6ea293::t_3ef11a56e2433d 1-3,7,11-13
+packages/wiki-import/vitest.config.ts
+  s_47c456ca6ea293::t_a0588b7664a692 5-7,10-14
+pnpm-lock.yaml
+  s_47c456ca6ea293::t_61a1caef0808ee 170-172,921-945,951-953,1000-1002,1006-1008
+packages/wiki-import/__tests__/setup-jsdom.ts
+  s_2d2fb160eab75b::t_70bf6fb80d9a35 1-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c6eb0a8c8b03274fc57612ae87f69eda17f15dad",
+  "prompts": {},
+  "sessions": {
+    "s_2d2fb160eab75b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a6ab2264b654a50e8",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_47c456ca6ea293": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0644985-87cc-456b-8ee1-1adbbdfaf8cd",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
