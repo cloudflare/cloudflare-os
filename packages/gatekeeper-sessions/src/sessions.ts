@@ -3,7 +3,7 @@ import { zstdDecompressSync } from "node:zlib";
 import { ContainerProxy, getSandbox, Sandbox, type Terminal } from "@cloudflare/sandbox";
 import type { OutboundHandlerContext } from "@cloudflare/containers";
 import { validateRpc } from "capnweb-validate";
-import { createLogger } from "@gadgets/backend-utils/logger";
+import { createObservabilityContext } from "@gadgets/backend-utils/observability-context";
 import {
   SUGGESTED_MODELS,
   type CodingSessionApplicationCapability,
@@ -138,8 +138,13 @@ const TERMINAL_REPLAY_BUFFER_SIZE = 256 * 1024;
 type SessionsLogFields = {
   attachPhase?: AttachPhase;
   durationMs?: number;
+  startedAtMs?: number;
+  checkpointAgeMs?: number;
+  generation?: number;
+  operationId?: string;
   outcome?: "success" | "failure";
   sessionId?: string;
+  sandboxId?: string;
   userId?: string;
   repositoryCount?: number;
   startupDurationMs?: number;
@@ -150,15 +155,17 @@ type SessionsLogFields = {
   reason?: string;
 };
 
-const logger = createLogger<SessionsLogFields>({ component: "gatekeeper.sessions" });
+const attachContext = createObservabilityContext<SessionsLogFields>();
+const logger = attachContext.createLogger({ component: "gatekeeper.sessions" });
 
 type AttachPhase = "total" | "authorization" | "terminal" | "policy" | "process" |
   "process-inspect" | "process-reuse" | "process-start" | "process-readiness" | "ticket-mint" | "ticket-store";
 
-// Only closed phase/outcome labels and elapsed time enter attach telemetry. In particular,
+// Only generated correlation IDs, timestamps and closed phase/outcome labels enter telemetry.
 // failures are rethrown to the caller without logging exception text or capability material.
 async function attachPhase<T>(phase: AttachPhase, operation: () => Promise<T>): Promise<T> {
   const started = performance.now();
+  const startedAtMs = Date.now();
   let outcome: "success" | "failure" = "failure";
   try {
     const result = await operation();
@@ -167,7 +174,7 @@ async function attachPhase<T>(phase: AttachPhase, operation: () => Promise<T>): 
   } finally {
     logger.info("OpenCode attach phase completed", {
       event: "coding.session.opencode.attach.phase", attachPhase: phase,
-      durationMs: Math.max(0, performance.now() - started), outcome,
+      startedAtMs, durationMs: Math.max(0, performance.now() - started), outcome,
     });
   }
 }
@@ -847,6 +854,8 @@ export class CodingSessionPolicy extends DurableObject<Env> {
       return;
     }
     const started = performance.now();
+    const startedAtMs = Date.now();
+    const policy = this.#policy();
     let outcome: "success" | "failure" = "failure";
     try {
       await this.#advanceStartupOnce(startup);
@@ -899,6 +908,11 @@ export class CodingSessionPolicy extends DurableObject<Env> {
       // An attempt may only poll an active clone; this is not whole-phase completion time.
       logger.debug("coding session startup attempt completed", {
         event: "coding.session.startup.attempt",
+        sessionId: policy.sessionId,
+        sandboxId: policy.sandboxId,
+        generation: startup.generation ?? 0,
+        startedAtMs,
+        checkpointAgeMs: Math.max(0, startedAtMs - startup.updatedAt),
         phase: startup.phase,
         durationMs: Math.max(0, performance.now() - started),
         outcome,
@@ -1894,7 +1908,11 @@ export class CodingSessionRegistry extends DurableObject<Env> {
     owner: CodingSessionOwner,
     sessionId: string,
   ): Promise<CodingSessionOpenCodeCapability> {
-    return attachPhase("total", () => this.#mintOpenCodeCapability(owner, sessionId));
+    const record = this.#get(sessionId);
+    return attachContext.with({
+      operationId: crypto.randomUUID(),
+      ...(record ? { sessionId: record.id, sandboxId: record.sandboxId, generation: storedSessionGeneration(record) } : {}),
+    }, () => attachPhase("total", () => this.#mintOpenCodeCapability(owner, sessionId)));
   }
 
   async #mintOpenCodeCapability(
@@ -1973,7 +1991,8 @@ export class CodingSessionRegistry extends DurableObject<Env> {
     if (!record || record.archivedAt || storedSessionRuntime(record) !== "opencode" ||
         !["starting", "running"].includes(record.status) || record.sandboxId !== sandboxId ||
         storedSessionGeneration(record) !== generation) throw new Error("Coding session is not running.");
-    await this.#ensureOpenCodeServer(record, customization);
+    await attachContext.with({ sessionId: record.id, sandboxId: record.sandboxId, generation, operationId: crypto.randomUUID() },
+      () => this.#ensureOpenCodeServer(record, customization));
   }
 
   async #ensureOpenCodeServer(record: SessionRecord, customization: OpenCodeUserCustomization): Promise<string> {
