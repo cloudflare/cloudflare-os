@@ -116,18 +116,23 @@ async function bridge(options: { largeHistory?: boolean; dialogTimeout?: number;
       return {status:response.status, data:await response.json() as any};
     },
     async close() {
+      const errors: unknown[] = [];
       try {
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
         await vi.waitFor(() => expect(child.exitCode !== null || child.signalCode !== null).toBe(true), {timeout:2500});
-      } finally {
-        // Emergency cleanup only: assertions in shutdown tests run before this teardown.
+      } catch (error) { errors.push(error); }
+      // Emergency cleanup only: assertions in shutdown tests run before this teardown.
+      try {
         for (const pid of (await readFile(ledger, "utf8")).trim().split("\n").map(Number)) {
-          try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+          try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") errors.push(error); }
         }
+      } catch (error) { errors.push(error); }
+      try {
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
         await vi.waitFor(() => expect(child.exitCode !== null || child.signalCode !== null).toBe(true), {timeout:1000});
-        await rm(dir, {recursive:true,force:true});
-      }
+      } catch (error) { errors.push(error); }
+      await rm(dir, {recursive:true,force:true}).catch(error => { errors.push(error); });
+      if (errors.length) throw new AggregateError(errors, "Bridge cleanup failed");
     },
   };
 }
