@@ -22,31 +22,31 @@
   "containers": [
     {
       "class_name": "CodingSessionSandbox",
-      "image": "registry.cloudflare.com/286469790a4362a2e194b32045c5eca7/odie-os-coding-session@sha256:a3ed11cff1c11faf8efd0fe4d1cebd7595026f791b8a6bc69b986e7ff9c5b1c1",
+      "image": "registry.cloudflare.com/286469790a4362a2e194b32045c5eca7/odie-os-coding-session@sha256:2d2edbdb0eb6e2ba382b878425dd928ad5b957862e5ad7450b062a9c75f1f01b",
       "instance_type": "standard-1",
       "max_instances": 20
     },
     {
       "class_name": "CodingSessionSandboxStandard2",
-      "image": "registry.cloudflare.com/286469790a4362a2e194b32045c5eca7/odie-os-coding-session@sha256:a3ed11cff1c11faf8efd0fe4d1cebd7595026f791b8a6bc69b986e7ff9c5b1c1",
+      "image": "registry.cloudflare.com/286469790a4362a2e194b32045c5eca7/odie-os-coding-session@sha256:2d2edbdb0eb6e2ba382b878425dd928ad5b957862e5ad7450b062a9c75f1f01b",
       "instance_type": "standard-2",
       "max_instances": 8
     },
     {
       "class_name": "CodingSessionSandboxStandard3",
-      "image": "registry.cloudflare.com/286469790a4362a2e194b32045c5eca7/odie-os-coding-session@sha256:a3ed11cff1c11faf8efd0fe4d1cebd7595026f791b8a6bc69b986e7ff9c5b1c1",
+      "image": "registry.cloudflare.com/286469790a4362a2e194b32045c5eca7/odie-os-coding-session@sha256:2d2edbdb0eb6e2ba382b878425dd928ad5b957862e5ad7450b062a9c75f1f01b",
       "instance_type": "standard-3",
       "max_instances": 4
     },
     {
       "class_name": "CodingSessionSandboxStandard4",
-      "image": "registry.cloudflare.com/286469790a4362a2e194b32045c5eca7/odie-os-coding-session@sha256:a3ed11cff1c11faf8efd0fe4d1cebd7595026f791b8a6bc69b986e7ff9c5b1c1",
+      "image": "registry.cloudflare.com/286469790a4362a2e194b32045c5eca7/odie-os-coding-session@sha256:2d2edbdb0eb6e2ba382b878425dd928ad5b957862e5ad7450b062a9c75f1f01b",
       "instance_type": "standard-4",
       "max_instances": 2
     },
     {
       "class_name": "ProductFeedbackSandbox",
-      "image": "registry.cloudflare.com/286469790a4362a2e194b32045c5eca7/odie-os-coding-session@sha256:a3ed11cff1c11faf8efd0fe4d1cebd7595026f791b8a6bc69b986e7ff9c5b1c1",
+      "image": "registry.cloudflare.com/286469790a4362a2e194b32045c5eca7/odie-os-coding-session@sha256:2d2edbdb0eb6e2ba382b878425dd928ad5b957862e5ad7450b062a9c75f1f01b",
       "instance_type": "standard-1",
       "max_instances": 4
     }

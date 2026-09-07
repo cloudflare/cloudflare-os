@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PI_BRIDGE_COMMAND } from "../src/pi-backbone.js";
 import { piCommand } from "../src/runtime.js";
 
@@ -22,7 +22,15 @@ function fixture(command = PI_BRIDGE_COMMAND) {
   };
   state.sandbox = {
     getTerminal:vi.fn(async () => ({getSnapshot:async () => ({status:"running",command})})),
-    containerFetch:vi.fn(async () => new Response('{"isStreaming":false}')),
+    containerFetch:vi.fn(async (url: unknown, init: RequestInit, port: number) => {
+      // Simulate the normal RPC serialization boundary before receiver-side Request construction.
+      if (typeof url !== "string" || Object.getPrototypeOf(init) !== Object.prototype || "signal" in init) {
+        throw new TypeError("Request and AbortSignal cannot cross normal RPC");
+      }
+      const request = new Request(url, JSON.parse(JSON.stringify(init)));
+      expect(new URL(request.url).port).toBe(String(port));
+      return new Response('{"isStreaming":false}');
+    }),
     createTerminal:vi.fn(),exec:vi.fn(),destroy:vi.fn(),
   };
   return {registry,record,values,configure,sandbox:state.sandbox};
@@ -48,6 +56,7 @@ function replayFixture(command: string[], status: string) {
 }
 
 describe("Pi generation lifecycle", () => {
+  afterEach(() => vi.useRealTimers());
   it.each([
     {status:"running",command:["/usr/local/bin/pi","--model","saved-selection"]},
     {status:"exited",command:PI_BRIDGE_COMMAND},
@@ -122,7 +131,9 @@ describe("Pi generation lifecycle", () => {
     expect(connection.mode).toBe("rpc");
     expect(await f.registry.connectPi(owner,"s")).toEqual(connection);
     expect(await f.registry.callPi(owner,"s",connection.connectionId,{type:"get_state"})).toEqual({json:'{"isStreaming":false}'});
-    expect(f.sandbox.containerFetch.mock.calls[0][0].url).toBe("http://127.0.0.1:4097/");
+    expect(f.sandbox.containerFetch).toHaveBeenCalledExactlyOnceWith(
+      "http://127.0.0.1:4097/", {method:"POST",body:'{"type":"get_state"}',redirect:"manual"}, 4097,
+    );
     expect(f.sandbox.exec).not.toHaveBeenCalled();
     expect(f.sandbox.createTerminal).not.toHaveBeenCalled();
   });
@@ -136,13 +147,14 @@ describe("Pi generation lifecycle", () => {
     expect(f.sandbox.createTerminal).not.toHaveBeenCalled();
   });
 
-  it.each(["sandbox", "generation", "terminal", "stop", "archive", "expiry", "version", "handle"])("rejects %s invalidation before dispatch", async kind => {
+  it.each(["sandbox", "generation", "terminal", "runtime", "stop", "archive", "expiry", "version", "handle"])("rejects %s invalidation before dispatch", async kind => {
     const f = fixture();
     const connection = await f.registry.connectPi(owner,"s");
     const ticket = f.values.get("pi-connection:s");
     if (kind === "sandbox") f.values.set("session:s", {...f.record,sandboxId:"replacement"});
     if (kind === "generation") f.values.set("session:s", {...f.record,generation:4});
     if (kind === "terminal") f.values.set("session:s", {...f.record,terminalId:"replacement"});
+    if (kind === "runtime") f.values.set("session:s", {...f.record,runtime:"opencode"});
     if (kind === "stop") f.values.set("session:s", {...f.record,status:"stopping"});
     if (kind === "archive") f.values.set("session:s", {...f.record,archivedAt:new Date()});
     if (kind === "expiry") ticket.expiresAt = 0;
@@ -163,5 +175,127 @@ describe("Pi generation lifecycle", () => {
       return new Response('{}');
     });
     await expect(f.registry.callPi(owner,"s",connection.connectionId,{type:"get_messages"})).rejects.toThrow();
+  });
+
+  it("reauthorizes the owner and repositories and does not dispatch after authorization fails", async () => {
+    const f = fixture();
+    const connection = await f.registry.connectPi(owner,"s");
+    f.configure.mockClear();
+    f.configure.mockRejectedValueOnce(new Error("repository access revoked"));
+    await expect(f.registry.callPi(owner,"s",connection.connectionId,{type:"prompt",message:"hello"})).rejects.toThrow("repository access revoked");
+    expect(f.configure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      sessionId:"s",sandboxId:"box",generation:3,owner,repositories:["jarvis"],
+    }));
+    expect(f.sandbox.containerFetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["resolve", "resolve with stalled cancel", "reject"])("bounds a stalled fetch and ignores its late %s without activity or retries", async settlement => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.record.lastActiveAt = new Date(Date.now() - 60_000);
+    const connection = await f.registry.connectPi(owner,"s");
+    const fetch = Promise.withResolvers<Response>();
+    f.sandbox.containerFetch.mockReturnValueOnce(fetch.promise);
+    const call = f.registry.callPi(owner,"s",connection.connectionId,{type:"prompt",message:"hello"});
+    const settled = vi.fn();
+    void call.then(settled, settled);
+    const rejected = expect(call).rejects.toThrow("outcome unknown. Do not retry writes automatically.");
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(settled).not.toHaveBeenCalled();
+    expect(f.sandbox.containerFetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    const cancel = vi.fn(() => settlement === "resolve with stalled cancel"
+      ? new Promise<void>(() => {}) : Promise.reject(new Error("late cancel failed")));
+    if (settlement !== "reject") fetch.resolve(new Response(new ReadableStream({cancel})));
+    else fetch.reject(new Error("late fetch failed"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cancel).toHaveBeenCalledTimes(settlement === "reject" ? 0 : 1);
+    expect(f.values.get("session:s")).toBe(f.record);
+    expect(f.sandbox.containerFetch).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["stall", "reject"])("uses one fetch/body deadline and releases the active reader even when cancel will %s", async cleanup => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.record.lastActiveAt = new Date(Date.now() - 60_000);
+    const connection = await f.registry.connectPi(owner,"s");
+    const fetch = Promise.withResolvers<Response>();
+    const cancel = vi.fn(() => cleanup === "stall" ? new Promise<void>(() => {}) : Promise.reject(new Error("cancel failed")));
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{"partial":')); },
+      cancel,
+    });
+    f.sandbox.containerFetch.mockReturnValueOnce(fetch.promise);
+    const call = f.registry.callPi(owner,"s",connection.connectionId,{type:"get_state"});
+    const rejected = expect(call).rejects.toThrow("outcome unknown. Do not retry writes automatically.");
+    await vi.advanceTimersByTimeAsync(20_000);
+    fetch.resolve(new Response(body));
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(body.locked).toBe(true);
+    expect(cancel).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+    expect(f.values.get("session:s")).toBe(f.record);
+    expect(f.sandbox.containerFetch).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["http", "redirect", "json", "oversize", "read", "fetch"])("rejects %s failure without activity or retries and clears the deadline", async failure => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.record.lastActiveAt = new Date(Date.now() - 60_000);
+    const connection = await f.registry.connectPi(owner,"s");
+    const cancel = vi.fn(() => new Promise<void>(() => {}));
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (failure === "read") controller.error(new Error("read failed"));
+        else controller.enqueue(new Uint8Array(2 * 1024 * 1024 + 1));
+      },
+      cancel,
+    });
+    if (failure === "fetch") f.sandbox.containerFetch.mockRejectedValueOnce(new Error("fetch failed"));
+    else f.sandbox.containerFetch.mockResolvedValueOnce(failure === "oversize" || failure === "read"
+      ? new Response(body)
+      : new Response(failure === "json" ? "not json" : "{}", {
+        status:failure === "http" ? 500 : 200,
+        headers:failure === "redirect" ? {Location:"https://elsewhere.test"} : {},
+      }));
+    await expect(f.registry.callPi(owner,"s",connection.connectionId,{type:"get_state"})).rejects.toThrow();
+    if (failure === "oversize") expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+    expect(f.values.get("session:s")).toBe(f.record);
+    expect(f.sandbox.containerFetch).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["generation", "runtime", "expiry"])("rechecks %s after the entire body is consumed", async fence => {
+    const f = fixture();
+    f.record.lastActiveAt = new Date(Date.now() - 60_000);
+    const connection = await f.registry.connectPi(owner,"s");
+    f.sandbox.containerFetch.mockResolvedValueOnce(new Response(new ReadableStream({
+      pull(controller) {
+        if (fence === "expiry") f.values.get("pi-connection:s").expiresAt = 0;
+        else f.values.set("session:s", {...f.record,...(fence === "generation" ? {generation:4} : {runtime:"opencode"})});
+        controller.enqueue(new TextEncoder().encode("{}"));
+        controller.close();
+      },
+    }, {highWaterMark:0})));
+    await expect(f.registry.callPi(owner,"s",connection.connectionId,{type:"get_state"})).rejects.toThrow();
+    expect(f.values.get("session:s").lastActiveAt).toEqual(f.record.lastActiveAt);
+    expect(f.sandbox.containerFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("updates activity only after a complete valid success and clears the deadline", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.record.lastActiveAt = new Date(Date.now() - 60_000);
+    const connection = await f.registry.connectPi(owner,"s");
+    await expect(f.registry.callPi(owner,"s",connection.connectionId,{type:"get_state"})).resolves.toEqual({json:'{"isStreaming":false}'});
+    expect(f.values.get("session:s").lastActiveAt).toEqual(new Date());
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
