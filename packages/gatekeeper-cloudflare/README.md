@@ -113,7 +113,10 @@ a visible truncation for an invisible one.
 You need a Cloudflare dashboard OAuth client (client id + secret). The dashboard OAuth endpoints and
 scopes are hardcoded in `src/oauth.ts`, so you only configure the client id/secret and register the
 redirect URI. Ensure the client's scope allowlist includes `workers-observability.read` when this
-deployment offers Workers Observability resources.
+deployment offers Workers Observability resources. Enable both the `authorization_code` and
+`refresh_token` grant types, and allow `offline_access`; persistent billing and observability
+connections fail closed if Cloudflare does not issue a refresh token. Select `client_secret_basic`
+as the token endpoint authentication method, matching the gatekeeper's token requests.
 
 ### Step 1: Register the redirect URI
 
@@ -186,3 +189,10 @@ trailing slash, `http` not `https` for localhost.
 
 `CLIENT_ID` / `CLIENT_SECRET` are missing. Ensure they're set (per-package `.env` or seeded from the
 root `.dev.vars`), then restart the dev server.
+
+### "no refresh token for a persistent connection"
+
+The OAuth client does not allow refresh tokens. Enable the `refresh_token` grant type and
+`offline_access` scope in the Cloudflare OAuth client configuration. Auth-only flows intentionally
+use only their short-lived access token, but billing and observability connections must remain
+refreshable.

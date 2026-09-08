@@ -29,11 +29,10 @@ export function persistentScopesForResources(resourceUrlPatterns?: string[]): st
 }
 
 /**
- * Minimal scopes for sign-in only: a refresh token + the /user identity read. Used in "auth" mode
- * (the resulting grant is transient).
+ * Minimal scopes for sign-in only. The resulting grant is transient, so it deliberately does not
+ * request offline access or require a refresh token.
  */
 export const AUTH_SCOPES = [
-  "offline_access",
   "user-details.read",
 ];
 
@@ -94,6 +93,20 @@ export interface TokenResponse {
   expiresIn: number;
   tokenType?: string;
   scopes?: string[];
+}
+
+/**
+ * Select the refresh token for a completed connection. Transient authentication only needs its
+ * short-lived access token; every persistent connection must remain refreshable.
+ */
+export function refreshTokenForConnection(
+  tokens: TokenResponse, ephemeral: boolean,
+): string | undefined {
+  if (tokens.refreshToken || ephemeral) return tokens.refreshToken;
+  throw new Error(
+    "Cloudflare OAuth returned no refresh token for a persistent connection. " +
+    "Ensure the OAuth client allows the refresh_token grant and offline_access scope.",
+  );
 }
 
 interface RawTokenResponse {

@@ -9,7 +9,7 @@ import {
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import {
   getOAuthConfig, buildAuthorizeUrl, generatePkce, exchangeCode, refreshTokens,
-  AUTH_SCOPES, BILLING_SCOPES, persistentScopesForResources,
+  AUTH_SCOPES, BILLING_SCOPES, persistentScopesForResources, refreshTokenForConnection,
 } from "./oauth";
 import { fetchIdentity } from "./cloudflare-api";
 import {
@@ -233,6 +233,7 @@ export class UserAccount extends DurableObject<Env> {
 
   async prepareReconnect(initiationNonce: string, scopes: string[]) {
     this.ctx.storage.kv.put<boolean>("reconnecting", true);
+    this.ctx.storage.kv.put<boolean>("ephemeral", false);
     this.ctx.storage.kv.put<string[]>("scopes", scopes);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
@@ -284,11 +285,11 @@ export class UserAccount extends DurableObject<Env> {
     }
 
     const tokens = await exchangeCode(this.#config(), code, stored.verifier);
-    if (!tokens || !tokens.refreshToken) {
-      throw new Error("Cloudflare OAuth exchange failed or returned no refresh token.");
-    }
+    if (!tokens) throw new Error("Cloudflare OAuth token exchange failed.");
 
-    this.ctx.storage.kv.put<string>("refreshToken", tokens.refreshToken);
+    const ephemeral = this.ctx.storage.kv.get<boolean>("ephemeral") ?? false;
+    const refreshToken = refreshTokenForConnection(tokens, ephemeral);
+    if (refreshToken) this.ctx.storage.kv.put<string>("refreshToken", refreshToken);
     this.ctx.storage.kv.put<StoredAccessToken>("accessToken", {
       token: tokens.accessToken,
       expires: Date.now() + tokens.expiresIn * 1000,
@@ -315,7 +316,7 @@ export class UserAccount extends DurableObject<Env> {
       // Auth-only sign-in grants are transient: the caller read the email via complete(), so
       // schedule a prompt self-destruct. We do NOT call a provider revoke endpoint; we just drop
       // our local copy.
-      if (this.ctx.storage.kv.get<boolean>("ephemeral")) {
+      if (ephemeral) {
         this.ctx.storage.setAlarm(Date.now() + 2 * 60 * 1000);
       }
     }
@@ -331,13 +332,13 @@ export class UserAccount extends DurableObject<Env> {
    * can no longer be refreshed (in which case the workshop is notified via credentialsExpired()).
    */
   async getAccessToken(): Promise<string | null> {
-    const refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
-    if (!refreshToken) return null;
-
     const cached = this.ctx.storage.kv.get<StoredAccessToken>("accessToken");
     if (cached && cached.expires > Date.now() + ACCESS_TOKEN_EXPIRY_SAFETY_MS) {
       return cached.token;
     }
+
+    const refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
+    if (!refreshToken) return null;
 
     const refreshed = await refreshTokens(this.#config(), refreshToken);
     if (!refreshed) {

@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  AUTH_SCOPES,
+  BILLING_SCOPES,
   buildAuthorizeUrl,
   exchangeCode,
   generatePkce,
+  refreshTokenForConnection,
   refreshTokens,
   type CloudflareOAuthConfig,
 } from "../src/oauth";
@@ -28,6 +31,30 @@ function captureRedeem(payload: Record<string, unknown>) {
 }
 
 describe("Cloudflare OAuth", () => {
+  it("requests offline access only for persistent connections", () => {
+    expect(AUTH_SCOPES).toEqual(["user-details.read"]);
+    expect(BILLING_SCOPES).toContain("offline_access");
+  });
+
+  it("allows a transient sign-in grant to omit a refresh token", () => {
+    const tokens = { accessToken: "access", expiresIn: 3600 };
+
+    expect(refreshTokenForConnection(tokens, true)).toBeUndefined();
+  });
+
+  it("requires a refresh token for persistent connections", () => {
+    const tokens = { accessToken: "access", expiresIn: 3600 };
+
+    expect(() => refreshTokenForConnection(tokens, false))
+      .toThrow(/OAuth client allows the refresh_token grant and offline_access scope/);
+  });
+
+  it("returns a refresh token when the provider supplies one", () => {
+    const tokens = { accessToken: "access", refreshToken: "refresh", expiresIn: 3600 };
+
+    expect(refreshTokenForConnection(tokens, false)).toBe("refresh");
+  });
+
   it("returns the scopes granted by the token endpoint", async () => {
     captureRedeem({
       access_token: "access",
@@ -43,7 +70,7 @@ describe("Cloudflare OAuth", () => {
 
   it("reports no granted scopes when the provider omits them", async () => {
     // The caller must be able to tell "granted nothing extra" from "granted everything": this is what
-    // `handleOAuthCallback` keys its fail-closed scope record on.
+    // `acceptAuthCode` keys its fail-closed scope record on.
     captureRedeem({ access_token: "access", expires_in: 3600 });
 
     const tokens = await exchangeCode(config, "code", "verifier");
