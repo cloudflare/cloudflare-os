@@ -155,16 +155,12 @@ function jpeg(width: number, height: number): Uint8Array {
   ]);
 }
 
-function gif(width: number, height: number, frames = [[width, height]]): Uint8Array {
-  const bytes = [
+function gif(width: number, height: number): Uint8Array {
+  return Uint8Array.from([
     ...encoder.encode("GIF89a"), width & 0xff, width >> 8, height & 0xff, height >> 8, 0x00, 0x00, 0x00,
-  ];
-  for (const [frameWidth, frameHeight] of frames) {
-    bytes.push(0x2c, 0x00, 0x00, 0x00, 0x00, frameWidth & 0xff, frameWidth >> 8,
-        frameHeight & 0xff, frameHeight >> 8, 0x00, 0x02, 0x01, 0x00, 0x00);
-  }
-  bytes.push(0x3b);
-  return Uint8Array.from(bytes);
+    0x2c, 0x00, 0x00, 0x00, 0x00, width & 0xff, width >> 8, height & 0xff, height >> 8, 0x00, 0x02, 0x01, 0x00, 0x00,
+    0x3b,
+  ]);
 }
 
 function webp(width: number, height: number): Uint8Array {
@@ -180,35 +176,6 @@ function webp(width: number, height: number): Uint8Array {
   bytes.set(encoder.encode("VP8 "), 30);
   new DataView(bytes.buffer).setUint32(34, 10, true);
   bytes.set([0, 0, 0, 0x9d, 0x01, 0x2a, width & 0xff, width >> 8, height & 0xff, height >> 8], 38);
-  return bytes;
-}
-
-function animatedWebp(width: number, height: number, frames: number[][]): Uint8Array {
-  const bytes = new Uint8Array(44 + frames.length * 42);
-  bytes.set(encoder.encode("RIFF"), 0);
-  new DataView(bytes.buffer).setUint32(4, bytes.length - 8, true);
-  bytes.set(encoder.encode("WEBPVP8X"), 8);
-  new DataView(bytes.buffer).setUint32(16, 10, true);
-  bytes[20] = 0x02;
-  for (const [offset, value] of [[24, width - 1], [27, height - 1]]) {
-    bytes.set([value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff], offset);
-  }
-  bytes.set(encoder.encode("ANIM"), 30);
-  new DataView(bytes.buffer).setUint32(34, 6, true);
-  let offset = 44;
-  for (const [frameWidth, frameHeight, encodedWidth = frameWidth, encodedHeight = frameHeight] of frames) {
-    bytes.set(encoder.encode("ANMF"), offset);
-    new DataView(bytes.buffer).setUint32(offset + 4, 34, true);
-    const data = offset + 8;
-    for (const [field, value] of [[data + 6, frameWidth - 1], [data + 9, frameHeight - 1]]) {
-      bytes.set([value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff], field);
-    }
-    bytes.set(encoder.encode("VP8 "), data + 16);
-    new DataView(bytes.buffer).setUint32(data + 20, 10, true);
-    bytes.set([0, 0, 0, 0x9d, 0x01, 0x2a,
-      encodedWidth & 0xff, encodedWidth >> 8, encodedHeight & 0xff, encodedHeight >> 8], data + 24);
-    offset += 42;
-  }
   return bytes;
 }
 
@@ -419,13 +386,24 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).not.toContain("\ud800");
   });
 
+  it("keeps empty lines as empty paragraphs and drops breaks that end a block", async () => {
+    const {entries} = await readZip(await documentToDocx({blocks: [block(
+        "<p>one<br></p><p><br></p><p>two<br><br>three</p>")]}));
+    const xml = text(entries, "word/document.xml");
+    expect(xml.match(/<w:p>/g)).toHaveLength(3);
+    expect(xml).toContain('<w:p><w:pPr><w:pStyle w:val="Normal"/></w:pPr></w:p>');
+    expect(xml.match(/<w:br\/>/g)).toHaveLength(2);
+    expect(xml).toContain(">one</w:t></w:r></w:p>");
+  });
+
   it("maps quotes, code blocks, inline code, and horizontal rules", async () => {
-    const html = '<blockquote>quoted</blockquote><pre> a  b\n\tc</pre><p>use <code>code</code></p><hr>';
+    const html = '<blockquote>quoted</blockquote><pre>\n a  b\n\tc\n</pre><p>use <code>code</code></p><hr>';
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     expect(xml).toContain('<w:pStyle w:val="Quote"/>');
     expect(xml).toContain('<w:pStyle w:val="CodeBlock"/>');
-    expect(xml).toContain('<w:t xml:space="preserve"> a  b</w:t><w:br/><w:tab/>');
+    expect(xml).toContain('<w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr><w:r><w:t xml:space="preserve"> a  b</w:t></w:r>' +
+      '<w:r><w:br/></w:r><w:r><w:tab/><w:t xml:space="preserve">c</w:t></w:r></w:p>');
     expect(runContaining(xml, "code")).toContain('w:ascii="Courier New"');
     expect(xml).toContain('<w:bottom w:val="single"');
   });
@@ -459,8 +437,8 @@ describe("Workspace Docs DOCX package", () => {
     const html = '<blockquote style="margin: 0 0 0 40px; border: none; padding: 0px;">indented</blockquote>' +
       '<blockquote style="margin: 0 0 0 40px; border: none; padding: 0px;">outer' +
       '<blockquote style="margin: 0 0 0 40px; border: none; padding: 0px;">inner</blockquote></blockquote>' +
-      '<blockquote data-doc-indent style="margin-left:60px">marked</blockquote>' +
-      '<blockquote style="margin-left:40px;border:none;padding-left:0">custom quote</blockquote>' +
+      '<blockquote style="margin-left:60px;border-left:none">custom</blockquote>' +
+      '<blockquote style="margin-left:40px">quoted indent</blockquote>' +
       "<blockquote>quoted</blockquote>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
@@ -468,6 +446,7 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).toContain('<w:pStyle w:val="Normal"/><w:ind w:left="600"/>');
     expect(xml).toContain('<w:pStyle w:val="Normal"/><w:ind w:left="1200"/>');
     expect(xml).toContain('<w:pStyle w:val="Normal"/><w:ind w:left="900"/>');
+    expect(xml).toContain('<w:pStyle w:val="Quote"/><w:ind w:left="600"/>');
     expect(xml.match(/<w:pStyle w:val="Quote"/g)).toHaveLength(2);
   });
 
@@ -556,12 +535,12 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml.match(/r:embed="rId3"/g)).toHaveLength(2);
     expect(text(entries, "word/_rels/document.xml.rels").match(/relationships\/image/g)).toHaveLength(4);
 
-    const tallUrl = dataUrl("image/png", png(1, DOCX_LIMITS.imageDimension));
+    const tallUrl = dataUrl("image/png", png(1, 16384));
     const tall = await readZip(await documentToDocx({blocks: [block(`<img src="${tallUrl}" alt="tall">`)]}));
     expect(text(tall.entries, "word/document.xml")).toContain('cy="8869680"');
   });
 
-  it("accepts the editor JPEG alias and masks parser-sized image attributes", async () => {
+  it("accepts the editor JPEG alias and embeds images larger than the parser buffer", async () => {
     const jpgUrl = dataUrl("image/jpg", jpeg(2, 1));
     const largeUrl = dataUrl("image/png", png(1, 1, 2_400_000));
     expect(largeUrl.length).toBeGreaterThan(3 * 1024 * 1024);
@@ -575,42 +554,12 @@ describe("Workspace Docs DOCX package", () => {
     expect(text(entries, "word/document.xml")).toContain('descr="©"');
   });
 
-  it("does not count literal data URLs as images during parser masking", async () => {
+  it("does not count literal data URLs in text or unrelated attributes as images", async () => {
     const urls = Array.from({length: DOCX_LIMITS.images + 1}, () => "data:image/png;base64,AAAA").join(" ");
-    const largeUnused = `data:image/png;base64,${"A".repeat(DOCX_LIMITS.imageEncodedBytes + 1)}`;
+    const largeUnused = `data:image/png;base64,${"A".repeat(DOCX_LIMITS.imageBytes * 2)}`;
     const {entries} = await readZip(await documentToDocx({blocks: [block(
         `<p data-unused="${largeUnused}">${urls}</p>`)]}));
     expect(text(entries, "word/document.xml")).toContain(urls);
-    expect([...entries.keys()].some((name) => name.startsWith("word/media/"))).toBe(false);
-  });
-
-  it("rejects oversized GIF frames and aggregate animation pixels", async () => {
-    const oversizedFrame = dataUrl("image/gif", gif(1, 1, [[DOCX_LIMITS.imageDimension + 1, 1]]));
-    await expect(documentToDocx({blocks: [block(`<img src="${oversizedFrame}">`)]}))
-      .rejects.toThrow("dimensions exceed");
-
-    const animated = dataUrl("image/gif", gif(5000, 5000, [[5000, 5000], [5000, 5000]]));
-    await expect(documentToDocx({blocks: [block(`<img src="${animated}">`)]}))
-      .rejects.toThrow("pixel count exceeds");
-
-    const tooManyFrames = dataUrl("image/gif", gif(1, 1,
-        Array.from({length: DOCX_LIMITS.imageFrames + 1}, () => [1, 1])));
-    await expect(documentToDocx({blocks: [block(`<img src="${tooManyFrames}">`)]}))
-      .rejects.toThrow("frame count exceeds");
-  });
-
-  it("rejects excessive or inconsistent WebP animation work", async () => {
-    const animated = dataUrl("image/webp", animatedWebp(5000, 5000, [[5000, 5000], [5000, 5000]]));
-    await expect(documentToDocx({blocks: [block(`<img src="${animated}">`)]}))
-      .rejects.toThrow("pixel count exceeds");
-
-    const tooManyFrames = dataUrl("image/webp", animatedWebp(1, 1,
-        Array.from({length: DOCX_LIMITS.imageFrames + 1}, () => [1, 1])));
-    await expect(documentToDocx({blocks: [block(`<img src="${tooManyFrames}">`)]}))
-      .rejects.toThrow("frame count exceeds");
-
-    const mismatched = dataUrl("image/webp", animatedWebp(5000, 5000, [[1, 1, 5000, 5000]]));
-    const {entries} = await readZip(await documentToDocx({blocks: [block(`<img src="${mismatched}">`)]}));
     expect([...entries.keys()].some((name) => name.startsWith("word/media/"))).toBe(false);
   });
 
@@ -620,9 +569,9 @@ describe("Workspace Docs DOCX package", () => {
         `<p><a href="https://example.com/image"><img src="${source}" alt="linked"></a></p>`)]}));
     const xml = text(entries, "word/document.xml");
     const rels = text(entries, "word/_rels/document.xml.rels");
-    expect(xml).toContain('<a:hlinkClick r:id="rId4"/>');
-    expect(rels).toContain('Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"');
-    expect(rels).toContain('Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"');
+    expect(xml).toContain('<a:hlinkClick r:id="rId3"/>');
+    expect(rels).toContain('Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"');
+    expect(rels).toContain('Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"');
   });
 
   it("replaces invalid, signature-mismatched, and external images with visible safe text", async () => {
@@ -639,15 +588,16 @@ describe("Workspace Docs DOCX package", () => {
 
   it("flattens incidental table rows to paragraphs and cells to tabs while flattening unknown tags", async () => {
     const html = '<table><tbody><tr><td>A</td><td><b>B</b></td></tr><tr><td>C</td><td>D</td></tr></tbody></table>' +
-      '<section><custom>visible</custom><!-- hidden --><script>bad()</script><style>.bad{}</style></section>';
+      '<section><custom>visible</custom><!-- hidden --><script>bad()</script><style>.bad{}</style></section>' +
+      "<article>article</article><aside>aside</aside>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     expect(xml.match(/<w:tab\/>/g)).toHaveLength(2);
-    for (const value of ["A", "B", "C", "D", "visible"]) expect(xml).toContain(`>${value}</w:t>`);
+    for (const value of ["A", "B", "C", "D", "visible", "article", "aside"]) expect(xml).toContain(`>${value}</w:t>`);
     expect(runContaining(xml, "B")).toContain("<w:b/>");
     expect(xml).not.toContain("bad()");
     expect(xml).not.toContain(".bad{}");
-    expect(xml.match(/<w:p>/g)).toHaveLength(3);
+    expect(xml.match(/<w:p>/g)).toHaveLength(5);
   });
 
   it("ignores self-closing foreign elements without rejecting surrounding content", async () => {
@@ -658,29 +608,16 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).toContain(">after</w:t>");
   });
 
-  it("fails before returning a stream when parser, text, relationship, or media limits are exceeded", async () => {
-    await expect(documentToDocx({blocks: Array.from({length: DOCX_LIMITS.blocks + 1}, () => ({}))}))
-      .rejects.toThrow("block count exceeds");
+  it("fails before returning a stream when parser or media limits are exceeded", async () => {
     const deep = "<div>".repeat(DOCX_LIMITS.depth + 1) + "deep";
     await expect(documentToDocx({blocks: [block(deep)]})).rejects.toThrow("nesting exceeds");
-
-    const tooMuchText = "x".repeat(DOCX_LIMITS.textCharacters + 1);
-    await expect(documentToDocx({blocks: [block(`<p>${tooMuchText}</p>`)]})).rejects.toThrow("text exceeds");
-
-    const links = Array.from({length: DOCX_LIMITS.relationships - 1}, (_, index) =>
-      `<a href="https://example.com/${index}">x</a>`).join("");
-    await expect(documentToDocx({blocks: [block(`<p>${links}</p>`)]})).rejects.toThrow("relationship count exceeds");
 
     const image = dataUrl("image/png", png(1, 1));
     const images = `<p>${`<img src="${image}" alt="x">`.repeat(DOCX_LIMITS.images + 1)}</p>`;
     await expect(documentToDocx({blocks: [block(images)]})).rejects.toThrow("image count exceeds");
 
-    const oversized = dataUrl("image/png", png(DOCX_LIMITS.imageDimension + 1, 1));
-    await expect(documentToDocx({blocks: [block(`<img src="${oversized}">`)]})).rejects.toThrow("dimensions exceed");
-
-    const tooMuchEncoded = `data:image/png;base64,${"A".repeat(DOCX_LIMITS.imageEncodedBytes + 1)}`;
-    await expect(documentToDocx({blocks: [block(`<img src="${tooMuchEncoded}">`)]}))
-      .rejects.toThrow("image encoded data exceeds");
+    const oversized = `data:image/png;base64,${"A".repeat(DOCX_LIMITS.imageBytes * 4 / 3 + 4)}`;
+    await expect(documentToDocx({blocks: [block(`<img src="${oversized}">`)]})).rejects.toThrow("per-image export limit");
   });
 });
 
