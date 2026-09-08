@@ -386,6 +386,12 @@ interface StoredCredentials {
 interface StoredNonce {
   value: string;
   expiresAt: number;
+  /**
+   * Set when this flow reconnects an existing account, so its grant is staged rather than made
+   * live. The mode travels with the flow instead of living on the account: committing one
+   * reconnect while another is in flight must not change how that other flow lands.
+   */
+  reconnect?: true;
 }
 
 type CompleteConnectionResult =
@@ -406,11 +412,11 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async prepareReconnect(nonce: string): Promise<void> {
-    this.ctx.storage.kv.put("reconnecting", true);
     this.ctx.storage.kv.put("expiredNotified", false);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: nonce,
       expiresAt: Date.now() + NONCE_LIFETIME_MS,
+      reconnect: true,
     });
   }
 
@@ -453,7 +459,7 @@ export class UserAccount extends DurableObject<Env> {
     }
 
     let handoff: ConnectHandoff;
-    if (this.ctx.storage.kv.get<boolean>("reconnecting")) {
+    if (stored.reconnect) {
       // The reconnect URL is a bearer capability, so the new credentials are only staged until the
       // Workshop has confirmed the browser that finished the flow is the owner's (see
       // commitReconnect). Bound gadgets keep reading the current token meanwhile.
@@ -486,7 +492,6 @@ export class UserAccount extends DurableObject<Env> {
     if (!creds) throw new Error("No reconnect is awaiting confirmation. Please try again.");
     this.ctx.storage.kv.put<StoredCredentials>("credentials", creds);
     this.ctx.storage.kv.put("expiredNotified", false);
-    this.ctx.storage.kv.delete("reconnecting");
   }
 
   getCredentials(): HomeAssistantCredentials {

@@ -1574,9 +1574,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * links the account for AI Gateway billing: the login callback resolves this user by verified
    * email, then calls here to store the resulting grant. That grant covers billing only: sign-in
    * requests no gadget-facing resources, so any later resource access is authorized separately.
+   * Returns the id of the connected account the grant now backs, so the login callback — which the
+   * gatekeeper keeps for that account's lifetime — can find it again.
    */
   async linkConnectedAccountFromLogin(
-      account: Fetcher<GatekeeperUser>, vendorId: string, expiresAt?: Date): Promise<void> {
+      account: Fetcher<GatekeeperUser>, vendorId: string, expiresAt?: Date): Promise<number> {
     let description = await account.describe();
     let uniqueName = description.uniqueName;
 
@@ -1603,7 +1605,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         existing.credentialExpiresAt = expiresAt;
         existing.credentialsExpired = false;
         this.storage.connectedAccounts.put(existing);
-        return;
+        return existing.id;
       }
     }
 
@@ -1616,6 +1618,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       vendorId,
       credentialExpiresAt: expiresAt,
     });
+    return id;
   }
 
   // Find an existing connected account for the given vendor + identity (uniqueName), excluding
@@ -1672,11 +1675,21 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record) throw new Error("No such account.");
 
-    // Re-fetch description since the user may have re-authed with different info.
-    record.description = await record.account.describe();
     record.credentialsExpired = false;
     record.credentialExpiresAt = expiresAt;
     this.storage.connectedAccounts.put(record);
+
+    // Re-fetch the description since the user may have re-authed with different info. Best-effort:
+    // the credentials are live either way, and a record still showing as expired over a failed
+    // describe() would send the user back through a reconnect that changes nothing.
+    try {
+      record.description = await record.account.describe();
+      this.storage.connectedAccounts.put(record);
+    } catch (err) {
+      logger.warn("failed to refresh the description of a restored account", {
+        event: "account.describe.refresh.failed", vendorId: record.vendorId, accountId, error: err,
+      });
+    }
   }
 
   // --- Connect handoff (see connect-handoff.ts) ---
@@ -1750,17 +1763,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       if (record.stageId === undefined) throw new Error("Corrupt pending reconnect.");
       // A failed commit changed nothing live, and the gatekeeper's stage expires on its own.
       await account.account.commitReconnect(record.stageId);
-      try {
-        await this.markCredentialsRestored(record.accountId, record.credentialExpiresAt);
-      } catch (err) {
-        // The credentials are live but the account still shows as expired; the next successful
-        // operation or a credentialsRestored() from the gatekeeper clears that.
-        logger.error("committed reconnect could not be marked restored", {
-          event: "account.reconnect.mark.failed", vendorId: account.vendorId,
-          accountId: record.accountId, error: err,
-        });
-        throw err;
-      }
+      await this.markCredentialsRestored(record.accountId, record.credentialExpiresAt);
       logger.info("account credentials restored", {
         event: "account.reconnect.completed", vendorId: account.vendorId,
         accountId: record.accountId,
@@ -1790,9 +1793,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // Arm the alarm for the soonest pending expiry (the alarm is used for nothing else).
   async #armHandoffSweep(): Promise<void> {
     let next: number | undefined;
-    for (let pending of this.storage.pendingHandoffs.list()) {
-      let at = pending.expiresAt.getTime();
-      if (next === undefined || at < next) next = at;
+    try {
+      for (let pending of this.storage.pendingHandoffs.list()) {
+        let at = pending.expiresAt.getTime();
+        if (next === undefined || at < next) next = at;
+      }
+    } catch (err) {
+      // A record whose stub no longer deserializes (its Worker was unbound) fails the listing, and
+      // without a keys-only listing it cannot be deleted either. Staging a new connect must not
+      // depend on listing old ones, so arm a retry instead: one warning per lifetime for this user
+      // until the Worker is bound again, while the grant the record holds is reachable by nobody.
+      logger.warn("failed to list pending handoffs", {
+        event: "connect.handoff.arm.failed", error: err,
+      });
+      next = Date.now() + PENDING_HANDOFF_LIFETIME_MS;
     }
     if (next === undefined) {
       await this.ctx.storage.deleteAlarm();
@@ -1811,7 +1825,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     } catch (err) {
       // Same failure mode as #connectedAccountRecords: a stub for a Worker that is no longer bound
-      // fails to deserialize. Leave the sweep for next time rather than failing every alarm.
+      // fails to deserialize. Leave the sweep for next time (#armHandoffSweep bounds the retry).
       logger.warn("failed to list pending handoffs", {
         event: "connect.handoff.sweep.failed", error: err,
       });

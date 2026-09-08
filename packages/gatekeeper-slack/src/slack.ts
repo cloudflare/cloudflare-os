@@ -33,6 +33,12 @@ type StoredNonce = {
   value: string;
   expiresAt: number;
   stage: "initiation" | "oauth";
+  /**
+   * Set when this flow reconnects an existing account, so its grant is staged rather than made
+   * live. The mode travels with the flow instead of living on the account: committing one
+   * reconnect while another is in flight must not change how that other flow lands.
+   */
+  reconnect?: true;
 };
 
 const NONCE_BYTES = 32;
@@ -345,12 +351,12 @@ export class UserAccount extends DurableObject<Env> {
    * and notifies via reconnectComplete() instead of complete(); commitReconnect() makes them live.
    */
   async prepareReconnect(initiationNonce: string, requestedScopes: string[]) {
-    this.ctx.storage.kv.put<boolean>("reconnecting", true);
     this.ctx.storage.kv.put<string[]>("requestedScopes", requestedScopes);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
       stage: "initiation",
+      reconnect: true,
     });
   }
 
@@ -372,6 +378,7 @@ export class UserAccount extends DurableObject<Env> {
       value: oauthNonce,
       expiresAt: Date.now() + OAUTH_NONCE_LIFETIME_MS,
       stage: "oauth",
+      reconnect: stored.reconnect,
     });
     let scopes = this.ctx.storage.kv.get<string[]>("requestedScopes") ?? resourceUrlPatternsToScopes();
     return { oauthNonce, scopes };
@@ -389,6 +396,7 @@ export class UserAccount extends DurableObject<Env> {
     }
     // Consume OAuth state before the network exchange to prevent callback replay.
     this.ctx.storage.kv.delete("nonce");
+    let reconnect = stored.reconnect;
 
     let completion = await this.#updateCredentials(async () => {
       if (!this.env.CLIENT_ID || !this.env.CLIENT_SECRET) {
@@ -406,7 +414,7 @@ export class UserAccount extends DurableObject<Env> {
       // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
       // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
       // gadgets keep reading the current token meanwhile.
-      let stageId = this.ctx.storage.kv.get<boolean>("reconnecting")
+      let stageId = reconnect
           ? stageCredentials(this.ctx.storage.kv, grant, Date.now())
           : undefined;
       if (stageId === undefined) this.#writeGrant(grant);
@@ -443,7 +451,6 @@ export class UserAccount extends DurableObject<Env> {
       let grant = commitStagedCredentials<SlackOAuthGrant>(this.ctx.storage.kv, Date.now(), stageId);
       if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
       this.#writeGrant(grant);
-      this.ctx.storage.kv.delete("reconnecting");
     });
   }
 

@@ -112,7 +112,10 @@ class OAuthFlowAccount extends McpAccountBase<AccountEnv> {
     _server: ConnectedServer, accessToken: string | null,
   ): Promise<never> {
     if (!accessToken) throw new McpAuthRequiredError("authorization required", null);
-    return { serverInfo: { name: "Acme" } } as never;
+    // The transport session the server opened for these credentials.
+    return {
+      info: { serverInfo: { name: "Acme" } }, sessionId: `session-for-${accessToken}`,
+    } as never;
   }
 }
 
@@ -473,6 +476,7 @@ describe("connect initiation nonce", () => {
     expect(await resumed.acceptAuthCode("authorization-code", oauthNonce)).toEqual(HANDOFF);
     expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token)
       .toBe("access-token");
+    expect(context.storage.kv.get("mcpSessionId")).toBe("session-for-access-token");
     expect(complete).toHaveBeenCalledOnce();
     expect(await resumed.acceptAuthCode("authorization-code", oauthNonce)).toBeNull();
   });
@@ -487,6 +491,7 @@ describe("connect initiation nonce", () => {
     context.storage.kv.put("server", server("https://mcp.example/mcp"));
     context.storage.kv.put("callback", { complete, reconnectComplete });
     context.storage.kv.put("tokens", { access_token: "old-token", token_type: "Bearer", expiresAt: 1 });
+    context.storage.kv.put("mcpSessionId", "old-session");
     const account = new OAuthFlowAccount(context as never, {});
     const nonce = "7".repeat(64);
     await account.prepareReconnect(nonce);
@@ -501,7 +506,10 @@ describe("connect initiation nonce", () => {
     expect(complete).not.toHaveBeenCalled();
     expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token)
       .toBe("old-token");
-    expect(context.storage.kv.get("reconnecting")).toBe(true);
+    // The session the probe opened with the new tokens is staged with them: bound facets still
+    // read the old tokens, and a session opened under other credentials is not theirs to use.
+    expect(context.storage.kv.get("mcpSessionId")).toBe("old-session");
+    expect(context.storage.kv.get("reconnectTokens")).toBeUndefined();
     // The Workshop was told which stage this completion produced, and only that id commits it.
     const stageId = reconnectComplete.mock.calls[0][0];
     expect(stageId).toMatch(/^[0-9a-f]{64}$/);
@@ -513,9 +521,54 @@ describe("connect initiation nonce", () => {
     await account.commitReconnect(stageId);
     expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token)
       .toBe("access-token");
-    expect(context.storage.kv.get("reconnecting")).toBeUndefined();
+    expect(context.storage.kv.get("mcpSessionId")).toBe("session-for-access-token");
     expect(context.storage.kv.get("stagedCredentials")).toBeUndefined();
     await expect(account.commitReconnect(stageId)).rejects.toThrow(/No reconnect is awaiting/);
+  });
+
+  it("stages an overlapping reconnect even after an earlier one is committed", async () => {
+    // Redeeming reconnect A must not change how reconnect B, already in flight, lands: B's URL may
+    // be in a phished victim's hands, so B's grant has to stay in escrow until B's own ticket.
+    const context = fakeContext();
+    stubOAuthServer();
+    let issued = 0;
+    const upstream = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (String(input) !== "https://auth.example/token") return upstream(input, init);
+      issued++;
+      return Response.json({
+        access_token: `token-${issued}`, refresh_token: `refresh-${issued}`,
+        token_type: "Bearer", expires_in: 3600,
+      });
+    });
+    const reconnectComplete = vi.fn(async (_stageId: string) => HANDOFF);
+    const complete = vi.fn(async () => HANDOFF);
+    context.storage.kv.put("server", server("https://mcp.example/mcp"));
+    context.storage.kv.put("callback", { complete, reconnectComplete });
+    context.storage.kv.put("tokens", { access_token: "old-token", token_type: "Bearer", expiresAt: 1 });
+    const account = new OAuthFlowAccount(context as never, {});
+    const liveToken = () =>
+      context.storage.kv.get<{ access_token: string }>("tokens")?.access_token;
+    const startReconnect = async (nonce: string) => {
+      await account.prepareReconnect(nonce);
+      const outcome = await account.beginConnect(nonce, null);
+      expect(outcome.kind).toBe("redirect");
+      const state = new URL((outcome as { url: string }).url).searchParams.get("state")!;
+      return state.slice(state.indexOf(":") + 1);
+    };
+
+    const a = await startReconnect("1".repeat(64));
+    expect(await account.acceptAuthCode("code-a", a)).toEqual(HANDOFF);
+    const b = await startReconnect("2".repeat(64));
+    await account.commitReconnect(reconnectComplete.mock.calls[0][0]);
+    expect(liveToken()).toBe("token-1");
+
+    expect(await account.acceptAuthCode("code-b", b)).toEqual(HANDOFF);
+    expect(reconnectComplete).toHaveBeenCalledTimes(2);
+    expect(complete).not.toHaveBeenCalled();
+    expect(liveToken()).toBe("token-1");
+    await account.commitReconnect(reconnectComplete.mock.calls[1][0]);
+    expect(liveToken()).toBe("token-2");
   });
 
   it("re-authorizes a reconnect rather than refreshing the live tokens", async () => {

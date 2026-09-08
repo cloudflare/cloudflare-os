@@ -24,14 +24,15 @@ type UserInternals = UserDurableObject & {
   };
   ctx: DurableObjectState & {
     exports: {
-      FakeGatekeeperAccount(options: { props: { name: string; failRevoke?: boolean } })
-        : Fetcher<FakeGatekeeperAccount>;
+      FakeGatekeeperAccount(options: { props: FakeAccountProps }): Fetcher<FakeGatekeeperAccount>;
       TestConnectCallback(options: {
         props: { userId: string; accountId: number; vendorId: string };
       }): Fetcher<GatekeeperConnectCallbackImpl>;
     };
   };
 };
+
+type FakeAccountProps = { name: string; failRevoke?: boolean; failDescribe?: boolean };
 
 let userCounter = 0;
 function freshUser() {
@@ -46,8 +47,8 @@ function freshUser() {
 
 // An account stub the DO can persist (a WorkerEntrypoint reached through ctx.exports, like a real
 // gatekeeper's), viewed as the GatekeeperUser the kernel expects.
-function fakeAccount(user: UserInternals, name: string, failRevoke?: boolean) {
-  const account = user.ctx.exports.FakeGatekeeperAccount({ props: { name, failRevoke } });
+function fakeAccount(user: UserInternals, name: string, failing?: Omit<FakeAccountProps, "name">) {
+  const account = user.ctx.exports.FakeGatekeeperAccount({ props: { name, ...failing } });
   return { account: account as unknown as Fetcher<GatekeeperUser>, calls: () => account.calls() };
 }
 
@@ -161,7 +162,7 @@ describe("connect handoff", () => {
         id: 0, account: fakeAccount(user, "dup").account, vendorId: "github",
         description: { displayName: "dup", uniqueName: "dup" },
       });
-      return user.stagePendingConnect(1, fakeAccount(user, "dup", true).account, "github");
+      return user.stagePendingConnect(1, fakeAccount(user, "dup", { failRevoke: true }).account, "github");
     });
 
     expect(await redeem(stub, ticket)).toBe("revoke failed");
@@ -199,6 +200,53 @@ describe("connect handoff", () => {
         credentialsExpired: false, credentialExpiresAt: new Date("2027-06-01"),
         description: { displayName: "renewed" },
       });
+    });
+  });
+
+  it("marks a committed reconnect restored even when the description cannot be refreshed", async () => {
+    const { stub, inDo } = freshUser();
+    const { ticket } = await inDo(async user => {
+      user.storage.nextAccountId.put(1);
+      user.storage.connectedAccounts.put({
+        id: 0, account: fakeAccount(user, "stale", { failDescribe: true }).account, vendorId: "github",
+        description: { displayName: "old" }, credentialsExpired: true,
+      });
+      return user.stagePendingRestore(0, STAGE_ID, new Date("2027-06-01"));
+    });
+
+    // The credentials went live at the commit; a failed describe() must not leave the account
+    // showing as expired, which would send the user back through a reconnect that changes nothing.
+    expect(await redeem(stub, ticket)).toBe("ok");
+    await inDo(async user => {
+      expect(await fakeAccount(user, "stale").calls())
+        .toEqual([`commitReconnect(${STAGE_ID})`, "describe"]);
+      expect(user.storage.connectedAccounts.get(0)).toMatchObject({
+        credentialsExpired: false, credentialExpiresAt: new Date("2027-06-01"),
+        description: { displayName: "old" },
+      });
+    });
+  });
+
+  it("stages a new connect although an old pending record cannot be listed", async () => {
+    // A record whose stub no longer deserializes (its Worker was unbound) fails every listing, and
+    // cannot be deleted without one. Staging must not depend on it, and the sweep must keep retrying
+    // rather than failing the alarm forever.
+    const { stub, inDo } = freshUser();
+    const before = Date.now();
+    const { ticket } = await inDo(async user => {
+      user.ctx.storage.kv.put(`pendingHandoffs:${"0".repeat(64)}`, null);
+      expect(() => pendingCount(user)).toThrow();
+      const staged = await user.stagePendingConnect(0, fakeAccount(user, "listable").account, "github");
+      const alarm = await user.ctx.storage.getAlarm();
+      expect(alarm).toBeGreaterThanOrEqual(before + PENDING_HANDOFF_LIFETIME_MS);
+      await user.alarm();
+      expect(await user.ctx.storage.getAlarm()).toBeGreaterThanOrEqual(before + PENDING_HANDOFF_LIFETIME_MS);
+      return staged;
+    });
+
+    expect(await redeem(stub, ticket)).toBe("ok");
+    await inDo(async user => {
+      expect(user.storage.connectedAccounts.get(0)?.vendorId).toBe("github");
     });
   });
 

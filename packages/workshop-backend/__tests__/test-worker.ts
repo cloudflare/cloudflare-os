@@ -4,6 +4,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { AccountDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { GatekeeperConnectCallbackImpl } from "../src/user.js";
+import { LoginConnectCallbackImpl } from "../src/auth/login-flow.js";
 
 export * from "../src/server.js";
 export { default } from "../src/server.js";
@@ -13,6 +14,8 @@ export { default } from "../src/server.js";
  * than covered by the `export *`.
  */
 export class TestConnectCallback extends GatekeeperConnectCallbackImpl {}
+/** The sign-in callback, reachable the same way. */
+export class TestLoginCallback extends LoginConnectCallbackImpl {}
 
 /** What each FakeGatekeeperAccount has been asked to do, by its `name` prop. */
 const accountCalls = new Map<string, string[]>();
@@ -20,10 +23,10 @@ const accountCalls = new Map<string, string[]>();
 /**
  * A gatekeeper account as the Workshop sees one: a persistent stub it can store and call back into.
  * Records calls by `props.name` so a test can ask any instance what happened (`calls()`); with
- * `failRevoke`, every `revoke()` rejects after being recorded.
+ * `failRevoke` / `failDescribe`, that method rejects after being recorded.
  */
 export class FakeGatekeeperAccount
-    extends WorkerEntrypoint<unknown, { name: string; failRevoke?: boolean }> {
+    extends WorkerEntrypoint<unknown, { name: string; failRevoke?: boolean; failDescribe?: boolean }> {
   #record(call: string) {
     const calls = accountCalls.get(this.ctx.props.name) ?? [];
     calls.push(call);
@@ -32,6 +35,7 @@ export class FakeGatekeeperAccount
 
   async describe(): Promise<AccountDescription> {
     this.#record("describe");
+    if (this.ctx.props.failDescribe) throw new Error("describe failed");
     return { displayName: this.ctx.props.name, uniqueName: this.ctx.props.name };
   }
 

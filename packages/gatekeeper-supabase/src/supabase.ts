@@ -79,6 +79,12 @@ type StoredNonce = {
   value: string;
   expiresAt: number;
   stage: "initiation" | "oauth";
+  /**
+   * Set when this flow reconnects an existing account, so its grant is staged rather than made
+   * live. The mode travels with the flow instead of living on the account: committing one
+   * reconnect while another is in flight must not change how that other flow lands.
+   */
+  reconnect?: true;
 };
 
 type StoredToken = {
@@ -386,12 +392,12 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async prepareReconnect(initiationNonce: string): Promise<void> {
-    this.ctx.storage.kv.put("reconnecting", true);
     this.ctx.storage.kv.put("expiredNotified", false);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
       stage: "initiation",
+      reconnect: true,
     });
   }
 
@@ -408,6 +414,7 @@ export class UserAccount extends DurableObject<Env> {
       value: oauthNonce,
       expiresAt: Date.now() + OAUTH_NONCE_LIFETIME_MS,
       stage: "oauth",
+      reconnect: stored.reconnect,
     });
     return oauthNonce;
   }
@@ -438,7 +445,7 @@ export class UserAccount extends DurableObject<Env> {
     const grant = await exchangeAuthCode(code, clientId, clientSecret, `${getBaseUrl(this.env)}/oauth`);
 
     let handoff: ConnectHandoff;
-    if (this.ctx.storage.kv.get<boolean>("reconnecting")) {
+    if (stored.reconnect) {
       // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
       // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
       // gadgets keep reading the current token meanwhile.
@@ -468,7 +475,6 @@ export class UserAccount extends DurableObject<Env> {
     if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
     this.#storeGrant(grant.accessToken, grant.refreshToken, grant.expiresIn);
     this.ctx.storage.kv.put("expiredNotified", false);
-    this.ctx.storage.kv.delete("reconnecting");
   }
 
   #storeGrant(accessToken: string, refreshToken: string, expiresIn: number): void {

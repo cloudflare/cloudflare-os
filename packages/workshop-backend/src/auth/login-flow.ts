@@ -24,11 +24,16 @@
 // shortly after we read the email) — so login does NOT create a persistent connected account.
 // Capability access (repos, docs, billing) is granted later when the user explicitly connects the
 // gatekeeper, which requests the full scopes and persists the connection.
+//
+// Cloudflare is the exception: signing in also links the account for billing, and the gatekeeper
+// keeps this callback for that account's lifetime. The PendingLogin DO therefore also records which
+// user and account the sign-in produced (`link`), outliving the login result, so expiry notices and
+// reconnects for the account reach its user DO.
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { ConnectHandoff, GatekeeperConnectCallback, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
 import { createWorkshopLogger } from "../observability";
-import { CLOUDFLARE_VENDOR_ID } from "../user.js";
+import { CLOUDFLARE_VENDOR_ID, type UserDurableObject } from "../user.js";
 import { readAdminConfig } from "../admin-config.js";
 import {
   handoffTargetOrigin, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS,
@@ -41,14 +46,19 @@ type PendingOutcome = { token: string; ticketHash: string } | { error: string };
 // the alarm having fired on time.
 type PendingResult = PendingOutcome & { expiresAt: number };
 
+// The connected account a sign-in persisted, by the user DO that owns it (see `PendingLogin.link`).
+type AccountLink = { userId: string; accountId: number };
+
 const RESULT_KEY = "result";
+const LINK_KEY = "link";
 const EXPIRED_MESSAGE = "This sign-in attempt has expired. Please try again.";
 
 /**
  * Bridges a login result from the (separate) OAuth-callback invocation back to the browser that
  * started the attempt. The result is written to storage: the ticket reaches the browser only after
  * deliver() has returned, so claim() always follows it, but nothing keeps this DO in memory across
- * that gap. It lives for PENDING_HANDOFF_LIFETIME_MS at most; an alarm then wipes an unclaimed token.
+ * that gap. The result lives for PENDING_HANDOFF_LIFETIME_MS at most; an alarm then wipes an
+ * unclaimed token. An account link (`link`) is kept for as long as the account exists.
  */
 export class PendingLogin extends DurableObject<Cloudflare.Env> {
   /** Called by LoginConnectCallbackImpl on success, with the hash of the ticket that may claim it. */
@@ -68,12 +78,25 @@ export class PendingLogin extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * Records the connected account this sign-in persisted, so the callback the gatekeeper holds for
+   * it can reach the account's user DO. Independent of the login result: a sign-in whose ticket is
+   * never claimed still linked the (owner's own) account.
+   */
+  async link(userId: string, accountId: number): Promise<void> {
+    this.ctx.storage.kv.put<AccountLink>(LINK_KEY, { userId, accountId });
+  }
+
+  async getLink(): Promise<AccountLink | null> {
+    return this.ctx.storage.kv.get<AccountLink>(LINK_KEY) ?? null;
+  }
+
+  /**
    * Release the token to the holder of the matching ticket. Single use: the result is removed before
    * it is checked, so neither a wrong ticket nor a repeat gets a second try.
    */
   async claim(ticket: string): Promise<string> {
     const result = this.ctx.storage.kv.get<PendingResult>(RESULT_KEY);
-    await this.ctx.storage.deleteAll();
+    this.ctx.storage.kv.delete(RESULT_KEY);
     await this.ctx.storage.deleteAlarm();
     if (!result || Date.now() >= result.expiresAt) throw new Error(EXPIRED_MESSAGE);
     if ("error" in result) throw new Error(result.error);
@@ -85,7 +108,7 @@ export class PendingLogin extends DurableObject<Cloudflare.Env> {
   }
 
   async alarm(): Promise<void> {
-    await this.ctx.storage.deleteAll();
+    this.ctx.storage.kv.delete(RESULT_KEY);
   }
 }
 
@@ -146,7 +169,9 @@ export class LoginConnectCallbackImpl
       // requested full (non-transient) scopes, so persist the grant as a connected account before
       // handing back the session. Other providers use minimal, transient sign-in grants (no persist).
       if (this.ctx.props.vendorId === CLOUDFLARE_VENDOR_ID) {
-        await userStub.linkConnectedAccountFromLogin(account, this.ctx.props.vendorId, expiresAt);
+        const accountId = await userStub.linkConnectedAccountFromLogin(
+            account, this.ctx.props.vendorId, expiresAt);
+        await pending.link(userStub.id.toString(), accountId);
       }
       // Session tokens are "<doName>:<secret>"; PublicApi.authenticate() routes via idFromName of
       // the first part. The user DO is keyed by email, so the prefix must be the email.
@@ -165,18 +190,28 @@ export class LoginConnectCallbackImpl
     }
   }
 
-  /**
-   * No-ops: for transient sign-in grants there's nothing persisted to update. For the Cloudflare
-   * billing connection (persisted on login) these would ideally flip the account's credential flag,
-   * but the callback doesn't carry the user/account identity (it's only learned in complete()). The
-   * billing path degrades gracefully regardless — getUsableAccessToken() returns null on expiry and
-   * the user falls back to the free tier / a reconnect prompt.
-   */
-  async credentialsExpired(): Promise<void> {}
-  async credentialsRestored(_expiresAt?: Date): Promise<void> {}
+  // The user DO and account id a sign-in linked (Cloudflare), or null for a transient sign-in
+  // grant, which persists nothing there is to update.
+  async #linked(): Promise<{ user: DurableObjectStub<UserDurableObject>; accountId: number } | null> {
+    const link = await this.#pending().getLink();
+    if (!link) return null;
+    const id = this.ctx.exports.UserDurableObject.idFromString(link.userId);
+    return { user: this.ctx.exports.UserDurableObject.get(id), accountId: link.accountId };
+  }
 
-  /** Sign-in grants are never reconnected: there is no persisted account to restore. */
-  async reconnectComplete(_stageId: string, _expiresAt?: Date): Promise<ConnectHandoff> {
-    throw new Error("Sign-in flows cannot be reconnected.");
+  async credentialsExpired(): Promise<void> {
+    const linked = await this.#linked();
+    if (linked) await linked.user.markCredentialsExpired(linked.accountId);
+  }
+
+  async credentialsRestored(expiresAt?: Date): Promise<void> {
+    const linked = await this.#linked();
+    if (linked) await linked.user.markCredentialsRestored(linked.accountId, expiresAt);
+  }
+
+  async reconnectComplete(stageId: string, expiresAt?: Date): Promise<ConnectHandoff> {
+    const linked = await this.#linked();
+    if (!linked) throw new Error("Sign-in flows cannot be reconnected.");
+    return linked.user.stagePendingRestore(linked.accountId, stageId, expiresAt);
   }
 }

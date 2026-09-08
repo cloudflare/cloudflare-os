@@ -62,8 +62,10 @@ export function connectHandoffTicket(event: MessageEvent): string | null {
  * completion page reaches us over a same-origin BroadcastChannel instead (`useConnectHandoffListener`).
  *
  * Under the Vite dev server the Workshop and the gatekeepers are on different origins, so a channel
- * could not reach us; there the popup keeps its opener and the page falls back to `postMessage`.
- * Throws when the browser blocked the popup.
+ * could not reach us; there the popup keeps its opener and the page falls back to `postMessage`. A
+ * provider that isolates its pages with COOP severs that opener too, and no channel crosses origins,
+ * so such a connect ends in dev on "couldn't reach the Workshop"; production is unaffected, the
+ * popup being disowned there anyway. Throws when the browser blocked the popup.
  */
 export function openConnectWindow(url: string): Window {
   const popup = window.open('', 'gadgets-connect', 'popup,width=520,height=680')

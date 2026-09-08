@@ -63,10 +63,9 @@ function liveStage<T>(kv: KvMutable, now: number): StagedCredentials<T> | undefi
 }
 
 /**
- * Reads the staged credentials without consuming them, for a connector that must *use* them once
- * before commit — an MCP account re-probes the server with the tokens it just obtained — or that
- * needs the id of a stage it wrote earlier in the same flow. Every other reader waits for
- * `commitStagedCredentials`.
+ * Reads the staged credentials without consuming them, for a connector that needs the id of a stage
+ * it wrote earlier in the same flow, or must *use* the credentials once before commit. Every other
+ * reader waits for `commitStagedCredentials`.
  * @param kv Durable Object storage.
  * @param now Current Unix time in milliseconds.
  * @returns The staged credentials and their stage id, or `null` when nothing live is staged.

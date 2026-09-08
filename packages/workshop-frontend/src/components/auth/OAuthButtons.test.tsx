@@ -81,6 +81,39 @@ describe('OAuthButtons', () => {
     expect(popup.close).toHaveBeenCalled()
   })
 
+  it('keeps listening after the popup handle dies, and claims a broadcast ticket', async () => {
+    // A provider that isolates its pages with COOP severs the opener mid-flow: the handle reports
+    // closed while the flow is still running, and the handoff page reaches us over the channel.
+    const severed = { closed: false, close: vi.fn<() => void>() } as unknown as Window
+    vi.spyOn(window, 'open').mockReturnValue(severed)
+    claim.mockResolvedValue('alice@example.com:secret')
+    const rpcStub = {
+      startGatekeeperLogin: async () => ({ url: 'https://gk.example/login', attempt }),
+    } as unknown as RpcStub<PublicApi>
+    const onSuccess = mount(rpcStub)
+    const button = () => container!.querySelector('button')!
+
+    await clickSignIn()
+    await settle()
+    expect(button().disabled).toBe(true)
+
+    ;(severed as { closed: boolean }).closed = true
+    await act(() => new Promise(resolve => setTimeout(resolve, 600)))
+    // Not treated as a cancellation: the buttons come back, the attempt stays live.
+    expect(button().disabled).toBe(false)
+    expect(container!.textContent).not.toContain('cancelled')
+    expect(claim).not.toHaveBeenCalled()
+
+    const sender = new BroadcastChannel(CONNECT_HANDOFF_MESSAGE_TYPE)
+    // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no targetOrigin.
+    sender.postMessage({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: TICKET })
+    sender.close()
+    await vi.waitFor(() => expect(claim).toHaveBeenCalledExactlyOnceWith(TICKET))
+    await settle()
+    expect(localStorage.getItem('authToken')).toBe('alice@example.com:secret')
+    expect(onSuccess).toHaveBeenCalledOnce()
+  })
+
   it('opens nothing if it was unmounted while the sign-in was starting', async () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(popup)
     const start = deferred<{ url: string; attempt: RpcStub<LoginAttempt> }>()

@@ -61,6 +61,9 @@ describe("handleMcpHttpRequest", () => {
     );
 
     expect(response.status).toBe(200);
+    // The page carries the ticket, so it must never be cached or framed.
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Content-Security-Policy")).toBe("frame-ancestors 'none'");
     // The page hands the ticket to the Workshop window that opened the flow, and nobody else.
     const html = await response.text();
     expect(html).toContain(HANDOFF.ticket);
