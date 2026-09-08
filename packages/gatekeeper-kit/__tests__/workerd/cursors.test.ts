@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
-import type { RpcStub } from "cloudflare:workers";
+import type {
+  GatekeeperUserVerifier,
+  GitCache,
+  ObservationAuthorizer,
+  ObservationDescription,
+} from "@gadgets/workshop-shared/gatekeeper";
+import { RpcStub, RpcTarget } from "cloudflare:workers";
 import {
   ArrayCursor,
   OffsetCursor,
@@ -17,6 +22,36 @@ type Issue = { id: number; open: boolean };
 function pagedApi(items: Issue[]) {
   return vi.fn(async (page: number, perPage: number) =>
     items.slice((page - 1) * perPage, page * perPage));
+}
+
+/** A real authorizer, so a gate built from its stub is type-checked rather than cast into place. */
+class TestAuthorizer extends RpcTarget implements ObservationAuthorizer {
+  readonly #seen: string[];
+
+  constructor(seen: string[]) {
+    super();
+    this.#seen = seen;
+  }
+
+  async authorizeObservation(description: ObservationDescription): Promise<void> {
+    if (description.excludeObservers?.length) {
+      throw new Error(`cannot hide from ${description.excludeObservers.join(", ")}`);
+    }
+    this.#seen.push(description.description);
+  }
+
+  async getGitCache(): Promise<GitCache> {
+    throw new Error("Git cache is not used in this test.");
+  }
+}
+
+/**
+ * A stub over a fresh `TestAuthorizer` and the descriptions it accepted. Annotated, never cast: a
+ * gate demanding the whole approval queue would fail to compile against it.
+ */
+function makeAuthorizer(): { authorizer: RpcStub<ObservationAuthorizer>; seen: string[] } {
+  const seen: string[] = [];
+  return { authorizer: new RpcStub(new TestAuthorizer(seen)), seen };
 }
 
 /** Serves a scripted sequence of token pages; past the end the provider reports exhaustion. */
@@ -516,9 +551,9 @@ describe("TokenCursor", () => {
   it("drives a real gate through every empty case the documented pattern must survive", async () => {
     // The other tests stub `authorizePage`, so they cannot catch a scope the gate itself refuses.
     // A spent window and an exhausted walk both arrive with no items, and `{ ids: [] }` is refused.
-    const authorizeObservation = vi.fn(async (_sent: { description: string }) => {});
-    const gate = new ObservationGate(
-      { authorizeObservation } as unknown as RpcStub<ApprovalQueue>,
+    const { authorizer, seen } = makeAuthorizer();
+    using gate = new ObservationGate(
+      authorizer,
       // A `sets` scope needs the strategy that actually checks them.
       trackedCollectionObservers({ kv: fakeKv(), hasCollectionAccess: async () => [] }));
     const cursor = new TokenCursor<Issue>({
@@ -540,35 +575,42 @@ describe("TokenCursor", () => {
     // A page, then exhaustion. Neither may throw out of the gate.
     expect(ids(await cursor.next())).toEqual([1]);
     expect(await cursor.next()).toBeNull();
-    expect(authorizeObservation.mock.calls.map(([sent]) => sent.description))
-      .toEqual(["Read 1 issues."]);
+    expect(seen).toEqual(["Read 1 issues."]);
+  });
+
+  it("refuses a gated page through a real read-only authorizer stub", async () => {
+    // The gate needs only `ObservationAuthorizer` -- exactly what a catalog or slash-command
+    // handler is given.
+    const { authorizer, seen } = makeAuthorizer();
+    const strategy = trackedCollectionObservers<string[]>({
+      kv: fakeKv(),
+      hasCollectionAccess: async (allowed, collectionIds) =>
+        collectionIds.map(id => allowed.includes(id)),
+    });
+    using gate = new ObservationGate(authorizer, strategy);
+    await strategy.addObserver("limited", ["s1"] as unknown as Fetcher<GatekeeperUserVerifier>);
+
+    using cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [{ id: 1, open: true }] }]),
+      pageSize: 1,
+      authorizePage: issues => gate.authorize(
+        { title: "Issues", description: `Read ${issues.length} issues.` },
+        { kind: "collections", ids: ["s2"] }),
+    });
+
+    // The collaborator cannot see s2, so the derived exclusion refuses the page before its rows
+    // reach the caller.
+    await expect(cursor.next()).rejects.toThrow("cannot hide from limited");
+    expect(seen).toEqual([]);
   });
 
   it("keeps authorizing after the session that made it is gone", async () => {
     // A cursor is returned to the gadget and walked later, so it outlives the call that made it.
-    // Built on the session's own gate, the first `next()` after the session releases its stub
-    // fails -- and what fails is the authorization, not the data.
-    // Modelled on a real stub: `dup` refcounts, and only the last release closes it.
-    let handles = 1;
-    const authorizeObservation = vi.fn(async (_sent: { description: string }) => {
-      if (handles === 0) throw new Error("RPC stub used after being disposed.");
-    });
-    const makeHandle = () => {
-      handles += 1;
-      let released = false;
-      return {
-        authorizeObservation,
-        dup: makeHandle,
-        [Symbol.dispose]: () => { if (!released) { released = true; handles -= 1; } },
-      };
-    };
-    const queue = {
-      authorizeObservation,
-      dup: makeHandle,
-      [Symbol.dispose]: () => { handles -= 1; },
-    } as unknown as RpcStub<ApprovalQueue>;
+    // Real stubs, so the lease's refcount is workerd's rather than the test's: releasing the
+    // session must not close the handle the walk still holds.
+    const { authorizer, seen } = makeAuthorizer();
     const session = new ObservationGate(
-      queue, trackedCollectionObservers({ kv: fakeKv(), hasCollectionAccess: async () => [] }));
+      authorizer, trackedCollectionObservers({ kv: fakeKv(), hasCollectionAccess: async () => [] }));
     const walk = session.lease();
     const cursor = new TokenCursor<Issue>({
       fetchPage: tokenApi([
@@ -589,33 +631,20 @@ describe("TokenCursor", () => {
 
     // The walk must neither continue unaudited nor become unusable.
     expect(ids(await cursor.next())).toEqual([2]);
-    expect(authorizeObservation).toHaveBeenCalledTimes(2);
+    expect(seen).toEqual(["Read 1 issues.", "Read 1 issues."]);
+    cursor[Symbol.dispose]();
   });
 
   it("releases a lease without disturbing the session that opened it", async () => {
-    let handles = 1;
-    const authorizeObservation = vi.fn(async (_sent: { description: string }) => {
-      if (handles === 0) throw new Error("RPC stub used after being disposed.");
-    });
-    const makeHandle = () => {
-      handles += 1;
-      let released = false;
-      return {
-        authorizeObservation,
-        dup: makeHandle,
-        [Symbol.dispose]: () => { if (!released) { released = true; handles -= 1; } },
-      };
-    };
-    const session = new ObservationGate(
-      { authorizeObservation, dup: makeHandle } as unknown as RpcStub<ApprovalQueue>,
-      trackedCollectionObservers({ kv: fakeKv(), hasCollectionAccess: async () => [] }));
+    const { authorizer, seen } = makeAuthorizer();
+    using session = new ObservationGate(
+      authorizer, trackedCollectionObservers({ kv: fakeKv(), hasCollectionAccess: async () => [] }));
 
-    const walk = session.lease();
-    walk[Symbol.dispose]();
+    session.lease()[Symbol.dispose]();
 
     // The session still holds its own handle, so the walk ending does not end the session.
     await session.authorize({ title: "After", description: "Still open." }, { kind: "baseline" });
-    expect(authorizeObservation).toHaveBeenCalledOnce();
+    expect(seen).toEqual(["Still open."]);
   });
 
   it("rejects page sizes that would never terminate", () => {

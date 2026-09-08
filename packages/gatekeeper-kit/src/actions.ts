@@ -22,7 +22,7 @@ export {
   type RetainedActionPage,
 } from "./action-journal";
 
-/** The queue surface staging needs; `gate.actions` and a full stub both satisfy it. */
+/** The queue surface staging needs; a session's own approval-queue stub satisfies it. */
 export type ActionSubmitter = Pick<RpcStub<ApprovalQueue>, "submitAction">;
 
 type ActionLogFields =
@@ -224,8 +224,9 @@ export type ActionSetOptions<Host, M> = {
   afterResolve?(host: Host, outcome: ResolveOutcome): void | Promise<void>;
   /**
    * Reports whether a provisional reference from `dependsOn` has been bound to a real provider id
-   * (e.g. `(host, ref) => host.provisionalIds.isResolved(ref)`). When set, apply refuses to run a
-   * handler whose references are unresolved instead of passing provisional strings to the provider.
+   * (e.g. `(host, ref) => host.provisionalIds.isResolved(ref)`). Required as soon as any
+   * definition declares `dependsOn`: apply refuses to run a handler whose references are
+   * unresolved instead of passing provisional strings to the provider.
    * The host is passed because the bindings are durable provider state, which lives per resource.
    * @param host Provider host this set is bound to.
    * @param ref Provisional reference the action depends on.
@@ -381,7 +382,7 @@ function strandedBy(
  * await this.#creds.run(async (creds, read) => {
  *   const task = await api.draftTask(creds, input);
  *   return declared.bind(journal, api)
- *     .submit(gate.actions, "createTask", task, { fence: read });
+ *     .submit(queue, "createTask", task, { fence: read });
  * });
  * ```
  */
@@ -404,6 +405,12 @@ export function defineActions<Host, M extends Record<string, unknown>>(
   const fencePolicyFor = (kind: keyof M): FencePolicy =>
     fenceByKind.get(String(kind)) ?? options.fence;
   for (const [name, definition] of declared) {
+    // Without it apply passes provisional strings to the provider, and the cascade's `unbound`
+    // predicate reads every reference as dead. One omission, wrong in both directions.
+    if (definition.dependsOn && options.isResolvedReference === undefined) {
+      throw new Error(
+        `Action "${name}" declares dependsOn, so the set needs isResolvedReference.`);
+    }
     // Auto-approval rules key on the tag, so without a kind the flag could never take effect.
     if (definition.autoApprovable === true && !definition.kind) {
       throw new Error(`Action "${name}" declares autoApprovable without a kind.`);
@@ -588,13 +595,12 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           throw new Error(message);
         }
         // Retryable, never terminal, and no cascade: the providing action may still apply later,
-        // and the cascade owns terminal marking when it cannot.
-        if (options.isResolvedReference) {
-          for (const ref of definition.dependsOn?.(action.payload) ?? []) {
-            if (options.isResolvedReference(host, ref) === true) continue;
-            throw new Error(`Action ${id} depends on ${ref}, which is not applied yet. Apply its `
-              + "providing action first, or reject this action.");
-          }
+        // and the cascade owns terminal marking when it cannot. A set declaring `dependsOn` is
+        // refused without a resolver, so an absent one here can only mean an empty loop.
+        for (const ref of definition.dependsOn?.(action.payload) ?? []) {
+          if (options.isResolvedReference?.(host, ref) === true) continue;
+          throw new Error(`Action ${id} depends on ${ref}, which is not applied yet. Apply its `
+            + "providing action first, or reject this action.");
         }
         try {
           let result: void | { action?: unknown };
@@ -699,8 +705,10 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           // fence the connection this call staged under.
           payload = structuredClone(payload);
           const staged = fence && { generation: fence.generation };
+          // Cloned for the same reason as the payload: staging serializes behind the journal's
+          // lane, and `describe` may still own what it returned.
           const { title, description, pushedCommits, implementsRevert } =
-            await definition.describe(payload, host);
+            structuredClone(await definition.describe(payload, host));
           const action = { kind, payload } as TaggedAction<M>;
           return stageAction(journal, queue, action, {
             // Destructured, not spread: a port returning a full `ActionDescription` here would

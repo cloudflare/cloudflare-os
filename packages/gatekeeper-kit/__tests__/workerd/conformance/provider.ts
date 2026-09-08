@@ -44,6 +44,8 @@ export class FakeProvider {
   readonly projects = new Map<string, Project>();
   /** Per-user visibility, so a collaborator can legitimately lack access to one space. */
   readonly access = new Map<string, Set<string>>();
+  /** Provider page fetches, so a test can prove a page came from the cursor's buffer. */
+  listCalls = 0;
   /** The principal a fresh authorization belongs to; reassign it to reconnect as someone else. */
   principal = "user-a";
   #issued = 0;
@@ -91,30 +93,36 @@ export class FakeProvider {
    * Pages projects. Filters nothing, so the caller's `retain` decides visibility.
    * @param grant Current credentials.
    * @param token Continuation token.
+   * @param perPage Requested page size.
    * @returns One page and the next token.
    */
-  listProjects(grant: PublicGrant, token: string | undefined): {
+  listProjects(grant: PublicGrant, token: string | undefined, perPage: number): {
     items: Project[];
     nextToken?: string;
   } {
     this.#check(grant);
+    this.listCalls += 1;
     const all = [...this.projects.values()];
     const start = token === undefined ? 0 : Number(token);
-    const items = all.slice(start, start + 2);
-    const next = start + 2;
+    const items = all.slice(start, start + perPage);
+    const next = start + perPage;
     return next < all.length ? { items, nextToken: String(next) } : { items };
   }
 
   /**
-   * Answers whether a project matches. An empty answer is the existence oracle a zero-result walk
-   * must still authorize.
+   * Answers whether a project matches, across every space the account can see.
    * @param grant Current credentials.
    * @param query Name substring.
-   * @returns Matching projects.
+   * @returns The matches, and every space the search covered — the scope an observation must
+   * name, since a miss discloses absence in each of them.
    */
-  searchProjects(grant: PublicGrant, query: string): Project[] {
+  searchProjects(grant: PublicGrant, query: string): { matches: Project[]; spaces: string[] } {
     this.#check(grant);
-    return [...this.projects.values()].filter(project => project.name.includes(query));
+    const all = [...this.projects.values()];
+    return {
+      matches: all.filter(project => project.name.includes(query)),
+      spaces: [...new Set(all.map(project => project.spaceId))],
+    };
   }
 
   /**

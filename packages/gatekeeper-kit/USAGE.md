@@ -104,6 +104,12 @@ Omit `adjudicateRejection`'s `refresh` callback when rejection of a current cred
 whole grant is dead. A heal cannot recover that provider model and would suppress the expiry
 notification.
 
+A provider-confirmed death is recorded against the grant's identity fence, so every later read —
+in this facet or any other over the same storage — refuses it until a reconnect replaces it, even
+while its access token is still inside its own expiry window. The grant itself stays stored, so
+account-owned revoke keeps its material and a failed expiry notification can still be retried by
+a later read.
+
 Every credential replacement re-arms the expiry latch. This includes `connect()`, successful
 refresh, and rejection healing. A legacy-layout migration does not re-arm it because it replaces no
 credentials. `clearCredentialExpiryLatch` remains available for accounts that manage credentials
@@ -132,8 +138,9 @@ try {
   // Never stored, so this mint is yours to dispose — but only where revoking one token cannot
   // revoke the whole grant; see "Revoke discarded token rotations" below.
   await revokeAtProvider(grant);
-  // A `clear()` also moves the generation, so report the outcome rather than a bare success.
-  throw new Error("This account was disconnected while connecting. Try again.");
+  // Either a `clear()` or a newer winning `connect()` moves the generation, so report the change
+  // rather than asserting which one happened.
+  throw new Error("This account's connection changed while connecting. Start again.");
 }
 ```
 
@@ -229,9 +236,6 @@ staged under one and applied under the other fails terminally on every attempt. 
 entry check, so a reconnect may still land between it and the provider call. A handler that must
 not run under a replaced connection compares `ctx.fence` with the `CredentialRead` passed to the
 same `run` callback that issues the request.
-
-`lastSeenGeneration()` is a diagnostic. A concurrent fetch can change it during an operation, and
-it names the previous connection until the next fetch, so never partition provider data on it.
 
 ## Storage
 
@@ -367,15 +371,23 @@ strategy's derived `excludeObservers` never reaches the overseer, so owner-only 
 admitted collaborator. Authorizing after the fetch is what makes the description name the bytes
 actually disclosed; authorizing before it would describe a read that may still fail.
 
-`ObservationGate` is also the only path to `authorizeObservation` and the only holder of the queue
-stub a session stages actions through (`gate.actions`). It owns that `.dup()`, so the session must
-forward disposal to it or leak one stub per session:
+`ObservationGate` is the only path to `authorizeObservation`. It takes a duplicate of the stub it
+guards and owns that dup, so a session holds two owners — its own approval queue for staging
+actions, and the gate over `queue.dup()` — and releases both when the session ends:
 
 ```ts
+#queue = queue;
+#gate = new ObservationGate(queue.dup(), this.#observers);
+
 [Symbol.dispose]() {
   this.#gate[Symbol.dispose]();
+  this.#queue[Symbol.dispose]();
 }
 ```
+
+The gate only needs `ObservationAuthorizer`, the read-only capability, so a catalog or
+slash-command handler — which receives exactly that — constructs one from its own
+`authorizer.dup()`. Gate leases (`lease()`) are independent owners in the same way.
 
 Every gatekeeper must implement the three observer methods, and `GatekeeperUser.getVerifier()`
 alongside them — that capability is what `aclObservers` and `trackedCollectionObservers` call to check a
@@ -398,7 +410,7 @@ collaborator, and `asVerifier` casts it to the vendor's own interface. Select on
 re-admits on every open, so losing Workshop membership is the revocation path.
 
 Only `trackedCollectionObservers` continuously runs its oracle. It calls `hasCollectionAccess` for every observer
-on every set-scoped read. If the provider can revoke binding-level access independently of Workshop
+on every collection-scoped read. If the provider can revoke binding-level access independently of Workshop
 membership, a `{ kind: "baseline" }` read is insufficient because it consults no oracle. Represent
 that disclosure with a synthetic collection ID instead.
 
@@ -434,11 +446,16 @@ from the buffer with no provider fetch at all. Pass `authorizePage`, which the c
 exact page it is about to return:
 
 ```ts
+// A cursor is walked after this call returns, so it takes its own gate with `lease()` and
+// releases it from `dispose`. Built on the session's gate instead, the first `next()` after the
+// session releases its stub fails on the authorization rather than the data.
+const walk = this.#gate.lease();
 return new TokenCursor<Project>({
   pageSize: 50,
+  dispose: () => walk[Symbol.dispose](),
   fetchPage: (token, perPage) => this.#api.listProjects({ cursor: token, limit: perPage }),
   authorizePage: (projects, { terminal }) => projects.length === 0
-    ? this.#gate.authorize(
+    ? walk.authorize(
       {
         title: "Projects",
         description: terminal
@@ -446,29 +463,16 @@ return new TokenCursor<Project>({
           : "Scanned a window of projects; none were visible.",
       },
       { kind: "baseline" })
-    : this.#gate.authorize(
+    : walk.authorize(
       { title: "Projects", description: `Read ${projects.length} projects.` },
       { kind: "collections", ids: projects.map(project => project.id) }),
 });
 ```
 
-A cursor is handed to the gadget and walked later, so it outlives the call that made it. Give it
-its own gate with `lease()` and release that from `dispose`, or the first `next()` after the
-session releases its stub fails on the authorization rather than the data:
-
-```ts
-const walk = this.#gate.lease();
-return new TokenCursor<Project>({
-  authorizePage: projects => walk.authorize(/* … */),
-  dispose: () => walk[Symbol.dispose](),
-  // …
-});
-```
-
-Both gates share the binding's strategy, so exclusions stay one decision; only the queue stub is
-duplicated, and either side can be released without disturbing the other. `lease()` needs a real
-`RpcStub` — the overseer hands one over, but a gate built from a service binding cannot duplicate
-it, since `dup` is reserved over RPC.
+The lease and the session gate share the binding's strategy, so exclusions stay one decision; only
+the stub is duplicated, and either side can be released without disturbing the other. `lease()`
+needs a real `RpcStub` — the overseer hands one over, but a gate built from a service binding
+cannot duplicate it, since `dup` is reserved over RPC.
 
 Every page is authorized, including an empty one from a spent fetch window. So is the end of a walk
 that disclosed nothing: `searchUsers(email) → no matches` answers a question about provider data,
@@ -489,6 +493,25 @@ exception — nothing was disclosed, so the retry opens a fresh window rather th
 on a failure that may have been transient. A refused zero-result answer is likewise re-offered.
 `ArrayCursor` takes no callback: the session that assembled its items authorized them as one read.
 
+That hold is also why a walk pinned to a connection must re-check its authority in
+`authorizePage`, not only in `fetchPage`. The retry never re-enters the fetch, so a reconnect
+landing between the refusal and the retry would otherwise disclose the previous connection's rows
+under the new one. Compare against a read taken now — a value captured earlier names the
+connection the walk opened under, not the current one:
+
+```ts
+const opened = await this.#creds.read();
+return new TokenCursor<Project>({
+  authorizePage: async projects => {
+    if ((await this.#creds.read()).generation !== opened.generation) {
+      throw new Error("This walk was started under a connection that has since been replaced.");
+    }
+    await walk.authorize(/* … */);
+  },
+  // …
+});
+```
+
 ### Refusal and failure have different outcomes
 
 `ObservationGate.authorize()` reclaims prepared state only when an error carries
@@ -496,13 +519,15 @@ on a failure that may have been transient. A refused zero-result answer is likew
 anything.
 
 Every other failure has an unknown outcome. The gate releases in-memory bookkeeping but retains
-durable fences because a lost reply may have left an observation record. A tracked-set marker is
-reclaimed only after every read that disclosed the set was refused. One unknown result retains it.
+durable fences because a lost reply may have left an observation record. A tracked-collection marker is
+reclaimed only after every read that disclosed the collection was refused. One unknown result retains it.
 
 The Workshop overseer does not yet add this code: both pre-recording refusal paths — owner-only
 observations in shared workspaces, and collaborator exclusions — still throw plain errors. Until a
 kernel change marks them, every failure takes the fail-closed unknown-outcome path above, and
-`discard()` never runs.
+`discard()` never runs. For a `withholdFromObservers` read that is not merely a retained marker:
+`abandon` latches the binding unshareable for good, so a refused owner-only read costs the
+workspace its sharing until the kernel distinguishes the two.
 
 ## Bounds
 

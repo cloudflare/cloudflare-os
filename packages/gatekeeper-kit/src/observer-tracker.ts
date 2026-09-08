@@ -5,6 +5,14 @@ import { generateNonce } from "./connect-nonce";
 import type { KvScannable } from "./kv";
 import { perStorage } from "./per-storage";
 import { requirePositiveInt } from "./positive-int";
+import {
+  OBSERVER_ATTEMPT_PREFIX,
+  OBSERVER_NONCE_PREFIX,
+  OBSERVER_PREFIX,
+  OBSERVER_WITHHOLD_LATCH_KEY,
+  OBSERVER_WITHHOLD_FENCE_PREFIX,
+  reservedObserverOverlap,
+} from "./observer-keys";
 
 const logger = createLogger<{ vendorId: string; observerId: string }>({
   component: "gatekeeper.observers",
@@ -56,29 +64,12 @@ export const NOTHING_TO_RESOLVE: ObservationCheck = {
   commit() {},
 };
 
-const OBSERVER_PREFIX = "observer:";
-
-// Admission attempts are durable so concurrent reads already exclude the candidate.
-const OBSERVER_ATTEMPT_PREFIX = "observer-attempt:";
-const OBSERVER_NONCE_PREFIX = "observer-nonce:";
-
 type ObserverAttempt<V> = { verifier: V; at: number };
 
 /** Maximum age of a pending observer-admission attempt. */
 export const OBSERVER_ATTEMPT_LIFETIME_MS = 10 * 60 * 1000;
 
-const OBSERVER_WITHHELD_KEY = "observer-withheld";
-
-// Durable markers fence withheld reads until the overseer accepts or rejects them.
-// A marker stranded by a crash fails closed.
-const OBSERVER_WITHHOLD_PREFIX = "observer-withhold:";
-
-const RESERVED_PREFIXES = [
-  OBSERVER_PREFIX, OBSERVER_ATTEMPT_PREFIX, OBSERVER_NONCE_PREFIX, OBSERVER_WITHHOLD_PREFIX,
-  OBSERVER_WITHHELD_KEY,
-];
-
-const DEFAULT_MAX_TRACKED_SETS = 1000;
+const DEFAULT_MAX_TRACKED_COLLECTIONS = 1000;
 
 // Keep verifier fan-out below the Workers subrequest ceiling.
 const DEFAULT_MAX_OBSERVERS = 10;
@@ -167,11 +158,11 @@ export type ObserverTrackerOptions<V> = {
    * The binding's `ctx.storage.kv`, passed as the same object every time. Pending-marker claims
    * are coordinated in memory keyed on this object, so trackers handed distinct wrappers over one
    * storage cannot see each other's in-flight reads: one refused read could then reclaim a marker
-   * another still depends on, and the next `addObserver` would admit against a set it never
+   * another still depends on, and the next `addObserver` would admit against a collection it never
    * checked.
    */
   kv: ObserverKv;
-  /** Key prefix for observed-set records; observers always live under `"observer:"`. */
+  /** Key prefix for observed-collection records; observers always live under `"observer:"`. */
   collectionPrefix?: string;
   /**
    * Canonicalizes a provider collection ID so equivalent spellings share one stored ACL record.
@@ -187,7 +178,7 @@ export type ObserverTrackerOptions<V> = {
    */
   verifyBaseline?(verifier: V): Promise<void>;
   /**
-   * Checks access to canonical provider sets.
+   * Checks access to canonical provider collections.
    * @param verifier Vendor-specific verifier capability.
    * @param collectionIds Canonical collection IDs.
    * @returns Exactly one verdict per collection ID; only literal `true` grants access.
@@ -200,7 +191,7 @@ export type ObserverTrackerOptions<V> = {
    */
   denyMessage?(collectionId: string): string;
   /**
-   * Caps distinct sets before disclosure, so existing observers never become unverifiable. Size it
+   * Caps distinct collections before disclosure, so existing observers never become unverifiable. Size it
    * from the provider's read fan-out: a refused read reclaims its slots, but a marker stranded by
    * a crash is kept permanently, since a lost reply may still have recorded the observation.
    */
@@ -214,10 +205,10 @@ export type ObserverTrackerOptions<V> = {
 };
 
 // Brands collection IDs after canonicalization so internal helpers cannot accept raw IDs.
-type CanonicalSetId = string & { readonly __canonical: true };
+type CanonicalCollectionId = string & { readonly __canonical: true };
 
 /**
- * Tracks observer admission and forward exclusion across revealed data sets. Persisting verifier
+ * Tracks observer admission and forward exclusion across revealed collections. Persisting verifier
  * capabilities requires `allow_irrevocable_stub_storage` and a durable service stub.
  *
  * @example
@@ -232,7 +223,7 @@ type CanonicalSetId = string & { readonly __canonical: true };
 export class ObserverTracker<V> {
   readonly #options: ObserverTrackerOptions<V>;
   readonly #collectionPrefix: string;
-  readonly #canonicalCollectionId: (collectionId: string) => CanonicalSetId;
+  readonly #canonicalCollectionId: (collectionId: string) => CanonicalCollectionId;
   readonly #maxTrackedCollections: number;
   readonly #maxObservers: number;
   readonly #concurrency: number;
@@ -249,23 +240,22 @@ export class ObserverTracker<V> {
     // The brand is asserted here and nowhere else on this path: whatever the caller's function
     // returns *is* the canonical spelling, by definition of the option.
     this.#canonicalCollectionId =
-      (options.canonicalCollectionId ?? (collectionId => collectionId)) as (collectionId: string) => CanonicalSetId;
+      (options.canonicalCollectionId ?? (collectionId => collectionId)) as (collectionId: string) => CanonicalCollectionId;
     // A cap of zero refuses every read, and a window of zero never advances.
     this.#maxTrackedCollections = requirePositiveInt(
-      "maxTrackedCollections", options.maxTrackedCollections ?? DEFAULT_MAX_TRACKED_SETS);
+      "maxTrackedCollections", options.maxTrackedCollections ?? DEFAULT_MAX_TRACKED_COLLECTIONS);
     this.#maxObservers = requirePositiveInt(
       "maxObservers", options.maxObservers ?? DEFAULT_MAX_OBSERVERS);
     this.#concurrency = requirePositiveInt(
       "concurrency", options.concurrency ?? DEFAULT_CONCURRENCY);
 
-    // Overlapping families scan into each other: collection ids would come back as verifier keys, and
-    // stored verifiers would be handed to `hasCollectionAccess` as collection ids. An empty prefix overlaps by
-    // scanning everything, and the same check rejects it.
-    for (const reserved of RESERVED_PREFIXES) {
-      if (this.#collectionPrefix.startsWith(reserved) || reserved.startsWith(this.#collectionPrefix)) {
-        throw new Error(
-          `Set prefix "${this.#collectionPrefix}" overlaps the reserved prefix "${reserved}".`);
-      }
+    // Overlapping families scan into each other: collection ids would come back as verifier keys,
+    // and stored verifiers would be handed to `hasCollectionAccess` as collection ids. An empty
+    // prefix overlaps by scanning everything, and the same check rejects it.
+    const overlap = reservedObserverOverlap(this.#collectionPrefix);
+    if (overlap !== undefined) {
+      throw new Error(
+        `Collection prefix "${this.#collectionPrefix}" overlaps the reserved prefix "${overlap}".`);
     }
   }
 
@@ -278,9 +268,9 @@ export class ObserverTracker<V> {
   async addObserver(id: string, verifier: V): Promise<void> {
     const { kv, verifyBaseline, hasCollectionAccess, denyMessage } = this.#options;
     this.#compactWithholds();
-    // A withheld read registers no set, so nothing here can establish this candidate was entitled
+    // A withheld read registers no collection, so nothing here can establish this candidate was entitled
     // to it. One still in flight counts: this candidate is absent from the exclusion list it sent.
-    if (kv.get<boolean>(OBSERVER_WITHHELD_KEY) || this.#withholdInFlight()) {
+    if (kv.get<boolean>(OBSERVER_WITHHOLD_LATCH_KEY) || this.#withholdInFlight()) {
       throw new Error(OBSERVER_WITHHELD);
     }
     this.#sweepStaleAttempts();
@@ -319,7 +309,7 @@ export class ObserverTracker<V> {
         this.#requireCurrentAttempt(id, nonceKey, nonce);
         // A ragged answer denies rather than admits, in either direction. Short already denied
         // (`undefined !== true`); an answer *longer* than the question used to admit, which is the
-        // worse half -- index alignment is the only thing tying a verdict to a set, so a length the
+        // worse half -- index alignment is the only thing tying a verdict to a collection, so a length the
         // oracle disagrees about invalidates every verdict in the array rather than just the extras.
         if (access.length !== collectionIds.length) throw new Error(OBSERVER_DENIED);
         const denied = collectionIds.findIndex((_, index) => access[index] !== true);
@@ -341,13 +331,13 @@ export class ObserverTracker<V> {
     const { kv } = this.#options;
     // Enumerated before the marker goes down: a throw here must strand nothing.
     const excludeObservers = this.observerIds();
-    const markerKey = `${OBSERVER_WITHHOLD_PREFIX}${generateNonce()}`;
+    const markerKey = `${OBSERVER_WITHHOLD_FENCE_PREFIX}${generateNonce()}`;
     kv.put(markerKey, true);
     activeWithholds(kv).add(markerKey);
     // Commit and an unknown outcome reach the same durable state: the overseer may hold the
     // record, so sharing is fenced for good. Latch before delete, so no instant fences neither.
     const fenceForGood = () => {
-      kv.put(OBSERVER_WITHHELD_KEY, true);
+      kv.put(OBSERVER_WITHHOLD_LATCH_KEY, true);
       kv.delete(markerKey);
       activeWithholds(kv).delete(markerKey);
     };
@@ -367,17 +357,17 @@ export class ObserverTracker<V> {
   #compactWithholds(): void {
     const { kv } = this.#options;
     const active = activeWithholds(kv);
-    for (const [key] of kv.list({ prefix: OBSERVER_WITHHOLD_PREFIX })) {
+    for (const [key] of kv.list({ prefix: OBSERVER_WITHHOLD_FENCE_PREFIX })) {
       if (active.has(key)) continue;
       // Latch before delete, as `commit` does: no instant where neither fences.
-      kv.put(OBSERVER_WITHHELD_KEY, true);
+      kv.put(OBSERVER_WITHHOLD_LATCH_KEY, true);
       kv.delete(key);
     }
   }
 
   /** @returns Whether any owner-only read remains unsettled. */
   #withholdInFlight(): boolean {
-    for (const _ of this.#options.kv.list({ prefix: OBSERVER_WITHHOLD_PREFIX })) return true;
+    for (const _ of this.#options.kv.list({ prefix: OBSERVER_WITHHOLD_FENCE_PREFIX })) return true;
     return false;
   }
 
@@ -435,7 +425,7 @@ export class ObserverTracker<V> {
     // Canonicalized up front, so the keys written, the state compared, and the ids the oracle is
     // asked about are all the same spelling.
     const canonical = [...new Set(collectionIds.map(collectionId => this.#canonicalCollectionId(collectionId)))];
-    // Both partitions come from one state read per set, before the first await, so the "pending"
+    // Both partitions come from one state read per collection, before the first await, so the "pending"
     // writes below reflect storage as a concurrent addObserver will scan it.
     const states = canonical.map(collectionId => [collectionId, this.#state(collectionId)] as const);
     const promote = states
@@ -462,7 +452,7 @@ export class ObserverTracker<V> {
       try {
         // Copied per verifier: the oracle may chunk destructively, and the exclusion check below
         // compares against this array. Shared, an emptied batch would make that check vacuous and
-        // admit every later observer to sets no oracle ever verified.
+        // admit every later observer to collections no oracle ever verified.
         return await hasCollectionAccess(verifier, canonical.slice());
       } catch {
         // A throw excludes, like a denial: rejecting the batch would let one dead stub fail every
@@ -505,11 +495,11 @@ export class ObserverTracker<V> {
   }
 
   /**
-   * Builds an observed-set storage key.
+   * Builds an observed-collection storage key.
    * @param collectionId Canonical collection ID.
-   * @returns Storage key for the set.
+   * @returns Storage key for the collection.
    */
-  #collectionKey(collectionId: CanonicalSetId): string {
+  #collectionKey(collectionId: CanonicalCollectionId): string {
     return `${this.#collectionPrefix}${collectionId}`;
   }
 
@@ -518,7 +508,7 @@ export class ObserverTracker<V> {
    * @param collectionId Canonical collection ID.
    * @returns Current state, including normalized legacy values.
    */
-  #state(collectionId: CanonicalSetId): CollectionState | undefined {
+  #state(collectionId: CanonicalCollectionId): CollectionState | undefined {
     // `true` is the legacy encoding of "observed" some gatekeepers already have in storage. The kit
     // never writes it, and normalizing it here keeps the two spellings out of every other line.
     const stored = this.#options.kv.get<CollectionState | true>(this.#collectionKey(collectionId));
@@ -526,9 +516,9 @@ export class ObserverTracker<V> {
   }
 
   /** @returns Every canonical collection ID retained by this tracker. */
-  #trackedCollections(): CanonicalSetId[] {
+  #trackedCollections(): CanonicalCollectionId[] {
     return [...this.#options.kv.list<unknown>({ prefix: this.#collectionPrefix })].map(([key]) =>
-      key.slice(this.#collectionPrefix.length) as CanonicalSetId,
+      key.slice(this.#collectionPrefix.length) as CanonicalCollectionId,
     );
   }
 

@@ -140,9 +140,13 @@ const CREDENTIALS_KEY = "credentials";
 const IDENTITY_KEY = `${CREDENTIALS_KEY}:identity`;
 const MIGRATED_KEY = `${CREDENTIALS_KEY}:migrated`;
 const CONNECTION_KEY = `${CREDENTIALS_KEY}:connection`;
+// One identity: the fence of the grant the provider confirmed dead, or absent for no death.
+const EXPIRED_IDENTITY_KEY = `${CREDENTIALS_KEY}:expired`;
 
 const OWNED_KEYS: readonly string[] =
-  [CREDENTIALS_KEY, IDENTITY_KEY, MIGRATED_KEY, CONNECTION_KEY];
+  [CREDENTIALS_KEY, IDENTITY_KEY, MIGRATED_KEY, CONNECTION_KEY, EXPIRED_IDENTITY_KEY];
+
+const EXPIRED_MESSAGE = "This account's credentials have expired.";
 
 // Coalesce refreshes across coordinators sharing the same storage object.
 const refreshes = perStorage(() => new SingleFlight());
@@ -200,8 +204,10 @@ export type CredentialCoordinatorOptions<Creds> = {
 /**
  * Owns credential storage, migration, and skew-aware refresh. Concurrent refreshes share one
  * provider request, and a mint a reconnect or revoke overtook goes to `discardMint` for
- * provider-side disposal. A crash after provider-side token rotation may still require
- * reconnection.
+ * provider-side disposal. A provider-confirmed death is recorded against its identity fence, so
+ * every later read refuses that grant until a reconnect replaces it, while `stored()` keeps
+ * serving it to account-owned revoke. A crash after provider-side token rotation may still
+ * require reconnection.
  */
 export class CredentialCoordinator<Creds> {
   readonly #kv: CredentialsKv;
@@ -325,10 +331,10 @@ export class CredentialCoordinator<Creds> {
    * @param credentials Credentials to store.
    */
   #commit(credentials: Creds): void {
-    // Grant first: a rotating provider has already invalidated the old refresh token, so a throw
-    // between these puts must not leave latch bookkeeping standing over unusable credentials.
-    this.#publish(credentials);
+    // Latch first: both puts land in one implicit transaction, and a split fails toward a
+    // duplicate notice this way round rather than toward silence.
     clearCredentialExpiryLatch(this.#kv);
+    this.#publish(credentials);
   }
 
   /** Clears credentials and prevents legacy migration from restoring them. */
@@ -360,6 +366,26 @@ export class CredentialCoordinator<Creds> {
   }
 
   /**
+   * @param identity Identity fence to test.
+   * @returns Whether the account recorded that grant's confirmed death.
+   */
+  #isExpired(identity: string): boolean {
+    return this.#kv.get<string>(EXPIRED_IDENTITY_KEY) === identity;
+  }
+
+  /**
+   * Records a confirmed grant death, so later reads -- and every other facet over this storage --
+   * refuse the grant instead of rediscovering its death at the provider. One scalar: a fence the
+   * account moved makes the old marker inert, and the next death overwrites it.
+   * @param identity Fence of the grant the provider confirmed dead; a stale one marks nothing.
+   */
+  #markExpired(identity: string): void {
+    if (identity === this.identity() && !this.#isExpired(identity)) {
+      this.#kv.put(EXPIRED_IDENTITY_KEY, identity);
+    }
+  }
+
+  /**
    * Returns usable credentials, refreshing after the expiry boundary.
    * @param refresh Provider refresh, under the `RefreshCredentials` contract.
    * @returns Current or refreshed credentials.
@@ -384,10 +410,13 @@ export class CredentialCoordinator<Creds> {
     return this.#coalesced(this.#connected(), refresh);
   }
 
-  /** @returns Stored credentials, or throws when disconnected. */
+  /** @returns Stored credentials, or throws when disconnected or the grant is recorded dead. */
   #connected(): Creds {
     const current = this.stored();
     if (current === undefined) throw new CredentialsExpiredError("This account is not connected.");
+    // Death outlives the call that found it, so an access token still inside its own expiry
+    // window is refused too. `stored()` stays open, so revoke keeps its material.
+    if (this.#isExpired(this.identity())) throw new CredentialsExpiredError(EXPIRED_MESSAGE);
     return current;
   }
 
@@ -420,12 +449,16 @@ export class CredentialCoordinator<Creds> {
     try {
       refreshed = await refresh(current);
     } catch (error) {
-      if (!isCredentialsExpired(error) || this.identity() === fence) throw error;
-      return this.#overtaken(error);
+      if (!isCredentialsExpired(error)) throw error;
+      // A stale failure adjudicates nothing; only the fence it ran under may be buried.
+      if (this.identity() !== fence) return this.#overtaken(error);
+      this.#markExpired(fence);
+      throw error;
     }
 
-    if (this.identity() !== fence) {
-      // The mint is fenced out and will never be stored, so the provider is told to drop it.
+    // Fenced out, or buried while the mint was in flight: either way it will never be stored, so
+    // the provider is told to drop it.
+    if (this.identity() !== fence || this.#isExpired(fence)) {
       await this.#discard(refreshed);
       return this.#overtaken();
     }
@@ -434,14 +467,20 @@ export class CredentialCoordinator<Creds> {
   }
 
   /**
-   * Resolves a refresh overtaken by reconnect or revoke.
+   * Resolves a refresh overtaken by reconnect, revoke, or a death recorded while it ran.
    * @param cause Optional expiry error from the stale refresh.
-   * @returns Replacement credentials, or throws when disconnected.
+   * @returns Replacement credentials, or throws when disconnected or the successor is dead.
    */
   #overtaken(cause?: unknown): Creds {
     const latest = this.stored();
-    if (latest !== undefined) return latest;
-    throw new CredentialsExpiredError("This account was disconnected while refreshing.", { cause });
+    if (latest === undefined) {
+      throw new CredentialsExpiredError(
+        "This account was disconnected while refreshing.", { cause });
+    }
+    if (this.#isExpired(this.identity())) {
+      throw new CredentialsExpiredError(EXPIRED_MESSAGE, { cause });
+    }
+    return latest;
   }
 
   /**
@@ -506,10 +545,9 @@ export class CredentialCoordinator<Creds> {
    * disconnected grant, the fence re-checked after the notify await since a reconnect landing
    * mid-notification supersedes it.
    *
-   * No durable mint latch guards a dead grant: a repeat report costs one provider call that
-   * answers `invalid_grant` again — the same verdict — and Workshop notification is already
-   * deduped by `notifyCredentialsExpiredOnce`'s latch. A port that measures mint spam adds a
-   * cooldown inside its `refresh` callback.
+   * Death is durable and notification is not: the marker retires the identity for every facet at
+   * once, while `notifyCredentialsExpiredOnce`'s latch keeps its own retry, so a later read
+   * refuses the grant without another mint but can still deliver an announcement that failed.
    * @param identity Credential identity the consumer saw rejected.
    * @param options `refresh` mints past a stale credential under the `RefreshCredentials` contract
    * (grant-death providers leave it unset);
@@ -525,7 +563,10 @@ export class CredentialCoordinator<Creds> {
     // Moved-past gate: whatever moved the fence already adjudicated the rejected identity.
     if (identity !== this.identity()) return this.#moved();
     // A grant-death provider has no mint to heal with: the rejection is the grant's death.
-    if (options.refresh === undefined) return this.#expired(identity, options.notify);
+    if (options.refresh === undefined) {
+      this.#markExpired(identity);
+      return this.#expired(identity, options.notify);
+    }
     try {
       // Fence-keyed, so concurrent heals of one identity collapse onto one provider mint.
       await this.rotate(options.refresh);
@@ -564,13 +605,16 @@ export class CredentialCoordinator<Creds> {
   }
 
   /**
-   * Resolves a rejected identity the fence moved past. `"superseded"` promises a live successor;
-   * a fence moved by a disconnect left none, so the caller is told to reconnect rather than
-   * re-enter into a disconnected account. The disconnect itself never notifies — a user action.
-   * @returns `"superseded"` under a live successor, `"expired"` when the account disconnected.
+   * Resolves a rejected identity the fence moved past. `"superseded"` promises a *live* successor,
+   * so a fence moved by a disconnect, or onto a grant this account has since buried, answers
+   * `"expired"` instead: the caller reconnects rather than re-entering into credentials that
+   * cannot work. The disconnect itself never notifies — a user action.
+   * @returns `"superseded"` under a live successor, `"expired"` otherwise.
    */
   #moved(): RejectionVerdict {
-    return this.stored() === undefined ? "expired" : "superseded";
+    return this.stored() === undefined || this.#isExpired(this.identity())
+      ? "expired"
+      : "superseded";
   }
 
   /**
@@ -599,10 +643,10 @@ export type CredentialsWithIdentity<Creds> = CredentialRead & { creds: Creds };
 
 /**
  * The identity and generation of the read a `run` operation executes under — the values to
- * capture in an action fence, since a retry runs under a different read than the first attempt
- * and a shared accessor like `lastSeenGeneration()` can move mid-operation. A fresh object per
- * attempt, never the source's internal state. An identity of `""` is reserved for a never-connected
- * read: it always adjudicates `"superseded"`, and no read serving credentials may carry it.
+ * capture in an action fence, since a retry runs under a different read than the first attempt and
+ * shared source state can move mid-operation. A fresh object per attempt, never the source's
+ * internal state. An identity of `""` is reserved for a never-connected read: it always
+ * adjudicates `"superseded"`, and no read serving credentials may carry it.
  */
 export type CredentialRead = { identity: string; generation: string };
 
@@ -737,28 +781,12 @@ export class CredentialSource<Creds> {
   }
 
   /**
-   * The connection generation of the last successful fetch, for diagnostics and for composing a
-   * *non-security* partition on the raw `KvTtlCache` constructor. Never partition provider data on
-   * it: it is a last-seen value, so a reconnect leaves it naming the previous connection until the
-   * next fetch. `KvTtlCache.partitionedBy` reads `cacheAuthority()` instead. Action-fence capture
-   * must ride the `CredentialRead` handed to its own `run` operation (or the `generation` of its own
-   * `getCredentials()` read), never this accessor, which a concurrent fetch can move.
-   * @returns The last-seen connection generation; `undefined` (principal unknown) until a fetch
-   * succeeds, and from a reported — or account-refused — expiry until a fetch started after the
-   * report adopts an identity neither adjudicated dead nor still under adjudication. A refetch
-   * that re-serves the identity a `"superseded"` verdict promised to replace drops it again.
-   */
-  lastSeenGeneration(): string | undefined {
-    return this.#generation;
-  }
-
-  /**
    * Runs a provider operation, resolving a confirmed credential rejection through the account's
    * verdict on the identity the operation used. The account heals past a rejected-but-current
    * credential inside that ask, so recovery stays invisible here except through the verdict.
    * @param operation Provider call using current credentials. Its second argument is the read the
-   * attempt runs under — capture action fences from it, not from `lastSeenGeneration()`, which a
-   * concurrent fetch can move mid-operation.
+   * attempt runs under — capture action fences from it, never from state a concurrent fetch can
+   * move mid-operation.
    * @param options `replayable` marks the operation safe to execute twice: a `"superseded"`
    * verdict — the rejected credential was already replaced, or the account just healed past it —
    * retries the operation once with freshly fetched credentials, as does a same-generation
@@ -851,8 +879,8 @@ export class CredentialSource<Creds> {
     // the answer goes — dead, its partition could serve the next principal stale data on a hit;
     // superseded, it no longer vouches for the current principal — so cache-first readers bypass
     // during the round trip instead of serving the rejected partition. Drop again on the answer:
-    // the account keeps serving a dead grant until reconnect, so a read landing meanwhile may
-    // re-adopt it, and the death mark itself must wait for the account's word.
+    // a hand-written account may keep serving a dead grant until reconnect, so a read landing
+    // meanwhile may re-adopt it, and the death mark itself must wait for the account's word.
     this.#supersede();
     // The verdict adjudicates the identity, not the report, so concurrent reporters of one grant
     // share the account round trip — and the account's fence-keyed heal collapses their mints.
@@ -965,7 +993,7 @@ export class CredentialSource<Creds> {
     }
     // Three guards, none subsuming another: the fence blocks fetches started before an expiry
     // report (a straggler can carry any old identity, not just a marked one), the dead set blocks
-    // the grants the account keeps serving after their reports, and the pending ask blocks a
+    // any grant an account keeps serving after its report, and the pending ask blocks a
     // post-report fetch handing the rejected partition back before the verdict — cache-first
     // readers bypass for the whole round trip. The fence holds even against a read resolving a
     // reconnect: generations are opaque and equality-only, so a fenced response cannot prove

@@ -1,6 +1,7 @@
 /** Durable action lifecycle storage for approval, simulation, retry, and retention. */
 
 import type { KvScannable } from "./kv";
+import { reservedObserverOverlap } from "./observer-keys";
 import { requirePositiveInt } from "./positive-int";
 
 /** The Durable Object KV surface used by the action journal. */
@@ -180,6 +181,13 @@ export class ActionJournal<A> {
     }
     if (this.#retainedPrefix.startsWith(this.#prefix)) {
       throw new Error(`recordPrefix "${this.#prefix}" would contain its own retained tier.`);
+    }
+    // Observer storage is scanned by prefix, so records landing inside it come back as verifiers
+    // or as an unsettled withheld read -- type-confused ACL checks, and sharing fenced for good.
+    const observerOverlap = reservedObserverOverlap(this.#prefix)
+      ?? reservedObserverOverlap(this.#nextIdKey);
+    if (observerOverlap !== undefined) {
+      throw new Error(`Journal keys overlap the reserved observer prefix "${observerOverlap}".`);
     }
   }
 

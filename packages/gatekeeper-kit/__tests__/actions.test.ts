@@ -18,7 +18,6 @@ import {
   type TaggedAction,
 } from "../src/actions";
 import type { CredentialRead } from "../src/credentials";
-import { ObservationGate, openObservers } from "../src/observers";
 import { fakeKv } from "./fake-kv";
 
 function makeKv() {
@@ -314,6 +313,17 @@ describe("ActionJournal", () => {
       expect(() => new ActionJournal(makeKv(), { namespace }))
         .toThrow(/must match/);
     }
+  });
+
+  it("refuses a namespace that lands its records inside observer storage", () => {
+    // `observer:action:1` comes back from the observer scan as a stored verifier, and
+    // `observer-withhold-fence:action:1` reads as an owner-only read nothing will ever settle.
+    for (const namespace of ["observer", "observer-attempt", "observer-nonce",
+      "observer-withhold-fence", "observer-withhold-latch"]) {
+      expect(() => new ActionJournal(makeKv(), { namespace }))
+        .toThrow(/overlap the reserved observer prefix/);
+    }
+    expect(() => new ActionJournal(makeKv(), { namespace: "observations" })).not.toThrow();
   });
 
   it("keeps two namespaces over one storage from sharing ids, records, or capacity", () => {
@@ -700,21 +710,6 @@ describe("defineActions", () => {
     ]);
   });
 
-  it("stages through the gate's borrowed action surface", async () => {
-    // The one-dup session shape: `gate.actions` must satisfy `ActionSubmitter` without a cast.
-    const { actions, journal } = bind();
-    const submitAction = submitSpy();
-    const gate = new ObservationGate(
-      { submitAction } as unknown as RpcStub<ApprovalQueue>, openObservers());
-
-    const id = await actions.submit(gate.actions, "execute", { sql: "one" });
-
-    expect(submitAction).toHaveBeenCalledWith(id, expect.objectContaining(presentation));
-    expect(journal.listPending()).toEqual([
-      { id, action: { kind: "execute", payload: { sql: "one" } } },
-    ]);
-  });
-
   it("journals the payload as submitted, not as the caller mutated it afterwards", async () => {
     // What the approver reads and what apply receives must be the same payload, so submit snapshots
     // it before its first await -- the caller's reference is live until the KV put otherwise.
@@ -811,6 +806,28 @@ describe("defineActions", () => {
     });
   });
 
+  it("sends the commits described at staging time, not ones added while the lane was busy", async () => {
+    // Staging serializes per journal, so a description built now reaches the queue only after the
+    // submission ahead of it settles. A describe hook returning an array it still owns must not be
+    // able to grow the push the approver sees inside that window.
+    const commits = ["abc"];
+    const { actions } = bind({ describe: () => ({ ...presentation, pushedCommits: commits }) });
+    const blocking = Promise.withResolvers<void>();
+    const submitAction = vi.fn<ApprovalQueue["submitAction"]>(async () => { await blocking.promise; });
+
+    const queue = fakeQueue(submitAction);
+    const first = actions.submit(queue, "execute", { sql: "one" });
+    const second = actions.submit(queue, "execute", { sql: "two" });
+    await vi.waitFor(() => expect(submitAction).toHaveBeenCalled());
+    commits.push("def");
+    blocking.resolve();
+    await Promise.all([first, second]);
+
+    for (const [, description] of submitAction.mock.calls) {
+      expect(description.pushedCommits).toEqual(["abc"]);
+    }
+  });
+
   it("puts no pushedCommits key on the wire when the description declares none", async () => {
     // Absent, not `undefined`: the overseer reads presence as "this action pushes".
     const { actions } = bind();
@@ -854,6 +871,24 @@ describe("defineActions", () => {
         apply: async () => {},
       },
     }, { fence: "none" })).toThrow(/autoApprovable without a kind/);
+  });
+
+  it("refuses a set that declares dependsOn with no way to resolve the reference", () => {
+    // Without a resolver apply hands the provider the provisional string, and the strand cascade
+    // reads every reference as dead. Both are silent, so the declaration is refused instead.
+    const definitions = {
+      execute: {
+        delivery: "continue-with-simulation" as const,
+        describe: () => presentation,
+        dependsOn: (payload: Sql) => [payload.sql],
+        apply: async () => {},
+      },
+    };
+
+    expect(() => defineActions<Host, { execute: Sql }>(definitions, { fence: "none" }))
+      .toThrow(/declares dependsOn, so the set needs isResolvedReference/);
+    expect(() => defineActions<Host, { execute: Sql }>(
+      definitions, { fence: "none", isResolvedReference: () => true })).not.toThrow();
   });
 
   it("refuses a tag whose siblings disagree about the label shown for it", () => {
@@ -1625,7 +1660,7 @@ describe("dependent actions", () => {
         apply: overrides.apply ?? (async () => {}),
         reject: async payload => void host.ran.push(`released edit ${payload.target}`),
       },
-    }, { fence: "none", isResolvedReference: overrides.isResolvedReference });
+    }, { fence: "none", isResolvedReference: overrides.isResolvedReference ?? (() => false) });
     return { host, journal, actions: set.bind(journal, host) };
   }
 

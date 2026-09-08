@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ApprovalQueue, GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  GatekeeperUserVerifier,
+  ObservationAuthorizer,
+} from "@gadgets/workshop-shared/gatekeeper";
 import type { RpcStub } from "cloudflare:workers";
 import {
   aclObservers,
@@ -25,7 +28,7 @@ function makeKv(): ObserverKv {
 }
 
 const withholdMarkers = (kv: FakeKv) =>
-  kv.keys().filter(key => key.startsWith("observer-withhold:"));
+  kv.keys().filter(key => key.startsWith("observer-withhold-fence:"));
 
 // Fixed ACL verifier that records each batched check.
 type V = { allowed: string[]; batches: (readonly string[])[] };
@@ -51,9 +54,9 @@ async function observe(instance: ObserverTracker<V>, sets: string[]) {
   return check.excludeObservers;
 }
 
-// Approval queue fake that records authorization requests.
-function fakeQueue(authorizeObservation = vi.fn(async () => {})) {
-  return { authorizeObservation } as unknown as RpcStub<ApprovalQueue>;
+// Observation authorizer fake that records authorization requests.
+function fakeAuthorizer(authorizeObservation = vi.fn(async () => {})) {
+  return { authorizeObservation } as unknown as RpcStub<ObservationAuthorizer>;
 }
 
 // The mark the overseer carries on a policy refusal. No kernel error class exists yet, so the
@@ -736,7 +739,7 @@ describe("ObservationGate", () => {
       },
     };
 
-    const authorizing = new ObservationGate(fakeQueue(authorizeObservation), strategy)
+    const authorizing = new ObservationGate(fakeAuthorizer(authorizeObservation), strategy)
       .authorize(read, { kind: "collections", ids: ["p1"] });
 
     // `prepare` ran synchronously up to its await, and nothing else may have happened yet.
@@ -753,19 +756,10 @@ describe("ObservationGate", () => {
   it("releases the queue dup it was handed", () => {
     const dispose = vi.fn();
     const queue = { authorizeObservation: async () => {}, [Symbol.dispose]: dispose } as unknown as
-      RpcStub<ApprovalQueue>;
+      RpcStub<ObservationAuthorizer>;
 
     new ObservationGate(queue, openObservers())[Symbol.dispose]();
     expect(dispose).toHaveBeenCalledOnce();
-  });
-
-  it("shares its stub so a session staging actions needs no second dup", () => {
-    const queue = { authorizeObservation: async () => {} } as unknown as RpcStub<ApprovalQueue>;
-    const gate = new ObservationGate(queue, openObservers());
-
-    // The same reference, not a dup: ownership (and release) stays with the gate. The type is
-    // narrowed to actions only, so observations cannot skip the strategy's exclusions.
-    expect(gate.actions).toBe(queue);
   });
 
   it("discards rather than commits when the overseer refuses, keeping its error", async () => {
@@ -782,7 +776,7 @@ describe("ObservationGate", () => {
     const authorizeObservation = vi.fn(async () => { throw refusal("cannot hide observation"); });
 
     await expect(
-      new ObservationGate(fakeQueue(authorizeObservation), strategy)
+      new ObservationGate(fakeAuthorizer(authorizeObservation), strategy)
         .authorize(read, { kind: "collections", ids: ["p1"] }),
     ).rejects.toThrow("cannot hide observation");
     expect(commit).not.toHaveBeenCalled();
@@ -805,7 +799,7 @@ describe("ObservationGate", () => {
     const authorizeObservation = vi.fn(async () => { throw new Error("connection lost"); });
 
     await expect(
-      new ObservationGate(fakeQueue(authorizeObservation), strategy)
+      new ObservationGate(fakeAuthorizer(authorizeObservation), strategy)
         .authorize(read, { kind: "collections", ids: ["p1"] }),
     ).rejects.toThrow("connection lost");
     expect(discard).not.toHaveBeenCalled();
@@ -817,7 +811,7 @@ describe("ObservationGate", () => {
     // The caller's own object, so a copy that added or dropped a field fails this.
     const description = { title: "Read", description: "Read a row" };
 
-    await new ObservationGate(fakeQueue(authorizeObservation), openObservers())
+    await new ObservationGate(fakeAuthorizer(authorizeObservation), openObservers())
       .authorize(description, { kind: "baseline" });
 
     expect(authorizeObservation).toHaveBeenCalledWith(description);
@@ -829,7 +823,7 @@ describe("ObservationGate", () => {
     const authorizeObservation = vi.fn(async () => {});
     const acl = aclObservers({ hasAccess: async () => true });
 
-    await expect(new ObservationGate(fakeQueue(authorizeObservation), acl)
+    await expect(new ObservationGate(fakeAuthorizer(authorizeObservation), acl)
       .authorize(read, { kind: "collections", ids: ["p1"] }))
       .rejects.toThrow(/cannot enforce collection ACLs/);
     expect(authorizeObservation).not.toHaveBeenCalled();
@@ -838,7 +832,7 @@ describe("ObservationGate", () => {
   it("refuses collection ids under an open strategy, which draws no distinction to enforce", async () => {
     const authorizeObservation = vi.fn(async () => {});
 
-    await expect(new ObservationGate(fakeQueue(authorizeObservation), openObservers())
+    await expect(new ObservationGate(fakeAuthorizer(authorizeObservation), openObservers())
       .authorize(read, { kind: "collections", ids: ["p1"] }))
       .rejects.toThrow(/cannot enforce collection ACLs/);
     expect(authorizeObservation).not.toHaveBeenCalled();
@@ -848,7 +842,7 @@ describe("ObservationGate", () => {
     // Refusing here would force a correct configuration to misdescribe what it read.
     const authorizeObservation = vi.fn(async () => {});
 
-    await new ObservationGate(fakeQueue(authorizeObservation), privateObservers("no sharing"))
+    await new ObservationGate(fakeAuthorizer(authorizeObservation), privateObservers("no sharing"))
       .authorize(read, { kind: "collections", ids: ["p1"] });
 
     expect(authorizeObservation).toHaveBeenCalledWith(read);
@@ -858,7 +852,7 @@ describe("ObservationGate", () => {
     const authorizeObservation = vi.fn(async () => {});
     const strategy = trackedCollectionObservers<V>({ kv: makeKv(), hasCollectionAccess: async () => [] });
 
-    await expect(new ObservationGate(fakeQueue(authorizeObservation), strategy)
+    await expect(new ObservationGate(fakeAuthorizer(authorizeObservation), strategy)
       .authorize(read, { kind: "collections", ids: [] })).rejects.toThrow(/at least one collection id/);
     expect(authorizeObservation).not.toHaveBeenCalled();
   });
@@ -869,7 +863,7 @@ describe("ObservationGate", () => {
     const strategy = trackedCollectionObservers<V>({ kv: makeKv(), hasCollectionAccess });
     await strategy.addObserver("x", someUser);
 
-    await new ObservationGate(fakeQueue(authorizeObservation), strategy)
+    await new ObservationGate(fakeAuthorizer(authorizeObservation), strategy)
       .authorize(read, { kind: "baseline" });
 
     expect(authorizeObservation).toHaveBeenCalledWith(read);
@@ -882,7 +876,7 @@ describe("ObservationGate", () => {
     await strategy.addObserver("x", someUser);
     await strategy.addObserver("y", someUser);
 
-    await new ObservationGate(fakeQueue(authorizeObservation), strategy)
+    await new ObservationGate(fakeAuthorizer(authorizeObservation), strategy)
       .authorize(read, { kind: "withholdFromObservers" });
 
     expect(authorizeObservation).toHaveBeenCalledWith({ ...read, excludeObservers: ["x", "y"] });
@@ -902,7 +896,7 @@ describe("ObservationGate", () => {
     await strategy.addObserver("settled", someUser);
 
     const joining = strategy.addObserver("late", someUser);
-    await new ObservationGate(fakeQueue(authorizeObservation), strategy)
+    await new ObservationGate(fakeAuthorizer(authorizeObservation), strategy)
       .authorize(read, { kind: "withholdFromObservers" });
 
     expect(authorizeObservation)
@@ -916,7 +910,7 @@ describe("ObservationGate", () => {
     const kv = makeKv();
     const strategy = trackedCollectionObservers<V>({ kv, hasCollectionAccess: async () => [] });
 
-    await new ObservationGate(fakeQueue(), strategy)
+    await new ObservationGate(fakeAuthorizer(), strategy)
       .authorize(read, { kind: "withholdFromObservers" });
 
     await expect(strategy.addObserver("late", someUser)).rejects.toThrow(OBSERVER_WITHHELD);
@@ -929,14 +923,14 @@ describe("ObservationGate", () => {
     // ordinary answer, not an outage. Nothing was disclosed, so nothing may be latched.
     const kv = fakeKv();
     const strategy = trackedCollectionObservers<V>({ kv, hasCollectionAccess: async () => [] });
-    const refusing = fakeQueue(vi.fn(async () => { throw refusal(); }));
+    const refusing = fakeAuthorizer(vi.fn(async () => { throw refusal(); }));
 
     await expect(new ObservationGate(refusing, strategy)
       .authorize(read, { kind: "withholdFromObservers" }))
       .rejects.toThrow("a collaborator may not see this");
 
     expect(withholdMarkers(kv)).toEqual([]);
-    expect(kv.get("observer-withheld")).toBeUndefined();
+    expect(kv.get("observer-withhold-latch")).toBeUndefined();
     await expect(strategy.addObserver("late", someUser)).resolves.toBeUndefined();
   });
 
@@ -946,7 +940,7 @@ describe("ObservationGate", () => {
     // markers would accumulate, one per ambiguous failure, for the life of the binding.
     const kv = fakeKv();
     const strategy = trackedCollectionObservers<V>({ kv, hasCollectionAccess: async () => [] });
-    const failing = fakeQueue(vi.fn(async () => { throw new Error("connection lost"); }));
+    const failing = fakeAuthorizer(vi.fn(async () => { throw new Error("connection lost"); }));
 
     for (const _attempt of [1, 2, 3]) {
       await expect(new ObservationGate(failing, strategy)
@@ -954,7 +948,7 @@ describe("ObservationGate", () => {
     }
 
     expect(withholdMarkers(kv)).toEqual([]);
-    expect(kv.get("observer-withheld")).toBe(true);
+    expect(kv.get("observer-withhold-latch")).toBe(true);
     await expect(strategy.addObserver("late", someUser)).rejects.toThrow(OBSERVER_WITHHELD);
   });
 
@@ -965,12 +959,12 @@ describe("ObservationGate", () => {
     const strategy = trackedCollectionObservers<V>({ kv, hasCollectionAccess: async () => [] });
     const overseer = Promise.withResolvers<void>();
 
-    const authorizing = new ObservationGate(fakeQueue(vi.fn(() => overseer.promise)), strategy)
+    const authorizing = new ObservationGate(fakeAuthorizer(vi.fn(() => overseer.promise)), strategy)
       .authorize(read, { kind: "withholdFromObservers" });
 
     await expect(strategy.addObserver("late", someUser)).rejects.toThrow(OBSERVER_WITHHELD);
     expect(withholdMarkers(kv)).toHaveLength(1);
-    expect(kv.get("observer-withheld")).toBeUndefined();
+    expect(kv.get("observer-withhold-latch")).toBeUndefined();
 
     overseer.resolve();
     await authorizing;
@@ -982,9 +976,9 @@ describe("ObservationGate", () => {
     const refused = Promise.withResolvers<void>();
     const overseer = Promise.withResolvers<void>();
 
-    const reclaiming = new ObservationGate(fakeQueue(vi.fn(() => refused.promise)), strategy)
+    const reclaiming = new ObservationGate(fakeAuthorizer(vi.fn(() => refused.promise)), strategy)
       .authorize(read, { kind: "withholdFromObservers" });
-    const surviving = new ObservationGate(fakeQueue(vi.fn(() => overseer.promise)), strategy)
+    const surviving = new ObservationGate(fakeAuthorizer(vi.fn(() => overseer.promise)), strategy)
       .authorize(read, { kind: "withholdFromObservers" });
 
     // A marked refusal reclaims its own marker, so only the second read's fence is left.
@@ -1003,13 +997,13 @@ describe("ObservationGate", () => {
     const failing: ObserverKv = {
       ...kv,
       put: (key, value) => {
-        if (key === "observer-withheld") throw new Error("storage unavailable");
+        if (key === "observer-withhold-latch") throw new Error("storage unavailable");
         kv.put(key, value);
       },
     };
     const strategy = trackedCollectionObservers<V>({ kv: failing, hasCollectionAccess: async () => [] });
 
-    await expect(new ObservationGate(fakeQueue(vi.fn(async () => {})), strategy)
+    await expect(new ObservationGate(fakeAuthorizer(vi.fn(async () => {})), strategy)
       .authorize(read, { kind: "withholdFromObservers" })).rejects.toThrow("storage unavailable");
 
     await expect(strategy.addObserver("later", someUser)).rejects.toThrow(OBSERVER_WITHHELD);
@@ -1027,7 +1021,7 @@ describe("ObservationGate", () => {
     const revived = trackedCollectionObservers<V>({ kv: { ...kv }, hasCollectionAccess: async () => [] });
     await expect(revived.addObserver("late", someUser)).rejects.toThrow(OBSERVER_WITHHELD);
     expect(withholdMarkers(kv)).toEqual([]);
-    expect(kv.get("observer-withheld")).toBe(true);
+    expect(kv.get("observer-withhold-latch")).toBe(true);
   });
 
   it("takes no fence when enumerating observers fails", async () => {
@@ -1042,7 +1036,7 @@ describe("ObservationGate", () => {
     };
     const strategy = trackedCollectionObservers<V>({ kv: failing, hasCollectionAccess: async () => [] });
 
-    await expect(new ObservationGate(fakeQueue(vi.fn(async () => {})), strategy)
+    await expect(new ObservationGate(fakeAuthorizer(vi.fn(async () => {})), strategy)
       .authorize(read, { kind: "withholdFromObservers" })).rejects.toThrow("storage unavailable");
 
     scan = false;
@@ -1056,7 +1050,7 @@ describe("ObservationGate", () => {
     const strategy = aclObservers({ hasAccess: async () => true });
     await strategy.addObserver("x", someUser);
 
-    await expect(new ObservationGate(fakeQueue(authorizeObservation), strategy)
+    await expect(new ObservationGate(fakeAuthorizer(authorizeObservation), strategy)
       .authorize(read, { kind: "withholdFromObservers" })).rejects.toThrow(/shares every read/);
 
     expect(authorizeObservation).not.toHaveBeenCalled();
@@ -1072,7 +1066,7 @@ describe("ObservationGate", () => {
       prepare: async () => ({ excludeObservers: ["limited"], commit() {}, discard() {} }),
     };
 
-    await new ObservationGate(fakeQueue(authorizeObservation), strategy)
+    await new ObservationGate(fakeAuthorizer(authorizeObservation), strategy)
       .authorize({ ...read, prohibitAllSharing: true }, { kind: "collections", ids: ["p1"] });
 
     expect(authorizeObservation).toHaveBeenCalledWith({
@@ -1082,17 +1076,15 @@ describe("ObservationGate", () => {
     });
   });
 
-  it("reaches the git cache through the gate, without exposing raw authorization", async () => {
+  it("reaches the git cache through the gate", async () => {
     // A gatekeeper returning commit ids must advertise them. Without this it would have to keep a
     // raw queue stub, which is the bypass the gate exists to prevent.
     const cache = { advertiseCommit: vi.fn() };
     const getGitCache = vi.fn(async () => cache);
     const gate = new ObservationGate(
-      { getGitCache } as unknown as RpcStub<ApprovalQueue>, openObservers());
+      { getGitCache } as unknown as RpcStub<ObservationAuthorizer>, openObservers());
 
     expect(await gate.getGitCache()).toBe(cache);
     expect(getGitCache).toHaveBeenCalledOnce();
-    // The action surface still hides it: observations may only go through `authorize()`.
-    expect((gate.actions as Record<string, unknown>).authorizeObservation).toBeUndefined();
   });
 });

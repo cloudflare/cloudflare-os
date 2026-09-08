@@ -2,8 +2,8 @@
 
 import type { RpcStub } from "cloudflare:workers";
 import type {
-  ApprovalQueue,
   GatekeeperUserVerifier,
+  ObservationAuthorizer,
   ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
@@ -115,7 +115,7 @@ function cannotWithhold(): never {
  */
 export function privateObservers(message: string): ObserverStrategy {
   return {
-    // Nobody is ever admitted, so a set scope has no observer to exclude.
+    // Nobody is ever admitted, so a collection scope has no observer to exclude.
     aclChecks: "no-observers",
     addObserver: async () => { throw new Error(message); },
     removeObserver: async () => {},
@@ -158,7 +158,7 @@ export function aclObservers<V>(options: {
 /**
  * Creates a strategy that tracks observed collection ACLs.
  * @param options Observer-tracker storage and ACL policy.
- * @returns A tracked-set observer strategy.
+ * @returns A tracked-collection observer strategy.
  */
 export function trackedCollectionObservers<V>(options: ObserverTrackerOptions<V>): ObserverStrategy {
   const tracker = new ObserverTracker<V>(options);
@@ -199,15 +199,15 @@ export function escapeObservationValue(value: string): string {
 }
 
 /**
- * Describes what a read discloses: the admission baseline, a set of provider groupings whose ACLs
+ * Describes what a read discloses: the admission baseline, the provider groupings whose ACLs
  * govern it, or nothing shareable at all.
  *
- * A `sets` scope names provider-side access-controlled groupings — a space, a project, a repo —
- * not the individual rows returned. The gate refuses one under a strategy whose `aclChecks` is
- * `"unsupported"`, since ids nothing verifies would describe a check that never ran; pick
- * `trackedCollectionObservers` for a resource whose children carry their own ACLs, and `baseline` where
- * admission already covers the read. It also refuses a `collections` scope naming no set, so a read that
- * returned nothing describes itself as `baseline`.
+ * A `collections` scope names provider-side access-controlled groupings — a space, a project, a
+ * repo — not the individual rows returned. The gate refuses one under a strategy whose
+ * `aclChecks` is `"unsupported"`, since ids nothing verifies would describe a check that never
+ * ran; pick `trackedCollectionObservers` for a resource whose children carry their own ACLs, and
+ * `baseline` where admission already covers the read. It also refuses a `collections` scope
+ * naming none, so a read that returned nothing describes itself as `baseline`.
  */
 export type ObservationScope =
   | { kind: "baseline" }
@@ -216,9 +216,6 @@ export type ObservationScope =
 
 /** Observation text completed by the gate with derived exclusions. */
 export type ObservationInput = Omit<ObservationDescription, "excludeObservers">;
-
-/** The queue surface a session stages actions through; observations go only through the gate. */
-export type ActionQueue = Pick<RpcStub<ApprovalQueue>, "submitAction" | "bindHook">;
 
 /**
  * Authorizes observations after applying the selected observer strategy.
@@ -238,64 +235,59 @@ export type ActionQueue = Pick<RpcStub<ApprovalQueue>, "submitAction" | "bindHoo
  * ```
  */
 export class ObservationGate implements Disposable {
-  readonly #queue: RpcStub<ApprovalQueue>;
+  readonly #authorizer: RpcStub<ObservationAuthorizer>;
   readonly #strategy: ObserverStrategy;
 
   /**
    * Creates an observation gate.
-   * @param queue Duplicated approval-queue stub owned by the gate.
+   * @param authorizer Duplicated authorizer stub owned by the gate. A session that also stages
+   * actions keeps its own approval-queue stub; this one is the read-only surface.
    * @param strategy Observer strategy for this binding.
    */
-  constructor(queue: RpcStub<ApprovalQueue>, strategy: ObserverStrategy) {
-    this.#queue = queue;
+  constructor(authorizer: RpcStub<ObservationAuthorizer>, strategy: ObserverStrategy) {
+    this.#authorizer = authorizer;
     this.#strategy = strategy;
   }
 
   /**
-   * Shares the gate's stub for staging actions, so a session holds one dup for observations and
-   * actions alike. Narrowed to the action surface: a raw `authorizeObservation` would skip the
-   * strategy's exclusions, so observations go only through `authorize()`.
-   * @returns The action surface of the queue, borrowed: the gate keeps ownership, never dispose it.
-   */
-  get actions(): ActionQueue {
-    return this.#queue;
-  }
-
-  /**
    * Reaches the workspace git cache through the gate, so a gatekeeper whose API returns commit ids
-   * can advertise them without holding a raw queue stub of its own. Observations still go only
+   * can advertise them without holding a stub of its own. Observations still go only
    * through `authorize()`.
    *
    * The returned stub is **caller-owned**: dispose it when the read is done, or take it with
-   * `using`. The gate keeps its own queue stub either way. The promise pipelines, so a call on it
-   * need not be awaited first. The return type is the queue's own, so the stub stays `Disposable`
-   * rather than being flattened to a bare `GitCache` that `using` would reject.
+   * `using`. The gate keeps its own authorizer stub either way. The promise pipelines, so a call
+   * on it need not be awaited first. The return type is the authorizer's own, so the stub stays
+   * `Disposable` rather than being flattened to a bare `GitCache` that `using` would reject.
    * @returns The gatekeeper-scoped git cache.
    */
-  getGitCache(): ReturnType<RpcStub<ApprovalQueue>["getGitCache"]> {
-    return this.#queue.getGitCache();
+  getGitCache(): ReturnType<RpcStub<ObservationAuthorizer>["getGitCache"]> {
+    return this.#authorizer.getGitCache();
   }
 
   /**
-   * Opens a second gate over its own duplicate of the queue, for a capability that outlives the
-   * session that made it — a cursor handed to the gadget and walked later, most often.
+   * Opens a second gate over its own duplicate of the authorizer, for a capability that outlives
+   * the session that made it — a cursor handed to the gadget and walked later, most often.
    *
    * Both gates share this binding's strategy, so exclusions and fences stay one decision; only the
-   * queue stub is duplicated. The lease is **caller-owned**: release it when the capability it
+   * stub is duplicated. The lease is **caller-owned**: release it when the capability it
    * serves is released, typically from a cursor's `dispose`. Disposing the session gate does not
    * disturb a lease, and disposing a lease does not disturb the session.
+   *
+   * Needs a real `RpcStub`: this calls `dup()`, which the overseer's stub has and a plain object
+   * does not. A gate built from a service binding cannot lease either, `dup` being reserved
+   * over RPC.
    * @returns A gate the caller disposes independently.
    */
   lease(): ObservationGate {
-    return new ObservationGate(this.#queue.dup(), this.#strategy);
+    return new ObservationGate(this.#authorizer.dup(), this.#strategy);
   }
 
   /**
-   * Releases the duplicated approval-queue stub. Disposing during isolate shutdown trips a fatal
+   * Releases the duplicated authorizer stub. Disposing during isolate shutdown trips a fatal
    * workerd assertion; shipped gatekeepers leave the release to RPC connection teardown.
    */
   [Symbol.dispose](): void {
-    this.#queue[Symbol.dispose]();
+    this.#authorizer[Symbol.dispose]();
   }
 
   /**
@@ -308,7 +300,7 @@ export class ObservationGate implements Disposable {
     const check = await this.#prepare(scope);
     const exclude = check.excludeObservers;
     try {
-      await this.#queue.authorizeObservation(
+      await this.#authorizer.authorizeObservation(
         exclude?.length ? { ...input, excludeObservers: exclude } : input);
     } catch (error) {
       // A marked refusal proves nothing was recorded, so prepared state is reclaimed; any other

@@ -55,6 +55,10 @@ type CursorShape<T> = {
    * empty page from a spent window: nothing was disclosed, so the retry opens a fresh window
    * rather than pinning the walk on a failure that may have been transient.
    *
+   * That hold is why a walk pinned to a connection must re-check its authority **here**, not only
+   * in its fetch callback: the retry path never re-enters the fetch, so a reconnect landing
+   * between refusal and retry would otherwise disclose the previous connection's rows.
+   *
    * `terminal` marks the walk over, so `items` is empty and no further page will come. Describe
    * that case as the query it answered rather than the rows it returned, and give it a
    * `{ kind: "baseline" }` scope or a synthetic collection id: the gate refuses a `collections`

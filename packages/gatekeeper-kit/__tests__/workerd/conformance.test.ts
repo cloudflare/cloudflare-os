@@ -9,8 +9,17 @@
 
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import type { ConformanceAccount } from "./conformance/gatekeeper";
-import { advertised, observations, provider, resetProvider, submissions } from "./conformance/gatekeeper";
+import { RpcStub } from "cloudflare:workers";
+import type { ConformanceAccount, ConformanceResource } from "./conformance/gatekeeper";
+import {
+  advertised,
+  FixtureQueue,
+  observations,
+  overseer,
+  provider,
+  resetProvider,
+  submissions,
+} from "./conformance/gatekeeper";
 
 let seq = 0;
 
@@ -20,6 +29,15 @@ function bind() {
   const account = env.CONFORMANCE_ACCOUNT.getByName(`account-${seq}`);
   const resource = env.CONFORMANCE_RESOURCE.getByName(`resource-${seq}`);
   return { account, resource };
+}
+
+/** Binds the way the overseer hands a session its queue: borrowed for the call, not given away. */
+async function bindResource(
+  resource: DurableObjectStub<ConformanceResource>,
+  account: DurableObjectStub<ConformanceAccount>,
+): Promise<void> {
+  using queue = new RpcStub(new FixtureQueue());
+  await resource.bind(account, queue);
 }
 
 /** Runs a full connect handshake, as a user clicking through the connect page does. */
@@ -61,6 +79,9 @@ describe("credentials and connect", () => {
     const latest = await account.getCredentials();
     expect(latest.creds.scopes).toEqual(["projects:read", "projects:write"]);
     expect(latest.identity).not.toBe(first.identity);
+    // Each rotation revokes the token it replaced, so this is what proves all three refreshed —
+    // comparing only the first and last identity passes on one rotation and two no-ops.
+    expect(provider.revoked.size).toBe(3);
   });
 
   it("reports a grant the provider revoked as expiry, not as a recycled 401", async () => {
@@ -68,7 +89,7 @@ describe("credentials and connect", () => {
     // adjudicates "unavailable" and the dead grant stays adoptable as cache authority.
     const { account, resource } = bind();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
     provider.controls.grantDead = true;
     provider.controls.rejectCredentials = true;
 
@@ -106,7 +127,7 @@ describe("observations", () => {
   it("excludes a collaborator from the spaces they cannot see", async () => {
     const { account, resource } = bind();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
     provider.access.set("limited", new Set(["space-1"]));
     await resource.addObserver("limited", "limited");
 
@@ -117,10 +138,24 @@ describe("observations", () => {
     expect(observations[0]?.excludeObservers).toEqual(["limited"]);
   });
 
+  it("excludes a collaborator from a search that covered a space they cannot see", async () => {
+    const { account, resource } = bind();
+    await connect(account);
+    await bindResource(resource, account);
+    provider.access.set("limited", new Set(["space-1"]));
+    await resource.addObserver("limited", "limited");
+
+    // Only the space-1 project matches, but the search read space-2 as well: the miss there is
+    // disclosure too, so naming only the matched space would leak it.
+    expect((await resource.searchProjects("Alpha")).map(project => project.id))
+      .toEqual(["project-a"]);
+    expect(observations[0]?.excludeObservers).toEqual(["limited"]);
+  });
+
   it("authorizes a zero-result search, which is an existence oracle", async () => {
     const { account, resource } = bind();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
 
     expect(await resource.searchProjects("nothing-matches")).toEqual([]);
 
@@ -133,7 +168,7 @@ describe("observations", () => {
     const { account, resource } = bind();
     provider.projects.clear();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
 
     using cursor = await resource.listProjects();
     expect(await cursor.next()).toBeNull();
@@ -149,15 +184,17 @@ describe("observations", () => {
         { id: `extra-${index}`, name: `Extra ${index}`, spaceId: "space-1" });
     }
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
 
     using cursor = await resource.listProjects();
     let pages = 0;
     while (await cursor.next() !== null) pages += 1;
 
-    // One observation per returned page, and the walk terminated.
+    // One observation per returned page, and fewer provider fetches than pages — so at least one
+    // authorized page was served from the buffer with no fetch behind it.
     expect(observations).toHaveLength(pages);
     expect(pages).toBeGreaterThan(1);
+    expect(provider.listCalls).toBeLessThan(pages);
   });
 
   it("stops a walk whose connection was replaced between pages", async () => {
@@ -169,10 +206,29 @@ describe("observations", () => {
         { id: `extra-${index}`, name: `Extra ${index}`, spaceId: "space-1" });
     }
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
 
     using cursor = await resource.listProjects();
     expect(await cursor.next()).not.toBeNull();
+    await account.disconnect();
+    await connect(account);
+
+    await expect(async () => { await cursor.next(); })
+      .rejects.toThrow(/walk was started under a connection/);
+  });
+
+  it("refuses a held page whose connection was replaced before the retry", async () => {
+    // A refused page is held rather than refetched, so the retry never re-enters the fetch where
+    // the walk's authority is checked. Without a second check it would disclose the previous
+    // connection's rows under the new one.
+    const { account, resource } = bind();
+    await connect(account);
+    await bindResource(resource, account);
+
+    using cursor = await resource.listProjects();
+    overseer.refuseNext = true;
+    await expect(async () => { await cursor.next(); }).rejects.toThrow(/overseer refused/);
+
     await account.disconnect();
     await connect(account);
 
@@ -185,7 +241,7 @@ describe("actions", () => {
   it("applies a create, then its dependent rename against the real provider id", async () => {
     const { account, resource } = bind();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
 
     const create = await resource.submit("createProject",
       { ref: "~new", name: "Gamma", spaceId: "space-1" });
@@ -205,7 +261,7 @@ describe("actions", () => {
     // `submitAction` would still allocate a journal record and still apply.
     const { account, resource } = bind();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
 
     const id = await resource.submit("createProject",
       { ref: "~queued", name: "Iota", spaceId: "space-1" });
@@ -222,7 +278,7 @@ describe("actions", () => {
   it("refuses to dispatch a dependent whose reference is still provisional", async () => {
     const { account, resource } = bind();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
 
     await resource.submit("createProject",
       { ref: "~later", name: "Delta", spaceId: "space-1" });
@@ -238,7 +294,7 @@ describe("actions", () => {
     // "not applied" would be a lie, and replaying it would create a second project.
     const { account, resource } = bind();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
     provider.controls.timeoutAfterCreate = true;
     const create = await resource.submit("createProject",
       { ref: "~ghost", name: "Epsilon", spaceId: "space-1" });
@@ -246,8 +302,11 @@ describe("actions", () => {
     await expect(async () => { await resource.apply(create); }).rejects.toThrow(/timed out/);
 
     expect(await resource.record(create)).toMatchObject({ state: "failed", outcome: "unknown" });
-    // The effect landed exactly once, which is why it may not be replayed. Counted, not merely
-    // present: a replay throws the same timeout, so presence alone would pass through one.
+
+    // Terminal: a second approval is refused before the provider is reached, so the effect that
+    // did land stays a single one.
+    provider.controls.timeoutAfterCreate = false;
+    await expect(async () => { await resource.apply(create); }).rejects.toThrow(/timed out/);
     expect([...provider.projects.values()].filter(project => project.name === "Epsilon"))
       .toHaveLength(1);
   });
@@ -255,7 +314,7 @@ describe("actions", () => {
   it("keeps a dependent decidable when its provider's outcome is unknown", async () => {
     const { account, resource } = bind();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
     provider.controls.timeoutAfterCreate = true;
     const create = await resource.submit("createProject",
       { ref: "~maybe", name: "Zeta", spaceId: "space-1" });
@@ -273,7 +332,7 @@ describe("assembly", () => {
   it("advertises a commit through the gate rather than a raw queue stub", async () => {
     const { account, resource } = bind();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
 
     await resource.advertiseHead("abc123");
 
@@ -283,7 +342,7 @@ describe("assembly", () => {
   it("repartitions the cache when the account reconnects as another principal", async () => {
     const { account, resource } = bind();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
     expect((await resource.searchProjects("Alpha")).map(project => project.id))
       .toEqual(["project-a"]);
 
@@ -298,10 +357,59 @@ describe("assembly", () => {
       .toEqual(["project-a", "project-c"]);
   });
 
+  it("stops a warm facet reading a grant another facet's rejection buried", async () => {
+    const { account, resource } = bind();
+    const other = env.CONFORMANCE_RESOURCE.getByName(`resource-${seq}-b`);
+    await connect(account);
+    await bindResource(resource, account);
+    await bindResource(other, account);
+
+    // The second facet vouches for the grant and warms its cache under it.
+    expect((await other.searchProjects("Alpha")).map(project => project.id)).toEqual(["project-a"]);
+
+    provider.controls.grantDead = true;
+    provider.controls.rejectCredentials = true;
+    await expect(async () => { await resource.searchProjects("Alpha"); })
+      .rejects.toThrow(/Reconnect the conformance account/);
+
+    // The account recorded the death, so the warm facet must refuse rather than serve its hit --
+    // nothing about the grant's own hour-long expiry says it is dead.
+    await expect(async () => { await other.searchProjects("Alpha"); })
+      .rejects.toThrow(/credentials have expired/);
+
+    provider.controls.grantDead = false;
+    provider.controls.rejectCredentials = false;
+    await account.disconnect();
+    await connect(account);
+
+    expect((await other.searchProjects("Alpha")).map(project => project.id)).toEqual(["project-a"]);
+  });
+
+  it("keeps a cursor's lease walking after its resource rebinds", async () => {
+    const { account, resource } = bind();
+    for (const index of [1, 2, 3]) {
+      provider.projects.set(`extra-${index}`,
+        { id: `extra-${index}`, name: `Extra ${index}`, spaceId: "space-1" });
+    }
+    await connect(account);
+    await bindResource(resource, account);
+
+    using cursor = await resource.listProjects();
+    expect(await cursor.next()).not.toBeNull();
+    const authorized = observations.length;
+
+    // Rebinding releases the queue and gate the previous bind made; the cursor's lease owns its
+    // own dup and must outlive both.
+    await bindResource(resource, account);
+
+    expect(await cursor.next()).not.toBeNull();
+    expect(observations).toHaveLength(authorized + 1);
+  });
+
   it("refreshes and retries a read whose stored access token the provider has rotated", async () => {
     const { account, resource } = bind();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
 
     // The provider issues a newer token, so the stored one now 401s exactly as a stale one does.
     provider.mint();
@@ -316,7 +424,7 @@ describe("assembly", () => {
   it("refuses an action approved under a connection that has since been replaced", async () => {
     const { account, resource } = bind();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
     const staged = await resource.submit("createProject",
       { ref: "~fenced", name: "Fenced", spaceId: "space-1" });
 
@@ -333,20 +441,22 @@ describe("assembly", () => {
     // handler comparing its own read against the fence closes this; nothing earlier can.
     const { account, resource } = bind();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
     const staged = await resource.submit("createProject",
       { ref: "~raced", name: "Raced", spaceId: "space-1" });
 
     await expect(async () => { await resource.apply(staged, true); })
       .rejects.toThrow(/has since been replaced/);
-    // The provider was never called, so no project was created under the new connection.
+    // The provider was never called, so no project was created under the new connection — and the
+    // record is terminal, not restored to pending under a fence that can never match again.
     expect([...provider.projects.values()].map(project => project.name)).not.toContain("Raced");
+    expect((await resource.record(staged))?.state).toBe("failed");
   });
 
   it("keeps two journals over one Durable Object from seeing each other", async () => {
     const { account, resource } = bind();
     await connect(account);
-    await resource.bind(account);
+    await bindResource(resource, account);
 
     const { ids, names } = await resource.isolation();
 

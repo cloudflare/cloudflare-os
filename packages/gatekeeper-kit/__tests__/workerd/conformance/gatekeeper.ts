@@ -8,8 +8,13 @@
  */
 
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
-import type { ActionDescription, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  ActionDescription,
+  GitCache,
+  ObservationDescription,
+} from "@gadgets/workshop-shared/gatekeeper";
 import {
+  ActionApplyError,
   ActionOutcomeUnknownError,
   ActionJournal,
   defineActions,
@@ -50,23 +55,26 @@ export const submissions: [number, ActionDescription][] = [];
 /** Commit ids advertised through the gate's git cache. */
 export const advertised: string[] = [];
 
+/** Refuses the next observation, as the overseer does on a policy refusal. */
+export const overseer = { refuseNext: false };
+
 /** Resets shared state between tests, since these module instances outlive one. */
 export function resetProvider(): void {
   provider.controls.rejectCredentials = false;
   provider.controls.grantDead = false;
   provider.controls.timeoutAfterCreate = false;
   provider.principal = "user-a";
+  provider.listCalls = 0;
   provider.revoked.clear();
   provider.projects.clear();
   provider.access.clear();
   observations.length = 0;
   submissions.length = 0;
   advertised.length = 0;
+  overseer.refuseNext = false;
 }
 
-/** The slice of `GitCache` this consumer touches. */
-type GitCacheStub = { advertiseCommit(oid: string): Promise<void> };
-
+/** Deliberately partial: this consumer only advertises commits. */
 class FixtureGitCache extends RpcTarget {
   async advertiseCommit(oid: string): Promise<void> {
     advertised.push(oid);
@@ -80,6 +88,10 @@ class FixtureGitCache extends RpcTarget {
  */
 export class FixtureQueue extends RpcTarget {
   async authorizeObservation(description: ObservationDescription): Promise<void> {
+    if (overseer.refuseNext) {
+      overseer.refuseNext = false;
+      throw new Error("the overseer refused this observation");
+    }
     observations.push(description);
   }
 
@@ -88,8 +100,8 @@ export class FixtureQueue extends RpcTarget {
   }
 
   /** The git cache a gatekeeper returning commit ids must advertise through. */
-  async getGitCache(): Promise<GitCacheStub> {
-    return new FixtureGitCache();
+  async getGitCache(): Promise<GitCache> {
+    return new FixtureGitCache() as unknown as GitCache;
   }
 }
 
@@ -101,17 +113,28 @@ type Actions = {
 
 /**
  * Closes the window apply's entry check cannot: a reconnect landing between that check and the
- * provider call. Compared against the read the call itself runs under.
+ * provider call. Terminal, and `ActionApplyError` rather than a bare throw: this runs before the
+ * provider is reached, so no effect landed and retrying under a fence that can never match again
+ * would leave the action pending for good.
  * @param fence The action's captured authority, absent for an unfenced action.
  * @param read The credential read this provider call runs under.
  */
-function requireFence(
-  fence: ActionFence | undefined,
-  read: CredentialRead,
-  subject = "This action was approved",
-): void {
+function requireActionFence(fence: ActionFence | undefined, read: CredentialRead): void {
   if (fence && fence.generation !== read.generation) {
-    throw new Error(`${subject} under a connection that has since been replaced.`);
+    throw new ActionApplyError(
+      "This action was approved under a connection that has since been replaced. "
+      + "Reject it and submit it again.");
+  }
+}
+
+/**
+ * Refuses a walk whose continuation token belongs to a connection the account has moved past.
+ * @param opened The read the walk opened under.
+ * @param read The credential read this page runs under.
+ */
+function requireWalkFence(opened: CredentialRead, read: CredentialRead): void {
+  if (opened.generation !== read.generation) {
+    throw new Error("This walk was started under a connection that has since been replaced.");
   }
 }
 
@@ -319,16 +342,23 @@ export class ConformanceResource extends DurableObject {
   };
 
   #gate?: ObservationGate;
+  #queue?: RpcStub<FixtureQueue>;
   #reconnectMidApply = false;
 
   /**
-   * Binds the account this resource answers for and opens its queue capability.
+   * Binds the account this resource answers for and the queue its session stages through.
    * @param account The account Durable Object.
+   * @param queue The overseer's approval queue, borrowed for this call only.
    */
-  bind(account: DurableObjectStub<ConformanceAccount>): void {
+  bind(account: DurableObjectStub<ConformanceAccount>, queue: RpcStub<FixtureQueue>): void {
     this.#account = account;
-    // The gate owns this stub for the resource's lifetime, as a session's `queue.dup()` would.
-    this.#gate = new ObservationGate(new RpcStub(new FixtureQueue()) as never, this.#observers);
+    // Two owners, as a session has: its own queue for staging actions, and a gate over a second
+    // dup. Both come from the borrowed argument, which the caller drops when this call returns.
+    // Rebinding releases the pair the previous bind made; leases outlive it.
+    this.#gate?.[Symbol.dispose]();
+    this.#queue?.[Symbol.dispose]();
+    this.#queue = queue.dup();
+    this.#gate = new ObservationGate(queue.dup(), this.#observers);
   }
 
   #requireAccount(): DurableObjectStub<ConformanceAccount> {
@@ -349,6 +379,11 @@ export class ConformanceResource extends DurableObject {
     return this.#gate;
   }
 
+  #requireQueue(): RpcStub<FixtureQueue> {
+    if (!this.#queue) throw new Error("resource is not bound");
+    return this.#queue;
+  }
+
   /**
    * Admits a collaborator, which verifies their access to every space read so far.
    * @param id Collaborator id.
@@ -360,32 +395,39 @@ export class ConformanceResource extends DurableObject {
 
   /** @returns Every project, paged, with each page authorized before it is returned. */
   async listProjects(): Promise<TokenCursor<Project>> {
+    // Pinned to the connection the walk opened under: a continuation token is provider state
+    // scoped to one account, so presenting it under the next one mixes or skips rows. Read before
+    // leasing, so a disconnected account throws with nothing acquired.
+    const opened = await this.#creds.read();
     // The cursor is returned to the caller and walked later, so it takes its own lease rather than
     // borrowing the session's stub, and releases it when the walk is dropped.
     const walk = this.#requireGate().lease();
-    // Pinned to the connection the walk opened under: a continuation token is provider state
-    // scoped to one account, so presenting it under the next one mixes or skips rows.
-    const opened = await this.#creds.read();
     return new TokenCursor<Project>({
       dispose: () => walk[Symbol.dispose](),
       pageSize: 2,
-      remotePageSize: 2,
-      fetchPage: token => this.#creds.run(
+      // Wider than the local page, so a walk serves one page from the buffer with no fetch.
+      remotePageSize: 4,
+      fetchPage: (token, perPage) => this.#creds.run(
         async (creds, read) => {
-          requireFence(opened, read, "This walk was started");
-          return provider.listProjects(creds, token);
+          requireWalkFence(opened, read);
+          return provider.listProjects(creds, token, perPage);
         },
         { replayable: true }),
-      authorizePage: (projects, { terminal }) => projects.length === 0
-        ? walk.authorize(
-          {
-            title: "Projects",
-            description: terminal ? "Listed projects; there were none." : "Scanned an empty window.",
-          },
-          { kind: "baseline" })
-        : walk.authorize(
-          { title: "Projects", description: `Read ${projects.length} projects.` },
-          { kind: "collections", ids: [...new Set(projects.map(project => project.spaceId))] }),
+      authorizePage: async (projects, { terminal }) => {
+        // Re-checked here, not only in `fetchPage`: a refused page is held and re-offered without
+        // refetching, so this is the only check the retry path runs.
+        requireWalkFence(opened, await this.#creds.read());
+        await (projects.length === 0
+          ? walk.authorize(
+            {
+              title: "Projects",
+              description: terminal ? "Listed projects; there were none." : "Scanned an empty window.",
+            },
+            { kind: "baseline" })
+          : walk.authorize(
+            { title: "Projects", description: `Read ${projects.length} projects.` },
+            { kind: "collections", ids: [...new Set(projects.map(project => project.spaceId))] }));
+      },
     });
   }
 
@@ -395,14 +437,14 @@ export class ConformanceResource extends DurableObject {
    * @returns Matching projects.
    */
   async searchProjects(query: string): Promise<Project[]> {
-    const matches = await this.#cache.cached(`search:${query}`, 60_000,
+    const { matches, spaces } = await this.#cache.cached(`search:${query}`, 60_000,
       () => this.#creds.run(async creds => provider.searchProjects(creds, query),
         { replayable: true }));
+    // Every space searched, not just the ones that matched: a miss discloses absence in each of
+    // them, so an observer excluded from one must not learn that.
     await this.#requireGate().authorize(
       { title: "Search", description: `Searched projects for "${query}".` },
-      matches.length === 0
-        ? { kind: "baseline" }
-        : { kind: "collections", ids: [...new Set(matches.map(project => project.spaceId))] });
+      spaces.length === 0 ? { kind: "baseline" } : { kind: "collections", ids: spaces });
     return matches;
   }
 
@@ -454,7 +496,7 @@ export class ConformanceResource extends DurableObject {
     // invisible to it -- the operation would run under the new connection.
     if (this.#reconnectMidApply) await this.#reconnect();
     return this.#creds.run(async (creds, read) => {
-      requireFence(fence, read);
+      requireActionFence(fence, read);
       try {
         return provider.createProject(creds, name, spaceId);
       } catch (error) {
@@ -475,7 +517,7 @@ export class ConformanceResource extends DurableObject {
    */
   async #renameProject(id: string, name: string, fence?: ActionFence): Promise<void> {
     await this.#creds.run(async (creds, read) => {
-      requireFence(fence, read);
+      requireActionFence(fence, read);
       provider.renameProject(creds, id, name);
     });
   }
@@ -492,7 +534,7 @@ export class ConformanceResource extends DurableObject {
     // Staged inside a credentialed operation, so the fence is that operation's own read rather
     // than a second one a reconnect could land in front of.
     return this.#creds.run((_creds, read) => actions.bind(this.#journal, this.#host)
-      .submit(this.#requireGate().actions, kind, payload, { fence: read }));
+      .submit(this.#requireQueue(), kind, payload, { fence: read }));
   }
 
   /**
