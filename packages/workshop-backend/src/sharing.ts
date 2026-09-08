@@ -564,9 +564,6 @@ export class SharingManager {
         recipientPolicy?: ObservationDomainSharingPolicy;
         beforeStore?: () => void })
       : Promise<{ key: string; linkId: string; recipientPolicy?: ObservationDomainSharingPolicy }> {
-    if (opts.recipientPolicy && opts.role !== "use") {
-      throw new Error("Internal share links only support Gadget-only access.");
-    }
     let callerRole = this.#requireCallerRole(opts.caller, opts.recipientPolicy);
     if (roleRank(opts.role) > roleRank(callerRole)) {
       throw new Error("You cannot grant a role higher than your own.");

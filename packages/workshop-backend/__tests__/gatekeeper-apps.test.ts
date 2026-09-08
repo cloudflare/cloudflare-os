@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { gatekeeperAppInstanceId, listVisibleGatekeeperApps, resolveGatekeeperAppAccount } from "../src/server.js";
-import type { ProvidedAccountInfo } from "../src/user.js";
+import { shouldRefreshWorkItemsSourceDescription, type ProvidedAccountInfo } from "../src/user.js";
 
 function account(accountId: number, vendorId = "context",
     providesUi: NonNullable<ProvidedAccountInfo["description"]["providesUi"]> = { title: "Context" })
@@ -104,5 +104,16 @@ describe("gatekeeper management app identity", () => {
     })]);
     expect(await resolveGatekeeperAppAccount(
         [source], await gatekeeperAppInstanceId(source), true)).toBe(source);
+  });
+
+  it("refreshes migrated Jira and Zendesk accounts that predate Work Items source metadata", () => {
+    expect(shouldRefreshWorkItemsSourceDescription(account(7, "jira", { title: "Jira" })))
+      .toBe(true);
+    expect(shouldRefreshWorkItemsSourceDescription(account(8, "zendesk", {
+      title: "Zendesk",
+      composition: {kind: "work-items", role: "zendesk", embeddedOnly: true},
+    }))).toBe(false);
+    expect(shouldRefreshWorkItemsSourceDescription(account(9, "confluence", { title: "Confluence" })))
+      .toBe(false);
   });
 });

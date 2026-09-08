@@ -6413,16 +6413,23 @@ class OverseerImpl implements AgentHooks {
           `Available vendors: ${vendors.map(v => v.id).join(", ") || "(none)"}.` };
     }
 
-    // Resolve the exact resource this request maps to, using the same precedence the accept modal
-    // uses. If it can't be resolved, REJECT the request: otherwise the user would get an accept
-    // card that opens a blank "create new connection" picker. The agent is told what to fix.
-    let resolved = resolveRequestedResource(vendor.supportedResources, input.resourceUrl);
-    if (!resolved.ok) {
+    // If the agent names a concrete URL, resolve the exact resource type so acceptance can enforce
+    // that type and (below) exact URL. If the agent omits the URL, keep the request vendor-only: the
+    // accept modal will show a vendor-scoped explicit picker instead of guessing among resources.
+    let resolved = input.resourceUrl === undefined
+        ? undefined
+        : resolveRequestedResource(vendor.supportedResources, input.resourceUrl);
+    if (resolved?.ok === false) {
       return { requested: false, message:
           `Cannot request a connection for "${vendor.description.displayName}": ${resolved.reason}` };
     }
+    if (resolved === undefined && vendor.supportedResources.length === 0) {
+      return { requested: false, message:
+          `Cannot request a connection for "${vendor.description.displayName}": this vendor ` +
+          `offers no connectable resources.` };
+    }
 
-    if (resolved.resource.providedBySingleton) {
+    if (resolved?.resource.providedBySingleton) {
       let providedAccounts = await this.#ownerUserDo().listProvidedAccounts();
       let connectedSingleton = providedAccounts.some(account =>
         account.vendorId.toLowerCase() === input.vendorId.toLowerCase() &&
@@ -6459,9 +6466,9 @@ class OverseerImpl implements AgentHooks {
       vendorId: input.vendorId,
       vendorName: vendor.description.displayName,
       vendorLogoUrl: vendor.description.logo?.url,
-      resourceTitle: resolved.resource.title,
+      resourceTitle: resolved?.resource.title,
       resourceUrl: input.resourceUrl,
-      resourceUrlPattern: resolved.resource.urlPattern,
+      resourceUrlPattern: resolved?.resource.urlPattern,
       reason: input.reason,
       state: "pending",
       // Claims the name in the chat's scope from this moment until denial; on acceptance the
@@ -9169,7 +9176,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (spec.vendorId.toLowerCase() !== msg.vendorId.toLowerCase()) {
       throw new Error("Accepted connection does not match the requested gatekeeper.");
     }
-    if ((spec.typeUrlPattern || spec.resourceUrl) !== msg.resourceUrlPattern) {
+    if (msg.resourceUrlPattern !== undefined &&
+        (spec.typeUrlPattern || spec.resourceUrl) !== msg.resourceUrlPattern) {
       throw new Error("Accepted connection does not match the requested resource type.");
     }
     if (msg.resourceUrl !== undefined && spec.resourceUrl !== msg.resourceUrl) {
@@ -10050,9 +10058,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     assertShareLinksAllowed(await this.#isFinanceWorkspace());
     const sharing = await this.impl.getSharingManager();
     const recipientPolicy = await this.impl.deriveDomainSharingPolicyForRole(role);
-    if (recipientPolicy && role !== "use") {
-      throw new Error("Internal share links only support Gadget-only access.");
-    }
     if (this.impl.storage.prohibitAllSharing.get()) {
       throw new Error(
           "This workspace has observed sensitive data. To prevent leaks, the workspace cannot be " +

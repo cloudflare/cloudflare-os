@@ -275,6 +275,43 @@ describe("suspended agent resume identity", () => {
         CHAT_ID, ORIGINAL_MODEL, ORIGINAL_INITIATOR, ORIGINAL_USER_ID);
   });
 
+  it("accepts a vendor-only Jira connection request after the user explicitly picks a resource", async () => {
+    let requestId = `${CHAT_ID}:request`;
+    let harness = makeHarness([{
+      type: "connectionRequest",
+      chatId: CHAT_ID,
+      sequence: 1,
+      author: { type: "agent", id: ORIGINAL_MODEL_ID, name: "Original Model" },
+      timestamp: new Date(0),
+      requestId,
+      vendorId: "jira",
+      vendorName: "Jira",
+      reason: "Need Jira access; user should choose the site or issue.",
+      state: "pending",
+      bindingName: "JIRA",
+    }], new Map(), {
+      gatekeepers: new Map<number, object>([[42, {
+        id: 42,
+        resourceTitle: "Jira Issue",
+        resourceUrl: "https://acme.atlassian.net/browse/ENG-1",
+        creationSpec: {
+          type: "gatekeeper",
+          vendorId: "jira",
+          resourceUrl: "https://acme.atlassian.net/browse/ENG-1",
+          typeUrlPattern: "https://:site.atlassian.net/browse/:issueKey",
+        },
+      }]]),
+      suspensionReason: "connectionRequest",
+    });
+    let client = await openOwnerClient(harness);
+
+    await client.acceptConnectionRequest(requestId, { gatekeeperId: 42 });
+
+    expect((harness.getMessages()[0] as { state?: string }).state).toBe("accepted");
+    expect(harness.startAgent).toHaveBeenCalledWith(
+        CHAT_ID, ORIGINAL_MODEL, ORIGINAL_INITIATOR, ORIGINAL_USER_ID);
+  });
+
   it("resumes an approved awaitDecision action as the original initiator", async () => {
     let action: ActionRecord = {
       id: 99,
@@ -479,6 +516,44 @@ describe("suspended agent resume identity", () => {
 
     await expect(client.acceptConnectionRequest(requestId, { gatekeeperId: 42 }))
       .rejects.toThrow("Accepted connection does not match the requested resource.");
+
+    expect(harness.startAgent).not.toHaveBeenCalled();
+    expect((harness.getMessages()[0] as { state?: string }).state).toBe("pending");
+  });
+
+  it("rejects an accepted connection result for a different requested resource type", async () => {
+    let requestId = `${CHAT_ID}:request`;
+    let harness = makeHarness([{
+      type: "connectionRequest",
+      chatId: CHAT_ID,
+      sequence: 1,
+      author: { type: "agent", id: ORIGINAL_MODEL_ID, name: "Original Model" },
+      timestamp: new Date(0),
+      requestId,
+      vendorId: "github",
+      vendorName: "GitHub",
+      resourceTitle: "Repository",
+      resourceUrlPattern: "https://github.com/:owner/:repo",
+      reason: "Need repository access",
+      state: "pending",
+      bindingName: "REPO",
+    }], new Map(), {
+      gatekeepers: new Map<number, object>([[42, {
+        id: 42,
+        resourceTitle: "Organization",
+        resourceUrl: "https://github.com/acme",
+        creationSpec: {
+          type: "gatekeeper",
+          vendorId: "github",
+          resourceUrl: "https://github.com/acme",
+          typeUrlPattern: "https://github.com/:org",
+        },
+      }]]),
+    });
+    let client = await openOwnerClient(harness);
+
+    await expect(client.acceptConnectionRequest(requestId, { gatekeeperId: 42 }))
+      .rejects.toThrow("Accepted connection does not match the requested resource type.");
 
     expect(harness.startAgent).not.toHaveBeenCalled();
     expect((harness.getMessages()[0] as { state?: string }).state).toBe("pending");

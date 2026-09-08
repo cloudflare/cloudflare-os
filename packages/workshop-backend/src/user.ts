@@ -117,6 +117,8 @@ type SingletonAccountStub = Required<Pick<GatekeeperUser,
   "getSingletonGatekeeperClass" | "getSingletonGatekeeperAuthority" | "startAppUi">>;
 type ConnectionStatusAccountStub = Required<Pick<GatekeeperUser, "getConnectionStatus">>;
 
+const WORK_ITEMS_SOURCE_VENDOR_IDS = new Set(["jira", "zendesk"]);
+
 function areCredentialsValid(record: ConnectedAccountRecord): boolean {
   if (record.credentialsExpired) return false;
   // Slack previously reported its refreshable access-token expiry here. Ignore those persisted
@@ -124,6 +126,18 @@ function areCredentialsValid(record: ConnectedAccountRecord): boolean {
   if (record.vendorId !== "slack" &&
       record.credentialExpiresAt && record.credentialExpiresAt.valueOf() < Date.now()) return false;
   return true;
+}
+
+/** Returns true when an existing provider account may predate embedded Work Items UI metadata. */
+export function shouldRefreshWorkItemsSourceDescription(record: Pick<ConnectedAccountRecord, "vendorId" | "description" | "autoProvisioned">): boolean {
+  let vendorId = record.vendorId.toLowerCase();
+  if (!WORK_ITEMS_SOURCE_VENDOR_IDS.has(vendorId)) return false;
+  let composition = record.description.providesUi?.composition;
+  return composition?.kind !== "work-items" || composition.role !== vendorId || composition.embeddedOnly !== true;
+}
+
+function sameAccountDescription(a: AccountDescription, b: AccountDescription): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function fnv1a32(value: string): string {
@@ -2458,12 +2472,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       if (isRetiredGatekeeperVendor(rec.vendorId)) continue;
       if (config.disabledGatekeepers.includes(rec.vendorId)) continue;
       if (!areCredentialsValid(rec)) continue;
-      // Auto-provisioned provider declarations may evolve after an account was persisted (for
-      // example a singleton adding revisioned authority). Refresh them at this cold boundary without
-      // adding remote calls for ordinary connected accounts.
-      if (rec.autoProvisioned) {
-        rec.description = await rec.account.describe();
-        this.storage.connectedAccounts.put(rec);
+      // Provider declarations may evolve after an account was persisted. Refresh auto-provisioned
+      // accounts, and ordinary Jira/Zendesk accounts that may predate embedded Work Items UI metadata.
+      if (rec.autoProvisioned || shouldRefreshWorkItemsSourceDescription(rec)) {
+        let refreshedDescription = await rec.account.describe();
+        if (!sameAccountDescription(rec.description, refreshedDescription)) {
+          rec.description = refreshedDescription;
+          this.storage.connectedAccounts.put(rec);
+        }
       }
       if (!rec.description.singleton && !rec.description.providesUi) continue;
       // A "disabled" ambient gatekeeper's account stays dormant: don't surface its singleton capsule

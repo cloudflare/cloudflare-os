@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Type } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
+import { resolveRequestedResource, type SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import {
   runAgentLoopContinue,
   type AgentContext,
@@ -9,7 +10,7 @@ import {
   type AgentTool,
   type StreamFn,
 } from "@earendil-works/pi-agent-core";
-import { agentToolExecutionMode } from "../src/agent.js";
+import { agentToolExecutionMode, REQUEST_CONNECTION_TOOL_DESCRIPTION } from "../src/agent.js";
 
 function makeModel(): Model<any> {
   return {
@@ -127,6 +128,30 @@ describe("agent tool parallelism policy", () => {
     ]) {
       expect(agentToolExecutionMode(name)).toBe("sequential");
     }
+  });
+
+  it("describes vendor-only connection requests as explicit user picker flows", () => {
+    expect(REQUEST_CONNECTION_TOOL_DESCRIPTION).toContain(
+        "omit resourceUrl; the accept flow will show the user that vendor's explicit resource picker");
+    expect(REQUEST_CONNECTION_TOOL_DESCRIPTION).toContain(
+        "reuse an already-connected account when possible");
+    expect(REQUEST_CONNECTION_TOOL_DESCRIPTION).not.toContain(
+        "if the vendor offers multiple resource types with no whole-instance option you MUST pass");
+  });
+
+  it("keeps explicit invalid resource URLs rejected instead of falling back to a wrong type", () => {
+    const resources: SupportedResource[] = [{
+      title: "Jira issue",
+      description: "Pick a Jira issue.",
+      urlPattern: "https://:site.atlassian.net/browse/:issueKey",
+    }, {
+      title: "Jira project",
+      description: "Pick a Jira project.",
+      urlPattern: "https://:site.atlassian.net/projects/:projectKey",
+    }];
+
+    expect(resolveRequestedResource(resources, "https://acme.atlassian.net/wiki/spaces/ENG").ok)
+      .toBe(false);
   });
 
   it("runs an all-read-only batch concurrently but persists results in model call order", async () => {
