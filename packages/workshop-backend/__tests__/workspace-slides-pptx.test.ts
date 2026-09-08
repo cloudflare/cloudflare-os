@@ -435,7 +435,7 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(title).toContain('spc="160"');
     expect(title).toContain('<a:latin typeface="Arial"/>');
     expect(title).not.toContain('typeface="Inter"');
-    expect(title).toContain('<a:spcPct val="125000"/>');
+    expect(title).toContain('<a:spcPts val="2000"/>'); // 20px * 1.25 line-height, in hundredths of a point.
 
     const shapes = [...xml.matchAll(/<p:cNvPr id="(\d+)" name="([^"]*)"/g)]
       .map(match => ({id: Number(match[1]), name: match[2]}));
@@ -461,7 +461,12 @@ describe("Workspace Slides PPTX rendering", () => {
     ])));
     const xml = partText(zip, "ppt/slides/slide1.xml");
 
-    expect(shapeByName(xml, "Block 1 logo wordmark")).toContain('<a:bodyPr wrap="none"');
+    const wordmark = shapeByName(xml, "Block 1 logo wordmark");
+    expect(wordmark).toContain('<a:bodyPr wrap="none"');
+    // "Workspace" in Arial Bold is 5.335em; at 24px * 0.62 the box must hold it (Google Slides
+    // ignores wrap="none" and breaks anything wider than its box onto a second line).
+    const wordmarkWidth = Number(/<a:ext cx="(\d+)"/.exec(wordmark)![1]);
+    expect(wordmarkWidth).toBeGreaterThanOrEqual(Math.round(5.335 * 24 * 0.62 * 10160));
     expect(shapeByName(xml, "Block 2 sectionLabel")).toContain('<a:bodyPr wrap="none"');
     expect(shapeByName(xml, "Block 3 text")).toContain('<a:bodyPr wrap="square"');
     expect(shapeByName(xml, "Block 3 text")).toContain('<a:off x="365760" y="2072640"/>');
@@ -509,10 +514,10 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(title).toContain("HOT");
     expect(title).toContain("&amp; cold");
     expect(title).toContain('sz="1600" b="1" spc="160"');
-    expect(title).toContain('<a:spcPct val="125000"/>');
+    expect(title).toContain('<a:spcPts val="2000"/>');
     const aligned = shapeByName(xml, "Block 6 text");
     expect(aligned).toContain('<a:pPr algn="r"');
-    expect(aligned).toContain('<a:spcPct val="200000"/>');
+    expect(aligned).toContain('<a:spcPts val="2560"/>');
     expect(aligned).toContain('sz="1280"');
 
     const bullets = shapeByName(xml, "Block 7 bulletList");

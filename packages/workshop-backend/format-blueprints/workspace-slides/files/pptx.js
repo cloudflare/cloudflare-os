@@ -296,7 +296,7 @@ function letterSpacingHundredths(value, fontPixels) {
 function runProperties(style, colorOverride) {
   const color = colorOverride || style.color;
   const size = fontSizeHundredths(style.fontSize);
-  const bold = numberOr(style.weight, 400) >= 600 ? ' b="1"' : ' b="0"';
+  const bold = isBold(style.weight) ? ' b="1"' : ' b="0"';
   const spacing = letterSpacingHundredths(style.letterSpacing, style.fontSize);
   const spacingXml = spacing ? ` spc="${spacing}"` : "";
   return `lang="en-US" sz="${size}"${bold}${spacingXml} dirty="0"` +
@@ -360,16 +360,20 @@ function highlightMarks(text, terms, label, limits) {
 
 function* paragraphXml(text, style, options = {}) {
   const alignment = {left: "l", center: "ctr", right: "r"}[style.align] || "l";
-  const lineHeight = Math.round(cssNumber(style.lineHeight, 1.2, 0.5, 4) * 100000);
+  // CSS line-height is an absolute multiple of the font size, whereas spcPct is relative to the
+  // font's own line gap (~115% for Arial), so emit exact points to match the browser's leading.
+  const fontPixels = cssNumber(style.fontSize, 12, 1, 1000);
+  const lineSpacing = Math.min(158400,
+    Math.round(cssNumber(style.lineHeight, 1.2, 0.5, 4) * fontPixels * PX_TO_POINT * 100));
   let properties = `<a:pPr algn="${alignment}" fontAlgn="base"`;
   if (options.bullet) properties += ` marL="${Math.round(18 * PX_TO_EMU)}" indent="-${Math.round(18 * PX_TO_EMU)}"`;
-  properties += `><a:lnSpc><a:spcPct val="${lineHeight}"/></a:lnSpc>`;
+  properties += `><a:lnSpc><a:spcPts val="${lineSpacing}"/></a:lnSpc>`;
   if (options.spacingAfter) {
     properties += `<a:spcAft><a:spcPts val="${Math.round(options.spacingAfter * PX_TO_POINT * 100)}"/></a:spcAft>`;
   }
   if (options.bullet) {
     properties += `<a:buClr><a:srgbClr val="${COLORS.tangerine}"/></a:buClr>` +
-      '<a:buSzPts val="480"/><a:buFont typeface="Arial"/><a:buChar char="&#x25CF;"/>';
+      '<a:buSzPts val="1000"/><a:buFont typeface="Arial"/><a:buChar char="&#x25CF;"/>';
   } else {
     properties += "<a:buNone/>";
   }
@@ -847,25 +851,56 @@ function pixelBox(block, defaultWidth, defaultHeight) {
   };
 }
 
-function codePointLength(value) {
-  let length = 0;
-  const iterator = value[Symbol.iterator]();
-  while (!iterator.next().done) ++length;
-  return length;
+// Arial advance widths for U+0020..U+007E in thousandths of an em (Helvetica-compatible metrics),
+// regular and bold. Intrinsic-width boxes are sized from these because consumers that ignore
+// wrap="none" (Google Slides) wrap anything wider than its box.
+const ARIAL_WIDTHS = [
+  278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278,
+  556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556,
+  1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778,
+  667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556,
+  333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556,
+  556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584,
+];
+const ARIAL_BOLD_WIDTHS = [
+  278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278,
+  556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 333, 333, 584, 584, 584, 611,
+  975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722, 778,
+  667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333, 278, 333, 584, 556,
+  333, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611,
+  611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584,
+];
+
+function isBold(weight) {
+  return numberOr(weight, 400) >= 600;
 }
 
-function estimateTextHeight(text, width, fontSize, lineHeight) {
-  const charactersPerLine = Math.max(1, Math.floor(Math.max(1, width) / Math.max(1, fontSize * 0.52)));
+// Advance width in CSS pixels of `text` (line breaks excluded) set in Arial at `fontSize`.
+function textWidth(text, fontSize, weight, letterSpacing = 0) {
+  const widths = isBold(weight) ? ARIAL_BOLD_WIDTHS : ARIAL_WIDTHS;
+  let units = 0;
+  let count = 0;
+  for (const character of text) {
+    const code = character.codePointAt(0);
+    if (code === 10) continue;
+    units += code >= 32 && code <= 126 ? widths[code - 32] : code > 0xffff ? 1000 : 600;
+    ++count;
+  }
+  return units / 1000 * fontSize + Math.max(0, count - 1) * letterSpacing;
+}
+
+function estimateTextHeight(text, width, fontSize, lineHeight, weight) {
   let lines = 0;
   for (const line of linesOf(text)) {
-    lines += Math.max(1, Math.ceil(codePointLength(line) / charactersPerLine));
+    lines += Math.max(1, Math.ceil(textWidth(line, fontSize, weight) / Math.max(1, width)));
   }
   return Math.max(fontSize * lineHeight, lines * fontSize * lineHeight + 2);
 }
 
-function naturalTextWidth(text, fontSize, letterSpacing = 0) {
-  return Math.max(fontSize * 0.5,
-    codePointLength(text.replace(/\n/g, "")) * fontSize * 0.56 + Math.max(0, codePointLength(text) - 1) * letterSpacing);
+// Width for a single-line box: measured text plus 2% slack, so a consumer that wraps at the box
+// edge (rather than honouring wrap="none") does not break the last glyph onto a second line.
+function naturalTextWidth(text, fontSize, weight, letterSpacing = 0) {
+  return Math.max(fontSize * 0.5, textWidth(text, fontSize, weight, letterSpacing) * 1.02);
 }
 
 function* coverArtworkXml(state) {
@@ -881,7 +916,7 @@ function* coverArtworkXml(state) {
 
 function* renderSectionLabel(state, block, name) {
   const props = block.props;
-  const width = block.w == null ? Math.max(80, naturalTextWidth(props.text, 10, 0.5) + 4) : sizePixels(block.w, 200);
+  const width = block.w == null ? Math.max(80, naturalTextWidth(props.text, 10, 600, 0.5) + 4) : sizePixels(block.w, 200);
   const box = blockBox({...block, w: width}, width, 14);
   const style = {
     fontSize: 10, weight: 600, letterSpacing: "0.05em", lineHeight: 1,
@@ -895,8 +930,8 @@ function* renderLogo(state, block, name) {
   const scale = cssNumber(props.scale, 1, 0.01, 20);
   const text = props.text;
   const fontSize = 24 * scale;
-  const textWidth = naturalTextWidth(text, fontSize, -0.02 * fontSize) + 8 * scale;
-  const textBox = boxFromPixels(positionPixels(block.x), positionPixels(block.y), textWidth, 29 * scale);
+  const textWidth = naturalTextWidth(text, fontSize, 700, -0.02 * fontSize);
+  const textBox = boxFromPixels(positionPixels(block.x), positionPixels(block.y), textWidth + 8 * scale, 29 * scale);
   const color = props.variant === "dark" ? parseColor("#000000") : parseColor("#FFFFFF");
   yield* textShapeXml(state, `${name} wordmark`, textBox, {
     fontSize, weight: 700, letterSpacing: "-0.02em", lineHeight: 1,
@@ -904,7 +939,7 @@ function* renderLogo(state, block, name) {
   }, {text}, {wrap: false});
   if (props.accentDot !== false) {
     const dot = boxFromPixels(
-      positionPixels(block.x) + textWidth,
+      positionPixels(block.x) + textWidth + 3 * scale,
       positionPixels(block.y) + 18 * scale,
       6 * scale,
       6 * scale,
@@ -931,7 +966,7 @@ function* renderGadgetsMark(state, block, name) {
   const wordmark = "gadgets";
   yield* textShapeXml(state, `${name} wordmark`,
     boxFromPixels(x + iconSize + gap, y + (iconSize - fontSize) / 2,
-      naturalTextWidth(wordmark, fontSize, -0.055 * fontSize) + 8, fontSize + 5), {
+      naturalTextWidth(wordmark, fontSize, 500, -0.055 * fontSize) + 8, fontSize + 5), {
       fontSize, weight: 500, letterSpacing: "-0.055em", lineHeight: 1,
       color: parseColor("#140400"), align: "left",
     }, {text: wordmark}, {wrap: false});
@@ -942,7 +977,7 @@ function* renderTitle(state, block, name) {
   const fontSize = cssNumber(props.fontSize, 42, 1, 1000);
   const lineHeight = cssNumber(props.lineHeight, 1.08, 0.5, 4);
   const width = sizePixels(block.w, 900);
-  const height = block.h == null ? estimateTextHeight(props.text, width, fontSize, lineHeight) : sizePixels(block.h, fontSize * lineHeight);
+  const height = block.h == null ? estimateTextHeight(props.text, width, fontSize, lineHeight, props.weight || 900) : sizePixels(block.h, fontSize * lineHeight);
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
     fontSize,
     weight: props.weight || 900,
@@ -958,7 +993,7 @@ function* renderSubtitle(state, block, name) {
   const fontSize = cssNumber(props.fontSize, 19, 1, 1000);
   const lineHeight = cssNumber(props.lineHeight, 1.5, 0.5, 4);
   const width = sizePixels(block.w, 650);
-  const height = block.h == null ? estimateTextHeight(props.text, width, fontSize, lineHeight) : sizePixels(block.h, fontSize * lineHeight);
+  const height = block.h == null ? estimateTextHeight(props.text, width, fontSize, lineHeight, props.weight || 500) : sizePixels(block.h, fontSize * lineHeight);
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
     fontSize,
     weight: props.weight || 500,
@@ -973,7 +1008,7 @@ function* renderText(state, block, name) {
   const fontSize = cssNumber(props.fontSize, 19, 1, 1000);
   const lineHeight = cssNumber(props.lineHeight, 1.6, 0.5, 4);
   const width = sizePixels(block.w, 400);
-  const height = block.h == null ? estimateTextHeight(props.text, width, fontSize, lineHeight) : sizePixels(block.h, fontSize * lineHeight);
+  const height = block.h == null ? estimateTextHeight(props.text, width, fontSize, lineHeight, props.weight || 400) : sizePixels(block.h, fontSize * lineHeight);
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
     fontSize,
     weight: props.weight || 400,
@@ -996,7 +1031,7 @@ function* renderBullets(state, block, name) {
   }
   const width = sizePixels(block.w, 850);
   let height = 1;
-  for (const item of items) height += estimateTextHeight(item, Math.max(1, width - 18), fontSize, lineHeight) + gap;
+  for (const item of items) height += estimateTextHeight(item, Math.max(1, width - 18), fontSize, lineHeight, 400) + gap;
   if (items.length) height -= gap;
   if (block.h != null) height = sizePixels(block.h, height);
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
@@ -1024,7 +1059,7 @@ function* renderCard(state, block, name) {
     }, {text: props.eyebrow.toUpperCase()});
     y += height + 12;
   }
-  const titleHeight = estimateTextHeight(props.title, width, 18, 1.3);
+  const titleHeight = estimateTextHeight(props.title, width, 18, 1.3, 600);
   yield* textShapeXml(state, `${name} title`, boxFromPixels(x, y, width, titleHeight), {
     fontSize: 18, weight: 600, letterSpacing: "-0.02em", lineHeight: 1.3,
     color: parseColor("#000000"), align: "left",
@@ -1047,8 +1082,8 @@ function* renderBox(state, block, name) {
     line: lineXml(parseColor("#E5E5E5"), 1, Boolean(props.dashed)),
   });
   const width = Math.max(1, outer.width - 28);
-  const titleHeight = estimateTextHeight(props.title, width, 16, 1.3);
-  const bodyHeight = props.body ? estimateTextHeight(props.body, width, 14, 1.45) : 0;
+  const titleHeight = estimateTextHeight(props.title, width, 16, 1.3, 600);
+  const bodyHeight = props.body ? estimateTextHeight(props.body, width, 14, 1.45, 400) : 0;
   const contentHeight = titleHeight + (props.body ? 6 + bodyHeight : 0);
   let y = outer.y + Math.max(14, (outer.height - contentHeight) / 2);
   yield* textShapeXml(state, `${name} title`, boxFromPixels(outer.x + 14, y, width, titleHeight), {
@@ -1071,7 +1106,7 @@ function* renderTonePill(state, block, name) {
     tangerine: "#F6821F",
     ruby: "#FF6633",
   }[props.tone] || "#F6821F";
-  const width = block.w == null ? naturalTextWidth(props.text, 11, 0.06 * 11) + 24 : sizePixels(block.w, 80);
+  const width = block.w == null ? naturalTextWidth(props.text, 11, 850, 0.06 * 11) + 24 : sizePixels(block.w, 80);
   const height = block.h == null ? 24 : sizePixels(block.h, 24);
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
     fontSize: 11, weight: 850, letterSpacing: "0.06em", lineHeight: 1,
@@ -1229,7 +1264,7 @@ function* renderArrow(state, block, name) {
   yield connectorXml(state, name, x1, y1, x2, y2, color, width, Boolean(props.dashed));
   if (props.label) {
     const fontSize = 12;
-    const labelWidth = naturalTextWidth(props.label, fontSize, 0.02 * fontSize) + 16;
+    const labelWidth = naturalTextWidth(props.label, fontSize, 800, 0.02 * fontSize) + 16;
     yield* textShapeXml(state, `${name} label`,
       boxFromPixels((x1 + x2 - labelWidth) / 2, (y1 + y2) / 2 - 8 - fontSize,
         labelWidth, fontSize * 1.3), {
@@ -1241,7 +1276,7 @@ function* renderArrow(state, block, name) {
 
 function* renderUnknown(state, block, name) {
   const text = `?: ${block.type}`;
-  const width = block.w == null ? naturalTextWidth(text, 12) + 20 : sizePixels(block.w, 120);
+  const width = block.w == null ? naturalTextWidth(text, 12, 400) + 20 : sizePixels(block.w, 120);
   const height = block.h == null ? 27 : sizePixels(block.h, 27);
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
     fontSize: 12, weight: 400, lineHeight: 1, color: parseColor("#FFFFFF"), align: "left",
