@@ -5,26 +5,19 @@
 
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
-import type {
-  AiChatAuthorInfo, AiModelConfig, AuthenticatedApi, Overseer, PublicApi,
-} from "@gadgets/workshop-shared/api";
+import type { AuthenticatedApi, Overseer, PublicApi } from "@gadgets/workshop-shared/api";
 import {
   startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
 } from "../src/harness.js";
-import { scriptedChatCompletions, type ScriptedChatCompletions } from "../src/mock-model.js";
+import {
+  scriptedChatCompletions, SCRIPTED_MODEL_CONFIG, SCRIPTED_MODEL_ID, SCRIPTED_MODEL_PROFILE,
+  type ScriptedChatCompletions,
+} from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
   accountLabel, connect, listConnectedAccounts, nextUsernames, signUp, waitFor,
 } from "../src/rpc-client.js";
 
-const MODEL_ID = "@cf/zai-org/glm-5.2";
-const MODEL_PROFILE: AiChatAuthorInfo = { type: "agent", id: MODEL_ID, name: "Scripted model" };
-const MODEL_CONFIG: AiModelConfig = {
-  provider: "cloudflare",
-  model: MODEL_ID,
-  accountId: "test-account",
-  apiToken: "test-token",
-};
 
 const RESOURCE_URL_PATTERN = "https://gadgets-test.example/things/*";
 
@@ -56,9 +49,9 @@ async function signUpScriptedUser(
   const [username] = nextUsernames(prefix);
   if (username === undefined) throw new Error("Failed to allocate a username");
   const authenticated = await signUp(publicApi, username);
-  await authenticated.addModel(MODEL_PROFILE, MODEL_CONFIG);
+  await authenticated.addModel(SCRIPTED_MODEL_PROFILE, SCRIPTED_MODEL_CONFIG);
   await authenticated.setQuickModel(null);
-  await authenticated.setPreferredModel(MODEL_ID);
+  await authenticated.setPreferredModel(SCRIPTED_MODEL_ID);
   await authenticated.completeOnboarding();
   await authenticated.provisionAmbientAccount(TEST_VENDOR_ID);
   await waitFor("the ambient test account to be provisioned", async () =>
@@ -195,7 +188,7 @@ it("creates a resource the agent can use before the user approves it", async () 
   using publicApi = connect(harness.url);
   using authenticated = await signUpScriptedUser(publicApi, "createres");
   using workspace = await authenticated.newGadget();
-  const chatId = await workspace.newChat("Create a new test thing and read it.", MODEL_ID);
+  const chatId = await workspace.newChat("Create a new test thing and read it.", SCRIPTED_MODEL_ID);
 
   // The turn runs to completion: creation does not suspend the agent the way requestConnection
   // or an awaitDecision action does.
@@ -223,7 +216,7 @@ it("creates a resource the agent can use before the user approves it", async () 
 
   // Turn 2: the binding is re-established from the recorded tool output, and the write is
   // queued while the resource is still provisional. The turn suspends holding both actions.
-  await workspace.sendChatMessage(chatId, "Now set its value to 9.", MODEL_ID);
+  await workspace.sendChatMessage(chatId, "Now set its value to 9.", SCRIPTED_MODEL_ID);
   const queued = await waitFor("the creation and the write to be pending", async () => {
     const entries = (await workspace.listActions({ filter: "pending" })).entries;
     return entries.length === 2 ? entries : null;
@@ -324,7 +317,7 @@ it("kills the binding and cascades to queued edits when the user rejects the cre
   using authenticated = await signUpScriptedUser(publicApi, "createrej");
   using workspace = await authenticated.newGadget();
   const chatId = await workspace.newChat(
-      "Create a doomed test thing and write to it.", MODEL_ID);
+      "Create a doomed test thing and write to it.", SCRIPTED_MODEL_ID);
 
   // The write awaits a decision, so the turn suspends holding two pending actions: the
   // creation and an edit that depends on it.
@@ -345,7 +338,7 @@ it("kills the binding and cascades to queued edits when the user rejects the cre
 
   // The next turn's use of the binding fails with the gatekeeper's dead-binding explanation
   // rather than silently simulating against nothing.
-  await workspace.sendChatMessage(chatId, "Read the doomed thing.", MODEL_ID);
+  await workspace.sendChatMessage(chatId, "Read the doomed thing.", SCRIPTED_MODEL_ID);
   await waitForAgentSays(workspace, chatId, "The doomed thing is gone.");
   expect(toolResultShownToModel("read-doomed")).toContain("DEAD:");
   expect(toolResultShownToModel("read-doomed")).toMatch(/rejected/);
@@ -377,7 +370,7 @@ it("settles the queued action when the vendor fails after queueing it", async ()
   using publicApi = connect(harness.url);
   using authenticated = await signUpScriptedUser(publicApi, "createfail");
   using workspace = await authenticated.newGadget();
-  const chatId = await workspace.newChat("Create a failing test thing.", MODEL_ID);
+  const chatId = await workspace.newChat("Create a failing test thing.", SCRIPTED_MODEL_ID);
   await waitForAgentSays(workspace, chatId, "The creation failed.");
 
   // The tool reported a fixable rejection carrying the vendor's error...
@@ -415,7 +408,7 @@ it("fails closed when the vendor never queues its creation action", async () => 
   using publicApi = connect(harness.url);
   using authenticated = await signUpScriptedUser(publicApi, "createnoop");
   using workspace = await authenticated.newGadget();
-  const chatId = await workspace.newChat("Create a never-queued test thing.", MODEL_ID);
+  const chatId = await workspace.newChat("Create a never-queued test thing.", SCRIPTED_MODEL_ID);
   await waitForAgentSays(workspace, chatId, "The creation failed.");
 
   expect(toolResultShownToModel("create-unqueued")).toMatch(/vendor bug/);
@@ -442,7 +435,7 @@ it("settles an undecided creation when its chat is deleted", async () => {
   using publicApi = connect(harness.url);
   using authenticated = await signUpScriptedUser(publicApi, "createdel");
   using workspace = await authenticated.newGadget();
-  const chatId = await workspace.newChat("Create a thing I will abandon.", MODEL_ID);
+  const chatId = await workspace.newChat("Create a thing I will abandon.", SCRIPTED_MODEL_ID);
   await waitForAgentSays(workspace, chatId, "Created the abandoned thing.");
   const pending = await onlyPendingAction(workspace, "the creation action to be pending");
   if (pending.gatekeeperId === undefined) throw new Error("Creation action has no gatekeeper");
@@ -492,7 +485,7 @@ it("threads creation options to the vendor and its approval card", async () => {
   using publicApi = connect(harness.url);
   using authenticated = await signUpScriptedUser(publicApi, "createopts");
   using workspace = await authenticated.newGadget();
-  const chatId = await workspace.newChat("Create a thing on the top shelf.", MODEL_ID);
+  const chatId = await workspace.newChat("Create a thing on the top shelf.", SCRIPTED_MODEL_ID);
   await waitForAgentSays(workspace, chatId, "Created the shelved thing.");
 
   expect(toolResultShownToModel("create-bad-option")).toContain('accept only "shelf"');
