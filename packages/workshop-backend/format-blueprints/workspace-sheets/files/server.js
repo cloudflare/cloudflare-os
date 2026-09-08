@@ -205,18 +205,19 @@ export class Gadget extends DurableObject {
 
   // --- Presence & subscription ------------------------------------------
   async subscribe(callback, client = {}) {
-    const dup = callback.dup();
     const info = {
-      callback: dup,
       clientId: String(client.clientId || ""),
       name: String(client.name || "Guest").slice(0, 40),
       color: String(client.color || "#e1632e"),
     };
     // Registering and snapshotting inside the queue means the subscriber sees
-    // every operation committed after its snapshot, and none before it.
+    // every operation committed after its snapshot, and none before it. The
+    // callback is duplicated only once the snapshot exists, so a failed read
+    // leaves nothing to dispose.
     return this.enqueueMutation(async () => {
       const document = await this.assembleDocument(await this.loadMeta());
       const existing = Array.from(this.subscribers.values());
+      const dup = callback.dup();
       this.subscribers.set(dup, info);
       dup.onRpcBroken(() => {
         this.dropSubscriber(dup);

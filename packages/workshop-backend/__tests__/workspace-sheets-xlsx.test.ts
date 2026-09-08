@@ -713,9 +713,10 @@ describe("Workspace Sheets document snapshots", () => {
     fixture.applyOperationLocked = async (operation: unknown) => { await writeReleased; return original(operation); };
 
     const writing = fixture.applyOperation(setCell("A1", "before subscribe"));
-    const subscribing = fixture.subscribe({dup: () => newcomer} as never, {clientId: "newcomer"});
+    const callback = {dup: vi.fn(() => newcomer)};
+    const subscribing = fixture.subscribe(callback as never, {clientId: "newcomer"});
     await Promise.resolve();
-    expect(fixture.subscribers.has(newcomer)).toBe(false);
+    expect(callback.dup).not.toHaveBeenCalled();
 
     releaseWrite();
     await writing;
@@ -724,6 +725,18 @@ describe("Workspace Sheets document snapshots", () => {
     expect(document.cells.sheet.A1.value).toBe("before subscribe");
     expect(fixture.subscribers.has(newcomer)).toBe(true);
     expect(newcomer.operation).not.toHaveBeenCalled();
+  });
+
+  it("does not duplicate the callback when the snapshot fails", async () => {
+    const fixture = inMemoryGadget();
+    const loadMeta = fixture.loadMeta.bind(fixture);
+    fixture.loadMeta = vi.fn(loadMeta).mockRejectedValueOnce(new Error("storage unavailable"));
+    const callback = {dup: vi.fn()};
+
+    await expect(fixture.subscribe(callback as never)).rejects.toThrow("storage unavailable");
+    expect(callback.dup).not.toHaveBeenCalled();
+    expect(fixture.subscribers.size).toBe(0);
+    await expect(fixture.applyOperation(setCell("A1", "still works"))).resolves.toMatchObject({status: "applied"});
   });
 });
 
