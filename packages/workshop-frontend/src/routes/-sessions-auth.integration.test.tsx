@@ -203,6 +203,11 @@ describe('authenticated session workbench transitions', () => {
     }
   }
 
+  function sessionCallCounts(api: ReturnType<typeof createApi>['api']) {
+    return ['listCodingSessions', 'listCodingSessionActivity', 'listCodingSessionRepositoryOptions', 'codingSessionEditorAvailable', 'mintCodingSessionEditorCapability', 'mintCodingSessionOpenCodeCapability', 'connectCodingSessionPi', 'callCodingSessionPi', 'createCodingSession', 'stopCodingSession', 'restartCodingSession', 'archiveCodingSession', 'approveCodingSessionAction', 'rejectCodingSessionAction']
+      .map((name) => api[name as keyof typeof api].mock.calls.length)
+  }
+
   function editorButton() {
     return container.querySelector<HTMLButtonElement>('[aria-label="Open browser VS Code"]')!
   }
@@ -439,8 +444,20 @@ describe('authenticated session workbench transitions', () => {
     const required = deferred<RequiredConnectionStatus[]>()
     first.api.getRequiredConnectionStatuses.mockReturnValue(required.promise)
     await first.github()
-    expect(container.textContent).toContain('Checking required connections')
-    const before = Object.values(first.api).map((mock) => mock.mock.calls.length)
+    expect(container.textContent).not.toContain('Checking required connections')
+    expect(context.activeId).toBe(session.id)
+    expect(context.title).toBe('Private title')
+    expect(context.repositories).toEqual(['jarvis'])
+    expect(container.querySelector('textarea')!.value).toBe('Private draft')
+    expect(container.querySelector('[aria-label="Image attachments"]')!.textContent).toContain('private.png')
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="OpenCode transcript"]')!.value).toBe('older')
+    await act(async () => {
+      if (failure === 'error') required.reject(new Error('offline'))
+      else required.resolve([{ vendorId: 'github', displayName: 'GitHub', state: 'missing' }])
+    })
+    expect(container.querySelector('textarea')).toBeNull()
+    expect(container.textContent).toContain('Connect required services to continue')
+    const before = sessionCallCounts(first.api)
     const transportCount = calls.length
     await act(async () => {
       context.refresh()
@@ -454,14 +471,8 @@ describe('authenticated session workbench transitions', () => {
       container.querySelector<HTMLButtonElement>('button[type="submit"]')?.click()
       await vi.advanceTimersByTimeAsync(12_000)
     })
-    expect(Object.values(first.api).map((mock) => mock.mock.calls.length)).toEqual(before)
+    expect(sessionCallCounts(first.api)).toEqual(before)
     expect(calls).toHaveLength(transportCount)
-    await act(async () => {
-      if (failure === 'error') required.reject(new Error('offline'))
-      else required.resolve([{ vendorId: 'github', displayName: 'GitHub', state: 'missing' }])
-    })
-    expect(container.querySelector('textarea')).toBeNull()
-    expect(container.textContent).toContain('Connect required services to continue')
     first.api.getRequiredConnectionStatuses.mockResolvedValue([])
     await first.github()
     // Resubscribing the resumed provider sends its own ready snapshot, not a gate refresh.

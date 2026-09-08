@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act } from 'react'
+import { act, useEffect } from 'react'
 import type React from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -225,6 +225,59 @@ describe('RequiredConnectionsGate', () => {
 
     await act(async () => pending.resolve([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }]))
     expect(container.querySelector('textarea')).toBe(prompt)
+  })
+
+  it('keeps an already-unlocked workspace mounted across benign healthy account updates', async () => {
+    const api = createApi([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }])
+    const firstBenignUpdate = deferred<RequiredConnectionStatus[]>()
+    const secondBenignUpdate = deferred<RequiredConnectionStatus[]>()
+    api.getRequiredConnectionStatuses
+      .mockResolvedValueOnce([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }])
+      .mockReturnValueOnce(firstBenignUpdate.promise)
+      .mockReturnValueOnce(secondBenignUpdate.promise)
+
+    let mounts = 0
+    let cleanups = 0
+    function WorkspaceThatRefreshesAccounts() {
+      useEffect(() => {
+        mounts += 1
+        api.subscriber!.add(1, { displayName: 'GitHub' } as never, { displayName: 'GitHub' } as never, [], true, 'github')
+        return () => { cleanups += 1 }
+      }, [])
+      return <div>Workspace content</div>
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root!.render(
+        <RequiredConnectionsGate authenticatedApi={api as never} pathname="/workspace/abc">
+          <WorkspaceThatRefreshesAccounts />
+        </RequiredConnectionsGate>,
+      )
+    })
+
+    expect(container.textContent).toContain('Workspace content')
+    expect(mounts).toBe(1)
+    expect(cleanups).toBe(0)
+    expect(api.getRequiredConnectionStatuses).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      api.subscriber!.add(1, { displayName: 'GitHub' } as never, { displayName: 'GitHub' } as never, [], true, 'github')
+    })
+
+    expect(api.getRequiredConnectionStatuses).toHaveBeenCalledTimes(3)
+    expect(container.textContent).toContain('Workspace content')
+    expect(mounts).toBe(1)
+    expect(cleanups).toBe(0)
+
+    await act(async () => firstBenignUpdate.resolve([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }]))
+    await act(async () => secondBenignUpdate.resolve([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }]))
+
+    expect(container.textContent).toContain('Workspace content')
+    expect(mounts).toBe(1)
+    expect(cleanups).toBe(0)
   })
 
   it('hides the Home composer on account removal until required connections are verified healthy', async () => {
