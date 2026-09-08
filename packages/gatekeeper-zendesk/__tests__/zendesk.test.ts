@@ -333,6 +333,34 @@ describe("Zendesk native OAuth return URLs", () => {
     expect(subdomainPattern.test("bad-.zendesk.com")).toBe(false);
   });
 
+  it("returns a clean 400 when a connect account id passes hex shape but fails Durable Object parsing", async () => {
+    const zendesk = await import("../src/zendesk");
+    const get = vi.fn();
+
+    const response = await zendesk.default.fetch(new Request(`${env.BASE_URL}/connect/${"7".repeat(64)}/${"8".repeat(64)}`), env, {
+      exports: { ZendeskAccount: { idFromString: vi.fn(() => { throw new Error("invalid id"); }), get } },
+    } as never);
+
+    await expect(response.text()).resolves.toBe("Invalid Zendesk connection link.");
+    expect(response.status).toBe(400);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("returns a clean 400 when an OAuth state account id fails Durable Object parsing", async () => {
+    const zendesk = await import("../src/zendesk");
+    const get = vi.fn();
+
+    const response = await zendesk.default.fetch(
+      new Request(`${env.BASE_URL}/oauth?state=${"7".repeat(64)}:${"8".repeat(64)}&code=code`),
+      env,
+      { exports: { ZendeskAccount: { idFromString: vi.fn(() => { throw new Error("invalid id"); }), get } } } as never,
+    );
+
+    await expect(response.text()).resolves.toBe("Invalid OAuth state.");
+    expect(response.status).toBe(400);
+    expect(get).not.toHaveBeenCalled();
+  });
+
   it("renders a same-origin POST continuation page for the original initiation nonce", async () => {
     const zendesk = await import("../src/zendesk");
     const { kv, storage: accountStorage } = makeTestStorage();

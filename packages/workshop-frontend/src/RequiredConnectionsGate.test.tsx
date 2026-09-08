@@ -193,6 +193,110 @@ describe('RequiredConnectionsGate', () => {
     expect(rendered.textContent).toContain('Unlocked app')
   })
 
+  it('keeps focused app content visible while a healthy route refreshes in the background', async () => {
+    const api = createApi([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }])
+    const pending = deferred<RequiredConnectionStatus[]>()
+    api.getRequiredConnectionStatuses
+      .mockResolvedValueOnce([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }])
+      .mockReturnValueOnce(pending.promise)
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root!.render(
+        <RequiredConnectionsGate authenticatedApi={api as never} pathname="/">
+          <label>
+            Prompt
+            <textarea defaultValue="Investigate renewals" />
+          </label>
+        </RequiredConnectionsGate>,
+      )
+    })
+    const prompt = container.querySelector('textarea')!
+    prompt.focus()
+    prompt.setSelectionRange(4, 11)
+
+    await act(async () => api.subscriber!.ready())
+
+    expect(container.textContent).not.toContain('Checking required connections')
+    expect(document.activeElement).toBe(prompt)
+    expect(prompt.selectionStart).toBe(4)
+    expect(prompt.selectionEnd).toBe(11)
+
+    await act(async () => pending.resolve([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }]))
+    expect(container.querySelector('textarea')).toBe(prompt)
+  })
+
+  it('hides the Home composer on account removal until required connections are verified healthy', async () => {
+    const api = createApi([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }])
+    const benign = deferred<RequiredConnectionStatus[]>()
+    const afterRemove = deferred<RequiredConnectionStatus[]>()
+    api.getRequiredConnectionStatuses
+      .mockResolvedValueOnce([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }])
+      .mockReturnValueOnce(benign.promise)
+      .mockReturnValueOnce(afterRemove.promise)
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root!.render(
+        <RequiredConnectionsGate authenticatedApi={api as never} pathname="/">
+          <label>
+            Prompt
+            <textarea defaultValue="Keep me safe" />
+          </label>
+        </RequiredConnectionsGate>,
+      )
+    })
+
+    await act(async () => api.subscriber!.ready())
+    expect(container.textContent).not.toContain('Checking required connections')
+
+    await act(async () => api.subscriber!.remove(1))
+    expect(container.textContent).toContain('Checking required connections')
+    expect(container.querySelector('label')?.style.display).toBe('none')
+
+    await act(async () => benign.resolve([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }]))
+    expect(container.textContent).toContain('Checking required connections')
+    expect(container.querySelector('label')?.style.display).toBe('none')
+
+    await act(async () => afterRemove.resolve([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }]))
+    expect(container.querySelector('textarea')?.value).toBe('Keep me safe')
+    expect(container.querySelector('label')?.style.display).not.toBe('none')
+    expect(container.textContent).not.toContain('Checking required connections')
+  })
+
+  it('hides the Home composer on expired account updates until required connections are verified healthy', async () => {
+    const api = createApi([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }])
+    const pending = deferred<RequiredConnectionStatus[]>()
+    api.getRequiredConnectionStatuses
+      .mockResolvedValueOnce([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }])
+      .mockReturnValueOnce(pending.promise)
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root!.render(
+        <RequiredConnectionsGate authenticatedApi={api as never} pathname="/">
+          <label>
+            Prompt
+            <textarea defaultValue="Reconnect first" />
+          </label>
+        </RequiredConnectionsGate>,
+      )
+    })
+
+    await act(async () => {
+      api.subscriber!.add(1, { displayName: 'GitHub' } as never, { displayName: 'GitHub' } as never, [], false, 'github')
+    })
+
+    expect(container.textContent).toContain('Checking required connections')
+    expect(container.querySelector('label')?.style.display).toBe('none')
+    await act(async () => pending.resolve([{ vendorId: 'github', displayName: 'GitHub', state: 'healthy' }]))
+    expect(container.querySelector('textarea')?.value).toBe('Reconnect first')
+    expect(container.querySelector('label')?.style.display).not.toBe('none')
+  })
+
   it('checks a replacement API synchronously and ignores its predecessor’s late result', async () => {
     const first = createApi([])
     const rendered = await renderGate(first, '/sessions')

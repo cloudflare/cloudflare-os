@@ -76,9 +76,17 @@ export function RequiredConnectionsGate({ authenticatedApi, pathname, children }
         if (!cancelled) void refresh()
       })
     }
+    const invalidateAndScheduleRefresh = () => {
+      refreshGeneration.current += 1
+      setResult({ scope, statuses: null })
+      scheduleRefresh()
+    }
     const subscriber = new AccountsSubscriberAdapter({
-      add: scheduleRefresh,
-      remove: scheduleRefresh,
+      add: (event) => {
+        if (event.credentialsValid) scheduleRefresh()
+        else invalidateAndScheduleRefresh()
+      },
+      remove: invalidateAndScheduleRefresh,
       ready: scheduleRefresh,
     })
 
@@ -102,11 +110,15 @@ export function RequiredConnectionsGate({ authenticatedApi, pathname, children }
     [statuses],
   )
 
-  const pending = checking || (statuses === null && !loadError)
+  const initialPending = statuses === null && !loadError
+  const homeHealthyRecheck = pathname === '/' && checking && statuses !== null && unhealthy.length === 0
+  const pending = initialPending || (checking && !homeHealthyRecheck)
   if (escapeRoute || pending || (statuses !== null && unhealthy.length === 0)) {
     return (
       <>
-        {/* Keep this boundary stable; confirmed failures below deliberately discard the subtree. */}
+        {/* Keep this boundary stable; confirmed failures below deliberately discard the subtree.
+            Home's healthy background rechecks must not hide it: React Activity tears down effects
+            while hidden, interrupting the focused first-message composer during live updates. */}
         <Activity mode={!escapeRoute && pending ? 'hidden' : 'visible'}>{children}</Activity>
         {!escapeRoute && pending && <AppLoadingSkeleton label="Checking required connections" />}
       </>
