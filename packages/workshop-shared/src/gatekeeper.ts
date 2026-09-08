@@ -255,6 +255,18 @@ export type SupportedResource = {
    * If omitted/false, the resource type is not separately grantable.
    */
   grantable?: boolean;
+
+  /**
+   * Present when an agent may create a brand-new resource of this type via the
+   * createExternalResource tool, without user pre-approval. The vendor's GatekeeperUser must
+   * implement createResource() for this urlPattern, and the gatekeeper class it returns must
+   * implement submitCreationAction(). The gatekeeper simulates the new resource locally until
+   * the user approves the creation action.
+   */
+  creatable?: {
+    /** What creation does, e.g. "Creates a new, empty Google Doc with the given title." */
+    description: string;
+  };
 }
 
 /** Removes every trailing slash from a string in linear time. */
@@ -557,6 +569,15 @@ export interface GatekeeperConnectCallback extends WorkerEntrypoint {
 }
 
 /**
+ * Vendor-specific creation parameters for GatekeeperUser.createResource(), authored by the agent
+ * and untrusted like `title`. Flat bounded scalars only (e.g. a parent folder id). The resource's
+ * `creatable.description` documents the accepted keys; the vendor MUST reject unknown or invalid
+ * entries with an agent-readable message, and MUST reflect consequential entries (e.g. placement)
+ * in the creation action's description so the user approves what will actually happen.
+ */
+export type ResourceCreationOptions = Record<string, string | number | boolean>;
+
+/**
  * RPC interface to an Adapter. This is a privileged interface exposed to the Gadget Workshop UI
  * itself, not to Gadgets nor AI agents.
  *
@@ -591,6 +612,32 @@ export interface GatekeeperUser extends WorkerEntrypoint {
   getGatekeeperClassFor(url: string): Promise<{
     class: DurableObjectClass<Gatekeeper<any>>;
     resource: SupportedResource;
+  }>;
+
+  /**
+   * Create a NEW resource of the type identified by `resourceUrlPattern` (a urlPattern from
+   * getSupportedResources() whose `creatable` is set). Mints a provisional identity for the
+   * resource — no provider API call, no user interaction — and returns a gatekeeper class imbued
+   * with it (via `ctx.props`), exactly as getGatekeeperClassFor() does for existing resources,
+   * plus the provisional `resourceUrl` that names the resource until it really exists.
+   *
+   * The returned class MUST implement Gatekeeper.submitCreationAction(). The provider-side
+   * creation happens only when the user approves that action; until then the gatekeeper simulates
+   * the resource locally, and describe() must not call the provider. addObserver() likewise
+   * MUST NOT require the provider resource to exist: build collaborators are verified against
+   * the binding while the creation is still pending, so admit observers on the simulated
+   * state's own policy.
+   *
+   * Throws with an agent-readable message when the account cannot create this resource type
+   * (e.g. its authorization does not cover the needed scopes) or when `input.options` carries
+   * unknown or invalid entries (see ResourceCreationOptions); callers surface the message.
+   */
+  createResource?(resourceUrlPattern: string,
+                  input: {title: string, options?: ResourceCreationOptions}): Promise<{
+    class: DurableObjectClass<Gatekeeper<any>>;
+    resource: SupportedResource;
+    /** Provisional URL of the new resource; replaced by the real URL once created. */
+    resourceUrl: string;
   }>;
 
   /**
@@ -737,6 +784,24 @@ export interface Gatekeeper<Session> extends DurableObject {
    * particular API.
    */
   startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<Session>;
+
+  /**
+   * For gatekeepers minted by GatekeeperUser.createResource(): submit the pending "create this
+   * resource" action to the given approval queue. The Overseer calls this exactly once,
+   * immediately after adding the workpiece, with a queue scoped to it and attributed to the
+   * creating agent's chat (so the approval card lands there). Implementations must be idempotent
+   * (a retried call must not queue a second creation) and must queue the creation FIRST.
+   *
+   * Ordering is the gatekeeper's responsibility: the platform applies auto-approvals in order,
+   * but a manual approval can target any pending action, so the gatekeeper must itself reject
+   * applyAction() of any action that depends on the resource existing until the creation has
+   * been applied. Only gatekeepers reachable via createResource() need implement this.
+   *
+   * If this call fails, or a crash orphans the mint, the platform settles the queued actions
+   * and removes the gatekeeper WITHOUT delivering rejectAction(): the facet's storage is
+   * destroyed with it, and any state staged outside the facet must tolerate orphaned entries.
+   */
+  submitCreationAction?(approvalQueue: RpcStub<ApprovalQueue>): Promise<void>;
 
   /**
    * Bounded, user-specific metadata the agent uses to discover entries reachable through this
