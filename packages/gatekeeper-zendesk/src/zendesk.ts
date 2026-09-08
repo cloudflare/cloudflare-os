@@ -32,6 +32,7 @@ import TYPES_CODE from "./types.txt";
 import { codingTools, toolOk, toolPending, zendeskActionResultToToolResult } from "./coding-session.js";
 import {
   MAX_ATTACHMENT_BYTES,
+  SUBDOMAIN_RE,
   ZendeskApi,
   ZendeskApiError,
   buildAuthorizeUrl,
@@ -214,7 +215,8 @@ function zendeskOauthContinueResponse(authorizeUrl: string): Response {
   const url = new URL(authorizeUrl);
   if (
     url.protocol !== "https:" ||
-    !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.zendesk\.com$/.test(url.hostname) ||
+    !url.hostname.endsWith(".zendesk.com") ||
+    !SUBDOMAIN_RE.test(url.hostname.slice(0, -".zendesk.com".length)) ||
     url.pathname !== "/oauth/authorizations/new"
   ) {
     throw new Error("Invalid Zendesk OAuth URL.");
