@@ -303,4 +303,52 @@ describe("Zendesk native OAuth return URLs", () => {
     expect(response.status).toBe(400);
     expect(account.beginOAuth).not.toHaveBeenCalled();
   });
+
+  it("renders a connect form whose same-URL POST redirects with the original initiation nonce", async () => {
+    const zendesk = await import("../src/zendesk");
+    const { kv, storage: accountStorage } = makeTestStorage();
+    const accountId = "7".repeat(64);
+    const nonce = "8".repeat(64);
+    const account = new zendesk.ZendeskAccount({ storage: accountStorage } as never, env as never);
+    await account.setCallback({ complete: vi.fn() } as never, nonce, validReturnUrl);
+    const ctx = {
+      exports: {
+        ZendeskAccount: {
+          idFromString: (id: string) => id,
+          get: () => account,
+        },
+      },
+    };
+
+    const connectUrl = `${env.BASE_URL}/connect/${accountId}/${nonce}?returnUrl=${encodeURIComponent(validReturnUrl)}`;
+    const response = await zendesk.default.fetch(
+      new Request(connectUrl),
+      env,
+      ctx as never,
+    );
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toContain("<form method=\"post\">");
+    expect(body).not.toContain("action=\"./");
+    expect(kv.get("nonce")).toMatchObject({ value: nonce });
+
+    const post = await zendesk.default.fetch(
+      new Request(connectUrl, {
+        method: "POST",
+        body: new URLSearchParams({ subdomain: "acme" }),
+        redirect: "manual",
+      }),
+      env,
+      ctx as never,
+    );
+    expect(post.status).toBe(302);
+    const location = post.headers.get("location");
+    expect(location).not.toBeNull();
+    const redirect = new URL(location!);
+    expect(redirect.origin).toBe("https://acme.zendesk.com");
+    expect(redirect.searchParams.get("state")).toMatch(new RegExp(`^${accountId}:[0-9a-f]{64}$`));
+    expect(kv.get("nonce")).toMatchObject({ value: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  });
+
 });

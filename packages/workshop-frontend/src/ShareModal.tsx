@@ -301,6 +301,8 @@ function sameRequirements(
 
 export default function ShareModal({ open, onClose, overseer, metadata, currentUser, authenticatedApi }: Props) {
   const toasts = useKumoToastManager()
+  const toastsRef = useRef(toasts)
+  toastsRef.current = toasts
   const [collaborators, setCollaborators] = useState<CollaboratorInfo[]>([])
   const [shareLinks, setShareLinks] = useState<ShareLinkInfo[]>([])
   const [addUsername, setAddUsername] = useState('')
@@ -322,6 +324,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const [confirmationTarget, setConfirmationTarget] = useState<ConfirmationTarget | null>(null)
   const [confirmationBusy, setConfirmationBusy] = useState(false)
   const wasOpenRef = useRef(false)
+  const openOverseerRef = useRef<RpcStub<Overseer> | null>(null)
+  const openWorkspaceIdRef = useRef<string | null>(null)
   const creatingLinkRef = useRef(false)
   const addingRef = useRef(false)
   const landedTimerRef = useRef<number | null>(null)
@@ -339,6 +343,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const savingShareLinkNoteRef = useRef(false)
   const copyingLinkRef = useRef(false)
   const copiedTimerRef = useRef<number | null>(null)
+  const sessionRef = useRef(0)
+  const openRef = useRef(open)
+  openRef.current = open
   // Freshly-minted share URLs, kept only in memory for the life of this modal session so repeat
   // Copy clicks on the same link re-use the URL.
   const copiedUrlsRef = useRef<Map<string, string>>(new Map())
@@ -381,21 +388,52 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const sharingProhibited = metadata.sharingProhibited === true
   const financeWorkspace = metadata.originHubId === 'finance'
 
-  const loadData = useCallback(async () => {
+  const isLiveSession = useCallback((session: number) => (
+    openRef.current && sessionRef.current === session
+  ), [])
+
+  // Invalidate async completions on open/close, workspace/stub replacement, and StrictMode's
+  // effect cleanup cycle. Unlike a sticky mounted flag, each modal epoch gets a fresh generation.
+  useEffect(() => {
+    sessionRef.current += 1
+    return () => { sessionRef.current += 1 }
+  }, [open, overseer, metadata.id])
+
+  const loadDataWith = useCallback(async (activeOverseer: RpcStub<Overseer>, session: number) => {
     try {
       const [collabs, keys] = await Promise.all([
-        overseer.listCollaborators(),
-        overseer.listShareLinks(),
+        activeOverseer.listCollaborators(),
+        activeOverseer.listShareLinks(),
       ])
+      if (!isLiveSession(session)) return null
       setCollaborators(collabs)
       setShareLinks(keys)
       return { collaborators: collabs, shareLinks: keys }
     } catch (err) {
       console.error('Failed to load share data:', err)
-      toasts.add({ title: 'Failed to load sharing info', variant: 'error' })
+      if (isLiveSession(session)) {
+        toastsRef.current.add({ title: 'Failed to load sharing info', variant: 'error' })
+      }
       return null
     }
-  }, [overseer])
+  }, [isLiveSession])
+
+  const loadData = useCallback(async () => {
+    const session = sessionRef.current
+    let activeOverseer: RpcStub<Overseer> | null = null
+    try {
+      activeOverseer = overseer.dup()
+      return await loadDataWith(activeOverseer, session)
+    } catch (err) {
+      console.error('Failed to load share data:', err)
+      if (isLiveSession(session)) {
+        toastsRef.current.add({ title: 'Failed to load sharing info', variant: 'error' })
+      }
+      return null
+    } finally {
+      activeOverseer?.[Symbol.dispose]()
+    }
+  }, [isLiveSession, loadDataWith, overseer])
 
   // Refresh on focus as well as open: bindings cannot change in this modal, but they can change in
   // another tab while it remains open. A failed refresh is informational and never blocks sharing.
@@ -406,18 +444,34 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     setRequirements(null)
     const refresh = () => {
       const thisRequest = ++requestId
+      const session = sessionRef.current
       setRequirementsFailed(false)
-      const useRequirements = overseer.listObserverRequirements('use')
-      Promise.all(financeWorkspace
-        ? [useRequirements, useRequirements]
-        : [useRequirements, overseer.listObserverRequirements('build')])
-        .then(([use, build]) => {
-          if (!cancelled && thisRequest === requestId) setRequirements({ use, build })
-        })
-        .catch(err => {
-          console.error('Failed to load observer requirements:', err)
-          if (!cancelled && thisRequest === requestId) setRequirementsFailed(true)
-        })
+      let activeOverseer: RpcStub<Overseer> | null = null
+      try {
+        activeOverseer = overseer.dup()
+        const useRequirements = activeOverseer.listObserverRequirements('use')
+        Promise.all(financeWorkspace
+          ? [useRequirements, useRequirements]
+          : [useRequirements, activeOverseer.listObserverRequirements('build')])
+          .then(([use, build]) => {
+            if (!cancelled && thisRequest === requestId && isLiveSession(session)) {
+              setRequirements({ use, build })
+            }
+          })
+          .catch(err => {
+            console.error('Failed to load observer requirements:', err)
+            if (!cancelled && thisRequest === requestId && isLiveSession(session)) {
+              setRequirementsFailed(true)
+            }
+          })
+          .finally(() => activeOverseer?.[Symbol.dispose]())
+      } catch (err) {
+        activeOverseer?.[Symbol.dispose]()
+        console.error('Failed to load observer requirements:', err)
+        if (!cancelled && thisRequest === requestId && isLiveSession(session)) {
+          setRequirementsFailed(true)
+        }
+      }
     }
     refresh()
     window.addEventListener('focus', refresh)
@@ -425,12 +479,14 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       cancelled = true
       window.removeEventListener('focus', refresh)
     }
-  }, [financeWorkspace, open, overseer])
+  }, [financeWorkspace, isLiveSession, open, overseer])
 
   useEffect(() => {
     if (open) {
       loadData()
-      if (!wasOpenRef.current) {
+      const sessionChanged = openOverseerRef.current !== overseer ||
+        openWorkspaceIdRef.current !== metadata.id
+      if (!wasOpenRef.current || sessionChanged) {
         setAddUsername('')
         setAddRole('use')
         setNewShareLink(null)
@@ -446,15 +502,28 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
         setEditingShareLinkNote('')
         setCopiedLinkId(null)
         setCopyingLinkId(null)
+        setCreatingLink(false)
+        creatingLinkRef.current = false
+        setAdding(false)
+        addingRef.current = false
+        setSavingShareLinkNote(false)
+        savingShareLinkNoteRef.current = false
+        setConfirmationBusy(false)
+        copyingLinkRef.current = false
         if (copiedTimerRef.current !== null) {
           window.clearTimeout(copiedTimerRef.current)
           copiedTimerRef.current = null
         }
         copiedUrlsRef.current.clear()
       }
+      openOverseerRef.current = overseer
+      openWorkspaceIdRef.current = metadata.id
+    } else {
+      openOverseerRef.current = null
+      openWorkspaceIdRef.current = null
     }
     wasOpenRef.current = open
-  }, [open, loadData])
+  }, [metadata.id, open, loadData, overseer])
 
   const ownerProfile: AiChatAuthorInfo | null = isOwner ? currentUser : (metadata.owner ?? null)
   const collaboratorRows: CollaboratorRow[] = [
@@ -535,7 +604,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
 
   const copyNewLink = async () => {
     if (!newShareLink) return
+    const session = sessionRef.current
     const copied = await copyToClipboard(newShareLink)
+    if (!isLiveSession(session)) return
     if (copied) {
       setNewShareLinkCopied(true)
     } else {
@@ -548,7 +619,10 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const workspaceUrl = new URL(`/workspace/${metadata.id}`, getWorkshopRuntime().publicWebOrigin).toString()
 
   const copyWorkspaceUrl = async () => {
-    if (await copyToClipboard(workspaceUrl)) {
+    const session = sessionRef.current
+    const copied = await copyToClipboard(workspaceUrl)
+    if (!isLiveSession(session)) return
+    if (copied) {
       setInvitedLinkCopied(true)
     } else {
       toasts.add({ title: 'Could not copy the workspace link.', variant: 'error' })
@@ -570,11 +644,15 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     const username = addUsername.trim()
     if (!username || sharingProhibited || addingRef.current) return
 
+    const session = sessionRef.current
     addingRef.current = true
     setAdding(true)
+    let activeOverseer: RpcStub<Overseer> | null = null
     try {
-      const result = await overseer.addCollaborator(
+      activeOverseer = overseer.dup()
+      const result = await activeOverseer.addCollaborator(
         username, financeWorkspace ? 'use' : addRole, undefined)
+      if (!isLiveSession(session)) return
       if (result === null) {
         toasts.add({ title: 'No account found for that username.', variant: 'error' })
       } else {
@@ -582,25 +660,35 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
         setAddUsername('')
         setInvitedName(result.profile.name)
         setInvitedLinkCopied(false)
-        await loadData()
+        await loadDataWith(activeOverseer, session)
+        if (!isLiveSession(session)) return
         showLandedRow('person', landedId)
         toasts.add({ title: `Added ${result.profile.name} as a collaborator.`, variant: 'success' })
       }
     } catch (err: any) {
-      toasts.add({ title: err.message || 'Failed to add collaborator.', variant: 'error' })
+      if (isLiveSession(session)) {
+        toasts.add({ title: err.message || 'Failed to add collaborator.', variant: 'error' })
+      }
     } finally {
-      addingRef.current = false
-      setAdding(false)
+      if (isLiveSession(session)) {
+        addingRef.current = false
+        setAdding(false)
+      }
+      activeOverseer?.[Symbol.dispose]()
     }
   }
 
   const handleCreateShareLink = async () => {
     if (financeWorkspace || sharingProhibited || creatingLinkRef.current) return
+    const session = sessionRef.current
     creatingLinkRef.current = true
     setCreatingLink(true)
+    let activeOverseer: RpcStub<Overseer> | null = null
     try {
-      const { key, linkId, recipientPolicy } = await overseer.createShareLink(
+      activeOverseer = overseer.dup()
+      const { key, linkId, recipientPolicy } = await activeOverseer.createShareLink(
         newLinkRole, newLinkNote.trim() || undefined)
+      if (!isLiveSession(session)) return
       const url = `${new URL(`/workspace/${metadata.id}`, getWorkshopRuntime().publicWebOrigin).toString()}#share=${key}`
       setNewShareLink(url)
       setNewShareLinkCopied(false)
@@ -608,14 +696,20 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       setNewShareLinkId(linkId)
       setNewShareLinkPolicy(recipientPolicy ?? null)
       copiedUrlsRef.current.set(linkId, url)
-      await loadData()
+      await loadDataWith(activeOverseer, session)
+      if (!isLiveSession(session)) return
       showLandedRow('shareLink', linkId)
     } catch (err: any) {
       // Keep the composer and its values open so the user can retry without re-entering them.
-      toasts.add({ title: err.message || 'Failed to create share link.', variant: 'error' })
+      if (isLiveSession(session)) {
+        toasts.add({ title: err.message || 'Failed to create share link.', variant: 'error' })
+      }
     } finally {
-      creatingLinkRef.current = false
-      setCreatingLink(false)
+      if (isLiveSession(session)) {
+        creatingLinkRef.current = false
+        setCreatingLink(false)
+      }
+      activeOverseer?.[Symbol.dispose]()
     }
   }
 
@@ -623,17 +717,22 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   // re-displayed. We mint a new secret for the same logical link and copy that.
   const handleCopyShareLink = async (linkId: string) => {
     if (financeWorkspace || sharingProhibited || copyingLinkRef.current) return
+    const session = sessionRef.current
     copyingLinkRef.current = true
     setCopyingLinkId(linkId)
+    let activeOverseer: RpcStub<Overseer> | null = null
     try {
+      activeOverseer = overseer.dup()
       // Re-use a URL already minted for this link during this session.
       let url = copiedUrlsRef.current.get(linkId)
       if (!url) {
-        const { key } = await overseer.newShareLinkKey(linkId)
+        const { key } = await activeOverseer.newShareLinkKey(linkId)
+        if (!isLiveSession(session)) return
         url = `${new URL(`/workspace/${metadata.id}`, getWorkshopRuntime().publicWebOrigin).toString()}#share=${key}`
         copiedUrlsRef.current.set(linkId, url)
       }
       const copied = await copyToClipboard(url)
+      if (!isLiveSession(session)) return
       if (!copied) {
         toasts.add({ title: 'Could not copy share link.', variant: 'error' })
         return
@@ -647,31 +746,48 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       }, 2000)
       toasts.add({ title: 'Link copied to clipboard.', variant: 'success' })
     } catch (err: any) {
-      toasts.add({ title: err.message || 'Failed to copy share link.', variant: 'error' })
+      if (isLiveSession(session)) {
+        toasts.add({ title: err.message || 'Failed to copy share link.', variant: 'error' })
+      }
     } finally {
-      copyingLinkRef.current = false
-      setCopyingLinkId(null)
+      if (isLiveSession(session)) {
+        copyingLinkRef.current = false
+        setCopyingLinkId(null)
+      }
+      activeOverseer?.[Symbol.dispose]()
     }
   }
 
   const handleStartRemoveCollaborator = async (profileId: string) => {
+    const session = sessionRef.current
     setConfirmationTarget({ kind: 'remove', profileId, dependents: [], previewing: true, keepSet: new Set() })
+    let activeOverseer: RpcStub<Overseer> | null = null
     try {
-      const dependents = await overseer.previewRemoveCollaborator(profileId)
+      activeOverseer = overseer.dup()
+      const dependents = await activeOverseer.previewRemoveCollaborator(profileId)
+      if (!isLiveSession(session)) return
       setConfirmationTarget(current => current?.kind === 'remove' && current.profileId === profileId
         ? { ...current, dependents, previewing: false }
         : current)
     } catch (err: any) {
-      setConfirmationTarget(current => current?.kind === 'remove' && current.profileId === profileId ? null : current)
-      toasts.add({ title: err.message || 'Failed to preview collaborator removal.', variant: 'error' })
+      if (isLiveSession(session)) {
+        setConfirmationTarget(current => current?.kind === 'remove' && current.profileId === profileId ? null : current)
+        toasts.add({ title: err.message || 'Failed to preview collaborator removal.', variant: 'error' })
+      }
+    } finally {
+      activeOverseer?.[Symbol.dispose]()
     }
   }
 
   const handleConfirmRemoveCollaborator = async () => {
     if (!removeTarget || removeTarget.previewing || confirmationBusy) return
+    const session = sessionRef.current
     setConfirmationBusy(true)
+    let activeOverseer: RpcStub<Overseer> | null = null
     try {
-      const removed = await overseer.removeCollaborator(removeTarget.profileId, [...removeTarget.keepSet])
+      activeOverseer = overseer.dup()
+      const removed = await activeOverseer.removeCollaborator(removeTarget.profileId, [...removeTarget.keepSet])
+      if (!isLiveSession(session)) return
       setConfirmationTarget(null)
       toasts.add({
         title: removed.length > 0
@@ -679,11 +795,14 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
           : 'Your direct grant was removed. This collaborator still has access through another source.',
         variant: 'success',
       })
-      await loadData()
+      await loadDataWith(activeOverseer, session)
     } catch (err: any) {
-      toasts.add({ title: err.message || 'Failed to remove collaborator.', variant: 'error' })
+      if (isLiveSession(session)) {
+        toasts.add({ title: err.message || 'Failed to remove collaborator.', variant: 'error' })
+      }
     } finally {
-      setConfirmationBusy(false)
+      if (isLiveSession(session)) setConfirmationBusy(false)
+      activeOverseer?.[Symbol.dispose]()
     }
   }
 
@@ -707,41 +826,63 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       cancelRenameShareLink()
       return
     }
+    const session = sessionRef.current
     savingShareLinkNoteRef.current = true
     setSavingShareLinkNote(true)
+    let activeOverseer: RpcStub<Overseer> | null = null
     try {
-      await overseer.updateShareLink(linkId, note || undefined)
+      activeOverseer = overseer.dup()
+      await activeOverseer.updateShareLink(linkId, note || undefined)
+      if (!isLiveSession(session)) return
       cancelRenameShareLink()
-      await loadData()
+      await loadDataWith(activeOverseer, session)
+      if (!isLiveSession(session)) return
       showLandedRow('shareLink', linkId)
       toasts.add({ title: 'Share link renamed.', variant: 'success' })
     } catch (err: any) {
-      toasts.add({ title: err.message || 'Failed to rename share link.', variant: 'error' })
+      if (isLiveSession(session)) {
+        toasts.add({ title: err.message || 'Failed to rename share link.', variant: 'error' })
+      }
     } finally {
-      savingShareLinkNoteRef.current = false
-      setSavingShareLinkNote(false)
+      if (isLiveSession(session)) {
+        savingShareLinkNoteRef.current = false
+        setSavingShareLinkNote(false)
+      }
+      activeOverseer?.[Symbol.dispose]()
     }
   }
 
   const handleStartRevokeShareLink = async (linkId: string) => {
+    const session = sessionRef.current
     cancelRenameShareLink()
     setConfirmationTarget({ kind: 'revoke', linkId, dependents: [], previewing: true, keepSet: new Set() })
+    let activeOverseer: RpcStub<Overseer> | null = null
     try {
-      const dependents = await overseer.previewRevokeShareLink(linkId)
+      activeOverseer = overseer.dup()
+      const dependents = await activeOverseer.previewRevokeShareLink(linkId)
+      if (!isLiveSession(session)) return
       setConfirmationTarget(current => current?.kind === 'revoke' && current.linkId === linkId
         ? { ...current, dependents, previewing: false }
         : current)
     } catch (err: any) {
-      setConfirmationTarget(current => current?.kind === 'revoke' && current.linkId === linkId ? null : current)
-      toasts.add({ title: err.message || 'Failed to preview share-link revocation.', variant: 'error' })
+      if (isLiveSession(session)) {
+        setConfirmationTarget(current => current?.kind === 'revoke' && current.linkId === linkId ? null : current)
+        toasts.add({ title: err.message || 'Failed to preview share-link revocation.', variant: 'error' })
+      }
+    } finally {
+      activeOverseer?.[Symbol.dispose]()
     }
   }
 
   const handleConfirmRevokeShareLink = async () => {
     if (!revokeTarget || revokeTarget.previewing || confirmationBusy) return
+    const session = sessionRef.current
     setConfirmationBusy(true)
+    let activeOverseer: RpcStub<Overseer> | null = null
     try {
-      await overseer.revokeShareLink(revokeTarget.linkId, [...revokeTarget.keepSet])
+      activeOverseer = overseer.dup()
+      await activeOverseer.revokeShareLink(revokeTarget.linkId, [...revokeTarget.keepSet])
+      if (!isLiveSession(session)) return
       setConfirmationTarget(null)
       if (revokeTarget.linkId === newShareLinkId) {
         setNewShareLink(null)
@@ -751,11 +892,14 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
         setShowLinkComposer(false)
       }
       toasts.add({ title: 'Share link revoked.', variant: 'success' })
-      await loadData()
+      await loadDataWith(activeOverseer, session)
     } catch (err: any) {
-      toasts.add({ title: err.message || 'Failed to revoke share link.', variant: 'error' })
+      if (isLiveSession(session)) {
+        toasts.add({ title: err.message || 'Failed to revoke share link.', variant: 'error' })
+      }
     } finally {
-      setConfirmationBusy(false)
+      if (isLiveSession(session)) setConfirmationBusy(false)
+      activeOverseer?.[Symbol.dispose]()
     }
   }
 

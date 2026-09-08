@@ -116,7 +116,6 @@ export function useWorkspaceOpen({
         configureObservers = new RpcStub(configureObserversTarget)
 
         overseerStub = authenticatedApi.openGadget(id, shareKey, configureObservers)
-        setOverseer({ stub: overseerStub })
 
         const resolvedSubscription = await overseerStub.subscribeToMetadata((nextMetadata) => {
           if (cancelled) return
@@ -129,6 +128,7 @@ export function useWorkspaceOpen({
         }
         metadataSubscription = resolvedSubscription
 
+        setOverseer({ stub: overseerStub })
         openWorkspaceIdRef.current = id
         setError(null)
         if (connectionLost) setConnectionLost(false)
