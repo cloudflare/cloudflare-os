@@ -415,7 +415,8 @@ function* textShapeXml(state, name, box, style, source, options = {}) {
     fill + line + '</p:spPr><p:txBody>' +
     `<a:bodyPr wrap="${wrap}" anchor="${anchor}" lIns="${emuLength(insets.left || 0)}" ` +
     `rIns="${emuLength(insets.right || 0)}" tIns="${emuLength(insets.top || 0)}" ` +
-    `bIns="${emuLength(insets.bottom || 0)}"><a:noAutofit/></a:bodyPr><a:lstStyle/>`;
+    `bIns="${emuLength(insets.bottom || 0)}">` +
+    `${options.autofit ? "<a:spAutoFit/>" : "<a:noAutofit/>"}</a:bodyPr><a:lstStyle/>`;
   if (source.items) {
     for (let i = 0; i < source.items.length; ++i) {
       yield* paragraphXml(source.items[i], style, {
@@ -767,9 +768,7 @@ function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
       props.markup = text("markup");
       props.fit = text("fit");
       props.background = text("background");
-      props.brandBar = /viewBox=["']0 0 1200 12["']/.test(props.markup.trim()) &&
-        props.markup.includes("#FF6633") && props.markup.includes("#F6821F") &&
-        props.markup.includes("#FBAD41");
+      props.brandBar = isBrandBar(props.markup);
       break;
     case "arrow":
       props.x1 = sourceScalar(propsSource.x1);
@@ -792,6 +791,19 @@ function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
     h: sourceScalar(blockSource.h),
     props,
   };
+}
+
+const BRAND_BAR_ELEMENTS = new Set(["svg", "defs", "linearGradient", "stop", "rect"]);
+
+// The seed decks' bottom bar: a 1200x12 strip in the three brand colors built only from gradient
+// primitives. Authored content (text, paths) keeps the SVG placeholder instead of being replaced.
+function isBrandBar(markup) {
+  if (!/viewBox=["']0 0 1200 12["']/.test(markup)) return false;
+  if (!["#FF6633", "#F6821F", "#FBAD41"].every(color => markup.includes(color))) return false;
+  for (const match of markup.matchAll(/<\s*([A-Za-z][\w:-]*)/g)) {
+    if (!BRAND_BAR_ELEMENTS.has(match[1])) return false;
+  }
+  return true;
 }
 
 function prepareDeck(deck) {
@@ -875,13 +887,18 @@ function isBold(weight) {
   return numberOr(weight, 400) >= 600;
 }
 
-// Advance width in CSS pixels of `text` (line breaks excluded) set in Arial at `fontSize`.
-function textWidth(text, fontSize, weight, letterSpacing = 0) {
+function letterSpacingPixels(value, fontPixels) {
+  return letterSpacingHundredths(value, fontPixels) / 100 / PX_TO_POINT;
+}
+
+// Advance width in CSS pixels of `text[start, end)` (line breaks excluded) set in Arial.
+function textWidth(text, fontSize, weight, letterSpacing = 0, start = 0, end = text.length) {
   const widths = isBold(weight) ? ARIAL_BOLD_WIDTHS : ARIAL_WIDTHS;
   let units = 0;
   let count = 0;
-  for (const character of text) {
-    const code = character.codePointAt(0);
+  for (let i = start; i < end; ++i) {
+    const code = text.codePointAt(i);
+    if (code > 0xffff) ++i;
     if (code === 10) continue;
     units += code >= 32 && code <= 126 ? widths[code - 32] : code > 0xffff ? 1000 : 600;
     ++count;
@@ -889,10 +906,32 @@ function textWidth(text, fontSize, weight, letterSpacing = 0) {
   return units / 1000 * fontSize + Math.max(0, count - 1) * letterSpacing;
 }
 
-function estimateTextHeight(text, width, fontSize, lineHeight, weight) {
+// Greedy word wrap at spaces, breaking a word wider than the line mid-word as browsers and
+// PowerPoint do. Auto-height boxes also autofit, but card and box children are laid out from this.
+function estimateTextHeight(text, width, fontSize, lineHeight, weight, letterSpacing = "") {
+  const maxWidth = Math.max(1, width);
+  const spacing = letterSpacingPixels(letterSpacing, fontSize);
+  const spaceWidth = textWidth(" ", fontSize, weight) + spacing;
   let lines = 0;
   for (const line of linesOf(text)) {
-    lines += Math.max(1, Math.ceil(textWidth(line, fontSize, weight) / Math.max(1, width)));
+    let lineWidth = 0;
+    let count = 1;
+    for (let start = 0; start <= line.length;) {
+      let end = line.indexOf(" ", start);
+      if (end < 0) end = line.length;
+      const wordWidth = textWidth(line, fontSize, weight, spacing, start, end);
+      if (lineWidth && lineWidth + spaceWidth + wordWidth > maxWidth) {
+        ++count;
+        lineWidth = 0;
+      }
+      lineWidth += (lineWidth ? spaceWidth : 0) + wordWidth;
+      if (lineWidth > maxWidth) {
+        count += Math.ceil(lineWidth / maxWidth) - 1;
+        lineWidth %= maxWidth;
+      }
+      start = end + 1;
+    }
+    lines += count;
   }
   return Math.max(fontSize * lineHeight, lines * fontSize * lineHeight + 2);
 }
@@ -977,15 +1016,18 @@ function* renderTitle(state, block, name) {
   const fontSize = cssNumber(props.fontSize, 42, 1, 1000);
   const lineHeight = cssNumber(props.lineHeight, 1.08, 0.5, 4);
   const width = sizePixels(block.w, 900);
-  const height = block.h == null ? estimateTextHeight(props.text, width, fontSize, lineHeight, props.weight || 900) : sizePixels(block.h, fontSize * lineHeight);
+  const letterSpacing = props.letterSpacing || "-0.04em";
+  const height = block.h == null
+    ? estimateTextHeight(props.text, width, fontSize, lineHeight, props.weight || 900, letterSpacing)
+    : sizePixels(block.h, fontSize * lineHeight);
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
     fontSize,
     weight: props.weight || 900,
-    letterSpacing: props.letterSpacing || "-0.04em",
+    letterSpacing,
     lineHeight,
     color: parseColor(props.color, "#2B0B05"),
     align: "left",
-  }, {text: props.text, highlightMarks: props.highlightMarks});
+  }, {text: props.text, highlightMarks: props.highlightMarks}, {autofit: block.h == null});
 }
 
 function* renderSubtitle(state, block, name) {
@@ -1000,7 +1042,7 @@ function* renderSubtitle(state, block, name) {
     lineHeight,
     color: parseColor(props.color, "#7B6254"),
     align: "left",
-  }, {text: props.text});
+  }, {text: props.text}, {autofit: block.h == null});
 }
 
 function* renderText(state, block, name) {
@@ -1015,7 +1057,7 @@ function* renderText(state, block, name) {
     lineHeight,
     color: parseColor(props.color, "#000000"),
     align: ["left", "center", "right"].includes(props.align) ? props.align : "left",
-  }, {text: props.text});
+  }, {text: props.text}, {autofit: block.h == null});
 }
 
 function* renderBullets(state, block, name) {
@@ -1036,7 +1078,7 @@ function* renderBullets(state, block, name) {
   if (block.h != null) height = sizePixels(block.h, height);
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
     fontSize, weight: 400, lineHeight, color: parseColor("#000000"), align: "left",
-  }, {items, spacingAfter: gap});
+  }, {items, spacingAfter: gap}, {autofit: block.h == null});
 }
 
 function* renderCard(state, block, name) {
@@ -1059,11 +1101,14 @@ function* renderCard(state, block, name) {
     }, {text: props.eyebrow.toUpperCase()});
     y += height + 12;
   }
-  const titleHeight = estimateTextHeight(props.title, width, 18, 1.3, 600);
-  yield* textShapeXml(state, `${name} title`, boxFromPixels(x, y, width, titleHeight), {
-    fontSize: 18, weight: 600, letterSpacing: "-0.02em", lineHeight: 1.3,
-    color: parseColor("#000000"), align: "left",
-  }, {text: props.title});
+  // An empty title is a zero-height element in the browser; only the flex gap remains.
+  const titleHeight = props.title ? estimateTextHeight(props.title, width, 18, 1.3, 600, "-0.02em") : 0;
+  if (props.title) {
+    yield* textShapeXml(state, `${name} title`, boxFromPixels(x, y, width, titleHeight), {
+      fontSize: 18, weight: 600, letterSpacing: "-0.02em", lineHeight: 1.3,
+      color: parseColor("#000000"), align: "left",
+    }, {text: props.title});
+  }
   y += titleHeight + 12;
   yield* textShapeXml(state, `${name} body`,
     boxFromPixels(x, y, width, Math.max(1, outer.y + outer.height - 20 - y)), {
@@ -1082,14 +1127,16 @@ function* renderBox(state, block, name) {
     line: lineXml(parseColor("#E5E5E5"), 1, Boolean(props.dashed)),
   });
   const width = Math.max(1, outer.width - 28);
-  const titleHeight = estimateTextHeight(props.title, width, 16, 1.3, 600);
+  const titleHeight = props.title ? estimateTextHeight(props.title, width, 16, 1.3, 600, "-0.02em") : 0;
   const bodyHeight = props.body ? estimateTextHeight(props.body, width, 14, 1.45, 400) : 0;
   const contentHeight = titleHeight + (props.body ? 6 + bodyHeight : 0);
   let y = outer.y + Math.max(14, (outer.height - contentHeight) / 2);
-  yield* textShapeXml(state, `${name} title`, boxFromPixels(outer.x + 14, y, width, titleHeight), {
-    fontSize: 16, weight: 600, letterSpacing: "-0.02em", lineHeight: 1.3,
-    color: parseColor("#000000"), align: "left",
-  }, {text: props.title});
+  if (props.title) {
+    yield* textShapeXml(state, `${name} title`, boxFromPixels(outer.x + 14, y, width, titleHeight), {
+      fontSize: 16, weight: 600, letterSpacing: "-0.02em", lineHeight: 1.3,
+      color: parseColor("#000000"), align: "left",
+    }, {text: props.title});
+  }
   if (props.body) {
     y += titleHeight + 6;
     yield* textShapeXml(state, `${name} body`, boxFromPixels(outer.x + 14, y, width, bodyHeight), {

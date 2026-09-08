@@ -654,6 +654,9 @@ describe("Workspace Slides PPTX rendering", () => {
       block("image", {src: dataUrl("jpeg", jpegWithoutScan(2, 4))}),
       block("image", {src: "data:image/gif;base64,R0lGODlh"}),
       block("svg", {markup: "<svg><circle/></svg>", background: "#fff4e6"}),
+      // Brand-bar geometry and colors, but with authored content: not the seed decks' plain bar.
+      block("svg", {markup: '<svg viewBox="0 0 1200 12"><stop stop-color="#FF6633"/>' +
+        '<stop stop-color="#F6821F"/><stop stop-color="#FBAD41"/><text>Q3</text></svg>'}),
       block("not-a-real-block", {}),
     ])));
     const xml = partText(zip, "ppt/slides/slide1.xml");
@@ -667,6 +670,8 @@ describe("Workspace Slides PPTX rendering", () => {
       "?: not-a-real-block",
     ]) expect(xml).toContain(placeholder);
     expect(occurrences(xml, "Malformed image data")).toBe(2);
+    expect(occurrences(xml, "SVG not included in PowerPoint export")).toBe(2);
+    expect(xml).not.toContain("<a:gradFill");
     expect(xml).not.toContain("<p:pic>");
     expect(zip.names.some(name => name.startsWith("ppt/media/"))).toBe(false);
     expect(partText(zip, "ppt/slides/_rels/slide1.xml.rels")).not.toContain("/image");
@@ -685,6 +690,42 @@ describe("Workspace Slides PPTX rendering", () => {
       expect(xml).toContain("<p:spTree>");
       expect(xml).not.toMatch(/NaN|Infinity/);
     }
+  });
+
+  it("sizes auto-height text by word wrapping with tracking, and lets consumers grow it", async () => {
+    const zip = await readZip(deckToPptx(oneSlide([
+      // Three words of ~55px in a 100px box: advance-width division says 2 lines, wrapping says 3.
+      block("text", {text: "wwww wwww wwww", fontSize: 19, lineHeight: 1.6}, {w: 100}),
+      // Two 44.5px words fit one 100px line untracked; 2px tracking pushes the second word down.
+      block("title", {text: "aaaa aaaa", fontSize: 20, letterSpacing: "2px"}, {w: 100}),
+      block("title", {text: "aaaa aaaa", fontSize: 20, letterSpacing: "0px"}, {w: 100}),
+      block("text", {text: "fixed"}, {w: 100, h: 40}),
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+
+    const wrapped = shapeByName(xml, "Block 1 text");
+    expect(wrapped).toContain(`cy="${Math.round((3 * 19 * 1.6 + 2) * 10160)}"`);
+    expect(wrapped).toContain("<a:spAutoFit/>");
+    expect(shapeByName(xml, "Block 2 title")).toContain(`cy="${Math.round((2 * 20 * 1.08 + 2) * 10160)}"`);
+    expect(shapeByName(xml, "Block 3 title")).toContain(`cy="${Math.round((20 * 1.08 + 2) * 10160)}"`);
+    expect(shapeByName(xml, "Block 4 text")).toContain("<a:noAutofit/>");
+  });
+
+  it("gives empty card and box titles no height, like the browser's empty element", async () => {
+    const zip = await readZip(deckToPptx(oneSlide([
+      block("card", {eyebrow: "", title: "", body: "Body"}, {x: 0, y: 0, w: 280, h: 260}),
+      block("box", {title: "", body: "Body"}, {x: 0, y: 300, w: 220, h: 110}),
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+
+    expect(xml).not.toContain('name="Block 1 card title"');
+    expect(xml).not.toContain('name="Block 2 box title"');
+    // Card padding (20) plus the single remaining flex gap (12).
+    expect(shapeByName(xml, "Block 1 card body")).toContain(`<a:off x="${20 * 10160}" y="${32 * 10160}"/>`);
+    // Box body is vertically centred on its own height (14px line * 1.45 + 2, plus the 6px gap).
+    const bodyHeight = 14 * 1.45 + 2;
+    const bodyY = 300 + Math.max(14, (110 - (6 + bodyHeight)) / 2) + 6;
+    expect(shapeByName(xml, "Block 2 box body")).toContain(`y="${Math.round(bodyY * 10160)}"`);
   });
 
   it("clamps non-finite, negative, and extreme drawing geometry", async () => {

@@ -189,7 +189,10 @@ export class Gadget extends DurableObject {
 
   // -------- bulk ----------------------------------------------------------
   async setDeck(deck) {
-    await this.#save(deck);
+    // Stamp the schema marker getDeck() checks; a caller-built deck without it
+    // would otherwise be discarded and replaced by the starter deck on the
+    // next read (client boot, export).
+    await this.#save({ ...deck, themeVersion: "workspace.1" });
   }
 
   async resetAll() {
