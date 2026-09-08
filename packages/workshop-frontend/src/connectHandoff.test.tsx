@@ -13,7 +13,7 @@ import { gatekeeperOrigin, openConnectWindow, useConnectHandoffListener } from '
 
 const TICKET = 'a'.repeat(64)
 
-function Listener({ api, onError }: { api: RpcStub<AuthenticatedApi>; onError: (m: string) => void }) {
+function Listener({ api, onError }: { api: RpcStub<AuthenticatedApi> | null; onError: (m: string) => void }) {
   useConnectHandoffListener(api, onError)
   return null
 }
@@ -86,6 +86,18 @@ describe('useConnectHandoffListener', () => {
 
     expect(onError).toHaveBeenCalledExactlyOnceWith('This connection attempt has expired.')
     expect(popup.close).not.toHaveBeenCalled()
+  })
+
+  it('listens for nothing when given no session', async () => {
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    act(() => root!.render(<Listener api={null} onError={onError} />))
+
+    deliver({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: TICKET })
+    await settle()
+
+    expect(completeConnectHandoff).not.toHaveBeenCalled()
   })
 
   it('stops listening once unmounted', async () => {

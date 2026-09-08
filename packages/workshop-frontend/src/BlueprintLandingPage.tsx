@@ -8,6 +8,7 @@ import { Button, Dialog, DropdownMenu, Select, Tooltip, useKumoToastManager } fr
 import { ArrowsOutSimple, ArrowLeft, ArrowSquareOut, DotsThree, DownloadSimple, Lightning, Plus, Robot, Sparkle, Star, Trash, X } from '@phosphor-icons/react'
 
 import { useAuth } from './useAuth'
+import { useOptionalAuthenticatedApi } from './AuthContext'
 import LoginPage from './LoginPage'
 import { normalizeResourceUrl } from './resourceMatching'
 import {
@@ -22,7 +23,7 @@ import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './components/menuStyl
 import { useDocumentTitle } from './useDocumentTitle'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
-import { openConnectWindow } from './connectHandoff'
+import { openConnectWindow, useConnectHandoffListener } from './connectHandoff'
 
 interface Props {
   rpcStub: RpcStub<PublicApi>
@@ -39,6 +40,16 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   const router = useRouter()
   const { isAuthenticated, authenticatedApi, isLoading: authLoading, login } = useAuth(rpcStub)
   const toasts = useKumoToastManager()
+
+  // A signed-out visitor who logs in here does so through this page's own useAuth(); the root stays
+  // in its standalone branch with no AuthProvider, so the app shell's ConnectHandoffListener is not
+  // mounted and the connect popups below would never complete. Listen here in that case only: when
+  // the shell is authenticated its listener is already live, and a ticket can be redeemed once.
+  const shellAuth = useOptionalAuthenticatedApi()
+  const onHandoffError = useCallback((message: string) => {
+    toasts.add({ title: 'Could not complete the connection', description: message, variant: 'error' })
+  }, [toasts])
+  useConnectHandoffListener(shellAuth ? null : authenticatedApi, onHandoffError)
 
   const [blueprint, setBlueprint] = useState<BlueprintPublicInfo | null>(null)
   useDocumentTitle(blueprint?.metadata.title)

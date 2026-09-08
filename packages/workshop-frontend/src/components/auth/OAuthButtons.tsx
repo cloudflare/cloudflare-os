@@ -60,6 +60,12 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
     setPending(vendorId)
     try {
       const { url, attempt } = await rpcStub.startGatekeeperLogin(vendorId)
+      if (!mountedRef.current) {
+        // Unmounted while the RPC was in flight: the cleanup above has already run, so nothing may
+        // be opened or registered now.
+        try { (attempt as unknown as Disposable)[Symbol.dispose]() } catch { /* already disposed */ }
+        return
+      }
       // `attempt` is the capability to redeem the session token; track it so we can dispose it if
       // the component unmounts mid-login.
       loginRpcRef.current = attempt as unknown as Disposable
@@ -95,6 +101,10 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           if (popup.closed) finish(() => reject(new Error('Sign-in was cancelled.')))
         }, 500)
         const onMessage = (event: MessageEvent) => {
+          // Unlike the connect listener, this page holds the popup handle, so a ticket from any
+          // other window (say, an account-connect popup that outlived a logout) is not ours: claiming
+          // it would only burn this attempt.
+          if (event.source !== popup) return
           const ticket = connectHandoffTicket(event)
           if (ticket === null) return
           // The popup closes itself shortly after posting; that is no longer a cancellation.

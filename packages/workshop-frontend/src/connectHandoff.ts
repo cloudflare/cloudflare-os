@@ -63,12 +63,16 @@ export function openConnectWindow(url: string): Window {
  * (the page closes itself a moment later regardless). Security rests on the ticket being scoped to
  * the user who started the flow, not on which window sent it, so a Workshop tab that reloaded
  * mid-flow (and has no popup handle) still completes.
+ *
+ * Pass `null` to listen for nothing: a ticket must be redeemed exactly once, so only one listener may
+ * be live per window (see `ConnectHandoffListener` and the blueprint page).
  */
 export function useConnectHandoffListener(
-  authenticatedApi: RpcStub<AuthenticatedApi>,
+  authenticatedApi: RpcStub<AuthenticatedApi> | null,
   onError: (message: string) => void,
 ): void {
   useEffect(() => {
+    if (!authenticatedApi) return
     const onMessage = (event: MessageEvent) => {
       const ticket = connectHandoffTicket(event)
       if (ticket === null) return
