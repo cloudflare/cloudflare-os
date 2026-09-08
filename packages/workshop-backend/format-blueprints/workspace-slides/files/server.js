@@ -20,10 +20,10 @@ import { deckToPptx } from "./pptx.js";
  *   props: {...},         // type-specific (text, tone, etc.)
  * }
  *
- * All shape/render logic lives in client.js; the server is a dumb document
- * store with realtime broadcast. Mutations are coarse: any change re-sends
- * the whole deck, which keeps clients trivially in sync and makes undo
- * (future) easy.
+ * Interactive rendering lives in client.js and PowerPoint rendering in
+ * pptx.js; the server is a document store with realtime broadcast plus the
+ * export entrypoint. Mutations are coarse: any change re-sends the whole
+ * deck, which keeps clients trivially in sync and makes undo easy.
  */
 
 const STORAGE_KEY = "deck";

@@ -23,6 +23,10 @@ const MAX_LINE_BREAKS = 10000;
 const MAX_TOTAL_LINE_BREAKS = 50000;
 const MAX_HIGHLIGHT_TERMS = 128;
 const MAX_HIGHLIGHT_WORK = 8000000;
+const MAX_TOTAL_HIGHLIGHT_WORK = 32000000;
+const MAX_HIGHLIGHT_TRANSITIONS = 4096;
+const MAX_TOTAL_HIGHLIGHT_TRANSITIONS = 32768;
+const TEXT_CHUNK_SIZE = 64 * 1024;
 const MAX_MEDIA_COUNT = 256;
 const MAX_MEDIA_ENCODED_BYTES = 24 * 1024 * 1024;
 const MAX_TOTAL_MEDIA_ENCODED_BYTES = 96 * 1024 * 1024;
@@ -46,6 +50,7 @@ const COLORS = {
   tangerine: "F6821F",
   mango: "FBAD41",
 };
+const HIGHLIGHT_COLOR = {rgb: COLORS.orange, alpha: 1};
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -96,18 +101,30 @@ function* escapedTextChunks(value) {
   if (chunk) yield chunk;
 }
 
-function textStream(iterable) {
-  const iterator = iterable[Symbol.iterator]();
+// Encodes a string generator into ~64 KiB byte chunks, so the ZIP's CompressionStream sees a few
+// large writes rather than one per run. `highWaterMark: 0` keeps generation lazy until the archive
+// reaches this part.
+function textStream(generator) {
   return new ReadableStream({
     pull(controller) {
-      const result = iterator.next();
-      if (result.done) controller.close();
-      else controller.enqueue(encoder.encode(result.value));
+      const parts = [];
+      let length = 0;
+      while (length < TEXT_CHUNK_SIZE) {
+        const result = generator.next();
+        if (result.done) {
+          if (parts.length) controller.enqueue(encoder.encode(parts.join("")));
+          controller.close();
+          return;
+        }
+        parts.push(result.value);
+        length += result.value.length;
+      }
+      controller.enqueue(encoder.encode(parts.join("")));
     },
     cancel(reason) {
-      if (iterator.return) iterator.return(reason);
+      generator.return(reason);
     },
-  });
+  }, {highWaterMark: 0});
 }
 
 function primitiveNumber(value) {
@@ -286,29 +303,59 @@ function runProperties(style, colorOverride) {
     `>${solidFill(color)}<a:latin typeface="Arial"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/>`;
 }
 
-function highlightedSegments(line, terms, normalColor) {
-  if (!terms.length || !line) return [{text: line, color: normalColor}];
-  const marks = new Uint8Array(line.length);
+// Comma-delimited, trimmed, deduplicated in order. Bounded by delimited entries while scanning, so
+// a persisted flood of separators is rejected before any per-entry allocation.
+function parseHighlightTerms(value, label) {
+  const terms = new Set();
+  let entries = 0;
+  for (let start = 0; start <= value.length; ++entries) {
+    if (entries === MAX_HIGHLIGHT_TERMS) {
+      throw new Error(`${label} has too many comma-separated title highlight entries (maximum ${MAX_HIGHLIGHT_TERMS}).`);
+    }
+    let end = value.indexOf(",", start);
+    if (end < 0) end = value.length;
+    if (end > start) {
+      const term = value.slice(start, end).trim();
+      if (term) terms.add(term);
+    }
+    start = end + 1;
+  }
+  return [...terms];
+}
+
+// Marks every code unit covered by a literal, case-sensitive match of any term (the union of each
+// term's non-overlapping matches, spanning line breaks like the browser renderer). Bounds the
+// search work and the mark changes between adjacent non-newline characters -- each of which adds a
+// text run to the paragraph -- before any XML is produced.
+function highlightMarks(text, terms, label, limits) {
+  const work = text.length * terms.length;
+  if (work > MAX_HIGHLIGHT_WORK) {
+    throw new Error(`${label} title highlights are too complex for PowerPoint export.`);
+  }
+  limits.totalHighlightWork += work;
+  if (limits.totalHighlightWork > MAX_TOTAL_HIGHLIGHT_WORK) {
+    throw new Error("Deck title highlights are too complex for PowerPoint export.");
+  }
+  const marks = new Uint8Array(text.length);
   for (const term of terms) {
-    for (let offset = 0; offset <= line.length - term.length;) {
-      const found = line.indexOf(term, offset);
-      if (found < 0) break;
+    for (let found = text.indexOf(term); found >= 0; found = text.indexOf(term, found + term.length)) {
       marks.fill(1, found, found + term.length);
-      offset = found + Math.max(1, term.length);
     }
   }
-  const segments = [];
-  let start = 0;
-  while (start < line.length) {
-    let end = start + 1;
-    while (end < line.length && marks[end] === marks[start]) ++end;
-    segments.push({
-      text: line.slice(start, end),
-      color: marks[start] ? parseColor("#FF5F2E") : normalColor,
-    });
-    start = end;
+  let transitions = 0;
+  for (let i = 1; i < text.length; ++i) {
+    if (marks[i] !== marks[i - 1] && text.charCodeAt(i) !== 10 && text.charCodeAt(i - 1) !== 10) {
+      ++transitions;
+    }
   }
-  return segments.length ? segments : [{text: "", color: normalColor}];
+  if (transitions > MAX_HIGHLIGHT_TRANSITIONS) {
+    throw new Error(`${label} title highlights would create too many PowerPoint text runs (maximum ${MAX_HIGHLIGHT_TRANSITIONS} transitions).`);
+  }
+  limits.totalHighlightTransitions += transitions;
+  if (limits.totalHighlightTransitions > MAX_TOTAL_HIGHLIGHT_TRANSITIONS) {
+    throw new Error(`Deck title highlights would create too many PowerPoint text runs (maximum ${MAX_TOTAL_HIGHLIGHT_TRANSITIONS} transitions total).`);
+  }
+  return marks;
 }
 
 function* paragraphXml(text, style, options = {}) {
@@ -328,17 +375,23 @@ function* paragraphXml(text, style, options = {}) {
   }
   properties += "</a:pPr>";
   yield `<a:p>${properties}`;
-  let firstLine = true;
-  for (const line of linesOf(text)) {
-    if (!firstLine) yield "<a:br/>";
-    firstLine = false;
-    const segments = highlightedSegments(line, options.highlightTerms || [], style.color);
-    for (const segment of segments) {
-      if (!segment.text) continue;
-      yield `<a:r><a:rPr ${runProperties(style, segment.color)}</a:rPr><a:t xml:space="preserve">`;
-      yield* escapedTextChunks(segment.text);
+  const marks = options.highlightMarks;
+  const normalRun = `<a:r><a:rPr ${runProperties(style)}</a:rPr><a:t xml:space="preserve">`;
+  const highlightRun = marks
+    ? `<a:r><a:rPr ${runProperties(style, HIGHLIGHT_COLOR)}</a:rPr><a:t xml:space="preserve">`
+    : normalRun;
+  // One run per maximal same-mark span within a line; `<a:br/>` between lines.
+  let start = 0;
+  for (let end = 0; end <= text.length; ++end) {
+    const lineBreak = end === text.length || text.charCodeAt(end) === 10;
+    if (!lineBreak && (!marks || marks[end] === marks[start])) continue;
+    if (end > start) {
+      yield marks && marks[start] ? highlightRun : normalRun;
+      yield* escapedTextChunks(text.slice(start, end));
       yield "</a:t></a:r>";
     }
+    if (lineBreak && end < text.length) yield "<a:br/>";
+    start = lineBreak ? end + 1 : end;
   }
   yield `<a:endParaRPr ${runProperties(style)}</a:endParaRPr></a:p>`;
 }
@@ -368,7 +421,7 @@ function* textShapeXml(state, name, box, style, source, options = {}) {
     }
     if (!source.items.length) yield* paragraphXml("", style);
   } else {
-    yield* paragraphXml(source.text, style, {highlightTerms: source.highlightTerms || []});
+    yield* paragraphXml(source.text, style, {highlightMarks: source.highlightMarks});
   }
   yield "</p:txBody></p:sp>";
 }
@@ -657,14 +710,8 @@ function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
       props.color = text("color");
       props.letterSpacing = text("letterSpacing");
       props.lineHeight = sourceScalar(propsSource.lineHeight);
-      const highlight = text("highlight");
-      props.highlightTerms = [...new Set(highlight.split(",").map(term => term.trim()).filter(Boolean))];
-      if (props.highlightTerms.length > MAX_HIGHLIGHT_TERMS) {
-        throw new Error(`${label} has too many title highlight terms (maximum ${MAX_HIGHLIGHT_TERMS}).`);
-      }
-      if (props.text.length * props.highlightTerms.length > MAX_HIGHLIGHT_WORK) {
-        throw new Error(`${label} title highlights are too complex for PowerPoint export.`);
-      }
+      const terms = parseHighlightTerms(text("highlight"), label);
+      if (terms.length) props.highlightMarks = highlightMarks(props.text, terms, label, limits);
       break;
     }
     case "subtitle":
@@ -744,7 +791,10 @@ function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
 }
 
 function prepareDeck(deck) {
-  const limits = {totalText: 0, totalLineBreaks: 0, encodedBytes: 0, decodedBytes: 0};
+  const limits = {
+    totalText: 0, totalLineBreaks: 0, totalHighlightWork: 0, totalHighlightTransitions: 0,
+    encodedBytes: 0, decodedBytes: 0,
+  };
   const mediaState = {media: [], bySource: new Map(), byChecksum: new Map(), totalPixels: 0};
   const validDeck = isRecord(deck) && Array.isArray(deck.slides) && deck.slides.length > 0;
   const sourceSlides = validDeck ? deck.slides : [{}];
@@ -900,7 +950,7 @@ function* renderTitle(state, block, name) {
     lineHeight,
     color: parseColor(props.color, "#2B0B05"),
     align: "left",
-  }, {text: props.text, highlightTerms: props.highlightTerms});
+  }, {text: props.text, highlightMarks: props.highlightMarks});
 }
 
 function* renderSubtitle(state, block, name) {
@@ -1448,7 +1498,7 @@ export function deckToPptx(deck) {
     const slide = prepared.slides[i];
     entries.push({
       name: `ppt/slides/slide${i + 1}.xml`,
-      data: () => textStream(slideXml(slide)),
+      data: textStream(slideXml(slide)),
     });
     entries.push({
       name: `ppt/slides/_rels/slide${i + 1}.xml.rels`,
@@ -1456,7 +1506,10 @@ export function deckToPptx(deck) {
     });
   }
   for (const media of prepared.media) {
-    entries.push({name: `ppt/media/image${media.index}.${media.extension}`, data: media.bytes});
+    entries.push({
+      name: `ppt/media/image${media.index}.${media.extension}`,
+      data: new Response(media.bytes).body,
+    });
   }
   return createZip(entries);
 }

@@ -85,17 +85,16 @@ hanging-indent treatment: one item per source line, 6px Tangerine dots,
 12px dot-to-copy gap, 19px primary or 17px compact Inter Regular text, and
 controlled 10px/8px item spacing.
 
-## Data model## Initial blueprint
+## Initial blueprint
 
 New Gadget instances start from the current four-slide overview of the
 builder: the orange “Compose your deck or build with agent” cover, a six-part
 feature overview, a connected-charts example showing how an agent can use an
 approved internal system of record as a data source, and a two-path get-started
 slide for editing directly or asking the agent. The complete blueprint
-is defined by `INITIAL_DECK` plus `KEY_TAKEAWAYS_SLIDE` in `server.js`; both
-first-time initialization and `resetAll()` clone that blueprint. The immutable default
-objects in `server.js` are cloned whenever storage is first seeded and by
-`resetAll()`, so later edits cannot mutate the blueprint.
+is defined by `INITIAL_DECK` plus `KEY_TAKEAWAYS_SLIDE` and `GET_STARTED_SLIDE`
+in `server.js`; both first-time initialization and `resetAll()` clone that
+blueprint, so later edits cannot mutate the immutable default objects.
 
 ## Data model
 

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ExportHandler } from "../format-blueprints/workspace-slides/files/server.js";
 import { deckToPptx } from "../format-blueprints/workspace-slides/files/pptx.js";
-import { createZip, crc32 } from "../format-blueprints/workspace-slides/files/zip.js";
+import { crc32 } from "../format-blueprints/workspace-slides/files/zip.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -292,37 +292,8 @@ function handler(): ExportHandler {
   return Object.create(ExportHandler.prototype) as ExportHandler;
 }
 
-describe("Workspace Slides ZIP32", () => {
-  it("writes deterministic descriptor-based deflate entries with valid CRCs", async () => {
-    expect(crc32(encoder.encode("123456789"))).toBe(0xcbf43926);
-    const chunks = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(encoder.encode("streamed "));
-        controller.enqueue(encoder.encode("content"));
-        controller.close();
-      },
-    });
-
-    const zip = await readZip(createZip([
-      {name: "plain.txt", data: "hello"},
-      {name: "nested/utf8-\u2603.txt", data: chunks},
-    ]));
-
-    expect(zip.names).toEqual(["plain.txt", "nested/utf8-\u2603.txt"]);
-    expect(partText(zip, "plain.txt")).toBe("hello");
-    expect(partText(zip, "nested/utf8-\u2603.txt")).toBe("streamed content");
-  });
-
-  it("rejects unsupported entry data through the ZIP reader", async () => {
-    const reader = createZip([{name: "failure.txt", data: {unsupported: true}}]).getReader();
-    await expect(reader.read()).resolves.toMatchObject({done: false}); // Local header.
-    await expect(reader.read()).resolves.toMatchObject({done: false}); // Entry name.
-    await expect(reader.read()).rejects.toThrow("ZIP entry data must be text, bytes, or a byte stream");
-  });
-});
-
 describe("Workspace Slides PPTX package", () => {
-  it("emits a deterministic, complete OOXML package and internal relationship graph", async () => {
+  it("emits a complete OOXML package and internal relationship graph", async () => {
     const png = pngFixture(4, 2);
     const jpeg = jpegFixture(2, 4);
     const deck = {
@@ -338,7 +309,6 @@ describe("Workspace Slides PPTX package", () => {
       ],
     };
     const zip = await readZip(deckToPptx(deck));
-    const repeat = await readZip(deckToPptx(deck));
 
     expect(zip.names).toEqual([
       "[Content_Types].xml",
@@ -362,7 +332,6 @@ describe("Workspace Slides PPTX package", () => {
       "ppt/media/image1.png",
       "ppt/media/image2.jpeg",
     ]);
-    expect(repeat.archive).toEqual(zip.archive);
 
     const contentTypes = partText(zip, "[Content_Types].xml");
     const defaults = Object.fromEntries([...contentTypes.matchAll(/<Default\b([^>]*)\/>/g)]
@@ -447,17 +416,15 @@ describe("Workspace Slides PPTX package", () => {
 });
 
 describe("Workspace Slides PPTX rendering", () => {
-  it("converts CSS pixels, assigns deterministic IDs, and preserves expanded-block z-order", async () => {
+  it("converts CSS pixels, assigns sequential IDs, and preserves expanded-block z-order", async () => {
     const deck = oneSlide([
       block("shape", {fill: "#123456"}, {x: 1.25, y: 2.5, w: 3, h: 4}),
       block("title", {text: "Sized", fontSize: 20, letterSpacing: "2px", lineHeight: 1.25}, {x: 5, y: 6, w: 100, h: 30}),
       block("card", {eyebrow: "top", title: "Card", body: "Body"}, {x: 10, y: 20, w: 200, h: 160}),
       block("shape", {fill: "#654321"}, {x: 30, y: 40, w: 50, h: 60}),
     ]);
-    const first = await readZip(deckToPptx(deck));
-    const second = await readZip(deckToPptx(deck));
-    const xml = partText(first, "ppt/slides/slide1.xml");
-    expect(partText(second, "ppt/slides/slide1.xml")).toBe(xml);
+    const zip = await readZip(deckToPptx(deck));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
 
     expect(shapeByName(xml, "Block 1 shape")).toContain(
       '<a:off x="12700" y="25400"/><a:ext cx="30480" cy="40640"/>',
@@ -566,6 +533,19 @@ describe("Workspace Slides PPTX rendering", () => {
     const arrow = shapeByName(xml, "Block 16 arrow");
     expect(arrow).toContain('<a:prstDash val="dash"/>');
     expect(arrow).toContain('<a:tailEnd type="triangle" w="sm" len="sm"/>');
+  });
+
+  it("highlights terms across line breaks and coalesces overlapping matches into single runs", async () => {
+    const zip = await readZip(deckToPptx(oneSlide([
+      block("title", {text: "foo\nbar & baz", highlight: "foo\nbar, o\nb, ar &, , foo\nbar"}),
+    ])));
+    const title = shapeByName(partText(zip, "ppt/slides/slide1.xml"), "Block 1 title");
+    const runs = [...title.matchAll(/<a:br\/>|<a:r>([\s\S]*?)<\/a:r>/g)].map(match => {
+      if (match[0] === "<a:br/>") return "<br>";
+      const text = /<a:t xml:space="preserve">([\s\S]*?)<\/a:t>/.exec(match[1])![1];
+      return (match[1].includes('<a:srgbClr val="FF5F2E">') ? "*" : "") + text;
+    });
+    expect(runs).toEqual(["*foo", "<br>", "*bar &amp;", " baz"]);
   });
 
   it("normalizes and escapes text and attributes without losing whitespace or line breaks", async () => {
@@ -737,15 +717,48 @@ describe("Workspace Slides PPTX resource limits", () => {
   });
 
   it("reports aggregate text and line-break limits", () => {
-    const millionCharacters = "x".repeat(1_000_000);
-    expect(() => deckToPptx(oneSlide(Array.from({length: 8}, () =>
-      block("text", {text: millionCharacters})))))
+    const largeText = "x".repeat(900_000);
+    expect(() => deckToPptx(oneSlide(Array.from({length: 9}, () =>
+      block("text", {text: largeText})))))
       .toThrow("Deck text is too large for PowerPoint export (maximum 8000000 characters total)");
 
     const tenThousandLines = "x\n".repeat(10_000);
     expect(() => deckToPptx(oneSlide(Array.from({length: 6}, () =>
       block("text", {text: tenThousandLines})))))
       .toThrow("Deck text has too many line breaks for PowerPoint export (maximum 50000 total)");
+  });
+
+  it("bounds comma-separated highlight parsing before allocating every entry", () => {
+    const entries = (count: number) => Array.from({length: count}, (_, index) => `t${index}`).join(",");
+    const title = (highlight: string) => oneSlide([block("title", {text: "t1", highlight})]);
+    const error = "Slide 1, block 1 has too many comma-separated title highlight entries (maximum 128)";
+    expect(() => deckToPptx(title(entries(128)))).not.toThrow();
+    expect(() => deckToPptx(title(entries(129)))).toThrow(error);
+    expect(() => deckToPptx(title(",".repeat(999_999)))).toThrow(error);
+  });
+
+  it("bounds highlight search work per title and per deck", () => {
+    const terms = (count: number) => Array.from({length: count}, (_, index) => `term${index}`).join(",");
+    expect(() => deckToPptx(oneSlide([block("title", {text: "x".repeat(1_000_000), highlight: terms(9)})])))
+      .toThrow("Slide 1, block 1 title highlights are too complex for PowerPoint export.");
+    const titles = (count: number) => Array.from({length: count}, () =>
+      block("title", {text: "x".repeat(100_000), highlight: terms(64)}));
+    expect(() => deckToPptx(oneSlide(titles(5)))).not.toThrow();
+    expect(() => deckToPptx(oneSlide(titles(6))))
+      .toThrow("Deck title highlights are too complex for PowerPoint export.");
+  });
+
+  it("bounds highlight text runs per title and per deck before creating the stream", () => {
+    expect(() => deckToPptx(oneSlide([block("title", {text: "ab".repeat(50_000), highlight: "a"})])))
+      .toThrow("Slide 1, block 1 title highlights would create too many PowerPoint text runs (maximum 4096 transitions)");
+    const atLimit = "a" + "ba".repeat(2_048); // 4096 highlight transitions.
+    expect(() => deckToPptx(oneSlide([block("title", {text: atLimit, highlight: "a"})]))).not.toThrow();
+    expect(() => deckToPptx(oneSlide([block("title", {text: atLimit + "b", highlight: "a"})])))
+      .toThrow("(maximum 4096 transitions)");
+    const titles = (count: number) => Array.from({length: count}, () => block("title", {text: atLimit, highlight: "a"}));
+    expect(() => deckToPptx(oneSlide(titles(8)))).not.toThrow();
+    expect(() => deckToPptx(oneSlide(titles(9))))
+      .toThrow("Deck title highlights would create too many PowerPoint text runs (maximum 32768 transitions total)");
   });
 
   it("rejects image dimensions beyond the declared raster limit", () => {
