@@ -1148,31 +1148,34 @@ describe("organization-scoped observation sharing policy", () => {
     expect(() => assertShareLinkAllowedByDomainSharingPolicy(undefined)).not.toThrow();
   });
 
-  it("creates internal links that admit matching SSO users and persist their grant", async () => {
-    let owner = await createSsoUser(`internal-owner-${crypto.randomUUID()}@totango.com`);
-    let member = await createSsoUser(`internal-member-${crypto.randomUUID()}@totango.com`);
-    let outsider = await createSsoUser(`internal-outsider-${crypto.randomUUID()}@example.com`);
+  it.each(["use", "build"] as const)(
+      "creates internal %s links that admit matching SSO users and persist their grant", async role => {
+    let owner = await createSsoUser(`internal-${role}-owner-${crypto.randomUUID()}@totango.com`);
+    let member = await createSsoUser(`internal-${role}-member-${crypto.randomUUID()}@totango.com`);
+    let outsider = await createSsoUser(`internal-${role}-outsider-${crypto.randomUUID()}@example.com`);
     let passwordMember = await createPasswordUser(
-        `internal-password-${crypto.randomUUID()}@totango.com`);
+        `internal-${role}-password-${crypto.randomUUID()}@totango.com`);
     let workspaceId = env.TEST_OVERSEER.newUniqueId();
     let workspaceIdString = workspaceId.toString();
-    await owner.user.newGadget(workspaceIdString, "Internal sharing workspace");
+    await owner.user.newGadget(workspaceIdString, `Internal ${role} sharing workspace`);
     let workspace = env.TEST_OVERSEER.get(workspaceId);
     let ownerSession = await workspace.open(owner.id.toString(), owner.profileId, () => {});
 
     try {
       await authorizeDomainObservation(workspace, TOTANGO_POLICY);
-      await expect(ownerSession.createShareLink("build")).rejects.toThrow(/Gadget-only/);
-      let {key, recipientPolicy} = await ownerSession.createShareLink("use");
+      let {key, recipientPolicy} = await ownerSession.createShareLink(role);
       expect(recipientPolicy).toEqual(TOTANGO_POLICY);
 
       let firstOpen = await workspace.open(
           member.id.toString(), member.profileId, () => {}, key);
-      expect((await firstOpen.getMetadata()).role).toBe("use");
+      expect((await firstOpen.getMetadata()).role).toBe(role);
+      if (role === "build") {
+        await expect(readWorkspaceFiles(firstOpen)).resolves.toEqual({});
+      }
       firstOpen[Symbol.dispose]();
 
       let reopen = await workspace.open(member.id.toString(), member.profileId, () => {});
-      expect((await reopen.getMetadata()).role).toBe("use");
+      expect((await reopen.getMetadata()).role).toBe(role);
       reopen[Symbol.dispose]();
 
       await expectOpenDenied(() => workspace.open(
@@ -1187,18 +1190,19 @@ describe("organization-scoped observation sharing policy", () => {
     }
   });
 
-  it("does not persist an internal-link grant when observer authorization fails", async () => {
-    let owner = await createSsoUser(`observer-owner-${crypto.randomUUID()}@totango.com`);
-    let member = await createSsoUser(`observer-member-${crypto.randomUUID()}@totango.com`);
+  it.each(["use", "build"] as const)(
+      "does not persist an internal %s-link grant when observer authorization fails", async role => {
+    let owner = await createSsoUser(`observer-${role}-owner-${crypto.randomUUID()}@totango.com`);
+    let member = await createSsoUser(`observer-${role}-member-${crypto.randomUUID()}@totango.com`);
     let workspaceId = env.TEST_OVERSEER.newUniqueId();
     let workspaceIdString = workspaceId.toString();
-    await owner.user.newGadget(workspaceIdString, "Observer denial workspace");
+    await owner.user.newGadget(workspaceIdString, `Observer ${role} denial workspace`);
     let workspace = env.TEST_OVERSEER.get(workspaceId);
     let ownerSession = await workspace.open(owner.id.toString(), owner.profileId, () => {});
 
     try {
       await authorizeDomainObservation(workspace, TOTANGO_POLICY);
-      let {key} = await ownerSession.createShareLink("use");
+      let {key} = await ownerSession.createShareLink(role);
       await runInDurableObject(workspace, async (instance: OverseerDurableObject) => {
         const impl = (instance as unknown as {
           impl: { ensureObserver: (...args: unknown[]) => Promise<void> };

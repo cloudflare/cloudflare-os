@@ -4,7 +4,7 @@ import type { GatekeeperUiFrame } from '@gadgets/workshop-shared/gatekeeper'
 import { useAuthenticatedApi } from './AuthContext'
 import SandboxedGatekeeperApp, { type GatekeeperAppDependency } from './SandboxedGatekeeperApp'
 import { reportIssue } from './errorReporting'
-import { compositeSourceApps, useGatekeeperApps } from './useGatekeeperApps'
+import { compositeSourceApps, isFirstPartyWorkItemsShell, useGatekeeperApps } from './useGatekeeperApps'
 import { useSessionsContext } from './components/sessions/SessionsContext'
 import { codingSessionInputForWorkItem, type WorkItemTarget } from './workItemNavigation'
 
@@ -116,7 +116,7 @@ export default function GatekeeperAppPage({
         routeState={routeState}
         setRouteState={setRouteState}
         codingSessionAvailable={sessions.github.state === 'connected'}
-        workItemHandoffs={app?.composition?.kind === 'work-items' && app.composition.role === undefined}
+        workItemHandoffs={isFirstPartyWorkItemsShell(app)}
         onRequestCodingSession={requestCodingSession}
       />
     </div>

@@ -97,10 +97,13 @@ import SITE_CONFIGURATOR_HTML from "./generated/jira-site-configurator-ui.txt";
 import PROJECT_CONFIGURATOR_HTML from "./generated/jira-project-configurator-ui.txt";
 import ISSUE_CONFIGURATOR_HTML from "./generated/jira-issue-configurator-ui.txt";
 import { JiraConfiguratorUI } from "./jira-configurators";
+import type { ConfiguratorOption, JiraConfiguratorRpc, JiraDefaultProject } from "./configurator/jira-configurator-types";
 
 type Env = Cloudflare.Env & { BASE_URL?: string; PUBLIC_BASE_URL?: string; CLIENT_ID?: string; CLIENT_SECRET?: string };
 type StoredNonce = { value: string; expiresAt: number; stage: "initiation" | "oauth"; returnUrl?: string };
 type StoredGrant = Pick<OAuthGrant, "accessToken" | "refreshToken" | "expiresAt">;
+type StoredDefaultProject = { cloudId: string; webBase: string; projectKey: string; projectName: string };
+type StoredOAuthError = { error?: string; error_description?: string };
 type StagedActionState = { state: "pending" | "applying" | "approved" | "rejected" | "failed"; action: StoredAction; createdAt: number; result?: unknown; error?: string };
 type BaseProps = { userObjectId: string; cloudId: string; webBase: string };
 type ProjectProps = BaseProps & { projectKey: string };
@@ -112,7 +115,9 @@ const logger = createLogger<JiraLogFields>({ component: "gatekeeper.jira", vendo
 const NONCE_BYTES = 32;
 const CONNECT_TIMEOUT_MS = 60 * 60 * 1000;
 const NONCE_TTL_MS = 10 * 60 * 1000;
-const TOKEN_REFRESH_SKEW_MS = 60 * 1000;
+const TOKEN_REFRESH_SKEW_MS = 10 * 60 * 1000;
+const REFRESH_RETRY_DELAY_MS = 5 * 60 * 1000;
+const CALLBACK_RETRY_DELAY_MS = 5 * 60 * 1000;
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
 const MAX_COMMENT_CHARS = 20_000;
@@ -136,6 +141,24 @@ const projectUrl = (webBase: string, key: string): string => `${webBase}/project
 const SECURITY_HEADERS = { "content-type": "text/html; charset=utf-8", "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" };
 const htmlResponse = (body: string, status = 200): Response => new Response(body, { status, headers: SECURITY_HEADERS });
 const page = (title: string, message: string): string => `<!doctype html><html><body style="font-family:system-ui,sans-serif;max-width:36rem;margin:4rem auto"><h1>${title}</h1><p>${message}</p></body></html>`;
+
+function tokenRefreshAt(grant: StoredGrant): number {
+  return Math.max(Date.now(), grant.expiresAt - TOKEN_REFRESH_SKEW_MS);
+}
+
+function isSameStoredGrant(a: StoredGrant | undefined, b: StoredGrant): boolean {
+  return a?.accessToken === b.accessToken && a.refreshToken === b.refreshToken && a.expiresAt === b.expiresAt;
+}
+
+function isSameNotificationGeneration(value: unknown, generation: number): boolean {
+  return value === true || value === generation;
+}
+
+function isTerminalRefreshError(error: unknown): boolean {
+  if (!(error instanceof JiraApiError)) return false;
+  const details = error.details as StoredOAuthError | undefined;
+  return details?.error === "invalid_grant" || /(^|:)\s*invalid_grant\b/.test(error.message);
+}
 
 function expectedWorkshopBase(env: Env): URL {
   return new URL(env.PUBLIC_BASE_URL ?? new URL(getBaseUrl(env)).origin);
@@ -196,6 +219,7 @@ const normComment = (comment: RawComment): JiraComment => ({ id: comment.id, aut
 const normAttachment = (attachment: RawAttachment): JiraAttachment => ({ id: attachment.id, filename: attachment.filename, mimeType: attachment.mimeType, size: attachment.size ?? 0, author: normUser(attachment.author), created: attachment.created });
 const normTransition = (transition: RawTransition): JiraTransition => ({ id: transition.id, name: transition.name, to: normStatus(transition.to) });
 const display = (user?: JiraUser | null): string | undefined => user ? user.emailAddress ?? user.displayName ?? user.accountId : undefined;
+const defaultProjectOption = (project: StoredDefaultProject): JiraDefaultProject => ({ value: projectUrl(project.webBase, project.projectKey), title: project.projectName, subtitle: `${project.projectKey} · ${new URL(project.webBase).hostname}` });
 function toWorkItem(issue: JiraIssueDetails | JiraIssueSummary): import("@gadgets/gatekeeper-work-items/types").WorkItemSummary {
   return { source: "jira", id: issue.url, key: issue.key, url: issue.url, title: issue.summary.slice(0, 500), status: issue.status?.name, type: issue.issueType?.name, priority: issue.priority, assignee: display(issue.assignee), requester: "reporter" in issue ? display(issue.reporter) : undefined, updatedAt: issue.updated, projectKey: issue.projectKey, description: "descriptionMarkdown" in issue && issue.descriptionMarkdown ? { body: issue.descriptionMarkdown, format: "markdown", providerFormat: "jira-adf" } : undefined, fields: { projectKey: issue.projectKey, key: issue.key, siteUrl: new URL(issue.url).origin } };
 }
@@ -379,10 +403,13 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 }
 
 export class UserAccount extends DurableObject<Env> {
+  #refreshPromise: Promise<string> | undefined;
+
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, nonce: string, returnUrl?: string): Promise<void> {
-    if (!this.ctx.storage.kv.get<StoredGrant>("grant")) this.ctx.storage.setAlarm(Date.now() + CONNECT_TIMEOUT_MS);
+    if (!this.ctx.storage.kv.get<StoredGrant>("grant")) this.ctx.storage.kv.put("oauthCleanupAt", Date.now() + CONNECT_TIMEOUT_MS);
     this.ctx.storage.kv.put("callback", callback);
     this.ctx.storage.kv.put<StoredNonce>("nonce", { value: nonce, expiresAt: Date.now() + NONCE_TTL_MS, stage: "initiation", returnUrl });
+    await this.#scheduleAlarm();
   }
   async beginOAuthFlow(nonce: string): Promise<{ oauthNonce: string } | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
@@ -399,10 +426,40 @@ export class UserAccount extends DurableObject<Env> {
     const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
     if (!callback) throw new Error("Authorization callback expired.");
     const grant = await exchangeAuthCode(code, this.env.CLIENT_ID, this.env.CLIENT_SECRET, `${getBaseUrl(this.env)}/oauth`);
+    const generation = this.#nextGrantGeneration();
     this.ctx.storage.kv.put<StoredGrant>("grant", grant);
+    this.ctx.storage.kv.delete("credentialsExpiredNotified");
+    this.ctx.storage.kv.delete("credentialsExpiredPending");
+    this.ctx.storage.kv.delete("credentialsExpiredGeneration");
+    this.ctx.storage.kv.delete("oauthCleanupAt");
+    this.ctx.storage.kv.delete("refreshRetryAt");
+    this.ctx.storage.kv.delete("refreshRestoredNotified");
+    this.ctx.storage.kv.delete("refreshRestoredPending");
+    this.ctx.storage.kv.delete("refreshRestoredGeneration");
+    this.ctx.storage.kv.delete("callbackRetryAt");
     await this.refreshSitesAndIdentity(grant.accessToken);
-    if (this.ctx.storage.kv.get<boolean>("reconnecting")) { this.ctx.storage.kv.delete("reconnecting"); await callback.credentialsRestored(new Date(grant.expiresAt)); }
-    else await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props: { userObjectId: this.ctx.id.toString() } }), new Date(grant.expiresAt));
+    await this.#scheduleAlarm();
+    const expiresAt = grant.refreshToken ? undefined : new Date(grant.expiresAt);
+    if (this.ctx.storage.kv.get<boolean>("reconnecting")) {
+      this.ctx.storage.kv.delete("reconnecting");
+      this.ctx.storage.kv.put("refreshRestoredPending", true);
+      this.ctx.storage.kv.put("refreshRestoredGeneration", generation);
+      await this.#notifyRefreshRestoredOnce(expiresAt);
+    } else {
+      try {
+        await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props: { userObjectId: this.ctx.id.toString() } }), expiresAt);
+        this.ctx.storage.kv.put("refreshRestoredNotified", generation);
+      } catch (error) {
+        this.ctx.storage.kv.delete("grant");
+        this.ctx.storage.kv.delete("sites");
+        this.ctx.storage.kv.delete("identity");
+        this.ctx.storage.kv.delete("refreshRestoredNotified");
+        this.ctx.storage.kv.delete("refreshRestoredGeneration");
+        this.ctx.storage.kv.put("oauthCleanupAt", Date.now() + CONNECT_TIMEOUT_MS);
+        await this.#scheduleAlarm();
+        throw error;
+      }
+    }
     return { returnUrl: stored.returnUrl };
   }
   async refreshSitesAndIdentity(token: string): Promise<void> {
@@ -413,19 +470,151 @@ export class UserAccount extends DurableObject<Env> {
     const grant = this.ctx.storage.kv.get<StoredGrant>("grant");
     if (!grant) throw new JiraApiError(401, "No Jira credentials set.");
     if (Date.now() < grant.expiresAt - TOKEN_REFRESH_SKEW_MS) return grant.accessToken;
-    if (!grant.refreshToken || !this.env.CLIENT_ID || !this.env.CLIENT_SECRET) throw new JiraApiError(401, "Jira credentials must be reconnected.");
+    const retryAt = this.ctx.storage.kv.get<number>("refreshRetryAt");
+    if (retryAt !== undefined && Date.now() < retryAt && Date.now() < grant.expiresAt) return grant.accessToken;
+    return this.#refreshPromise ??= this.#refreshAccessToken().finally(() => { this.#refreshPromise = undefined; });
+  }
+  async #refreshAccessToken(): Promise<string> {
+    const grant = this.ctx.storage.kv.get<StoredGrant>("grant");
+    if (!grant) throw new JiraApiError(401, "No Jira credentials set.");
+    if (Date.now() < grant.expiresAt - TOKEN_REFRESH_SKEW_MS) return grant.accessToken;
+    if (!grant.refreshToken || !this.env.CLIENT_ID || !this.env.CLIENT_SECRET) {
+      if (!grant.refreshToken) await this.#markCredentialsExpired();
+      throw new JiraApiError(401, "Jira credentials must be reconnected.");
+    }
     try {
       const next = await refreshAccessToken(grant.refreshToken, this.env.CLIENT_ID, this.env.CLIENT_SECRET);
+      const current = this.ctx.storage.kv.get<StoredGrant>("grant");
+      if (!isSameStoredGrant(current, grant)) return current?.accessToken ?? next.accessToken;
       this.ctx.storage.kv.put<StoredGrant>("grant", next);
-      this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback")?.credentialsRestored(new Date(next.expiresAt)).catch(() => {});
+      this.ctx.storage.kv.delete("credentialsExpiredNotified");
+      this.ctx.storage.kv.delete("refreshRetryAt");
+      await this.#scheduleAlarm();
+      const generation = this.ctx.storage.kv.get<number>("grantGeneration") ?? 0;
+      if (!isSameNotificationGeneration(this.ctx.storage.kv.get("refreshRestoredNotified"), generation)) {
+        this.ctx.storage.kv.put("refreshRestoredPending", true);
+        this.ctx.storage.kv.put("refreshRestoredGeneration", generation);
+        await this.#notifyRefreshRestoredOnce();
+      } else {
+        this.ctx.storage.kv.delete("refreshRestoredPending");
+        this.ctx.storage.kv.delete("refreshRestoredGeneration");
+      }
       return next.accessToken;
-    } catch (err) { this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback")?.credentialsExpired().catch(() => {}); throw err; }
+    } catch (err) {
+      const current = this.ctx.storage.kv.get<StoredGrant>("grant");
+      if (!isSameStoredGrant(current, grant)) return current?.accessToken ?? Promise.reject(err);
+      if (isTerminalRefreshError(err)) await this.#markCredentialsExpired();
+      else { this.ctx.storage.kv.put("refreshRetryAt", Date.now() + REFRESH_RETRY_DELAY_MS); await this.#scheduleAlarm(); }
+      if (!isTerminalRefreshError(err) && Date.now() < grant.expiresAt) return grant.accessToken;
+      throw err;
+    }
   }
   async getSites(): Promise<AccessibleResource[]> { return this.ctx.storage.kv.get<AccessibleResource[]>("sites") ?? []; }
   async getIdentity(): Promise<AtlassianIdentity | null> { return this.ctx.storage.kv.get<AtlassianIdentity>("identity") ?? null; }
-  async prepareReconnect(nonce: string, returnUrl?: string): Promise<void> { this.ctx.storage.kv.put("reconnecting", true); this.ctx.storage.kv.put<StoredNonce>("nonce", { value: nonce, expiresAt: Date.now() + NONCE_TTL_MS, stage: "initiation", returnUrl }); }
-  async alarm(): Promise<void> { if (!this.ctx.storage.kv.get<StoredGrant>("grant")) this.ctx.storage.deleteAll(); }
+  async getDefaultProject(): Promise<StoredDefaultProject | null> {
+    const stored = this.ctx.storage.kv.get<StoredDefaultProject>("defaultProject") ?? null;
+    if (!stored) return null;
+    return (await this.getSites()).some(site => site.id === stored.cloudId && site.url === stored.webBase) ? stored : null;
+  }
+  async setDefaultProject(projectUrlInput: string | null): Promise<StoredDefaultProject | null> {
+    if (projectUrlInput === null) {
+      this.ctx.storage.kv.delete("defaultProject");
+      return null;
+    }
+    const classified = classifyJiraUrl(projectUrlInput);
+    if (classified.kind !== "project") throw new JiraApiError(400, "Default Jira project must be a project URL.");
+    const site = (await this.getSites()).find(s => new URL(s.url).hostname === classified.host);
+    if (!site) throw new JiraApiError(403, `Default Jira project must belong to a granted Jira site: ${classified.host}.`);
+    const api = new JiraApi({ cloudId: site.id, webBase: site.url, getToken: () => this.getAccessToken() });
+    const project = await api.getProject(classified.projectKey);
+    if (project.key !== classified.projectKey) throw new JiraApiError(400, "Jira returned a different project than requested.");
+    const stored: StoredDefaultProject = { cloudId: site.id, webBase: site.url, projectKey: project.key, projectName: project.name };
+    this.ctx.storage.kv.put<StoredDefaultProject>("defaultProject", stored);
+    return stored;
+  }
+  async prepareReconnect(nonce: string, returnUrl?: string): Promise<void> { this.ctx.storage.kv.put("reconnecting", true); this.ctx.storage.kv.put("oauthCleanupAt", Date.now() + CONNECT_TIMEOUT_MS); this.ctx.storage.kv.put<StoredNonce>("nonce", { value: nonce, expiresAt: Date.now() + NONCE_TTL_MS, stage: "initiation", returnUrl }); await this.#scheduleAlarm(); }
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    const cleanupAt = this.ctx.storage.kv.get<number>("oauthCleanupAt");
+    if (cleanupAt !== undefined && now >= cleanupAt) {
+      if (!this.ctx.storage.kv.get<StoredGrant>("grant")) { this.ctx.storage.deleteAll(); return; }
+      this.ctx.storage.kv.delete("nonce");
+      this.ctx.storage.kv.delete("reconnecting");
+      this.ctx.storage.kv.delete("oauthCleanupAt");
+    }
+    const grant = this.ctx.storage.kv.get<StoredGrant>("grant");
+    if (grant && now >= tokenRefreshAt(grant)) {
+      try { await this.getAccessToken(); }
+      catch (error) {
+        if (isTerminalRefreshError(error)) return;
+        logger.warn("failed to proactively refresh Jira credentials", { event: "oauth.refresh.proactive.failed", error });
+      }
+    }
+    if (this.ctx.storage.kv.get<boolean>("credentialsExpiredPending")) await this.#notifyCredentialsExpired();
+    if (this.ctx.storage.kv.get<boolean>("refreshRestoredPending")) await this.#notifyRefreshRestoredOnce();
+    await this.#scheduleAlarm();
+  }
   async revoke(): Promise<void> { this.ctx.storage.deleteAlarm(); this.ctx.storage.deleteAll(); }
+  async #markCredentialsExpired(): Promise<void> {
+    const generation = this.ctx.storage.kv.get<number>("grantGeneration") ?? 0;
+    this.ctx.storage.kv.delete("grant");
+    this.ctx.storage.kv.delete("sites");
+    this.ctx.storage.kv.delete("refreshRetryAt");
+    this.ctx.storage.kv.delete("refreshRestoredNotified");
+    this.ctx.storage.kv.delete("refreshRestoredPending");
+    this.ctx.storage.kv.delete("refreshRestoredGeneration");
+    this.ctx.storage.kv.put("credentialsExpiredPending", true);
+    this.ctx.storage.kv.put("credentialsExpiredGeneration", generation);
+    await this.#notifyCredentialsExpired();
+    await this.#scheduleAlarm();
+  }
+  async #notifyCredentialsExpired(): Promise<void> {
+    const generation = this.ctx.storage.kv.get<number>("credentialsExpiredGeneration") ?? 0;
+    if (isSameNotificationGeneration(this.ctx.storage.kv.get("credentialsExpiredNotified"), generation)) { this.ctx.storage.kv.delete("credentialsExpiredPending"); return; }
+    const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
+    if (!callback) return;
+    try {
+      await callback.credentialsExpired();
+      if (this.ctx.storage.kv.get<number>("credentialsExpiredGeneration") === generation && this.ctx.storage.kv.get<boolean>("credentialsExpiredPending")) {
+        this.ctx.storage.kv.put("credentialsExpiredNotified", generation);
+        this.ctx.storage.kv.delete("credentialsExpiredPending");
+        this.ctx.storage.kv.delete("callbackRetryAt");
+      }
+    } catch {
+      if (this.ctx.storage.kv.get<number>("credentialsExpiredGeneration") === generation && this.ctx.storage.kv.get<boolean>("credentialsExpiredPending")) this.ctx.storage.kv.put("callbackRetryAt", Date.now() + CALLBACK_RETRY_DELAY_MS);
+    }
+  }
+  async #notifyRefreshRestoredOnce(expiresAt?: Date): Promise<void> {
+    const generation = this.ctx.storage.kv.get<number>("refreshRestoredGeneration") ?? (this.ctx.storage.kv.get<number>("grantGeneration") ?? 0);
+    if (isSameNotificationGeneration(this.ctx.storage.kv.get("refreshRestoredNotified"), generation)) { this.ctx.storage.kv.delete("refreshRestoredPending"); return; }
+    const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
+    if (!callback) return;
+    try {
+      await callback.credentialsRestored(expiresAt);
+      if ((this.ctx.storage.kv.get<number>("refreshRestoredGeneration") ?? generation) === generation && this.ctx.storage.kv.get<boolean>("refreshRestoredPending")) {
+        this.ctx.storage.kv.put("refreshRestoredNotified", generation);
+        this.ctx.storage.kv.delete("refreshRestoredPending");
+        this.ctx.storage.kv.delete("callbackRetryAt");
+      }
+    } catch {
+      if ((this.ctx.storage.kv.get<number>("refreshRestoredGeneration") ?? generation) === generation && this.ctx.storage.kv.get<boolean>("refreshRestoredPending")) this.ctx.storage.kv.put("callbackRetryAt", Date.now() + CALLBACK_RETRY_DELAY_MS);
+    }
+  }
+  #nextGrantGeneration(): number {
+    const next = (this.ctx.storage.kv.get<number>("grantGeneration") ?? 0) + 1;
+    this.ctx.storage.kv.put("grantGeneration", next);
+    return next;
+  }
+  async #scheduleAlarm(): Promise<void> {
+    const candidates = [this.ctx.storage.kv.get<number>("oauthCleanupAt")];
+    if (this.ctx.storage.kv.get<boolean>("credentialsExpiredPending") || this.ctx.storage.kv.get<boolean>("refreshRestoredPending")) candidates.push(this.ctx.storage.kv.get<number>("callbackRetryAt") ?? Date.now() + CALLBACK_RETRY_DELAY_MS);
+    const grant = this.ctx.storage.kv.get<StoredGrant>("grant");
+    if (grant?.refreshToken && this.env.CLIENT_ID && this.env.CLIENT_SECRET) candidates.push(this.ctx.storage.kv.get<number>("refreshRetryAt") ?? tokenRefreshAt(grant));
+    const next = candidates.filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+      .reduce<number | undefined>((earliest, value) => earliest === undefined || value < earliest ? value : earliest, undefined);
+    if (next === undefined) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(next);
+  }
 }
 
 @validateRpc()
@@ -445,7 +634,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, { userObjectId: st
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> { return this.ctx.exports.JiraVerifier({ props: { userObjectId: this.ctx.props.userObjectId } }); }
   async startAppUi(): Promise<ResourceConfiguratorFrame> { return { iframeHtml: SITE_CONFIGURATOR_HTML, ui: new RpcStub(new JiraWorkItemsManagementUI(this.#account())) }; }
   async startResourceConfigurator(pattern: string): Promise<ResourceConfiguratorFrame> {
-    const ui = new JiraConfiguratorUI(() => this.#account().getSites(), () => this.#account().getAccessToken());
+    const ui = new JiraConfiguratorUI(() => this.#account().getSites(), () => this.#account().getAccessToken(), { getDefaultProject: async () => { const project = await this.#account().getDefaultProject(); return project ? defaultProjectOption(project) : null; }, setDefaultProject: async (url) => { const project = await this.#account().setDefaultProject(url); return project ? defaultProjectOption(project) : null; } });
     if (pattern === PROJECT_RESOURCE.urlPattern) return { iframeHtml: PROJECT_CONFIGURATOR_HTML, ui: new RpcStub(ui) };
     if (pattern === ISSUE_RESOURCE.urlPattern) return { iframeHtml: ISSUE_CONFIGURATOR_HTML, ui: new RpcStub(ui) };
     return { iframeHtml: SITE_CONFIGURATOR_HTML, ui: new RpcStub(ui) };
@@ -462,11 +651,16 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, { userObjectId: st
 
 export interface JiraVerifierApi extends GatekeeperUserVerifier { hasProjectAccess(host: string, projectKey: string): Promise<boolean>; hasIssueAccess(host: string, issueKey: string): Promise<boolean>; }
 
-type JiraAccountApi = Pick<UserAccount, "getSites" | "getAccessToken" | "getIdentity">;
+type JiraAccountApi = Pick<UserAccount, "getSites" | "getAccessToken" | "getIdentity" | "getDefaultProject" | "setDefaultProject">;
 
 @validateRpc()
-export class JiraWorkItemsManagementUI extends RpcTarget implements WorkItemsManagementApi {
+export class JiraWorkItemsManagementUI extends RpcTarget implements WorkItemsManagementApi, JiraConfiguratorRpc {
   constructor(readonly account: JiraAccountApi) { super(); }
+  async listSites(query: string): Promise<ConfiguratorOption[]> { return new JiraConfiguratorUI(() => this.account.getSites(), () => this.account.getAccessToken()).listSites(query); }
+  async listProjects(query: string): Promise<ConfiguratorOption[]> { return new JiraConfiguratorUI(() => this.account.getSites(), () => this.account.getAccessToken()).listProjects(query); }
+  async listIssues(query: string): Promise<ConfiguratorOption[]> { return new JiraConfiguratorUI(() => this.account.getSites(), () => this.account.getAccessToken()).listIssues(query); }
+  async getDefaultProject(): Promise<JiraDefaultProject> { const project = await this.account.getDefaultProject(); return project ? defaultProjectOption(project) : null; }
+  async setDefaultProject(projectUrlInput: string | null): Promise<JiraDefaultProject> { const project = await this.account.setDefaultProject(projectUrlInput); return project ? defaultProjectOption(project) : null; }
   async #apiForRef(ref: WorkItemProviderRef): Promise<{ api: JiraApi; site: AccessibleResource; issue: string }> {
     const sites = await this.account.getSites();
     const refUrl = ref.id.startsWith("http") ? ref.id : (ref as WorkItemProviderRef & { url?: string }).url;
@@ -535,13 +729,14 @@ export class JiraWorkItemUI extends RpcTarget implements WorkItemManagementApi {
 export const JIRA_CODING_TOOLS: McpToolInfo[] = [
   { name: "jira_search", title: "Search Jira", description: "Search Jira issues with bounded text query.", mode: "read", classifiedBy: "server-annotation", inputSchema: { type: "object", additionalProperties: false, properties: { query: { type: "string", maxLength: 500 }, limit: { type: "integer", minimum: 1, maximum: 20 } } } },
   { name: "jira_read_issue", title: "Read Jira issue", description: "Read one Jira issue by key.", mode: "read", classifiedBy: "server-annotation", inputSchema: { type: "object", additionalProperties: false, required: ["issue"], properties: { issue: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9]+-[0-9]+$" } } } },
-  { name: "jira_create_issue", title: "Create Jira issue", description: "Stage creation of one Jira issue.", mode: "action", classifiedBy: "default", inputSchema: { type: "object", additionalProperties: false, required: ["projectKey", "issueType", "summary"], properties: { projectKey: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9_]{1,31}$" }, issueType: { type: "string", minLength: 1, maxLength: 80 }, summary: { type: "string", minLength: 1, maxLength: 500 }, descriptionMarkdown: { type: "string", maxLength: 20000 } } } },
+  { name: "jira_create_issue", title: "Create Jira issue", description: "Stage creation of one Jira issue. projectKey may be omitted when this connection has a default Jira project.", mode: "action", classifiedBy: "default", inputSchema: { type: "object", additionalProperties: false, required: ["issueType", "summary"], properties: { projectKey: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9_]{1,31}$" }, issueType: { type: "string", minLength: 1, maxLength: 80 }, summary: { type: "string", minLength: 1, maxLength: 500 }, descriptionMarkdown: { type: "string", maxLength: 20000 } } } },
   { name: "jira_add_comment", title: "Add Jira comment", description: "Stage a Jira issue comment and return a pending action id.", mode: "action", classifiedBy: "default", inputSchema: { type: "object", additionalProperties: false, required: ["issue", "body"], properties: { issue: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9]+-[0-9]+$" }, body: { type: "string", minLength: 1, maxLength: MAX_COMMENT_CHARS } } } },
   { name: "jira_update_issue", title: "Update Jira issue", description: "Stage allowlisted Jira issue field updates.", mode: "action", classifiedBy: "default", inputSchema: { type: "object", additionalProperties: false, required: ["issue", "fields"], properties: { issue: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9]+-[0-9]+$" }, fields: { type: "object", additionalProperties: false, properties: { summary: { type: "string", maxLength: 500 }, descriptionMarkdown: { anyOf: [{ type: "string", maxLength: 20000 }, { type: "null" }] }, assigneeAccountId: { anyOf: [{ type: "string", maxLength: 128 }, { type: "null" }] }, labels: { type: "array", maxItems: 20, items: { type: "string", maxLength: 80 } }, components: { type: "array", maxItems: 20, items: { type: "string", maxLength: 80 } }, priority: { anyOf: [{ type: "string", maxLength: 80 }, { type: "null" }] }, dueDate: { anyOf: [{ type: "string", pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }, { type: "null" }] } } } } } },
   { name: "jira_transition_issue", title: "Transition Jira issue", description: "Stage a Jira workflow transition by transition ID.", mode: "action", classifiedBy: "default", inputSchema: { type: "object", additionalProperties: false, required: ["issue", "transitionId"], properties: { issue: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9]+-[0-9]+$" }, transitionId: { type: "string", pattern: "^[0-9]+$" } } } },
 ];
 
 type CodingToolScope = { projectKey?: string; issueKey?: string };
+type CodingToolDefaults = { projectKey?: string };
 
 async function assertIssueInScope(api: JiraApi, issue: string, scope: CodingToolScope): Promise<RawIssue> {
   const raw = await api.getIssue(issue);
@@ -550,12 +745,12 @@ async function assertIssueInScope(api: JiraApi, issue: string, scope: CodingTool
   return raw;
 }
 
-async function callCodingTool(stager: ActionStager, api: JiraApi, queue: RpcStub<ApprovalQueue>, webBase: string, scope: CodingToolScope, name: string, args: Record<string, unknown>): Promise<McpCallResult> {
+async function callCodingTool(stager: ActionStager, api: JiraApi, queue: RpcStub<ApprovalQueue>, webBase: string, scope: CodingToolScope, name: string, args: Record<string, unknown>, defaults?: CodingToolDefaults): Promise<McpCallResult> {
   if (name === "jira_search") { const query = typeof args.query === "string" ? args.query.slice(0, 500) : ""; const limit = parseToolLimit(args.limit); const jql = scopedJql(scope.projectKey, { text: query || undefined, jql: scope.issueKey ? `issuekey = ${jqlLiteral(normalizeJiraIssueKey(scope.issueKey))}` : undefined }); const page = await api.searchIssues(jql, 0, limit); const items = page.issues.map(i => toWorkItem(normIssueDetails(webBase, i))); await queue.authorizeObservation({ title: "Coding session Jira search", description: `Returned ${items.length} Jira issues to a coding session.`, prohibitAllSharing: true }); return okResult({ items }); }
   if (name === "jira_read_issue") { const issue = parseIssueKeyOrId(String(args.issue ?? "")); const item = toWorkItem(normIssueDetails(webBase, await assertIssueInScope(api, issue, scope))); await queue.authorizeObservation({ title: "Coding session Jira issue read", description: `Read Jira issue ${item.key ?? issue} for a coding session.` }); return okResult(item); }
   const issue = "issue" in args ? parseIssueKeyOrId(String(args.issue ?? "")) : undefined;
   let action: StoredAction | undefined;
-  if (name === "jira_create_issue") { if (scope.issueKey) throw new Error("Issue-scoped Jira bindings cannot create issues."); const projectKey = normalizeJiraProjectKey(scope.projectKey ?? parseToolString(args, "projectKey", /^[A-Za-z][A-Za-z0-9_]{1,31}$/, 32)); action = { kind: "create", fields: issueFields({ projectKey, issueType: parseToolString(args, "issueType", undefined, 80), summary: parseToolString(args, "summary", undefined, 500), descriptionMarkdown: typeof args.descriptionMarkdown === "string" ? args.descriptionMarkdown : undefined }, projectKey) }; }
+  if (name === "jira_create_issue") { if (scope.issueKey) throw new Error("Issue-scoped Jira bindings cannot create issues."); const projectKey = normalizeJiraProjectKey(scope.projectKey ?? (typeof args.projectKey === "string" && args.projectKey.trim() ? parseToolString(args, "projectKey", /^[A-Za-z][A-Za-z0-9_]{1,31}$/, 32) : defaults?.projectKey ?? "")); action = { kind: "create", fields: issueFields({ projectKey, issueType: parseToolString(args, "issueType", undefined, 80), summary: parseToolString(args, "summary", undefined, 500), descriptionMarkdown: typeof args.descriptionMarkdown === "string" ? args.descriptionMarkdown : undefined }, projectKey) }; }
   else if (name === "jira_add_comment" && issue) { await assertIssueInScope(api, issue, scope); action = { kind: "comment", issue, markdown: validateComment(parseToolString(args, "body", undefined, MAX_COMMENT_CHARS)) }; }
   else if (name === "jira_update_issue" && issue) { await assertIssueInScope(api, issue, scope); action = { kind: "update", issue, fields: updateFields(parseToolPatch(args)) }; }
   else if (name === "jira_transition_issue" && issue) { await assertIssueInScope(api, issue, scope); action = { kind: "transition", issue, body: { transition: { id: parseToolString(args, "transitionId", /^[0-9]+$/, 30) } } }; }
@@ -585,6 +780,10 @@ type ActionStager = {
 abstract class BaseGatekeeper<Session, Props extends BaseProps = BaseProps> extends DurableObject<Env, Props> implements Gatekeeper<Session> {
   #api(): JiraApi { return new JiraApi({ cloudId: this.ctx.props.cloudId, webBase: this.ctx.props.webBase, getToken: () => this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId)).getAccessToken() }); }
   protected api(): JiraApi { return this.#api(); }
+  protected async defaultProjectForThisSite(): Promise<CodingToolDefaults> {
+    const project = await this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId)).getDefaultProject();
+    return project?.cloudId === this.ctx.props.cloudId && project.webBase === this.ctx.props.webBase ? { projectKey: project.projectKey } : {};
+  }
   async getTypeScriptTypes(): Promise<string> { return TYPES_CODE; }
   async getAutoApprovableActions(): Promise<{ tag: string; label: string }[]> { return [{ tag: "jira.comment", label: "Add Jira comment" }]; }
   async startSession(queue: RpcStub<ApprovalQueue>): Promise<Session> { return this.makeSession(queue.dup()); }
@@ -645,7 +844,7 @@ abstract class BaseGatekeeper<Session, Props extends BaseProps = BaseProps> exte
 @validateRpc()
 export class JiraSiteGatekeeperImpl extends BaseGatekeeper<JiraSite, BaseProps> {
   async describe(): Promise<ResourceDescription> { return { url: this.ctx.props.webBase, title: new URL(this.ctx.props.webBase).hostname, snippet: "Jira site", suggestedBindingName: "JIRA_SITE", tsType: "JiraSite" }; }
-  protected makeSession(queue: RpcStub<ApprovalQueue>): JiraSite { return new JiraSiteSession(this, this.api(), queue, this.ctx.props.webBase); }
+  protected makeSession(queue: RpcStub<ApprovalQueue>): JiraSite { return new JiraSiteSession(this, this.api(), queue, this.ctx.props.webBase, () => this.defaultProjectForThisSite()); }
   async addObserver(): Promise<void> { throw new Error("Jira site bindings are private-only; connect a project or issue to share observations."); }
   async getAgentCatalog(authorizer: RpcStub<ObservationAuthorizer>) { await this.observe(authorizer, "Inspect Jira site catalog", "Listed connected Jira site resource metadata.", true); return boundAgentCatalog([{ id: this.ctx.props.webBase, title: new URL(this.ctx.props.webBase).hostname, description: "Jira Cloud site available through this private binding." }]); }
 }
@@ -673,16 +872,16 @@ export class JiraIssueGatekeeperImpl extends BaseGatekeeper<JiraIssue, IssueProp
 }
 
 class JiraSiteSession extends RpcTarget implements JiraSite {
-  constructor(readonly owner: BaseGatekeeper<JiraSite, BaseProps>, readonly api: JiraApi, readonly queue: RpcStub<ApprovalQueue>, readonly webBase: string) { super(); }
+  constructor(readonly owner: BaseGatekeeper<JiraSite, BaseProps>, readonly api: JiraApi, readonly queue: RpcStub<ApprovalQueue>, readonly webBase: string, readonly defaults: () => Promise<CodingToolDefaults>) { super(); }
   async getMetadata(): Promise<JiraSiteMetadata> { await this.queue.authorizeObservation({ title: "Read Jira site metadata", description: `Read metadata for ${this.webBase}`, prohibitAllSharing: true }); return { cloudId: this.api.options.cloudId, name: new URL(this.webBase).hostname, url: this.webBase }; }
   async listProjects(options?: JiraPageOptions): Promise<Cursor<JiraProjectSummary>> { return new JiraCursor(clampPageSize(options?.maxResults), async (start, max) => { const page = await this.api.listProjects(start, max); const rows = (page.values ?? []).map(p => normProject(this.webBase, p)); await this.queue.authorizeObservation({ title: "List Jira projects", description: `Listed ${rows.length} Jira projects on ${this.webBase}.`, prohibitAllSharing: true }); return rows; }); }
   async getProject(id: string): Promise<JiraProject> { const p = await this.api.getProject(parseProjectKeyOrId(id)); await this.queue.authorizeObservation({ title: "Open Jira project", description: `Opened Jira project ${p.key}.`, prohibitAllSharing: true }); return new JiraProjectSession(this.owner, this.api, this.queue.dup(), this.webBase, p.key); }
   async searchIssues(options: JiraIssueSearchOptions): Promise<Cursor<JiraIssueSummary>> { return issueSearchCursor(this.api, this.queue, this.webBase, undefined, options, true); }
   async getIssue(id: string): Promise<JiraIssue> { const issue = await this.api.getIssue(parseIssueKeyOrId(id)); await this.queue.authorizeObservation({ title: "Open Jira issue", description: `Opened Jira issue ${issue.key}.`, prohibitAllSharing: true }); return new JiraIssueSession(this.owner, this.api, this.queue.dup(), this.webBase, issue.key); }
-  async createIssue(options: JiraCreateIssueOptions): Promise<JiraIssue> { if (!options.projectKey) throw new Error("projectKey is required on a JiraSite session."); const fields = issueFields(options, options.projectKey); await this.owner.stageAction(this.queue, { kind: "create", fields }, `Create Jira issue ${options.summary}`, `Create a ${options.issueType} in ${options.projectKey}: ${options.summary}`); return new JiraIssueSession(this.owner, this.api, this.queue.dup(), this.webBase, `${options.projectKey}-PENDING`); }
+  async createIssue(options: JiraCreateIssueOptions): Promise<JiraIssue> { const projectKey = options.projectKey ?? (await this.defaults()).projectKey; if (!projectKey) throw new Error("projectKey is required on a JiraSite session unless a default Jira project is configured."); const fields = issueFields(options, projectKey); await this.owner.stageAction(this.queue, { kind: "create", fields }, `Create Jira issue ${options.summary}`, `Create a ${options.issueType} in ${projectKey}: ${options.summary}`); return new JiraIssueSession(this.owner, this.api, this.queue.dup(), this.webBase, `${projectKey}-PENDING`); }
   async findUsers(query: string): Promise<JiraUser[]> { const users = (await this.api.assignableUsers(undefined, query)).map(normUser).filter(Boolean) as JiraUser[]; await this.queue.authorizeObservation({ title: "Find Jira users", description: `Found ${users.length} Jira users matching a query.`, prohibitAllSharing: true }); return users; }
   async listTools(): Promise<McpToolInfo[]> { return JIRA_CODING_TOOLS; }
-  async callTool(name: string, args?: Record<string, unknown>): Promise<McpCallResult> { return callCodingTool(this.owner, this.api, this.queue, this.webBase, {}, name, args ?? {}); }
+  async callTool(name: string, args?: Record<string, unknown>): Promise<McpCallResult> { return callCodingTool(this.owner, this.api, this.queue, this.webBase, {}, name, args ?? {}, await this.defaults()); }
   getCodingSessionActionResult(actionId: number): Promise<McpCallResult> { return this.owner.getCodingSessionActionResult(actionId); }
   getActionResult(actionId: number): Promise<McpCallResult> { return this.getCodingSessionActionResult(actionId); }
   [Symbol.dispose](): void { this.queue[Symbol.dispose](); }

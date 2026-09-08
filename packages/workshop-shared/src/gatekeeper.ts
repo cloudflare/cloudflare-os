@@ -361,6 +361,7 @@ export function matchesResourceUrlPattern(pattern: string, url: string): boolean
   });
 }
 
+/** Result of resolving an optional agent-supplied resource URL to a supported resource type. */
 export type ResolveRequestedResourceResult =
   | { ok: true; resource: SupportedResource }
   | { ok: false; reason: string };

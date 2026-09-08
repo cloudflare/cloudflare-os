@@ -589,25 +589,16 @@ describe("createShareLink", () => {
     expect(linkId).toBe(records[0].id);
   });
 
-  it("persists an internal recipient policy", async () => {
+  it.each(["use", "build"] as const)("persists an internal recipient policy for %s links", async role => {
     let { mgr } = makeManager();
     let created = await mgr.createShareLink({
       caller: owner,
-      role: "use",
+      role,
       recipientPolicy: TOTANGO_POLICY,
     });
     expect(created.recipientPolicy).toEqual(TOTANGO_POLICY);
     expect(mgr.listShareLinkRecords()[0].recipientPolicy).toEqual(TOTANGO_POLICY);
-  });
-
-  it("rejects build access for an internal link", async () => {
-    let { storage, mgr } = makeManager();
-    await expect(mgr.createShareLink({
-      caller: owner,
-      role: "build",
-      recipientPolicy: TOTANGO_POLICY,
-    })).rejects.toThrow(/Gadget-only/);
-    expect([...storage.shareKeys.list()]).toEqual([]);
+    expect(mgr.listShareLinkRecords()[0].role).toBe(role);
   });
 
   it("forbids creating a link with a higher role than the caller's own", async () => {
@@ -683,10 +674,11 @@ describe("newShareLinkKey", () => {
     expect(storage.collaborators.get("a")).toBeUndefined();
   });
 
-  it("copies only links compatible with the required policy and preserves that policy", async () => {
+  it.each(["use", "build"] as const)(
+      "copies only %s links compatible with the required policy and preserves that policy", async role => {
     let { storage, mgr } = makeManager();
     seedLink(storage, "public", OWNER);
-    seedLink(storage, "internal", OWNER, "build", TOTANGO_POLICY);
+    seedLink(storage, "internal", OWNER, role, TOTANGO_POLICY);
     seedLink(storage, "other", OWNER, "build", EXAMPLE_POLICY);
 
     await expect(mgr.newShareLinkKey({

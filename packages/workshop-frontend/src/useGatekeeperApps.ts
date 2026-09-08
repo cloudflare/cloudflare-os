@@ -16,12 +16,20 @@ export function navigableGatekeeperApps(apps: GatekeeperAppInfo[]): GatekeeperAp
 }
 
 /** Selects explicitly declared embedded sources for one composite app, failing closed on bad metadata. */
+export function isFirstPartyWorkItemsShell(app: GatekeeperAppInfo | undefined): app is GatekeeperAppInfo {
+  return app?.vendorId === 'work-items'
+    && app.composition?.kind === 'work-items'
+    && app.composition.role === undefined
+    && app.composition.embeddedOnly !== true
+}
+
 export function compositeSourceApps(
   shell: GatekeeperAppInfo,
   apps: GatekeeperAppInfo[],
 ): GatekeeperAppInfo[] {
   const kind = shell.composition?.kind
   if (typeof kind !== 'string' || kind.length === 0
+      || kind === 'work-items' && !isFirstPartyWorkItemsShell(shell)
       || shell.composition?.role !== undefined || shell.composition?.embeddedOnly === true) {
     return []
   }

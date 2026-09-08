@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { GatekeeperAppInfo } from '@gadgets/workshop-shared/api'
-import { compositeSourceApps, navigableGatekeeperApps } from './useGatekeeperApps'
+import { compositeSourceApps, isFirstPartyWorkItemsShell, navigableGatekeeperApps } from './useGatekeeperApps'
 
 describe('navigableGatekeeperApps', () => {
   it('hides embedded composite sources but preserves shells and ordinary apps', () => {
@@ -39,6 +39,20 @@ describe('compositeSourceApps', () => {
     }
 
     expect(compositeSourceApps(shell, [shell, matching, visibleRole, otherKind])).toEqual([matching])
+  })
+
+  it('does not expose Work Items sources to an impostor shell from another vendor', () => {
+    const impostorShell: GatekeeperAppInfo = {
+      id: 'impostor', vendorId: 'context', title: 'Impostor', composition: {kind: 'work-items'},
+    }
+    const jira: GatekeeperAppInfo = {
+      id: 'jira-app', vendorId: 'jira', title: 'Jira', composition: {
+        kind: 'work-items', role: 'jira', embeddedOnly: true,
+      },
+    }
+
+    expect(isFirstPartyWorkItemsShell(impostorShell)).toBe(false)
+    expect(compositeSourceApps(impostorShell, [impostorShell, jira])).toEqual([])
   })
 
   it('pins Work Items source roles to matching vendor ids before exposing capabilities', () => {

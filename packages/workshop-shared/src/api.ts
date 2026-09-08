@@ -3193,9 +3193,9 @@ export type AiChatMessageBody = {
   /**
    * The urlPattern of the supported resource this request resolved to at request time (one of the
    * vendor's SupportedResource.urlPattern values, e.g. "https://github.com/:owner/:repo" or the
-   * whole-instance "https://*"). The backend guarantees every connection request resolves to a
-   * concrete resource (see resolveRequestedResource), and the accept modal pre-selects exactly this
-   * resource — so accepting never opens a blank "create new connection" picker.
+   * whole-instance "https://*"). Present when the agent supplied enough information for the backend
+   * to resolve a concrete requested resource type. Absent on vendor-only requests; the accept modal
+   * then shows only that vendor's resources and waits for the user to explicitly choose one.
    */
   resourceUrlPattern?: string;
 

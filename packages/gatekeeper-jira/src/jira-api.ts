@@ -82,7 +82,7 @@ async function postToken(body: Record<string, string>): Promise<OAuthGrant> {
   });
   const parsed = await readJsonBounded(response).catch(() => undefined) as TokenResponse | undefined;
   if (!response.ok || !parsed?.access_token) {
-    throw new JiraApiError(response.status, [parsed?.error, parsed?.error_description].filter(Boolean).join(": ") || `Atlassian OAuth failed: ${response.status}`);
+    throw new JiraApiError(response.status, [parsed?.error, parsed?.error_description].filter(Boolean).join(": ") || `Atlassian OAuth failed: ${response.status}`, parsed);
   }
   return {
     accessToken: parsed.access_token,

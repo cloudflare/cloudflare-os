@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JiraConfiguratorUI } from "../src/jira-configurators";
+import projectConfigurator from "../src/configurator/jira-project-configurator-ui";
 
 const sites = [
   { id: "cloud-1", name: "One", url: "https://one.atlassian.net", scopes: ["read:jira-work"] },
@@ -106,5 +107,34 @@ describe("Jira project configurator", () => {
 
     expect(options).toHaveLength(50);
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("round-trips the optional default project through the configurator RPC", async () => {
+    const defaultProject = { value: "https://one.atlassian.net/projects/ENG", title: "Engineering", subtitle: "ENG · One" };
+    const setDefaultProject = vi.fn(async () => defaultProject);
+    const ui = new JiraConfiguratorUI(async () => sites, async () => "token", {
+      getDefaultProject: async () => defaultProject,
+      setDefaultProject,
+    });
+
+    await expect(ui.getDefaultProject()).resolves.toEqual(defaultProject);
+    await expect(ui.setDefaultProject("https://one.atlassian.net/projects/ENG")).resolves.toEqual(defaultProject);
+    expect(setDefaultProject).toHaveBeenCalledWith("https://one.atlassian.net/projects/ENG");
+  });
+
+  it("keeps old accounts without a default project as null", async () => {
+    await expect(new JiraConfiguratorUI(async () => sites, async () => "token").getDefaultProject())
+      .resolves.toBeNull();
+  });
+
+  it("keeps an explicit project URL prefill ahead of any default project", async () => {
+    expect(await projectConfigurator.initialValuesFromResourceUrl?.({
+      resourceUrl: "https://two.atlassian.net/projects/PAY",
+      resourceUrlPattern: "https://*.atlassian.net/projects/:projectKey{/:rest}*",
+      ui: new JiraConfiguratorUI(async () => sites, async () => "token", {
+        getDefaultProject: async () => ({ value: "https://one.atlassian.net/projects/ENG", title: "Engineering" }),
+        setDefaultProject: async () => null,
+      }),
+    })).toEqual({ projectUrl: "https://two.atlassian.net/projects/PAY", defaultProjectLoadState: "loaded" });
   });
 });
