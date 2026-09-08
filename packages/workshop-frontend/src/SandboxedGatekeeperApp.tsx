@@ -1,4 +1,4 @@
-import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
 import { useNavigate } from '@tanstack/react-router'
@@ -59,6 +59,11 @@ const MAX_RESOLVED_WORKSPACES = 100
 const WORKSPACE_TITLES_TTL_MS = 10_000
 export const MAX_GATEKEEPER_APP_ROUTE_STATE_LENGTH = 2048
 
+type GatekeeperAppDependencyIdentity = {
+  id: string
+  capability: any
+}
+
 export function normalizeGatekeeperAppRouteState(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   if (value.length > MAX_GATEKEEPER_APP_ROUTE_STATE_LENGTH) return undefined
@@ -73,6 +78,20 @@ function requireGatekeeperAppRouteState(value: string): string {
   const normalized = normalizeGatekeeperAppRouteState(value)
   if (normalized === undefined) throw new TypeError('Invalid gatekeeper app route state.')
   return normalized
+}
+
+function dependencyIdentities(dependencies: GatekeeperAppDependency[]): GatekeeperAppDependencyIdentity[] {
+  return dependencies
+    .map((dependency) => ({ id: dependency.app.id, capability: dependency.capability }))
+    .toSorted((a, b) => a.id.localeCompare(b.id))
+}
+
+function sameDependencyIdentities(
+  a: GatekeeperAppDependencyIdentity[],
+  b: GatekeeperAppDependencyIdentity[],
+): boolean {
+  return a.length === b.length && a.every((entry, index) =>
+    entry.id === b[index]!.id && entry.capability === b[index]!.capability)
 }
 
 // Near the max int, so the full-viewport iframe sits above all Workshop chrome.
@@ -345,6 +364,23 @@ export default function SandboxedGatekeeperApp({
   setRouteStateRef.current = setRouteState ?? (() => {})
   codingSessionAvailableRef.current = codingSessionAvailable
   requestCodingSessionRef.current = onRequestCodingSession ?? (() => {})
+  const dependencyIdentity = dependencyIdentities(dependencies)
+  const iframeReload = useRef({
+    html: frame.iframeHtml,
+    ui: frame.ui,
+    dependencies: [] as GatekeeperAppDependencyIdentity[],
+    key: 0,
+  })
+  if (iframeReload.current.html !== frame.iframeHtml || iframeReload.current.ui !== frame.ui ||
+      !sameDependencyIdentities(iframeReload.current.dependencies, dependencyIdentity)) {
+    iframeReload.current = {
+      html: frame.iframeHtml,
+      ui: frame.ui,
+      dependencies: dependencyIdentity,
+      key: iframeReload.current.key + 1,
+    }
+  }
+  const sessionIdentityKey = iframeReload.current.key
   const [overlay, setOverlay] = useState<OverlayState>(null)
   const overlayRef = useRef<OverlayState>(null)
   // Push the Workshop's resolved light/dark mode and deployment accent whenever either changes.
@@ -416,9 +452,10 @@ export default function SandboxedGatekeeperApp({
   const capabilityRef = useRef<any>(null)
   capabilityRef.current = frame.ui
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     connectedRef.current = false
     invalidatedRef.current = false
+    const frameWindow = iframeRef.current?.contentWindow ?? null
 
     const connect = (port: MessagePort) => {
       if (connectedRef.current) {
@@ -456,10 +493,9 @@ export default function SandboxedGatekeeperApp({
     }
 
     const handleMessage = (event: MessageEvent) => {
-      // Only accept the handshake from our own sandboxed iframe (which posts from a null origin).
-      // Capture contentWindow first: if the frame isn't mounted there's no legitimate sender, so
-      // reject — comparing against a concrete window avoids a `source === undefined` edge.
-      const frameWindow = iframeRef.current?.contentWindow
+      // Only accept the handshake from the exact sandboxed iframe that owned this listener (which
+      // posts from a null origin). Capturing the window here keeps an old listener from adopting a
+      // newly-remounted iframe before its passive cleanup would otherwise run.
       if (!frameWindow || event.source !== frameWindow || event.origin !== 'null') return
       if (invalidatedRef.current) return
       if (forwardTrustedFrameError(
@@ -481,11 +517,12 @@ export default function SandboxedGatekeeperApp({
     }
     // Re-establish the session if either the HTML or the `ui` capability changes, so a new frame
     // carrying a fresh stub (even with identical HTML) never keeps talking through the stale one.
-  }, [dependencies, frame.iframeHtml, frame.ui, gatekeeperVendorId, openPrompt, openTarget,
+  }, [sessionIdentityKey, gatekeeperVendorId, openPrompt, openTarget,
       present, resolveWorkspaceTitles, setOverlayPhase, workItemHandoffs])
 
   return (
     <iframe
+      key={iframeReload.current.key}
       ref={iframeRef}
       srcDoc={frame.iframeHtml}
       // allow-scripts: run the app's JS. allow-modals: its beforeunload unsaved-changes guard. Not

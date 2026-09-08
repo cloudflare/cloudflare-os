@@ -268,6 +268,16 @@ export default function GatekeeperModal({
       .map(resource => connectionForResource(vendor, resource))),
   ], [siteName, vendors])
 
+  const pickerConnections = useMemo(() => {
+    if (!initialVendorId) return allConnections
+    return allConnections.filter(connection => connection.vendorId === initialVendorId)
+  }, [allConnections, initialVendorId])
+
+  const initialVendor = useMemo(
+    () => vendors.find(vendor => vendor.id === initialVendorId) ?? null,
+    [vendors, initialVendorId],
+  )
+
   const selectedConnection = useMemo(
     () => allConnections.find(connection => connection.id === selectedConnectionId) ?? null,
     [allConnections, selectedConnectionId],
@@ -276,11 +286,10 @@ export default function GatekeeperModal({
   // Pre-seed the selection for the agent requestConnection accept flow. Runs once per open after
   // vendors load and nothing is selected yet.
   //
-  // The backend authoritatively resolved the request to a specific resource and passes its
+  // If the backend authoritatively resolved the request to a specific resource, it passes that
   // urlPattern as initialResourceUrlPattern, so we select that exact resource — this can't diverge
-  // from the backend's validation, which guarantees the request resolved to something. The
-  // initialResourceUrl / catch-all / sole-resource branches are defensive fallbacks (e.g. an older
-  // message without a resolved pattern, or the resource list having shifted since the request).
+  // from the backend's validation. Vendor-only requests intentionally pass no pattern or URL and
+  // stay on the scoped picker until the user explicitly chooses a resource.
   useEffect(() => {
     if (!open || !initialVendorId || selectedConnectionId !== null) return
     const vendorConnections = allConnections.filter(c => c.vendorId === initialVendorId)
@@ -299,13 +308,19 @@ export default function GatekeeperModal({
         c.resourceUrlPattern !== 'https://*' &&
         matchesResourceUrlPattern(c.resourceUrlPattern, initialResourceUrl))
     }
-    // Still nothing: prefer the whole-instance catch-all ("https://*") if offered (e.g. Home
-    // Assistant), else the sole resource type if there's just one.
-    match = match
-      ?? vendorConnections.find(c => c.resourceUrlPattern === 'https://*')
-      ?? (vendorConnections.length === 1 ? vendorConnections[0] : undefined)
+    // A vendor-only request intentionally does not auto-pick a resource type, even if the vendor has
+    // a catch-all or a single resource. The user must explicitly choose what to grant.
+    if (!match && (initialResourceUrlPattern || initialResourceUrl)) {
+      match = vendorConnections.find(c => c.resourceUrlPattern === 'https://*')
+        ?? (vendorConnections.length === 1 ? vendorConnections[0] : undefined)
+    }
     if (match) setSelectedConnectionId(match.id)
   }, [open, initialVendorId, initialResourceUrl, initialResourceUrlPattern, allConnections, selectedConnectionId])
+
+  useEffect(() => {
+    if (!open || !initialVendorId || initialResourceUrlPattern || initialResourceUrl || selectedConnectionId !== null) return
+    setExpandedGroups(new Set([`vendor:${initialVendorId}`]))
+  }, [open, initialVendorId, initialResourceUrlPattern, initialResourceUrl, selectedConnectionId])
 
   useEffect(() => {
     return () => {
@@ -370,7 +385,7 @@ export default function GatekeeperModal({
 
     setSelectedConnectionId(null)
     setSearchText('')
-    setExpandedGroups(new Set())
+    setExpandedGroups(initialVendorId ? new Set([`vendor:${initialVendorId}`]) : new Set())
     setCreating(false)
     setConnectingVendor(null)
     setReconnectingAccountId(null)
@@ -418,7 +433,7 @@ export default function GatekeeperModal({
     return () => {
       cancelled = true
     }
-  }, [open, authenticatedApi])
+  }, [open, authenticatedApi, initialVendorId])
 
   useEffect(() => {
     if (!open) return
@@ -459,8 +474,8 @@ export default function GatekeeperModal({
 
   const filteredConnections = useMemo(() => {
     const query = searchText.trim().toLowerCase()
-    if (!query) return allConnections
-    return allConnections.filter(connection => {
+    if (!query) return pickerConnections
+    return pickerConnections.filter(connection => {
       const haystack = [
         connection.title,
         connection.vendor,
@@ -473,7 +488,7 @@ export default function GatekeeperModal({
         matchesResourceUrl(query, connection.resourceUrlPattern)
       return matchesText || matchesUrl
     })
-  }, [allConnections, searchText])
+  }, [pickerConnections, searchText])
 
   // Group connections by stable vendor key (e.g. all Google resources together).
   // Preserves the order in which a vendor's first item appears in the flat list.
@@ -483,14 +498,14 @@ export default function GatekeeperModal({
   // named after the site.
   const groupedConnections = useMemo(() => {
     const groups = new Map<string, { label: string; items: ConnectionType[] }>()
-    for (const connection of allConnections) {
+    for (const connection of pickerConnections) {
       const key = connection.groupKey
       const existing = groups.get(key)
       if (existing) existing.items.push(connection)
       else groups.set(key, { label: connection.groupLabel, items: [connection] })
     }
     return Array.from(groups.entries()).map(([key, { label, items }]) => ({ key, label, items }))
-  }, [allConnections])
+  }, [pickerConnections])
 
   const isSearching = searchText.trim().length > 0
 
@@ -825,7 +840,9 @@ export default function GatekeeperModal({
             <Dialog.Description className="mt-1 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
               {selectedConnection
                 ? selectedConnection.description
-                : 'Choose what this gadget should be able to use.'}
+                : initialVendor
+                  ? `Choose which ${initialVendor.description.displayName} resource to grant.`
+                  : 'Choose what this gadget should be able to use.'}
             </Dialog.Description>
           </div>
           <Dialog.Close
@@ -846,7 +863,7 @@ export default function GatekeeperModal({
                 className="mb-4 inline-flex cursor-pointer items-center gap-1.5 text-[12px] leading-4 font-medium tracking-[-0.2px] text-kumo-subtle transition-colors hover:text-kumo-default"
               >
                 <CaretLeft size={13} />
-                All connection types
+                {initialVendor ? `${initialVendor.description.displayName} resource types` : 'All connection types'}
               </button>
 
               <div className="space-y-4">
@@ -920,7 +937,9 @@ export default function GatekeeperModal({
                 <input
                   value={searchText}
                   onChange={(event) => setSearchText(event.target.value)}
-                  placeholder="Search services, apps, data sources..."
+                  placeholder={initialVendor
+                    ? `Search ${initialVendor.description.displayName} resources...`
+                    : 'Search services, apps, data sources...'}
                   autoFocus
                   className="h-10 w-full rounded-xl border border-kumo-line bg-kumo-base pl-9 pr-3 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-default placeholder:text-kumo-inactive shadow-none outline-none transition-[border-color,box-shadow] focus:border-kumo-ring focus:ring-2 focus:ring-kumo-ring/10"
                 />
