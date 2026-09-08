@@ -2,7 +2,7 @@ import { lstatSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JiraApi, markdownToAdf } from "../src/jira-api";
-import { JIRA_CODING_TOOLS, JiraWorkItemUI, JiraWorkItemsManagementUI, scopedJql } from "../src/jira";
+import { JIRA_CODING_TOOLS, JiraWorkItemUI, JiraWorkItemsManagementUI, scopedJql, UserAccount } from "../src/jira";
 
 const ok = (body: unknown = {}) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 
@@ -87,7 +87,7 @@ describe("Jira API action behavior", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const api = new JiraApi({ cloudId: "cloud-1", webBase: "https://acme.atlassian.net", getToken: async () => "tok" });
-    const ui = new JiraWorkItemUI(api, { getSites: async () => [], getAccessToken: async () => "tok", getIdentity: async () => null }, "https://acme.atlassian.net", "ENG-1");
+    const ui = new JiraWorkItemUI(api, { getSites: async () => [], getAccessToken: async () => "tok", getIdentity: async () => null, getDefaultProject: async () => null, setDefaultProject: async () => null }, "https://acme.atlassian.net", "ENG-1");
 
     const read = await ui.read();
     expect(read.updateOptions.allowedFields).toContain("description");
@@ -120,6 +120,8 @@ describe("Jira API action behavior", () => {
       ],
       getAccessToken: async () => "tok",
       getIdentity: async () => null,
+      getDefaultProject: async () => null,
+      setDefaultProject: async () => null,
     };
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes("/cloud-1/") && url.endsWith("/search")) return ok({ issues: [], total: 0 });
@@ -140,6 +142,33 @@ describe("Jira API action behavior", () => {
     await expect(item.readAttachment("att-2")).resolves.toMatchObject({ name: "note.txt", contentType: "text/plain" });
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/cloud-1/rest/api/3/issue/ENG-2"))).toBe(false);
   });
+
+  it("persists, returns, and clears a validated default Jira project", async () => {
+    const account = makeStoredAccount();
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.includes("/cloud-1/rest/api/3/project/ENG")) return ok({ id: "100", key: "ENG", name: "Engineering" });
+      throw new Error(`unexpected URL ${url}`);
+    }));
+
+    await expect(account.getDefaultProject()).resolves.toBeNull();
+    await expect(account.setDefaultProject("https://one.atlassian.net/projects/ENG")).resolves.toEqual({
+      cloudId: "cloud-1",
+      webBase: "https://one.atlassian.net",
+      projectKey: "ENG",
+      projectName: "Engineering",
+    });
+    await expect(account.getDefaultProject()).resolves.toMatchObject({ projectKey: "ENG" });
+    await expect(account.setDefaultProject(null)).resolves.toBeNull();
+    await expect(account.getDefaultProject()).resolves.toBeNull();
+  });
+
+  it("denies a default project outside the granted Jira sites", async () => {
+    const account = makeStoredAccount();
+    vi.stubGlobal("fetch", vi.fn(async () => ok({ id: "200", key: "PAY", name: "Payments" })));
+
+    await expect(account.setDefaultProject("https://two.atlassian.net/projects/PAY"))
+      .rejects.toThrow(/granted Jira site/);
+  });
 });
 
 function issue(key: string, description: string, attachment = []) {
@@ -153,4 +182,27 @@ function issue(key: string, description: string, attachment = []) {
       attachment,
     },
   };
+}
+
+function makeStoredAccount(): UserAccount {
+  const account = new UserAccount();
+  const kv = new Map<string, unknown>([
+    ["grant", { accessToken: "tok", refreshToken: "refresh", expiresAt: Date.now() + 60_000 }],
+    ["sites", [{ id: "cloud-1", name: "One", url: "https://one.atlassian.net", scopes: ["read:jira-work"] }]],
+  ]);
+  Object.assign(account, {
+    env: { CLIENT_ID: "client", CLIENT_SECRET: "secret" },
+    ctx: {
+      storage: {
+        kv: {
+          get: (key: string) => kv.get(key),
+          put: (key: string, value: unknown) => kv.set(key, value),
+          delete: (key: string) => kv.delete(key),
+        },
+        setAlarm: vi.fn(),
+        deleteAlarm: vi.fn(),
+      },
+    },
+  });
+  return account;
 }

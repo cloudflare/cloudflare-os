@@ -1,11 +1,11 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { JiraApi, jqlLiteral, parseIssueKeyOrId, type AccessibleResource } from "./jira-api";
-import type { ConfiguratorOption, JiraConfiguratorRpc } from "./configurator/jira-configurator-types";
+import type { ConfiguratorOption, JiraConfiguratorRpc, JiraDefaultProject } from "./configurator/jira-configurator-types";
 
 const OPTION_LIMIT = 50;
 const QUERY_LIMIT = 256;
-type Context = { getSites: () => Promise<AccessibleResource[]>; getToken: () => Promise<string> };
+type Context = { getSites: () => Promise<AccessibleResource[]>; getToken: () => Promise<string>; getDefaultProject: () => Promise<JiraDefaultProject>; setDefaultProject: (projectUrl: string | null) => Promise<JiraDefaultProject> };
 const contexts = new WeakMap<object, Context>();
 const ctx = (target: object): Context => {
   const value = contexts.get(target);
@@ -16,9 +16,14 @@ const apiFor = (site: AccessibleResource, getToken: () => Promise<string>): Jira
 
 @validateRpc()
 export class JiraConfiguratorUI extends RpcTarget implements JiraConfiguratorRpc {
-  constructor(getSites: () => Promise<AccessibleResource[]>, getToken: () => Promise<string>) {
+  constructor(getSites: () => Promise<AccessibleResource[]>, getToken: () => Promise<string>, defaults?: Pick<Context, "getDefaultProject" | "setDefaultProject">) {
     super();
-    contexts.set(this, { getSites, getToken });
+    contexts.set(this, {
+      getSites,
+      getToken,
+      getDefaultProject: defaults?.getDefaultProject ?? (async () => null),
+      setDefaultProject: defaults?.setDefaultProject ?? (async () => null),
+    });
   }
 
   async listSites(query: string): Promise<ConfiguratorOption[]> {
@@ -58,5 +63,13 @@ export class JiraConfiguratorUI extends RpcTarget implements JiraConfiguratorRpc
       if (options.length >= OPTION_LIMIT) break;
     }
     return options;
+  }
+
+  getDefaultProject(): Promise<JiraDefaultProject> {
+    return ctx(this).getDefaultProject();
+  }
+
+  setDefaultProject(projectUrl: string | null): Promise<JiraDefaultProject> {
+    return ctx(this).setDefaultProject(projectUrl);
   }
 }

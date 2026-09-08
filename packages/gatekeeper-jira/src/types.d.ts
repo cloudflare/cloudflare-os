@@ -20,7 +20,7 @@ export interface JiraSite {
   searchIssues(options: JiraIssueSearchOptions): Promise<Cursor<JiraIssueSummary>>;
   /** Opens an issue by key, numeric ID, or Jira issue URL. */
   getIssue(issueKeyOrIdOrUrl: string): Promise<JiraIssue>;
-  /** Creates an issue. `projectKey` is required on a site session. */
+  /** Creates an issue. `projectKey` is required on a site session unless the connection has a default project. */
   createIssue(options: JiraCreateIssueOptions): Promise<JiraIssue>;
   /** Finds assignable users by name or email for issue assignment fields. */
   findUsers(query: string): Promise<JiraUser[]>;
