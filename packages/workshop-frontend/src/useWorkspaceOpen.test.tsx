@@ -25,8 +25,12 @@ vi.mock('./components/WorkshopControls', () => ({
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>(next => { resolve = next })
-  return { promise, resolve }
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve
+    reject = nextReject
+  })
+  return { promise, resolve, reject }
 }
 
 function disposableStub<T extends object>(value: T, dispose = vi.fn<() => void>()) {
@@ -106,6 +110,102 @@ describe('useWorkspaceOpen', () => {
 
     expect(overseerDispose).toHaveBeenCalledOnce()
     expect(subscriptionDispose).toHaveBeenCalledOnce()
+  })
+
+  it('does not publish the overseer stub while the metadata subscription is pending', async () => {
+    const pendingSubscription = deferred<RpcStub<{}>>()
+    const overseer = disposableStub({
+      subscribeToMetadata: vi.fn<() => Promise<RpcStub<{}>>>(() => pendingSubscription.promise),
+    }) as unknown as RpcStub<Overseer>
+    const authenticatedApi = api(overseer)
+
+    function Probe() {
+      const state = useWorkspaceOpen({
+        id: 'workspace-1',
+        authenticatedApi,
+        onInvalidShareKey: () => {},
+        onMetadata: () => {},
+        onShareKeyConsumed: () => {},
+      })
+      return <p>{state.overseer ? 'published' : 'pending'}</p>
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<Probe />))
+    await act(async () => { await Promise.resolve() })
+
+    expect(container.textContent).toBe('pending')
+  })
+
+  it('publishes the overseer stub after the metadata subscription succeeds', async () => {
+    const pendingSubscription = deferred<RpcStub<{}>>()
+    const overseer = disposableStub({
+      subscribeToMetadata: vi.fn<() => Promise<RpcStub<{}>>>(() => pendingSubscription.promise),
+    }) as unknown as RpcStub<Overseer>
+    const subscription = disposableStub({}) as RpcStub<{}>
+    const authenticatedApi = api(overseer)
+
+    function Probe() {
+      const state = useWorkspaceOpen({
+        id: 'workspace-1',
+        authenticatedApi,
+        onInvalidShareKey: () => {},
+        onMetadata: () => {},
+        onShareKeyConsumed: () => {},
+      })
+      return <p>{state.overseer ? 'published' : 'pending'}</p>
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<Probe />))
+    expect(container.textContent).toBe('pending')
+
+    await act(async () => {
+      pendingSubscription.resolve(subscription)
+      await Promise.resolve()
+    })
+
+    expect(container.textContent).toBe('published')
+  })
+
+  it('does not publish the failed overseer stub after access is denied', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const pendingSubscription = deferred<RpcStub<{}>>()
+    const deniedOverseerDispose = vi.fn<() => void>()
+    const deniedOverseer = disposableStub({
+      subscribeToMetadata: vi.fn<() => Promise<RpcStub<{}>>>(() => pendingSubscription.promise),
+    }, deniedOverseerDispose) as unknown as RpcStub<Overseer>
+    const authenticatedApi = api(deniedOverseer)
+
+    function Probe() {
+      const state = useWorkspaceOpen({
+        id: 'workspace-1',
+        authenticatedApi,
+        onInvalidShareKey: () => {},
+        onMetadata: () => {},
+        onShareKeyConsumed: () => {},
+      })
+      if (state.error?.kind === 'open') return <p>{state.error.failure}</p>
+      return <p>{state.overseer ? 'published' : 'pending'}</p>
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<Probe />))
+    expect(container.textContent).toBe('pending')
+
+    await act(async () => {
+      pendingSubscription.reject(createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied))
+      await Promise.resolve()
+    })
+
+    expect(container.textContent).toBe('access-denied')
+    expect(deniedOverseerDispose).toHaveBeenCalledOnce()
   })
 
   it('clears loaded metadata and title and disposes the failed stub after access is denied', async () => {

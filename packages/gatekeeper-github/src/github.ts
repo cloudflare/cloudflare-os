@@ -3485,7 +3485,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GitHubRepoSession | GitHubIssue | GitHubPullRequest | GitHubCodingSessionImpl> {
     const queue = this.ctx.props.owner.toLowerCase() === TOTANGO_GITHUB_ORG
-      ? new DomainSharingApprovalQueue(approvalQueue) as unknown as RpcStub<ApprovalQueue>
+      ? new DomainSharingApprovalQueue(approvalQueue.dup(), true) as unknown as RpcStub<ApprovalQueue>
       : approvalQueue.dup();
     const surface = await approvalQueue.getSessionSurface().catch(() => "chat" as const);
     if (surface === "code" && this.ctx.props.resourceKind === "repo") {

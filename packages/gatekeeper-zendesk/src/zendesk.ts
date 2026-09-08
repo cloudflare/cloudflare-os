@@ -247,8 +247,8 @@ function ticketObservation(title: string, description: string): ObservationDescr
   return { title, description };
 }
 
-function connectHtml(accountId: string, nonce: string): string {
-  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Zendesk</title></head><body style="font-family:system-ui;margin:2rem"><main style="max-width:520px;margin:auto"><h1>Connect Zendesk</h1><p>Enter your Zendesk subdomain. Example: <code>acme</code> for <code>acme.zendesk.com</code>.</p><form method="post" action="./${accountId}/${nonce}"><label>Zendesk subdomain <input required name="subdomain" pattern="[A-Za-z0-9][A-Za-z0-9-]{1,61}[A-Za-z0-9](\\.zendesk\\.com)?" style="display:block;width:100%;padding:.6rem;margin:.4rem 0"></label><button style="padding:.6rem 1rem">Continue to Zendesk</button></form></main></body></html>`;
+function connectHtml(): string {
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Zendesk</title></head><body style="font-family:system-ui;margin:2rem"><main style="max-width:520px;margin:auto"><h1>Connect Zendesk</h1><p>Enter your Zendesk subdomain. Example: <code>acme</code> for <code>acme.zendesk.com</code>.</p><form method="post"><label>Zendesk subdomain <input required name="subdomain" pattern="[A-Za-z0-9][A-Za-z0-9-]{1,61}[A-Za-z0-9](\\.zendesk\\.com)?" style="display:block;width:100%;padding:.6rem;margin:.4rem 0"></label><button style="padding:.6rem 1rem">Continue to Zendesk</button></form></main></body></html>`;
 }
 
 export default {
@@ -264,7 +264,7 @@ export default {
       const exports = exportsOf(ctx);
       const account = exports.ZendeskAccount.get(exports.ZendeskAccount.idFromString(parts[1]));
       if (request.method === "GET") {
-        return new Response(connectHtml(parts[1], parts[2]), {
+        return new Response(connectHtml(), {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
             "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",

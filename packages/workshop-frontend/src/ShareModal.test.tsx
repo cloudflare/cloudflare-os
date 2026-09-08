@@ -15,6 +15,8 @@ import type {
   ShareLinkInfo,
 } from '@gadgets/workshop-shared/api'
 
+const toastAdd = vi.hoisted(() => vi.fn<(toast: { title?: string; variant?: string }) => void>())
+
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const previousActEnvironment = testGlobal.IS_REACT_ACT_ENVIRONMENT
 testGlobal.IS_REACT_ACT_ENVIRONMENT = true
@@ -48,7 +50,7 @@ vi.mock('@cloudflare/kumo', () => {
     Checkbox: ({ label }: { label: ReactNode }) => <label>{label}</label>,
     Dialog,
     DropdownMenu,
-    useKumoToastManager: () => ({ add: vi.fn<(toast: unknown) => void>() }),
+    useKumoToastManager: () => ({ add: toastAdd }),
   }
 })
 
@@ -110,9 +112,34 @@ type OverseerOverrides = {
   updateShareLink?: (linkId: string, note?: string) => Promise<void>
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+
+function testRpcStub<T extends object>(
+  methods: Record<string, (...args: any[]) => any>,
+  onDispose?: () => void,
+): RpcStub<T> {
+  let disposed = false
+  const stub: Record<PropertyKey, unknown> = {
+    dup: () => testRpcStub<T>(methods, onDispose),
+    [Symbol.dispose]: () => { disposed = true; onDispose?.() },
+  }
+  for (const [name, method] of Object.entries(methods)) {
+    stub[name] = (...args: any[]) => {
+      if (disposed) throw new Error('Attempted to use RPC stub after it has been disposed.')
+      return method(...args)
+    }
+  }
+  return stub as RpcStub<T>
+}
+
 function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
   const requirements = overrides.requirements ?? { use: [], build: [] }
-  return {
+  return testRpcStub<Overseer>({
     listCollaborators: async () => [],
     listShareLinks: async () => overrides.shareLinks ?? [],
     listObserverRequirements:
@@ -125,7 +152,7 @@ function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
     }),
     createShareLink: async () => ({ key: 'secret', linkId: 'link-1' }),
     updateShareLink: overrides.updateShareLink ?? (async () => {}),
-  } as unknown as RpcStub<Overseer>
+  })
 }
 
 const fakeAuthenticatedApi = {} as RpcStub<AuthenticatedApi>
@@ -172,6 +199,7 @@ describe('ShareModal', () => {
 
   beforeEach(() => {
     copyToClipboard.mockClear()
+    toastAdd.mockClear()
   })
 
   afterEach(() => {
@@ -181,14 +209,20 @@ describe('ShareModal', () => {
     container = undefined
   })
 
-  async function render(overseer: RpcStub<Overseer>, metadata: GadgetMetadata = METADATA) {
-    container = document.createElement('div')
-    document.body.append(container)
-    root = createRoot(container)
+  async function renderModal(
+    overseer: RpcStub<Overseer>,
+    metadata: GadgetMetadata = METADATA,
+    open = true,
+  ) {
+    if (!container) {
+      container = document.createElement('div')
+      document.body.append(container)
+    }
+    root ??= createRoot(container)
     await act(async () => {
       root!.render(
         <ShareModal
-          open
+          open={open}
           onClose={() => {}}
           overseer={overseer}
           metadata={metadata}
@@ -200,6 +234,10 @@ describe('ShareModal', () => {
     // Let the load effects settle.
     await act(async () => { await Promise.resolve() })
     return container
+  }
+
+  async function render(overseer: RpcStub<Overseer>, metadata: GadgetMetadata = METADATA) {
+    return renderModal(overseer, metadata, true)
   }
 
   it('reveals the workspace link to send after a direct invite', async () => {
@@ -325,5 +363,157 @@ describe('ShareModal', () => {
 
     expect(rendered.textContent).toContain('Internal link')
     expect(rendered.textContent).toContain('only verified @totango.com SSO users can open')
+  })
+
+  it('keeps a duplicated overseer alive for the create-link refresh after the parent closes', async () => {
+    let rootDispose!: () => void
+    const listShareLinks = vi.fn<() => Promise<ShareLinkInfo[]>>(async () => [])
+    const overseer = testRpcStub<Overseer>({
+      listCollaborators: async () => [],
+      listShareLinks,
+      listObserverRequirements: async () => [],
+      createShareLink: async () => {
+        rootDispose()
+        return { key: 'secret', linkId: 'link-1' }
+      },
+    })
+    rootDispose = () => overseer[Symbol.dispose]()
+    const rendered = await render(overseer)
+    listShareLinks.mockClear()
+
+    await click(button(rendered, 'Create a share link'))
+    await click(button(rendered, 'Create link'))
+
+    expect(rendered.textContent).toContain(`${WORKSPACE_URL}#share=secret`)
+    expect(listShareLinks).toHaveBeenCalledOnce()
+  })
+
+  it('ignores a stale create-link success after close and same-workspace reopen', async () => {
+    const created = deferred<{ key: string; linkId: string }>()
+    const overseer = testRpcStub<Overseer>({
+      listCollaborators: async () => [],
+      listShareLinks: async () => [],
+      listObserverRequirements: async () => [],
+      createShareLink: () => created.promise,
+    })
+    const rendered = await render(overseer)
+
+    await click(button(rendered, 'Create a share link'))
+    await click(button(rendered, 'Create link'))
+    expect(rendered.textContent).toContain('Creating…')
+
+    await renderModal(overseer, METADATA, false)
+    await renderModal(overseer, METADATA, true)
+    expect(rendered.textContent).toContain('Create a share link')
+
+    created.resolve({ key: 'late-secret', linkId: 'late-link' })
+    await act(async () => { await Promise.resolve() })
+
+    expect(rendered.textContent).not.toContain('late-secret')
+    expect(toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ variant: 'success' }))
+  })
+
+  it('ignores a stale create-link error after close and same-workspace reopen', async () => {
+    const created = deferred<{ key: string; linkId: string }>()
+    const overseer = testRpcStub<Overseer>({
+      listCollaborators: async () => [],
+      listShareLinks: async () => [],
+      listObserverRequirements: async () => [],
+      createShareLink: () => created.promise,
+    })
+    const rendered = await render(overseer)
+
+    await click(button(rendered, 'Create a share link'))
+    await click(button(rendered, 'Create link'))
+    await renderModal(overseer, METADATA, false)
+    await renderModal(overseer, METADATA, true)
+
+    created.reject(new Error('late failure'))
+    await act(async () => { await Promise.resolve() })
+
+    expect(rendered.textContent).not.toContain('late failure')
+    expect(toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'late failure' }))
+  })
+
+  it('releases duplicated overseer handles after stale and live share actions', async () => {
+    let liveHandles = 0
+    const created = deferred<{ key: string; linkId: string }>()
+    const methods = {
+      listCollaborators: async () => [],
+      listShareLinks: async () => [],
+      listObserverRequirements: async () => [],
+      createShareLink: () => created.promise,
+    }
+    const overseer = {
+      ...testRpcStub<Overseer>(methods),
+      dup: () => {
+        liveHandles += 1
+        return testRpcStub<Overseer>(methods, () => { liveHandles -= 1 })
+      },
+    } as RpcStub<Overseer>
+    const rendered = await render(overseer)
+
+    await click(button(rendered, 'Create a share link'))
+    await click(button(rendered, 'Create link'))
+    await renderModal(overseer, METADATA, false)
+    created.resolve({ key: 'released-secret', linkId: 'released-link' })
+    await act(async () => { await Promise.resolve() })
+
+    expect(liveHandles).toBe(0)
+  })
+
+  it('resets busy latches when the open modal receives a new overseer for the same workspace', async () => {
+    const oldCreate = deferred<{ key: string; linkId: string }>()
+    const newCreate = deferred<{ key: string; linkId: string }>()
+    const oldOverseer = testRpcStub<Overseer>({
+      listCollaborators: async () => [],
+      listShareLinks: async () => [],
+      listObserverRequirements: async () => [],
+      createShareLink: () => oldCreate.promise,
+    })
+    const createShareLink = vi.fn<() => Promise<{ key: string; linkId: string }>>(
+      () => newCreate.promise,
+    )
+    const newOverseer = testRpcStub<Overseer>({
+      listCollaborators: async () => [],
+      listShareLinks: async () => [],
+      listObserverRequirements: async () => [],
+      createShareLink,
+    })
+    const rendered = await render(oldOverseer)
+
+    await click(button(rendered, 'Create a share link'))
+    await click(button(rendered, 'Create link'))
+    expect(rendered.textContent).toContain('Creating…')
+
+    await renderModal(newOverseer, METADATA, true)
+    expect(rendered.textContent).toContain('Create a share link')
+    await click(button(rendered, 'Create a share link'))
+    await click(button(rendered, 'Create link'))
+    expect(createShareLink).toHaveBeenCalledOnce()
+    expect(rendered.textContent).toContain('Creating…')
+
+    oldCreate.resolve({ key: 'old-secret', linkId: 'old-link' })
+    await act(async () => { await Promise.resolve() })
+    expect(rendered.textContent).toContain('Creating…')
+    expect(rendered.textContent).not.toContain('old-secret')
+
+    newCreate.resolve({ key: 'new-secret', linkId: 'new-link' })
+    await act(async () => { await Promise.resolve() })
+    expect(rendered.textContent).toContain(`${WORKSPACE_URL}#share=new-secret`)
+  })
+
+  it('reports load failure when duplicating the overseer fails during initial load', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const overseer = {
+      dup: () => { throw new Error('disposed root') },
+    } as unknown as RpcStub<Overseer>
+
+    await render(overseer)
+
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Failed to load sharing info',
+      variant: 'error',
+    }))
   })
 })
