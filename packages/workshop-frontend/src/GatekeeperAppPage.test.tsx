@@ -12,7 +12,7 @@ import GatekeeperAppPage from "./GatekeeperAppPage";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 Object.defineProperty(window, "scrollTo", { value: vi.fn<() => void>(), configurable: true });
 
-const sandboxedGatekeeperApp = vi.hoisted(() => vi.fn<(_props: unknown) => ReactElement>((_props) => <div data-testid="gatekeeper-app" />));
+const sandboxedGatekeeperApp = vi.hoisted(() => vi.fn<(_props: unknown) => ReactElement>((_props) => React.createElement('div', { 'data-testid': 'gatekeeper-app' })));
 const getGatekeeperApp = vi.hoisted(() => vi.fn<(_id: string) => Promise<GatekeeperUiFrame | null>>());
 const authenticatedApi = vi.hoisted(() => ({ getGatekeeperApp }));
 const appsRef = vi.hoisted(() => ({ current: [] as GatekeeperAppInfo[] }));
@@ -42,7 +42,7 @@ vi.mock("./errorReporting", () => ({
 }));
 
 function frame(label: string): GatekeeperUiFrame {
-  return { iframeHtml: `<!doctype html><title>${label}</title>`, ui: { [Symbol.dispose]: vi.fn<() => void>() } } as unknown as GatekeeperUiFrame;
+  return { iframeHtml: `<!doctype html><title>${label}</title>`, ui: { [Symbol.dispose]: vi.fn<() => void>() } };
 }
 
 describe("GatekeeperAppPage Work Items composition", () => {

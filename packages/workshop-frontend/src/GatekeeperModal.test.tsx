@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
-/* eslint-disable react/react-in-jsx-scope */
 
-import { act, useEffect, type ComponentProps, type ReactNode } from 'react'
+import React, { act, useEffect, type ComponentProps, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
@@ -12,7 +11,7 @@ import type { AccountDescription, ResourceConfiguratorFrame, SupportedResource, 
 
 vi.mock('@cloudflare/kumo', () => {
   const Dialog = Object.assign(
-    ({ children }: { children: ReactNode }) => <div>{children}</div>,
+    ({ children }: { children: ReactNode }) => React.createElement('div', null, children),
     {
       Root: ({ children }: { children: ReactNode }) => <>{children}</>,
       Title: ({ children }: { children: ReactNode }) => <h1>{children}</h1>,
@@ -66,8 +65,8 @@ vi.mock('./rpcErrors', () => ({ logRpcFailure: vi.fn<(...args: unknown[]) => voi
 
 import GatekeeperModal from './GatekeeperModal'
 
-const JIRA_VENDOR: VendorDescription = { displayName: 'Jira', color: '#0052cc' }
-const GITHUB_VENDOR: VendorDescription = { displayName: 'GitHub', color: '#24292f' }
+const JIRA_VENDOR: VendorDescription = { displayName: 'Jira', url: 'https://www.atlassian.com/software/jira', color: '#0052cc' }
+const GITHUB_VENDOR: VendorDescription = { displayName: 'GitHub', url: 'https://github.com', color: '#24292f' }
 const JIRA_SITE: SupportedResource = {
   title: 'Jira site',
   description: 'Pick an authorized Jira site.',
@@ -116,6 +115,7 @@ function makeApi() {
       const description: AccountDescription = {
         displayName: 'Jacob Jira',
         uniqueName: 'jacob@jira',
+        avatar: { url: 'https://acme.atlassian.net/avatar.png' },
         grantedResourceUrlPatterns: [JIRA_SITE.urlPattern, JIRA_ISSUE.urlPattern],
       }
       subscriber.add(3, description, JIRA_VENDOR, [JIRA_SITE, JIRA_ISSUE], true, 'jira')
@@ -146,9 +146,10 @@ describe('GatekeeperModal requestConnection accept flow', () => {
   beforeEach(() => {
     class ResizeObserverMock {
       observe() {}
+      unobserve() {}
       disconnect() {}
     }
-    ;(globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = ResizeObserverMock as typeof ResizeObserver
+    globalThis.ResizeObserver = ResizeObserverMock
   })
 
   afterEach(() => {
