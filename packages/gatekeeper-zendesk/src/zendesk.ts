@@ -207,6 +207,14 @@ function textResponse(message: string, status = 400): Response {
   });
 }
 
+function parseZendeskAccountId(exports: Exports, accountId: string): unknown | null {
+  try {
+    return exports.ZendeskAccount.idFromString(accountId);
+  } catch {
+    return null;
+  }
+}
+
 function htmlAttribute(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
 }
@@ -291,7 +299,9 @@ export default {
         return textResponse("Invalid Zendesk connection link.");
       }
       const exports = exportsOf(ctx);
-      const account = exports.ZendeskAccount.get(exports.ZendeskAccount.idFromString(parts[1]));
+      const parsedAccountId = parseZendeskAccountId(exports, parts[1]);
+      if (!parsedAccountId) return textResponse("Invalid Zendesk connection link.");
+      const account = exports.ZendeskAccount.get(parsedAccountId);
       if (request.method === "GET") {
         return new Response(connectHtml(), {
           headers: {
@@ -332,8 +342,10 @@ export default {
       const code = boundedString(url.searchParams.get("code"), 1000);
       if (!code) return textResponse("Zendesk did not return an authorization code.");
       const exports = exportsOf(ctx);
+      const parsedAccountId = parseZendeskAccountId(exports, accountId);
+      if (!parsedAccountId) return textResponse("Invalid OAuth state.");
       const accepted = await exports.ZendeskAccount
-        .get(exports.ZendeskAccount.idFromString(accountId))
+        .get(parsedAccountId)
         .acceptAuthCode(code, oauthNonce);
       if (!accepted) return textResponse("Invalid or expired OAuth state.");
       return new Response(renderBrowserFlowCompletionHtml({ appName: "Odie OS", returnUrl: accepted.returnUrl }), {

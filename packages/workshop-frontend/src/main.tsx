@@ -1,7 +1,7 @@
 import { StrictMode, useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { RouterProvider } from '@tanstack/react-router'
-import { RpcPromise, RpcStub, newWebSocketRpcSession } from 'capnweb'
+import { RpcPromise, RpcStub } from 'capnweb'
 import { PublicApi, ServerConfig } from '@gadgets/workshop-shared/api'
 import { RpcContext } from './RpcContext'
 import { ServerConfigContext, ServerConfigErrorContext, ServerConfigUpdateContext } from './ServerConfigContext'
@@ -15,6 +15,7 @@ import { installWorkshopErrorReporting, reportIssue } from './errorReporting'
 import { applySiteFavicon, cacheBustSiteLogoUrl } from './siteLogoUtils'
 import { getWorkshopRuntime, installNativeLoginCoordinator } from './runtime'
 import { installProductFeedbackDiagnostics } from './productFeedbackDiagnostics'
+import { newWorkshopWebSocketRpcSession } from './workshopWebSocketRpc'
 
 installProductFeedbackDiagnostics()
 
@@ -94,7 +95,7 @@ function startConnection(onBroken?: (error: unknown) => void): RpcStub<PublicApi
   lastConnectTime = Date.now();
   const apiOrigin = getWorkshopRuntime().apiOrigin;
   const wsUrl = `${apiOrigin.protocol === 'https:' ? 'wss:' : 'ws:'}//${apiOrigin.host}/api`;
-  const stub = newWebSocketRpcSession<PublicApi>(wsUrl);
+  const stub = newWorkshopWebSocketRpcSession<PublicApi>(wsUrl);
   stub.onRpcBroken(error => onBroken ? onBroken(error) : handleBroken(stub, error));
   return stub;
 }
