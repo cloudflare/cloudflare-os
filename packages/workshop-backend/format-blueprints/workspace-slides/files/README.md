@@ -349,9 +349,10 @@ Dot-grid backgrounds are omitted.
 
 The 1200 x 675 canvas maps to standard widescreen PowerPoint at 12,192,000 x
 6,858,000 EMU. Positions, dimensions, and CSS font sizes all use the canvas's
-0.8-point-per-pixel scale. CSS `line-height` becomes exact line spacing in
-points rather than a percentage (PowerPoint percentages are relative to the
-font's own line gap, which would loosen every paragraph). Single-line labels
+0.8-point-per-pixel scale. CSS `line-height` is emitted as a line-spacing
+percentage divided by Arial's natural 1.15em line height, since both PowerPoint
+and Google Slides apply percentages to that (Google also converts exact point
+spacing back into such a percentage, so points are not portable). Single-line labels
 (logo, section label, pill, arrow label) are sized from Arial's advance widths,
 because Google Slides ignores `wrap="none"` and breaks any label wider than its
 box. The package requests Arial, which is available in PowerPoint and Google

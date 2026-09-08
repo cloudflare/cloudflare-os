@@ -435,7 +435,7 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(title).toContain('spc="160"');
     expect(title).toContain('<a:latin typeface="Arial"/>');
     expect(title).not.toContain('typeface="Inter"');
-    expect(title).toContain('<a:spcPts val="2000"/>'); // 20px * 1.25 line-height, in hundredths of a point.
+    expect(title).toContain('<a:spcPct val="108696"/>'); // line-height 1.25 over Arial's natural 1.15.
 
     const shapes = [...xml.matchAll(/<p:cNvPr id="(\d+)" name="([^"]*)"/g)]
       .map(match => ({id: Number(match[1]), name: match[2]}));
@@ -514,10 +514,10 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(title).toContain("HOT");
     expect(title).toContain("&amp; cold");
     expect(title).toContain('sz="1600" b="1" spc="160"');
-    expect(title).toContain('<a:spcPts val="2000"/>');
+    expect(title).toContain('<a:spcPct val="108696"/>');
     const aligned = shapeByName(xml, "Block 6 text");
     expect(aligned).toContain('<a:pPr algn="r"');
-    expect(aligned).toContain('<a:spcPts val="2560"/>');
+    expect(aligned).toContain('<a:spcPct val="173913"/>');
     expect(aligned).toContain('sz="1280"');
 
     const bullets = shapeByName(xml, "Block 7 bulletList");

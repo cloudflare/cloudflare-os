@@ -13,6 +13,7 @@ const PX_TO_EMU = 10160;
 const PX_TO_LINE_EMU = PX_TO_EMU;
 const PX_TO_POINT = PX_TO_EMU / 12700;
 const MAX_DRAWING_COORDINATE = 2147483647;
+const ARIAL_LINE_HEIGHT = 1.15; // (ascender 1854 + descender 434 + lineGap 67) / 2048 em
 
 const MAX_SLIDES = 500;
 const MAX_BLOCKS_PER_SLIDE = 1000;
@@ -360,14 +361,14 @@ function highlightMarks(text, terms, label, limits) {
 
 function* paragraphXml(text, style, options = {}) {
   const alignment = {left: "l", center: "ctr", right: "r"}[style.align] || "l";
-  // CSS line-height is an absolute multiple of the font size, whereas spcPct is relative to the
-  // font's own line gap (~115% for Arial), so emit exact points to match the browser's leading.
-  const fontPixels = cssNumber(style.fontSize, 12, 1, 1000);
-  const lineSpacing = Math.min(158400,
-    Math.round(cssNumber(style.lineHeight, 1.2, 0.5, 4) * fontPixels * PX_TO_POINT * 100));
+  // CSS line-height is a multiple of the font size; lnSpc percentages are multiples of the
+  // font's natural line height (ascent + descent + line gap = 1.15em for Arial). Exact spcPts
+  // would be right in PowerPoint but Google Slides converts it back to a percentage of the
+  // natural height, so the divided percentage is the value both consumers render correctly.
+  const lineSpacing = Math.round(cssNumber(style.lineHeight, 1.2, 0.5, 4) / ARIAL_LINE_HEIGHT * 100000);
   let properties = `<a:pPr algn="${alignment}" fontAlgn="base"`;
   if (options.bullet) properties += ` marL="${Math.round(18 * PX_TO_EMU)}" indent="-${Math.round(18 * PX_TO_EMU)}"`;
-  properties += `><a:lnSpc><a:spcPts val="${lineSpacing}"/></a:lnSpc>`;
+  properties += `><a:lnSpc><a:spcPct val="${lineSpacing}"/></a:lnSpc>`;
   if (options.spacingAfter) {
     properties += `<a:spcAft><a:spcPts val="${Math.round(options.spacingAfter * PX_TO_POINT * 100)}"/></a:spcAft>`;
   }
