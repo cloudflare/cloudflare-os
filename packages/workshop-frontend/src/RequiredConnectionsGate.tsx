@@ -111,8 +111,8 @@ export function RequiredConnectionsGate({ authenticatedApi, pathname, children }
   )
 
   const initialPending = statuses === null && !loadError
-  const homeHealthyRecheck = pathname === '/' && checking && statuses !== null && unhealthy.length === 0
-  const pending = initialPending || (checking && !homeHealthyRecheck)
+  const healthyRecheck = checking && statuses !== null && unhealthy.length === 0
+  const pending = initialPending || (checking && !healthyRecheck)
   if (escapeRoute || pending || (statuses !== null && unhealthy.length === 0)) {
     return (
       <>
