@@ -206,6 +206,33 @@ function textResponse(message: string, status = 400): Response {
   });
 }
 
+function htmlAttribute(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+}
+
+function zendeskOauthContinueResponse(authorizeUrl: string): Response {
+  const url = new URL(authorizeUrl);
+  if (
+    url.protocol !== "https:" ||
+    !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.zendesk\.com$/.test(url.hostname) ||
+    url.pathname !== "/oauth/authorizations/new"
+  ) {
+    throw new Error("Invalid Zendesk OAuth URL.");
+  }
+  return new Response(
+    `<!doctype html><html><head><meta name="referrer" content="no-referrer"><meta http-equiv="refresh" content="0;url=${htmlAttribute(url.toString())}"><title>Continue to Zendesk</title></head><body><p>Continuing to Zendesk...</p><script>location.replace(${JSON.stringify(url.toString())});</script></body></html>`,
+    {
+      headers: {
+        "Cache-Control": "no-store",
+        "Content-Type": "text/html; charset=utf-8",
+        "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+      },
+    },
+  );
+}
+
 function boundedString(value: unknown, max: number, fallback = ""): string {
   const raw = typeof value === "string" ? value : value == null ? "" : String(value);
   const trimmed = raw.replaceAll(String.fromCharCode(0), "").replace(/[\t\r\n ]+/g, " ").trim();
@@ -248,7 +275,7 @@ function ticketObservation(title: string, description: string): ObservationDescr
 }
 
 function connectHtml(): string {
-  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Zendesk</title></head><body style="font-family:system-ui;margin:2rem"><main style="max-width:520px;margin:auto"><h1>Connect Zendesk</h1><p>Enter your Zendesk subdomain. Example: <code>acme</code> for <code>acme.zendesk.com</code>.</p><form method="post"><label>Zendesk subdomain <input required name="subdomain" pattern="[A-Za-z0-9][A-Za-z0-9-]{1,61}[A-Za-z0-9](\\.zendesk\\.com)?" style="display:block;width:100%;padding:.6rem;margin:.4rem 0"></label><button style="padding:.6rem 1rem">Continue to Zendesk</button></form></main></body></html>`;
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Zendesk</title></head><body style="font-family:system-ui;margin:2rem"><main style="max-width:520px;margin:auto"><h1>Connect Zendesk</h1><p>Enter your Zendesk subdomain. Example: <code>acme</code> for <code>acme.zendesk.com</code>.</p><form method="post"><label>Zendesk subdomain <input required name="subdomain" pattern="[A-Za-z0-9][A-Za-z0-9\\-]{1,61}[A-Za-z0-9](\\.zendesk\\.com)?" style="display:block;width:100%;padding:.6rem;margin:.4rem 0"></label><button style="padding:.6rem 1rem">Continue to Zendesk</button></form></main></body></html>`;
 }
 
 export default {
@@ -266,8 +293,10 @@ export default {
       if (request.method === "GET") {
         return new Response(connectHtml(), {
           headers: {
+            "Cache-Control": "no-store",
             "Content-Type": "text/html; charset=utf-8",
             "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
           },
         });
@@ -284,13 +313,13 @@ export default {
       }
       const begun = await account.beginOAuth(parts[2], subdomain, returnUrl);
       if (!begun) return textResponse("Invalid or expired Zendesk connection link.");
-      return Response.redirect(buildAuthorizeUrl({
+      return zendeskOauthContinueResponse(buildAuthorizeUrl({
         subdomain,
         clientId: env.CLIENT_ID,
         redirectUri: `${getBaseUrl(env)}/oauth`,
         scope: OAUTH_SCOPE,
         state: `${parts[1]}:${begun.oauthNonce}`,
-      }), 302);
+      }));
     }
 
     if (relPath === "/oauth") {
@@ -306,7 +335,13 @@ export default {
         .acceptAuthCode(code, oauthNonce);
       if (!accepted) return textResponse("Invalid or expired OAuth state.");
       return new Response(renderBrowserFlowCompletionHtml({ appName: "Odie OS", returnUrl: accepted.returnUrl }), {
-        headers: { "Content-Type": "text/html; charset=utf-8", "X-Content-Type-Options": "nosniff" },
+        headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+          "Referrer-Policy": "no-referrer",
+          "X-Content-Type-Options": "nosniff",
+        },
       });
     }
 

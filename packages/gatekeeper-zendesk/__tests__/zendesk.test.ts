@@ -265,6 +265,9 @@ describe("Zendesk native OAuth return URLs", () => {
     const body = await response.text();
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(response.headers.get("Content-Security-Policy")).toBe("default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
     expect(body).toContain(validReturnUrl);
     expect(body).toContain("location.replace");
     expect(callback.complete).toHaveBeenCalledOnce();
@@ -304,7 +307,33 @@ describe("Zendesk native OAuth return URLs", () => {
     expect(account.beginOAuth).not.toHaveBeenCalled();
   });
 
-  it("renders a connect form whose same-URL POST redirects with the original initiation nonce", async () => {
+  it("renders a connect form with a v-flag-compatible subdomain pattern and restricted form target", async () => {
+    const zendesk = await import("../src/zendesk");
+    const account = { beginOAuth: vi.fn() };
+    const connectUrl = `${env.BASE_URL}/connect/${"7".repeat(64)}/${"8".repeat(64)}?returnUrl=${encodeURIComponent(validReturnUrl)}`;
+
+    const response = await zendesk.default.fetch(new Request(connectUrl), env, {
+      exports: { ZendeskAccount: { idFromString: (id: string) => id, get: () => account } },
+    } as never);
+    const body = await response.text();
+    const pattern = body.match(/\bpattern="([^"]+)"/)?.[1];
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(response.headers.get("Content-Security-Policy")).toContain("form-action 'self'");
+    expect(body).toContain("<form method=\"post\">");
+    expect(body).not.toContain("action=\"");
+    expect(pattern).toBeDefined();
+    const subdomainPattern = new RegExp(`^(?:${pattern})$`, "v");
+    expect(subdomainPattern.test("acme")).toBe(true);
+    expect(subdomainPattern.test("support-team.zendesk.com")).toBe(true);
+    expect(subdomainPattern.test("evil.com")).toBe(false);
+    expect(subdomainPattern.test("-bad.zendesk.com")).toBe(false);
+    expect(subdomainPattern.test("bad-.zendesk.com")).toBe(false);
+  });
+
+  it("renders a same-origin POST continuation page for the original initiation nonce", async () => {
     const zendesk = await import("../src/zendesk");
     const { kv, storage: accountStorage } = makeTestStorage();
     const accountId = "7".repeat(64);
@@ -326,11 +355,8 @@ describe("Zendesk native OAuth return URLs", () => {
       env,
       ctx as never,
     );
-    const body = await response.text();
 
     expect(response.status).toBe(200);
-    expect(body).toContain("<form method=\"post\">");
-    expect(body).not.toContain("action=\"./");
     expect(kv.get("nonce")).toMatchObject({ value: nonce });
 
     const post = await zendesk.default.fetch(
@@ -342,11 +368,18 @@ describe("Zendesk native OAuth return URLs", () => {
       env,
       ctx as never,
     );
-    expect(post.status).toBe(302);
-    const location = post.headers.get("location");
-    expect(location).not.toBeNull();
-    const redirect = new URL(location!);
+    expect(post.status).toBe(200);
+    expect(post.headers.get("location")).toBeNull();
+    expect(post.headers.get("Cache-Control")).toBe("no-store");
+    expect(post.headers.get("Content-Security-Policy")).toBe("default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+    expect(post.headers.get("Referrer-Policy")).toBe("no-referrer");
+    const postBody = await post.text();
+    expect(postBody).toContain("Continuing to Zendesk...");
+    expect(postBody).toContain("location.replace");
+    expect(postBody).toContain("https://acme.zendesk.com/oauth/authorizations/new");
+    const redirect = new URL(postBody.match(/location\.replace\("([^"]+)"\)/)![1]);
     expect(redirect.origin).toBe("https://acme.zendesk.com");
+    expect(redirect.pathname).toBe("/oauth/authorizations/new");
     expect(redirect.searchParams.get("state")).toMatch(new RegExp(`^${accountId}:[0-9a-f]{64}$`));
     expect(kv.get("nonce")).toMatchObject({ value: expect.stringMatching(/^[0-9a-f]{64}$/) });
   });
