@@ -470,15 +470,21 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).not.toMatch(/<w:t[^>]*>[\u2022\u25aa]|<w:t[^>]*>\d+\. /);
   });
 
-  it("preserves ordered-list start and item value overrides", async () => {
+  it("preserves ordered-list start, item value overrides, and type formats", async () => {
     const {entries} = await readZip(await documentToDocx({blocks: [block(
-        '<ol start="4"><li>four</li><li value="7">seven</li><li>eight</li></ol>')]}));
+        '<ol start="4"><li>four</li><li value="7">seven</li><li>eight</li></ol>' +
+        '<ol type="a"><li>a</li></ol><ol type="I"><li>I</li></ol>')]}));
     const xml = text(entries, "word/document.xml");
     const numbering = text(entries, "word/numbering.xml");
     expect(numbering).toContain('<w:num w:numId="1"><w:abstractNumId w:val="1"/>' +
       '<w:lvlOverride w:ilvl="0"><w:startOverride w:val="4"/></w:lvlOverride></w:num>');
     expect(numbering).toContain('<w:num w:numId="2"><w:abstractNumId w:val="1"/>' +
       '<w:lvlOverride w:ilvl="0"><w:startOverride w:val="7"/></w:lvlOverride></w:num>');
+    expect(numbering).toContain('<w:abstractNum w:abstractNumId="2"><w:multiLevelType w:val="multilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/>');
+    expect(numbering).toContain('<w:num w:numId="3"><w:abstractNumId w:val="2"/></w:num>');
+    expect(numbering).toContain('<w:numFmt w:val="upperRoman"/>');
+    expect(numbering).toContain('<w:num w:numId="4"><w:abstractNumId w:val="5"/></w:num>');
+    expect(numbering).not.toContain('w:abstractNumId="0"');
     expect(xml.match(/<w:numId w:val="1"\/>/g)).toHaveLength(1);
     expect(xml.match(/<w:numId w:val="2"\/>/g)).toHaveLength(2);
   });
@@ -587,17 +593,34 @@ describe("Workspace Docs DOCX package", () => {
   });
 
   it("flattens incidental table rows to paragraphs and cells to tabs while flattening unknown tags", async () => {
-    const html = '<table><tbody><tr><td>A</td><td><b>B</b></td></tr><tr><td>C</td><td>D</td></tr></tbody></table>' +
+    const html = '<table><tbody><tr><td>A</td><td><b>B</b></td></tr><tr><td></td><td>D</td></tr>' +
+      "<tr><td>E<td><i>F</i><tr><td>G</td></tr></tbody></table>" +
       '<section><custom>visible</custom><!-- hidden --><script>bad()</script><style>.bad{}</style></section>' +
       "<article>article</article><aside>aside</aside>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
-    expect(xml.match(/<w:tab\/>/g)).toHaveLength(2);
-    for (const value of ["A", "B", "C", "D", "visible", "article", "aside"]) expect(xml).toContain(`>${value}</w:t>`);
+    expect(xml.match(/<w:tab\/>/g)).toHaveLength(3);
+    for (const value of ["A", "B", "D", "E", "F", "G", "visible", "article", "aside"]) expect(xml).toContain(`>${value}</w:t>`);
     expect(runContaining(xml, "B")).toContain("<w:b/>");
+    expect(runContaining(xml, "F")).toContain("<w:i/>");
+    expect(runContaining(xml, "G")).not.toContain("<w:i/>");
+    expect(xml).toContain('<w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r><w:tab/></w:r><w:r><w:t xml:space="preserve">D</w:t>');
     expect(xml).not.toContain("bad()");
     expect(xml).not.toContain(".bad{}");
-    expect(xml.match(/<w:p>/g)).toHaveLength(5);
+    expect(xml.match(/<w:p>/g)).toHaveLength(7);
+  });
+
+  it("bounds the work done for oversized text runs and inline styles", async () => {
+    const chunk = 64 * 1024;
+    const long = "x".repeat(chunk - 1) + "\ud83d\ude00" + "y".repeat(chunk);
+    const style = "color:#123456;" + "a:b;".repeat(1_000_000);
+    const {entries} = await readZip(await documentToDocx({blocks: [block(`<p style="${style}">${long}</p>`)]}));
+    const xml = text(entries, "word/document.xml");
+    expect(xml.match(/<w:t xml:space="preserve">/g)).toHaveLength(3);
+    expect(xml).toContain('x</w:t><w:t xml:space="preserve">\ud83d\ude00y');
+    expect(xml).not.toContain("\ufffd");
+    expect(xml.match(/<w:r>/g)).toHaveLength(1);
+    expect(xml).toContain('<w:r><w:rPr><w:color w:val="123456"/></w:rPr><w:t xml:space="preserve">xxx');
   });
 
   it("ignores self-closing foreign elements without rejecting surrounding content", async () => {

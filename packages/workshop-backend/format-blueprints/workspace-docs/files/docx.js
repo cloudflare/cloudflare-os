@@ -44,6 +44,9 @@ const BLOCK_TAGS = new Set([
 ]);
 const HEADING_STYLES = {h1: "Heading1", h2: "Heading2", h3: "Heading3", h4: "Heading3", h5: "Heading3", h6: "Heading3"};
 const BULLET_GLYPHS = ["&#x2022;", "&#x25E6;", "&#x25AA;"];
+// Word numbering formats, indexed by abstract numbering id; `<ol type>` maps onto the last four.
+const LIST_KINDS = ["bullet", "decimal", "lowerLetter", "upperLetter", "lowerRoman", "upperRoman"];
+const LIST_TYPES = {a: "lowerLetter", A: "upperLetter", i: "lowerRoman", I: "upperRoman"};
 
 // --- XML text ----------------------------------------------------------------------------------
 
@@ -135,17 +138,20 @@ function normalizeSnapshot(document) {
   };
 }
 
-// lol-html only reports explicit end tags, so the end tags HTML lets authors omit are closed here.
+// lol-html only reports explicit end tags, so the end tags HTML lets authors omit are closed here:
+// `tag` closes any open element in `closes` unless one in `within` is reached first.
 function closeImplied(stack, tag) {
-  const implied = tag === "li" ? "li" : BLOCK_TAGS.has(tag) ? "p" : null;
-  if (!implied) return;
-  for (let index = stack.length - 1; index > 0; --index) {
+  const [closes, within] = tag === "li" ? [["li"], ["ul", "ol"]]
+    : tag === "td" || tag === "th" ? [["td", "th"], ["tr", "table"]]
+    : tag === "tr" ? [["tr"], ["table"]]
+    : BLOCK_TAGS.has(tag) ? [["p"], []] : [[], []];
+  for (let index = stack.length - 1; index > 0 && closes.length; --index) {
     const open = stack[index].tag;
-    if (open === implied) {
+    if (closes.includes(open)) {
       stack.length = index;
       return;
     }
-    if (implied === "li" && (open === "ul" || open === "ol")) return;
+    if (within.includes(open)) return;
   }
 }
 
@@ -223,7 +229,8 @@ async function parseHtml(fragments, namedEntities) {
 
 function cssDeclarations(style) {
   const declarations = [];
-  for (const part of String(style || "").split(";")) {
+  // Inline styles are short; a huge one is not worth allocating a declaration per fragment for.
+  for (const part of String(style || "").slice(0, 8192).split(";")) {
     const colon = part.indexOf(":");
     if (colon < 0) continue;
     const name = part.slice(0, colon).trim().toLowerCase();
@@ -301,7 +308,7 @@ function isIndentation(node, declarations) {
 }
 
 function blockStyle(node, declarations) {
-  if (node.tag === "h1" && (node.attrs.class || "").split(/\s+/).includes("doc-title")) return "Title";
+  if (node.tag === "h1" && /(?:^|\s)doc-title(?:\s|$)/.test(node.attrs.class || "")) return "Title";
   if (node.tag === "blockquote") return isIndentation(node, declarations) ? null : "Quote";
   if (node.tag === "pre") return "CodeBlock";
   return HEADING_STYLES[node.tag] ?? null;
@@ -650,7 +657,7 @@ function walk(builder, node, parent) {
     }
     case "ul":
     case "ol": {
-      context.listKind = tag === "ol" ? "decimal" : "bullet";
+      context.listKind = tag === "ol" ? LIST_TYPES[node.attrs.type] || "decimal" : "bullet";
       context.level = Math.min(8, parent.level == null ? 0 : parent.level + 1);
       context.numId = builder.list(context.listKind, context.level, ordinal(node.attrs.start));
       // A nested list inside an item that has no content of its own still shows the item's marker.
@@ -660,14 +667,17 @@ function walk(builder, node, parent) {
     case "li":
       if (parent.numId == null) break;
       // A `value` restarts numbering for this item and those that follow it in the same list.
-      if (context.listKind === "decimal" && ordinal(node.attrs.value) != null) {
-        parent.numId = builder.list("decimal", context.level, ordinal(node.attrs.value));
+      if (context.listKind !== "bullet" && ordinal(node.attrs.value) != null) {
+        parent.numId = builder.list(context.listKind, context.level, ordinal(node.attrs.value));
       }
       context.list = {numId: parent.numId, level: context.level, marked: false};
       break;
+    case "tr":
+      context.cells = 0;
+      break;
     case "td":
     case "th":
-      if (builder.current?.runs.length) builder.addRun(context, {type: "tab"});
+      if (parent.cells++) builder.addRun(context, {type: "tab"});
       break;
   }
   for (const child of node.children) {
@@ -702,12 +712,22 @@ function runProperties(format, hyperlink) {
   return properties.length ? `<w:rPr>${properties.join("")}</w:rPr>` : "";
 }
 
-function textRunXml(run) {
-  const body = run.text.split("\t")
-    .map((part) => (part ? `<w:t xml:space="preserve">${xmlText(part)}</w:t>` : ""))
-    .join("<w:tab/>");
-  const xml = `<w:r>${runProperties(run.format, run.hyperlink)}${body}</w:r>`;
-  return run.hyperlink ? `<w:hyperlink r:id="${run.hyperlink}" w:history="1">${xml}</w:hyperlink>` : xml;
+// Text is emitted in bounded `<w:t>` slices so a single huge run never becomes one huge string.
+function* textRunXml(run) {
+  if (run.hyperlink) yield `<w:hyperlink r:id="${run.hyperlink}" w:history="1">`;
+  yield `<w:r>${runProperties(run.format, run.hyperlink)}`;
+  const parts = run.text.split("\t");
+  for (let index = 0; index < parts.length; ++index) {
+    if (index) yield "<w:tab/>";
+    for (let offset = 0; offset < parts[index].length;) {
+      let end = Math.min(parts[index].length, offset + TEXT_CHUNK_SIZE);
+      if (end < parts[index].length && (parts[index].charCodeAt(end - 1) & 0xfc00) === 0xd800) --end;
+      yield `<w:t xml:space="preserve">${xmlText(parts[index].slice(offset, end))}</w:t>`;
+      offset = end;
+    }
+  }
+  yield "</w:r>";
+  if (run.hyperlink) yield "</w:hyperlink>";
 }
 
 function imageRunXml(run) {
@@ -763,7 +783,7 @@ function* documentXml(model) {
   for (const paragraph of model.paragraphs) {
     yield `<w:p>${paragraphProperties(paragraph)}`;
     for (const run of paragraph.runs) {
-      if (run.type === "text") yield textRunXml(run);
+      if (run.type === "text") yield* textRunXml(run);
       else if (run.type === "break") yield "<w:r><w:br/></w:r>";
       else if (run.type === "tab") yield "<w:r><w:tab/></w:r>";
       else yield imageRunXml(run);
@@ -794,10 +814,10 @@ function stylesXml() {
 // numbering restarts where the document restarts it.
 function* numberingXml(numbering) {
   yield `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="${WORD_NS}">`;
-  for (const [abstractId, kind] of [[0, "bullet"], [1, "decimal"]]) {
-    yield `<w:abstractNum w:abstractNumId="${abstractId}"><w:multiLevelType w:val="multilevel"/>`;
+  for (const kind of new Set(numbering.map((item) => item.kind))) {
+    yield `<w:abstractNum w:abstractNumId="${LIST_KINDS.indexOf(kind)}"><w:multiLevelType w:val="multilevel"/>`;
     for (let level = 0; level < 9; ++level) {
-      const text = kind === "decimal" ? `%${level + 1}.` : BULLET_GLYPHS[level % 3];
+      const text = kind === "bullet" ? BULLET_GLYPHS[level % 3] : `%${level + 1}.`;
       const indent = (level + 1) * LIST_INDENT_TWIPS;
       yield `<w:lvl w:ilvl="${level}"><w:start w:val="1"/><w:numFmt w:val="${kind}"/>` +
         `<w:lvlText w:val="${text}"/><w:lvlJc w:val="left"/><w:pPr><w:tabs><w:tab w:val="num" w:pos="${indent}"/></w:tabs>` +
@@ -806,7 +826,7 @@ function* numberingXml(numbering) {
     yield "</w:abstractNum>";
   }
   for (const item of numbering) {
-    yield `<w:num w:numId="${item.id}"><w:abstractNumId w:val="${item.kind === "bullet" ? 0 : 1}"/>`;
+    yield `<w:num w:numId="${item.id}"><w:abstractNumId w:val="${LIST_KINDS.indexOf(item.kind)}"/>`;
     if (item.start != null) {
       yield `<w:lvlOverride w:ilvl="${item.level}"><w:startOverride w:val="${item.start}"/></w:lvlOverride>`;
     }
