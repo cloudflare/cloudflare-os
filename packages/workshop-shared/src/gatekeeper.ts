@@ -444,22 +444,26 @@ export type GatekeeperConnectOptions = {
 };
 
 /**
- * The `type` field of the `postMessage` envelope `{type, ticket}` that a finished connect flow's
- * browser tab posts to the Workshop window that opened it. Versioned so the listener can ignore
- * envelopes from an older or newer page.
+ * The `type` field of the envelope `{type, ticket}` that a finished connect flow's browser tab
+ * delivers to the Workshop, and the name of the same-origin `BroadcastChannel` it delivers over when
+ * it has no opener to `postMessage` to. Versioned so the listener can ignore envelopes from an older
+ * or newer page.
  */
 export const CONNECT_HANDOFF_MESSAGE_TYPE = "gadgets.connect-handoff.v1";
 
 /**
- * What the browser tab that finished a connect flow must deliver to the window that opened it, as
- * returned by `GatekeeperConnectCallback.complete()` / `reconnectComplete()`.
+ * What the browser tab that finished a connect flow must deliver to the Workshop, as returned by
+ * `GatekeeperConnectCallback.complete()` / `reconnectComplete()`.
  *
  * `ticket` is a single-use secret the Workshop redeems over the initiating user's authenticated RPC
  * session (`AuthenticatedApi.completeConnectHandoff`); the staged grant is activated only when it
- * arrives from that user. `targetOrigin` is the Workshop's origin, passed verbatim as the
- * `targetOrigin` argument of `postMessage` so a browser drops the ticket if the opener is anyone
- * else. Opaque to gatekeepers: they only render it into the completion page (see
- * `connectHandoffPageHtml` in gatekeeper-kit).
+ * arrives from that user. `targetOrigin` is the Workshop's origin. The completion page delivers the
+ * envelope one of two ways: `postMessage` to its opener with `targetOrigin` passed verbatim, so a
+ * browser drops the ticket if the opener is anyone else (sign-in popups keep their opener); or, for
+ * a connect popup the Workshop disowned before navigating it, a `BroadcastChannel` that the page
+ * opens only when it is itself on `targetOrigin` — the browser scopes the channel to that origin.
+ * Opaque to gatekeepers: they only render it into the completion page (see `connectHandoffPageHtml`
+ * in gatekeeper-kit).
  */
 export type ConnectHandoff = {
   targetOrigin: string;
@@ -473,11 +477,11 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
   /**
    * Start the auth flow to connect to the user's remote account. Returns the URL which the user
    * should open in their browser in order to complete the flow. The Workshop opens this URL as a
-   * popup whose opener is the Workshop window.
+   * popup it has disowned, so the provider's pages hold no handle to the Workshop window.
    *
    * When the flow completes, `callback.complete()` should be called to add the connection to the
    * user's list of authorizations. (`callback` can be stored.) It returns a `ConnectHandoff` which
-   * the flow's final page must post to its opener (render it with gatekeeper-kit's
+   * the flow's final page must deliver to the Workshop (render it with gatekeeper-kit's
    * `connectHandoffPageHtml`); the connection is not active until the Workshop has redeemed it.
    *
    * A typical implementation creates a UserAccount Durable Object to manage the authorization
@@ -489,9 +493,9 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
    * nothing about the HTTP requests ties the browser that finishes to the user who started it. So
    * an attacker can start a connect and trick a victim into opening the URL, whereupon the victim's
    * provider credentials would be delivered into the attacker's Workshop account. The defence is
-   * the handoff: the flow must end on the kit's handoff page, which posts the ticket only to the
-   * Workshop-origin window that opened it, and the Workshop activates the grant only when the
-   * ticket comes back over the initiator's own session. Until then the gatekeeper holds the
+   * the handoff: the flow must end on the kit's handoff page, which delivers the ticket only to
+   * the Workshop's origin, and the Workshop activates the grant only when the ticket comes back
+   * over the initiator's own session. Until then the gatekeeper holds the
    * credentials but they are reachable from no Workshop account; if the ticket is never redeemed,
    * the Workshop calls `GatekeeperUser.revoke()` on the staged account. The URL must additionally
    * include a cryptographic nonce (in addition to the DO ID), stored in the DO and verified when the
@@ -575,12 +579,16 @@ export interface GatekeeperConnectCallback extends WorkerEntrypoint {
   /**
    * Indicates a `reconnect()` / `ensureResources()` flow finished and the new credentials are
    * *staged* in the gatekeeper (not yet live; see `GatekeeperUser.commitReconnect`). Returns the
-   * handoff the flow's final page must post to its opener. Once the Workshop has verified the
-   * completing browser belongs to the account's owner it calls `commitReconnect()` on the account,
-   * then treats the credentials as restored. `expiresAt` is the staged credentials' expected
-   * refreshability expiry, if known (same semantics as `complete()`).
+   * handoff the flow's final page must deliver to the Workshop. Once the Workshop has verified the
+   * completing browser belongs to the account's owner it calls `commitReconnect(stageId)` on the
+   * account, then treats the credentials as restored.
+   *
+   * `stageId` identifies the staged credentials this completion produced (gatekeeper-kit's
+   * `stageCredentials` returns one); the Workshop hands it back in `commitReconnect()` so the
+   * ticket it mints activates exactly these credentials and no later stage's. `expiresAt` is the
+   * staged credentials' expected refreshability expiry, if known (same semantics as `complete()`).
    */
-  reconnectComplete(expiresAt?: Date): Promise<ConnectHandoff>;
+  reconnectComplete(stageId: string, expiresAt?: Date): Promise<ConnectHandoff>;
 
   // Note: If the authorization flow fails, the error can be displayed directly to the user, and
   // the callback can be discarded.
@@ -660,9 +668,10 @@ export interface GatekeeperUser extends WorkerEntrypoint {
    * Start the flow to refresh/replace credentials on this account. Returns the URL for the user
    * to visit in a popup to complete re-authentication. When the flow completes, the gatekeeper
    * stages the new credentials, notifies the GatekeeperConnectCallback (provided during the
-   * original connectAccount() flow) via reconnectComplete(), and renders the returned handoff on
-   * the final page. The Workshop then calls commitReconnect(), after which the existing account
-   * Fetcher and all gatekeeper bindings created through it work with the new credentials.
+   * original connectAccount() flow) via reconnectComplete(stageId), and renders the returned
+   * handoff on the final page. The Workshop then calls commitReconnect(stageId), after which the
+   * existing account Fetcher and all gatekeeper bindings created through it work with the new
+   * credentials.
    *
    * SECURITY: As with connectAccount(), the returned URL is a bearer capability that may be opened
    * by someone other than the account's owner. The flow must therefore *stage* the new credentials
@@ -674,12 +683,18 @@ export interface GatekeeperUser extends WorkerEntrypoint {
   reconnect(): Promise<{url: string}>;
 
   /**
-   * Make the credentials staged by the most recent reconnect()/ensureResources() flow live,
+   * Make the credentials staged under `stageId` by a reconnect()/ensureResources() flow live,
    * replacing the account's current credentials. Called by the Workshop once the completing browser
    * has been verified as the owner's (see `GatekeeperConnectCallback.reconnectComplete`). Throws if
-   * nothing is staged or the stage has expired; the live credentials are then left as they were.
+   * nothing is staged, the stage has expired, or the current stage is a different one; the live
+   * credentials are then left as they were.
+   *
+   * SECURITY: Two reconnects can overlap — the owner's, and one a phished victim was tricked into
+   * finishing, each replacing the stage. Their tickets are redeemed separately, so a commit of
+   * "whatever is staged" would let the ticket from one flow activate the other's credentials. The
+   * id ties each ticket to the credentials whose completion minted it.
    */
-  commitReconnect(): Promise<void>;
+  commitReconnect(stageId: string): Promise<void>;
 
   /**
    * For vendors that advertise `providesAuth`, returns the account's email address for use as the
@@ -699,7 +714,8 @@ export interface GatekeeperUser extends WorkerEntrypoint {
    *
    * Returns the URL for the user to visit to authorize them, or no URL if nothing was needed.
    * Gatekeepers with no grantable resource types should return no URL. A returned URL completes
-   * exactly like reconnect(): staged credentials, reconnectComplete(), then commitReconnect().
+   * exactly like reconnect(): staged credentials, reconnectComplete(stageId), then
+   * commitReconnect(stageId).
    *
    * SECURITY: As with reconnect(), any returned URL is a bearer capability, so the flow must stage
    * the widened grant rather than write it live, and the URL must include a cryptographic nonce.

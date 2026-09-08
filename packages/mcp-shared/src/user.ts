@@ -15,8 +15,8 @@ export interface McpGatekeeperUserAccount {
   revoke(): Promise<void>;
   /** Starts a reconnect with a fresh initiation nonce. */
   prepareReconnect(initiationNonce: string): Promise<void>;
-  /** Makes the credentials staged by the last reconnect live. */
-  commitReconnect(): Promise<void>;
+  /** Makes the credentials staged under `stageId` live. */
+  commitReconnect(stageId: string): Promise<void>;
 }
 
 /** Connector-owned values used by the common MCP account lifecycle. */
@@ -65,9 +65,9 @@ export abstract class McpGatekeeperUserBase<E>
     await this[mcpGatekeeperUserContext]().account.revoke();
   }
 
-  /** Makes the credentials staged by the last reconnect live (see GatekeeperUser.commitReconnect). */
-  async commitReconnect(): Promise<void> {
-    await this[mcpGatekeeperUserContext]().account.commitReconnect();
+  /** Makes the credentials staged under `stageId` live (see GatekeeperUser.commitReconnect). */
+  async commitReconnect(stageId: string): Promise<void> {
+    await this[mcpGatekeeperUserContext]().account.commitReconnect(stageId);
   }
 
   /** Starts reconnecting the connected account. */

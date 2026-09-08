@@ -36,7 +36,10 @@ import {
 
 const logger = createWorkshopLogger("workshop.auth");
 
-type PendingResult = { token: string; ticketHash: string } | { error: string };
+type PendingOutcome = { token: string; ticketHash: string } | { error: string };
+// `expiresAt` bounds the result absolutely: the alarm wipes it too, but claim() must not depend on
+// the alarm having fired on time.
+type PendingResult = PendingOutcome & { expiresAt: number };
 
 const RESULT_KEY = "result";
 const EXPIRED_MESSAGE = "This sign-in attempt has expired. Please try again.";
@@ -58,9 +61,10 @@ export class PendingLogin extends DurableObject<Cloudflare.Env> {
     await this.#store({ error: reason });
   }
 
-  async #store(result: PendingResult): Promise<void> {
-    this.ctx.storage.kv.put(RESULT_KEY, result);
-    await this.ctx.storage.setAlarm(Date.now() + PENDING_HANDOFF_LIFETIME_MS);
+  async #store(result: PendingOutcome): Promise<void> {
+    const expiresAt = Date.now() + PENDING_HANDOFF_LIFETIME_MS;
+    this.ctx.storage.kv.put<PendingResult>(RESULT_KEY, { ...result, expiresAt });
+    await this.ctx.storage.setAlarm(expiresAt);
   }
 
   /**
@@ -71,7 +75,7 @@ export class PendingLogin extends DurableObject<Cloudflare.Env> {
     const result = this.ctx.storage.kv.get<PendingResult>(RESULT_KEY);
     await this.ctx.storage.deleteAll();
     await this.ctx.storage.deleteAlarm();
-    if (!result) throw new Error(EXPIRED_MESSAGE);
+    if (!result || Date.now() >= result.expiresAt) throw new Error(EXPIRED_MESSAGE);
     if ("error" in result) throw new Error(result.error);
     if (!/^[0-9a-f]{64}$/.test(ticket) ||
         await hashSecret(Uint8Array.fromHex(ticket)) !== result.ticketHash) {
@@ -172,7 +176,7 @@ export class LoginConnectCallbackImpl
   async credentialsRestored(_expiresAt?: Date): Promise<void> {}
 
   /** Sign-in grants are never reconnected: there is no persisted account to restore. */
-  async reconnectComplete(_expiresAt?: Date): Promise<ConnectHandoff> {
+  async reconnectComplete(_stageId: string, _expiresAt?: Date): Promise<ConnectHandoff> {
     throw new Error("Sign-in flows cannot be reconnected.");
   }
 }

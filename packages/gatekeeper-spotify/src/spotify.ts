@@ -572,8 +572,8 @@ export class UserAccount extends DurableObject<Env> {
       // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
       // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
       // gadgets keep reading the current token meanwhile.
-      stageCredentials(this.ctx.storage.kv, credentials, Date.now());
-      handoff = await callback.reconnectComplete();
+      const stageId = stageCredentials(this.ctx.storage.kv, credentials, Date.now());
+      handoff = await callback.reconnectComplete(stageId);
     } else {
       this.#storeCredentials(credentials);
       try {
@@ -590,9 +590,9 @@ export class UserAccount extends DurableObject<Env> {
     return handoff;
   }
 
-  /** Makes the grant staged by the last reconnect live; see GatekeeperUser.commitReconnect. */
-  async commitReconnect(): Promise<void> {
-    const credentials = commitStagedCredentials<StoredCredentials>(this.ctx.storage.kv, Date.now());
+  /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
+  async commitReconnect(stageId: string): Promise<void> {
+    const credentials = commitStagedCredentials<StoredCredentials>(this.ctx.storage.kv, Date.now(), stageId);
     if (!credentials) throw new Error("No reconnect is awaiting confirmation. Please try again.");
     this.#storeCredentials(credentials);
     this.ctx.storage.kv.delete("reconnecting");
@@ -758,8 +758,8 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
-  async commitReconnect(): Promise<void> {
-    await this.#userAccount().commitReconnect();
+  async commitReconnect(stageId: string): Promise<void> {
+    await this.#userAccount().commitReconnect(stageId);
   }
 
   /**

@@ -17,6 +17,7 @@ import type { ConnectHandoff, GatekeeperConnectCallback, GatekeeperUser }
   from "@gadgets/workshop-shared/gatekeeper";
 import {
   commitStagedCredentials,
+  discardStagedCredentials,
   peekStagedCredentials,
   stageCredentials,
 } from "@gadgets/gatekeeper-kit/credential-stage";
@@ -452,6 +453,11 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       },
       tokens: context => {
         current();
+        // A reconnect is a re-authorization, so the SDK must not see — and refresh — the live
+        // tokens: against a server that rotates refresh tokens, a refresh here would burn the live
+        // one before the Workshop has redeemed the handoff, leaving bound facets with nothing if it
+        // never does. With no tokens the SDK redirects to the authorization server instead.
+        if (this.ctx.storage.kv.get<boolean>("reconnecting")) return undefined;
         const tokens = this.ctx.storage.kv.get<OAuthTokens>("tokens");
         if (tokens && (typeof tokens.access_token !== "string" ||
             typeof tokens.token_type !== "string")) {
@@ -520,7 +526,15 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       },
       invalidateCredentials: scope => {
         current();
-        if (scope === "all" || scope === "tokens") this.ctx.storage.kv.delete("tokens");
+        if (scope === "all" || scope === "tokens") {
+          // While reconnecting the SDK only ever held the staged tokens, so those are what it is
+          // invalidating; the live ones stay until the Workshop commits or the stage expires.
+          if (this.ctx.storage.kv.get<boolean>("reconnecting")) {
+            discardStagedCredentials(this.ctx.storage.kv);
+          } else {
+            this.ctx.storage.kv.delete("tokens");
+          }
+        }
         if (scope === "all" || scope === "client") this.ctx.storage.kv.delete("oauthClient");
         if (scope === "all" || scope === "verifier") this.ctx.storage.kv.delete("oauthVerifier");
         if (scope === "all" || scope === "discovery") {
@@ -636,18 +650,20 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
   // The tokens `saveTokens` just stored: live ones for a first connect, staged ones for a reconnect.
   private freshTokens(): OAuthTokens | undefined {
     if (this.ctx.storage.kv.get<boolean>("reconnecting")) {
-      return peekStagedCredentials<StagedReconnect>(this.ctx.storage.kv, Date.now())?.tokens
+      return peekStagedCredentials<StagedReconnect>(this.ctx.storage.kv, Date.now())?.creds.tokens
         ?? undefined;
     }
     return this.ctx.storage.kv.get<OAuthTokens>("tokens");
   }
 
   /**
-   * Makes the credentials staged by the last reconnect live (see `GatekeeperUser.commitReconnect`).
-   * Throws when no reconnect awaits confirmation or its stage has expired.
+   * Makes the credentials staged under `stageId` live (see `GatekeeperUser.commitReconnect`).
+   * Throws when no reconnect awaits confirmation, its stage has expired, or a different one is
+   * staged now.
    */
-  async commitReconnect(): Promise<void> {
-    const staged = commitStagedCredentials<StagedReconnect>(this.ctx.storage.kv, Date.now());
+  async commitReconnect(stageId: string): Promise<void> {
+    const staged = commitStagedCredentials<StagedReconnect>(
+      this.ctx.storage.kv, Date.now(), stageId);
     if (!staged) throw new Error("No reconnect is awaiting confirmation. Please try again.");
     if (staged.tokens) this.ctx.storage.kv.put<OAuthTokens>("tokens", staged.tokens);
     this.ctx.storage.kv.put("expiredNotified", false);
@@ -686,15 +702,17 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     let handoff: ConnectHandoff;
     if (this.ctx.storage.kv.get<boolean>("reconnecting")) {
       // `reconnecting` stays set until `commitReconnect`: the new tokens (if the server issues any)
-      // are only staged so far. A server with no credential of its own stages an empty record so the
-      // commit still has something to confirm.
+      // are only staged so far, under the id `saveTokens` was handed. A server with no credential
+      // of its own stages an empty record so the commit still has something to confirm.
       let staged = peekStagedCredentials<StagedReconnect>(this.ctx.storage.kv, Date.now());
       if (!staged) {
-        staged = { tokens: null };
-        stageCredentials<StagedReconnect>(this.ctx.storage.kv, staged, Date.now());
+        const creds: StagedReconnect = { tokens: null };
+        const stageId = stageCredentials<StagedReconnect>(this.ctx.storage.kv, creds, Date.now());
+        staged = { creds, stageId };
       }
-      const expiresAt = staged.tokens?.expiresAt;
-      handoff = await callback.reconnectComplete(expiresAt ? new Date(expiresAt) : undefined);
+      const expiresAt = staged.creds.tokens?.expiresAt;
+      handoff = await callback.reconnectComplete(
+        staged.stageId, expiresAt ? new Date(expiresAt) : undefined);
     } else {
       handoff = await callback.complete(this.mintAccount());
     }

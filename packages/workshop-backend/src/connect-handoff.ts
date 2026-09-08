@@ -1,12 +1,14 @@
 // The connect handoff: how a finished gatekeeper connect flow is bound to the browser that started
-// it. A connect URL is a bearer capability, so the gatekeeper's final page posts a single-use ticket
-// to the Workshop window that opened it, and the Workshop activates the staged grant only when that
-// ticket is redeemed over the initiating user's own session (UserDurableObject.completeConnectHandoff).
+// it. A connect URL is a bearer capability, so the gatekeeper's final page delivers a single-use
+// ticket to the Workshop — over a same-origin BroadcastChannel for a connect popup (which the
+// Workshop disowns before navigating, so the provider never holds its window), or by postMessage to
+// its opener for sign-in — and the Workshop activates the staged grant only when that ticket is
+// redeemed over the initiating user's own session (UserDurableObject.completeConnectHandoff).
 
 /**
- * How long a staged connect / reconnect waits for its ticket. The handoff page posts the ticket the
- * instant it loads, so anything not redeemed within this window was opened somewhere the Workshop
- * could not reach, and the staged grant is dropped (and, for a connect, revoked).
+ * How long a staged connect / reconnect waits for its ticket. The handoff page delivers the ticket
+ * the instant it loads, so anything not redeemed within this window was opened somewhere the
+ * Workshop could not reach, and the staged grant is dropped (and, for a connect, revoked).
  */
 export const PENDING_HANDOFF_LIFETIME_MS = 2 * 60 * 1000;
 

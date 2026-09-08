@@ -447,7 +447,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     throw new Error("Email connections do not require re-authentication.");
   }
 
-  async commitReconnect(): Promise<void> {
+  async commitReconnect(_stageId: string): Promise<void> {
     // reconnect() never starts a flow, so nothing can ever be staged.
     throw new Error("No reconnect is awaiting confirmation. Please try again.");
   }

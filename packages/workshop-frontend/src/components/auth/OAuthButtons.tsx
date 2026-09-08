@@ -69,9 +69,10 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
       // `attempt` is the capability to redeem the session token; track it so we can dispose it if
       // the component unmounts mid-login.
       loginRpcRef.current = attempt as unknown as Disposable
-      // NB: don't pass "noopener" — the popup posts its ticket to window.opener, and window.open()
-      // returns null with it anyway, so we couldn't tell a real pop-up block from a successful open
-      // (nor watch for the user closing it).
+      // Unlike account-connect popups (see openConnectWindow), a login popup deliberately keeps this
+      // window as its opener: sign-in providers are admin-allowlisted, and the opener is both how the
+      // ticket comes back (postMessage) and what lets us watch for the user closing the popup. Don't
+      // pass "noopener" — window.open() returns null with it, indistinguishable from a pop-up block.
       const popup = window.open(url, 'gatekeeper-login', 'popup,width=520,height=680')
       if (!popup) {
         try { (attempt as unknown as Disposable)[Symbol.dispose]() } catch { /* already disposed */ }

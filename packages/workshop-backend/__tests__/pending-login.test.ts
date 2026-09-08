@@ -71,6 +71,21 @@ describe("PendingLogin", () => {
       .toBe("error:This sign-in attempt has expired. Please try again.");
   });
 
+  it("refuses a claim past the lifetime even if the alarm has not fired", async () => {
+    const stub = fresh();
+    const { secret, hash } = await newSecretToken();
+    await stub.deliver("alice@example.com:session", hash);
+    // Age the stored result without running the alarm: validity must not depend on it.
+    await runInDurableObject(stub, async (instance: PendingLogin) => {
+      const [[key, stored]] = [...instance.ctx.storage.kv.list()] as [string, { expiresAt: number }][];
+      expect(stored.expiresAt).toBeGreaterThan(Date.now());
+      instance.ctx.storage.kv.put(key, { ...stored, expiresAt: Date.now() - 1 });
+    });
+
+    expect(await claim(stub, secret.toHex()))
+      .toBe("error:This sign-in attempt has expired. Please try again.");
+  });
+
   it("stores only the ticket's hash", async () => {
     const stub = fresh();
     const { secret, hash } = await newSecretToken();

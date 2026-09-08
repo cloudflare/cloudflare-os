@@ -482,7 +482,7 @@ describe("connect initiation nonce", () => {
     // Workshop has confirmed the finishing browser is the owner's: facets read the live key directly.
     const context = fakeContext();
     stubOAuthServer();
-    const reconnectComplete = vi.fn(async () => HANDOFF);
+    const reconnectComplete = vi.fn(async (_stageId: string) => HANDOFF);
     const complete = vi.fn(async () => HANDOFF);
     context.storage.kv.put("server", server("https://mcp.example/mcp"));
     context.storage.kv.put("callback", { complete, reconnectComplete });
@@ -502,13 +502,54 @@ describe("connect initiation nonce", () => {
     expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token)
       .toBe("old-token");
     expect(context.storage.kv.get("reconnecting")).toBe(true);
+    // The Workshop was told which stage this completion produced, and only that id commits it.
+    const stageId = reconnectComplete.mock.calls[0][0];
+    expect(stageId).toMatch(/^[0-9a-f]{64}$/);
+    await expect(account.commitReconnect("0".repeat(64))).rejects.toThrow(/No reconnect is awaiting/);
+    expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token)
+      .toBe("old-token");
+    expect(context.storage.kv.get("stagedCredentials")).toBeDefined();
 
-    await account.commitReconnect();
+    await account.commitReconnect(stageId);
     expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token)
       .toBe("access-token");
     expect(context.storage.kv.get("reconnecting")).toBeUndefined();
     expect(context.storage.kv.get("stagedCredentials")).toBeUndefined();
-    await expect(account.commitReconnect()).rejects.toThrow(/No reconnect is awaiting/);
+    await expect(account.commitReconnect(stageId)).rejects.toThrow(/No reconnect is awaiting/);
+  });
+
+  it("re-authorizes a reconnect rather than refreshing the live tokens", async () => {
+    // The live tokens are refreshable, so `auth()` would refresh them if it saw them — and against a
+    // server that rotates refresh tokens that burns the live one before the handoff is redeemed.
+    // A reconnect hides them from the SDK, so it redirects and the live record is untouched.
+    const context = fakeContext();
+    stubOAuthServer();
+    const tokenRequests: string[] = [];
+    const upstream = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (String(input) === "https://auth.example/token") {
+        tokenRequests.push(String(init?.body));
+      }
+      return upstream(input, init);
+    });
+    const live = {
+      access_token: "old-token", refresh_token: "old-refresh", token_type: "Bearer", expiresAt: 1,
+    };
+    context.storage.kv.put("server", server("https://mcp.example/mcp"));
+    context.storage.kv.put("callback", {
+      complete: vi.fn(async () => HANDOFF), reconnectComplete: vi.fn(async () => HANDOFF),
+    });
+    context.storage.kv.put("tokens", live);
+    const account = new OAuthFlowAccount(context as never, {});
+    const nonce = "8".repeat(64);
+    await account.prepareReconnect(nonce);
+
+    const outcome = await account.beginConnect(nonce, null);
+
+    expect(outcome.kind).toBe("redirect");
+    expect(tokenRequests.filter(body => body.includes("refresh_token"))).toEqual([]);
+    expect(context.storage.kv.get("tokens")).toEqual(live);
+    expect(context.storage.kv.get("stagedCredentials")).toBeUndefined();
   });
 });
 

@@ -119,6 +119,13 @@ function fakeApi(
   } as unknown as RpcStub<AuthenticatedApi>
 }
 
+// The popup openConnectWindow gets back: opened blank, then navigated to the connect URL.
+function mockConnectPopup() {
+  const popup = { close() {}, opener: window as Window | null, location: { replace: vi.fn<(url: string) => void>() } }
+  vi.spyOn(window, 'open').mockImplementation(() => popup as unknown as Window)
+  return popup
+}
+
 describe('ObserverConfigModal account selection', () => {
   let root: Root | undefined
   let container: HTMLDivElement | undefined
@@ -191,7 +198,7 @@ describe('ObserverConfigModal account selection', () => {
     const connectAccount = vi.fn<
       (vendorId: string, resourceUrlPatterns?: string[]) => Promise<{ url: string }>
     >().mockResolvedValue({ url: 'https://accounts.google.test/oauth' })
-    vi.spyOn(window, 'open').mockImplementation(() => ({ close() {} }) as unknown as Window)
+    const popup = mockConnectPopup()
     const rendered = await render([], {
       api: fakeApi([], { connectAccount }),
     })
@@ -202,9 +209,8 @@ describe('ObserverConfigModal account selection', () => {
     await act(async () => connect!.click())
 
     expect(connectAccount).toHaveBeenCalledWith('google', [DOC_RESOURCE.urlPattern])
-    expect(window.open).toHaveBeenCalledWith(
-      'https://accounts.google.test/oauth', 'gadgets-connect', 'popup,width=520,height=680',
-    )
+    expect(window.open).toHaveBeenCalledWith('', 'gadgets-connect', 'popup,width=520,height=680')
+    expect(popup.location.replace).toHaveBeenCalledWith('https://accounts.google.test/oauth')
   })
 
   it('expands an existing account grant before allowing verification', async () => {
@@ -212,7 +218,7 @@ describe('ObserverConfigModal account selection', () => {
       (accountId: number, resourceUrlPatterns: string[]) => Promise<{ url?: string }>
     >()
       .mockResolvedValue({ url: 'https://accounts.google.test/oauth' })
-    vi.spyOn(window, 'open').mockImplementation(() => ({ close() {} }) as unknown as Window)
+    const popup = mockConnectPopup()
     const underScoped = account(1, 'dan@cloudflare.com', [GMAIL_RESOURCE_PATTERN])
     const rendered = await render([underScoped], {
       api: fakeApi([underScoped], { ensureAccountResources }),
@@ -229,9 +235,8 @@ describe('ObserverConfigModal account selection', () => {
     await act(async () => grant!.click())
 
     expect(ensureAccountResources).toHaveBeenCalledWith(1, [DOC_RESOURCE.urlPattern])
-    expect(window.open).toHaveBeenCalledWith(
-      'https://accounts.google.test/oauth', 'gadgets-connect', 'popup,width=520,height=680',
-    )
+    expect(window.open).toHaveBeenCalledWith('', 'gadgets-connect', 'popup,width=520,height=680')
+    expect(popup.location.replace).toHaveBeenCalledWith('https://accounts.google.test/oauth')
     expect(rendered.textContent).not.toContain('Ready')
     expect(verify?.disabled).toBe(true)
   })
@@ -240,7 +245,7 @@ describe('ObserverConfigModal account selection', () => {
     const ensureAccountResources = vi.fn<
       (accountId: number, resourceUrlPatterns: string[]) => Promise<{ url?: string }>
     >().mockResolvedValue({ url: 'https://accounts.google.test/oauth' })
-    vi.spyOn(window, 'open').mockImplementation(() => ({ close() {} }) as unknown as Window)
+    const popup = mockConnectPopup()
     const legacy = account(1, 'dan@cloudflare.com')
     const rendered = await render([legacy], {
       api: fakeApi([legacy], { ensureAccountResources }),
@@ -256,9 +261,8 @@ describe('ObserverConfigModal account selection', () => {
     await act(async () => grant!.click())
 
     expect(ensureAccountResources).toHaveBeenCalledWith(1, [DOC_RESOURCE.urlPattern])
-    expect(window.open).toHaveBeenCalledWith(
-      'https://accounts.google.test/oauth', 'gadgets-connect', 'popup,width=520,height=680',
-    )
+    expect(window.open).toHaveBeenCalledWith('', 'gadgets-connect', 'popup,width=520,height=680')
+    expect(popup.location.replace).toHaveBeenCalledWith('https://accounts.google.test/oauth')
   })
 
   it('allows verification when the gatekeeper confirms an unknown grant needs no OAuth', async () => {

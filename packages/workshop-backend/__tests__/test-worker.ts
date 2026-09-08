@@ -19,9 +19,11 @@ const accountCalls = new Map<string, string[]>();
 
 /**
  * A gatekeeper account as the Workshop sees one: a persistent stub it can store and call back into.
- * Records calls by `props.name` so a test can ask any instance what happened (`calls()`).
+ * Records calls by `props.name` so a test can ask any instance what happened (`calls()`); with
+ * `failRevoke`, every `revoke()` rejects after being recorded.
  */
-export class FakeGatekeeperAccount extends WorkerEntrypoint<unknown, { name: string }> {
+export class FakeGatekeeperAccount
+    extends WorkerEntrypoint<unknown, { name: string; failRevoke?: boolean }> {
   #record(call: string) {
     const calls = accountCalls.get(this.ctx.props.name) ?? [];
     calls.push(call);
@@ -35,10 +37,11 @@ export class FakeGatekeeperAccount extends WorkerEntrypoint<unknown, { name: str
 
   async revoke(): Promise<void> {
     this.#record("revoke");
+    if (this.ctx.props.failRevoke) throw new Error("revoke failed");
   }
 
-  async commitReconnect(): Promise<void> {
-    this.#record("commitReconnect");
+  async commitReconnect(stageId: string): Promise<void> {
+    this.#record(`commitReconnect(${stageId})`);
   }
 
   async calls(): Promise<string[]> {

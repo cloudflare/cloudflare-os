@@ -403,22 +403,21 @@ export class UserAccount extends DurableObject<Env> {
       let grant = await exchangeAuthCode(
           code, this.env.CLIENT_ID, this.env.CLIENT_SECRET, getBaseUrl(this.env) + "/oauth");
 
-      let reconnecting = !!this.ctx.storage.kv.get<boolean>("reconnecting");
-      if (reconnecting) {
-        // The reconnect URL is a bearer capability, so the new grant is only staged until the
-        // Workshop has confirmed the browser that finished the flow is the owner's (see
-        // commitReconnect). Bound gadgets keep reading the current token meanwhile.
-        stageCredentials(this.ctx.storage.kv, grant, Date.now());
-      } else {
-        this.#writeGrant(grant);
-      }
+      // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
+      // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
+      // gadgets keep reading the current token meanwhile.
+      let stageId = this.ctx.storage.kv.get<boolean>("reconnecting")
+          ? stageCredentials(this.ctx.storage.kv, grant, Date.now())
+          : undefined;
+      if (stageId === undefined) this.#writeGrant(grant);
       this.ctx.storage.kv.delete("requestedScopes");
-      return { callback, grant, reconnecting };
+      return { callback, grant, stageId };
     });
 
     let handoff: ConnectHandoff;
-    if (completion.reconnecting) {
-      handoff = await completion.callback.reconnectComplete(completion.grant.accessToken.expires);
+    if (completion.stageId !== undefined) {
+      handoff = await completion.callback.reconnectComplete(
+          completion.stageId, completion.grant.accessToken.expires);
     } else {
       try {
         let props: SlackUserImplProps = { userObjectId: this.ctx.id.toString() };
@@ -438,10 +437,10 @@ export class UserAccount extends DurableObject<Env> {
     return handoff;
   }
 
-  /** Makes the grant staged by the last reconnect live; see GatekeeperUser.commitReconnect. */
-  async commitReconnect(): Promise<void> {
+  /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
+  async commitReconnect(stageId: string): Promise<void> {
     await this.#updateCredentials(async () => {
-      let grant = commitStagedCredentials<SlackOAuthGrant>(this.ctx.storage.kv, Date.now());
+      let grant = commitStagedCredentials<SlackOAuthGrant>(this.ctx.storage.kv, Date.now(), stageId);
       if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
       this.#writeGrant(grant);
       this.ctx.storage.kv.delete("reconnecting");
@@ -652,8 +651,8 @@ export class SlackUserImpl extends WorkerEntrypoint<Env, SlackUserImplProps>
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
-  async commitReconnect(): Promise<void> {
-    await this.#account().commitReconnect();
+  async commitReconnect(stageId: string): Promise<void> {
+    await this.#account().commitReconnect(stageId);
   }
 
   async ensureResources(resourceUrlPatterns: string[]): Promise<{ url?: string }> {

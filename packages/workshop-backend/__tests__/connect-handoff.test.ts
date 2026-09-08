@@ -24,7 +24,8 @@ type UserInternals = UserDurableObject & {
   };
   ctx: DurableObjectState & {
     exports: {
-      FakeGatekeeperAccount(options: { props: { name: string } }): Fetcher<FakeGatekeeperAccount>;
+      FakeGatekeeperAccount(options: { props: { name: string; failRevoke?: boolean } })
+        : Fetcher<FakeGatekeeperAccount>;
       TestConnectCallback(options: {
         props: { userId: string; accountId: number; vendorId: string };
       }): Fetcher<GatekeeperConnectCallbackImpl>;
@@ -45,10 +46,12 @@ function freshUser() {
 
 // An account stub the DO can persist (a WorkerEntrypoint reached through ctx.exports, like a real
 // gatekeeper's), viewed as the GatekeeperUser the kernel expects.
-function fakeAccount(user: UserInternals, name: string) {
-  const account = user.ctx.exports.FakeGatekeeperAccount({ props: { name } });
+function fakeAccount(user: UserInternals, name: string, failRevoke?: boolean) {
+  const account = user.ctx.exports.FakeGatekeeperAccount({ props: { name, failRevoke } });
   return { account: account as unknown as Fetcher<GatekeeperUser>, calls: () => account.calls() };
 }
+
+const STAGE_ID = "5".repeat(64);
 
 // Redeems over the user's stub the way the browser does, reporting the outcome as a value: a native
 // RPC promise left to `.rejects` is also flagged as an unhandled rejection by the pool.
@@ -125,7 +128,7 @@ describe("connect handoff", () => {
     expect(await redeem(stub, ticket)).toBe(EXPIRED);
   });
 
-  it("refuses an expired ticket and revokes the unconfirmed grant from the alarm", async () => {
+  it("refuses an expired ticket, revoking the unconfirmed grant whether redeemed or swept", async () => {
     const { stub, inDo } = freshUser();
     const { ticket } = await inDo(user =>
       user.stagePendingConnect(0, fakeAccount(user, "expired").account, "github"));
@@ -137,14 +140,39 @@ describe("connect handoff", () => {
     expect(await redeem(stub, ticket)).toBe(EXPIRED);
     await inDo(async user => {
       expect(user.storage.connectedAccounts.get(0)).toBeUndefined();
-      // The refused redemption consumed its record; the alarm sweeps the one nobody redeemed.
+      // The refused redemption consumed its record — and revoked the grant it could no longer
+      // activate, which the alarm would otherwise never see; the alarm sweeps the other.
+      expect(await fakeAccount(user, "expired").calls()).toEqual(["describe", "revoke"]);
       expect(pendingCount(user)).toBe(1);
       await user.alarm();
       expect(pendingCount(user)).toBe(0);
-      expect(await fakeAccount(user, "expired").calls()).toEqual(["describe"]);
       expect(await fakeAccount(user, "swept").calls()).toEqual(["describe", "revoke"]);
       expect(await user.ctx.storage.getAlarm()).toBeNull();
     });
+  });
+
+  it("revokes a staged connect it failed to persist, and reports the failure", async () => {
+    const { stub, inDo } = freshUser();
+    const { ticket } = await inDo(async user => {
+      user.storage.nextAccountId.put(1);
+      // The same identity is already connected, so persisting runs the dedupe path, whose revoke of
+      // the duplicate grant fails here — the one way putConnectedAccount itself can throw.
+      user.storage.connectedAccounts.put({
+        id: 0, account: fakeAccount(user, "dup").account, vendorId: "github",
+        description: { displayName: "dup", uniqueName: "dup" },
+      });
+      return user.stagePendingConnect(1, fakeAccount(user, "dup", true).account, "github");
+    });
+
+    expect(await redeem(stub, ticket)).toBe("revoke failed");
+    await inDo(async user => {
+      expect(user.storage.connectedAccounts.get(1)).toBeUndefined();
+      expect(pendingCount(user)).toBe(0);
+      // The dedupe revoke that threw, then the best-effort revoke of the dropped grant.
+      expect(await fakeAccount(user, "dup").calls()).toEqual(["describe", "revoke", "revoke"]);
+    });
+    // The ticket was consumed by the attempt.
+    expect(await redeem(stub, ticket)).toBe(EXPIRED);
   });
 
   it("commits a staged reconnect and then marks the credentials restored", async () => {
@@ -156,7 +184,7 @@ describe("connect handoff", () => {
         id: 0, account, vendorId: "github", description: { displayName: "old" },
         credentialsExpired: true,
       });
-      const handoff = await user.stagePendingRestore(0, new Date("2027-06-01"));
+      const handoff = await user.stagePendingRestore(0, STAGE_ID, new Date("2027-06-01"));
       expect(await fakeAccount(user, "renewed").calls()).toEqual([]);
       expect(user.storage.connectedAccounts.get(0)?.credentialsExpired).toBe(true);
       return handoff;
@@ -164,7 +192,9 @@ describe("connect handoff", () => {
 
     await stub.completeConnectHandoff(ticket);
     await inDo(async user => {
-      expect(await fakeAccount(user, "renewed").calls()).toEqual(["commitReconnect", "describe"]);
+      // The commit names the stage this ticket was minted for, not "whatever is staged".
+      expect(await fakeAccount(user, "renewed").calls())
+        .toEqual([`commitReconnect(${STAGE_ID})`, "describe"]);
       expect(user.storage.connectedAccounts.get(0)).toMatchObject({
         credentialsExpired: false, credentialExpiresAt: new Date("2027-06-01"),
         description: { displayName: "renewed" },
@@ -180,7 +210,7 @@ describe("connect handoff", () => {
         id: 0, account: fakeAccount(user, "live").account, vendorId: "github",
         description: { displayName: "live" },
       });
-      await user.stagePendingRestore(0);
+      await user.stagePendingRestore(0, STAGE_ID);
       expirePending(user);
       await user.alarm();
       expect(pendingCount(user)).toBe(0);
@@ -215,7 +245,7 @@ describe("connect handoff", () => {
       const callback = user.ctx.exports.TestConnectCallback({
         props: { userId: user.ctx.id.toString(), accountId: 0, vendorId: "github" },
       });
-      await callback.reconnectComplete();
+      await callback.reconnectComplete(STAGE_ID);
       expect(pendingCount(user)).toBe(1);
       expect(user.storage.nextAccountId.get()).toBe(1);
     });

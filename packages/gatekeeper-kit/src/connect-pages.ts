@@ -137,12 +137,22 @@ function scriptLiteral(value: unknown): string {
 }
 
 /**
- * The page a connect flow lands on when it has finished. It posts the handoff ticket to the window
- * that opened it — and *only* to `handoff.targetOrigin`, the Workshop's origin, so a browser drops
- * the message if the opener is anyone else — then closes itself. Without an opener it can reach no
- * Workshop, so it tells the user to go back and start again; a flow opened from a phished link ends
- * here with its ticket unredeemed. The connection itself is inert until the Workshop redeems the
- * ticket on the initiating user's session (see `GatekeeperVendor.connectAccount`).
+ * The page a connect flow lands on when it has finished. It delivers the handoff ticket to the
+ * Workshop and closes itself, over one of two transports:
+ *
+ * - `postMessage` to the window that opened it — and *only* to `handoff.targetOrigin`, the
+ *   Workshop's origin, so a browser drops the message if the opener is anyone else. This is the
+ *   sign-in path (the login page keeps the popup handle) and the dev-server path, where the Workshop
+ *   is on another origin.
+ * - A `BroadcastChannel` named `CONNECT_HANDOFF_MESSAGE_TYPE`, when this page is itself on the
+ *   Workshop's origin and has no opener. The Workshop disowns connect popups before navigating them
+ *   (so no provider page ever holds a handle to the Workshop window), and a same-origin channel is
+ *   the only thing a disowned popup can still reach; the browser scopes it to that origin.
+ *
+ * Without either it can reach no Workshop, so it tells the user to go back and start again; a flow
+ * opened from a phished link on another origin ends here with its ticket unredeemed. The connection
+ * itself is inert until the Workshop redeems the ticket on the initiating user's session (see
+ * `GatekeeperVendor.connectAccount`).
  * @param handoff The handoff returned by `GatekeeperConnectCallback.complete()` /
  *   `reconnectComplete()`. Its `targetOrigin` must be exactly an origin.
  * @returns Escaped HTML; serve it with `htmlResponse()`.
@@ -173,16 +183,21 @@ export function connectHandoffPageHtml(handoff: ConnectHandoff): string {
 <p class="sub" id="detail">Returning to the Workshop…</p></main>
 <script>
 (function () {
+  var envelope = ${scriptLiteral(envelope)};
+  var target = ${scriptLiteral(origin)};
   var opener = window.opener;
   if (opener && !opener.closed) {
-    opener.postMessage(${scriptLiteral(envelope)}, ${scriptLiteral(origin)});
-    // The Workshop closes this window once it has redeemed the ticket; this is the fallback.
-    setTimeout(function () { window.close(); }, 2000);
+    opener.postMessage(envelope, target);
+  } else if (window.location.origin === target && "BroadcastChannel" in window) {
+    new BroadcastChannel(${scriptLiteral(CONNECT_HANDOFF_MESSAGE_TYPE)}).postMessage(envelope);
   } else {
     document.getElementById("title").textContent = "This window couldn't reach the Workshop";
     document.getElementById("detail").textContent =
       "Go back to the Workshop tab and start the connection again.";
+    return;
   }
+  // The Workshop closes this window once it has redeemed the ticket; this is the fallback.
+  setTimeout(function () { window.close(); }, 2000);
 })();
 </script></body></html>`;
 }

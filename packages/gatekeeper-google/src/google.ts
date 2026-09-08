@@ -504,8 +504,8 @@ export class UserAccount extends DurableObject<Env> {
           refreshToken: response.refreshToken, accessToken: response.accessToken,
           grantedScopes: response.grantedScopes, requestedResources: flow.requestedResources,
         };
-        stageCredentials(this.ctx.storage.kv, staged, Date.now());
-        return { callback, mode: flow.mode };
+        let stageId = stageCredentials(this.ctx.storage.kv, staged, Date.now());
+        return { callback, mode: flow.mode, stageId };
       }
 
       this.ctx.storage.kv.put<string>("refreshToken", response.refreshToken);
@@ -514,13 +514,13 @@ export class UserAccount extends DurableObject<Env> {
       this.#mintFailure = undefined;
       this.ctx.storage.kv.put<string[]>("grantedScopes", response.grantedScopes);
       mergeGrantedResources(this.ctx.storage.kv, flow.requestedResources);
-      return { callback, mode: flow.mode };
+      return { callback, mode: flow.mode, stageId: undefined };
     });
 
     let callback = completion.callback;
     let handoff: ConnectHandoff;
-    if (completion.mode === "reconnect") {
-      handoff = await callback.reconnectComplete();
+    if (completion.stageId !== undefined) {
+      handoff = await callback.reconnectComplete(completion.stageId);
     } else {
       try {
         let props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
@@ -541,10 +541,11 @@ export class UserAccount extends DurableObject<Env> {
     return handoff;
   }
 
-  /** Makes the grant staged by the last reconnect live; see GatekeeperUser.commitReconnect. */
-  async commitReconnect(): Promise<void> {
+  /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
+  async commitReconnect(stageId: string): Promise<void> {
     await this.#credentials.run(async () => {
-      let staged = commitStagedCredentials<StagedGoogleCredentials>(this.ctx.storage.kv, Date.now());
+      let staged = commitStagedCredentials<StagedGoogleCredentials>(
+          this.ctx.storage.kv, Date.now(), stageId);
       if (!staged) throw new Error("No reconnect is awaiting confirmation. Please try again.");
       this.ctx.storage.kv.put<string>("refreshToken", staged.refreshToken);
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", staged.accessToken);
@@ -867,9 +868,9 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
-  async commitReconnect(): Promise<void> {
+  async commitReconnect(stageId: string): Promise<void> {
     let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
-    await this.ctx.exports.UserAccount.get(id).commitReconnect();
+    await this.ctx.exports.UserAccount.get(id).commitReconnect(stageId);
   }
 
   async ensureResources(resourceUrlPatterns: string[]): Promise<{url?: string}> {

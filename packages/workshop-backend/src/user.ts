@@ -44,6 +44,9 @@ type PendingHandoffRecord = {
   credentialExpiresAt?: Date;
   // The staged account, present for `kind: "connect"` only; becomes the ConnectedAccountRecord.
   connect?: Pick<ConnectedAccountRecord, "account" | "description" | "vendorId">;
+  // The gatekeeper's id for the staged credentials, present for `kind: "restore"` only; passed back
+  // in commitReconnect() so this ticket can activate no other stage's credentials.
+  stageId?: string;
 };
 
 /**
@@ -1700,14 +1703,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     });
   }
 
-  /** A gatekeeper finished a reconnect/ensureResources flow; its credentials stay staged there. */
-  stagePendingRestore(accountId: number, credentialExpiresAt?: Date): Promise<ConnectHandoff> {
-    return this.#stagePendingHandoff({ kind: "restore", accountId, credentialExpiresAt });
+  /**
+   * A gatekeeper finished a reconnect/ensureResources flow; its credentials stay staged there under
+   * `stageId`, which commitReconnect() names so the ticket activates exactly those credentials.
+   */
+  stagePendingRestore(accountId: number, stageId: string, credentialExpiresAt?: Date)
+      : Promise<ConnectHandoff> {
+    return this.#stagePendingHandoff({ kind: "restore", accountId, stageId, credentialExpiresAt });
   }
 
   /**
-   * Redeem a ticket posted to this user's browser. The record is deleted before anything else, so a
-   * ticket is single-use however the rest goes (DO input gates serialize the read and delete).
+   * Redeem a ticket delivered to this user's browser. The record is deleted before anything else, so
+   * a ticket is single-use however the rest goes (DO input gates serialize the read and delete); a
+   * staged connect the redemption cannot activate is dropped like an unredeemed one, so no grant is
+   * left reachable in a gatekeeper with nothing to revoke it.
    */
   async completeConnectHandoff(ticket: string): Promise<void> {
     let record: PendingHandoffRecord | undefined;
@@ -1717,14 +1726,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       if (record) this.storage.pendingHandoffs.delete(ticketHash);
     }
     if (!record || record.expiresAt.getTime() <= Date.now()) {
+      if (record) await this.#dropPendingConnect(record);
       throw new Error("This connection attempt has expired. Please try again.");
     }
 
     if (record.kind === "connect") {
       if (!record.connect) throw new Error("Corrupt pending connection.");
-      await this.putConnectedAccount({
-        id: record.accountId, ...record.connect, credentialExpiresAt: record.credentialExpiresAt,
-      });
+      try {
+        await this.putConnectedAccount({
+          id: record.accountId, ...record.connect, credentialExpiresAt: record.credentialExpiresAt,
+        });
+      } catch (err) {
+        await this.#dropPendingConnect(record);
+        throw err;
+      }
       logger.info("account connected", {
         event: "account.connect.completed", vendorId: record.connect.vendorId,
         accountId: record.accountId,
@@ -1732,13 +1747,44 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     } else {
       let account = this.storage.connectedAccounts.get(record.accountId);
       if (!account) throw new Error("No such account.");
-      await account.account.commitReconnect();
-      await this.markCredentialsRestored(record.accountId, record.credentialExpiresAt);
+      if (record.stageId === undefined) throw new Error("Corrupt pending reconnect.");
+      // A failed commit changed nothing live, and the gatekeeper's stage expires on its own.
+      await account.account.commitReconnect(record.stageId);
+      try {
+        await this.markCredentialsRestored(record.accountId, record.credentialExpiresAt);
+      } catch (err) {
+        // The credentials are live but the account still shows as expired; the next successful
+        // operation or a credentialsRestored() from the gatekeeper clears that.
+        logger.error("committed reconnect could not be marked restored", {
+          event: "account.reconnect.mark.failed", vendorId: account.vendorId,
+          accountId: record.accountId, error: err,
+        });
+        throw err;
+      }
       logger.info("account credentials restored", {
         event: "account.reconnect.completed", vendorId: account.vendorId,
         accountId: record.accountId,
       });
     }
+  }
+
+  // Drop a pending handoff that will never activate. A staged connect holds a victim's (or just an
+  // abandoned) grant in a reachable gatekeeper DO, so it is revoked, best-effort. A staged restore
+  // left nothing live: the gatekeeper's staged credentials expire on their own.
+  async #dropPendingConnect(pending: PendingHandoffRecord): Promise<void> {
+    if (pending.kind === "connect" && pending.connect) {
+      try {
+        await pending.connect.account.revoke();
+      } catch (err) {
+        logger.warn("failed to revoke unconfirmed connection", {
+          event: "connect.handoff.revoke.failed", vendorId: pending.connect.vendorId,
+          accountId: pending.accountId, error: err,
+        });
+      }
+    }
+    logger.info("unconfirmed connection dropped", {
+      event: "connect.handoff.expired", handoffKind: pending.kind, accountId: pending.accountId,
+    });
   }
 
   // Arm the alarm for the soonest pending expiry (the alarm is used for nothing else).
@@ -1755,11 +1801,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  /**
-   * Drop pending handoffs whose ticket never came back. A staged connect holds a victim's (or just an
-   * abandoned) grant in a reachable gatekeeper DO, so it is revoked, best-effort. A staged restore
-   * left nothing live: the gatekeeper's staged credentials expire on their own.
-   */
+  /** Drop pending handoffs whose ticket never came back (see #dropPendingConnect). */
   async alarm(): Promise<void> {
     let now = Date.now();
     let expired: PendingHandoffRecord[] = [];
@@ -1776,19 +1818,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     for (let pending of expired) {
       this.storage.pendingHandoffs.delete(pending.ticketHash);
-      if (pending.kind === "connect" && pending.connect) {
-        try {
-          await pending.connect.account.revoke();
-        } catch (err) {
-          logger.warn("failed to revoke unconfirmed connection", {
-            event: "connect.handoff.revoke.failed", vendorId: pending.connect.vendorId,
-            accountId: pending.accountId, error: err,
-          });
-        }
-      }
-      logger.info("unconfirmed connection dropped", {
-        event: "connect.handoff.expired", handoffKind: pending.kind, accountId: pending.accountId,
-      });
+      await this.#dropPendingConnect(pending);
     }
     await this.#armHandoffSweep();
   }
@@ -1874,8 +1904,8 @@ export class GatekeeperConnectCallbackImpl
     return this.#getUserStub().stagePendingConnect(accountId, account, vendorId, expiresAt);
   }
 
-  reconnectComplete(expiresAt?: Date): Promise<ConnectHandoff> {
-    return this.#getUserStub().stagePendingRestore(this.ctx.props.accountId, expiresAt);
+  reconnectComplete(stageId: string, expiresAt?: Date): Promise<ConnectHandoff> {
+    return this.#getUserStub().stagePendingRestore(this.ctx.props.accountId, stageId, expiresAt);
   }
 
   async credentialsExpired(): Promise<void> {

@@ -457,9 +457,10 @@ export class UserAccount extends DurableObject<Env> {
       // The reconnect URL is a bearer capability, so the new credentials are only staged until the
       // Workshop has confirmed the browser that finished the flow is the owner's (see
       // commitReconnect). Bound gadgets keep reading the current token meanwhile.
-      stageCredentials<StoredCredentials>(this.ctx.storage.kv, { baseUrl, token }, Date.now());
+      const stageId = stageCredentials<StoredCredentials>(
+          this.ctx.storage.kv, { baseUrl, token }, Date.now());
       try {
-        handoff = await callback.reconnectComplete();
+        handoff = await callback.reconnectComplete(stageId);
       } catch (e: any) {
         return { kind: "error", message: `Failed to notify workshop: ${e?.message ?? e}` };
       }
@@ -479,9 +480,9 @@ export class UserAccount extends DurableObject<Env> {
     return { kind: "ok", handoff };
   }
 
-  /** Makes the credentials staged by the last reconnect live; see GatekeeperUser.commitReconnect. */
-  async commitReconnect(): Promise<void> {
-    const creds = commitStagedCredentials<StoredCredentials>(this.ctx.storage.kv, Date.now());
+  /** Makes the credentials staged under `stageId` live; see GatekeeperUser.commitReconnect. */
+  async commitReconnect(stageId: string): Promise<void> {
+    const creds = commitStagedCredentials<StoredCredentials>(this.ctx.storage.kv, Date.now(), stageId);
     if (!creds) throw new Error("No reconnect is awaiting confirmation. Please try again.");
     this.ctx.storage.kv.put<StoredCredentials>("credentials", creds);
     this.ctx.storage.kv.put("expiredNotified", false);
@@ -683,8 +684,8 @@ export class HomeAssistantUserImpl
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${nonce}` };
   }
 
-  async commitReconnect(): Promise<void> {
-    await this.#userAccount().commitReconnect();
+  async commitReconnect(stageId: string): Promise<void> {
+    await this.#userAccount().commitReconnect(stageId);
   }
 
   async ensureResources(_resourceUrlPatterns: string[]): Promise<{url?: string}> {

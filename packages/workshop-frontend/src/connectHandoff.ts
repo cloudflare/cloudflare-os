@@ -1,7 +1,8 @@
 // The browser half of the gatekeeper connect handoff (see `GatekeeperVendor.connectAccount` in
-// workshop-shared). A connect URL is a bearer capability, so the Workshop opens it as a popup that
-// keeps this window as its opener; when the flow finishes, the gatekeeper's page posts a single-use
-// ticket back here, and redeeming it over our authenticated session is what activates the grant.
+// workshop-shared). A connect URL is a bearer capability, so the Workshop opens it as a popup; when
+// the flow finishes, the gatekeeper's page delivers a single-use ticket back here — over a
+// same-origin BroadcastChannel, or by postMessage to its opener where one is kept — and redeeming it
+// over our authenticated session is what activates the grant.
 
 import { useEffect } from 'react'
 import type { RpcStub } from 'capnweb'
@@ -29,13 +30,11 @@ export function gatekeeperOrigin(): string {
 const TICKET_PATTERN = /^[0-9a-f]{64}$/
 
 /**
- * The ticket a `message` event carries, or null unless it came from the gatekeeper origin with a
- * well-formed handoff envelope. Shared by the connect listener and the sign-in buttons, so both apply
- * exactly the same checks.
+ * The ticket a handoff envelope carries, or null unless `data` is a well-formed one. Origin is the
+ * caller's business: a `message` event's must be checked (`connectHandoffTicket`), a BroadcastChannel
+ * is same-origin by construction.
  */
-export function connectHandoffTicket(event: MessageEvent): string | null {
-  if (event.origin !== gatekeeperOrigin()) return null
-  const data: unknown = event.data
+export function parseHandoffEnvelope(data: unknown): string | null {
   if (typeof data !== 'object' || data === null) return null
   const { type, ticket } = data as { type?: unknown; ticket?: unknown }
   if (type !== CONNECT_HANDOFF_MESSAGE_TYPE) return null
@@ -44,25 +43,48 @@ export function connectHandoffTicket(event: MessageEvent): string | null {
 }
 
 /**
- * Opens a connect / reconnect / ensure-resources URL as a popup that keeps this window as its
- * opener — the opener *is* the channel the completion ticket comes back on, so `noopener` (which
- * `noreferrer` implies) must not be used here. Throws when the browser blocked the popup.
+ * The ticket a `message` event carries, or null unless it came from the gatekeeper origin with a
+ * well-formed handoff envelope. Shared by the connect listener and the sign-in buttons, so both apply
+ * exactly the same checks.
+ */
+export function connectHandoffTicket(event: MessageEvent): string | null {
+  if (event.origin !== gatekeeperOrigin()) return null
+  return parseHandoffEnvelope(event.data)
+}
+
+/**
+ * Opens a connect / reconnect / ensure-resources URL as a popup. The popup is opened empty, disowned,
+ * and only then navigated, so the provider's pages never hold `window.opener`: a connect flow can
+ * land on pages the deployment does not vouch for — notably an MCP server the user pasted — and an
+ * opener handle would let such a page navigate this authenticated tab to a phishing page (reverse
+ * tabnabbing). Disowning is done by hand rather than with the `noopener` feature because that makes
+ * `window.open()` return null even on success, which is indistinguishable from a pop-up block. The
+ * completion page reaches us over a same-origin BroadcastChannel instead (`useConnectHandoffListener`).
+ *
+ * Under the Vite dev server the Workshop and the gatekeepers are on different origins, so a channel
+ * could not reach us; there the popup keeps its opener and the page falls back to `postMessage`.
+ * Throws when the browser blocked the popup.
  */
 export function openConnectWindow(url: string): Window {
-  // NB: with "noopener", window.open() returns null even on success, so a block would be
-  // indistinguishable from a successful open.
-  const popup = window.open(url, 'gadgets-connect', 'popup,width=520,height=680')
+  const popup = window.open('', 'gadgets-connect', 'popup,width=520,height=680')
   if (!popup) throw new Error('Pop-up blocked. Please allow pop-ups and try again.')
+  if (gatekeeperOrigin() === window.location.origin) popup.opener = null
+  popup.location.replace(url)
   return popup
 }
 
 /**
- * Listens for the ticket a connect popup posts to this window and redeems it on the user's
- * session. Only messages from the gatekeeper origin carrying a well-formed envelope are considered;
- * anything else is ignored silently. The popup is closed once the Workshop has accepted the ticket
- * (the page closes itself a moment later regardless). Security rests on the ticket being scoped to
- * the user who started the flow, not on which window sent it, so a Workshop tab that reloaded
- * mid-flow (and has no popup handle) still completes.
+ * Listens for the ticket a connect popup delivers and redeems it on the user's session. Two
+ * transports are watched: a BroadcastChannel named `CONNECT_HANDOFF_MESSAGE_TYPE` (a disowned popup
+ * on our own origin; the browser scopes the channel to that origin) and `message` events from the
+ * gatekeeper origin (a popup that kept its opener, as under the dev server). Only well-formed
+ * envelopes are considered; anything else is ignored silently. A popup that posted is closed once
+ * the Workshop has accepted the ticket; a broadcast has no source, so that page closes itself.
+ *
+ * Security rests on the ticket being scoped to the user who started the flow, not on which window
+ * sent it — so a Workshop tab that reloaded mid-flow still completes, and a phished handoff page
+ * opened directly in the victim's own browser broadcasts to the victim's tabs, whose redemption the
+ * server refuses as expired (the ticket belongs to the attacker's session).
  *
  * Pass `null` to listen for nothing: a ticket must be redeemed exactly once, so only one listener may
  * be live per window (see `ConnectHandoffListener` and the blueprint page).
@@ -73,16 +95,27 @@ export function useConnectHandoffListener(
 ): void {
   useEffect(() => {
     if (!authenticatedApi) return
-    const onMessage = (event: MessageEvent) => {
-      const ticket = connectHandoffTicket(event)
-      if (ticket === null) return
-      const source = event.source
+    const redeem = (ticket: string, source: Window | null) => {
       authenticatedApi.completeConnectHandoff(ticket).then(
-        () => { (source as Window | null)?.close?.() },
+        () => { source?.close?.() },
         (err: unknown) => { onError(err instanceof Error ? err.message : String(err)) },
       )
     }
+    const onMessage = (event: MessageEvent) => {
+      const ticket = connectHandoffTicket(event)
+      if (ticket !== null) redeem(ticket, event.source as Window | null)
+    }
     window.addEventListener('message', onMessage)
-    return () => window.removeEventListener('message', onMessage)
+    const channel = 'BroadcastChannel' in globalThis
+      ? new BroadcastChannel(CONNECT_HANDOFF_MESSAGE_TYPE)
+      : null
+    channel?.addEventListener('message', (event: MessageEvent) => {
+      const ticket = parseHandoffEnvelope(event.data)
+      if (ticket !== null) redeem(ticket, null)
+    })
+    return () => {
+      window.removeEventListener('message', onMessage)
+      channel?.close()
+    }
   }, [authenticatedApi, onError])
 }
