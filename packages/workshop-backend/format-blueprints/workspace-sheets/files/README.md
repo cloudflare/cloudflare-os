@@ -219,8 +219,11 @@ The server and client synchronization code support multiple connected clients an
 ## Current limitations
 
 - There is no file import workflow; clipboard operations use tab-separated text.
-- Structural edits and sorting clear local undo/redo history.
-- Formula reference adjustment during row/column changes is limited to references on the current sheet.
+- Structural edits and sorting clear local undo/redo history. Both save the sheet's cells as a
+  whole-sheet replacement without a base revision, so a cell edited by another client in the
+  short window before that save flushes is overwritten without a conflict.
+- Sorting moves formulas with their rows and shifts their relative references, as Excel does.
+- Formula reference adjustment during row/column changes is limited to references on the current sheet; chart ranges and pivot sources on the edited sheet move with it.
 - Formula support is broad but is not intended to be fully compatible with Excel or Google Sheets.
 - Frozen row/column metadata exists in the model, but the current UI does not expose controls for it.
 

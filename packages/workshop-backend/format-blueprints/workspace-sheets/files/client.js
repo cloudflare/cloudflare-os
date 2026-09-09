@@ -1615,12 +1615,14 @@ function queueCellOp(sheetId, ref, value, fmt, baseVersion) {
   pendingCellOps.set(sheetId + "!" + ref, { sheetId, ref, value, fmt, baseVersion });
   scheduleSave();
 }
+// Structure is saved as a whole-workbook snapshot, so `ackedStructure` (what the server last held)
+// lets a remote update be merged with the local changes still pending.
+let ackedStructure = null;
+function structureSnapshot() {
+  return { title: model.title, sheetOrder: model.sheetOrder.slice(), sheets: JSON.parse(JSON.stringify(model.sheets)) };
+}
 function queueStructure() {
-  pendingStructure = {
-    title: model.title,
-    sheetOrder: model.sheetOrder.slice(),
-    sheets: JSON.parse(JSON.stringify(model.sheets)),
-  };
+  pendingStructure = structureSnapshot();
   scheduleSave();
 }
 function queueReplacement(sheetId) {
@@ -1655,6 +1657,7 @@ async function doSave() {
   try {
     const result = await gadget.applyOperation({ senderId: clientId, structure, cellOps, sheetReplacements });
     model.revision = Math.max(model.revision, result.revision || 0);
+    if (structure) ackedStructure = structure;
     // Adopt acknowledged versions without overwriting a newer local edit that
     // was queued while this save was in flight.
     for (const up of result.upserts || []) {
@@ -1904,24 +1907,40 @@ function rewriteAllFormulas(rowAt, rowDelta, colAt, colDelta) {
   }
 }
 
-function rebuildSheetCells(mapFn) {
-  // mapFn(r,c) -> {r,c}|null ; moves cells to new positions.
+// Moves every cell and range-bearing piece of metadata through the row and column maps
+// (`index -> index | null` for deleted). Chart ranges and pivot sources that reference this sheet
+// shrink around deleted lines and grow around inserted ones.
+function rebuildSheetCells(mapRow, mapCol) {
   const old = curCells();
   const next = {};
   for (const [ref, cell] of Object.entries(old)) {
     const rc = parseRef(ref); if (!rc) continue;
-    const nn = mapFn(rc.r, rc.c);
-    if (!nn) continue;
-    next[rcToRef(nn.r, nn.c)] = { ...cell, version: cell.version };
+    const r = mapRow(rc.r), c = mapCol(rc.c);
+    if (r == null || c == null) continue;
+    next[rcToRef(r, c)] = { ...cell, version: cell.version };
   }
   model.cells[activeSheetId] = next;
   if (Array.isArray(curSheet().comments)) {
     curSheet().comments = curSheet().comments.flatMap((comment) => {
       const position = parseRef(comment.ref); if (!position) return [];
-      const moved = mapFn(position.r, position.c); if (!moved) return [];
-      return [{ ...comment, ref: rcToRef(moved.r, moved.c) }];
+      const r = mapRow(position.r), c = mapCol(position.c); if (r == null || c == null) return [];
+      return [{ ...comment, ref: rcToRef(r, c) }];
     });
   }
+  for (const chart of curSheet().charts || []) chart.range = remapRange(chart.range, mapRow, mapCol);
+  for (const id of pivotSheets()) {
+    const pivot = model.sheets[id].pivot;
+    if (pivot.sourceSheetId === activeSheetId) pivot.sourceRange = remapRange(pivot.sourceRange, mapRow, mapCol);
+  }
+}
+function remapRange(text, mapRow, mapCol) {
+  const range = parseChartRange(text); if (!range) return text;
+  const first = (from, to, map) => { for (let i = from; i <= to; i++) { const m = map(i); if (m != null) return m; } return null; };
+  const last = (from, to, map) => { for (let i = to; i >= from; i--) { const m = map(i); if (m != null) return m; } return null; };
+  const r1 = first(range.r1, range.r2, mapRow), r2 = last(range.r1, range.r2, mapRow);
+  const c1 = first(range.c1, range.c2, mapCol), c2 = last(range.c1, range.c2, mapCol);
+  if (r1 == null || c1 == null) return "";
+  return text.includes(":") || r1 !== r2 || c1 !== c2 ? `${rcToRef(r1, c1)}:${rcToRef(r2, c2)}` : rcToRef(r1, c1);
 }
 
 function insertRows(at, count) {
@@ -1931,7 +1950,7 @@ function insertRows(at, count) {
     else if (at <= (sh.filter.endRow ?? sh.rows - 1)) sh.filter.endRow = (sh.filter.endRow ?? sh.rows - 1) + count;
   }
   rewriteAllFormulas(at, count, 0, 0);
-  rebuildSheetCells((r, c) => ({ r: r >= at ? r + count : r, c }));
+  rebuildSheetCells((r) => r >= at ? r + count : r, (c) => c);
   sh.rows += count;
   shiftDims(sh.rowHeights, at, count);
   commitStructuralChange();
@@ -1946,7 +1965,7 @@ function insertCols(at, count) {
     sh.filter.columns = filterColumns(sh.filter).map((column) => column >= at ? column + count : column);
   }
   rewriteAllFormulas(0, 0, at, count);
-  rebuildSheetCells((r, c) => ({ r, c: c >= at ? c + count : c }));
+  rebuildSheetCells((r) => r, (c) => c >= at ? c + count : c);
   sh.cols += count;
   shiftDims(sh.colWidths, at, count);
   commitStructuralChange();
@@ -1967,7 +1986,7 @@ function deleteRows() {
     }
   }
   rewriteAllFormulas(at + count, -count, 0, 0);
-  rebuildSheetCells((row, c) => (row >= at && row < at + count) ? null : ({ r: row > at ? row - count : row, c }));
+  rebuildSheetCells((row) => (row >= at && row < at + count) ? null : (row > at ? row - count : row), (c) => c);
   sh.rows -= count;
   removeDims(sh.rowHeights, at, count);
   commitStructuralChange();
@@ -1992,7 +2011,7 @@ function deleteCols() {
     if (!sh.filter.columns.length) sh.filter = null;
   }
   rewriteAllFormulas(0, 0, at + count, -count);
-  rebuildSheetCells((row, c) => (c >= at && c < at + count) ? null : ({ r: row, c: c > at ? c - count : c }));
+  rebuildSheetCells((row) => row, (c) => (c >= at && c < at + count) ? null : (c > at ? c - count : c));
   sh.cols -= count;
   removeDims(sh.colWidths, at, count);
   commitStructuralChange();
@@ -2032,7 +2051,7 @@ function sortSelection(asc) {
     for (let col = r.c1; col <= r.c2; col++) { const c = cells[rcToRef(row, col)]; if (c) rowCells[col] = { ...c }; }
     const keyVal = engine.computeRef(activeSheetId, rcToRef(row, r.c1));
     const rowComments = sheetComments().filter((comment) => { const position = parseRef(comment.ref); return position?.r === row && position.c >= r.c1 && position.c <= r.c2; });
-    rows.push({ rowCells, keyVal, rowComments });
+    rows.push({ rowCells, keyVal, rowComments, sourceRow: row });
   }
   rows.sort((x, y) => {
     let a = x.keyVal, b = y.keyVal;
@@ -2049,7 +2068,7 @@ function sortSelection(asc) {
     for (let col = r.c1; col <= r.c2; col++) {
       const src = rows[i].rowCells[col];
       const ref = rcToRef(row, col);
-      if (src) cells[ref] = { value: src.value, fmt: src.fmt, version: (cells[ref]?.version || 0) };
+      if (src) cells[ref] = { value: shiftedCopyFormula(src.value, rcToRef(rows[i].sourceRow, col), ref, false), fmt: src.fmt, version: (cells[ref]?.version || 0) };
       else delete cells[ref];
     }
     for (const comment of rows[i].rowComments) {
@@ -2103,7 +2122,7 @@ function aggregateState() { return { sum: 0, count: 0, numericCount: 0, min: Inf
 function addAggregate(state, value) {
   if (value != null && value !== "" && !isErr(value)) state.count++;
   const number = typeof value === "number" ? value : Number(value);
-  if (Number.isFinite(number) && value !== "") { state.sum += number; state.numericCount++; state.min = Math.min(state.min, number); state.max = Math.max(state.max, number); }
+  if (value != null && value !== "" && Number.isFinite(number)) { state.sum += number; state.numericCount++; state.min = Math.min(state.min, number); state.max = Math.max(state.max, number); }
 }
 function finishAggregate(state, kind) {
   if (kind === "count") return state.count;
@@ -2174,11 +2193,15 @@ function refreshPivot(sheetId, save = true) {
   rebuildEngine();
   if (activeSheetId === sheetId) renderGrid();
 }
+// Edits to several source sheets inside the debounce window refresh every one of their pivots.
+const pendingPivotSources = new Set();
 function schedulePivotRefreshes(sourceSheetId) {
+  pendingPivotSources.add(sourceSheetId);
   clearTimeout(pivotRefreshTimer);
   pivotRefreshTimer = setTimeout(() => {
+    const sources = new Set(pendingPivotSources); pendingPivotSources.clear();
     rebuildEngine();
-    for (const id of pivotSheets()) if (model.sheets[id].pivot.sourceSheetId === sourceSheetId) refreshPivot(id);
+    for (const id of pivotSheets()) if (sources.has(model.sheets[id].pivot.sourceSheetId)) refreshPivot(id);
   }, 320);
 }
 function createPivotTable() {
@@ -2797,12 +2820,12 @@ function filterTokenLabel(token) {
 function filterColumns(filter) {
   return filter?.columns?.length ? filter.columns : Array.from({ length: curSheet().cols }, (_, column) => column);
 }
-function rowPassesFilter(row) {
-  const filter = curSheet()?.filter;
-  if (!filter || row <= filter.row || row > (filter.endRow ?? curSheet().rows - 1)) return true;
+function rowPassesFilter(row, sheetId = activeSheetId) {
+  const sheet = model.sheets[sheetId], filter = sheet?.filter;
+  if (!filter || row <= filter.row || row > (filter.endRow ?? sheet.rows - 1)) return true;
   for (const [column, selected] of Object.entries(filter.criteria || {})) {
     if (!selected?.length) continue;
-    const token = filterToken(engine.computeRef(activeSheetId, rcToRef(row, Number(column))));
+    const token = filterToken(engine.computeRef(sheetId, rcToRef(row, Number(column))));
     if (!selected.includes(token)) return false;
   }
   return true;
@@ -2816,15 +2839,10 @@ function detectFilterRange() {
   const selection = selRange();
   const explicit = selection.r2 > selection.r1;
   if (explicit) {
-    const columns = [];
-    for (let column = selection.c1; column <= selection.c2; column++) {
-      let populated = false;
-      for (let row = selection.r1; row <= selection.r2; row++) if (hasCellData(row, column)) { populated = true; break; }
-      if (populated) columns.push(column);
-    }
-    return columns.length && selection.r2 > selection.r1
-      ? { row: selection.r1, endRow: selection.r2, columns, criteria: {}, rowOrder: Array.from({ length: selection.r2 - selection.r1 }, (_, index) => selection.r1 + 1 + index), sort: null }
-      : null;
+    // Every selected column belongs to the record, even one still blank, so a later sort moves
+    // whole rows.
+    const columns = Array.from({ length: selection.c2 - selection.c1 + 1 }, (_, index) => selection.c1 + index);
+    return { row: selection.r1, endRow: selection.r2, columns, criteria: {}, rowOrder: Array.from({ length: selection.r2 - selection.r1 }, (_, index) => selection.r1 + 1 + index), sort: null };
   }
 
   let minRow = sheet.rows, maxRow = -1, minColumn = sheet.cols, maxColumn = -1;
@@ -2924,7 +2942,8 @@ function reorderFilteredRows(compare, nextSort) {
     const row = filter.row + 1 + index;
     for (const col of columns) {
       const ref = rcToRef(row, col), source = rows[index].rowCells[col];
-      if (source) curCells()[ref] = { value: source.value, fmt: source.fmt, version: getCell(ref)?.version || 0 };
+      // Rows move as in Excel's sort: relative references travel with the formula.
+      if (source) curCells()[ref] = { value: shiftedCopyFormula(source.value, rcToRef(rows[index].currentRow, col), ref, false), fmt: source.fmt, version: getCell(ref)?.version || 0 };
       else delete curCells()[ref];
     }
     for (const comment of rows[index].rowComments) {
@@ -2974,7 +2993,7 @@ function openFilterMenu(column, trigger) {
   clearSort.disabled = !filter.sort;
   sortUp.addEventListener("click", () => { closeCtx(); sortFilteredRange(column, true); });
   sortDown.addEventListener("click", () => { closeCtx(); sortFilteredRange(column, false); });
-  clearSort.addEventListener("click", () => { if (filter.sort) { closeCtx(); clearFilteredSort(); } });
+  clearSort.addEventListener("click", () => { if (curSheet()?.filter?.sort) { closeCtx(); clearFilteredSort(); } });
   menu.appendChild(el("div", { class: "filter-sort" }, [sortUp, sortDown, clearSort]));
   const list = el("div", { class: "filter-options" });
   const checks = [];
@@ -3000,15 +3019,22 @@ function openFilterMenu(column, trigger) {
   menu.appendChild(list);
   const clear = el("button", {}, "Clear filter");
   const apply = el("button", { class: "primary" }, "Apply");
+  // Remote structure updates replace the sheet's metadata object, so the filter is resolved when
+  // the button is clicked rather than when the menu opened.
+  const liveFilter = () => curSheet()?.filter;
   clear.addEventListener("click", () => {
-    delete filter.criteria[column];
-    closeCtx(); queueStructure(); renderGrid(); refreshToolbarState();
+    const current = liveFilter(); closeCtx();
+    if (!current) return;
+    delete current.criteria[column];
+    queueStructure(); renderGrid(); refreshToolbarState();
   });
   apply.addEventListener("click", () => {
+    const current = liveFilter(); closeCtx();
+    if (!current) return;
     const selected = checks.filter((entry) => entry.checkbox.checked).map((entry) => entry.token);
-    if (selected.length === checks.length) delete filter.criteria[column];
-    else filter.criteria[column] = selected.length ? selected : ["x:__none__"];
-    closeCtx(); queueStructure(); renderGrid(); refreshToolbarState();
+    if (selected.length === checks.length) delete current.criteria[column];
+    else current.criteria[column] = selected.length ? selected : ["x:__none__"];
+    queueStructure(); renderGrid(); refreshToolbarState();
   });
   menu.appendChild(el("div", { class: "filter-actions" }, [clear, apply]));
   const rect = trigger.getBoundingClientRect();
@@ -3311,6 +3337,7 @@ function renderPrintSheet(sheetId) {
 
   const tbody = el("tbody");
   for (let r = 0; r < bounds.rows; r++) {
+    if (!rowPassesFilter(r, sheetId)) continue; // rows the filter hides in the grid stay hidden in print
     const height = Math.max(20, Math.min(120, sheet.rowHeights[r] || DEFAULT_ROW_H));
     const row = el("tr", { style: `height:${height}px` });
     row.appendChild(el("th", { class: "rowhead" }, String(r + 1)));
@@ -3964,7 +3991,7 @@ function startEdit(ref, replace = false, seed = null, fromCapture = false, keepI
   const rc = parseRef(ref);
   const td = cellEl(rc.r, rc.c);
   if (!td) return;
-  editing = { ref, r: rc.r, c: rc.c };
+  editing = { ref, r: rc.r, c: rc.c, sheetId: activeSheetId };
   fillHandle.style.display = "none";
   const cell = getCell(ref);
   let text = seed != null ? seed : (replace ? "" : (cell ? cell.value : ""));
@@ -4071,14 +4098,17 @@ function showFormulaError(message) {
   formulaAssistItems = []; formulaAssist.style.display = "block"; requestAnimationFrame(positionFormulaAssist);
   setStatus("bad", "Fix formula error");
 }
+// Returns false when the value was rejected and the editor stays open, so callers that would
+// navigate away (sheet switches) can stop.
 function commitEdit(advance = "down") {
-  if (!editing) return;
+  if (!editing) return true;
+  if (editing.sheetId !== activeSheetId) { cancelEdit(); return true; }
   const { ref, r, c } = editing;
   let value = completeFormulaParentheses(cellEditor.value);
-  if (value == null) { showFormulaError("Formula quotes and parentheses must be balanced."); cellEditor.focus(); return; }
+  if (value == null) { showFormulaError("Formula quotes and parentheses must be balanced."); cellEditor.focus(); return false; }
   cellEditor.value = value;
   const formulaError = validateFormula(value);
-  if (formulaError) { showFormulaError(formulaError); cellEditor.focus(); return; }
+  if (formulaError) { showFormulaError(formulaError); cellEditor.focus(); return false; }
   imeComposing = false;
   editing = null; absoluteRefBtn.disabled = true;
   closeFormulaAssist(); clearFormulaPick();
@@ -4094,6 +4124,7 @@ function commitEdit(advance = "down") {
   else if (advance === "left") moveActive(r, c - 1);
   else moveActive(r, c);
   gridScroll.focus();
+  return true;
 }
 function cancelEdit() {
   if (!editing) return;
@@ -4393,11 +4424,16 @@ function deleteSelectionContents() {
 // ===========================================================================
 let copyRange = null;
 let copyFallback = null;
+// Whole-row and whole-column selections are trimmed to the populated extent; `trimmed` records
+// which axis, so a paste does not mistake the trimmed block for a repeatable pattern.
 function clipboardReferenceMatrix() {
   const ranges = selectionRanges();
   const sheet = curSheet();
   const allRows = ranges.every((range) => range.c1 === 0 && range.c2 === sheet.cols - 1);
   const allColumns = ranges.every((range) => range.r1 === 0 && range.r2 === sheet.rows - 1);
+  return { refs: clipboardReferences(ranges, sheet, allRows, allColumns), trimmed: allRows ? "rows" : allColumns ? "columns" : null };
+}
+function clipboardReferences(ranges, sheet, allRows, allColumns) {
   if (allRows) {
     const rows = [...new Set(ranges.flatMap((range) => Array.from({ length: range.r2 - range.r1 + 1 }, (_, index) => range.r1 + index)))].sort((a, b) => a - b);
     let lastColumn = 0;
@@ -4427,14 +4463,14 @@ function clipboardCellText(ref) {
   return cell.value?.startsWith("=") ? (isErr(value) ? value.value : (value == null ? "" : String(value))) : (cell.value || "");
 }
 function prepareClipboard(cut = false) {
-  const refs = clipboardReferenceMatrix();
+  const { refs, trimmed } = clipboardReferenceMatrix();
   const cells = refs.map((row) => row.map((ref) => {
     const cell = ref ? getCell(ref) : null;
     return cell ? { value: cell.value, fmt: cell.fmt, sourceRef: ref } : (ref ? { value: null, fmt: null, sourceRef: ref } : null);
   }));
   const tsv = refs.map((row) => row.map(clipboardCellText).join("\t")).join("\n");
   copyRange = { ...selRange() };
-  copyFallback = { tsv, cells, refs, sheetId: activeSheetId, cut };
+  copyFallback = { tsv, cells, refs, trimmed, sheetId: activeSheetId, cut };
   return tsv;
 }
 function requestGridClipboard(cut = false) {
@@ -4491,7 +4527,8 @@ function shiftedCopyFormula(value, sourceRef, targetRef, isCut) {
   const source = parseRef(sourceRef), target = parseRef(targetRef);
   if (!source || !target) return value;
   const rowDelta = target.r - source.r, colDelta = target.c - source.c;
-  return rewriteFormulaOutsideQuotes(value, (segment) => segment.replace(/(?<![A-Z0-9_])(\$?)([A-Z]{1,2})(\$?)([1-9]\d*)(?![A-Z0-9_])/gi, (match, fixedColumn, letters, fixedRow, rowText) => {
+  // `(?!!)` leaves an unquoted sheet name such as `Q1!` alone.
+  return rewriteFormulaOutsideQuotes(value, (segment) => segment.replace(/(?<![A-Z0-9_])(\$?)([A-Z]{1,2})(\$?)([1-9]\d*)(?![A-Z0-9_!])/gi, (match, fixedColumn, letters, fixedRow, rowText) => {
     let row = Number(rowText) - 1, column = letterToCol(letters);
     if (!fixedRow) row += rowDelta;
     if (!fixedColumn) column += colDelta;
@@ -4523,9 +4560,14 @@ function pasteText(text, { keepFormatting = true } = {}) {
   beginBatch();
   for (const target of targetRanges) {
     const targetHeight = target.r2 - target.r1 + 1, targetWidth = target.c2 - target.c1 + 1;
-    const repeat = (sourceHeight === 1 && sourceWidth === 1) || (targetHeight >= sourceHeight && targetWidth >= sourceWidth && targetHeight % sourceHeight === 0 && targetWidth % sourceWidth === 0);
-    const pasteHeight = repeat ? targetHeight : sourceHeight;
-    const pasteWidth = repeat ? targetWidth : sourceWidth;
+    // A trimmed whole-row copy keeps its own width (and a whole-column copy its height): the trim
+    // is not a pattern to tile across the destination.
+    const trimmedRows = useSnapshot && copyFallback.trimmed === "rows", trimmedColumns = useSnapshot && copyFallback.trimmed === "columns";
+    const widthFits = trimmedRows || (targetWidth >= sourceWidth && targetWidth % sourceWidth === 0);
+    const heightFits = trimmedColumns || (targetHeight >= sourceHeight && targetHeight % sourceHeight === 0);
+    const repeat = (sourceHeight === 1 && sourceWidth === 1 && !trimmedRows && !trimmedColumns) || (widthFits && heightFits);
+    const pasteHeight = repeat && !trimmedColumns ? targetHeight : sourceHeight;
+    const pasteWidth = repeat && !trimmedRows ? targetWidth : sourceWidth;
     for (let i = 0; i < pasteHeight; i++) for (let j = 0; j < pasteWidth; j++) {
       const row = target.r1 + i, column = target.c1 + j;
       if (row > target.r2 && targetRanges.length > 1 || column > target.c2 && targetRanges.length > 1) continue;
@@ -4787,7 +4829,7 @@ function renderTabs() {
   tabbar.appendChild(add);
 }
 function switchSheet(id) {
-  if (editing) commitEdit("none");
+  if (editing && !commitEdit("none")) return;
   activeSheetId = id;
   if (model.sheets[id]?.pivot) refreshPivot(id);
   anchor = { r: 0, c: 0 }; focus = { r: 0, c: 0 }; extraRanges = [];
@@ -4796,6 +4838,7 @@ function switchSheet(id) {
   sendPresence();
 }
 function addSheet() {
+  if (editing && !commitEdit("none")) return;
   const id = "s_" + Math.random().toString(36).slice(2, 8);
   let n = model.sheetOrder.length + 1;
   while (model.sheetOrder.some((sid) => model.sheets[sid].name === "Sheet" + n)) n++;
@@ -4821,6 +4864,7 @@ function sheetTabMenu(id, e) {
   showCtx(menu, e.clientX, e.clientY);
 }
 function duplicateSheet(id) {
+  if (editing && !commitEdit("none")) return;
   const src = model.sheets[id];
   const nid = "s_" + Math.random().toString(36).slice(2, 8);
   model.sheets[nid] = { ...JSON.parse(JSON.stringify(src)), id: nid, name: src.name + " copy" };
@@ -4831,7 +4875,7 @@ function duplicateSheet(id) {
   switchSheet(nid);
 }
 function deleteSheet(id) {
-  if (model.sheetOrder.length <= 1) return;
+  if (model.sheetOrder.length <= 1 || (editing && !commitEdit("none"))) return;
   const idx = model.sheetOrder.indexOf(id);
   model.sheetOrder.splice(idx, 1);
   delete model.sheets[id]; delete model.cells[id];
@@ -4928,18 +4972,59 @@ function applyRemoteOperation(event) {
   if (event.replacedCells) for (const [sid, cells] of Object.entries(event.replacedCells)) model.cells[sid] = cells;
   applyingRemote = false;
   rebuildEngine();
-  if (!model.sheets[activeSheetId]) activeSheetId = model.sheetOrder[0];
+  if (!model.sheets[activeSheetId]) { if (editing) cancelEdit(); activeSheetId = model.sheetOrder[0]; }
   if (selectedChartId && !(curSheet().charts || []).some((chart) => chart.id === selectedChartId)) selectedChartId = null;
   renderTabs(); renderGrid(); renderChartPanel();
   setStatus("synced", "Live update");
   setTimeout(() => { if (!saveInFlight && !pendingCellOps.size) setStatus("saved", "Saved"); }, 900);
 }
+// Remote structure replaces the model wholesale (last writer wins on the server). Local changes
+// that are still pending are diffed against `ackedStructure` and replayed on top, per sheet field,
+// so a remote chart and a local comment on the same sheet both survive.
 function applyStructure(s) {
+  const local = pendingStructure ? localStructureChanges() : null;
   if (s.title != null && document.activeElement !== titleInput) { model.title = s.title; titleInput.value = s.title; }
   else if (s.title != null) model.title = s.title;
   model.sheetOrder = s.sheetOrder.slice();
   for (const id of model.sheetOrder) model.sheets[id] = { ...model.sheets[id], ...s.sheets[id] };
-  for (const id of Object.keys(model.sheets)) if (!model.sheetOrder.includes(id)) { delete model.sheets[id]; delete model.cells[id]; }
+  const added = new Set(local?.added);
+  for (const id of Object.keys(model.sheets)) if (!model.sheetOrder.includes(id) && !added.has(id)) { delete model.sheets[id]; delete model.cells[id]; }
+  ackedStructure = { title: model.title, sheetOrder: model.sheetOrder.slice(), sheets: JSON.parse(JSON.stringify(Object.fromEntries(model.sheetOrder.map((id) => [id, model.sheets[id]])))) };
+  if (!local) return;
+  if (local.title != null) { model.title = local.title; if (document.activeElement !== titleInput) titleInput.value = local.title; }
+  for (const id of local.removed) {
+    const index = model.sheetOrder.indexOf(id);
+    if (index >= 0) { model.sheetOrder.splice(index, 1); delete model.sheets[id]; delete model.cells[id]; }
+  }
+  for (const [id, fields] of Object.entries(local.sheets)) {
+    if (added.has(id)) { model.sheets[id] = { ...model.sheets[id], ...fields }; model.sheetOrder.push(id); }
+    else if (model.sheetOrder.includes(id)) Object.assign(model.sheets[id], fields);
+    // A sheet deleted remotely while edited here stays deleted.
+  }
+  if (local.sheetOrder) {
+    const order = local.sheetOrder.filter((id) => model.sheetOrder.includes(id));
+    model.sheetOrder = [...order, ...model.sheetOrder.filter((id) => !order.includes(id))];
+  }
+  pendingStructure = structureSnapshot();
+}
+function localStructureChanges() {
+  const base = ackedStructure || { title: pendingStructure.title, sheetOrder: [], sheets: {} };
+  const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const changes = {
+    title: pendingStructure.title !== base.title ? pendingStructure.title : null,
+    sheetOrder: same(pendingStructure.sheetOrder, base.sheetOrder) ? null : pendingStructure.sheetOrder,
+    added: Object.keys(pendingStructure.sheets).filter((id) => !base.sheets[id]),
+    removed: base.sheetOrder.filter((id) => !pendingStructure.sheets[id]),
+    sheets: {},
+  };
+  for (const [id, sheet] of Object.entries(pendingStructure.sheets)) {
+    const baseSheet = base.sheets[id];
+    if (!baseSheet) { changes.sheets[id] = sheet; continue; }
+    const fields = {};
+    for (const key of new Set([...Object.keys(sheet), ...Object.keys(baseSheet)])) if (!same(sheet[key], baseSheet[key])) fields[key] = sheet[key];
+    if (Object.keys(fields).length) changes.sheets[id] = fields;
+  }
+  return changes;
 }
 
 function applySnapshot(doc) {
@@ -4950,6 +5035,7 @@ function applySnapshot(doc) {
   model.sheets = doc.sheets || {};
   model.cells = doc.cells || {};
   for (const id of model.sheetOrder) if (!model.cells[id]) model.cells[id] = {};
+  ackedStructure = structureSnapshot();
   titleInput.value = model.title;
   if (!activeSheetId || !model.sheets[activeSheetId]) activeSheetId = model.sheetOrder[0];
   applyingRemote = false;
