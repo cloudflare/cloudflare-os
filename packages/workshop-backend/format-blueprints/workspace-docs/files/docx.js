@@ -147,6 +147,8 @@ function closeImplied(stack, tag) {
     : tag === "td" || tag === "th" ? [["td", "th"], ["tr", "table"]]
     : tag === "dt" || tag === "dd" ? [["dt", "dd"], ["dl"]]
     : tag === "tr" ? [["tr"], ["table"]]
+    : tag === "a" ? [["a"], []]
+    : HEADING_STYLES[tag] ? [["p", ...Object.keys(HEADING_STYLES)], []]
     : BLOCK_TAGS.has(tag) ? [["p"], []] : [[], []];
   for (let index = stack.length - 1; index > 0 && closes.length; --index) {
     const open = stack[index].tag;
@@ -504,8 +506,10 @@ class DocumentBuilder {
     return paragraph;
   }
 
-  // Trailing line breaks do not render in HTML, so pending breaks are dropped here.
+  // Only the last trailing line break is non-rendering in HTML; the ones before it are blank lines.
   close() {
+    const paragraph = this.current;
+    for (let count = paragraph?.pendingBreaks - 1; count > 0; --count) paragraph.runs.push({type: "break"});
     this.current = null;
   }
 

@@ -386,15 +386,26 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).not.toContain("\ud800");
   });
 
-  it("keeps empty lines as empty paragraphs and drops breaks that end a block", async () => {
+  it("keeps empty lines as empty paragraphs and drops only the final break of a block", async () => {
     const {entries} = await readZip(await documentToDocx({blocks: [block(
-        "<p>one<br></p><p><br></p><p>two<br> <b>three</b></p>")]}));
+        "<p>one<br></p><p><br></p><p>two<br> <b>three</b></p><p>four<br><br></p>")]}));
     const xml = text(entries, "word/document.xml");
-    expect(xml.match(/<w:p>/g)).toHaveLength(3);
+    expect(xml.match(/<w:p>/g)).toHaveLength(4);
     expect(xml).toContain('<w:p><w:pPr><w:pStyle w:val="Normal"/></w:pPr></w:p>');
-    expect(xml.match(/<w:br\/>/g)).toHaveLength(1);
+    expect(xml.match(/<w:br\/>/g)).toHaveLength(2);
     expect(xml).toContain(">one</w:t></w:r></w:p>");
     expect(xml).toContain('<w:r><w:br/></w:r><w:r><w:rPr><w:b/><w:bCs/></w:rPr><w:t xml:space="preserve">three</w:t>');
+    expect(xml).toContain(">four</w:t></w:r><w:r><w:br/></w:r></w:p>");
+  });
+
+  it("recovers unclosed headings and anchors the way the browser parser does", async () => {
+    const {entries} = await readZip(await documentToDocx({blocks: [block(
+        '<h1>Title<h2>Sub</h2><p>Body</p><p><a href="https://a.example">one<a href="https://b.example">two</a>three</p>')]}));
+    const xml = text(entries, "word/document.xml");
+    expect(xml).toContain('<w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t xml:space="preserve">Title</w:t>');
+    expect(xml).toContain('<w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t xml:space="preserve">Sub</w:t>');
+    expect(xml).toContain('<w:pStyle w:val="Normal"/></w:pPr><w:r><w:t xml:space="preserve">Body</w:t>');
+    expect(xml).toMatch(/<w:hyperlink r:id="rId3"[^>]*><w:r>[^]*?>one<\/w:t><\/w:r><\/w:hyperlink><w:hyperlink r:id="rId4"[^>]*><w:r>[^]*?>two<\/w:t><\/w:r><\/w:hyperlink><w:r><w:t xml:space="preserve">three<\/w:t>/);
   });
 
   it("maps quotes, code blocks, inline code, and horizontal rules", async () => {
