@@ -17,6 +17,7 @@ import type { ConnectHandoff, GatekeeperConnectCallback, GatekeeperUser }
   from "@gadgets/workshop-shared/gatekeeper";
 import {
   commitStagedCredentials,
+  discardStagedCredentials,
   stageCredentials,
 } from "@gadgets/gatekeeper-kit/credential-stage";
 import {
@@ -130,10 +131,11 @@ type StagedReconnect = {
 };
 
 // Where a reconnect's OAuth state waits between the provider's writes and the stage `complete`
-// takes: the freshly issued tokens, and the client registration and discovery the flow used (seeded
-// from the live ones by `prepareReconnect`, so an existing registration is reused rather than
-// re-registered). Never read by anything serving a request; only the flow that wrote them reads
-// them back.
+// takes: the freshly issued tokens, and the client registration and discovery the flow used. Only
+// the registration is seeded from the live one by `prepareReconnect`, so an existing client is
+// reused rather than re-registered; discovery starts empty and is redone from the probe's current
+// challenge. Never read by anything serving a request; only the flow that wrote them reads them
+// back.
 const RECONNECT_TOKENS_KEY = "reconnectTokens";
 const RECONNECT_CLIENT_KEY = "reconnectOauthClient";
 const RECONNECT_DISCOVERY_KEY = "reconnectOauthDiscovery";
@@ -320,15 +322,17 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     this.advanceConnectionGeneration();
     this.ctx.storage.kv.put("expiredNotified", false);
     this.ctx.storage.kv.delete(RECONNECT_TOKENS_KEY);
-    // The flow works on copies of the client registration and discovery, so what it learns (or the
-    // SDK invalidates) stays off the live keys until the commit.
-    for (const [live, scratch] of [
-      ["oauthClient", RECONNECT_CLIENT_KEY], ["oauthDiscovery", RECONNECT_DISCOVERY_KEY],
-    ] as const) {
-      const value = this.ctx.storage.kv.get(live);
-      if (value === undefined) this.ctx.storage.kv.delete(scratch);
-      else this.ctx.storage.kv.put(scratch, value);
-    }
+    // The flow works on a copy of the client registration, so what it learns (or the SDK
+    // invalidates) stays off the live key until the commit. Discovery is not copied: a reconnect is
+    // an explicit re-authorization, so it runs again from the probe's current challenge -- given a
+    // cached state the SDK takes its `authorizationServerUrl` verbatim, and an endpoint that moved
+    // to another authorization server would keep redirecting to the old one. The registration is
+    // still offered, and the provider's `matchesIssuer` drops it when the discovered issuer differs,
+    // so a moved authorization server gets a fresh registration too.
+    const client = this.ctx.storage.kv.get("oauthClient");
+    if (client === undefined) this.ctx.storage.kv.delete(RECONNECT_CLIENT_KEY);
+    else this.ctx.storage.kv.put(RECONNECT_CLIENT_KEY, client);
+    this.ctx.storage.kv.delete(RECONNECT_DISCOVERY_KEY);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
@@ -360,7 +364,8 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     // the new portal's token.
     const generation = this.advanceConnectionGeneration();
     // A plain reconnect leaves the live session alone with the live tokens it was opened under;
-    // both are replaced together when the Workshop commits (see `commitReconnect`).
+    // both are replaced together when the Workshop commits (see `commitReconnect`). A repoint drops
+    // everything minted for the old endpoint, staged or live.
     const endpointChanged = existing !== undefined && existing.endpoint !== server.endpoint;
     if (endpointChanged) {
       this.ctx.storage.kv.put("server", server);
@@ -372,6 +377,12 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       ]) {
         this.ctx.storage.kv.delete(key);
       }
+      // A pending stage holds the old endpoint's record and credentials, and "credentials do not
+      // survive the move" (see `resolveConnectTarget`) applies to staged ones too: committing it
+      // would put the old server back live under this probe. Its ticket then fails with "No
+      // reconnect is awaiting confirmation", which the Workshop treats as a failed restore that
+      // changed nothing live.
+      discardStagedCredentials(this.ctx.storage.kv);
       this.ctx.storage.kv.put("expiredNotified", false);
       this.log().info("portal repointed", {
         event: "connect.repointed",
@@ -719,6 +730,11 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     const staged = commitStagedCredentials<StagedReconnect>(
       this.ctx.storage.kv, Date.now(), stageId);
     if (!staged) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+    // A repoint discards the stage (see `beginConnect`); the stage's own record says which endpoint
+    // it was for, so one that somehow outlives a move still cannot restore the old server.
+    if (!sameEndpoint(staged.server.endpoint, this.requireServer().endpoint)) {
+      throw new Error("No reconnect is awaiting confirmation. Please try again.");
+    }
     if (staged.tokens) this.ctx.storage.kv.put<OAuthTokens>("tokens", staged.tokens);
     // The live session was opened under the credentials being replaced, so it goes with them, as do
     // the server record the flow observed and the registration and discovery a refresh will need.

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+
 import { McpAuthRequiredError } from "../src/client.js";
 import {
   McpAccountBase, resolveConnectTarget, type AccountEnv, type ConnectedServer,
@@ -623,8 +625,8 @@ describe("connect initiation nonce", () => {
     stubOAuthServer();
     const reconnectComplete = vi.fn(async (_stageId: string) => HANDOFF);
     const liveServer = { ...server("https://mcp.example/mcp"), serverName: "Old name" };
-    // A registration with another issuer's stamp, so the flow has to register afresh; discovery
-    // that names the authorization server but has no metadata cached, so the flow refetches it.
+    // A registration with another issuer's stamp, so the flow has to register afresh; live discovery
+    // is not copied at all (see `prepareReconnect`), so the flow rediscovers from the probe.
     const liveClient = { client_id: "old-client", issuer: "https://other.example" };
     const liveDiscovery = { authorizationServerUrl: "https://auth.example" };
     context.storage.kv.put("server", liveServer);
@@ -657,6 +659,68 @@ describe("connect initiation nonce", () => {
       ?.authorizationServerMetadata).toBeDefined();
     expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token)
       .toBe("access-token");
+  });
+
+  it("rediscovers the authorization server on reconnect", async () => {
+    // A reconnect is an explicit re-authorization. Seeded with the live discovery, the SDK takes its
+    // `authorizationServerUrl` verbatim and skips discovery, so an endpoint that moved to another
+    // authorization server would keep redirecting to the old one.
+    const context = fakeContext();
+    stubOAuthServer();
+    const staleDiscovery = {
+      authorizationServerUrl: "https://stale.example",
+      authorizationServerMetadata: {
+        issuer: "https://stale.example",
+        authorization_endpoint: "https://stale.example/authorize",
+        token_endpoint: "https://stale.example/token",
+        response_types_supported: ["code"],
+      },
+    };
+    context.storage.kv.put("server", server("https://mcp.example/mcp"));
+    context.storage.kv.put("callback", {
+      complete: vi.fn(async () => HANDOFF), reconnectComplete: vi.fn(async () => HANDOFF),
+    });
+    context.storage.kv.put("tokens", { access_token: "old-token", token_type: "Bearer", expiresAt: 1 });
+    context.storage.kv.put("oauthDiscovery", staleDiscovery);
+    const account = new OAuthFlowAccount(context as never, {});
+    const nonce = "d".repeat(64);
+    await account.prepareReconnect(nonce);
+
+    const outcome = await account.beginConnect(nonce, null);
+    expect(outcome.kind).toBe("redirect");
+    expect((outcome as { url: string }).url).toMatch(/^https:\/\/auth\.example\/authorize\?/);
+    expect(context.storage.kv.get<{ authorizationServerUrl: string }>("reconnectOauthDiscovery")
+      ?.authorizationServerUrl).toBe("https://auth.example");
+    expect(context.storage.kv.get("oauthDiscovery")).toEqual(staleDiscovery);
+  });
+
+  it("refuses to commit a reconnect staged before a repoint", async () => {
+    // Reconnect A staged the old endpoint's record and tokens; a deployment then repointed the
+    // account. Redeeming A's ticket must not put the old server, tokens and session back live under
+    // the repoint's probe.
+    const context = fakeContext();
+    const oldServer = { ...server("https://old.example/mcp"), provenance: "deployment" as const };
+    const newServer = { ...server("https://new.example/mcp"), provenance: "deployment" as const };
+    context.storage.kv.put("server", oldServer);
+    context.storage.kv.put("tokens", { access_token: "live-token", token_type: "Bearer", expiresAt: 1 });
+    const stageIdA = stageCredentials(context.storage.kv, {
+      tokens: { access_token: "staged-token", token_type: "Bearer", expiresAt: 1 },
+      sessionId: "a",
+      server: oldServer,
+    }, Date.now());
+    const account = new InterleavingAccount(context as never, {});
+    const nonce = "e".repeat(64);
+    await account.prepareReconnect(nonce);
+    // The repoint runs before the probe's first await.
+    const repoint = account.beginConnect(nonce, newServer);
+
+    await expect(account.commitReconnect(stageIdA)).rejects.toThrow(/No reconnect is awaiting/);
+    expect(context.storage.kv.get("server")).toEqual(newServer);
+    expect(context.storage.kv.get("tokens")).toBeUndefined();
+    expect(context.storage.kv.get("mcpSessionId")).toBeUndefined();
+
+    account.failProbe();
+    await expect(repoint).rejects.toThrow("stop test probe");
   });
 
   it("registers a reconnect's client only under the reconnect key", async () => {
