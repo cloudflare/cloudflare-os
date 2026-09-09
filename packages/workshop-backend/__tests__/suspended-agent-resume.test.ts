@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { RpcStub as NativeRpcStub } from "cloudflare:workers";
+import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import type { AiChatAuthorInfo, AiChatMetadata, AiModelConfig } from "@gadgets/workshop-shared/api";
 import { OverseerDurableObject, type ActionRecord } from "../src/overseer.js";
 import type { UserAiModelRecord, UserChatContext } from "../src/user.js";
@@ -55,6 +56,8 @@ function makeHarness(messages: object[], actions = new Map<number, ActionRecord>
   originalGetChatContext?: (modelId: string | null) => Promise<UserChatContext>;
   gatekeepers?: Map<number, object>;
   suspensionReason?: "connectionRequest" | "awaitDecision";
+  sensitive?: boolean;
+  rejectAction?: () => Promise<void>;
 } = {}) {
   let chatMeta: AiChatMetadata = {
     id: CHAT_ID,
@@ -116,6 +119,7 @@ function makeHarness(messages: object[], actions = new Map<number, ActionRecord>
     ownerId: OWNER_USER_ID,
     ownerProfileId: OWNER_PROFILE_ID,
     isWorkspaceDeleting: () => false,
+    withWorkspaceMutation: <T>(operation: () => Promise<T>) => operation(),
     logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
     users: {
       idFromString: (id: string) => id,
@@ -133,7 +137,7 @@ function makeHarness(messages: object[], actions = new Map<number, ActionRecord>
     storage: {
       ownerId: { put: vi.fn() },
       title: { get: () => "Workspace" },
-      prohibitAllSharing: { get: () => false },
+      prohibitAllSharing: { get: () => options.sensitive ?? false },
       chatMeta: {
         get: (id: number) => id === CHAT_ID ? chatMeta : undefined,
         put: (meta: AiChatMetadata) => { chatMeta = meta; },
@@ -184,6 +188,7 @@ function makeHarness(messages: object[], actions = new Map<number, ActionRecord>
       actions.set(record.id, record);
     }),
     drainAutoApprovals: vi.fn(async () => {}),
+    getGatekeeperFacet: () => ({rejectAction: options.rejectAction ?? (async () => {})}),
   };
 
   impl.resumeSuspendedAgent = vi.fn(async (chatId: number) => {
@@ -247,6 +252,54 @@ async function openOwnerClient(harness: ReturnType<typeof makeHarness>) {
 }
 
 describe("suspended agent resume identity", () => {
+  it.each([
+    ["approveAction", "approveAction"],
+    ["approveAction", "rejectAction"],
+    ["rejectAction", "approveAction"],
+  ] as const)("serializes %s / %s with the real common apply guard", async (firstMethod, secondMethod) => {
+    await runInDurableObject(env.TEST_OVERSEER.getByName(crypto.randomUUID()), async instance => {
+      const impl = instance["impl"];
+      impl.ownerId = OWNER_USER_ID;
+      impl.storage.prohibitAllSharing.put(true);
+      impl.storage.actions.put({
+        id: 99, type: "action", gatekeeperId: 42, caller: {from: "agent", chatId: CHAT_ID},
+        createdAt: new Date(0), state: "pending", action: 123,
+        description: {title: "Export", description: "Export data", implementsRevert: false},
+      });
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const perform = vi.fn(async () => { started.resolve(); await release.promise; });
+      const apply = vi.fn(async () => perform());
+      const reject = vi.fn(async () => perform());
+      const facet = vi.spyOn(impl, "getGatekeeperFacet").mockReturnValue({
+        applyAction: apply,
+      } as ReturnType<typeof impl.getGatekeeperFacet>);
+      const harness = makeHarness([], new Map(), {sensitive: true, rejectAction: reject});
+      // Keep the existing RPC client fixture, but use real storage, serialization, and apply code.
+      harness.overseer.impl.storage.actions = impl.storage.actions;
+      harness.overseer.impl.withWorkspaceMutation = impl.withWorkspaceMutation.bind(impl);
+      harness.overseer.impl.applyPendingAction = impl.applyPendingAction.bind(impl);
+      const client = await openOwnerClient(harness);
+      try {
+        const first = client[firstMethod](99);
+        await started.promise;
+        const second = client[secondMethod](99).then(
+            () => undefined, (error: Error) => error.message);
+        release.resolve();
+        await first;
+        expect(await second).toContain("not pending");
+        await harness.waitUntil();
+        expect(apply).toHaveBeenCalledTimes(firstMethod === "approveAction" ? 1 : 0);
+        expect(reject).toHaveBeenCalledTimes(firstMethod === "rejectAction" ? 1 : 0);
+        expect(impl.storage.actions.get(99)?.state).toBe(
+            firstMethod === "approveAction" ? "approved" : "rejected");
+      } finally {
+        release.resolve();
+        facet.mockRestore();
+      }
+    });
+  });
+
   it("resumes an accepted connection request as the original initiator", async () => {
     let requestId = `${CHAT_ID}:request`;
     let harness = makeHarness([{
@@ -312,7 +365,7 @@ describe("suspended agent resume identity", () => {
         CHAT_ID, ORIGINAL_MODEL, ORIGINAL_INITIATOR, ORIGINAL_USER_ID);
   });
 
-  it("resumes an approved awaitDecision action as the original initiator", async () => {
+  it.each([false, true])("resumes an owner-approved awaitDecision action (sensitive: %s)", async sensitive => {
     let action: ActionRecord = {
       id: 99,
       type: "action",
@@ -334,17 +387,37 @@ describe("suspended agent resume identity", () => {
       author: { type: "agent", id: ORIGINAL_MODEL_ID, name: "Original Model" },
       timestamp: new Date(0),
       actionId: action.id,
-    }], new Map([[action.id, action]]));
+    }], new Map([[action.id, action]]), {sensitive});
     let client = await openOwnerClient(harness);
 
     await client.approveAction(action.id);
     await harness.waitUntil();
 
+    expect(harness.overseer.impl.applyPendingAction).toHaveBeenCalledWith(
+        action, OWNER_PROFILE, false, OWNER_USER_ID);
     expect(harness.originalGetChatContext).toHaveBeenCalledWith(ORIGINAL_MODEL_ID);
     expect(harness.ownerGetChatContext).not.toHaveBeenCalled();
     expect(harness.getChatMeta().activeAgent).toEqual(ORIGINAL_MODEL.profile);
     expect(harness.startAgent).toHaveBeenCalledWith(
         CHAT_ID, ORIGINAL_MODEL, ORIGINAL_INITIATOR, ORIGINAL_USER_ID);
+  });
+
+  it.each([false, true])("denies a sensitive agent action and ends the turn (notification fails: %s)", async fails => {
+    let action: ActionRecord = {
+      id: 99, type: "action", gatekeeperId: 42, caller: {from: "agent", chatId: CHAT_ID},
+      createdAt: new Date(0), state: "pending", action: 123,
+      description: {title: "Export", description: "Export data", implementsRevert: false,
+        awaitDecision: true, autoApprovable: false},
+    };
+    let rejectAction = vi.fn(async () => { if (fails) throw new Error("Unavailable"); });
+    let harness = makeHarness([], new Map([[action.id, action]]), {sensitive: true, rejectAction});
+    let client = await openOwnerClient(harness);
+    await client.rejectAction(action.id);
+    expect(rejectAction).toHaveBeenCalledWith(123);
+    expect(action).toMatchObject({state: "rejected", resolvedBy: OWNER_PROFILE});
+    expect(harness.getSuspended()).toBeUndefined();
+    expect(harness.startAgent).not.toHaveBeenCalled();
+    expect(harness.overseer.impl.applyPendingAction).not.toHaveBeenCalled();
   });
 
   it("does not resume an accepted connection request until same-turn awaited actions are approved", async () => {

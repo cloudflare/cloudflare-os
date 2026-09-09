@@ -1580,7 +1580,7 @@ class OverseerImpl implements AgentHooks {
     this.#autoApprovalDrainer = new AutoApprovalDrainer(
         this.storage,
         (record, resolvedBy, autoApproved) =>
-            this.applyPendingAction(record, resolvedBy, autoApproved),
+            this.applyPendingAction(record, resolvedBy, autoApproved, undefined),
         record => this.#deploymentAutoApprover(record));
 
     let deletion = this.storage.workspaceDeletion.get();
@@ -2935,8 +2935,8 @@ class OverseerImpl implements AgentHooks {
 
   // Apply a single pending action: invoke the gatekeeper, mark it approved, and persist (the put
   // auto-notifies subscribeToActions). Shared by manual approval (`approveAction`) and the
-  // auto-approval drain (`drainAutoApprovals`). The caller is responsible for validating that the
-  // record is still pending before calling.
+  // auto-approval drain (`drainAutoApprovals`). Serialize with rejection and re-read pending state
+  // inside the existing workspace mutation guard: callers can hold stale records across awaits.
   //
   // `resolvedBy`/`autoApproved` are required (not defaulted) so that no apply path can omit how the
   // gate was cleared: this is the single chokepoint where an action transitions to "approved", so
@@ -2944,10 +2944,30 @@ class OverseerImpl implements AgentHooks {
   // was applied automatically. For an auto-approval, `resolvedBy` identifies either the user who
   // enabled the rule or the narrow deployment policy that authorized it.
   async applyPendingAction(record: ActionRecord & {type: "action"},
-                           resolvedBy: AiChatAuthorInfo, autoApproved: boolean): Promise<void> {
+                           resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
+                           approverUserId: string | undefined): Promise<void> {
+    return this.withWorkspaceMutation(() =>
+        this.#applyPendingAction(record.id, resolvedBy, autoApproved, approverUserId));
+  }
+
+  async #applyPendingAction(id: number, resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
+                            approverUserId: string | undefined): Promise<void> {
+    let record = this.storage.actions.get(id);
+    if (record?.type !== "action" || record.state !== "pending") {
+      throw new Error(`Action is not pending: ${id}`);
+    }
     if (isGatekeeperDisabled(
         await readAdminConfig(this.env), this.storage.gatekeepers.get(record.gatekeeperId))) {
       throw new Error("Gatekeeper is disabled.");
+    }
+    // Re-check after the config await, immediately before dispatch: even actions queued before
+    // sensitive data was observed require the CURRENT owner's manual decision. approverUserId comes
+    // from the authenticated client capability, never the display/audit profile or an RPC argument.
+    if (this.storage.prohibitAllSharing.get() &&
+        (record.caller.from !== "agent" || autoApproved || !this.ownerId ||
+         approverUserId !== this.ownerId)) {
+      throw new Error("This workspace has observed sensitive data. " +
+          "Only manually approved agent actions are allowed, with approval from the workspace owner.");
     }
     let gatekeeper = this.getGatekeeperFacet(record.gatekeeperId);
     await gatekeeper.applyAction(record.action);
@@ -3399,9 +3419,13 @@ class OverseerImpl implements AgentHooks {
                      description: ActionDescription, caller: GatekeeperCaller)
       : Promise<void> {
     if (this.storage.prohibitAllSharing.get()) {
-      throw new Error(
-          "This workspace has observed sensitive data. To prevent leaks, the workspace is prohibited " +
-          "from performing actions.");
+      if (caller.from !== "agent") {
+        throw new Error(
+            "This workspace has observed sensitive data. To prevent leaks, the workspace is prohibited " +
+            "from performing actions.");
+      }
+      // A chatId is not authority: only the kernel-issued agent caller may request owner approval.
+      description = {...description, autoApprovable: false};
     }
 
     let actionId = this.storage.nextActionId.get();
@@ -8872,7 +8896,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Resolve the approver's identity before applying, so a failed profile fetch can't leave the
     // action applied in the world but still "pending" in storage.
     let profile = await this.#getClientProfile();
-    await this.impl.applyPendingAction(action, profile, false);
+    await this.impl.applyPendingAction(action, profile, false, this.clientUserId);
 
     // Clearing this manual gate may unblock later auto-eligible pending actions on the same
     // gatekeeper, so cascade a drain (in-order) once this one is applied. An awaited turn resumes
@@ -8993,6 +9017,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async rejectAction(id: number): Promise<void> {
+    return this.impl.withWorkspaceMutation(() => this.#rejectAction(id));
+  }
+
+  async #rejectAction(id: number): Promise<void> {
     let action = this.impl.storage.actions.get(id);
     if (!action) {
       throw new Error(`No such action: ${id}`);

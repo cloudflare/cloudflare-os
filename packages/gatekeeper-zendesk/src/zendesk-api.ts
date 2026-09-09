@@ -213,6 +213,16 @@ export class ZendeskApi {
     const guarded = { ...ticket, safe_update: true, updated_stamp: safeUpdate.updateStamp };
     return this.request(`/api/v2/tickets/${encodeURIComponent(id)}.json`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ticket: guarded }) });
   }
+  /** Synchronous creation only. Zendesk retains idempotency keys for two hours; callers must not blindly retry later. */
+  async createTicket(ticket: Record<string, unknown>, idempotencyKey: string): Promise<{ ticket: ZendeskTicket }> {
+    const result = await this.request<{ ticket: ZendeskTicket }>("/api/v2/tickets.json", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({ ticket }),
+    });
+    if (!Number.isSafeInteger(result?.ticket?.id) || result.ticket.id <= 0) throw new Error("Zendesk creation completed without a valid ticket ID. Verify the outcome before creating another ticket.");
+    return result;
+  }
   async downloadAttachment(url: string, maxBytes = MAX_ATTACHMENT_BYTES): Promise<{ data: Uint8Array; contentType?: string }> {
     const parsed = new URL(url);
     if (parsed.origin !== baseUrl(this.subdomain) || parsed.username || parsed.password) throw new Error("Attachment URL is outside the connected Zendesk subdomain.");

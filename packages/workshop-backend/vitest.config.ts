@@ -6,6 +6,8 @@ const EXPECTED_RPC_REJECTIONS = new Set([
   'Collaborators requires an explicitly invited, verified @totango.com SSO collaborator.',
   'Finance workspaces are invite-only and do not support share links.',
   'Internal share links only support Gadget-only access.',
+  // Losing concurrent decision in suspended-agent-resume.test.ts (also asserted by the caller).
+  'Action is not pending: 99',
 ])
 
 /**

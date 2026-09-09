@@ -74,9 +74,11 @@ import type {
   ZendeskCodingSessionToolInfo,
   ZendeskCodingSessionToolResult,
   ZendeskCurrentUser,
+  ZendeskCreateTicketInput,
   ZendeskQueuedAction,
   ZendeskTicketSearchRequest,
   ZendeskTicketSession,
+  ZendeskTicketCreationResult,
 } from "./types.js";
 
 type Env = Cloudflare.Env & { BASE_URL?: string; CLIENT_ID?: string; CLIENT_SECRET?: string; PUBLIC_BASE_URL?: string };
@@ -91,6 +93,7 @@ type StoredUpload = {
   consumed?: boolean;
 };
 type PendingAction =
+  | { kind: "create"; ticket: Record<string, unknown>; idempotencyKey: string }
   | {
       kind: "comment";
       ticketId: string;
@@ -129,6 +132,7 @@ const ACTION_KINDS = [
   { tag: "zendesk.comment", label: "Zendesk comment" },
   { tag: "zendesk.update-fields", label: "Zendesk field update" },
 ] as const satisfies ActionKind[];
+const CREATE_ACTION_KIND = { tag: "zendesk.create-ticket", label: "Create Zendesk ticket" } satisfies ActionKind;
 const ACCOUNT_RESOURCE: SupportedResource = {
   urlPattern: "https://:subdomain.zendesk.com",
   title: "Zendesk Account",
@@ -408,7 +412,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
       logo: ICON,
       color: "#03363d",
       tagline: "Read and manage Zendesk tickets",
-      description: "Connect Zendesk Support so agents can search tickets, read normalized Work Items-compatible data, stage attachments, and request ticket comments or field updates.",
+      description: "Connect Zendesk Support so agents can search tickets, read normalized Work Items-compatible data, stage attachments, and request ticket creation, comments or field updates.",
     };
   }
 
@@ -659,6 +663,8 @@ class ZendeskManagementTicketAdapter extends RpcTarget implements WorkItemManage
 
 @validateRpc()
 export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gatekeeper<ZendeskAccountSession | ZendeskTicketSession> {
+  // Liveness only, never authority to retry: persisted claims without a local execution have unknown outcomes.
+  #activeActions = new Set<number>();
   #account(): DurableObjectStub<ZendeskAccount> {
     const exports = exportsOf(this.ctx);
     return exports.ZendeskAccount.get(exports.ZendeskAccount.idFromString(this.ctx.props.accountId));
@@ -683,8 +689,11 @@ export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gate
       : new ZendeskAccountSessionImpl(this, queue.dup());
   }
   async getAgentCatalog(authorizer: RpcStub<ObservationAuthorizer>): Promise<AgentCatalog> {
-    await authorizer.authorizeObservation(privateObservation("Read Zendesk catalog", "Discovered native Zendesk ticket search, read, comment, field update, and staged attachment capabilities."));
-    return boundAgentCatalog([{ id: "zendesk:tickets", title: "Zendesk tickets", description: `Search and read tickets in ${this.ctx.props.subdomain}.zendesk.com.` }]);
+    const description = this.ctx.props.ticketId
+      ? `Read and update Zendesk ticket ${this.ctx.props.ticketId}, including its subject; add internal or public comments. Ticket creation is unavailable on this binding.`
+      : `Search, read, and create tickets in ${this.ctx.props.subdomain}.zendesk.com; edit subjects, update fields and add internal or public comments. Creation returns a pending ticket capability or coding-tool action ID; wait for its result before using the new ticket.`;
+    await authorizer.authorizeObservation(privateObservation("Read Zendesk catalog", description));
+    return boundAgentCatalog([{ id: "zendesk:tickets", title: "Zendesk tickets", description }]);
   }
   async addObserver(_id: string, verifier: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     if (!this.ctx.props.ticketId) throw new Error("Zendesk account-wide observations are private to the connected account.");
@@ -697,25 +706,34 @@ export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gate
   async applyAction(id: number): Promise<void> {
     const action = this.#claimAction(id);
     if (!action) return;
+    this.#activeActions.add(id);
     try {
-      const result = action.kind === "comment"
+      const result = action.kind === "create"
+        ? await this.#applyCreate(action)
+        : action.kind === "comment"
         ? await this.#applyComment(action)
         : await this.#applyFields(action);
       this.ctx.storage.kv.put<ZendeskActionResult>(resultKey(action.id), { status: "ready", result });
       action.status = "applied";
       this.ctx.storage.kv.put(actionKey(id), action);
     } catch (error) {
-      const guidance = error instanceof ZendeskApiError && error.status === 409
+      const guidance = action.kind === "create"
+        ? "Ticket creation may have succeeded. Search Zendesk and verify the outcome before submitting a new creation; do not blindly repeat the write."
+        : error instanceof ZendeskApiError && error.status === 409
         ? "Ticket update conflict. Read the latest ticket and submit a new action with the intended changes."
         : "The write outcome may be ambiguous. Read the ticket and its history to verify whether it applied before submitting a new action; do not blindly repeat the write.";
       this.ctx.storage.kv.put<ZendeskActionResult>(resultKey(action.id), { status: "failed", message: `${guidance} ${boundedString(error instanceof Error ? error.message : String(error), 240)}` });
       action.status = "failed";
       this.ctx.storage.kv.put(actionKey(id), action);
       throw error;
+    } finally {
+      this.#activeActions.delete(id);
     }
   }
   async rejectAction(id: number): Promise<void> {
     const action = this.ctx.storage.kv.get<StoredAction>(actionKey(id));
+    // Creation cannot be cancelled once claimed, and a late rejection must not erase its outcome.
+    if (action?.kind === "create" && action.status !== "pending") throw new Error("Zendesk ticket creation has already been claimed; verify its outcome instead of rejecting it.");
     if (action?.kind === "comment") for (const token of action.uploadTokens) this.ctx.storage.kv.delete(uploadKey(token));
     this.ctx.storage.kv.delete(actionKey(id));
     if (action) this.ctx.storage.kv.put<ZendeskActionResult>(resultKey(id), { status: "rejected" });
@@ -799,7 +817,7 @@ export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gate
       detail: { item },
       comments: [...normalizeComments(commentPage.comments, users), ...pending.flatMap(action => action.kind === "comment" ? [action.synthetic] : [])],
       activity: normalizeActivity(auditPage.audits, users),
-      updateOptions: { source: "zendesk", id: String(ticket.id), key: `ZD-${ticket.id}`, allowedFields: ["status", "priority", "type", "assignee_id", "group_id", "tags", "custom_<id>"] },
+      updateOptions: { source: "zendesk", id: String(ticket.id), key: `ZD-${ticket.id}`, allowedFields: ["subject", "status", "priority", "type", "assignee_id", "group_id", "tags", "custom_<id>"] },
       transitions: [],
       attachments: normalizeAttachments(commentPage.comments),
     };
@@ -839,15 +857,39 @@ export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gate
   }
   async queueFields(queue: RpcStub<ApprovalQueue>, ticketId: string, patch: WorkItemFieldPatch): Promise<ZendeskQueuedAction<WorkItemDetail>> {
     const action = await this.#fieldAction(ticketId, patch);
-    return this.#queue(queue, action, `Update Zendesk ticket ${action.ticketId}`, `Update allowlisted fields on Zendesk ticket ${action.ticketId}: ${Object.keys(action.fields).join(", ")}.`, ACTION_KINDS[1]);
+    const payload = JSON.stringify({ ticket: zendeskPatch(action.fields) }, null, 2).split("\n").map(line => `    ${line}`).join("\n");
+    return this.#queue(queue, action, `Update Zendesk ticket ${action.ticketId}`, `Update ${ticketUrl(this.ctx.props.subdomain, action.ticketId)} only if unchanged since ${action.updateStamp}. Zendesk business rules may send notifications. All outbound changed fields:\n\n${payload}`, ACTION_KINDS[1]);
   }
-  getActionResult(actionId: number): ZendeskActionResult { if (!Number.isInteger(actionId) || actionId <= 0) throw new Error("Invalid Zendesk action result id."); return this.ctx.storage.kv.get<ZendeskActionResult>(resultKey(actionId)) ?? { status: "pending" }; }
+  async queueCreate(queue: RpcStub<ApprovalQueue>, input: ZendeskCreateTicketInput): Promise<ZendeskQueuedAction<ZendeskTicketCreationResult>> {
+    this.#assertCreationScope();
+    const ticket = normalizeCreateTicket(input);
+    // Snapshot exactly what will be sent, including every custom field and comment visibility.
+    const payload = JSON.stringify({ ticket }, null, 2).split("\n").map(line => `    ${line}`).join("\n");
+    return this.#queue(queue, { kind: "create", ticket, idempotencyKey: crypto.randomUUID() },
+      `Create Zendesk ticket: ${boundedString(ticket.subject, 300)}`,
+      `Create one ticket in https://${this.ctx.props.subdomain}.zendesk.com. Initial comment: ${ticket.comment.public ? "PUBLIC (customer-visible)" : "INTERNAL (agent-only)"}. Requester: ${ticket.requester_id ?? "Zendesk default (not specified)"}. Zendesk business rules may send notifications. No attachments or CCs are supplied. All outbound ticket fields:\n\n${payload}`,
+      CREATE_ACTION_KIND);
+  }
+  getActionResult(actionId: number): ZendeskActionResult {
+    if (!Number.isInteger(actionId) || actionId <= 0) throw new Error("Invalid Zendesk action result id.");
+    const result = this.ctx.storage.kv.get<ZendeskActionResult>(resultKey(actionId));
+    if (result && result.status !== "pending") return result;
+    const action = this.ctx.storage.kv.get<StoredAction>(actionKey(actionId));
+    if (action?.status === "applying" && !this.#activeActions.has(actionId)) {
+      const failed: ZendeskActionResult = { status: "failed", message: `Zendesk action was interrupted; its outcome is unknown and it will not be retried. ${action.kind === "create" ? "Ticket creation may still have succeeded. Search Zendesk" : "Read the ticket and its history"} and verify the outcome before submitting a new action; do not blindly repeat the write.` };
+      // Recover lazily on polling or apply. No timeout can safely prove that an external write failed.
+      this.ctx.storage.kv.put(resultKey(actionId), failed);
+      this.ctx.storage.kv.put(actionKey(actionId), { ...action, status: "failed" });
+      return failed;
+    }
+    return result ?? { status: "pending" };
+  }
 
   #nextActionId(): number { const id = this.ctx.storage.kv.get<number>("nextActionId") ?? 1; this.ctx.storage.kv.put("nextActionId", id + 1); return id; }
-  #pendingActionsFor(ticketId: string): StoredAction[] { return [...this.ctx.storage.kv.list<StoredAction>({ prefix: "action:" })].map(([, value]) => value).filter(action => action.status === "pending" && action.ticketId === ticketId).toSorted((a, b) => a.id - b.id); }
+  #pendingActionsFor(ticketId: string): StoredAction[] { return [...this.ctx.storage.kv.list<StoredAction>({ prefix: "action:" })].map(([, value]) => value).filter(action => action.status === "pending" && action.kind !== "create" && action.ticketId === ticketId).toSorted((a, b) => a.id - b.id); }
   #claimAction(id: number): StoredAction | null {
     if (!Number.isInteger(id) || id <= 0) throw new Error("Invalid Zendesk action id.");
-    const result = this.ctx.storage.kv.get<ZendeskActionResult>(resultKey(id));
+    const result = this.getActionResult(id);
     // Consult results too: older versions deleted the action when recording failure.
     if (result?.status === "failed") throw new Error(`${result.message} Read the ticket and verify the outcome before submitting a new action.`);
     if (result?.status === "rejected") throw new Error("Zendesk action was rejected. Submit a new action if the change is still intended.");
@@ -859,12 +901,14 @@ export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gate
     this.ctx.storage.kv.put(actionKey(id), claimed);
     return claimed;
   }
-  async #queue(queue: RpcStub<ApprovalQueue>, action: PendingAction, title: string, description: string, actionKind: ActionKind): Promise<ZendeskQueuedAction<WorkItemDetail>> {
+  async #queue(queue: RpcStub<ApprovalQueue>, action: PendingAction, title: string, description: string, actionKind: ActionKind): Promise<ZendeskQueuedAction> {
     const id = this.#nextActionId();
     this.ctx.storage.kv.put<StoredAction>(actionKey(id), { ...action, id, status: "pending" });
     this.ctx.storage.kv.put<ZendeskActionResult>(resultKey(id), { status: "pending" });
-    try { await queue.submitAction(id, { title, description, implementsRevert: false, actionKind }); }
+    try { await queue.submitAction(id, { title, description, implementsRevert: false, actionKind, ...(action.kind === "create" ? { awaitDecision: true, autoApprovable: false } : {}) }); }
     catch (error) {
+      // submitAction may have delivered the action before its response was lost. Never erase a claim.
+      if (action.kind === "create" && this.ctx.storage.kv.get<StoredAction>(actionKey(id))?.status !== "pending") throw error;
       if (action.kind === "comment") for (const uploadToken of action.uploadTokens) this.ctx.storage.kv.delete(uploadKey(uploadToken));
       this.ctx.storage.kv.delete(actionKey(id));
       this.ctx.storage.kv.delete(resultKey(id));
@@ -899,11 +943,23 @@ export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gate
     const { ticket } = await this.#api().updateTicket(action.ticketId, zendeskPatch(action.fields), { updateStamp: action.updateStamp });
     return { item: normalizeSummary(this.ctx.props.subdomain, ticket) };
   }
+  #assertCreationScope(): void {
+    if (this.ctx.props.ticketId) throw new Error("Ticket-scoped Zendesk bindings cannot create tickets.");
+  }
+  async #applyCreate(action: StoredAction & { kind: "create" }): Promise<ZendeskTicketCreationResult> {
+    this.#assertCreationScope();
+    const { ticket } = await this.#api().createTicket(action.ticket, action.idempotencyKey);
+    return { source: "zendesk", id: String(ticket.id), key: `ZD-${ticket.id}`, url: ticketUrl(this.ctx.props.subdomain, ticket.id) };
+  }
 }
 
 class ZendeskAccountSessionImpl extends RpcTarget implements ZendeskAccountSession {
   constructor(private readonly gatekeeper: ZendeskGatekeeper, private readonly queue: RpcStub<ApprovalQueue>) { super(); }
   [Symbol.dispose](): void { this.queue[Symbol.dispose](); }
+  async createTicket(input: ZendeskCreateTicketInput): Promise<ZendeskTicketSession> {
+    const action = await this.gatekeeper.queueCreate(this.queue, input);
+    return new ZendeskPendingTicketSession(this.gatekeeper, action.actionId, this.queue.dup());
+  }
   async getCurrentUser(): Promise<ZendeskCurrentUser> { const result = await this.gatekeeper.getCurrentUser(); await this.queue.authorizeObservation(privateObservation("Read current Zendesk user", "Read the signed-in Zendesk user's identity.")); return result; }
   async searchTickets(request?: ZendeskTicketSearchRequest): Promise<WorkItemSearchPage> { const result = await this.gatekeeper.searchTickets(request); await this.queue.authorizeObservation(privateObservation("Search Zendesk tickets", "Searched tickets in the connected Zendesk subdomain.")); return result; }
   async readTicket(ticketId: string): Promise<WorkItemRead> { const result = await this.gatekeeper.readTicket(ticketId); await this.queue.authorizeObservation(privateObservation("Read Zendesk ticket", `Read Zendesk ticket ${normalizeTicketId(ticketId)}.`)); return result; }
@@ -917,10 +973,29 @@ class ZendeskAccountSessionImpl extends RpcTarget implements ZendeskAccountSessi
     if (name === "zendesk_get_current_user") return toolOk(await this.getCurrentUser());
     if (name === "zendesk_search_tickets") return toolOk(await this.searchTickets(toolSearchRequest(args)));
     if (name === "zendesk_read_ticket") return toolOk(await this.readTicket(normalizeTicketId(args.id ?? args.ticketId)));
+    if (name === "zendesk_create_ticket") return toolPending(await this.gatekeeper.queueCreate(this.queue, toolCreateInput(args)), "Zendesk ticket creation is pending. Poll this action ID; do not create another ticket.");
     if (name === "zendesk_add_comment") return toolPending(await this.gatekeeper.queueComment(this.queue, normalizeTicketId(args.id ?? args.ticketId), toolCommentInput(args)), "Zendesk comment is awaiting Workshop approval.");
     if (name === "zendesk_update_fields") return toolPending(await this.gatekeeper.queueFields(this.queue, normalizeTicketId(args.id ?? args.ticketId), toolFieldPatch(args)), "Zendesk field update is awaiting Workshop approval.");
     throw new Error(`Unknown Zendesk coding-session tool: ${name}`);
   }
+}
+
+class ZendeskPendingTicketSession extends RpcTarget implements ZendeskTicketSession {
+  constructor(private readonly gatekeeper: ZendeskGatekeeper, private readonly actionId: number, private readonly queue: RpcStub<ApprovalQueue>) { super(); }
+  #resolve(): ZendeskTicketSessionImpl {
+    const outcome = this.gatekeeper.getActionResult(this.actionId);
+    if (outcome.status === "pending") throw new Error("Zendesk ticket creation is pending. Retry this same ticket session after creation completes; do not create another ticket.");
+    if (outcome.status !== "ready") throw new Error(`Zendesk ticket creation ${outcome.status}. ${outcome.status === "failed" ? outcome.message : "This ticket session cannot be used."}`);
+    const result = outcome.result;
+    if (!result || typeof result !== "object" || !("id" in result) || typeof result.id !== "string") throw new Error("Zendesk ticket creation completed without a ticket ID.");
+    return new ZendeskTicketSessionImpl(this.gatekeeper, normalizeTicketId(result.id), this.queue);
+  }
+  async read() { return this.#resolve().read(); }
+  async readAttachment(id: string) { return this.#resolve().readAttachment(id); }
+  async mediaCapabilities() { return this.#resolve().mediaCapabilities(); }
+  async addComment(input: WorkItemCommentInput) { return this.#resolve().addComment(input); }
+  async updateFields(patch: WorkItemFieldPatch) { return this.#resolve().updateFields(patch); }
+  [Symbol.dispose](): void { this.queue[Symbol.dispose](); }
 }
 
 class ZendeskTicketSessionImpl extends RpcTarget implements ZendeskTicketSession {
@@ -976,12 +1051,13 @@ function normalizeComments(comments: ZendeskComment[], users: Map<number, Zendes
   });
 }
 function normalizeActivity(audits: ZendeskAudit[], users: Map<number, ZendeskApiUser>): WorkItemRead["activity"] { return audits.map(audit => ({ id: String(audit.id), type: "audit", author: displayUser(audit.author_id, users), createdAt: audit.created_at ?? undefined, summary: boundedString((audit.events ?? []).map(event => event.type === "Change" ? `${event.field_name ?? "field"} changed` : event.type ?? "event").join(", "), 300, "Ticket audit") })); }
-function overlayFields(item: WorkItemSummary, fields: Record<string, string | number | boolean | null | string[]>): WorkItemSummary { return { ...item, status: typeof fields.status === "string" ? fields.status : item.status, priority: typeof fields.priority === "string" ? fields.priority : item.priority, type: typeof fields.type === "string" ? fields.type : item.type, fields: { ...item.fields, ...Object.fromEntries(Object.entries(fields).filter(([key, value]) => key.startsWith("custom_") && (value === null || ["string", "number", "boolean"].includes(typeof value)))) as Record<string, string | number | boolean | null> } }; }
-export function zendeskPatch(fields: Record<string, string | number | boolean | null | string[]>): Record<string, unknown> { const ticket: Record<string, unknown> = {}; const customFields: Array<{ id: number; value: unknown }> = []; for (const [key, value] of Object.entries(fields)) { if (["status", "priority", "type", "assignee_id", "group_id", "tags"].includes(key)) ticket[key] = value; else if (/^custom_\d+$/.test(key)) customFields.push({ id: Number(key.slice(7)), value }); else throw new Error(`Unsupported Zendesk field: ${key}`); } if (customFields.length > 0) ticket.custom_fields = customFields; return ticket; }
+function overlayFields(item: WorkItemSummary, fields: Record<string, string | number | boolean | null | string[]>): WorkItemSummary { return { ...item, title: typeof fields.subject === "string" ? boundedString(fields.subject, 300) : item.title, status: typeof fields.status === "string" ? fields.status : item.status, priority: typeof fields.priority === "string" ? fields.priority : item.priority, type: typeof fields.type === "string" ? fields.type : item.type, fields: { ...item.fields, ...Object.fromEntries(Object.entries(fields).filter(([key, value]) => key.startsWith("custom_") && (value === null || ["string", "number", "boolean"].includes(typeof value)))) as Record<string, string | number | boolean | null> } }; }
+export function zendeskPatch(fields: Record<string, string | number | boolean | null | string[]>): Record<string, unknown> { const ticket: Record<string, unknown> = {}; const customFields: Array<{ id: number; value: unknown }> = []; for (const [key, value] of Object.entries(fields)) { if (["subject", "status", "priority", "type", "assignee_id", "group_id", "tags"].includes(key)) ticket[key] = value; else if (/^custom_\d+$/.test(key)) customFields.push({ id: Number(key.slice(7)), value }); else throw new Error(`Unsupported Zendesk field: ${key}`); } if (customFields.length > 0) ticket.custom_fields = customFields; return ticket; }
 function normalizeFieldPatch(patch: WorkItemFieldPatch): Record<string, string | number | boolean | null | string[]> {
   const entries = Object.entries(patch.fields ?? {});
   if (entries.length === 0 || entries.length > 10) throw new Error("Zendesk field updates require 1 to 10 supported fields.");
   for (const [key, value] of entries) {
+    if (key === "subject") validateSubject(value);
     const valid = value === null || typeof value === "boolean" ||
       (typeof value === "number" && Number.isFinite(value)) ||
       (typeof value === "string" && value.length <= FIELD_MAX) ||
@@ -993,5 +1069,52 @@ function normalizeFieldPatch(patch: WorkItemFieldPatch): Record<string, string |
   return fields;
 }
 function toolSearchRequest(args: Record<string, unknown>): WorkItemSearchRequest & { exhaustive?: boolean } { return { source: "zendesk", query: boundedString(args.query, 300), assignedToMe: args.assignedToMe === true, limit: pageLimit(args.limit), exhaustive: args.exhaustive === true, cursors: { zendesk: args.cursor == null ? undefined : boundedString(args.cursor, EXPORT_CURSOR_MAX) } }; }
+function createObject(value: unknown, keys?: string[]): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Zendesk creation input must contain objects.");
+  if (keys && Object.keys(value).some(key => !keys.includes(key))) throw new Error("Unsupported Zendesk creation property.");
+  return value as Record<string, unknown>;
+}
+function createText(value: unknown, max: number, name: string): string {
+  if (typeof value !== "string" || !value.trim() || value.length > max || value.includes("\0")) throw new Error(`Zendesk creation ${name} requires 1 to ${max} characters without NUL bytes.`);
+  return value;
+}
+function validateSubject(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || value.length > 300 || value.includes("\0")) throw new Error("Zendesk subject requires 1 to 300 characters without NUL bytes.");
+  return value;
+}
+function toolCreateInput(value: unknown): ZendeskCreateTicketInput {
+  const input = createObject(value, ["subject", "comment", "requesterId", "fields"]);
+  const comment = createObject(input.comment, ["body", "visibility"]);
+  if (comment.visibility !== undefined && comment.visibility !== "internal" && comment.visibility !== "public") throw new Error("Zendesk creation comment visibility must be internal or public.");
+  if (input.requesterId !== undefined && (typeof input.requesterId !== "number" || !Number.isSafeInteger(input.requesterId) || input.requesterId <= 0)) throw new Error("Zendesk requesterId must be a positive safe integer.");
+  let fields: WorkItemFieldPatch["fields"] | undefined;
+  if (input.fields !== undefined) {
+    const raw = createObject(input.fields);
+    if (Object.hasOwn(raw, "subject")) throw new Error("Set the creation subject only at the top level, not in fields.");
+    fields = Object.keys(raw).length ? normalizeFieldPatch(toolFieldPatch({ fields: raw })) : {};
+    for (const [key, field] of Object.entries(fields)) {
+      const choices = key === "status" ? ["new", "open", "pending", "hold", "solved"] : key === "priority" ? ["low", "normal", "high", "urgent"] : key === "type" ? ["problem", "incident", "question", "task"] : undefined;
+      if (choices && (typeof field !== "string" || !choices.includes(field))) throw new Error(`Invalid Zendesk creation ${key}.`);
+      if ((key === "assignee_id" || key === "group_id") && (typeof field !== "number" || !Number.isSafeInteger(field) || field <= 0)) throw new Error(`Zendesk creation ${key} must be a positive safe integer.`);
+      if (key === "tags" && !Array.isArray(field)) throw new Error("Zendesk creation tags must be an array of strings.");
+      if (key.startsWith("custom_") && (!/^custom_[1-9]\d*$/.test(key) || !Number.isSafeInteger(Number(key.slice(7))))) throw new Error("Zendesk custom field ID must be a positive safe integer.");
+    }
+  }
+  return {
+    subject: validateSubject(input.subject),
+    comment: { body: createText(comment.body, BODY_MAX, "comment body"), visibility: comment.visibility },
+    requesterId: input.requesterId,
+    fields: fields === undefined ? undefined : structuredClone(fields),
+  };
+}
+function normalizeCreateTicket(value: unknown) {
+  const input = toolCreateInput(value);
+  return {
+    ...zendeskPatch(input.fields ?? {}),
+    subject: input.subject,
+    comment: { body: input.comment.body, public: input.comment.visibility === "public" },
+    ...(input.requesterId === undefined ? {} : { requester_id: input.requesterId }),
+  };
+}
 function toolCommentInput(args: Record<string, unknown>): WorkItemCommentInput { return { body: typeof args.body === "string" ? args.body : "", visibility: args.visibility === "public" ? "public" : "internal", attachmentTokens: Array.isArray(args.attachmentTokens) ? args.attachmentTokens.map(String) : undefined }; }
 function toolFieldPatch(args: Record<string, unknown>): WorkItemFieldPatch { const fields = typeof args.fields === "object" && args.fields !== null ? args.fields as Record<string, string | number | boolean | null | string[]> : {}; return { fields }; }

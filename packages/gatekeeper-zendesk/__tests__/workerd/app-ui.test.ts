@@ -13,12 +13,13 @@
 // no test writes to a live ticket.
 
 import { env } from "cloudflare:test";
-import { exports as workerExports } from "cloudflare:workers";
+import { exports as workerExports, RpcStub, RpcTarget } from "cloudflare:workers";
 import type { ZendeskAccount } from "../../src/zendesk.js";
 import type {
   GatekeeperConnectCallback,
   GatekeeperUiFrame,
   GatekeeperUser,
+  ApprovalQueue,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkItemsManagementApi } from "../../src/types.js";
@@ -82,7 +83,12 @@ function stubZendesk(): Call[] {
     if (path === "/api/v2/search.json") {
       return Response.json({ results: [TICKET], count: 1, next_page: null });
     }
+    if (path === "/api/v2/tickets.json" && method === "POST") {
+      expect(request.headers.get("Idempotency-Key")).toBeTruthy();
+      return Response.json({ ticket: TICKET }, { status: 201 });
+    }
     if (path === `/api/v2/tickets/${TICKET_ID}.json`) {
+      if (method === "PUT") return Response.json({ ticket: { ...TICKET, ...JSON.parse(String(init?.body)).ticket } });
       return Response.json({ ticket: TICKET });
     }
     if (path === `/api/v2/tickets/${TICKET_ID}/comments.json`) {
@@ -136,6 +142,51 @@ afterEach(() => {
 });
 
 describe("Zendesk Work Items app UI", () => {
+  it("keeps management writes off the agent session while creation traverses real approval RPC", async () => {
+    const accountId = await connect("creation-session", SUBDOMAIN);
+    const hooks = testEnv.TEST_HOOKS.get(testEnv.TEST_HOOKS.idFromName("creation-session"));
+    const props = { accountId, subdomain: SUBDOMAIN };
+    const submitted = vi.fn<ApprovalQueue["submitAction"]>(async () => {});
+    class Queue extends RpcTarget implements Pick<ApprovalQueue, "authorizeObservation" | "submitAction"> {
+      async submitAction(...args: Parameters<ApprovalQueue["submitAction"]>): Promise<void> { await submitted(...args); }
+      async authorizeObservation(): Promise<void> {}
+    }
+    const queue = new Queue();
+    using queueStub = new RpcStub(queue);
+    using session = await hooks.startAccountSession(props, queueStub as never);
+    calls.length = 0;
+    using ticket = await session.createTicket({ subject: "RPC creation", comment: { body: "Internal note" } });
+    const actionId = submitted.mock.calls[0][0];
+    await expect((async () => await ticket.read())()).rejects.toThrow("creation is pending");
+    expect(calls).toHaveLength(0);
+    expect(submitted.mock.calls[0][1]).toMatchObject({ awaitDecision: true, autoApprovable: false });
+    await hooks.applyAction(props, actionId);
+    await hooks.applyAction(props, actionId);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ method: "POST", url: "https://acme.zendesk.com/api/v2/tickets.json" });
+    expect(await session.getActionResult(actionId)).toMatchObject({ status: "ok", structuredContent: { id: TICKET_ID } });
+    expect(await ticket.read()).toMatchObject({ detail: { item: { id: TICKET_ID } } });
+    const edit = await ticket.updateFields({ fields: { subject: "Edited through RPC" } });
+    expect((await ticket.read()).detail.item.title).toBe("Edited through RPC");
+    await hooks.applyAction(props, edit.actionId);
+    expect(await session.getActionResult(edit.actionId)).toMatchObject({ status: "ok", structuredContent: { item: { title: "Edited through RPC" } } });
+    const put = calls.find(call => call.method === "PUT");
+    expect(JSON.parse(put!.body!)).toEqual({ ticket: { subject: "Edited through RPC", safe_update: true, updated_stamp: TICKET.updated_at } });
+    // Returned capabilities do not expose DO/management bypasses, even over real RPC.
+    await expect((async () => await (session as unknown as { directUpdateFields(): Promise<void> }).directUpdateFields())()).rejects.toThrow();
+    await expect((async () => await (ticket as unknown as { createTicket(): Promise<void> }).createTicket())()).rejects.toThrow();
+  });
+
+  it("does not add creation or queued session capabilities to the management UI", async () => {
+    const accountId = await connect("management-no-create", SUBDOMAIN);
+    const ui = managementApi(await openAppUi(accountId, SUBDOMAIN));
+    const before = calls.length;
+    for (const method of ["createTicket", "queueCreate", "startSession", "callTool"] as const) {
+      await expect((async () => await (ui as unknown as Record<typeof method, () => Promise<void>>)[method]())()).rejects.toThrow();
+    }
+    expect(calls).toHaveLength(before);
+  });
+
   it("serves status, search, and ticket reads from a live gatekeeper", async () => {
     const accountId = await connect("statuses", SUBDOMAIN);
     const ui = managementApi(await openAppUi(accountId, SUBDOMAIN));

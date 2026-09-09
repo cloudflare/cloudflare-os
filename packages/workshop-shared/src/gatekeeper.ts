@@ -1281,9 +1281,14 @@ export type ObservationDescription = {
    * - If the gadget is shared already, authorizeObservation() must throw an exception to block
    *   the observation.
    * - All future sharing of the gadget is prohibited.
-   * - Once observed, the gadget goes into "lockdown mode" where it can no longer perform any
-   *   actions, only make observations. This prevents the gadget from leaking data through other
-   *   gatekeepers.
+   * - Once observed, gadget, hook, and user callers cannot submit or apply actions, even if they
+   *   carry a chatId. Only trusted agent callers may submit actions to the existing approval queue;
+   *   each requires explicit manual approval by the owner. These actions are stored as non-auto-
+   *   approvable. Current lockdown also blocks auto-approval of actions queued before the observation,
+   *   regardless of user rules or deployment policy.
+   *   Owner authority is checked again at apply time; a stale collaborator session cannot approve.
+   * - Public web fetches remain prohibited. Manual action approval does not relax sharing or fetch
+   *   restrictions.
    *
    * TODO(someday): This was added as a stopgap in order to be able to make certain sensitive data
    *   sources available to internal users. In the longer-term, it should be possible to share
@@ -1392,6 +1397,8 @@ export type ActionDescription = {
    * user has opted in to auto-approving this action's kind (see `actionKind`). Only the gatekeeper
    * author knows whether a given edit is benign vs. destructive, so this gate is set per-action.
    * Absent -> never auto-approvable, even if a matching rule exists.
+   * Workspace privacy policy can override this verdict: `prohibitAllSharing` requires explicit
+   * manual approval for agent actions, including actions queued before the workspace became sensitive.
    *
    * TODO: A single opaque boolean isn't the ideal long-term shape. Eventually the gatekeeper should
    * describe the *nature* of the action -- e.g. destructive vs. additive, reversible vs. not,

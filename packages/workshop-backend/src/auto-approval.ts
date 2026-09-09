@@ -13,6 +13,7 @@ const logger = createWorkshopLogger("workshop.auto.approval");
 export interface AutoApprovalStorage {
   actions: Collection<ActionRecord, number>;
   autoApproveTags: Collection<AutoApproveTagRecord>;
+  prohibitAllSharing: { get(): boolean };
 }
 
 /**
@@ -41,6 +42,7 @@ export class AutoApprovalDrainer {
 
   /** Returns the authority that permits this action to run without a prompt. */
   approverFor(record: ActionRecord & {type: "action"}): AiChatAuthorInfo | undefined {
+    if (this.storage.prohibitAllSharing.get()) return undefined;
     if (record.description.autoApprovable !== true) return undefined;
     let tag = record.description.actionKind?.tag;
     let rule = tag === undefined

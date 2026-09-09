@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { JiraApi } from "../src/jira-api";
+import { JiraApi, markdownToAdf } from "../src/jira-api";
 import { JiraSiteGatekeeperImpl, JiraProjectGatekeeperImpl, JiraIssueGatekeeperImpl, JiraWorkItemsManagementUI, scopedJql } from "../src/jira";
 
 const ok = (body: unknown) => Response.json(body);
@@ -20,9 +20,8 @@ const account = {
   getSites: async () => grantedSites,
 };
 
-function setup(kind: "site" | "project" | "issue" = "project") {
+function setup(kind: "site" | "project" | "issue" = "project", values = new Map<string, unknown>()) {
   const gatekeeper = kind === "site" ? new JiraSiteGatekeeperImpl() : kind === "project" ? new JiraProjectGatekeeperImpl() : new JiraIssueGatekeeperImpl();
-  const values = new Map<string, unknown>();
   Object.assign(gatekeeper, { ctx: {
     props: { cloudId: "cloud-1", webBase: "https://one.atlassian.net", userObjectId: "owner", projectKey: "ENG", issueKey: "ENG-1" },
     exports: { UserAccount: { idFromString: (s: string) => s, get: () => account } },
@@ -34,10 +33,206 @@ function setup(kind: "site" | "project" | "issue" = "project") {
     dup() { return this; },
     [Symbol.dispose]: vi.fn(),
   };
-  return { gatekeeper, queue, session: () => gatekeeper.startSession(queue as never) };
+  return { gatekeeper, queue, values, session: () => gatekeeper.startSession(queue as never) };
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe("Jira action claims and approval previews", () => {
+  const create = { kind: "create" as const, fields: { project: { key: "ENG" }, summary: "A task" } };
+
+  it("creates then edits, assigns, transitions, and uploads bytes through the existing session", async () => {
+    const { gatekeeper, queue, session } = setup();
+    queue.submitAction.mockResolvedValue(undefined);
+    const writes: { url: string; init: RequestInit }[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      if (init.method !== "GET") {
+        writes.push({ url, init });
+        if (url.endsWith("/issue")) return ok({ id: "42", key: "ENG-42" });
+        if (url.endsWith("/attachments")) return ok([{ id: "file-1", filename: "evidence.png", size: 3 }]);
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith("/transitions")) return ok({ transitions: [{ id: "31", name: "Done" }] });
+      return ok(issue("ENG-42"));
+    }));
+    const project = await session();
+    if (!("createIssue" in project)) throw new Error("Wrong session");
+    const created = await project.createIssue({ issueType: "Task", summary: "New task", descriptionMarkdown: "Initial detail" });
+    expect(writes).toHaveLength(0);
+    await gatekeeper.applyAction(1);
+    expect(JSON.parse(String(writes[0].init.body))).toEqual({ fields: { project: { key: "ENG" }, issuetype: { name: "Task" }, summary: "New task", description: markdownToAdf("Initial detail") } });
+    await created.update({ summary: "Edited", assigneeAccountId: "owner-2", descriptionMarkdown: "Updated detail" });
+    await created.transition("done", { fields: { labels: ["fixed"] }, commentMarkdown: "Resolved" });
+    await created.uploadAttachment({ filename: "evidence.png", mimeType: "image/png", bytes: new Uint8Array([1, 2, 3]).buffer });
+    expect(writes).toHaveLength(1);
+    for (const id of [2, 3, 4]) { await gatekeeper.applyAction(id); await gatekeeper.applyAction(id); }
+    expect(writes).toHaveLength(4);
+    expect(writes[1].init.method).toBe("PUT");
+    expect(JSON.parse(String(writes[1].init.body))).toMatchObject({ fields: { summary: "Edited", assignee: { accountId: "owner-2" }, description: markdownToAdf("Updated detail") } });
+    expect(JSON.parse(String(writes[2].init.body))).toEqual({ transition: { id: "31" }, fields: { labels: ["fixed"] }, update: { comment: [{ add: { body: markdownToAdf("Resolved") } }] } });
+    expect(writes[3].url).toMatch(/\/issue\/ENG-42\/attachments$/);
+    expect(writes[3].init.headers).toMatchObject({ "X-Atlassian-Token": "no-check" });
+    const file = (writes[3].init.body as FormData).get("file");
+    expect(file).toBeInstanceOf(Blob);
+    if (!(file instanceof Blob)) throw new Error("Missing upload bytes");
+    expect(file.type).toBe("image/png");
+    expect(new Uint8Array(await file.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it("claims before awaiting scope checks and refuses concurrent apply/reject", async () => {
+    const { gatekeeper, queue } = setup();
+    queue.submitAction.mockResolvedValue(undefined);
+    const id = await gatekeeper.stageAction(queue as never, { kind: "comment", issue: "ENG-1", markdown: "Once" }, "Comment", "Comment");
+    let release!: (response: Response) => void;
+    const fetchMock = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { release = resolve; })).mockResolvedValue(ok({ id: "comment-1" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const applying = gatekeeper.applyAction(id);
+    await expect(gatekeeper.applyAction(id)).rejects.toThrow(/in progress/);
+    await expect(gatekeeper.rejectAction(id)).rejects.toThrow(/already been claimed/);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    release(ok(issue("ENG-1")));
+    await applying;
+    await gatekeeper.applyAction(id);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // One scope read, one comment write.
+    await expect(gatekeeper.getActionResult(id)).resolves.toMatchObject({ status: "ok" });
+  });
+
+  it.each(["applying", "failed", "rejected"])("does not replay persisted %s actions", async state => {
+    const { gatekeeper, values } = setup("site");
+    values.set("action:1", { state, action: create, createdAt: 1 });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(values.get("action:1")).toMatchObject({ state });
+  });
+
+  it("reports an orphaned create claim as unknown after restart, without another POST", async () => {
+    const original = setup();
+    original.queue.submitAction.mockResolvedValue(undefined);
+    const project = await original.session();
+    if (!("createIssue" in project)) throw new Error("Wrong session");
+    const created = await project.createIssue({ issueType: "Task", summary: "Only once" });
+    let release!: (response: Response) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>(resolve => { release = resolve; }));
+    vi.stubGlobal("fetch", fetchMock);
+    const applying = original.gatekeeper.applyAction(1);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await expect(original.gatekeeper.getActionResult(1)).resolves.toMatchObject({ status: "pending" });
+    await expect(created.getDetails()).rejects.toThrow(/creation is pending/);
+
+    // Capture exactly the durable state at the crash window: the POST was sent, but no
+    // terminal result was stored. A fresh instance has no live invocation for this claim.
+    const restartSnapshot = structuredClone(original.values);
+    release(ok({ id: "42", key: "ENG-42" }));
+    await applying;
+    const restarted = setup("project", restartSnapshot);
+    // Model the pending issue's owner capability resolving to the restarted DO instance.
+    Object.assign(created, { owner: restarted.gatekeeper });
+    await expect(restarted.gatekeeper.getActionResult(1)).resolves.toMatchObject({ status: "failed", message: expect.stringContaining("unknown outcome after interruption") });
+    await expect(restarted.gatekeeper.getCodingSessionActionResult(1)).resolves.toMatchObject({ status: "failed", message: expect.stringContaining("will not be retried") });
+    await expect(created.getDetails()).rejects.toThrow(/creation failed.*Verify the issue/);
+    await expect(created.update({ summary: "Retry" })).rejects.toThrow(/unknown outcome/);
+    await expect(restarted.gatekeeper.applyAction(1)).rejects.toThrow(/ambiguous/);
+    await expect(restarted.gatekeeper.rejectAction(1)).rejects.toThrow(/already been claimed/);
+    expect(restartSnapshot.get("action:1")).toMatchObject({ state: "applying" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(restarted.queue.submitAction).not.toHaveBeenCalled();
+  });
+
+  it("keeps unclaimed actions pending and completed results available after restart", async () => {
+    const original = setup("site");
+    original.queue.submitAction.mockResolvedValue(undefined);
+    vi.stubGlobal("fetch", vi.fn(async () => ok({ id: "42", key: "ENG-42" })));
+    await original.gatekeeper.stageAction(original.queue as never, create, "Create", "Create");
+    await original.gatekeeper.stageAction(original.queue as never, create, "Create", "Create");
+    await original.gatekeeper.applyAction(1);
+    const restarted = setup("site", structuredClone(original.values));
+    await expect(restarted.gatekeeper.getActionResult(1)).resolves.toMatchObject({ status: "ok", structuredContent: { result: { key: "ENG-42" } } });
+    await expect(restarted.gatekeeper.getActionResult(2)).resolves.toMatchObject({ status: "pending" });
+  });
+
+  it.each([["project", "PAY-1"], ["issue", "PAY-1"], ["issue", "ENG-2"]] as const)("rechecks %s scope on apply and never writes foreign issue %s", async (kind, issueKey) => {
+    const { gatekeeper, queue } = setup(kind);
+    queue.submitAction.mockResolvedValue(undefined);
+    const id = await gatekeeper.stageAction(queue as never, { kind: "update", issue: issueKey, fields: { summary: "Forbidden" } }, "Update", "Update");
+    const fetchMock = vi.fn(async () => ok(issue(issueKey)));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(gatekeeper.applyAction(id)).rejects.toThrow(/outside this/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]).toEqual([expect.stringContaining(`/issue/${issueKey}`), expect.objectContaining({ method: "GET" })]);
+    await expect(gatekeeper.getActionResult(id)).resolves.toMatchObject({ status: "failed" });
+    await expect(gatekeeper.applyAction(id)).rejects.toThrow(/ambiguous/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains a failed write when submission also fails and never retries it", async () => {
+    const { gatekeeper, queue } = setup("site");
+    const fetchMock = vi.fn(async () => { throw new Error("Connection lost after send"); });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(gatekeeper.stageAction(queue as never, create, "Create", "Create")).rejects.toThrow(/Connection lost/);
+    await expect(gatekeeper.getActionResult(1)).resolves.toMatchObject({ status: "failed", message: expect.stringContaining("the write may have reached Jira") });
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/ambiguous/);
+    await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/already been claimed/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains successful results when the queue response is lost", async () => {
+    const { gatekeeper, queue } = setup("site");
+    const fetchMock = vi.fn(async () => ok({ id: "123", key: "ENG-123" }));
+    vi.stubGlobal("fetch", fetchMock);
+    queue.submitAction.mockImplementation(async id => { await gatekeeper.applyAction(id); throw new Error("Queue response lost"); });
+    await expect(gatekeeper.stageAction(queue as never, create, "Create", "Create")).rejects.toThrow(/Queue response lost/);
+    await gatekeeper.applyAction(1);
+    await expect(gatekeeper.getActionResult(1)).resolves.toMatchObject({ status: "ok", structuredContent: { result: { key: "ENG-123" } } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects only pending actions and removes only unclaimed submission failures", async () => {
+    const { gatekeeper, queue, values } = setup("site");
+    queue.submitAction.mockResolvedValue(undefined);
+    const id = await gatekeeper.stageAction(queue as never, create, "Create", "Create");
+    await gatekeeper.rejectAction(id);
+    await gatekeeper.rejectAction(id);
+    await expect(gatekeeper.applyAction(id)).rejects.toThrow(/rejected/);
+    queue.submitAction.mockRejectedValueOnce(new Error("Queue unavailable"));
+    await expect(gatekeeper.stageAction(queue as never, create, "Create", "Create")).rejects.toThrow(/Queue unavailable/);
+    expect(values.has("action:2")).toBe(false);
+    await expect(gatekeeper.applyAction(2)).rejects.toThrow(/unavailable/);
+    await expect(gatekeeper.applyAction(NaN)).rejects.toThrow(/Invalid/);
+  });
+
+  it("shows full outbound create/update/transition/comment values and attachment metadata", async () => {
+    const { gatekeeper, queue } = setup("site");
+    queue.submitAction.mockResolvedValue(undefined);
+    const fields = { summary: "Revised", description: null, assignee: { accountId: "owner-2" }, labels: [], components: [{ name: "API" }], priority: null, duedate: "2026-10-01" };
+    const comment = "Long comment " + "x".repeat(600) + "\n```\nfinal text";
+    const actions: Parameters<typeof gatekeeper.stageAction>[1][] = [
+      create,
+      { kind: "update", issue: "ENG-1", fields },
+      { kind: "transition", issue: "ENG-1", body: { transition: { id: "31" }, fields, update: { comment: [{ add: { body: comment } }] } } },
+      { kind: "comment", issue: "ENG-1", markdown: comment },
+      { kind: "upload", issue: "ENG-1", filename: "evidence.png", mimeType: "image/png", bytes: new Uint8Array([1, 2, 3]).buffer },
+    ];
+    for (const action of actions) await gatekeeper.stageAction(queue as never, action, "Action", "Summary");
+    const previews = queue.submitAction.mock.calls.map(([, description]) => (description as { description: string }).description);
+    expect(previews[0]).toContain('"summary": "A task"');
+    for (const preview of previews.slice(1, 3)) {
+      expect(preview).toContain('"accountId": "owner-2"');
+      expect(preview).toContain('"description": null');
+      expect(preview).toContain('"labels": []');
+      expect(preview).toContain('"name": "API"');
+      expect(preview).toContain('"duedate": "2026-10-01"');
+    }
+    expect(previews[2]).toContain('"id": "31"');
+    expect(previews[3]).toContain(JSON.stringify(comment));
+    expect(previews[3]).toContain("````json");
+    expect(previews[4]).toContain('"filename": "evidence.png"');
+    expect(previews[4]).toContain('"mimeType": "image/png"');
+    expect(previews[4]).toContain('"sizeBytes": 3');
+    expect(previews[4]).not.toContain('"bytes"');
+  });
+});
 
 describe("enhanced Jira search", () => {
   it("posts explicit fields and opaque tokens, without offsets or totals", async () => {

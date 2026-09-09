@@ -126,12 +126,14 @@ async function workflowGatekeeper(ticketId?: string, subdomain = "acme") {
   const { ZendeskGatekeeper } = await import("../src/zendesk");
   const { kv, storage } = makeTestStorage();
   const account = { getAccessToken: async () => "token" };
-  const gatekeeper = new ZendeskGatekeeper({
+  const ctx = {
     props: { accountId: "account", subdomain, ticketId }, storage,
     exports: { ZendeskAccount: { idFromString: (id: string) => id, get: () => account } },
-  } as never, {} as never);
+  };
+  const restart = () => new ZendeskGatekeeper(ctx as never, {} as never);
+  const gatekeeper = restart();
   const queue = { dup() { return this; }, [Symbol.dispose]: vi.fn(), authorizeObservation: vi.fn(), submitAction: vi.fn() };
-  return { gatekeeper, kv, queue };
+  return { gatekeeper, kv, queue, restart };
 }
 
 describe("Zendesk workflow regressions", () => {
@@ -208,7 +210,7 @@ describe("Zendesk workflow regressions", () => {
     await expect(gatekeeper.applyAction(3)).rejects.toThrow("rejected");
     for (const claimedAt of [Date.now(), 0]) {
       kv.set("action:4", { id: 4, kind: "fields", ticketId: "123", fields: { status: "pending" }, updateStamp: "stamp", status: "applying", claimedAt });
-      await expect(gatekeeper.applyAction(4)).rejects.toThrow(/in progress or its outcome is ambiguous/);
+      await expect(gatekeeper.applyAction(4)).rejects.toThrow(/interrupted; its outcome is unknown/);
     }
     expect(fetcher).not.toHaveBeenCalled();
   });
@@ -477,6 +479,296 @@ describe("Zendesk workflow regressions", () => {
     await expect(session.callTool("zendesk_add_comment", { id: "123", body: "Note", attachmentTokens: Array(11).fill("token") })).rejects.toThrow("tokens exceed");
     await expect(session.callTool("zendesk_add_comment", { id: "123", body: "Note", attachmentTokens: ["unknown"] })).rejects.toThrow("invalid, expired, consumed");
     expect(queue.submitAction).not.toHaveBeenCalled();
+  });
+});
+
+describe("Zendesk subject edits", () => {
+  it("previews, simulates, rejects, and applies subject changes using the existing safe update path", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper("123");
+    let subject = "Old subject";
+    const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("comments.json")) return Response.json({ comments: [] });
+      if (url.includes("audits.json")) return Response.json({ audits: [] });
+      if (init?.method === "PUT") subject = JSON.parse(String(init.body)).ticket.subject;
+      return Response.json({ ticket: { id: 123, subject, updated_at: "stamp" } });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskTicketSession;
+    const first = await session.updateFields({ fields: { subject: "First pending title" } });
+    const second = await session.updateFields({ fields: { subject: "Second pending title", priority: "high" } });
+    expect(fetcher.mock.calls.every(([, init]) => init?.method !== "PUT")).toBe(true);
+    const description = queue.submitAction.mock.calls[1][1].description;
+    expect(description).toContain("https://acme.zendesk.com/agent/tickets/123");
+    expect(JSON.parse(description.split("All outbound changed fields:\n\n")[1])).toEqual({ ticket: { subject: "Second pending title", priority: "high" } });
+    expect(queue.submitAction.mock.calls[1][1].actionKind.tag).toBe("zendesk.update-fields");
+    const read = await session.read();
+    expect(read.detail.item.title).toBe("Second pending title");
+    expect(read.updateOptions.allowedFields).toContain("subject");
+    await gatekeeper.rejectAction(second.actionId);
+    expect((await session.read()).detail.item.title).toBe("First pending title");
+    await gatekeeper.rejectAction(first.actionId);
+    expect((await session.read()).detail.item.title).toBe("Old subject");
+    const accepted = await session.updateFields({ fields: { subject: "Approved title" } });
+    fetcher.mockClear();
+    await gatekeeper.applyAction(accepted.actionId);
+    await gatekeeper.applyAction(accepted.actionId);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ ticket: { subject: "Approved title", safe_update: true, updated_stamp: "stamp" } });
+    expect(gatekeeper.getActionResult(accepted.actionId)).toMatchObject({ status: "ready", result: { item: { title: "Approved title" } } });
+  });
+
+  it("supports account coding-tool edits and documents their bounds", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ticket: { id: 123, subject: "Old", updated_at: "stamp" } })));
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    const tool = (await session.listTools()).find(candidate => candidate.name === "zendesk_update_fields");
+    expect(tool?.description).toContain("subject");
+    expect(tool?.inputSchema).toMatchObject({ properties: { fields: { properties: { subject: { type: "string", minLength: 1, maxLength: 300 } } } } });
+    await expect(session.callTool("zendesk_update_fields", { id: "123", fields: { subject: "s".repeat(300) } })).resolves.toMatchObject({ status: "pending" });
+    expect(queue.submitAction.mock.calls[0][1].description).toContain("s".repeat(300));
+    expect(JSON.stringify(await gatekeeper.getAgentCatalog(queue as never))).toContain("edit subjects");
+  });
+
+  it.each(["", "  \n\t", "s".repeat(301), "bad\0subject", 5, true, null, ["subject"]])("rejects invalid subjects before reads or queueing: %j", async subject => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    await expect(session.callTool("zendesk_update_fields", { id: "123", fields: { subject } })).rejects.toThrow("subject requires");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(queue.submitAction).not.toHaveBeenCalled();
+  });
+});
+
+describe("Zendesk interrupted action recovery", () => {
+  it.each([undefined, 0, Date.now()])("reports an interrupted creation after restart, regardless of claim timestamp %s", async claimedAt => {
+    const { gatekeeper, queue, kv, restart } = await workflowGatekeeper();
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    const ticket = await session.createTicket({ subject: "Creation interrupted", comment: { body: "Note" } });
+    // Durable state left by a process stopped after claiming but before recording the POST's result.
+    const action = kv.get("action:1") as Record<string, unknown>;
+    kv.set("action:1", { ...action, status: "applying", claimedAt });
+    const fresh = restart();
+    const freshSession = await fresh.startSession(queue as never) as ZendeskAccountSession;
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    const outcome = await freshSession.getActionResult(1);
+    expect(outcome).toMatchObject({ status: "failed", message: expect.stringContaining("interrupted; its outcome is unknown") });
+    expect(outcome).toMatchObject({ message: expect.stringContaining("Search Zendesk") });
+    expect(kv.get("action:1")).toMatchObject({ status: "failed", idempotencyKey: action.idempotencyKey });
+    await expect(ticket.read()).rejects.toThrow("creation failed");
+    await expect(fresh.applyAction(1)).rejects.toThrow("will not be retried");
+    await expect(fresh.rejectAction(1)).rejects.toThrow("already been claimed");
+    expect(await freshSession.getCodingSessionActionResult(1)).toEqual(outcome);
+    expect(restart().getActionResult(1)).toMatchObject({ status: "failed" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("recovers on apply without prior polling and preserves pending and terminal outcomes", async () => {
+    const { gatekeeper, queue, kv, restart } = await workflowGatekeeper();
+    await gatekeeper.queueCreate(queue as never, { subject: "Queued", comment: { body: "Note" } });
+    const fresh = restart();
+    expect(fresh.getActionResult(1)).toEqual({ status: "pending" });
+    kv.set("action:2", { id: 2, kind: "create", status: "applying", ticket: {}, idempotencyKey: "old" });
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    await expect(fresh.applyAction(2)).rejects.toThrow("outcome is unknown");
+    expect(fresh.getActionResult(2)).toMatchObject({ status: "failed" });
+    // A stored terminal result takes precedence even if a legacy action record is still applying.
+    kv.set("action:3", { id: 3, kind: "create", status: "applying" });
+    for (const result of [{ status: "ready", result: { id: "123" } }, { status: "rejected" }, { status: "failed", message: "original failure" }]) {
+      kv.set("result:3", result);
+      expect(restart().getActionResult(3)).toEqual(result);
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+describe("Zendesk queued ticket creation", () => {
+  const input = { subject: "Login broken", comment: { body: "Please investigate" } };
+
+  it.each(["Login broken", "Different subject", null])("rejects fields.subject even when it agrees with the top-level subject: %j", async subject => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    await expect(session.createTicket({ ...input, fields: { subject } })).rejects.toThrow("only at the top level");
+    await expect(session.callTool("zendesk_create_ticket", { ...input, fields: { subject } })).rejects.toThrow("only at the top level");
+    expect(queue.submitAction).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("queues the exact outbound payload for manual approval without any provider request", async () => {
+    const { gatekeeper, queue, kv } = await workflowGatekeeper();
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    const fields = { status: "open", priority: "high", type: "incident", assignee_id: 7, group_id: 9, tags: ["support"], custom_42: "last field\n```\nnot markdown" };
+    const pending = await session.callTool("zendesk_create_ticket", { ...input, requesterId: 8, fields });
+    expect(pending).toMatchObject({ status: "pending", actionId: 1 });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(queue.submitAction).toHaveBeenCalledExactlyOnceWith(1, expect.objectContaining({
+      actionKind: { tag: "zendesk.create-ticket", label: "Create Zendesk ticket" },
+      autoApprovable: false, awaitDecision: true, implementsRevert: false,
+    }));
+    const description = queue.submitAction.mock.calls[0][1].description;
+    expect(description).toContain("https://acme.zendesk.com");
+    expect(description).toContain("INTERNAL (agent-only)");
+    const outbound = { ticket: { status: "open", priority: "high", type: "incident", assignee_id: 7, group_id: 9, tags: ["support"], custom_fields: [{ id: 42, value: fields.custom_42 }], subject: input.subject, comment: { body: input.comment.body, public: false }, requester_id: 8 } };
+    expect(JSON.parse(description.split("All outbound ticket fields:\n\n")[1])).toEqual(outbound);
+    fields.tags.push("not approved");
+    expect(kv.get("action:1")).toMatchObject({ ticket: outbound.ticket, idempotencyKey: expect.any(String), status: "pending" });
+    await expect(session.getActionResult(1)).resolves.toMatchObject({ status: "pending", actionId: 1 });
+    expect(await gatekeeper.getAutoApprovableActions()).not.toContainEqual(expect.objectContaining({ tag: "zendesk.create-ticket" }));
+  });
+
+  it("posts once after approval and stores only the real ticket identity without follow-up reads", async () => {
+    const { gatekeeper, queue, kv } = await workflowGatekeeper();
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    await session.callTool("zendesk_create_ticket", { ...input, comment: { body: "Customer-visible", visibility: "public" } });
+    expect(queue.submitAction.mock.calls[0][1].description).toContain("PUBLIC (customer-visible)");
+    const fetcher = vi.fn(async (_url: string, _init?: RequestInit) => Response.json({ ticket: { id: 456, url: "https://evil.example", description: "not part of result" } }, { status: 201 }));
+    vi.stubGlobal("fetch", fetcher);
+    const key = (kv.get("action:1") as { idempotencyKey: string }).idempotencyKey;
+    await gatekeeper.applyAction(1);
+    await gatekeeper.applyAction(1);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith("https://acme.zendesk.com/api/v2/tickets.json", expect.objectContaining({
+      method: "POST", redirect: "manual", headers: expect.objectContaining({ "Idempotency-Key": key, "Content-Type": "application/json", Authorization: "Bearer token" }),
+      body: JSON.stringify({ ticket: { subject: input.subject, comment: { body: "Customer-visible", public: true } } }),
+    }));
+    await expect(session.getActionResult(1)).resolves.toMatchObject({ status: "ok", structuredContent: { source: "zendesk", id: "456", key: "ZD-456", url: "https://acme.zendesk.com/agent/tickets/456" } });
+    expect(await session.getCodingSessionActionResult(1)).toEqual(await session.getActionResult(1));
+    await expect(gatekeeper.rejectAction(1)).rejects.toThrow("already been claimed");
+    expect(gatekeeper.getActionResult(1)).toMatchObject({ status: "ready" });
+  });
+
+  it("fails pending capability operations promptly and reuses the same capability after creation", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("comments.json")) return Response.json({ comments: [] });
+      if (url.includes("audits.json")) return Response.json({ audits: [] });
+      return Response.json({ ticket: { id: 456, subject: input.subject, updated_at: "stamp", status: init?.method === "PUT" ? "pending" : "open" } });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const ticket = await session.createTicket(input);
+    for (const operation of [() => ticket.read(), () => ticket.readAttachment("1"), () => ticket.mediaCapabilities(), () => ticket.addComment({ body: "Follow-up" }), () => ticket.updateFields({ fields: { status: "pending" } })]) {
+      await expect(operation()).rejects.toThrow("Retry this same ticket session");
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(queue.submitAction).toHaveBeenCalledTimes(1);
+    await gatekeeper.applyAction(1);
+    await expect(ticket.read()).resolves.toMatchObject({ detail: { item: { id: "456" } } });
+    const update = await ticket.updateFields({ fields: { status: "pending" } });
+    await gatekeeper.applyAction(update.actionId);
+    const comment = await ticket.addComment({ body: "Follow-up" });
+    await gatekeeper.applyAction(comment.actionId);
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "PUT").map(([url]) => url)).toEqual([
+      "https://acme.zendesk.com/api/v2/tickets/456.json", "https://acme.zendesk.com/api/v2/tickets/456.json",
+    ]);
+  });
+
+  it("rejects pending creation without writes and preserves rejected polling and capability behavior", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    const ticket = await session.createTicket(input);
+    await gatekeeper.rejectAction(1);
+    await gatekeeper.rejectAction(1);
+    await expect(session.getActionResult(1)).resolves.toMatchObject({ status: "rejected" });
+    await expect(ticket.read()).rejects.toThrow("creation rejected");
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow("rejected");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each(["network", "malformed", "missing-id", "unsafe-id", "provider"])("never retries ambiguous creation (%s)", async failure => {
+    const { gatekeeper, queue, kv } = await workflowGatekeeper();
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    const ticket = await session.createTicket(input);
+    const fetcher = vi.fn(async () => {
+      if (failure === "network") throw new Error("Connection lost");
+      if (failure === "malformed") return new Response("{", { status: 201 });
+      if (failure === "missing-id") return Response.json({ ticket: {} }, { status: 201 });
+      if (failure === "unsafe-id") return Response.json({ ticket: { id: Number.MAX_SAFE_INTEGER + 1 } }, { status: 201 });
+      return Response.json({ error: "Unavailable" }, { status: 503 });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow();
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow("Search Zendesk and verify");
+    await expect(ticket.read()).rejects.toThrow("creation failed");
+    await expect(session.getActionResult(1)).resolves.toMatchObject({ status: "failed", message: expect.stringContaining("creation may have succeeded") });
+    expect(kv.get("action:1")).toMatchObject({ kind: "create", status: "failed", idempotencyKey: expect.any(String) });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("claims synchronously, blocking concurrent apply and rejection while the POST is in flight", async () => {
+    const { gatekeeper, queue, kv } = await workflowGatekeeper();
+    await gatekeeper.queueCreate(queue as never, input);
+    const { promise, resolve } = Promise.withResolvers<Response>();
+    const fetcher = vi.fn(() => promise);
+    vi.stubGlobal("fetch", fetcher);
+    const applying = gatekeeper.applyAction(1);
+    expect(kv.get("action:1")).toMatchObject({ status: "applying" });
+    expect(gatekeeper.getActionResult(1)).toEqual({ status: "pending" });
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow("in progress");
+    await expect(gatekeeper.rejectAction(1)).rejects.toThrow("already been claimed");
+    resolve(Response.json({ ticket: { id: 456 } }, { status: 201 }));
+    await applying;
+    expect(gatekeeper.getActionResult(1)).toMatchObject({ status: "ready" });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("cleans up a failed submission, but retains a completed claim if submission acknowledgement is lost", async () => {
+    const { gatekeeper, queue, kv } = await workflowGatekeeper();
+    queue.submitAction.mockRejectedValueOnce(new Error("queue failed"));
+    await expect(gatekeeper.queueCreate(queue as never, input)).rejects.toThrow("queue failed");
+    expect(kv.has("action:1")).toBe(false);
+    expect(kv.has("result:1")).toBe(false);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ticket: { id: 456 } }, { status: 201 })));
+    queue.submitAction.mockImplementationOnce(async id => { await gatekeeper.applyAction(id); throw new Error("response lost"); });
+    await expect(gatekeeper.queueCreate(queue as never, input)).rejects.toThrow("response lost");
+    expect(gatekeeper.getActionResult(2)).toMatchObject({ status: "ready" });
+    await gatekeeper.applyAction(2);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not expose creation on ticket bindings and enforces scope at both staging and apply", async () => {
+    const { gatekeeper, queue, kv } = await workflowGatekeeper("123");
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never);
+    for (const name of ["createTicket", "queueCreate", "callTool", "directComment", "directUpdateFields"]) expect(name in session).toBe(false);
+    await expect(gatekeeper.queueCreate(queue as never, input)).rejects.toThrow("cannot create tickets");
+    kv.set("action:1", { id: 1, kind: "create", status: "pending", ticket: {}, idempotencyKey: "key" });
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow("cannot create tickets");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(queue.submitAction).not.toHaveBeenCalled();
+    const catalog = await gatekeeper.getAgentCatalog(queue as never);
+    expect(JSON.stringify(catalog)).toContain("creation is unavailable");
+    const broad = await workflowGatekeeper();
+    const broadSession = await broad.gatekeeper.startSession(broad.queue as never) as ZendeskAccountSession;
+    expect(await broadSession.listTools()).toContainEqual(expect.objectContaining({ name: "zendesk_create_ticket", mode: "action", classifiedBy: "default" }));
+    for (const name of ["directComment", "directUpdateFields", "queueCreate", "stageUpload"]) expect(name in broadSession).toBe(false);
+  });
+
+  it.each([
+    {}, { subject: "" }, { subject: "x".repeat(301) }, { comment: { body: " " } },
+    { comment: { body: "x".repeat(12001) } }, { comment: { body: "note", visibility: "typo" } },
+    { comment: { body: "note", attachmentTokens: ["token"] } }, { requesterId: -1 }, { requesterId: "7" },
+    { requester: { email: "new@example.test" } }, { fields: { subject: "override" } },
+    { fields: { custom_0: "bad id" } }, { fields: { tags: Array(51).fill("tag") } },
+    { fields: { group_id: 1.5 } }, { fields: { status: "closed" } }, { fields: [] },
+  ])("validates creation before queueing or writing: %j", async override => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    const args = Object.keys(override).length ? { ...input, ...override } : {};
+    await expect(session.callTool("zendesk_create_ticket", args)).rejects.toThrow();
+    expect(queue.submitAction).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });
 

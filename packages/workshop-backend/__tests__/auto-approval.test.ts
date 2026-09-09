@@ -11,8 +11,9 @@ import { endpointTag } from "@gadgets/mcp-shared/scope";
 import { actionKindFor } from "@gadgets/mcp-shared/tools";
 import { makeMockStorage } from "./mock-storage.js";
 
-function makeStorage(): AutoApprovalStorage {
+function makeStorage() {
   return createTypedStorage(makeMockStorage(), {
+    singletons: { prohibitAllSharing: false },
     collections: {
       actions: collection<ActionRecord>()({ primaryKey: "id" }),
       autoApproveTags: collection<AutoApproveTagRecord>()({
@@ -120,6 +121,37 @@ function flush(): Promise<void> {
 }
 
 describe("AutoApprovalDrainer.drain", () => {
+  it("withdraws both rule and deployment eligibility when the workspace becomes sensitive", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    putAction(storage, 1);
+    putAction(storage, 2, {actionTag: "deployment-only"});
+    let {applyFn, calls} = makeImmediateApply(storage);
+    let drainer = new AutoApprovalDrainer(storage, applyFn, () => DEPLOYMENT);
+    expect(drainer.approverFor(getAction(storage, 1))).toEqual(ENABLER);
+    expect(drainer.approverFor(getAction(storage, 2))).toEqual(DEPLOYMENT);
+    storage.prohibitAllSharing.put(true);
+    expect(drainer.approverFor(getAction(storage, 1))).toBeUndefined();
+    expect(drainer.approverFor(getAction(storage, 2))).toBeUndefined();
+    await drainer.drain(GK);
+    expect(calls).toEqual([]);
+  });
+
+  it("stops an active drain when sensitivity latches during an earlier apply", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    putAction(storage, 1);
+    putAction(storage, 2);
+    let apply = makeControlledApply(storage);
+    let drainer = new AutoApprovalDrainer(storage, apply.applyFn);
+    let draining = drainer.drain(GK);
+    storage.prohibitAllSharing.put(true);
+    apply.releaseNext();
+    await draining;
+    expect(apply.calls).toEqual([1]);
+    expect(getAction(storage, 2).state).toBe("pending");
+  });
+
   it("applies all eligible pending actions in ascending id order", async () => {
     let storage = makeStorage();
     enableRule(storage);
