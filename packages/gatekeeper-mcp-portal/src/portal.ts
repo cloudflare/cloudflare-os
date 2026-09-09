@@ -25,13 +25,17 @@ import {
 } from "@gadgets/workshop-shared/gatekeeper";
 import { isValidToolName, type ToolIndex } from "@gadgets/mcp-shared/client";
 import { MAX_TOOLS_PER_SERVER, type ServerTrust } from "@gadgets/mcp-shared/tools";
-import { bindingNameFragment, hostOf } from "@gadgets/mcp-shared/util";
+import { bindingNameFragment, hexEncode, hostOf } from "@gadgets/mcp-shared/util";
 import type { McpLog, McpLogFields } from "@gadgets/mcp-shared/log";
 import { generateSessionTypes, sessionTypeName } from "@gadgets/mcp-shared/schema-to-ts";
 import { McpAccountBase, type ConnectedServer, type ConnectOutcome }
   from "@gadgets/mcp-shared/account";
 import { generateNonce } from "@gadgets/mcp-shared/connect-nonce";
-import { withClient, type ConnectionAccount } from "@gadgets/mcp-shared/connection";
+import {
+  withClient,
+  type ConnectionAccount,
+  type McpConnection,
+} from "@gadgets/mcp-shared/connection";
 import { McpSessionBase } from "@gadgets/mcp-shared/session";
 import { McpFacetBase } from "@gadgets/mcp-shared/facet";
 import {
@@ -75,6 +79,7 @@ import {
   requirePortalServerScope,
   isPortalToolGrantable,
   toolGrantOptions,
+  type PortalConfig,
 } from "./config.js";
 import type { ConfiguratorUIOption } from "@gadgets/configurator-ui";
 import { MCP_BASE_TYPES } from "@gadgets/mcp-shared/base-types";
@@ -325,6 +330,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
  * real addition: a portal may be fronted by one instead of using OAuth.
  */
 export class McpAccount extends McpAccountBase<Env> {
+  // Counts in-flight attempts per revision. Separate Durable Object requests can overlap at the
+  // digest and portal probe, so one losing or older attempt must not clear a newer attempt's guard.
+  #connectingRevisions = new Map<string, number>();
+
   protected baseUrl(): string {
     return getBaseUrl(this.env);
   }
@@ -344,6 +353,78 @@ export class McpAccount extends McpAccountBase<Env> {
    */
   protected override staticToken(server: ConnectedServer): string | null {
     return portalTokenFor(this.env, server.endpoint);
+  }
+
+  protected override allowsOAuthFallback(server: ConnectedServer): boolean {
+    return server.auth !== "none";
+  }
+
+  protected override allowsOAuthCallback(server: ConnectedServer): boolean {
+    const config = readPortalConfig(this.env);
+    return config?.auth === "oauth" && sameEndpoint(config.endpoint, server.endpoint);
+  }
+
+  async #configurationRevision(config: PortalConfig): Promise<string> {
+    const token = config.auth === "token" ? this.env.MCP_PORTAL_TOKEN ?? "" : "";
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(`${config.auth}\u0000${token}`),
+    );
+    return hexEncode(new Uint8Array(digest));
+  }
+
+  override async beginConnect(
+    initiationNonce: string,
+    target: ConnectedServer | null,
+  ): Promise<ConnectOutcome> {
+    const config = readPortalConfig(this.env);
+    const revision = config && this.awaitingSelection(initiationNonce)
+      ? await this.#configurationRevision(config)
+      : undefined;
+    if (revision !== undefined) {
+      this.#connectingRevisions.set(
+        revision, (this.#connectingRevisions.get(revision) ?? 0) + 1);
+    }
+    try {
+      const outcome = await super.beginConnect(initiationNonce, target);
+      if (outcome.kind !== "invalid") {
+        const current = readPortalConfig(this.env);
+        const server = this.server();
+        if (current && server && sameEndpoint(current.endpoint, server.endpoint)) {
+          this.ctx.storage.kv.put(
+            "portalConfigRevision",
+            await this.#configurationRevision(current),
+          );
+        }
+      }
+      return outcome;
+    } finally {
+      if (revision !== undefined) {
+        const remaining = this.#connectingRevisions.get(revision)! - 1;
+        if (remaining === 0) this.#connectingRevisions.delete(revision);
+        else this.#connectingRevisions.set(revision, remaining);
+      }
+    }
+  }
+
+  override async getConnection(endpoint: string): Promise<McpConnection> {
+    const config = readPortalConfig(this.env);
+    const server = this.server();
+    if (!config || !server || !sameEndpoint(config.endpoint, endpoint)
+        || portalAuthRequiresReconnect(server.auth, config.auth)) {
+      throw new Error("This deployment's MCP portal configuration changed. Reconnect the account.");
+    }
+    const revision = await this.#configurationRevision(config);
+    const previous = this.ctx.storage.kv.get<string>("portalConfigRevision");
+    const reconnectingToCurrentRevision = this.#connectingRevisions.has(revision);
+    if (!reconnectingToCurrentRevision && previous !== revision) {
+      // Existing token accounts predate the revision marker. Their cached session may have been
+      // minted under a different configured token, so invalidate it once before establishing the
+      // current revision as the baseline. New connects record the revision in `beginConnect()`.
+      if (previous !== undefined || server.auth === "token") this.invalidateConnectionState();
+      this.ctx.storage.kv.put("portalConfigRevision", revision);
+    }
+    return super.getConnection(endpoint);
   }
 }
 

@@ -180,6 +180,16 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     return null;
   }
 
+  /** Whether an unauthenticated target may follow a 401 into the standard OAuth flow. */
+  protected allowsOAuthFallback(_server: ConnectedServer): boolean {
+    return true;
+  }
+
+  /** Whether current connector configuration still permits this pending OAuth callback. */
+  protected allowsOAuthCallback(_server: ConnectedServer): boolean {
+    return true;
+  }
+
   /** Relaxes host and scheme checks for local development against an MCP server on localhost. */
   protected fetchOptions(): FetchOptions {
     return fetchOptions(this.env);
@@ -201,6 +211,13 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     const generation = this.connectionGeneration() + 1;
     this.ctx.storage.kv.put("connectionGeneration", generation);
     return generation;
+  }
+
+  /** Invalidates credentials captured by facets and clears their transport session. */
+  protected invalidateConnectionState(): void {
+    this.advanceConnectionGeneration();
+    this.ctx.storage.kv.delete("mcpSessionId");
+    this.ctx.storage.kv.put("expiredNotified", false);
   }
 
   private isCurrentConnection(server: ConnectedServer, generation: number): boolean {
@@ -310,14 +327,21 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     const generation = this.advanceConnectionGeneration();
     if (existing) this.ctx.storage.kv.delete("mcpSessionId");
     const endpointChanged = existing !== undefined && existing.endpoint !== server.endpoint;
-    if (endpointChanged) {
-      this.ctx.storage.kv.put("server", server);
+    const clearCredentialsOnCommit = existing !== undefined && !endpointChanged &&
+      existing.auth !== server.auth && !(existing.auth === "none" && server.auth === "oauth");
+    const clearCredentials = () => {
       for (const key of [
         "tokens", "oauthClient", "oauthDiscovery", "oauthVerifier", "pendingAuth",
       ]) {
         this.ctx.storage.kv.delete(key);
       }
       this.ctx.storage.kv.put("expiredNotified", false);
+    };
+    // `none` -> `oauth` is only configuration's guess until the probe challenges us. Publishing the
+    // guess here would make a previously public account look credentialed while it has no tokens.
+    if (endpointChanged) {
+      this.ctx.storage.kv.put("server", server);
+      clearCredentials();
       this.log().info("portal repointed", {
         event: "connect.repointed",
         serverHost: hostOf(server.endpoint),
@@ -356,6 +380,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       // token from every later request. Only an endpoint that answered with no credential at all is.
       const connected: ConnectedServer =
         server.auth === "token" ? server : { ...server, auth: "none" };
+      if (clearCredentialsOnCommit) clearCredentials();
       this.ctx.storage.kv.put("server", connected);
       await this.complete(connected, info, generation);
       log.info("connected without authorization", { event: "connect.completed" });
@@ -374,11 +399,22 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
           `The MCP server "${server.serverName}" rejected this deployment's configured token.`,
           { cause: err });
       }
+      if (!this.allowsOAuthFallback(server)) {
+        this.restoreSelection(initiationNonce);
+        throw new Error(
+          `The MCP server "${server.serverName}" requires authorization, but this connection is ` +
+          "configured for unauthenticated access.",
+          { cause: err });
+      }
+      if (generation !== this.connectionGeneration()) {
+        throw new Error("This connection attempt was replaced by a newer one.", { cause: err });
+      }
       // The endpoint answered with an authorization challenge, so OAuth is now the observed auth
       // mode even if deployment configuration optimistically called the portal public. Persist that
       // mode because `getAuthorization()` uses it to decide whether to read the tokens the callback
       // stores.
       const oauthServer: ConnectedServer = { ...server, auth: "oauth" };
+      if (clearCredentialsOnCommit) clearCredentials();
       this.ctx.storage.kv.put("server", oauthServer);
       try {
         return await this.beginOAuth(oauthServer, err.resourceMetadataUrl, generation);
@@ -577,6 +613,12 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     const pending = this.ctx.storage.kv.get<PendingAuthorization>("pendingAuth");
     if (!pending) return false;
     const server = this.requireServer();
+    if (!this.allowsOAuthCallback(server)) {
+      this.ctx.storage.kv.delete("nonce");
+      this.ctx.storage.kv.delete("pendingAuth");
+      this.ctx.storage.kv.delete("oauthVerifier");
+      return false;
+    }
     // Single-use: consumed before the exchange, so a replayed callback cannot reach the token endpoint.
     this.ctx.storage.kv.delete("nonce");
     this.ctx.storage.kv.delete("pendingAuth");
