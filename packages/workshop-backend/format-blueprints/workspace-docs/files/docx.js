@@ -55,24 +55,12 @@ const STORED_ATTRIBUTES = ["style", "class", "hidden", "open", "href", "src", "a
 
 // --- XML text ----------------------------------------------------------------------------------
 
-// Replaces characters XML 1.0 cannot carry (control characters, lone surrogates) with U+FFFD.
+// Replaces characters XML 1.0 cannot carry (control characters, lone surrogates, U+FFFE/U+FFFF)
+// with U+FFFD. With the `u` flag a surrogate range only matches unpaired surrogates.
+const INVALID_XML = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ud800-\udfff\ufffe\uffff]/gu;
+
 function cleanXml(value) {
-  const input = String(value ?? "");
-  let result = "";
-  for (let index = 0; index < input.length; ++index) {
-    const code = input.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const low = input.charCodeAt(index + 1);
-      if (low >= 0xdc00 && low <= 0xdfff) result += input[index] + input[++index];
-      else result += "\ufffd";
-    } else if (code === 9 || code === 10 || code === 13 ||
-        (code >= 0x20 && code <= 0xd7ff) || (code >= 0xe000 && code <= 0xfffd)) {
-      result += input[index];
-    } else {
-      result += "\ufffd";
-    }
-  }
-  return result;
+  return String(value).replace(INVALID_XML, "\ufffd");
 }
 
 function xmlText(value) {
@@ -376,11 +364,13 @@ function deriveFormat(parent, node, declarations) {
       if (lower === "normal") format.italic = false;
       else if (lower === "italic" || lower === "oblique") format.italic = true;
     } else if (name === "text-decoration" || name === "text-decoration-line") {
-      format.underline = /\bunderline\b/.test(lower);
-      format.strike = /\bline-through\b/.test(lower);
+      // Decorations propagate to descendants and cannot be cancelled there, so `none` only means
+      // "adds nothing".
+      if (/\bunderline\b/.test(lower)) format.underline = true;
+      if (/\bline-through\b/.test(lower)) format.strike = true;
     } else if (name === "color") {
       const color = cssColor(value);
-      if (color) format.color = color;
+      if (color != null) format.color = color || null;
     } else if (name === "background-color") {
       const color = lower === "transparent" ? "" : cssColor(value);
       if (color != null) format.shading = color || null;
@@ -769,7 +759,7 @@ function walk(builder, node, parent) {
   const paragraphCount = builder.paragraphs.length;
   // A collapsed `<details>` shows only its summary.
   const children = tag === "details" && !("open" in node.attrs)
-    ? node.children.filter((child) => child.tag === "summary") : node.children;
+    ? node.children.filter((child) => child.tag === "summary").slice(0, 1) : node.children;
   for (const child of children) {
     if (typeof child === "string") builder.text(context, child);
     else walk(builder, child, context);
@@ -797,10 +787,10 @@ function runProperties(format, hyperlink) {
   }
   if (format.bold != null) properties.push(format.bold ? "<w:b/><w:bCs/>" : '<w:b w:val="0"/><w:bCs w:val="0"/>');
   if (format.italic != null) properties.push(format.italic ? "<w:i/><w:iCs/>" : '<w:i w:val="0"/><w:iCs w:val="0"/>');
-  if (format.strike != null) properties.push(format.strike ? "<w:strike/>" : '<w:strike w:val="0"/>');
+  if (format.strike) properties.push("<w:strike/>");
   if (format.color) properties.push(`<w:color w:val="${format.color}"/>`);
   if (format.size) properties.push(`<w:sz w:val="${format.size}"/><w:szCs w:val="${format.size}"/>`);
-  if (format.underline != null) properties.push(`<w:u w:val="${format.underline ? "single" : "none"}"/>`);
+  if (format.underline) properties.push('<w:u w:val="single"/>');
   if (format.shading) properties.push(`<w:shd w:val="clear" w:color="auto" w:fill="${format.shading}"/>`);
   return properties.length ? `<w:rPr>${properties.join("")}</w:rPr>` : "";
 }

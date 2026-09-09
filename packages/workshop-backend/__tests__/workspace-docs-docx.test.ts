@@ -333,7 +333,7 @@ describe("Workspace Docs DOCX package", () => {
       '<i>italic<span style="font-style:normal">upright</span></i><u>under</u><s>strike</s>' +
       '<span style="text-decoration:underline line-through"><span>nested</span>' +
       '<span style="text-decoration:none">plain</span></span>' +
-      '<span style="color:rgba(255,0,0,0);background-color:#f000">clear</span>' +
+      '<span style="color:#ff0000"><span style="color:rgba(255,0,0,0);background-color:#f000">clear</span></span>' +
       '<span style="background-color:#ff0000"><span style="background-color:rgba(0,0,0,0)">unshaded</span></span></p>';
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
@@ -343,10 +343,9 @@ describe("Workspace Docs DOCX package", () => {
     expect(runContaining(xml, "upright")).toContain('<w:i w:val="0"/>');
     expect(runContaining(xml, "under")).toContain('<w:u w:val="single"/>');
     expect(runContaining(xml, "strike")).toContain("<w:strike/>");
-    expect(runContaining(xml, "nested")).toContain('<w:u w:val="single"/>');
-    expect(runContaining(xml, "nested")).toContain("<w:strike/>");
-    expect(runContaining(xml, "plain")).toContain('<w:u w:val="none"/>');
-    expect(runContaining(xml, "plain")).toContain('<w:strike w:val="0"/>');
+    // Decorations propagate: `text-decoration: none` on a descendant cannot cancel them.
+    expect(runContaining(xml, "nestedplain")).toContain('<w:u w:val="single"/>');
+    expect(runContaining(xml, "nestedplain")).toContain("<w:strike/>");
     expect(runContaining(xml, "clearunshaded")).not.toMatch(/w:color|w:shd/);
 
     const inherited = await readZip(await documentToDocx({blocks: [block(
@@ -677,7 +676,8 @@ describe("Workspace Docs DOCX package", () => {
       '<span style="display:none!important;display:inline">still secret</span>' +
       `<a href="https://example.com/kept">kept</a><a href="https://example.com/${"\u4e2d".repeat(3000)}">wide</a></p>` +
       "<dl><dt>term<dd>definition<dt><b>bold term</dt></dl>" +
-      "<details><summary>Summary</summary><p>collapsed secret</p></details><details open><summary>Open</summary><p>expanded</p></details>";
+      "<details><summary>Summary</summary><summary>second secret</summary><p>collapsed secret</p></details>" +
+      "<details open><summary>Open</summary><p>expanded</p></details>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     for (const value of ["draft", "secret"]) expect(xml).not.toContain(value);
