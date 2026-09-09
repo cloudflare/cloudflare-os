@@ -373,9 +373,10 @@ describe("Workspace Docs DOCX package", () => {
   it("converts font, size, color, shading, alignment, indentation, and line height", async () => {
     const html = '<p style="text-align:center;margin-left:16px;text-indent:8px;line-height:2">' +
       '<span style="font-family:Georgia, serif;font-size:16px;color:rgb(17, 34, 51);background-color:#fff3a3">styled</span>' +
-      '<font face="Courier New" size="5" color="#abc">font</font>' +
+      '<font face="Courier New" size="5" color="#abc">font</font><font size="+1">bigger</font><font size="-9">smallest</font>' +
+      '<span style="font-size:16px;font-size:10">unitless</span><b><span style="font-weight:lighter">lighter</span></b>' +
       '<span style="text-align:right;margin-left:100px">inline</span></p>' +
-      '<div style="line-height:2;margin-left:40px;margin-left:0"><p style="line-height:normal;margin:0 0 0 8px;margin-left:16px;margin-left:bogus">cascade</p><p style="margin-left:16px;margin-left:auto">auto</p><p style="padding-left:16px;padding-left:auto">pad</p></div>';
+      '<div style="line-height:2;margin-left:40px;margin-left:0"><p style="line-height:normal;margin:0 0 0 8px;margin-left:16px;margin-left:bogus">cascade</p><p style="margin-left:16px;margin-left:auto">auto</p><p style="margin-left:16px;margin-left:10">unitless</p><p style="padding-left:16px;padding-left:auto">pad</p></div>';
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     expect(xml).toContain('<w:spacing w:line="480" w:lineRule="auto"/>');
@@ -385,6 +386,7 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).toContain(">inline</w:t>");
     expect(xml).toContain('<w:pPr><w:pStyle w:val="Normal"/><w:ind w:left="240"/></w:pPr><w:r><w:t xml:space="preserve">cascade</w:t>');
     expect(xml).toContain('<w:spacing w:line="480" w:lineRule="auto"/><w:ind w:left="0"/></w:pPr><w:r><w:t xml:space="preserve">auto</w:t>');
+    expect(xml).toContain('<w:spacing w:line="480" w:lineRule="auto"/><w:ind w:left="240"/></w:pPr><w:r><w:t xml:space="preserve">unitless</w:t>');
     expect(xml).toContain('<w:spacing w:line="480" w:lineRule="auto"/><w:ind w:left="240"/></w:pPr><w:r><w:t xml:space="preserve">pad</w:t>');
     const styled = runContaining(xml, "styled");
     expect(styled).toContain('w:ascii="Georgia"');
@@ -395,6 +397,10 @@ describe("Workspace Docs DOCX package", () => {
     expect(font).toContain('w:ascii="Courier New"');
     expect(font).toContain('<w:sz w:val="36"/>');
     expect(font).toContain('<w:color w:val="AABBCC"/>');
+    expect(runContaining(xml, "bigger")).toContain('<w:sz w:val="28"/>');
+    expect(runContaining(xml, "smallest")).toContain('<w:sz w:val="16"/>');
+    expect(runContaining(xml, "unitless")).toContain('<w:sz w:val="24"/>');
+    expect(runContaining(xml, "lighter")).toContain('<w:b w:val="0"/>');
   });
 
   it("escapes XML, decodes entities, replaces invalid text, and preserves significant whitespace and breaks", async () => {
@@ -644,7 +650,8 @@ describe("Workspace Docs DOCX package", () => {
 
   it("flattens incidental table rows to paragraphs and cells to tabs while flattening unknown tags", async () => {
     const html = '<table><thead style="color:red"><tr><td>A</td><td><b>B</b></td></tr><tbody><tr><td></td><td>D</td></tr>' +
-      "<tr><td>E<td><i>F</i><tr><td>G</td></tr><tr><td><p>H1</p><p>H2<br></p><p>H3</p></td><td><div>I</div><hr>J</td></tr></tbody></table>" +
+      "<tr><td>E<td><i>F</i><tr><td>G</td></tr><tr><td><p>H1</p><p>H2<br></p><p>H3</p></td><td><div>I</div><hr>J</td></tr>" +
+      '<tr><td>prefix<ol start="3"><li>one</li><li>two</li></ol><ul><li>dot</li></ul></td></tr></tbody></table>' +
       '<section><custom>visible</custom><!-- hidden --><script>bad()</script><style>.bad{}</style></section>' +
       "<article>article</article><aside>aside</aside>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
@@ -655,6 +662,9 @@ describe("Workspace Docs DOCX package", () => {
       '<w:r><w:t xml:space="preserve">H3</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t xml:space="preserve">I</w:t></w:r>' +
       '<w:r><w:br/></w:r><w:r><w:t xml:space="preserve">J</w:t></w:r></w:p>');
     expect(xml).not.toContain("<w:pBdr>");
+    expect(xml).toContain('>prefix</w:t></w:r><w:r><w:br/></w:r><w:r><w:t xml:space="preserve">3. one</w:t></w:r><w:r><w:br/></w:r>' +
+      '<w:r><w:t xml:space="preserve">4. two</w:t></w:r><w:r><w:br/></w:r><w:r><w:t xml:space="preserve">\u2022 dot</w:t></w:r></w:p>');
+    expect(entries.has("word/numbering.xml")).toBe(false);
     expect(runContaining(xml, "B")).toContain("<w:b/>");
     expect(runContaining(xml, "F")).toContain("<w:i/>");
     expect(runContaining(xml, "G")).not.toContain("<w:i/>");
@@ -662,7 +672,7 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).toContain('<w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r><w:tab/></w:r><w:r><w:t xml:space="preserve">D</w:t>');
     expect(xml).not.toContain("bad()");
     expect(xml).not.toContain(".bad{}");
-    expect(xml.match(/<w:p>/g)).toHaveLength(8);
+    expect(xml.match(/<w:p>/g)).toHaveLength(9);
   });
 
   it("bounds the work done for oversized text runs, separators, and inline styles", async () => {
@@ -692,7 +702,7 @@ describe("Workspace Docs DOCX package", () => {
       '<span style="display:none;display:block flow">reflowed</span><span style="display:none;display:table-bogus">table secret</span>' +
       '<span style="display:none;display:none block">combo secret</span><span style="display:none;display:flex grid">grid secret</span>' +
       '<span style="display:none;display:block inline">pair secret</span><span style="display:none;display:inline flow-root list-item">listed</span>' +
-      '<span style="display:none;display:flex block">swapped</span><span style="display:none;display:list-item grid">gridlist secret</span>' +
+      '<span style="display:none;display:flex block">swapped</span><span style="visibility:hidden">vis secret<span style="visibility:visible">back</span></span><span style="display:none;display:list-item grid">gridlist secret</span>' +
       `<a href="https://example.com/kept">kept</a><a href="https://example.com/${"\u4e2d".repeat(3000)}">wide</a></p>` +
       "<dl><dt>term<dd>definition<dt><b>bold term</dt></dl>" +
       "<details><summary>Summary</summary><summary>second secret</summary><p>collapsed secret</p></details>" +
@@ -701,7 +711,7 @@ describe("Workspace Docs DOCX package", () => {
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     for (const value of ["draft", "secret"]) expect(xml).not.toContain(value);
-    for (const value of ["shownreshownreflowedlistedswapped", "wide", "Summary", "Open", "expanded", "shown dialog"]) expect(xml).toContain(`>${value}</w:t>`);
+    for (const value of ["shownreshownreflowedlistedswappedback", "wide", "Summary", "Open", "expanded", "shown dialog"]) expect(xml).toContain(`>${value}</w:t>`);
     expect(text(entries, "word/_rels/document.xml.rels").match(/relationships\/hyperlink/g)).toHaveLength(1);
     expect(runContaining(xml, "definition")).not.toContain("<w:b/>");
     expect(xml.match(/<w:p>/g)).toHaveLength(8);

@@ -306,9 +306,10 @@ function fontFamily(value) {
   }
 }
 
+// CSS lengths need a unit unless they are zero; a bare number is an invalid declaration.
 function cssLength(value, twipsPerPixel = TWIPS_PER_PIXEL) {
   const match = /^(-?(?:\d+\.?\d*|\.\d+))\s*(px|pt|in|cm|mm)?$/i.exec(value.trim());
-  if (!match) return null;
+  if (!match || (!match[2] && Number(match[1]) !== 0)) return null;
   const number = Number(match[1]);
   const unit = (match[2] || "px").toLowerCase();
   const inches = unit === "in" ? number : unit === "cm" ? number / 2.54 : unit === "mm" ? number / 25.4
@@ -322,9 +323,12 @@ function halfPoints(value) {
   return twips != null && twips >= 20 && twips <= 4000 ? Math.round(twips / 10) : null;
 }
 
-// `<font size="1..7">` in half-points.
+// `<font size>` in half-points: absolute `1..7`, or `+n`/`-n` relative to the default size 3.
 function htmlFontSize(value) {
-  return [0, 16, 20, 24, 28, 36, 48, 72][Math.round(Number(value))] || null;
+  const source = String(value ?? "").trim();
+  if (!/^[+-]?\d+$/.test(source)) return null;
+  const level = Math.max(1, Math.min(7, /^[+-]/.test(source) ? 3 + Number(source) : Number(source)));
+  return [0, 16, 20, 24, 28, 36, 48, 72][level];
 }
 
 // Left component of a `margin`/`padding` shorthand.
@@ -387,9 +391,12 @@ function deriveFormat(parent, node, declarations) {
       const size = halfPoints(value);
       if (size) format.size = size;
     } else if (name === "font-weight") {
-      if (lower === "normal") format.bold = false;
+      if (lower === "normal" || lower === "lighter") format.bold = false;
       else if (lower === "bold" || lower === "bolder") format.bold = true;
       else if (/^\d+$/.test(lower)) format.bold = Number(lower) >= 600;
+    } else if (name === "visibility") {
+      if (lower === "hidden" || lower === "collapse") format.invisible = true;
+      else if (lower === "visible") format.invisible = false;
     } else if (name === "font-style") {
       if (lower === "normal") format.italic = false;
       else if (lower === "italic" || lower === "oblique") format.italic = true;
@@ -542,10 +549,15 @@ function widthTwips(value) {
   return twips == null || twips < 0 ? undefined : twips; // A negative width is invalid CSS.
 }
 
+// The HTML `width` attribute takes a bare pixel count where CSS would require a unit.
+function attributeWidthTwips(value) {
+  return widthTwips(/^\d+(?:\.\d+)?$/.test(String(value).trim()) ? `${value.trim()}px` : value);
+}
+
 // Requested display width in pixels from the `width` attribute or inline style (last valid
 // declaration wins), or null when none applies.
 function requestedWidth(node) {
-  let twips = widthTwips(node.attrs.width || "") ?? null;
+  let twips = attributeWidthTwips(node.attrs.width || "") ?? null;
   for (const [name, value] of cssDeclarations(node.attrs.style)) {
     if (name !== "width") continue;
     const next = widthTwips(value);
@@ -604,6 +616,7 @@ class DocumentBuilder {
   }
 
   text(context, value) {
+    if (context.format.invisible) return;
     const text = cleanXml(value);
     if (context.preformatted) {
       // Newlines stay in the run and become `<w:br/>` when the XML is written.
@@ -691,7 +704,7 @@ class DocumentBuilder {
 
   image(context, node) {
     const requested = requestedWidth(node);
-    if (requested === 0) return; // Sized away in the editor; nothing is displayed.
+    if (requested === 0 || context.format.invisible) return; // Not displayed in the editor.
     if (++this.imageCount > DOCX_LIMITS.images) {
       throw new Error(`DOCX image count exceeds the ${DOCX_LIMITS.images}-image export limit.`);
     }
@@ -779,6 +792,12 @@ function walk(builder, node, parent) {
       if (parent.listKind == null) break;
       // A `value` restarts numbering for this item and those that follow it in the same list.
       const value = context.listKind === "bullet" ? null : ordinal(node.attrs.value);
+      if (parent.inCell) {
+        // Rows are flattened, so the marker becomes text.
+        parent.ordinal = value ?? (parent.ordinal ?? (parent.listStart ?? 1) - 1) + 1;
+        builder.text(context, context.listKind === "bullet" ? "\u2022 " : `${parent.ordinal}. `);
+        break;
+      }
       if (value != null || parent.numId == null) {
         parent.numId = builder.list(context.listKind, context.level, value ?? parent.listStart);
       }
