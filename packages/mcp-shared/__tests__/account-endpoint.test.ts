@@ -14,6 +14,7 @@ function fakeContext() {
     storage: {
       async deleteAlarm() {},
       async setAlarm() {},
+      async deleteAll() { values.clear(); },
       kv: {
         get<T>(key: string) { return values.get(key) as T | undefined; },
         put<T>(key: string, value: T) { values.set(key, value); },
@@ -880,6 +881,50 @@ describe("connect initiation nonce", () => {
       "token=old-token&token_type_hint=access_token&client_id=client-id",
       "token=old-refresh&token_type_hint=refresh_token&client_id=client-id",
     ]);
+  });
+
+  it("commits the retiring reconnect before the revocation round trip, not after it", async () => {
+    // The revocation is a network call. A disconnect (or a newer reconnect) that finishes while it
+    // is in flight must not be overwritten when the commit resumes, so every live write lands first.
+    const context = fakeContext();
+    stubOAuthServer();
+    const base = globalThis.fetch;
+    let releaseRevocation!: () => void;
+    const revocationStarted = new Promise<void>(started => {
+      vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+        if (String(input) !== "https://auth.example/revoke") return await base(input, init);
+        started();
+        await new Promise<void>(release => { releaseRevocation = release; });
+        return new Response(null, { status: 200 });
+      });
+    });
+    const reconnectComplete = vi.fn(async (_stageId: string) => HANDOFF);
+    context.storage.kv.put("server", server("https://mcp.example/mcp"));
+    context.storage.kv.put("callback", { reconnectComplete });
+    context.storage.kv.put("tokens", { access_token: "old-token", token_type: "Bearer", expiresAt: 1 });
+    context.storage.kv.put("oauthClient", { client_id: "client-id" });
+    context.storage.kv.put("oauthDiscovery", {
+      authorizationServerMetadata: { revocation_endpoint: "https://auth.example/revoke" },
+    });
+    const account = new PublicServerAccount(context as never, {});
+    const nonce = "e".repeat(64);
+    await account.prepareReconnect(nonce);
+    expect((await account.beginConnect(nonce, null)).kind).toBe("done");
+
+    const commit = account.commitReconnect(reconnectComplete.mock.calls[0][0]);
+    await revocationStarted;
+    // Already live while the revocation is still pending.
+    expect(context.storage.kv.get<ConnectedServer>("server")?.auth).toBe("none");
+    expect(context.storage.kv.get("tokens")).toBeUndefined();
+
+    // The user disconnects during the pause; the resumed commit must leave the account deleted.
+    await account.revoke();
+    expect(context.storage.kv.get("server")).toBeUndefined();
+    releaseRevocation();
+    await commit;
+    expect(context.storage.kv.get("server")).toBeUndefined();
+    expect(context.storage.kv.get("oauthClient")).toBeUndefined();
+    expect(context.storage.kv.get("expiredNotified")).toBeUndefined();
   });
 });
 

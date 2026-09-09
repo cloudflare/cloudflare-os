@@ -788,27 +788,30 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       throw new Error("No reconnect is awaiting confirmation. Please try again.");
     }
     const kv = this.ctx.storage.kv;
-    if (staged.tokens) {
-      kv.put<OAuthTokens>("tokens", staged.tokens);
-    } else {
-      // The reconnect observed a server that takes no OAuth credential, so the live grant is retired
-      // rather than replaced. Revoked now, with the discovery and client it was issued under: the
-      // commit below drops those, after which revoke() could no longer reach it.
-      const tokens = kv.get<OAuthTokens>("tokens");
-      const discovery = kv.get<OAuthDiscoveryState>("oauthDiscovery");
-      const client = kv.get<StoredOAuthClientInformation>("oauthClient");
-      if (tokens && discovery && client) await this.revokeTokens(tokens, discovery, client);
-      kv.delete("tokens");
-    }
+    // The reconnect observed a server that takes no OAuth credential, so the live grant is retired
+    // rather than replaced. It is revoked below, with the discovery and client it was issued under,
+    // which this commit drops -- after which revoke() could no longer reach it.
+    const retired = staged.tokens ? null : {
+      tokens: kv.get<OAuthTokens>("tokens"),
+      discovery: kv.get<OAuthDiscoveryState>("oauthDiscovery"),
+      client: kv.get<StoredOAuthClientInformation>("oauthClient"),
+    };
+    if (staged.tokens) kv.put<OAuthTokens>("tokens", staged.tokens);
+    else kv.delete("tokens");
     // The live session was opened under the credentials being replaced, so it goes with them, as do
     // the server record the flow observed and the registration and discovery a refresh will need.
     this.setSessionId(staged.sessionId ?? null);
-    this.ctx.storage.kv.put<ConnectedServer>("server", staged.server);
-    if (staged.client) this.ctx.storage.kv.put("oauthClient", staged.client);
-    else this.ctx.storage.kv.delete("oauthClient");
-    if (staged.discovery) this.ctx.storage.kv.put("oauthDiscovery", staged.discovery);
-    else this.ctx.storage.kv.delete("oauthDiscovery");
-    this.ctx.storage.kv.put("expiredNotified", false);
+    kv.put<ConnectedServer>("server", staged.server);
+    if (staged.client) kv.put("oauthClient", staged.client);
+    else kv.delete("oauthClient");
+    if (staged.discovery) kv.put("oauthDiscovery", staged.discovery);
+    else kv.delete("oauthDiscovery");
+    kv.put("expiredNotified", false);
+    // Only now, with every live write done: the revocation is a network round trip, and a newer
+    // reconnect or a disconnect that finished during it must not be overwritten when this resumes.
+    if (retired?.tokens && retired.discovery && retired.client) {
+      await this.revokeTokens(retired.tokens, retired.discovery, retired.client);
+    }
   }
 
   private setSessionId(sessionId: string | null): void {
