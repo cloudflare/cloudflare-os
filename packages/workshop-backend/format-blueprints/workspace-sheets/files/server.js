@@ -343,13 +343,14 @@ function sanitizePivot(pivot) {
     sourceSheetId: String(pivot.sourceSheetId || "").slice(0, 80),
     // Shape only; applyOperationLocked bounds it against the source sheet.
     sourceRange: /^([A-Z]+[1-9]\d*):([A-Z]+[1-9]\d*)$/.test(String(pivot.sourceRange || "").toUpperCase()) ? String(pivot.sourceRange).toUpperCase() : "",
-    rowField: String(pivot.rowField || "").slice(0, 200),
-    columnField: String(pivot.columnField || "").slice(0, 200),
-    valueField: String(pivot.valueField || "").slice(0, 200),
+    // Fields are keyed by their header cell's text, so they share the cell value limit.
+    rowField: String(pivot.rowField || "").slice(0, 8192),
+    columnField: String(pivot.columnField || "").slice(0, 8192),
+    valueField: String(pivot.valueField || "").slice(0, 8192),
     aggregate: aggregates.has(pivot.aggregate) ? pivot.aggregate : "sum",
     showRowTotals: pivot.showRowTotals !== false,
     showColumnTotals: pivot.showColumnTotals !== false,
-    filterField: String(pivot.filterField || "").slice(0, 200),
+    filterField: String(pivot.filterField || "").slice(0, 8192),
     filterValues: Array.isArray(pivot.filterValues)
       ? [...new Set(pivot.filterValues.map((value) => String(value).slice(0, 1000)))].slice(0, 500)
       : (pivot.filterValue ? [String(pivot.filterValue).slice(0, 1000)] : []),
@@ -386,6 +387,7 @@ function sanitizeCharts(charts, rows, cols) {
     height: clampInt(chart?.height, 200, 900, 320),
   }));
 }
+const MAX_FILTER_SELECTIONS = 500; // the client's filter menu refuses larger selections
 
 function sanitizeFilter(filter, rows, cols) {
   if (!filter || typeof filter !== "object") return null;
@@ -396,8 +398,10 @@ function sanitizeFilter(filter, rows, cols) {
       if (!/^\d+$/.test(column)) continue;
       const col = Number(column);
       if (col < 0 || col >= cols || !Array.isArray(values)) continue;
-      const clean = [...new Set(values.map((value) => String(value).slice(0, 8192)))].slice(0, 500);
-      if (clean.length) criteria[col] = clean;
+      // Trimming a selection would change which rows it hides; an oversized one is dropped whole.
+      // (Values are compared to cell values, which the server caps at 8,192 characters.)
+      const clean = [...new Set(values.map((value) => String(value).slice(0, 8192)))];
+      if (clean.length && clean.length <= MAX_FILTER_SELECTIONS) criteria[col] = clean;
     }
   }
   const endRow = clampInt(filter.endRow, row, Math.max(row, rows - 1), rows - 1);
