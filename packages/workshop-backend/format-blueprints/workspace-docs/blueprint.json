@@ -14,9 +14,9 @@
     "name": "Cloudflare",
     "id": "agent@cloudflare.com"
   },
-  "revision": 9,
+  "revision": 10,
   "created": "2026-06-24T04:19:41.881Z",
-  "version": 6,
-  "lastUpdated": "2026-08-12T18:09:36.250Z",
+  "version": 9,
+  "lastUpdated": "2026-09-08T00:00:00.000Z",
   "bindings": {}
 }

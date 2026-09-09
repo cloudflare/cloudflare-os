@@ -10,6 +10,24 @@ const DEFLATE_METHOD = 8;
 const DOS_TIME = 0;
 const DOS_DATE = 33; // 1980-01-01
 
+/** The bytes of one entry: a string (encoded as UTF-8) or a stream of chunks. */
+export type ZipEntryData = string | ReadableStream<Uint8Array>;
+
+/** One file to write into the archive. */
+export interface ZipEntry {
+  name: string;
+  data: ZipEntryData;
+}
+
+/** What the central directory records about an entry once it has streamed through. */
+interface CentralEntry {
+  name: Uint8Array;
+  crc: number;
+  compressedSize: number;
+  uncompressedSize: number;
+  localOffset: number;
+}
+
 const CRC32_TABLE = new Uint32Array(256);
 for (let i = 0; i < CRC32_TABLE.length; ++i) {
   let value = i;
@@ -19,19 +37,19 @@ for (let i = 0; i < CRC32_TABLE.length; ++i) {
   CRC32_TABLE[i] = value >>> 0;
 }
 
-export function crc32(bytes, previous = 0) {
+export function crc32(bytes: Uint8Array, previous = 0): number {
   let value = (previous ^ 0xffffffff) >>> 0;
   for (let i = 0; i < bytes.length; ++i) value = CRC32_TABLE[(value ^ bytes[i]) & 0xff] ^ (value >>> 8);
   return (value ^ 0xffffffff) >>> 0;
 }
 
-function record(size, write) {
+function record(size: number, write: (view: DataView) => void): Uint8Array {
   const bytes = new Uint8Array(size);
   write(new DataView(bytes.buffer));
   return bytes;
 }
 
-function localHeader(nameLength) {
+function localHeader(nameLength: number): Uint8Array {
   return record(30, (view) => {
     view.setUint32(0, 0x04034b50, true);
     view.setUint16(4, 20, true);
@@ -43,7 +61,7 @@ function localHeader(nameLength) {
   });
 }
 
-function dataDescriptor(crc, compressedSize, uncompressedSize) {
+function dataDescriptor(crc: number, compressedSize: number, uncompressedSize: number): Uint8Array {
   return record(16, (view) => {
     view.setUint32(0, 0x08074b50, true);
     view.setUint32(4, crc, true);
@@ -52,7 +70,7 @@ function dataDescriptor(crc, compressedSize, uncompressedSize) {
   });
 }
 
-function centralHeader(entry) {
+function centralHeader(entry: CentralEntry): Uint8Array {
   return record(46, (view) => {
     view.setUint32(0, 0x02014b50, true);
     view.setUint16(4, 20, true);
@@ -69,7 +87,7 @@ function centralHeader(entry) {
   });
 }
 
-function endOfCentralDirectory(entryCount, centralSize, centralOffset) {
+function endOfCentralDirectory(entryCount: number, centralSize: number, centralOffset: number): Uint8Array {
   return record(22, (view) => {
     view.setUint32(0, 0x06054b50, true);
     view.setUint16(8, entryCount, true);
@@ -79,9 +97,9 @@ function endOfCentralDirectory(entryCount, centralSize, centralOffset) {
   });
 }
 
-function byteStream(data) {
+function byteStream(data: ZipEntryData): ReadableStream<Uint8Array> {
   if (typeof data !== "string") return data;
-  return new ReadableStream({
+  return new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(encoder.encode(data));
       controller.close();
@@ -89,10 +107,10 @@ function byteStream(data) {
   });
 }
 
-async function* generateZip(entries) {
-  const centralEntries = [];
+async function* generateZip(entries: Iterable<ZipEntry>): AsyncGenerator<Uint8Array, void, unknown> {
+  const centralEntries: CentralEntry[] = [];
   let offset = 0;
-  const emit = (bytes) => {
+  const emit = (bytes: Uint8Array) => {
     offset += bytes.byteLength;
     return bytes;
   };
@@ -106,7 +124,7 @@ async function* generateZip(entries) {
     let crc = 0;
     let compressedSize = 0;
     let uncompressedSize = 0;
-    const measured = byteStream(data).pipeThrough(new TransformStream({
+    const measured = byteStream(data).pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
         uncompressedSize += chunk.byteLength;
         crc = crc32(chunk, crc);
@@ -135,16 +153,19 @@ async function* generateZip(entries) {
  * string or a `ReadableStream<Uint8Array>`. Entries are compressed one at a
  * time, in order, as the returned stream is read.
  */
-export function createZip(entries) {
+export function createZip(entries: Iterable<ZipEntry>): ReadableStream<Uint8Array> {
   const iterator = generateZip(entries);
-  return new ReadableStream({
+  return new ReadableStream<Uint8Array>({
     async pull(controller) {
       const result = await iterator.next();
       if (result.done) controller.close();
       else controller.enqueue(result.value);
     },
-    cancel(reason) {
-      return iterator.return(reason);
+    // Settles once the generator has finished closing, as the returned promise did in the
+    // untyped original; the stream's `cancel` contract is `Promise<void>`. `reason` keeps the
+    // stream API's own (untyped) parameter type, which is what the generator's `return` takes.
+    async cancel(reason) {
+      await iterator.return(reason);
     },
   });
 }

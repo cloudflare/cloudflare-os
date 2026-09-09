@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { ExportHandler, Gadget } from "../format-blueprints/workspace-sheets/files/server.js";
-import { workbookToXlsx } from "../format-blueprints/workspace-sheets/files/xlsx.js";
-import { createZip, crc32 } from "../format-blueprints/workspace-sheets/files/zip.js";
+import { MutationQueue, SubscriberRegistry } from "../format-blueprints/workspace-sheets/files/lib/sync/server.ts";
+import { ExportHandler, Gadget } from "../format-blueprints/workspace-sheets/files/server.ts";
+import { workbookToXlsx } from "../format-blueprints/workspace-sheets/files/lib/xlsx.ts";
+import { createZip, crc32 } from "../format-blueprints/workspace-sheets/files/lib/zip.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -128,8 +129,28 @@ function handler(): ExportHandler {
   return Object.create(ExportHandler.prototype) as ExportHandler;
 }
 
+type Registry = Gadget["subscribers"];
+
+// A subscriber as the RPC layer would deliver it: the callbacks under test plus the `dup`,
+// disconnection hook and disposer the registry expects of a stub.
+function stub<T extends object>(callbacks: T) {
+  return {
+    ...callbacks,
+    dup() { return this; },
+    onRpcBroken() {},
+    [Symbol.dispose]: vi.fn(),
+  };
+}
+
+// A registry holding `stubs`, with no presence hooks: these tests watch operations, not presence.
+function registryOf(...stubs: object[]): Registry {
+  const registry = new SubscriberRegistry() as Registry;
+  for (const each of stubs) registry.add(each as never, {clientId: "", name: "", color: ""});
+  return registry;
+}
+
 // A Gadget over in-memory storage, for exercising the mutation queue without a Durable Object.
-function inMemoryGadget(subscribers: Map<unknown, unknown> = new Map()) {
+function inMemoryGadget(subscribers: Registry = registryOf()) {
   const stored = new Map<string, unknown>([
     ["meta", {revision: 0, title: "Test", sheetOrder: ["sheet"], sheets: {sheet: sheet("Sheet")}, lastModified: 0}],
     ["cells:sheet", {}],
@@ -142,7 +163,7 @@ function inMemoryGadget(subscribers: Map<unknown, unknown> = new Map()) {
         delete: async (key: string) => stored.delete(key),
       },
     },
-    mutationQueue: Promise.resolve(),
+    mutations: new MutationQueue(),
     subscribers,
   }) as Gadget;
 }
@@ -621,7 +642,7 @@ describe("Workspace Sheets document snapshots", () => {
     const {promise: readStarted, resolve: markReadStarted} = Promise.withResolvers<void>();
     const order: string[] = [];
     const fixture = Object.assign(Object.create(Gadget.prototype), {
-      mutationQueue: Promise.resolve(),
+      mutations: new MutationQueue(),
       loadMeta: vi.fn(async () => ({revision: 1})),
       assembleDocument: vi.fn(async () => {
         order.push("read started");
@@ -650,19 +671,19 @@ describe("Workspace Sheets document snapshots", () => {
   });
 
   it("lets a subscriber callback read and write the document without holding up the save", async () => {
-    const subscribers = new Map();
+    const subscribers = registryOf();
     const fixture = inMemoryGadget(subscribers);
     const events: {revision: number}[] = [];
     const documents: {revision: number; cells: Record<string, Record<string, {value: string}>>}[] = [];
     const {promise: callbacksFinished, resolve: finishCallbacks} = Promise.withResolvers<void>();
-    subscribers.set({
+    subscribers.add(stub({
       operation: vi.fn(async (event: {revision: number}) => {
         events.push(event);
         documents.push(await fixture.getDocument());
         if (event.revision === 1) await fixture.applyOperation(setCell("B1", "from callback"));
         else finishCallbacks();
       }),
-    }, {});
+    }) as never, {clientId: "", name: "", color: ""});
 
     const result = await fixture.applyOperation(setCell("A1", "committed"));
     expect(result.status).toBe("applied");
@@ -679,9 +700,9 @@ describe("Workspace Sheets document snapshots", () => {
   });
 
   it("drops and disposes a subscriber whose callback fails, and does not wait on one that hangs", async () => {
-    const failing = {operation: vi.fn(async () => { throw new Error("broken"); }), [Symbol.dispose]: vi.fn()};
-    const hung = {operation: vi.fn(() => new Promise(() => {})), [Symbol.dispose]: vi.fn()};
-    const fixture = inMemoryGadget(new Map([[failing, {}], [hung, {}]]));
+    const failing = stub({operation: vi.fn(async () => { throw new Error("broken"); })});
+    const hung = stub({operation: vi.fn(() => new Promise(() => {}))});
+    const fixture = inMemoryGadget(registryOf(failing, hung));
 
     const result = await fixture.applyOperation(setCell("A1", "value"));
     expect(result.status).toBe("applied");
@@ -693,8 +714,8 @@ describe("Workspace Sheets document snapshots", () => {
   });
 
   it("does not broadcast unchanged or conflicting-only operations", async () => {
-    const subscriber = {operation: vi.fn()};
-    const fixture = inMemoryGadget(new Map([[subscriber, {}]]));
+    const subscriber = stub({operation: vi.fn()});
+    const fixture = inMemoryGadget(registryOf(subscriber));
     await fixture.applyOperation(setCell("A1", "first"));
     const conflict = await fixture.applyOperation(setCell("A1", "stale", 0));
     const unchanged = await fixture.applyOperation({senderId: "test", cellOps: []});
@@ -737,6 +758,17 @@ describe("Workspace Sheets document snapshots", () => {
     expect(callback.dup).not.toHaveBeenCalled();
     expect(fixture.subscribers.size).toBe(0);
     await expect(fixture.applyOperation(setCell("A1", "still works"))).resolves.toMatchObject({status: "applied"});
+  });
+});
+
+describe("Workspace Sheets cell formatting", () => {
+  it("keeps only string colours, dropping a value whose string form merely looks like one", async () => {
+    const fixture = inMemoryGadget();
+    const fmt = {c: ["#abc"], bg: "#123456", b: true, a: "c", fs: 12, x: true};
+    await fixture.applyOperation({senderId: "test", cellOps: [{sheetId: "sheet", ref: "A1", value: "v", fmt, baseVersion: 0}]});
+
+    const document = await fixture.getDocument();
+    expect(document.cells.sheet.A1.fmt).toEqual({bg: "#123456", b: true, a: "c", fs: 12});
   });
 });
 
