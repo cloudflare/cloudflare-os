@@ -183,6 +183,9 @@ export class ContextAccount
   reconnect(): never {
     throw new Error("The Context Library is a singleton gatekeeper; it has no connect flow.");
   }
+  commitReconnect(_stageId: string): never {
+    throw new Error("The Context Library is a singleton gatekeeper; it has no connect flow.");
+  }
   async getAuthenticatedEmail(): Promise<string | null> {
     return null;
   }

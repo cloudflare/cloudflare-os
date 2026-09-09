@@ -374,6 +374,11 @@ export class ScheduleAccount
     throw new Error("Scheduled Tasks has no connect flow.");
   }
 
+  /** Rejects commit because no flow can ever stage credentials. */
+  commitReconnect(_stageId: string): Promise<void> {
+    throw new Error("Scheduled Tasks has no connect flow.");
+  }
+
   /** Returns no authentication identity. */
   async getAuthenticatedEmail(): Promise<string | null> {
     return null;
