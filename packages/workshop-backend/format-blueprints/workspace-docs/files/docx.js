@@ -22,9 +22,11 @@ const LIST_INDENT_TWIPS = 420;
 const TEXT_CHUNK_SIZE = 64 * 1024;
 
 export const DOCX_LIMITS = Object.freeze({
+  blocks: 20_000,
   htmlCharacters: 32 * 1024 * 1024,
   nodes: 200_000,
   depth: 128,
+  styleCharacters: 16 * 1024,
   hyperlinks: 4096,
   images: 128,
   imageBytes: 8 * 1024 * 1024,
@@ -52,12 +54,14 @@ const LIST_KINDS = ["bullet", "decimal", "lowerLetter", "upperLetter", "lowerRom
 const LIST_TYPES = {a: "lowerLetter", A: "upperLetter", i: "lowerRoman", I: "upperRoman"};
 // The only attributes the walk reads; everything else is dropped at parse time.
 const STORED_ATTRIBUTES = ["style", "class", "hidden", "open", "href", "src", "alt", "width", "type", "start", "value", "face", "size", "color"];
-// `display` values the browser accepts (single or multi-keyword); an invalid declaration cannot
-// override an earlier valid one.
-const DISPLAY_KEYWORD = "none|contents|block|inline|run-in|flow|flow-root|list-item|flex|grid|table|ruby|" +
-  "inline-block|inline-flex|inline-grid|inline-table|table-(?:row|cell|caption|column|(?:row|header|footer|column)-group)|" +
-  "ruby-(?:base|text)(?:-container)?";
-const DISPLAY_VALUE = new RegExp(`^(?:${DISPLAY_KEYWORD})(?:\\s+(?:${DISPLAY_KEYWORD}))*$`, "i");
+// `display` values per the CSS Display grammar: a single box, internal, or legacy keyword, an
+// outside/inside pair, or a list-item form. An invalid declaration cannot override a valid one.
+const DISPLAY_VALUE = new RegExp("^(?:" + [
+  "none|contents|inline-block|inline-flex|inline-grid|inline-table",
+  "table-(?:row|cell|caption|column|(?:row|header|footer|column)-group)|ruby-(?:base|text)(?:-container)?",
+  "(?:(?:block|inline|run-in)(?:\\s+(?:flow|flow-root|flex|grid|table|ruby))?)|flow|flow-root|flex|grid|table|ruby",
+  "(?:(?:block|inline|run-in)\\s+)?(?:(?:flow|flow-root)\\s+)?list-item",
+].join("|") + ")$", "i");
 
 // --- XML text ----------------------------------------------------------------------------------
 
@@ -120,6 +124,9 @@ function normalizeSnapshot(document) {
   const blocks = Array.isArray(source.blocks) ? source.blocks.map((block) => block?.html) : [source.legacyContent];
   const fragments = [];
   let htmlCharacters = 0;
+  if (blocks.length > DOCX_LIMITS.blocks) {
+    throw new Error(`DOCX block count exceeds the ${DOCX_LIMITS.blocks}-block export limit.`);
+  }
   for (const value of blocks) {
     const fragment = String(value ?? "");
     if (!fragment) continue;
@@ -237,8 +244,11 @@ async function parseHtml(fragments, namedEntities) {
 // moved after the rest so a plain later declaration cannot override them.
 function cssDeclarations(style) {
   const declarations = [];
-  // Inline styles are short; a huge one is not worth allocating a declaration per fragment for.
-  for (const part of String(style || "").slice(0, 8192).split(";")) {
+  // An inline style this long is not authored content; failing is safer than parsing part of it.
+  if (style?.length > DOCX_LIMITS.styleCharacters) {
+    throw new Error(`DOCX inline style exceeds the ${DOCX_LIMITS.styleCharacters}-character export limit.`);
+  }
+  for (const part of String(style || "").split(";")) {
     const colon = part.indexOf(":");
     if (colon < 0) continue;
     const name = part.slice(0, colon).trim().toLowerCase();

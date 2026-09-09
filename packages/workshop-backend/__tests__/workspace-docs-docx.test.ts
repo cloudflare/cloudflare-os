@@ -666,7 +666,7 @@ describe("Workspace Docs DOCX package", () => {
   it("bounds the work done for oversized text runs, separators, and inline styles", async () => {
     const chunk = 64 * 1024;
     const long = "x".repeat(chunk - 1) + "\ud83d\ude00" + "y".repeat(chunk);
-    const style = "color:#123456;" + "a:b;".repeat(1_000_000);
+    const style = "color:#123456;" + "a:b;".repeat(4_000);
     const {entries} = await readZip(await documentToDocx({blocks: [block(`<p style="${style}">${long}</p>`)]}));
     const xml = text(entries, "word/document.xml");
     expect(xml.match(/<w:t xml:space="preserve">/g)).toHaveLength(3);
@@ -688,6 +688,8 @@ describe("Workspace Docs DOCX package", () => {
       '<span style="display:none !important">also secret</span><span style="display:none;display:inline">reshown</span>' +
       '<span style="display:none!important;display:inline">still secret</span><span style="display:none;display:bogus">bogus secret</span>' +
       '<span style="display:none;display:block flow">reflowed</span><span style="display:none;display:table-bogus">table secret</span>' +
+      '<span style="display:none;display:none block">combo secret</span><span style="display:none;display:flex grid">grid secret</span>' +
+      '<span style="display:none;display:block inline">pair secret</span><span style="display:none;display:inline flow-root list-item">listed</span>' +
       `<a href="https://example.com/kept">kept</a><a href="https://example.com/${"\u4e2d".repeat(3000)}">wide</a></p>` +
       "<dl><dt>term<dd>definition<dt><b>bold term</dt></dl>" +
       "<details><summary>Summary</summary><summary>second secret</summary><p>collapsed secret</p></details>" +
@@ -696,7 +698,7 @@ describe("Workspace Docs DOCX package", () => {
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     for (const value of ["draft", "secret"]) expect(xml).not.toContain(value);
-    for (const value of ["shownreshownreflowed", "wide", "Summary", "Open", "expanded", "shown dialog"]) expect(xml).toContain(`>${value}</w:t>`);
+    for (const value of ["shownreshownreflowedlisted", "wide", "Summary", "Open", "expanded", "shown dialog"]) expect(xml).toContain(`>${value}</w:t>`);
     expect(text(entries, "word/_rels/document.xml.rels").match(/relationships\/hyperlink/g)).toHaveLength(1);
     expect(runContaining(xml, "definition")).not.toContain("<w:b/>");
     expect(xml.match(/<w:p>/g)).toHaveLength(8);
@@ -726,6 +728,12 @@ describe("Workspace Docs DOCX package", () => {
   it("fails before returning a stream when parser or media limits are exceeded", async () => {
     const deep = "<div>".repeat(DOCX_LIMITS.depth + 1) + "deep";
     await expect(documentToDocx({blocks: [block(deep)]})).rejects.toThrow("nesting exceeds");
+
+    await expect(documentToDocx({blocks: Array.from({length: DOCX_LIMITS.blocks + 1}, () => ({html: "<!--x-->"}))}))
+      .rejects.toThrow("block count exceeds");
+
+    const style = `<p style="${"a:b;".repeat(DOCX_LIMITS.styleCharacters / 4)}display:none">secret</p>`;
+    await expect(documentToDocx({blocks: [block(style)]})).rejects.toThrow("inline style exceeds");
 
     const links = Array.from({length: DOCX_LIMITS.hyperlinks + 1}, (_, index) => `<a href="https://example.com/${index}">x</a>`).join("");
     await expect(documentToDocx({blocks: [block(`<p>${links}</p>`)]})).rejects.toThrow("hyperlink count exceeds");
