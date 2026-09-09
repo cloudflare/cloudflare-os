@@ -158,6 +158,16 @@ const BP: Record<string, { lbp: number; right?: boolean }> = {
   "^": { lbp: 5, right: true },
 };
 
+/**
+ * `node` with any grouping parentheses removed: `((A5))` is `A5`. The parser keeps a `paren` node
+ * so that a formula written back keeps its grouping; the evaluator sees through it, and so must a
+ * function that reads an argument's shape rather than its value (ROW, COLUMN), or `ROW((A5))`
+ * would find a `paren` where it looks for a reference.
+ */
+export function unwrapParens(node: Ast): Ast {
+  return node.k === "paren" ? unwrapParens(node.a) : node;
+}
+
 // --- Serializer (AST -> string), used for ref adjustment on insert/delete ---
 export function serializeAst(node: Ast): string {
   switch (node.k) {

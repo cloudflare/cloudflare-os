@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { type Ast, CellError, parseFormula, serializeAst, tokenize } from "../files/lib/formula.ts";
+import { type Ast, CellError, parseFormula, serializeAst, tokenize, unwrapParens } from "../files/lib/formula.ts";
 
 describe("the formula tokenizer", () => {
   it("reads numbers, strings, operators, references and quoted sheet names", () => {
@@ -54,6 +54,15 @@ describe("the formula parser", () => {
     expect(parseFormula("(1+2)*3")).toEqual({
       k: "bin", op: "*", a: { k: "paren", a: { k: "bin", op: "+", a: { k: "num", v: 1 }, b: { k: "num", v: 2 } } }, b: { k: "num", v: 3 },
     });
+  });
+
+  it("sees through grouping parentheses on request", () => {
+    // ROW and COLUMN read their argument's shape rather than its value, so `ROW((A5))` has to find
+    // the reference behind the grouping the parser keeps for the serializer.
+    expect(unwrapParens(parseFormula("((A5))"))).toEqual({ k: "ref", ref: "A5" });
+    expect(unwrapParens(parseFormula("(A1:B2)"))).toEqual({ k: "range", a: "A1", b: "B2" });
+    const ref: Ast = { k: "ref", ref: "A5" };
+    expect(unwrapParens(ref)).toBe(ref);
   });
 
   it("round-trips every node kind through the serializer", () => {

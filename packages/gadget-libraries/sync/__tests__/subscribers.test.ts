@@ -127,7 +127,7 @@ describe("SubscriberRegistry", () => {
     expect(ada.received).toEqual([{ type: "leave", clientId: "bob" }]);
   });
 
-  it("seeds a newcomer past a failure, then drops it unannounced", async () => {
+  it("seeds a newcomer past a failure, then drops it and announces its leave", async () => {
     const join = vi.fn(hooks.join);
     const registry = new SubscriberRegistry<Callbacks, Who>({ ...hooks, join });
     const ada = fakeStub();
@@ -143,20 +143,44 @@ describe("SubscriberRegistry", () => {
     registry.add(failing, { clientId: "zed" });
     expect(registry.size).toBe(3);
     await settle();
-    // Both seeds are attempted, ada's failure notwithstanding; the newcomer is then dropped and
-    // its join never broadcast, so the others hear neither a join nor a leave for it.
+    // Both seeds are attempted, ada's failure notwithstanding; the newcomer is then dropped. Its
+    // join was never broadcast, but its leave is: it was a member while it seeded, and anyone who
+    // subscribed in that window was seeded with it (see the next case).
     expect(join.mock.calls.filter(([subscriber]) => subscriber === failing).map(([, who]) => who)).toEqual([{ clientId: "ada" }, { clientId: "bob" }]);
     expect(join.mock.calls.filter(([subscriber]) => subscriber !== failing)).toEqual([]);
     expect(failing.received).toEqual([{ type: "join", clientId: "bob" }]);
     expect(registry.members()).toEqual([{ clientId: "ada" }, { clientId: "bob" }]);
     expect(failing.disposed).toBe(1);
-    expect(ada.received).toEqual([]);
+    expect(ada.received).toEqual([{ type: "leave", clientId: "zed" }]);
 
     // Its connection breaking afterwards has nothing left to drop or announce.
     failing.break();
     await settle();
     expect(failing.disposed).toBe(1);
-    expect(ada.received).toEqual([]);
+    expect(ada.received).toEqual([{ type: "leave", clientId: "zed" }]);
+  });
+
+  it("tells a subscriber seeded with a newcomer that then failed its own seed that it left", async () => {
+    const registry = new SubscriberRegistry<Callbacks, Who>(hooks);
+    const ada = fakeStub();
+    const bob = fakeStub();
+    const failing = fakeStub((event) => (event as { clientId: string }).clientId === "ada");
+    registry.add(ada, { clientId: "ada" });
+    await settle();
+
+    // bob subscribes while zed is still seeding: zed is a member, so bob is seeded with it.
+    registry.add(failing, { clientId: "zed" });
+    registry.add(bob, { clientId: "bob" });
+    expect(registry.members()).toEqual([{ clientId: "ada" }, { clientId: "zed" }, { clientId: "bob" }]);
+    await settle();
+
+    // zed's seed failure drops it; bob, who heard of it, hears that it left rather than keeping a
+    // phantom until its own roster expires it.
+    const zedEvents = bob.received.filter((event) => (event as { clientId: string }).clientId === "zed");
+    expect(zedEvents).toEqual([{ type: "join", clientId: "zed" }, { type: "leave", clientId: "zed" }]);
+    expect(bob.received.at(-1)).toEqual({ type: "join", clientId: "bob" });
+    expect(registry.members()).toEqual([{ clientId: "ada" }, { clientId: "bob" }]);
+    expect(failing.disposed).toBe(1);
   });
 
   it("does not announce a newcomer removed before its announcement ran", async () => {

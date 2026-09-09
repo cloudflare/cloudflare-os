@@ -969,6 +969,9 @@ importers:
       '@cloudflare/vitest-pool-workers':
         specifier: 'catalog:'
         version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10)
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 5.20260903.1
       '@gadgets/scripts':
         specifier: workspace:*
         version: link:../../scripts

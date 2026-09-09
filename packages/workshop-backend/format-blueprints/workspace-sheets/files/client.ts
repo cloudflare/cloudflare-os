@@ -35,6 +35,7 @@ import type {
   Dims,
   GadgetStub,
   OperationEvent,
+  OperationResult,
   PresenceUpdate,
   SelectionCursor,
   SheetMeta,
@@ -44,7 +45,7 @@ import type {
   StructureUpdate,
   SubscriberEvent,
 } from "./lib/protocol.ts";
-import { type Ast, CellError, ERR, isErr, parseFormula, serializeAst } from "./lib/formula.ts";
+import { type Ast, CellError, ERR, isErr, parseFormula, serializeAst, unwrapParens } from "./lib/formula.ts";
 
 // The bindings the Workshop's iframe bootstrap defines before this module runs: the RPC stub to
 // this gadget's Durable Object, and Cap'n Web's RpcTarget for the callbacks it is handed.
@@ -926,8 +927,8 @@ const FUNCTIONS: Record<string, FormulaFn> = (() => {
 
   // ---- Lookup / reference ----
   F.CHOOSE = (a, c, H) => { const i = H.toNum(H.scalar(a[0], c)); return i >= 1 && i < a.length ? H.scalar(a[i], c) : ERR.VALUE(); };
-  F.ROW = (a, c, H, R) => { if (!a.length) return c.r + 1; const nd = a[0]; if (nd.k === "ref") { const p = R.splitRef(nd.ref, c.sheetId); return p ? p.r + 1 : ERR.REF(); } if (nd.k === "range") { const p = R.splitRef(nd.a, c.sheetId); return p ? p.r + 1 : ERR.REF(); } return ERR.REF(); };
-  F.COLUMN = (a, c, H, R) => { if (!a.length) return c.c + 1; const nd = a[0]; if (nd.k === "ref") { const p = R.splitRef(nd.ref, c.sheetId); return p ? p.c + 1 : ERR.REF(); } if (nd.k === "range") { const p = R.splitRef(nd.a, c.sheetId); return p ? p.c + 1 : ERR.REF(); } return ERR.REF(); };
+  F.ROW = (a, c, H, R) => { if (!a.length) return c.r + 1; const nd = unwrapParens(a[0]); if (nd.k === "ref") { const p = R.splitRef(nd.ref, c.sheetId); return p ? p.r + 1 : ERR.REF(); } if (nd.k === "range") { const p = R.splitRef(nd.a, c.sheetId); return p ? p.r + 1 : ERR.REF(); } return ERR.REF(); };
+  F.COLUMN = (a, c, H, R) => { if (!a.length) return c.c + 1; const nd = unwrapParens(a[0]); if (nd.k === "ref") { const p = R.splitRef(nd.ref, c.sheetId); return p ? p.c + 1 : ERR.REF(); } if (nd.k === "range") { const p = R.splitRef(nd.a, c.sheetId); return p ? p.c + 1 : ERR.REF(); } return ERR.REF(); };
   F.ROWS = (a, c, H) => H.matrixOf(a[0], c).rows;
   F.COLUMNS = (a, c, H) => H.matrixOf(a[0], c).cols;
   F.MATCH = (a, c, H) => {
@@ -1199,6 +1200,11 @@ interface PendingCellOp {
 const pendingCellOps = new Map<string, PendingCellOp>(); // "sheetId!REF" -> { sheetId, ref, value, fmt }
 let pendingStructure: StructureUpdate | null = null;      // latest structure snapshot to send
 const pendingReplacements = new Map<string, CellMap>(); // sheetId -> cells (full)
+// Set when a save was rejected, so the next attempt first asks the server where the document
+// stands (see sendPendingOperation): a rejection says nothing about whether the commit landed.
+let resyncBeforeSave = false;
+// Set when that check reloaded the sheet, so the status line says so once the save settles.
+let reloadedAfterFailure = false;
 
 function queueCellOp(sheetId: string, ref: string, value: string | null, fmt: CellFmt | null): void {
   pendingCellOps.set(sheetId + "!" + ref, { sheetId, ref, value, fmt });
@@ -1222,7 +1228,16 @@ const saver = new SaveScheduler({
   debounceMs: 180,
   save: sendPendingOperation,
   isDirty: () => pendingCellOps.size > 0 || pendingStructure !== null || pendingReplacements.size > 0,
-  onStatus: (kind, message) => saveStatus.set(kind, message),
+  onStatus: (kind, message) => {
+    if (kind === "saved" && reloadedAfterFailure) {
+      // The save that followed a reload settled: say what happened before going back to "Saved".
+      reloadedAfterFailure = false;
+      saveStatus.set("synced", "Reloaded after a failed save");
+      setTimeout(() => { if (!saver.busy && !reloadedAfterFailure) saveStatus.set("saved", "Saved"); }, 1800);
+      return;
+    }
+    saveStatus.set(kind, message);
+  },
 });
 
 function scheduleSave(): void {
@@ -1231,7 +1246,30 @@ function scheduleSave(): void {
 }
 
 // Sends everything queued as one operation and adopts what the server acknowledged.
+//
+// A rejected call is retried by the scheduler, and a rejection is ambiguous: the socket may have
+// dropped after the server committed and before the reply arrived. The cell ops may be replayed
+// through that -- each carries the version it was based on, re-read from the model at send time,
+// and the server rejects a stale one as a conflict -- but the structure snapshot and the sheet
+// replacements carry no version and are applied wholesale, last writer wins, so replaying them
+// onto a document that moved in the meantime (our own commit, a collaborator's, or both) would
+// silently overwrite whatever moved it. They may only go out against the revision they were built
+// on: after a failure the next attempt asks for the document first, and if its revision is not
+// ours, drops both, adopts the server's copy and sends only the cell ops. The server could not
+// check this for us with a base revision: the revision moves on every cell edit, so a rename
+// would fail whenever anyone typed.
 async function sendPendingOperation(): Promise<SaveOutcome> {
+  if (resyncBeforeSave) {
+    // Rejecting here leaves the flag set; the scheduler counts a failure and tries again.
+    const doc = await gadget.getDocument();
+    resyncBeforeSave = false;
+    if (doc.revision !== model.revision) {
+      pendingStructure = null;
+      pendingReplacements.clear();
+      applySnapshot(doc);
+      reloadedAfterFailure = true;
+    }
+  }
   const sentCellOps = [...pendingCellOps];
   const sentStructure = pendingStructure;
   const sentReplacements = [...pendingReplacements];
@@ -1242,9 +1280,15 @@ async function sendPendingOperation(): Promise<SaveOutcome> {
     return { sheetId: op.sheetId, ref: op.ref, value: op.value, fmt: op.fmt, baseVersion: op.baseVersion || (cur ? cur.version : 0) };
   });
   const sheetReplacements = sentReplacements.map(([sheetId, cells]) => ({ sheetId, cells }));
-  const result = await gadget.applyOperation({
-    senderId: clientId, structure: sentStructure, cellOps, sheetReplacements,
-  });
+  let result: OperationResult;
+  try {
+    result = await gadget.applyOperation({
+      senderId: clientId, structure: sentStructure, cellOps, sheetReplacements,
+    });
+  } catch (e) {
+    resyncBeforeSave = true;
+    throw e;
+  }
 
   // Only what this call carried leaves the queue: an edit made while it was in flight
   // replaced its entry and stays pending, and a rejected call leaves everything queued

@@ -33,6 +33,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
     "@gadgets/scripts": "workspace:*",
     "@types/pako": "^2.0.4",
     "dompurify": "^3.4.13",
