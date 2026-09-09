@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildContent,
@@ -32,6 +33,13 @@ async function sourceTree(files: Record<string, string>): Promise<string> {
 // vitest.blueprints.config.ts in Node. Bundling runs esbuild's native binary, which only the Node
 // run can spawn, so those cases skip themselves under workerd rather than fail there.
 const inWorkerd = navigator.userAgent === "Cloudflare-Workers";
+
+/**
+ * `packages/gadget-libraries`, where the build resolves `gadgets:<name>/<side>`. Resolved on use,
+ * like the script's own, since this file is also loaded inside workerd.
+ */
+const gadgetLibrariesDir = (): string =>
+  resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "gadget-libraries");
 
 describe("format blueprint source", () => {
   it("reconstructs files deterministically", () => {
@@ -280,6 +288,18 @@ describe.skipIf(inWorkerd)("format blueprint TypeScript sources", () => {
       .rejects.toThrow("client.ts and client.js both define the client entry");
   });
 
+  it("rejects a lib module present as both TypeScript and JavaScript", async () => {
+    let directory = await sourceTree({
+      "client.ts": 'import { value } from "./lib/value.js"; console.log(value);',
+      "lib/value.ts": "export const value: number = 1;",
+      "lib/value.js": "export const value = 2;",
+    });
+
+    await expect(readSourceFiles(directory, "example/files"))
+      .rejects.toThrow("lib/value.ts and lib/value.js both define the same module; TypeScript " +
+          "would type the .ts while the bundle ships the .js");
+  });
+
   it("rejects TypeScript that is neither an entry nor a lib module", async () => {
     let directory = await sourceTree({
       "client.ts": "export {};",
@@ -373,6 +393,27 @@ describe.skipIf(inWorkerd)("format blueprint TypeScript sources", () => {
       .rejects.toThrow("client.ts imports ../outside.ts, which is outside the blueprint's files");
   });
 
+  // esbuild inlines a dynamic import of a literal path like a static one, but leaves a computed
+  // path in the output as written, to resolve inside the sandbox against nothing the build checked.
+  it("rejects a dynamic import of a computed path, and inlines one of a literal", async () => {
+    let computed = await sourceTree({
+      "client.ts": 'const p = "./lib/x.js"; export const m = import(p);',
+      "lib/x.ts": "export const x = 1;",
+    });
+    await expect(readSourceFiles(computed, "example/files")).rejects
+      .toThrow("example/files: client.ts contains a dynamic import whose path is not a string " +
+          "literal; the bundler cannot check it");
+
+    let literal = await sourceTree({
+      "client.ts": 'export const m = import("./lib/x.ts");',
+      "lib/x.ts": "export const x = 1;",
+    });
+    let files = await readSourceFiles(literal, "example/files");
+    expect([...files.keys()]).toEqual(["client.js"]);
+    expect(files.get("client.js")).toContain("x = 1");
+    expect(files.get("client.js")).not.toMatch(/\bimport\s*\(/u);
+  });
+
   it("reports an unresolvable import against the entry", async () => {
     let directory = await sourceTree({
       "server.ts": 'import { missing } from "./lib/missing.ts"; export default missing;',
@@ -442,6 +483,31 @@ describe.skipIf(inWorkerd)("format blueprint TypeScript sources", () => {
       await expect(readSourceFiles(directory, "example/files")).rejects
         .toThrow(new RegExp(`${entry}\\.ts failed to bundle: .*imports gadgets:ui/${side} from ` +
             `the ${entry} side`, "su"));
+    });
+
+    // The specifier is the libraries' only door: a relative path into packages/gadget-libraries is
+    // an import outside the blueprint's files like any other, wherever in the blueprint it is
+    // written, so a blueprint cannot reach a library's src/ or the wrong side by path.
+    it.each([
+      ["client.ts", (specifier: string) => ({
+        "client.ts": `import * as ui from "${specifier}";\nexport default ui;\n`,
+      })],
+      ["lib/reach.ts", (specifier: string) => ({
+        "client.ts": 'export { ui } from "./lib/reach.ts";',
+        "lib/reach.ts": `import * as ui from "${specifier}";\nexport { ui };\n`,
+      })],
+    ])("rejects %s importing a library by relative path", async (importer, tree) => {
+      let directory = await sourceTree({ "client.ts": "" });
+      let specifier = relative(join(directory, dirname(importer)),
+          join(gadgetLibrariesDir(), "ui", "server.ts")).replaceAll("\\", "/");
+      expect(specifier.startsWith("../")).toBe(true);
+      for (let [path, source] of Object.entries(tree(specifier))) {
+        await mkdir(dirname(join(directory, path)), {recursive: true});
+        await writeFile(join(directory, path), source);
+      }
+
+      await expect(readSourceFiles(directory, "example/files")).rejects
+          .toThrow(`${importer} imports ${specifier}, which is outside the blueprint's files`);
     });
 
     it("rejects a library the repository does not have", async () => {
