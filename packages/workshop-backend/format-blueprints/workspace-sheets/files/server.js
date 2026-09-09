@@ -351,9 +351,11 @@ function sanitizePivot(pivot) {
     showRowTotals: pivot.showRowTotals !== false,
     showColumnTotals: pivot.showColumnTotals !== false,
     filterField: String(pivot.filterField || "").slice(0, 8192),
-    filterValues: Array.isArray(pivot.filterValues)
-      ? [...new Set(pivot.filterValues.map((value) => String(value).slice(0, 1000)))].slice(0, 500)
-      : (pivot.filterValue ? [String(pivot.filterValue).slice(0, 1000)] : []),
+    // Compared exactly to cell values, so they keep the cell limit; an oversized set is dropped
+    // whole rather than trimmed into a different filter.
+    filterValues: ((values) => values.length <= MAX_FILTER_SELECTIONS ? values : [])(Array.isArray(pivot.filterValues)
+      ? [...new Set(pivot.filterValues.map((value) => String(value).slice(0, 8192)))]
+      : (pivot.filterValue ? [String(pivot.filterValue).slice(0, 8192)] : [])),
   };
 }
 

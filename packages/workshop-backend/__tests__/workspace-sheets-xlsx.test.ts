@@ -597,6 +597,7 @@ describe("Workspace Sheets XLSX", () => {
       A6: cell("='unterminated"),
       A7: cell("='esc\\'"),
       A8: cell("=\"tail\\\""),
+      A9: cell("='don\\'!t'"),
     };
     const {entries} = await readZip(workbookToXlsx({
       sheetOrder: ["sheet", "its"],
@@ -611,6 +612,8 @@ describe("Workspace Sheets XLSX", () => {
     expect(cellXml(worksheet, "A4")).toContain("<f>'Jan':'It''s'!A1</f>");
     expect(cellXml(worksheet, "A5")).toContain("<f>Table1[[A'[B]]&amp;\"q\"</f>");
     for (const reference of ["A6", "A7", "A8"]) expect(cellXml(worksheet, reference)).toContain('t="inlineStr"');
+    // An escaped quote followed by `!` is still inside the string, not a sheet name's closing quote.
+    expect(cellXml(worksheet, "A9")).toContain("<f>\"don'!t\"</f>");
   });
 
   it("exports a filter row as an autofilter with criteria, hidden buttons, sort state and hidden rows", async () => {
@@ -814,12 +817,21 @@ describe("Workspace Sheets XLSX", () => {
       cells[`${columnName(column)}2`] = cell(column === 3 + 255 ? "=A2" : String(column));
     }
     const {entries} = await readZip(workbookToXlsx({
-      sheetOrder: ["data", "empty"],
+      sheetOrder: ["data", "empty", "filtered"],
       sheets: {
         data: sheet("Data", {cols: 260, charts: [{id: "wide", type: "line", range: "A1:IZ3"}, {id: "pie", type: "pie", range: "A1:IZ3"}]}),
         empty: sheet("Empty", {charts: [{id: "text", type: "line", range: "A1:B3"}]}),
+        // B is numeric only in a row the filter hides, so the visible pie uses C, as the grid does.
+        filtered: sheet("Filtered", {
+          filter: {row: 0, endRow: 3, columns: [0, 1, 2], criteria: {0: ["s:keep"]}},
+          charts: [{id: "pie", type: "pie", range: "A1:C4"}],
+        }),
       },
-      cells: {data: cells, empty: {A1: cell("Name"), B1: cell("Note"), A2: cell("x"), B2: cell("words")}},
+      cells: {
+        data: cells,
+        empty: {A1: cell("Name"), B1: cell("Note"), A2: cell("x"), B2: cell("words")},
+        filtered: {A1: cell("k"), B1: cell("b"), C1: cell("c"), A2: cell("drop"), B2: cell("5"), A3: cell("keep"), C3: cell("7"), A4: cell("keep"), C4: cell("8")},
+      },
     }));
 
     const wide = text(entries, "xl/charts/chart1.xml");
@@ -833,8 +845,11 @@ describe("Workspace Sheets XLSX", () => {
     expect(pie.match(/<c:ser>/g)).toHaveLength(1);
     expect(pie).toContain("<c:f>'Data'!$D$2:$D$3</c:f>");
     // A chart over text only draws a placeholder in the grid and is not exported.
-    expect(entries.has("xl/charts/chart3.xml")).toBe(false);
+    expect([...entries.keys()].filter(name => name.startsWith("xl/charts/"))).toHaveLength(3);
     expect(text(entries, "xl/worksheets/sheet2.xml")).not.toContain("<drawing");
+    const filteredPie = text(entries, "xl/charts/chart3.xml");
+    expect(filteredPie.match(/<c:ser>/g)).toHaveLength(1);
+    expect(filteredPie).toContain("<c:f>'Filtered'!$C$2:$C$4</c:f>");
   });
 
   it("numbers drawing, chart and comment parts across sheets and orders sheet relationships", async () => {

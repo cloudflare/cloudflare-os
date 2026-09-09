@@ -1755,6 +1755,7 @@ function applyHistory(entry, into) {
   into.push(inverse);
   rebuildEngine();
   renderGrid();
+  schedulePivotRefreshes();
   updateUndoButtons();
 }
 function undo() { if (!undoStack.length) return; applyHistory(undoStack.pop(), redoStack); }
@@ -2116,12 +2117,14 @@ function pivotSourceRange() {
 }
 function pivotFields(pivot) {
   const range = parseChartRange(pivot.sourceRange); if (!range || !model.sheets[pivot.sourceSheetId]) return [];
-  const fields = [], used = new Map();
+  const fields = [], used = new Set();
   for (let column = range.c1; column <= range.c2; column++) {
     let name = pivotDisplay(pivotCellValue(pivot.sourceSheetId, range.r1, column));
     if (name === "(Blank)") name = `Column ${colToLetter(column)}`;
-    const count = (used.get(name) || 0) + 1; used.set(name, count);
-    fields.push({ name: count > 1 ? `${name} (${count})` : name, column });
+    // Generated names are reserved too, so headers `A`, `A (2)`, `A` stay distinct.
+    let unique = name; for (let count = 2; used.has(unique); count++) unique = `${name} (${count})`;
+    used.add(unique);
+    fields.push({ name: unique, column });
   }
   return fields;
 }
@@ -2159,9 +2162,11 @@ function buildPivotOutput(pivot) {
   }
   const rowKeys = [...new Set(records.map((record) => record.row))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   const columnKeys = [...new Set(records.map((record) => record.column))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  // The output is the Cartesian product of the two key sets; past this it cannot be materialized
-  // (the sheet also has at most 702 columns), so the pivot reports instead of freezing the browser.
-  if (rowKeys.length * columnKeys.length > MAX_PIVOT_CELLS || columnKeys.length > 699) {
+  // The output is the Cartesian product of the two key sets plus headers and totals; past the cell
+  // cap or the sheet's own limits (50,000 rows, 702 columns) it cannot be materialized, so the
+  // pivot reports instead of freezing the browser.
+  const outputRows = rowKeys.length + 2, outputColumns = columnKeys.length + 2;
+  if (outputRows * outputColumns > MAX_PIVOT_CELLS || outputRows > 50000 || outputColumns > 702) {
     return { cells: { A1: { value: `Pivot table too large: ${rowKeys.length.toLocaleString()} row values × ${columnKeys.length.toLocaleString()} column values. Choose fields with fewer distinct values.`, fmt: { b: true, c: "#b42318" }, version: 1 } }, rows: 20, cols: 8 };
   }
   const states = new Map(), rowTotals = new Map(), columnTotals = new Map(), grandTotal = aggregateState();
@@ -2171,14 +2176,17 @@ function buildPivotOutput(pivot) {
     addAggregate(stateFor(rowTotals, record.row), record.value); addAggregate(stateFor(columnTotals, record.column), record.value); addAggregate(grandTotal, record.value);
   }
   const cells = {}, put = (row, column, value, fmt = null) => { cells[rcToRef(row, column)] = { value: String(value ?? ""), fmt, version: 1 }; };
+  // Labels are text taken from computed values; one that the grid would re-parse (a formula,
+  // a number, a boolean, an apostrophe) is stored with the literal-text prefix.
+  const label = (text) => /^[='+\-$.\d]|^(true|false)$/i.test(text) ? "'" + text : text;
   const headerFmt = { b: true, bg: "#e1632e", c: "#ffffff" };
   const rowHeaderFmt = { b: true, bg: "#fff7f2", c: "#3f332e" };
   const totalFmt = { b: true, bg: "#fde9dc", c: "#3f332e" };
-  put(0, 0, pivot.rowField || "Rows", headerFmt);
-  columnKeys.forEach((key, index) => put(0, index + 1, key, headerFmt));
+  put(0, 0, label(pivot.rowField || "Rows"), headerFmt);
+  columnKeys.forEach((key, index) => put(0, index + 1, label(key), headerFmt));
   if (pivot.showRowTotals !== false) put(0, columnKeys.length + 1, "Grand Total", totalFmt);
   rowKeys.forEach((rowKey, rowIndex) => {
-    put(rowIndex + 1, 0, rowKey, rowHeaderFmt);
+    put(rowIndex + 1, 0, label(rowKey), rowHeaderFmt);
     columnKeys.forEach((columnKey, columnIndex) => put(rowIndex + 1, columnIndex + 1, finishAggregate(states.get(rowKey + "\u0000" + columnKey) || aggregateState(), pivot.aggregate), pivot.aggregate === "average" ? { nf: "number", d: 2 } : null));
     if (pivot.showRowTotals !== false) put(rowIndex + 1, columnKeys.length + 1, finishAggregate(rowTotals.get(rowKey) || aggregateState(), pivot.aggregate), totalFmt);
   });
@@ -2192,7 +2200,8 @@ function buildPivotOutput(pivot) {
 function refreshPivot(sheetId, save = true) {
   const sheet = model.sheets[sheetId]; if (!sheet?.pivot) return;
   const output = buildPivotOutput(sheet.pivot);
-  if (JSON.stringify(output.cells) === JSON.stringify(model.cells[sheetId] || {})) return; // nothing to rematerialize
+  // Settings that leave the cells identical (Sum vs Max over single records) still need saving.
+  if (JSON.stringify(output.cells) === JSON.stringify(model.cells[sheetId] || {})) { if (save) queueStructure(); return; }
   model.cells[sheetId] = output.cells; sheet.rows = Math.max(sheet.rows, output.rows); sheet.cols = Math.max(sheet.cols, output.cols);
   const widths = {};
   for (const [ref, cell] of Object.entries(output.cells)) {
@@ -2258,24 +2267,45 @@ function pivotFilterValues(pivot) {
   const values = []; for (let row = range.r1 + 1; row <= range.r2; row++) values.push(pivotDisplay(pivotCellValue(pivot.sourceSheetId, row, field.column)));
   return [...new Set(values)].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
+// A source column can hold tens of thousands of distinct values; only a page of them is rendered,
+// narrowed by the search box, so the panel never builds an unbounded DOM.
+const MAX_PIVOT_FILTER_OPTIONS = 200;
 function pivotFilterMultiSelect(sheetId, pivot) {
   const options = pivotFilterValues(pivot), selected = pivot.filterValues || (pivot.filterValue ? [pivot.filterValue] : []);
   const allSelected = !selected.length, wrap = el("div", { class: "chart-field" });
   wrap.appendChild(el("span", {}, "Filter values"));
-  const list = el("div", { class: "pivot-filter-values" }), checks = [];
-  for (const value of options) {
-    const input = el("input", { type: "checkbox" }); input.checked = allSelected || selected.includes(value);
-    const option = el("label", { class: "pivot-filter-option" }, [input, el("span", {}, value)]);
-    checks.push({ value, input }); list.appendChild(option);
-  }
+  const chosen = new Set(allSelected ? options : selected);
+  const list = el("div", { class: "pivot-filter-values" });
+  const note = el("div", { class: "pivot-note" });
   const apply = () => {
-    const values = checks.filter((item) => item.input.checked).map((item) => item.value);
-    pivot.filterValues = values.length === options.length ? [] : (values.length ? values : ["__PIVOT_NONE__"]);
+    const next = chosen.size === options.length ? [] : (chosen.size ? [...chosen] : ["__PIVOT_NONE__"]);
+    if (next.length > MAX_FILTER_SELECTIONS) {
+      setStatus("bad", `Select at most ${MAX_FILTER_SELECTIONS} values, or clear the filter instead`);
+      chosen.clear(); for (const value of pivot.filterValues?.length ? pivot.filterValues : options) chosen.add(value);
+      render(); return;
+    }
+    pivot.filterValues = next;
     refreshPivot(sheetId);
   };
-  checks.forEach((item) => item.input.addEventListener("change", apply));
-  if (!options.length) list.appendChild(el("div", { class: "pivot-note" }, "No values available"));
-  wrap.appendChild(list); return wrap;
+  const render = (query = "") => {
+    list.replaceChildren();
+    const matching = query ? options.filter((value) => value.toLowerCase().includes(query)) : options;
+    for (const value of matching.slice(0, MAX_PIVOT_FILTER_OPTIONS)) {
+      const input = el("input", { type: "checkbox" }); input.checked = chosen.has(value);
+      input.addEventListener("change", () => { if (input.checked) chosen.add(value); else chosen.delete(value); apply(); });
+      list.appendChild(el("label", { class: "pivot-filter-option" }, [input, el("span", {}, value)]));
+    }
+    note.textContent = !options.length ? "No values available"
+      : matching.length > MAX_PIVOT_FILTER_OPTIONS ? `Showing ${MAX_PIVOT_FILTER_OPTIONS} of ${matching.length.toLocaleString()} values; search to narrow` : "";
+    note.style.display = note.textContent ? "" : "none";
+  };
+  if (options.length > MAX_PIVOT_FILTER_OPTIONS) {
+    const search = el("input", { class: "filter-search", type: "search", placeholder: "Search values…", "aria-label": "Search pivot filter values" });
+    search.addEventListener("input", () => render(search.value.trim().toLowerCase()));
+    wrap.appendChild(search);
+  }
+  render();
+  wrap.appendChild(list); wrap.appendChild(note); return wrap;
 }
 
 // ===========================================================================
@@ -2412,7 +2442,9 @@ function openCreateChartMenu(event) {
   const rect = chartBtn.getBoundingClientRect();
   showCtx(menu, rect.left, rect.bottom + 4);
 }
+const MAX_CHARTS_PER_SHEET = 50; // the server keeps only this many
 function createChart(type = "line") {
+  if (sheetCharts().length >= MAX_CHARTS_PER_SHEET) { setStatus("bad", `A sheet holds at most ${MAX_CHARTS_PER_SHEET} charts`); return; }
   const range = defaultChartRange();
   const inferred = inferChartLayout(range);
   const chart = {
@@ -2858,6 +2890,14 @@ function rowPassesFilter(row, sheetId = activeSheetId) {
     if (!selected.includes(token)) return false;
   }
   return true;
+}
+// The next row in `step` direction that the filter shows; stays put when none remains, so the
+// keyboard never lands on (and edits) a hidden record.
+function nextVisibleRow(row, step) {
+  const sheet = curSheet();
+  if (!sheet?.filter) return row + step;
+  for (let candidate = row + step; candidate >= 0 && candidate < sheet.rows; candidate += step) if (rowPassesFilter(candidate)) return candidate;
+  return row;
 }
 function hasCellData(row, column) {
   const value = cellRaw(rcToRef(row, column));
@@ -3593,7 +3633,7 @@ function formulaPointModeActive() {
   if (formulaPick?.picked) return true;
   const start = cellEditor.selectionStart ?? cellEditor.value.length;
   if (start !== (cellEditor.selectionEnd ?? start) || formulaCursorInQuote(cellEditor.value, start)) return false;
-  return /[=(,+\-*/^&<>]\s*$/.test(cellEditor.value.slice(0, start));
+  return /[=(,:+\-*/^&<>]\s*$/.test(cellEditor.value.slice(0, start));
 }
 function insertFormulaComma() {
   const start = cellEditor.selectionStart ?? cellEditor.value.length, end = cellEditor.selectionEnd ?? start;
@@ -3655,7 +3695,10 @@ function updateFormulaAssist() {
 function acceptFormulaSuggestion() {
   const name = formulaAssistItems[formulaAssistIndex]; if (!name || !editing) return;
   const cursor = cellEditor.selectionStart ?? cellEditor.value.length;
-  cellEditor.value = cellEditor.value.slice(0, formulaAssistReplaceStart) + name + "()" + cellEditor.value.slice(cursor);
+  // Accepting over an existing call (`=SU|M(A1)`) reuses its parentheses instead of adding a pair.
+  const rest = cellEditor.value.slice(cursor), existingCall = /^[A-Za-z0-9_.]*\s*\(/.exec(rest);
+  const tail = existingCall ? rest.slice(existingCall[0].length) : rest;
+  cellEditor.value = cellEditor.value.slice(0, formulaAssistReplaceStart) + name + (existingCall ? "(" : "()") + tail;
   const next = formulaAssistReplaceStart + name.length + 1;
   cellEditor.setSelectionRange(next, next); formulaInput.value = cellEditor.value; formulaInput.setSelectionRange(next, next); syncEditorSize(); updateFormulaAssist();
 }
@@ -3820,6 +3863,7 @@ function syncFormulaPickFromCaret() {
   const start = cellEditor.selectionStart ?? cellEditor.value.length;
   const end = cellEditor.selectionEnd ?? start;
   let bounds = formulaReferenceBoundsAtCaret(cellEditor.value, start === end ? start : Math.min(start + 1, end));
+  if (bounds && cellEditor.value[bounds.start] !== "'" && formulaCursorInQuote(cellEditor.value, bounds.start + 1)) bounds = null; // text inside a string literal
   if (!bounds) {
     const span = activeFormulaArgumentSpans(cellEditor.value, start).find((item) => start >= item.start && start <= item.end);
     if (span) {
@@ -4159,8 +4203,8 @@ function commitEdit(advance = "down") {
   commitBatch();
   rebuildEngine();
   renderGrid();
-  if (advance === "down") moveActive(r + 1, c);
-  else if (advance === "up") moveActive(r - 1, c);
+  if (advance === "down") moveActive(nextVisibleRow(r, 1), c);
+  else if (advance === "up") moveActive(nextVisibleRow(r, -1), c);
   else if (advance === "right") moveActive(r, c + 1);
   else if (advance === "left") moveActive(r, c - 1);
   else moveActive(r, c);
@@ -4202,6 +4246,13 @@ cellEditor.addEventListener("keydown", (e) => {
     return;
   }
   if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "l") { e.preventDefault(); cycleAbsoluteReference(); e.stopPropagation(); return; }
+  // In point mode (e.g. right after `=`, where the starter suggestions also show) arrows pick cells;
+  // the suggestions stay reachable by Tab/Enter and click.
+  if (cellEditor.value.startsWith("=") && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key) && formulaPointModeActive()) {
+    e.preventDefault();
+    const directions = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+    moveFormulaPickByKeyboard(directions[e.key][0], directions[e.key][1], e.shiftKey); e.stopPropagation(); return;
+  }
   if (formulaAssistItems.length && e.key === "ArrowDown") { e.preventDefault(); moveFormulaSuggestion(1); e.stopPropagation(); return; }
   if (formulaAssistItems.length && e.key === "ArrowUp") { e.preventDefault(); moveFormulaSuggestion(-1); e.stopPropagation(); return; }
   if (formulaAssistItems.length && (e.key === "Tab" || e.key === "Enter")) { e.preventDefault(); acceptFormulaSuggestion(); e.stopPropagation(); return; }
@@ -4226,11 +4277,6 @@ cellEditor.addEventListener("keydown", (e) => {
     updateFormulaAssist();
     e.stopPropagation();
     return;
-  }
-  if (!formulaAssistItems.length && cellEditor.value.startsWith("=") && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key) && formulaPointModeActive()) {
-    e.preventDefault();
-    const directions = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
-    moveFormulaPickByKeyboard(directions[e.key][0], directions[e.key][1], e.shiftKey); e.stopPropagation(); return;
   }
   if (formulaAssist.style.display !== "none" && e.key === "Escape") { e.preventDefault(); closeFormulaAssist(); e.stopPropagation(); return; }
   if (e.key === "Enter" && !e.shiftKey && !e.altKey) { e.preventDefault(); commitEdit(e.shiftKey ? "up" : "down"); }
@@ -4402,8 +4448,8 @@ function handleGridKeydown(e) {
     }
   }
   switch (e.key) {
-    case "ArrowUp": e.preventDefault(); moveActive(focus.r - 1, focus.c, e.shiftKey); break;
-    case "ArrowDown": e.preventDefault(); moveActive(focus.r + 1, focus.c, e.shiftKey); break;
+    case "ArrowUp": e.preventDefault(); moveActive(nextVisibleRow(focus.r, -1), focus.c, e.shiftKey); break;
+    case "ArrowDown": e.preventDefault(); moveActive(nextVisibleRow(focus.r, 1), focus.c, e.shiftKey); break;
     case "ArrowLeft": e.preventDefault(); moveActive(focus.r, focus.c - 1, e.shiftKey); break;
     case "ArrowRight": e.preventDefault(); moveActive(focus.r, focus.c + 1, e.shiftKey); break;
     case "Tab": e.preventDefault(); moveWithinSelection(e.shiftKey ? -1 : 1, "h"); break;
@@ -4478,13 +4524,13 @@ function clipboardReferences(ranges, sheet, allRows, allColumns) {
   if (allRows) {
     const rows = [...new Set(ranges.flatMap((range) => Array.from({ length: range.r2 - range.r1 + 1 }, (_, index) => range.r1 + index)))].sort((a, b) => a - b);
     let lastColumn = 0;
-    for (const row of rows) for (let column = 0; column < sheet.cols; column++) if (!isVisuallyEmptyCell(row, column)) lastColumn = Math.max(lastColumn, column);
+    for (const row of rows) for (let column = 0; column < sheet.cols; column++) if (getCell(rcToRef(row, column))) lastColumn = Math.max(lastColumn, column);
     return rows.map((row) => Array.from({ length: lastColumn + 1 }, (_, column) => rcToRef(row, column)));
   }
   if (allColumns) {
     const columns = [...new Set(ranges.flatMap((range) => Array.from({ length: range.c2 - range.c1 + 1 }, (_, index) => range.c1 + index)))].sort((a, b) => a - b);
     let lastRow = 0;
-    for (const column of columns) for (let row = 0; row < sheet.rows; row++) if (!isVisuallyEmptyCell(row, column)) lastRow = Math.max(lastRow, row);
+    for (const column of columns) for (let row = 0; row < sheet.rows; row++) if (getCell(rcToRef(row, column))) lastRow = Math.max(lastRow, row);
     return Array.from({ length: lastRow + 1 }, (_, row) => columns.map((column) => rcToRef(row, column)));
   }
   if (ranges.length === 1) {
@@ -4625,7 +4671,7 @@ function pasteText(text, { keepFormatting = true, token = null } = {}) {
       const sourceRow = i % sourceHeight, sourceColumn = j % sourceWidth;
       const ref = rcToRef(row, column); destinationRefs.add(activeSheetId + "!" + ref);
       const snapshot = useSnapshot ? copyFallback.cells[sourceRow]?.[sourceColumn] : undefined;
-      if (moving && snapshot?.sourceRef && !moves.has(snapshot.sourceRef)) moves.set(snapshot.sourceRef, { sheetId: activeSheetId, ref });
+      if (moving && snapshot?.sourceRef && !moves.has(snapshot.sourceRef)) moves.set(snapshot.sourceRef, { sheetId: activeSheetId, ref, snapshot });
       if (useSnapshot && keepFormatting) {
         recordCell(activeSheetId, ref);
         if (snapshot && snapshot.value != null) {
@@ -4649,7 +4695,7 @@ function pasteText(text, { keepFormatting = true, token = null } = {}) {
     const sourceSheet = model.sheets[copyFallback.sheetId];
     let movedComments = false;
     for (const [sourceRef, destination] of moves) {
-      const snapshot = copyFallback.cells.flat().find((entry) => entry?.sourceRef === sourceRef);
+      const { snapshot } = destination;
       if (destinationRefs.has(copyFallback.sheetId + "!" + sourceRef) || !cutSourceUnchanged(copyFallback.sheetId, snapshot)) continue;
       clearStoredCell(copyFallback.sheetId, sourceRef);
       const comments = sourceSheet?.comments?.filter((comment) => comment.ref === sourceRef) || [];
@@ -5046,6 +5092,7 @@ function applyRemoteOperation(event) {
   if (!model.sheets[activeSheetId]) { if (editing) cancelEdit(); activeSheetId = model.sheetOrder[0]; }
   if (selectedChartId && !(curSheet().charts || []).some((chart) => chart.id === selectedChartId)) selectedChartId = null;
   renderTabs(); renderGrid(); renderChartPanel();
+  schedulePivotRefreshes(); // a remote source edit re-materializes the pivots reading it
   setStatus("synced", "Live update");
   setTimeout(() => { if (!saveInFlight && !pendingCellOps.size) setStatus("saved", "Saved"); }, 900);
 }

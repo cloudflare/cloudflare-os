@@ -537,12 +537,14 @@ function anchorPosition(pixels, sizes, defaultPixels, maximum) {
   }
 }
 
-// The grid's chartData() drops a column with no numeric value before building its series. Only
-// literals can be judged here, so a column is usable when it holds a number or a formula.
+// The grid's chartData() drops a column with no numeric value before building its series and
+// skips filter-hidden rows. Only literals can be judged here, so a visible cell makes its column
+// usable when it holds a number or a formula.
 function usableSeriesColumns(sheet, range, firstColumn) {
+  const hidden = new Set(sheet.hiddenRows);
   const usable = new Set();
   for (const cell of sheet.cells) {
-    if (cell.column < firstColumn || cell.column > range.lastColumn || cell.row < range.firstRow || cell.row > range.lastRow) continue;
+    if (cell.column < firstColumn || cell.column > range.lastColumn || cell.row < range.firstRow || cell.row > range.lastRow || hidden.has(cell.row)) continue;
     if (cell.value[0] === "=" || parsedCellValue(cell.value, null).type === "number") usable.add(cell.column);
   }
   return [...usable].sort((a, b) => a - b);
@@ -763,6 +765,11 @@ function stringLiteralAt(formula, offset) {
 // Excel 3-D reference such as 'Jan':'Mar'!A1 survives verbatim (see isThreeDimensionalReference).
 function quotedSheetNameAt(formula, offset) {
   for (let i = offset + 1; i < formula.length; ++i) {
+    // Same escape rules as stringLiteralAt(): `''` and `\'` are quotes inside the run.
+    if (formula[i] === "\\" && formula[i + 1] === "'") {
+      ++i;
+      continue;
+    }
     if (formula[i] !== "'") continue;
     if (formula[i + 1] === "'") {
       ++i;
