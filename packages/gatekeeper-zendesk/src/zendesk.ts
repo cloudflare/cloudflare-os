@@ -73,7 +73,9 @@ import type {
   ZendeskActionResult,
   ZendeskCodingSessionToolInfo,
   ZendeskCodingSessionToolResult,
+  ZendeskCurrentUser,
   ZendeskQueuedAction,
+  ZendeskTicketSearchRequest,
   ZendeskTicketSession,
 } from "./types.js";
 
@@ -105,18 +107,21 @@ type PendingAction =
       fields: Record<string, string | number | boolean | null | string[]>;
       updateStamp: string;
     };
-type StoredAction = PendingAction & { id: number; status: "pending" | "applying" | "applied"; claimedAt?: number };
+type StoredAction = PendingAction & { id: number; status: "pending" | "applying" | "applied" | "failed"; claimedAt?: number };
 
 const OAUTH_SCOPE = "read write";
 const CONNECT_TIMEOUT_MS = 15 * 60 * 1000;
 const NONCE_TTL_MS = 10 * 60 * 1000;
 const TOKEN_SKEW_MS = 60_000;
-const APPLYING_TIMEOUT_MS = 5 * 60 * 1000;
 const BODY_MAX = 12_000;
 const DESCRIPTION_MAX = 60_000;
 const FIELD_MAX = 2_000;
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 50;
+/** `/api/v2/search.json` returns at most 1,000 results per query. Only `/api/v2/search/export` pages past it. */
+const SEARCH_CEILING = 1000;
+const EXPORT_CURSOR_PREFIX = "zdx1";
+const EXPORT_CURSOR_MAX = 2_048;
 const MAX_UPLOAD_TOKENS = 10;
 const UPLOAD_TTL_MS = 60 * 60 * 1000;
 const ACTION_KINDS = [
@@ -272,6 +277,35 @@ function parseCursor(cursor: unknown): number {
   return page;
 }
 
+function isExportCursor(cursor: unknown): cursor is string {
+  return typeof cursor === "string" && cursor.startsWith(`${EXPORT_CURSOR_PREFIX}.`);
+}
+
+/**
+ * Binds an export cursor to the exact site, scoped query, and page size that produced it. This is an integrity tag,
+ * not a secret: it stops a cursor minted for another Zendesk site or a different query from silently paging an
+ * unrelated result set. Cross-account reads remain impossible regardless, because the request still carries only this
+ * session's own token.
+ */
+async function exportFingerprint(subdomain: string, query: string, limit: number): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${subdomain}\n${query}\n${limit}`));
+  return Array.from(new Uint8Array(digest, 0, 8), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function mintExportCursor(fingerprint: string, after: string): string {
+  return `${EXPORT_CURSOR_PREFIX}.${fingerprint}.${after}`;
+}
+
+function parseExportCursor(cursor: string, expected: string): string {
+  if (cursor.length > EXPORT_CURSOR_MAX) throw new Error("Zendesk export cursor is invalid.");
+  const fingerprint = cursor.split(".")[1] ?? "";
+  // The opaque Zendesk cursor may itself contain dots, so take everything after the fingerprint verbatim.
+  const after = cursor.slice(EXPORT_CURSOR_PREFIX.length + fingerprint.length + 2);
+  if (!/^[0-9a-f]{16}$/.test(fingerprint) || !/^[A-Za-z0-9._~+/=-]+$/.test(after)) throw new Error("Zendesk export cursor is invalid.");
+  if (fingerprint !== expected) throw new Error("Zendesk export cursor is for a different site, query, or page size. Restart the search.");
+  return after;
+}
+
 function actionKey(id: number): string { return `action:${id}`; }
 function resultKey(id: number): string { return `result:${id}`; }
 function uploadKey(token: string): string { return `upload:${token}`; }
@@ -389,6 +423,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 }
 
 export class ZendeskAccount extends DurableObject<Env> {
+  #refreshing?: Promise<string>;
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, nonce: string, returnUrl?: string): Promise<void> {
     this.ctx.storage.kv.put("callback", callback);
     this.ctx.storage.kv.put<StoredNonce>("nonce", { value: nonce, expiresAt: Date.now() + NONCE_TTL_MS, returnUrl });
@@ -398,6 +433,7 @@ export class ZendeskAccount extends DurableObject<Env> {
   async beginOAuth(nonce: string, subdomain: string, returnUrl?: string): Promise<{ oauthNonce: string } | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || Date.now() >= stored.expiresAt || !timingSafeEqual(stored.value, nonce)) return null;
+    if (this.ctx.storage.kv.get("grant") && subdomain !== this.ctx.storage.kv.get("subdomain")) throw new Error("Reconnect must use the original Zendesk subdomain.");
     const oauthNonce = randomNonce();
     this.ctx.storage.kv.put("subdomain", subdomain);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
@@ -423,6 +459,8 @@ export class ZendeskAccount extends DurableObject<Env> {
       scope: OAUTH_SCOPE,
     });
     this.ctx.storage.kv.put<ZendeskOAuthGrant>("grant", grant);
+    this.ctx.storage.kv.delete("identity");
+    this.ctx.storage.kv.delete("expiredNotified");
     const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
     if (!callback) throw new Error("Zendesk connection attempt was abandoned.");
     if (this.ctx.storage.kv.get<boolean>("reconnecting")) {
@@ -439,21 +477,32 @@ export class ZendeskAccount extends DurableObject<Env> {
     const grant = this.ctx.storage.kv.get<ZendeskOAuthGrant>("grant");
     const subdomain = this.ctx.storage.kv.get<string>("subdomain");
     if (!grant || !subdomain) throw new Error("Zendesk credentials have not been configured.");
-    if (Date.now() < grant.expiresAt - TOKEN_SKEW_MS) return grant.accessToken;
+    if (grant.expiresAt === null || Date.now() < grant.expiresAt - TOKEN_SKEW_MS) return grant.accessToken;
+    // Older persisted grants invented a one-hour expiry, including non-expiring tokens.
+    // Without a refresh token, let Zendesk decide whether that token is still usable.
     if (!grant.refreshToken || !this.env.CLIENT_ID || !this.env.CLIENT_SECRET) return grant.accessToken;
+    if (this.#refreshing) return this.#refreshing;
+    this.#refreshing = this.#refresh(grant, subdomain);
+    try { return await this.#refreshing; }
+    finally { this.#refreshing = undefined; }
+  }
+
+  async #refresh(grant: ZendeskOAuthGrant, subdomain: string): Promise<string> {
     try {
       const refreshed = await refreshAccessToken({
         subdomain,
-        refreshToken: grant.refreshToken,
-        clientId: this.env.CLIENT_ID,
-        clientSecret: this.env.CLIENT_SECRET,
-        scope: OAUTH_SCOPE,
+        refreshToken: grant.refreshToken!,
+        clientId: this.env.CLIENT_ID!,
+        clientSecret: this.env.CLIENT_SECRET!,
+        scope: grant.scope ?? OAUTH_SCOPE,
       });
+      if (this.ctx.storage.kv.get<ZendeskOAuthGrant>("grant")?.accessToken !== grant.accessToken) throw new Error("Zendesk credentials changed during refresh. Retry the operation.");
       if (!refreshed.refreshToken) refreshed.refreshToken = grant.refreshToken;
+      refreshed.scope ??= grant.scope;
       this.ctx.storage.kv.put<ZendeskOAuthGrant>("grant", refreshed);
       return refreshed.accessToken;
     } catch (error) {
-      if (error instanceof ZendeskApiError && error.isAuthError) await this.notifyExpired();
+      if (error instanceof ZendeskApiError && error.isAuthError && this.ctx.storage.kv.get<ZendeskOAuthGrant>("grant")?.accessToken === grant.accessToken) await this.notifyExpired();
       throw error;
     }
   }
@@ -508,14 +557,18 @@ export class ZendeskUserImpl extends WorkerEntrypoint<Env, Props> implements Gat
   async getSupportedResources(): Promise<SupportedResource[]> { return [ACCOUNT_RESOURCE, TICKET_RESOURCE]; }
   async ensureResources(): Promise<{ url?: string }> { return {}; }
   async getConnectionStatus(): Promise<ConnectionHealthStatus> {
-    try { await this.#account().getAccessToken(); return { state: "healthy", message: "Zendesk credentials are usable." }; }
-    catch (error) { return { state: error instanceof ZendeskApiError && error.isAuthError ? "expired" : "unavailable", message: error instanceof Error ? error.message : String(error) }; }
+    try { await this.#api().me(); return { state: "healthy", message: "Zendesk credentials are usable." }; }
+    catch (error) {
+      if (error instanceof ZendeskApiError && error.status === 401) await this.#account().notifyExpired();
+      return { state: error instanceof ZendeskApiError && error.status === 401 ? "expired" : "unavailable", message: error instanceof Error ? error.message : String(error) };
+    }
   }
   async getGatekeeperClassFor(url: string): Promise<{ class: DurableObjectClass<Gatekeeper<any>>; resource: SupportedResource }> {
     const parsed = new URL(url);
     const subdomain = normalizeSubdomain(parsed.hostname);
-    if (subdomain !== this.ctx.props.subdomain) throw new Error("Zendesk URL is outside the connected subdomain.");
-    const ticketId = parsed.pathname.match(/^\/agent\/tickets\/(\d+)/)?.[1];
+    if (parsed.origin !== `https://${this.ctx.props.subdomain}.zendesk.com` || parsed.username || parsed.password) throw new Error("Zendesk URL is outside the connected subdomain.");
+    const ticketId = parsed.pathname.match(/^\/agent\/tickets\/(\d+)\/?$/)?.[1];
+    if (!ticketId && parsed.pathname !== "/") throw new Error("Unsupported Zendesk resource URL; select the account root or a ticket URL.");
     return {
       class: exportsOf(this.ctx).ZendeskGatekeeper({ props: { accountId: this.ctx.props.accountId, subdomain, ticketId } }),
       resource: ticketId ? TICKET_RESOURCE : ACCOUNT_RESOURCE,
@@ -636,8 +689,12 @@ export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gate
       action.status = "applied";
       this.ctx.storage.kv.put(actionKey(id), action);
     } catch (error) {
-      this.ctx.storage.kv.put<ZendeskActionResult>(resultKey(action.id), { status: "failed", message: boundedString(error instanceof Error ? error.message : String(error), 512) });
-      this.ctx.storage.kv.delete(actionKey(id));
+      const guidance = error instanceof ZendeskApiError && error.status === 409
+        ? "Ticket update conflict. Read the latest ticket and submit a new action with the intended changes."
+        : "The write outcome may be ambiguous. Read the ticket and its history to verify whether it applied before submitting a new action; do not blindly repeat the write.";
+      this.ctx.storage.kv.put<ZendeskActionResult>(resultKey(action.id), { status: "failed", message: `${guidance} ${boundedString(error instanceof Error ? error.message : String(error), 240)}` });
+      action.status = "failed";
+      this.ctx.storage.kv.put(actionKey(id), action);
       throw error;
     }
   }
@@ -649,13 +706,9 @@ export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gate
   }
   revertAction(): Promise<void> { throw new Error("Zendesk actions are not revertable by this gatekeeper."); }
 
-  async getCurrentUser(): Promise<WorkItemsCurrentUser> {
-    let identity = await this.#account().identity() as ZendeskIdentity | undefined;
-    if (!identity) {
-      identity = (await this.#api().me()).user;
-      await this.#account().storeIdentity(identity);
-    }
-    return { displayName: identity.name ?? undefined, uniqueName: identity.email ?? `${this.ctx.props.subdomain}.zendesk.com` };
+  async getCurrentUser(): Promise<ZendeskCurrentUser> {
+    const identity = (await this.#api().me()).user;
+    return { id: String(identity.id), displayName: identity.name ?? undefined, uniqueName: identity.email ?? `${this.ctx.props.subdomain}.zendesk.com` };
   }
   async sourceStatuses(): Promise<WorkItemSourceStatuses> {
     try {
@@ -665,13 +718,57 @@ export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gate
       return { jira: { configured: false, connected: false, reason: "Native Zendesk source only." }, zendesk: { configured: true, connected: false, reason: boundedString(error instanceof Error ? error.message : String(error), 512) } };
     }
   }
-  async searchTickets(request?: Partial<WorkItemSearchRequest & { query?: string; cursor?: string; limit?: number }>): Promise<WorkItemSearchPage> {
+  async searchTickets(request?: Partial<WorkItemSearchRequest & { query?: string; cursor?: string; limit?: number; exhaustive?: boolean }>): Promise<WorkItemSearchPage> {
     const source = request?.source ?? "zendesk";
     if (source !== "zendesk" && source !== "both") throw new Error("Native Zendesk source only searches Zendesk.");
     const cursor = typeof request?.cursor === "string" ? request.cursor : request?.cursors?.zendesk;
+    const limit = pageLimit(request?.limit);
+    let query = boundedString(request?.query, 300);
+    if (request?.assignedToMe === true) {
+      // Repeated assignee terms can broaden a Zendesk query instead of intersecting it.
+      if (/\bassignee\s*:/i.test(query)) throw new Error("Use assignedToMe without an assignee term in query.");
+      const identity = await this.getCurrentUser();
+      query = `assignee:${identity.id} ${query}`.trim();
+    }
+    if (isExportCursor(cursor) || request?.exhaustive === true) return this.#exportSearch(query, limit, cursor);
     const page = parseCursor(cursor);
-    const out = await this.#api().searchTickets(boundedString(request?.query, 300), page, pageLimit(request?.limit));
-    return { items: out.results.map(ticket => normalizeSummary(this.ctx.props.subdomain, ticket)), cursors: out.next_page ? { zendesk: String(page + 1) } : {}, hasMore: { zendesk: Boolean(out.next_page) } };
+    if (page * limit > SEARCH_CEILING) throw new Error("Zendesk search is limited to 1,000 results. Narrow the query by date or other filters, or retry with exhaustive.");
+    const out = await this.#api().searchTickets(query, page, limit);
+    const atCeiling = (page + 1) * limit > SEARCH_CEILING;
+    const hasMore = Boolean(out.next_page) && !atCeiling;
+    const truncated = atCeiling && (out.count === undefined ? Boolean(out.next_page) : out.count > page * limit);
+    return {
+      items: out.results.map(ticket => normalizeSummary(this.ctx.props.subdomain, ticket)),
+      cursors: hasMore ? { zendesk: String(page + 1) } : {},
+      hasMore: { zendesk: hasMore },
+      truncated: { zendesk: truncated },
+      completeness: { zendesk: !hasMore && !truncated },
+    };
+  }
+  /**
+   * Pages the Export Search Results endpoint, which has no 1,000-result ceiling. The path is chosen once per
+   * pagination run and never mixed with offset paging: the two endpoints order results differently, so switching
+   * mid-run would drop and duplicate tickets.
+   */
+  async #exportSearch(query: string, limit: number, cursor: string | undefined): Promise<WorkItemSearchPage> {
+    if (cursor != null && cursor !== "" && !isExportCursor(cursor)) {
+      throw new Error("Restart the Zendesk search to page beyond the 1,000-result ceiling; offset and export cursors cannot be mixed.");
+    }
+    const fingerprint = await exportFingerprint(this.ctx.props.subdomain, query, limit);
+    const after = isExportCursor(cursor) ? parseExportCursor(cursor, fingerprint) : undefined;
+    const out = await this.#api().searchTicketsExport(query, limit, after);
+    if (!Array.isArray(out.results) || typeof out.meta?.has_more !== "boolean") throw new Error("Zendesk returned a malformed export search page.");
+    const next = out.meta.after_cursor;
+    // Reporting completeness here would silently drop every remaining ticket, so fail the page instead.
+    const hasMore = out.meta.has_more;
+    if (hasMore && (typeof next !== "string" || !next || next.length > EXPORT_CURSOR_MAX - 22 || next === after)) throw new Error("Zendesk export search is missing its next cursor or returned an invalid continuation.");
+    return {
+      items: out.results.map(ticket => normalizeSummary(this.ctx.props.subdomain, ticket)),
+      cursors: hasMore ? { zendesk: mintExportCursor(fingerprint, next!) } : {},
+      hasMore: { zendesk: hasMore },
+      truncated: { zendesk: false },
+      completeness: { zendesk: !hasMore },
+    };
   }
   async readTicket(ticketId: string): Promise<WorkItemRead> {
     const id = normalizeTicketId(ticketId);
@@ -713,13 +810,11 @@ export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gate
   async alarm(): Promise<void> { cleanupExpiredUploads(this.ctx.storage.kv); }
   async directComment(ticketId: string, input: WorkItemCommentInput): Promise<WorkItemDetail> {
     const action = await this.#commentAction(ticketId, input);
-    await this.#applyComment({ ...action, id: 0, status: "applying" });
-    return (await this.readTicket(action.ticketId)).detail;
+    return this.#applyComment({ ...action, id: 0, status: "applying" });
   }
   async directUpdateFields(ticketId: string, patch: WorkItemFieldPatch): Promise<WorkItemDetail> {
     const action = await this.#fieldAction(ticketId, patch);
-    await this.#applyFields({ ...action, id: 0, status: "applying" });
-    return (await this.readTicket(action.ticketId)).detail;
+    return this.#applyFields({ ...action, id: 0, status: "applying" });
   }
   async queueComment(queue: RpcStub<ApprovalQueue>, ticketId: string, input: WorkItemCommentInput): Promise<ZendeskQueuedAction<WorkItemDetail>> {
     const action = await this.#commentAction(ticketId, input);
@@ -734,9 +829,15 @@ export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gate
   #nextActionId(): number { const id = this.ctx.storage.kv.get<number>("nextActionId") ?? 1; this.ctx.storage.kv.put("nextActionId", id + 1); return id; }
   #pendingActionsFor(ticketId: string): StoredAction[] { return [...this.ctx.storage.kv.list<StoredAction>({ prefix: "action:" })].map(([, value]) => value).filter(action => action.status === "pending" && action.ticketId === ticketId).toSorted((a, b) => a.id - b.id); }
   #claimAction(id: number): StoredAction | null {
+    if (!Number.isInteger(id) || id <= 0) throw new Error("Invalid Zendesk action id.");
+    const result = this.ctx.storage.kv.get<ZendeskActionResult>(resultKey(id));
+    // Consult results too: older versions deleted the action when recording failure.
+    if (result?.status === "failed") throw new Error(`${result.message} Read the ticket and verify the outcome before submitting a new action.`);
+    if (result?.status === "rejected") throw new Error("Zendesk action was rejected. Submit a new action if the change is still intended.");
     const action = this.ctx.storage.kv.get<StoredAction>(actionKey(id));
-    if (!action || action.status === "applied") return null;
-    if (action.status === "applying" && Date.now() - (action.claimedAt ?? 0) < APPLYING_TIMEOUT_MS) return null;
+    if (action?.status === "applied" || result?.status === "ready") return null;
+    if (!action) throw new Error("Zendesk action is unavailable. Verify the ticket before submitting a new action.");
+    if (action.status === "applying" || action.status === "failed") throw new Error("Zendesk action is in progress or its outcome is ambiguous. Read the ticket and its history before submitting a new action; do not blindly repeat the write.");
     const claimed = { ...action, status: "applying" as const, claimedAt: Date.now() };
     this.ctx.storage.kv.put(actionKey(id), claimed);
     return claimed;
@@ -756,6 +857,7 @@ export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gate
   }
   async #commentAction(ticketId: string, input: WorkItemCommentInput): Promise<PendingAction & { kind: "comment" }> {
     const id = normalizeTicketId(ticketId);
+    if (typeof input.body !== "string" || input.body.length > BODY_MAX) throw new Error("Zendesk comment body must be at most 12,000 characters.");
     const body = boundedBody(input.body);
     if (!body) throw new Error("Comment body is required.");
     const ticket = await this.#api().showTicket(id);
@@ -772,20 +874,21 @@ export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gate
   }
   async #applyComment(action: StoredAction & { kind: "comment" }): Promise<WorkItemDetail> {
     validateUploadTokens(this.ctx.storage.kv, action.ticketId, action.uploadTokens);
-    await this.#api().updateTicket(action.ticketId, { comment: { body: action.body, public: action.public, uploads: action.uploadTokens } }, { updateStamp: action.updateStamp });
+    const { ticket } = await this.#api().updateTicket(action.ticketId, { comment: { body: action.body, public: action.public, uploads: action.uploadTokens } }, { updateStamp: action.updateStamp });
     for (const token of action.uploadTokens) this.ctx.storage.kv.delete(uploadKey(token));
-    return (await this.readTicket(action.ticketId)).detail;
+    return { item: normalizeSummary(this.ctx.props.subdomain, ticket) };
   }
   async #applyFields(action: StoredAction & { kind: "fields" }): Promise<WorkItemDetail> {
-    await this.#api().updateTicket(action.ticketId, zendeskPatch(action.fields), { updateStamp: action.updateStamp });
-    return (await this.readTicket(action.ticketId)).detail;
+    const { ticket } = await this.#api().updateTicket(action.ticketId, zendeskPatch(action.fields), { updateStamp: action.updateStamp });
+    return { item: normalizeSummary(this.ctx.props.subdomain, ticket) };
   }
 }
 
 class ZendeskAccountSessionImpl extends RpcTarget implements ZendeskAccountSession {
   constructor(private readonly gatekeeper: ZendeskGatekeeper, private readonly queue: RpcStub<ApprovalQueue>) { super(); }
   [Symbol.dispose](): void { this.queue[Symbol.dispose](); }
-  async searchTickets(request?: WorkItemSearchRequest): Promise<WorkItemSearchPage> { const result = await this.gatekeeper.searchTickets(request); await this.queue.authorizeObservation(privateObservation("Search Zendesk tickets", "Searched tickets in the connected Zendesk subdomain.")); return result; }
+  async getCurrentUser(): Promise<ZendeskCurrentUser> { const result = await this.gatekeeper.getCurrentUser(); await this.queue.authorizeObservation(privateObservation("Read current Zendesk user", "Read the signed-in Zendesk user's identity.")); return result; }
+  async searchTickets(request?: ZendeskTicketSearchRequest): Promise<WorkItemSearchPage> { const result = await this.gatekeeper.searchTickets(request); await this.queue.authorizeObservation(privateObservation("Search Zendesk tickets", "Searched tickets in the connected Zendesk subdomain.")); return result; }
   async readTicket(ticketId: string): Promise<WorkItemRead> { const result = await this.gatekeeper.readTicket(ticketId); await this.queue.authorizeObservation(privateObservation("Read Zendesk ticket", `Read Zendesk ticket ${normalizeTicketId(ticketId)}.`)); return result; }
   async ticket(ticketId: string): Promise<ZendeskTicketSession> { return new RpcStub(new ZendeskTicketSessionImpl(this.gatekeeper, normalizeTicketId(ticketId), this.queue.dup())) as unknown as ZendeskTicketSession; }
   async getActionResult(actionId: number): Promise<ZendeskCodingSessionToolResult> {
@@ -794,6 +897,7 @@ class ZendeskAccountSessionImpl extends RpcTarget implements ZendeskAccountSessi
   getCodingSessionActionResult(actionId: number): Promise<ZendeskCodingSessionToolResult> { return this.getActionResult(actionId); }
   async listTools(): Promise<ZendeskCodingSessionToolInfo[]> { return codingTools(); }
   async callTool(name: string, args: Record<string, unknown> = {}): Promise<ZendeskCodingSessionToolResult> {
+    if (name === "zendesk_get_current_user") return toolOk(await this.getCurrentUser());
     if (name === "zendesk_search_tickets") return toolOk(await this.searchTickets(toolSearchRequest(args)));
     if (name === "zendesk_read_ticket") return toolOk(await this.readTicket(normalizeTicketId(args.id ?? args.ticketId)));
     if (name === "zendesk_add_comment") return toolPending(await this.gatekeeper.queueComment(this.queue, normalizeTicketId(args.id ?? args.ticketId), toolCommentInput(args)), "Zendesk comment is awaiting Workshop approval.");
@@ -825,13 +929,13 @@ function normalizeUploadInput(input: WorkItemAttachmentUploadInput): { name: str
 }
 
 function validateUploadTokens(kv: DurableObjectStorage["kv"], ticketId: string, tokens: string[]): string[] {
-  const normalized = tokens.slice(0, MAX_UPLOAD_TOKENS).map(token => boundedString(token, 1600)).filter(Boolean);
-  for (const token of normalized) {
+  if (tokens.length > MAX_UPLOAD_TOKENS || tokens.some(token => typeof token !== "string" || !token || token.length > 1600)) throw new Error("Zendesk attachment tokens exceed the supported limits.");
+  for (const token of tokens) {
     const upload = kv.get<StoredUpload>(uploadKey(token));
     if (upload && Date.now() >= upload.expiresAtMs) kv.delete(uploadKey(token));
     if (!upload || upload.ticketId !== ticketId || upload.consumed || Date.now() >= upload.expiresAtMs) throw new Error("Zendesk upload token is invalid, expired, consumed, or belongs to another ticket.");
   }
-  return normalized;
+  return tokens;
 }
 
 function cleanupExpiredUploads(kv: DurableObjectStorage["kv"]): void {
@@ -848,11 +952,29 @@ function normalizeAttachments(comments: ZendeskComment[]): WorkItemAttachment[] 
 function normalizeSummary(subdomain: string, ticket: ZendeskTicket, users = new Map<number, ZendeskApiUser>()): WorkItemSummary { return { source: "zendesk", id: String(ticket.id), key: `ZD-${ticket.id}`, url: ticketUrl(subdomain, ticket.id), title: boundedString(ticket.subject ?? ticket.raw_subject, 300, `Zendesk ticket ${ticket.id}`), status: boundedString(ticket.status, 80) || undefined, type: boundedString(ticket.type, 80) || undefined, priority: boundedString(ticket.priority, 80) || undefined, assignee: displayUser(ticket.assignee_id, users), requester: displayUser(ticket.requester_id, users), updatedAt: ticket.updated_at ?? undefined, description: { body: String(ticket.description ?? "").slice(0, DESCRIPTION_MAX), format: "text", providerFormat: "zendesk-text", truncated: (ticket.description?.length ?? 0) > DESCRIPTION_MAX }, fields: normalizeTicketFields(ticket) }; }
 function displayUser(id: number | null | undefined, users: Map<number, ZendeskApiUser>): string | undefined { if (!id) return undefined; const user = users.get(id); return boundedString(user?.name ?? user?.email ?? id, 160); }
 function normalizeTicketFields(ticket: ZendeskTicket): Record<string, string | number | boolean | null> { const out: Record<string, string | number | boolean | null> = {}; for (const field of ticket.custom_fields ?? ticket.fields ?? []) if (field.value === null || ["string", "number", "boolean"].includes(typeof field.value)) out[`custom_${field.id}`] = field.value as string | number | boolean | null; return out; }
-function normalizeComments(comments: ZendeskComment[], users: Map<number, ZendeskApiUser>): WorkItemComment[] { return comments.map(comment => ({ id: String(comment.id), author: displayUser(comment.author_id, users), body: boundedBody(comment.plain_body ?? comment.body), format: "text", providerFormat: "zendesk-text", public: comment.public !== false, createdAt: comment.created_at ?? undefined })); }
-function normalizeActivity(audits: ZendeskAudit[], users: Map<number, ZendeskApiUser>): WorkItemRead["activity"] { return audits.slice(0, 50).map(audit => ({ id: String(audit.id), type: "audit", author: displayUser(audit.author_id, users), createdAt: audit.created_at ?? undefined, summary: boundedString((audit.events ?? []).map(event => event.type === "Change" ? `${event.field_name ?? "field"} changed` : event.type ?? "event").join(", "), 300, "Ticket audit") })); }
+function normalizeComments(comments: ZendeskComment[], users: Map<number, ZendeskApiUser>): WorkItemComment[] {
+  return comments.map(comment => {
+    const body = String(comment.plain_body ?? comment.body ?? "").replaceAll(String.fromCharCode(0), "").trim();
+    return { id: String(comment.id), author: displayUser(comment.author_id, users), body: body.slice(0, BODY_MAX), format: "text", providerFormat: "zendesk-text", public: comment.public !== false, createdAt: comment.created_at ?? undefined, truncated: body.length > BODY_MAX };
+  });
+}
+function normalizeActivity(audits: ZendeskAudit[], users: Map<number, ZendeskApiUser>): WorkItemRead["activity"] { return audits.map(audit => ({ id: String(audit.id), type: "audit", author: displayUser(audit.author_id, users), createdAt: audit.created_at ?? undefined, summary: boundedString((audit.events ?? []).map(event => event.type === "Change" ? `${event.field_name ?? "field"} changed` : event.type ?? "event").join(", "), 300, "Ticket audit") })); }
 function overlayFields(item: WorkItemSummary, fields: Record<string, string | number | boolean | null | string[]>): WorkItemSummary { return { ...item, status: typeof fields.status === "string" ? fields.status : item.status, priority: typeof fields.priority === "string" ? fields.priority : item.priority, type: typeof fields.type === "string" ? fields.type : item.type, fields: { ...item.fields, ...Object.fromEntries(Object.entries(fields).filter(([key, value]) => key.startsWith("custom_") && (value === null || ["string", "number", "boolean"].includes(typeof value)))) as Record<string, string | number | boolean | null> } }; }
 export function zendeskPatch(fields: Record<string, string | number | boolean | null | string[]>): Record<string, unknown> { const ticket: Record<string, unknown> = {}; const customFields: Array<{ id: number; value: unknown }> = []; for (const [key, value] of Object.entries(fields)) { if (["status", "priority", "type", "assignee_id", "group_id", "tags"].includes(key)) ticket[key] = value; else if (/^custom_\d+$/.test(key)) customFields.push({ id: Number(key.slice(7)), value }); else throw new Error(`Unsupported Zendesk field: ${key}`); } if (customFields.length > 0) ticket.custom_fields = customFields; return ticket; }
-function normalizeFieldPatch(patch: WorkItemFieldPatch): Record<string, string | number | boolean | null | string[]> { const out: Record<string, string | number | boolean | null | string[]> = {}; for (const [key, value] of Object.entries(patch.fields ?? {}).slice(0, 10)) { const name = boundedString(key, 80); if (typeof value === "string") out[name] = value.slice(0, FIELD_MAX); else if (typeof value === "number" || typeof value === "boolean" || value === null) out[name] = value; else if (Array.isArray(value)) out[name] = value.slice(0, 50).map(v => boundedString(v, 120)); } zendeskPatch(out); if (Object.keys(out).length === 0) throw new Error("At least one supported Zendesk field is required."); return out; }
-function toolSearchRequest(args: Record<string, unknown>): WorkItemSearchRequest { return { source: "zendesk", query: boundedString(args.query, 300), limit: pageLimit(args.limit), cursors: { zendesk: args.cursor == null ? undefined : boundedString(args.cursor, 16) } }; }
-function toolCommentInput(args: Record<string, unknown>): WorkItemCommentInput { return { body: boundedBody(args.body), visibility: args.visibility === "public" ? "public" : "internal", attachmentTokens: Array.isArray(args.attachmentTokens) ? args.attachmentTokens.map(String) : undefined }; }
+function normalizeFieldPatch(patch: WorkItemFieldPatch): Record<string, string | number | boolean | null | string[]> {
+  const entries = Object.entries(patch.fields ?? {});
+  if (entries.length === 0 || entries.length > 10) throw new Error("Zendesk field updates require 1 to 10 supported fields.");
+  for (const [key, value] of entries) {
+    const valid = value === null || typeof value === "boolean" ||
+      (typeof value === "number" && Number.isFinite(value)) ||
+      (typeof value === "string" && value.length <= FIELD_MAX) ||
+      (Array.isArray(value) && value.length <= 50 && value.every(v => typeof v === "string" && v.length <= 120));
+    if (key.length > 80 || !valid) throw new Error("Zendesk field update exceeds the supported value limits.");
+  }
+  const fields = Object.fromEntries(entries);
+  zendeskPatch(fields);
+  return fields;
+}
+function toolSearchRequest(args: Record<string, unknown>): WorkItemSearchRequest & { exhaustive?: boolean } { return { source: "zendesk", query: boundedString(args.query, 300), assignedToMe: args.assignedToMe === true, limit: pageLimit(args.limit), exhaustive: args.exhaustive === true, cursors: { zendesk: args.cursor == null ? undefined : boundedString(args.cursor, EXPORT_CURSOR_MAX) } }; }
+function toolCommentInput(args: Record<string, unknown>): WorkItemCommentInput { return { body: typeof args.body === "string" ? args.body : "", visibility: args.visibility === "public" ? "public" : "internal", attachmentTokens: Array.isArray(args.attachmentTokens) ? args.attachmentTokens.map(String) : undefined }; }
 function toolFieldPatch(args: Record<string, unknown>): WorkItemFieldPatch { const fields = typeof args.fields === "object" && args.fields !== null ? args.fields as Record<string, string | number | boolean | null | string[]> : {}; return { fields }; }

@@ -3,6 +3,8 @@
  *
  * Jira Cloud organizes work into sites, projects, and issues. The gatekeeper exposes the same
  * capability boundaries: a whole {@link JiraSite}, one {@link JiraProject}, or one {@link JiraIssue}.
+ * A connection uses exactly one Jira site, chosen when it was authorized; searches never reach
+ * another site even when the same Atlassian account can access one. Reconnect to change sites.
  * Issue descriptions and comments use plain Markdown-like text strings. Jira stores them as
  * Atlassian Document Format; this gatekeeper preserves paragraph text and line breaks and treats
  * richer Jira formatting as best-effort plain text.
@@ -10,13 +12,18 @@
 
 /** Access to a whole Jira Cloud site. Prefer project or issue grants when possible. */
 export interface JiraSite {
+  /** Returns the connected Jira user. Use accountId for assignment; email may be hidden. */
+  getCurrentUser(): Promise<JiraUser>;
   /** Returns basic site metadata, including the Atlassian cloud ID. */
   getMetadata(): Promise<JiraSiteMetadata>;
   /** Lists projects visible to the connected account. */
   listProjects(options?: JiraPageOptions): Promise<Cursor<JiraProjectSummary>>;
   /** Opens a project by key, numeric ID, or Jira project URL. */
   getProject(projectKeyOrIdOrUrl: string): Promise<JiraProject>;
-  /** Searches issues with a JQL expression. Keep JQL scoped when a narrower grant would suffice. */
+  /** Searches issues with JQL, e.g. `assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC`.
+   * currentUser() is the connected user: do not ask for their email. Keep JQL scoped when possible.
+   * Recent writes may take time to appear in search; use getIssue() to read a known issue directly.
+   */
   searchIssues(options: JiraIssueSearchOptions): Promise<Cursor<JiraIssueSummary>>;
   /** Opens an issue by key, numeric ID, or Jira issue URL. */
   getIssue(issueKeyOrIdOrUrl: string): Promise<JiraIssue>;
@@ -28,6 +35,8 @@ export interface JiraSite {
 
 /** Access to one Jira project and the issues it contains. */
 export interface JiraProject {
+  /** Returns the connected Jira user. Use accountId for assignment; email may be hidden. */
+  getCurrentUser(): Promise<JiraUser>;
   /** Returns project metadata. */
   getMetadata(): Promise<JiraProjectMetadata>;
   /** Searches issues in this project using bounded structural filters; raw JQL is rejected. */
@@ -44,7 +53,11 @@ export interface JiraProject {
   findUsers(query: string): Promise<JiraUser[]>;
 }
 
-/** Access to one Jira issue and its comments, attachments, and workflow transitions. */
+/** Access to one Jira issue and its comments, attachments, and workflow transitions.
+ * A session returned by createIssue() may still be awaiting creation. Its operations then throw a
+ * pending-creation error promptly. Retry the same session after creation completes, not createIssue().
+ * Rejected or failed creation is terminal for that session.
+ */
 export interface JiraIssue {
   /** Returns full issue details, including Markdown description. */
   getDetails(): Promise<JiraIssueDetails>;
@@ -66,7 +79,8 @@ export interface JiraIssue {
   uploadAttachment(options: JiraUploadAttachmentOptions): Promise<JiraAttachment>;
 }
 
-/** A pagination cursor. Call `next()` until it returns `null`, then dispose the cursor. */
+/** A pagination cursor. Await each `next()` before the next call. Empty batches may precede more
+ * results; continue until `null`, then dispose the cursor. */
 export interface Cursor<T> { next(): Promise<T[] | null>; }
 
 /** Generic paging options. */
@@ -78,6 +92,8 @@ export type JiraIssueSearchOptions = JiraPageOptions & {
   jql?: string;
   /** Plain text to match against issue text using Jira's `text ~` JQL operator. */
   text?: string;
+  /** Match issues assigned to the connected user without an email lookup. Works within project grants too. Cannot be combined with jql. */
+  assignedToMe?: boolean;
 };
 
 /** Metadata for a Jira Cloud site. */

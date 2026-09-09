@@ -28,6 +28,10 @@ interface ConnectConnectorModalProps {
   credentialsValid?: boolean
   disconnecting?: boolean
   onDisconnect?: () => void
+  // Reauthorize without disconnecting; callers opt in vendors that need healthy-account migration.
+  onReconnect?: () => void
+  // True while the reconnect flow is opening (disables the other manage actions).
+  reconnecting?: boolean
   grantedResourceUrlPatterns?: string[]
   // Manage mode: invoked to expand the grant to include the given resource `urlPattern`s.
   onEnsureResources?: (resourceUrlPatterns: string[]) => void
@@ -50,6 +54,8 @@ export default function ConnectConnectorModal({
   credentialsValid = true,
   disconnecting = false,
   onDisconnect,
+  onReconnect,
+  reconnecting = false,
   grantedResourceUrlPatterns,
   onEnsureResources,
   ensuringResourceUrlPatterns = [],
@@ -165,6 +171,8 @@ export default function ConnectConnectorModal({
           ? accountDescription?.uniqueName
             ? `${accountDisplayName} / ${accountDescription.uniqueName}`
             : accountDisplayName
+          : onReconnect
+          ? 'Credentials expired; reconnect to restore access'
           : 'Credentials expired; reconnect from the Gatekeepers page'}
       </span>
     </div>
@@ -176,7 +184,7 @@ export default function ConnectConnectorModal({
     )
   )
 
-  const busy = connecting || disconnecting
+  const busy = connecting || disconnecting || reconnecting
 
   // Resource icon helper shared by every resource row.
   function resourceIcon(resource?: SupportedResource) {
@@ -337,7 +345,7 @@ export default function ConnectConnectorModal({
           )}
         </div>
 
-        <div className="shrink-0 flex items-center justify-between gap-3 border-t border-kumo-line bg-kumo-base px-5 py-3">
+        <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line bg-kumo-base px-5 py-3">
           {isManage && confirmingDisconnect ? (
             <p className="m-0 min-w-0 flex-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-default">
               Disconnect {vendorDescription.displayName}? Gadgets using this will lose access.
@@ -353,7 +361,7 @@ export default function ConnectConnectorModal({
           ) : (
             <span aria-hidden />
           )}
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             {isManage ? (
               <>
                 {confirmingDisconnect ? (
@@ -394,15 +402,24 @@ export default function ConnectConnectorModal({
                   <>
                     <Dialog.Close
                       render={(props) => (
-                        <WorkshopButton {...props} className="!h-9">
+                        <WorkshopButton {...props} disabled={busy} className="!h-9">
                           Close
                         </WorkshopButton>
                       )}
                     />
+                    {onReconnect && (
+                      <WorkshopButton
+                        onClick={onReconnect}
+                        disabled={busy || ensuringBusy}
+                        className="!h-9"
+                      >
+                        {reconnecting ? 'Opening...' : 'Reconnect'}
+                      </WorkshopButton>
+                    )}
                     <WorkshopButton
                       tone="danger"
                       onClick={handleDisconnect}
-                      disabled={disconnecting}
+                      disabled={busy || ensuringBusy}
                       className="!h-9"
                     >
                       Disconnect

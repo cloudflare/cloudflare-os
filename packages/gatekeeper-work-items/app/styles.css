@@ -104,6 +104,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .source-badge.jira { background: #2554d9; }
 .source-badge.zendesk { background: #0f5132; }
 .load-more { padding: 10px; text-align: center; }
+.search-completeness { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; padding: 8px 10px; font-size: 12px; color: var(--text-color-kumo-subtle); border-top: 1px solid var(--color-kumo-line); }
+.search-completeness[data-complete="false"] { color: var(--text-color-kumo-default); }
 .empty-state { display: grid; place-items: center; align-content: center; gap: 10px; min-height: 220px; color: var(--text-color-kumo-subtle); text-align: center; padding: 20px; }
 .kanban-board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(260px, 320px); gap: 12px; overflow: auto; padding: 12px; min-height: 0; flex: 1; }
 .kanban-column { display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--color-kumo-line); border-radius: 12px; background: var(--color-kumo-elevated); }

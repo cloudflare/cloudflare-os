@@ -19,6 +19,8 @@ class AppIframe extends RpcTarget implements GatekeeperAppThemeReceiver {
 }
 
 interface HostCapability extends HostCompositionApi {
+  openWorkItemsConnectors(): Promise<void>;
+  retryWorkItemsProviders(): Promise<void>;
   readonly ui: RpcStub<WorkItemsShellRuntimeApi>;
   subscribeTheme(receiver: GatekeeperAppThemeReceiver): Promise<GatekeeperAppTheme>;
   getRouteState(): Promise<string>;
@@ -57,6 +59,8 @@ async function main() {
               initialRouteState,
               setRouteState: (value) => { void host.setRouteState(value).catch(() => {}); },
               codingSessionAvailable,
+              openConnectors: () => host.openWorkItemsConnectors(),
+              retryProviders: () => host.retryWorkItemsProviders(),
               requestCodingSession: (target, title) => {
                 void host.requestCodingSession(target.source, target.id, target.key, target.url, title).catch(() => {});
               },

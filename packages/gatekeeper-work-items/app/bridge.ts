@@ -9,6 +9,8 @@ export type WorkItemsRouteStateHost = {
   setRouteState?: (value: string) => void;
   codingSessionAvailable?: boolean;
   requestCodingSession?: (target: WorkItemProviderRef, title: string) => void;
+  openConnectors?: () => Promise<void>;
+  retryProviders?: () => Promise<void>;
 };
 
 export const WorkItemsApiProvider = WorkItemsApiContext.Provider;

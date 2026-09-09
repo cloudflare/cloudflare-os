@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { UserAccount } from "../src/jira";
 
+const SITES = [{ id: "site", name: "Site", url: "https://example.atlassian.net", scopes: ["read:jira-work"] }];
+
 describe("Jira OAuth refresh rotation", () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -11,7 +13,7 @@ describe("Jira OAuth refresh rotation", () => {
         await new Promise<void>(resolve => { release = resolve; });
         return json({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 3600, scope: "read:jira-work" });
       }
-      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json([]);
+      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json(SITES);
       if (url === "https://api.atlassian.com/me") return json({ account_id: "acct" });
       throw new Error(`unexpected URL ${url}`);
     });
@@ -34,7 +36,7 @@ describe("Jira OAuth refresh rotation", () => {
   it("repairs legacy Workshop access-token expiry once on the first successful refresh", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (url === "https://auth.atlassian.com/oauth/token") return json({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 3600, scope: "read:jira-work" });
-      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json([]);
+      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json(SITES);
       if (url === "https://api.atlassian.com/me") return json({ account_id: "acct" });
       throw new Error(`unexpected URL ${url}`);
     }));
@@ -51,7 +53,7 @@ describe("Jira OAuth refresh rotation", () => {
   it("schedules proactive refresh alarms when a grant is accepted", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (url === "https://auth.atlassian.com/oauth/token") return json({ access_token: "access", refresh_token: "refresh", expires_in: 3600, scope: "read:jira-work" });
-      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json([]);
+      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json(SITES);
       if (url === "https://api.atlassian.com/me") return json({ account_id: "acct" });
       throw new Error(`unexpected URL ${url}`);
     }));
@@ -74,7 +76,7 @@ describe("Jira OAuth refresh rotation", () => {
     ];
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (url === "https://auth.atlassian.com/oauth/token") return tokenResponses.shift()?.() ?? json({ error: "unexpected" }, 500);
-      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json([]);
+      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json(SITES);
       if (url === "https://api.atlassian.com/me") return json({ account_id: "acct" });
       throw new Error(`unexpected URL ${url}`);
     }));
@@ -123,7 +125,7 @@ describe("Jira OAuth refresh rotation", () => {
   it("does not send access-token expiry to Workshop for refreshable grants", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (url === "https://auth.atlassian.com/oauth/token") return json({ access_token: "access", refresh_token: "refresh", expires_in: 3600, scope: "read:jira-work" });
-      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json([]);
+      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json(SITES);
       if (url === "https://api.atlassian.com/me") return json({ account_id: "acct" });
       throw new Error(`unexpected URL ${url}`);
     }));
@@ -140,7 +142,7 @@ describe("Jira OAuth refresh rotation", () => {
   it("rolls back a new grant when the initial Workshop completion callback fails", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (url === "https://auth.atlassian.com/oauth/token") return json({ access_token: "access", refresh_token: "refresh", expires_in: 3600, scope: "read:jira-work" });
-      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json([]);
+      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json(SITES);
       if (url === "https://api.atlassian.com/me") return json({ account_id: "acct" });
       throw new Error(`unexpected URL ${url}`);
     }));
@@ -161,7 +163,7 @@ describe("Jira OAuth refresh rotation", () => {
   it("does send expiry for non-refreshable grants", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (url === "https://auth.atlassian.com/oauth/token") return json({ access_token: "access", expires_in: 3600, scope: "read:jira-work" });
-      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json([]);
+      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json(SITES);
       if (url === "https://api.atlassian.com/me") return json({ account_id: "acct" });
       throw new Error(`unexpected URL ${url}`);
     }));
@@ -208,7 +210,7 @@ describe("Jira OAuth refresh rotation", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (url === "https://auth.atlassian.com/oauth/token" && refreshFails) return json({ error: "invalid_grant", error_description: "Unknown or invalid refresh token." }, 403);
       if (url === "https://auth.atlassian.com/oauth/token") return json({ access_token: "new-access", refresh_token: "new-refresh", expires_in: 3600, scope: "read:jira-work" });
-      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json([]);
+      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json(SITES);
       if (url === "https://api.atlassian.com/me") return json({ account_id: "acct" });
       throw new Error(`unexpected URL ${url}`);
     }));
@@ -238,7 +240,7 @@ describe("Jira OAuth refresh rotation", () => {
   it("retries a failed legacy credentialsRestored notification without marking it delivered", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (url === "https://auth.atlassian.com/oauth/token") return json({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 3600, scope: "read:jira-work" });
-      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json([]);
+      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json(SITES);
       if (url === "https://api.atlassian.com/me") return json({ account_id: "acct" });
       throw new Error(`unexpected URL ${url}`);
     }));
@@ -285,6 +287,53 @@ describe("Jira OAuth refresh rotation", () => {
     expect(callback.credentialsExpired).toHaveBeenCalledTimes(2);
     expect(kv.get("credentialsExpiredNotified")).toBe(0);
     expect(kv.has("credentialsExpiredPending")).toBe(false);
+  });
+
+  it("rejects a held refresh after revoke without returning or persisting the fresh token", async () => {
+    let release!: () => void;
+    const fetchMock = vi.fn(async () => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return json({ access_token: "fresh-access", refresh_token: "fresh-refresh", expires_in: 3600 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { account, kv, callback } = makeAccount();
+    kv.set("grant", { accessToken: "old-access", refreshToken: "old-refresh", expiresAt: Date.now() - 1 });
+    const pending = account.getAccessToken();
+    await account.revoke();
+    release();
+    await expect(pending).rejects.toThrow(/revoked/);
+    await expect(account.getAccessToken()).rejects.toThrow(/No Jira credentials/);
+    expect(kv.size).toBe(0);
+    expect(callback.credentialsRestored).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["revoke", "replace"] as const)("rechecks credentials after a paused restoration notification: %s", async change => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({ access_token: "fresh-access", refresh_token: "fresh-refresh", expires_in: 3600 })));
+    const { account, kv, callback } = makeAccount();
+    kv.set("grant", { accessToken: "old-access", refreshToken: "old-refresh", expiresAt: Date.now() - 1 });
+    let release!: () => void;
+    const paused = new Promise<void>(resolve => {
+      callback.credentialsRestored.mockImplementationOnce(() => new Promise<void>(done => {
+        release = done;
+        resolve();
+      }));
+    });
+    const pending = account.getAccessToken();
+    await paused;
+    expect(kv.get("grant")).toMatchObject({ accessToken: "fresh-access" });
+    if (change === "revoke") await account.revoke();
+    else kv.set("grant", { accessToken: "replacement-access", refreshToken: "replacement-refresh", expiresAt: Date.now() + 3600_000 });
+    release();
+    if (change === "revoke") {
+      await expect(pending).rejects.toThrow(/revoked/);
+      await expect(account.getAccessToken()).rejects.toThrow(/No Jira credentials/);
+      expect(kv.size).toBe(0);
+    } else {
+      await expect(pending).resolves.toBe("replacement-access");
+      expect(kv.get("grant")).toMatchObject({ accessToken: "replacement-access", refreshToken: "replacement-refresh" });
+    }
+    expect(callback.credentialsRestored).toHaveBeenCalledTimes(1);
   });
 
   it("does not let stale in-flight refresh success overwrite a newer reconnect grant", async () => {
@@ -336,7 +385,7 @@ describe("Jira OAuth refresh rotation", () => {
     ];
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (url === "https://auth.atlassian.com/oauth/token") return tokenResponses.shift()?.() ?? json({ error: "unexpected" }, 500);
-      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json([]);
+      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json(SITES);
       if (url === "https://api.atlassian.com/me") return json({ account_id: "acct" });
       throw new Error(`unexpected URL ${url}`);
     }));
@@ -370,7 +419,7 @@ describe("Jira OAuth refresh rotation", () => {
     ];
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (url === "https://auth.atlassian.com/oauth/token") return tokenResponses.shift()?.() ?? json({ error: "unexpected" }, 500);
-      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json([]);
+      if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json(SITES);
       if (url === "https://api.atlassian.com/me") return json({ account_id: "acct" });
       throw new Error(`unexpected URL ${url}`);
     }));

@@ -1,0 +1,8 @@
+/** Readiness marker only. This session cannot search, read, or mutate work items.
+ * Use separately authorized Jira or Zendesk bindings for provider operations.
+ * The Work Items management UI APIs are not callable on this session.
+ */
+export interface WorkItemsSession {
+  /** Confirms the shell is installed, not that any provider is connected. */
+  ping(): Promise<string>;
+}

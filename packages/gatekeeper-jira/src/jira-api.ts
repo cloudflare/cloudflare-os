@@ -178,18 +178,29 @@ export class JiraApi {
     if (query) params.set("query", query);
     return this.#request(`/project/search?${params}`);
   }
-  searchIssues(jql: string, startAt: number, maxResults: number): Promise<{ issues: RawIssue[]; total?: number; startAt?: number; maxResults?: number }> {
-    return this.#request("/search", { method: "POST", body: JSON.stringify({ jql, startAt, maxResults, fields: ["summary", "description", "project", "issuetype", "status", "priority", "assignee", "reporter", "labels", "components", "fixVersions", "duedate", "parent", "attachment", "created", "updated"] }) });
+  async searchIssues(jql: string, nextPageToken: string | undefined, maxResults: number): Promise<{ issues: RawIssue[]; nextPageToken?: string }> {
+    // Preserve the shipped empty/sort-only searches while satisfying enhanced search's bound requirement.
+    if (!jql.trim() || /^\s*ORDER\s+BY\b/i.test(jql)) jql = `created >= "1970-01-01" ${jql}`.trim();
+    const page = await this.#request<{ issues: RawIssue[]; isLast?: boolean; nextPageToken?: string | null }>("/search/jql", { method: "POST", body: JSON.stringify({ jql, nextPageToken, maxResults, fields: ["summary", "description", "project", "issuetype", "status", "priority", "assignee", "reporter", "labels", "components", "fixVersions", "duedate", "parent", "created", "updated"] }) });
+    if (!page || !Array.isArray(page.issues) || (page.nextPageToken != null && (typeof page.nextPageToken !== "string" || !page.nextPageToken)) || (page.isLast !== undefined && typeof page.isLast !== "boolean")) throw new JiraApiError(502, "Invalid Jira search page");
+    if (page.isLast === false && !page.nextPageToken) throw new JiraApiError(502, "Jira search omitted its continuation token");
+    const next = page.isLast === true ? undefined : page.nextPageToken ?? undefined;
+    if (next && next === nextPageToken) throw new JiraApiError(502, "Jira search repeated its continuation token");
+    return { issues: page.issues, nextPageToken: next };
   }
+  getCurrentUser(): Promise<RawUser> { return this.#request("/myself"); }
   getIssue(keyOrId: string): Promise<RawIssue> { return this.#request(`/issue/${enc(keyOrId)}?fields=*all`); }
-  createIssue(fields: Record<string, unknown>): Promise<RawIssue> { return this.#request("/issue", { method: "POST", body: JSON.stringify({ fields }) }); }
+  createIssue(fields: Record<string, unknown>): Promise<{ id: string; key: string }> { return this.#request("/issue", { method: "POST", body: JSON.stringify({ fields }) }); }
   updateIssue(keyOrId: string, fields: Record<string, unknown>): Promise<void> { return this.#request(`/issue/${enc(keyOrId)}`, { method: "PUT", body: JSON.stringify({ fields }) }); }
   transitions(keyOrId: string): Promise<{ transitions: RawTransition[] }> { return this.#request(`/issue/${enc(keyOrId)}/transitions`); }
   transition(keyOrId: string, body: Record<string, unknown>): Promise<void> { return this.#request(`/issue/${enc(keyOrId)}/transitions`, { method: "POST", body: JSON.stringify(body) }); }
   listComments(keyOrId: string, startAt: number, maxResults: number): Promise<{ comments: RawComment[]; total?: number }> { return this.#request(`/issue/${enc(keyOrId)}/comment?orderBy=created&startAt=${startAt}&maxResults=${maxResults}`); }
   addComment(keyOrId: string, body: AdfDoc): Promise<RawComment> { return this.#request(`/issue/${enc(keyOrId)}/comment`, { method: "POST", body: JSON.stringify({ body }) }); }
   assignableUsers(project: string | undefined, query: string): Promise<RawUser[]> { return this.#request(`/user/assignable/search?${project ? `project=${enc(project)}&` : ""}query=${enc(query)}&maxResults=50`); }
-  statuses(projectKeyOrId: string): Promise<RawStatus[]> { return this.#request(`/project/${enc(projectKeyOrId)}/statuses`); }
+  async statuses(projectKeyOrId: string): Promise<RawStatus[]> {
+    const types = await this.#request<{ id: string; name: string; statuses: RawStatus[] }[]>(`/project/${enc(projectKeyOrId)}/statuses`);
+    return [...new Map(types.flatMap(type => type.statuses).map(status => [status.id, status])).values()];
+  }
   issueTypes(projectKeyOrId: string): Promise<RawProject> { return this.getProject(projectKeyOrId); }
   async downloadAttachment(url: string, limit = MAX_ATTACHMENT_DOWNLOAD_BYTES): Promise<ArrayBuffer> {
     const parsed = new URL(url);

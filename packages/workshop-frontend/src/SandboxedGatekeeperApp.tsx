@@ -45,6 +45,7 @@ type RouteStateSetter = (value: string) => void
 export type GatekeeperAppDependency = {
   app: GatekeeperAppInfo
   capability: any
+  error?: string
 }
 
 const EMPTY_DEPENDENCIES: GatekeeperAppDependency[] = []
@@ -62,6 +63,7 @@ export const MAX_GATEKEEPER_APP_ROUTE_STATE_LENGTH = 2048
 type GatekeeperAppDependencyIdentity = {
   id: string
   capability: any
+  error?: string
 }
 
 export function normalizeGatekeeperAppRouteState(value: unknown): string | undefined {
@@ -82,7 +84,7 @@ function requireGatekeeperAppRouteState(value: string): string {
 
 function dependencyIdentities(dependencies: GatekeeperAppDependency[]): GatekeeperAppDependencyIdentity[] {
   return dependencies
-    .map((dependency) => ({ id: dependency.app.id, capability: dependency.capability }))
+    .map((dependency) => ({ id: dependency.app.id, capability: dependency.capability, error: dependency.error }))
     .toSorted((a, b) => a.id.localeCompare(b.id))
 }
 
@@ -91,7 +93,7 @@ function sameDependencyIdentities(
   b: GatekeeperAppDependencyIdentity[],
 ): boolean {
   return a.length === b.length && a.every((entry, index) =>
-    entry.id === b[index]!.id && entry.capability === b[index]!.capability)
+    entry.id === b[index]!.id && entry.capability === b[index]!.capability && entry.error === b[index]!.error)
 }
 
 // Near the max int, so the full-viewport iframe sits above all Workshop chrome.
@@ -132,6 +134,7 @@ class GatekeeperAppHostImpl extends RpcTarget {
   readonly #capabilities = new Map<string, {
     app: GatekeeperAppInfo
     capability: any
+    error?: string
   }>()
   readonly #disposeRateLimiters: (() => void)[] = []
   readonly #present: PresentController
@@ -150,6 +153,8 @@ class GatekeeperAppHostImpl extends RpcTarget {
   #pendingActive: boolean | null = null
   #pendingResolvers: ((ack: PresentAck) => void)[] = []
   #frameId: number | null = null
+  readonly #retryProviders: () => void
+  readonly #openConnectors: () => void
 
   constructor(
     capability: any,
@@ -164,9 +169,13 @@ class GatekeeperAppHostImpl extends RpcTarget {
     getRouteState: () => string,
     setRouteState: RouteStateSetter,
     dependencies: GatekeeperAppDependency[],
+    retryProviders: () => void,
+    openConnectors: () => void,
   ) {
     super()
     this.#theme = theme
+    this.#retryProviders = retryProviders
+    this.#openConnectors = openConnectors
     const { capability: ui, dispose } = createRateLimitedCapability(capability, {
       maxConcurrency: 8,
       maxCallsPerMinute: 600,
@@ -177,6 +186,10 @@ class GatekeeperAppHostImpl extends RpcTarget {
     this.#ui = ui
     this.#disposeRateLimiters.push(dispose)
     for (const dependency of dependencies) {
+      if (dependency.error) {
+        this.#capabilities.set(dependency.app.id, dependency)
+        continue
+      }
       const limited = createRateLimitedCapability(dependency.capability, {
         maxConcurrency: 8,
         maxCallsPerMinute: 600,
@@ -211,7 +224,19 @@ class GatekeeperAppHostImpl extends RpcTarget {
   }
 
   getCapability(id: string): RpcStub<RpcTarget> | null {
+    const dependency = this.#capabilities.get(id)
+    if (dependency?.error) throw new Error(dependency.error)
     return this.#capabilities.get(id)?.capability ?? null
+  }
+
+  openWorkItemsConnectors(): void {
+    if (!this.#codingSessionRequestAllowed) throw new Error('Not available to this app.')
+    this.#openConnectors()
+  }
+
+  retryWorkItemsProviders(): void {
+    if (!this.#codingSessionRequestAllowed) throw new Error('Not available to this app.')
+    this.#retryProviders()
   }
 
   // Navigate to a workspace the app knows about. The IDs are validated here because the app is
@@ -339,6 +364,7 @@ export default function SandboxedGatekeeperApp({
   codingSessionAvailable = false,
   workItemHandoffs = false,
   onRequestCodingSession,
+  onRetryProviders,
 }: {
   frame: GatekeeperUiFrame,
   gatekeeperVendorId: string,
@@ -348,6 +374,7 @@ export default function SandboxedGatekeeperApp({
   codingSessionAvailable?: boolean,
   workItemHandoffs?: boolean,
   onRequestCodingSession?: RequestCodingSession,
+  onRetryProviders?: () => void,
 }) {
   const navigate = useNavigate()
   const { authenticatedApi } = useAuthenticatedApi()
@@ -360,6 +387,8 @@ export default function SandboxedGatekeeperApp({
   const setRouteStateRef = useRef<RouteStateSetter>(() => {})
   const codingSessionAvailableRef = useRef(false)
   const requestCodingSessionRef = useRef<RequestCodingSession>(() => {})
+  const retryProvidersRef = useRef(onRetryProviders)
+  retryProvidersRef.current = onRetryProviders
   routeStateRef.current = normalizeGatekeeperAppRouteState(routeState) ?? ''
   setRouteStateRef.current = setRouteState ?? (() => {})
   codingSessionAvailableRef.current = codingSessionAvailable
@@ -486,6 +515,8 @@ export default function SandboxedGatekeeperApp({
         () => routeStateRef.current,
         (value) => setRouteStateRef.current(value),
         dependencies,
+        () => retryProvidersRef.current?.(),
+        () => { void navigate({ to: '/gatekeepers' }) },
       )
       hostRef.current = host
       sessionRef.current = newMessagePortRpcSession(port, host)

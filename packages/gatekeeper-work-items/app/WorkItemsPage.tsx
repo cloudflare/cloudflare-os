@@ -46,7 +46,6 @@ import type {
   WorkItemSourceStatuses,
   WorkItemSummary,
   WorkItemAttachmentUploadResult,
-  WorkItemsCurrentUser,
   WorkItemsManagementApi,
 } from "../src/types";
 import { useWorkItemsApi, useWorkItemsRouteState, type WorkItemsRouteStateHost } from "./bridge";
@@ -119,14 +118,20 @@ export default function WorkItemsPage({
   const [query, setQuery] = useState(initial.query);
   const [debouncedQuery, setDebouncedQuery] = useState(initial.query);
   const [filters, setFilters] = useState<Filters>(initial.filters);
-  const [currentUser, setCurrentUser] = useState<WorkItemsCurrentUser | null>(null);
+  const [assignedToMe, setAssignedToMe] = useState(initial.assignedToMe);
   const [savedViews, setSavedViews] = useState<WorkItemSavedView[]>([]);
+  const [initialViewLoaded, setInitialViewLoaded] = useState(isBuiltinView(initial.viewId));
+  const [viewsRetry, setViewsRetry] = useState(0);
   const [selectedViewId, setSelectedViewId] = useState(initial.viewId);
+  const selectedViewIdRef = useRef(selectedViewId);
+  selectedViewIdRef.current = selectedViewId;
+  const [viewError, setViewError] = useState<string>();
   const [viewMode, setViewMode] = useState<ViewMode>(initial.view);
   const [hiddenStatuses, setHiddenStatuses] = useState<string[]>(initial.hiddenStatuses);
   const [newViewName, setNewViewName] = useState("");
   const [viewsBusy, setViewsBusy] = useState(false);
   const [page, setPage] = useState<WorkItemSearchPage>({ items: [], cursors: {}, hasMore: {} });
+  const [exhaustive, setExhaustive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string>();
@@ -157,7 +162,7 @@ export default function WorkItemsPage({
     try {
       const next = await api.getSourceStatuses();
       if (epoch !== statusEpoch.current) return { ok: false };
-      setStatuses(next);
+      setStatuses({ ...next });
       setError(undefined);
       return { ok: true, statuses: next };
     } catch (caught) {
@@ -175,27 +180,29 @@ export default function WorkItemsPage({
 
   useEffect(() => {
     let cancelled = false;
+    setViewError(undefined);
     void (async () => {
       try {
-        const [user, views] = await Promise.all([
-          api.getCurrentUser().catch(() => null),
-          api.listSavedViews().catch(() => []),
-        ]);
+        const views = await api.listSavedViews();
         if (cancelled) return;
-        setCurrentUser(user);
         setSavedViews(views);
-        if (initial.viewId && !isBuiltinView(initial.viewId)) {
+        if (initial.viewId && !isBuiltinView(initial.viewId) && selectedViewIdRef.current === initial.viewId) {
           const saved = views.find((view) => view.id === initial.viewId);
-          if (saved) applySavedView(saved, { setQuery, setSource, setFilters, setViewMode, setHiddenStatuses, setSelectedViewId });
+          if (!saved) throw new Error("Saved view is unavailable. Retry or choose a built-in view.");
+          applySavedView(saved, { setQuery, setSource, setFilters, setViewMode, setHiddenStatuses, setSelectedViewId, setAssignedToMe });
         }
-      } catch {
-        // Optional convenience metadata must not block work item search.
+        setInitialViewLoaded(true);
+      } catch (caught) {
+        if (!cancelled && !isBuiltinView(initial.viewId) && selectedViewIdRef.current === initial.viewId) {
+          setViewError(safeMessage(caught));
+          setLoading(false);
+        }
       }
     })();
     return () => { cancelled = true; };
     // Initial route selection is consumed once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api]);
+  }, [api, viewsRetry]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 220);
@@ -205,11 +212,15 @@ export default function WorkItemsPage({
   const search = useCallback(
     async (opts?: { cursor?: Partial<Record<WorkItemProviderKind, string>>; append?: boolean; statuses?: WorkItemSourceStatuses }) => {
       const statusSnapshot = opts?.statuses ?? statuses;
-      if (!statusSnapshot) return;
+      if (!statusSnapshot || !initialViewLoaded && !isBuiltinView(selectedViewId)) return;
       const effectiveSource = opts?.append ? getAppendSource(source, statusSnapshot, pageRef.current.hasMore) : getEffectiveSource(source, statusSnapshot);
       const epoch = ++searchEpoch.current;
       if (opts?.append) setLoadingMore(true);
-      else setLoading(true);
+      else {
+        setLoading(true);
+        // A failed replacement search must not leave another view's items looking current.
+        setPage({ items: [], cursors: {}, hasMore: {} });
+      }
       setError(undefined);
       if (!effectiveSource) {
         setPage({ items: [], cursors: {}, hasMore: {} });
@@ -221,6 +232,8 @@ export default function WorkItemsPage({
       try {
         const result = await api.search({
           source: effectiveSource,
+          ...(assignedToMe ? { assignedToMe: true } : {}),
+          ...(exhaustive ? { exhaustive: true } : {}),
           query: debouncedQuery || undefined,
           limit: LIMIT,
           cursors: opts?.cursor,
@@ -231,6 +244,9 @@ export default function WorkItemsPage({
           ...result,
           cursors: opts?.append ? { ...current.cursors, ...result.cursors } : result.cursors,
           hasMore: opts?.append ? { ...current.hasMore, ...result.hasMore } : result.hasMore,
+          // Truncation and errors are sticky across appends: a page lost earlier is still lost.
+          truncated: opts?.append ? { jira: current.truncated?.jira || result.truncated?.jira, zendesk: current.truncated?.zendesk || result.truncated?.zendesk } : result.truncated,
+          completeness: opts?.append ? { ...current.completeness, ...result.completeness } : result.completeness,
           errors: opts?.append ? mergeProviderErrors(current.errors, result.errors) : result.errors,
           items: opts?.append ? [...current.items, ...result.items] : result.items,
         }));
@@ -244,12 +260,17 @@ export default function WorkItemsPage({
         }
       }
     },
-    [api, debouncedQuery, source, statuses],
+    [api, assignedToMe, debouncedQuery, exhaustive, initialViewLoaded, selectedViewId, source, statuses],
   );
 
   useEffect(() => {
     void search();
   }, [search]);
+
+  // Exhaustive paging is opted into per result set; changing what is being searched starts over at the normal path.
+  useEffect(() => {
+    setExhaustive(false);
+  }, [assignedToMe, debouncedQuery, selectedViewId, source]);
 
   const filteredItems = useMemo(() => applyFilters(page.items, filters), [page.items, filters]);
   const filterOptions = useMemo(() => collectFilterOptions(page.items), [page.items]);
@@ -262,18 +283,19 @@ export default function WorkItemsPage({
 
   const persist = useCallback(
     (nextSelected = selected?.ref) => {
-      const state = { query, source, filters, selected: nextSelected ?? null, view: viewMode, hiddenStatuses, viewId: selectedViewId };
+      const state = { query, source, filters, selected: nextSelected ?? null, view: viewMode, hiddenStatuses, viewId: selectedViewId, assignedToMe };
       safeSetStoredState(state);
       if (routeStateHost?.setRouteState) routeStateHost.setRouteState(encodeStoredState(state));
       else safeReplaceHash(state);
     },
-    [filters, hiddenStatuses, query, routeStateHost, selected?.ref, selectedViewId, source, viewMode],
+    [assignedToMe, filters, hiddenStatuses, query, routeStateHost, selected?.ref, selectedViewId, source, viewMode],
   );
 
   useEffect(() => {
+    if (!initialViewLoaded && selectedViewId === initial.viewId) return;
     const timer = window.setTimeout(() => persist(), 220);
     return () => window.clearTimeout(timer);
-  }, [persist]);
+  }, [initial.viewId, initialViewLoaded, persist, selectedViewId]);
 
   const disposeSelected = useCallback((item: Selected | null) => {
     try {
@@ -368,11 +390,22 @@ export default function WorkItemsPage({
   }, [disposeSelected]);
 
   const refreshAll = useCallback(async () => {
+    if (!initialViewLoaded && !isBuiltinView(selectedViewId)) {
+      setViewsRetry((value) => value + 1);
+      return;
+    }
     const nextStatuses = await loadStatuses();
     if (!nextStatuses.ok) return;
-    await search({ statuses: nextStatuses.statuses });
+    // Updating statuses triggers the search effect; don't issue the same search twice here.
     if (selected?.stub) await readSelected(selected.stub, selectEpoch.current, selected.ref);
-  }, [loadStatuses, readSelected, search, selected]);
+  }, [initialViewLoaded, loadStatuses, readSelected, selected, selectedViewId]);
+
+  const providerAction = async (action?: () => Promise<void>) => {
+    try {
+      if (action) await action();
+      else await refreshAll();
+    } catch (caught) { setError(safeMessage(caught)); }
+  };
 
   const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "ArrowDown") {
@@ -414,6 +447,8 @@ export default function WorkItemsPage({
   }, [closeDetail, selected]);
 
   const hasMore = Object.values(page.hasMore).some(Boolean);
+  const searchedSources = useMemo(() => searchedProviders(source, statuses), [source, statuses]);
+  const canLoadAll = !exhaustive && (Boolean(debouncedQuery) || assignedToMe) && searchedSources.some((provider) => page.truncated?.[provider] === true);
   useEffect(() => {
     if (!selected) return;
     lastSelectedRowKey.current = rowKey(selected.ref);
@@ -459,15 +494,15 @@ export default function WorkItemsPage({
 
       <section className="saved-views" aria-label="Saved work item views">
         <div className="view-tabs" aria-label="Saved views">
-          <button type="button" aria-pressed={selectedViewId === BUILTIN_MY_WORK} onClick={() => applyBuiltinView(BUILTIN_MY_WORK, currentUser, { setQuery, setSource, setFilters, setViewMode, setHiddenStatuses, setSelectedViewId })}>My work</button>
-          <button type="button" aria-pressed={selectedViewId === BUILTIN_ALL} onClick={() => applyBuiltinView(BUILTIN_ALL, currentUser, { setQuery, setSource, setFilters, setViewMode, setHiddenStatuses, setSelectedViewId })}>All items</button>
-          {savedViews.map((view) => <button key={view.id} type="button" aria-pressed={selectedViewId === view.id} onClick={() => applySavedView(view, { setQuery, setSource, setFilters, setViewMode, setHiddenStatuses, setSelectedViewId })}>{view.name}</button>)}
+          <button type="button" aria-pressed={selectedViewId === BUILTIN_MY_WORK} onClick={() => applyBuiltinView(BUILTIN_MY_WORK, { setQuery, setSource, setFilters, setViewMode, setHiddenStatuses, setSelectedViewId, setAssignedToMe })}>My work</button>
+          <button type="button" aria-pressed={selectedViewId === BUILTIN_ALL} onClick={() => applyBuiltinView(BUILTIN_ALL, { setQuery, setSource, setFilters, setViewMode, setHiddenStatuses, setSelectedViewId, setAssignedToMe })}>All items</button>
+          {savedViews.map((view) => <button key={view.id} type="button" aria-pressed={selectedViewId === view.id} onClick={() => applySavedView(view, { setQuery, setSource, setFilters, setViewMode, setHiddenStatuses, setSelectedViewId, setAssignedToMe })}>{view.name}</button>)}
         </div>
         <div className="view-actions">
           <fieldset className="segment"><legend className="sr-only">Result view</legend>{(["list", "kanban"] as const).map((mode) => <label key={mode} data-active={viewMode === mode}><input type="radio" name="work-item-view-mode" checked={viewMode === mode} onChange={() => setViewMode(mode)} />{mode === "list" ? "List" : "Kanban"}</label>)}</fieldset>
           <label className="save-view-name"><span className="sr-only">New view name</span><input value={newViewName} onChange={(event) => setNewViewName(event.currentTarget.value)} placeholder="Name this view…" /></label>
-          <button type="button" disabled={viewsBusy || !newViewName.trim()} onClick={() => void saveCurrentView(api, { name: newViewName, query, source, filters, view: viewMode, hiddenStatuses }, { setViewsBusy, setSavedViews, setSelectedViewId, setNewViewName, setError })}>Save view</button>
-          {!isBuiltinView(selectedViewId) && <button className="danger-link" type="button" disabled={viewsBusy} onClick={() => void deleteCurrentView(api, selectedViewId, currentUser, { setViewsBusy, setSavedViews, setQuery, setSource, setFilters, setViewMode, setHiddenStatuses, setSelectedViewId, setError })}><Trash size={14} /> Delete</button>}
+          <button type="button" disabled={viewsBusy || !newViewName.trim()} onClick={() => void saveCurrentView(api, { name: newViewName, query, source, filters, view: viewMode, hiddenStatuses, assignedToMe }, { setViewsBusy, setSavedViews, setSelectedViewId, setNewViewName, setError })}>Save view</button>
+          {!isBuiltinView(selectedViewId) && <button className="danger-link" type="button" disabled={viewsBusy} onClick={() => void deleteCurrentView(api, selectedViewId, { setViewsBusy, setSavedViews, setQuery, setSource, setFilters, setViewMode, setHiddenStatuses, setSelectedViewId, setAssignedToMe, setError })}><Trash size={14} /> Delete</button>}
         </div>
       </section>
 
@@ -488,9 +523,16 @@ export default function WorkItemsPage({
         {selectableKanbanStatuses.map((status) => <label key={status}><input type="checkbox" checked={!hiddenSet.has(status)} onChange={(event) => { const checked = event.currentTarget.checked; setHiddenStatuses((current) => checked ? current.filter((value) => value !== status) : [...new Set([...current, status])]); }} /> Show {status}</label>)}
       </section>}
 
-      {statuses && (!statuses.jira.configured || !statuses.jira.connected || !statuses.zendesk.configured || !statuses.zendesk.connected) && (
-        <Banner tone="neutral" title="Provider setup" message="Disconnected or unconfigured providers stay visible here so admins know what Work Items needs before searching." />
-      )}
+      {statuses && (["jira", "zendesk"] as const).map((provider) => {
+        const status = statuses[provider];
+        if (status.configured && status.connected) return null;
+        return <Banner key={provider} tone="warning" title={`${labelSource(provider)} unavailable`}
+          message={status.reason ?? "Check your provider connection in Connectors. If the connector is not offered, ask your deployment administrator to enable it."}
+          action={<>
+            {routeStateHost?.openConnectors && <button type="button" onClick={() => void providerAction(routeStateHost.openConnectors)}>Connect or manage {labelSource(provider)}</button>}
+            <button type="button" onClick={() => void providerAction(routeStateHost?.retryProviders)}>Retry {labelSource(provider)}</button>
+          </>} />;
+      })}
       {page.errors?.map((providerError) => {
         const expiredCursor = /invalid .*cursor|cursor.*(?:expired|invalid)/i.test(providerError.message);
         return <Banner
@@ -498,19 +540,29 @@ export default function WorkItemsPage({
           tone="warning"
           title={expiredCursor ? "Results need a refresh" : `${labelSource(providerError.source)} search failed`}
           message={expiredCursor ? "The provider’s paging token expired. Your connection is still active." : providerError.message}
-          action={expiredCursor ? <button type="button" onClick={() => void refreshAll()}>Refresh results</button> : undefined}
+          action={<button type="button" onClick={() => void refreshAll()}>{expiredCursor ? "Refresh results" : "Retry search"}</button>}
         />;
       })}
-      {error && <Banner tone="danger" title="Couldn’t load work items" message={error} action={<button onClick={() => void refreshAll()}>Retry</button>} />}
+      {(error || viewError && selectedViewId === initial.viewId) && <Banner tone="danger" title="Couldn’t load work items" message={error ?? viewError!} action={<button onClick={() => void refreshAll()}>Retry</button>} />}
 
       <div className="content-grid">
         <section className="list-pane" aria-label="Work item results">
-          {viewMode === "list" ? <>
+          {!loading && filteredItems.length === 0 && (error || viewError && selectedViewId === initial.viewId || page.errors?.length || !statuses || !getEffectiveSource(source, statuses)) ?
+            <div className="empty-state" role="status">Work items are unavailable. Resolve the provider errors above, then retry.</div> : viewMode === "list" ? <>
             <div className="list-head" role="row"><span>Source</span><span>Key</span><span>Title</span><span>Status</span><span>Priority</span><span>Owner</span><span>Updated</span></div>
             <div ref={listRef} className="work-list" role="list" tabIndex={0} aria-label="Work items. Use arrow keys to move and Enter to open." onKeyDown={onListKeyDown} aria-busy={loading} aria-live="polite">
               {loading ? <SkeletonRows /> : filteredItems.length === 0 ? <EmptyState query={debouncedQuery} /> : filteredItems.map((item, index) => <WorkItemRow key={`${item.source}:${item.id}`} item={item} active={index === activeIndex} selected={sameRef(item, selected?.ref)} rowRef={(node) => setRowRef(item, node, rowRefs.current)} onFocus={() => setActiveIndex(index)} onOpen={() => void selectItem(item)} />)}
             </div>
           </> : <KanbanBoard items={filteredItems} statuses={kanbanStatuses} hiddenStatuses={hiddenSet} loading={loading} query={debouncedQuery} selected={selected?.ref} onOpen={(item) => void selectItem(item)} />}
+          {!loading && searchedSources.length > 0 && (
+            <SearchCompleteness
+              page={page}
+              sources={searchedSources}
+              shown={filteredItems.length}
+              exhaustive={exhaustive}
+              onLoadAll={canLoadAll ? () => setExhaustive(true) : undefined}
+            />
+          )}
           {hasMore && !loading && (
             <div className="load-more">
               <button type="button" disabled={loadingMore} onClick={() => void search({ cursor: page.cursors, append: true })}>
@@ -548,7 +600,7 @@ function SourceStatusPills({ statuses }: { statuses?: WorkItemSourceStatuses }) 
       const status = statuses?.[source];
       if (!status) return <span key={source} className={`source-pill ${source} checking`} title="Checking connection">{labelSource(source)} checking</span>;
       const ok = status?.configured && status.connected;
-      return <span key={source} className={`source-pill ${source} ${ok ? "ok" : "warn"}`} title={status?.reason ?? (ok ? "Connected" : "Checking connection")}>{labelSource(source)} {ok ? "connected" : "needs setup"}</span>;
+      return <span key={source} className={`source-pill ${source} ${ok ? "ok" : "warn"}`} title={status?.reason ?? (ok ? "Connected" : "Unavailable")}>{labelSource(source)} {ok ? "connected" : "unavailable"}</span>;
     })}
   </div>;
 }
@@ -1015,6 +1067,40 @@ function getAppendSource(source: WorkItemSearchSource, statuses: WorkItemSourceS
   if (nextSources.length === 2) return "both";
   return nextSources[0] ?? null;
 }
+function searchedProviders(source: WorkItemSearchSource, statuses: WorkItemSourceStatuses | undefined): WorkItemProviderKind[] {
+  const effective = statuses ? getEffectiveSource(source, statuses) : null;
+  if (!effective) return [];
+  return effective === "both" ? ["jira", "zendesk"] : [effective];
+}
+/**
+ * Mirrors the shared completeness contract: a provider counts as complete only when it reported no further pages, no
+ * ceiling truncation, no failure, and did not explicitly say otherwise. Providers that omit the flag are derived.
+ */
+function isSourceComplete(page: WorkItemSearchPage, source: WorkItemProviderKind): boolean {
+  if (page.errors?.some((error) => error.source === source)) return false;
+  if (page.hasMore?.[source] === true || page.truncated?.[source] === true) return false;
+  return page.completeness?.[source] ?? page.hasMore?.[source] === false;
+}
+function incompleteReason(page: WorkItemSearchPage, source: WorkItemProviderKind): string {
+  if (page.errors?.some((error) => error.source === source)) return `${labelSource(source)} results are missing because its search failed`;
+  if (page.truncated?.[source] === true) return `${labelSource(source)} stopped at its provider result ceiling; add search terms or use My work to load all matches`;
+  if (page.hasMore?.[source] === true) return `${labelSource(source)} has more pages to load`;
+  return `${labelSource(source)} did not confirm a complete result set`;
+}
+function SearchCompleteness({ page, sources, shown, exhaustive, onLoadAll }: { page: WorkItemSearchPage; sources: WorkItemProviderKind[]; shown: number; exhaustive: boolean; onLoadAll?: () => void }) {
+  const incomplete = sources.filter((source) => !isSourceComplete(page, source));
+  const complete = incomplete.length === 0;
+  return (
+    <div className="search-completeness" role="status" aria-live="polite" data-complete={complete ? "true" : "false"}>
+      <span>
+        {complete
+          ? `Showing all ${shown} matching ${shown === 1 ? "item" : "items"}${exhaustive ? " from an exhaustive search" : ""}.`
+          : `Partial results: showing ${shown} of more. ${incomplete.map((source) => incompleteReason(page, source)).join("; ")}.`}
+      </span>
+      {onLoadAll && <button type="button" onClick={onLoadAll}>Load all matching results</button>}
+    </div>
+  );
+}
 function mergeProviderErrors(current: WorkItemSearchPage["errors"], next: WorkItemSearchPage["errors"]): WorkItemSearchPage["errors"] {
   if (!current?.length) return next;
   if (!next?.length) return current;
@@ -1024,17 +1110,9 @@ function mergeProviderErrors(current: WorkItemSearchPage["errors"], next: WorkIt
 }
 function hasFilters(filters: Filters) { return Object.values(filters).some(Boolean); }
 function isBuiltinView(id: string) { return id === BUILTIN_MY_WORK || id === BUILTIN_ALL; }
-function preferredUserToken(user: WorkItemsCurrentUser | null): string { return user?.uniqueName || user?.displayName || ""; }
-function normalizePerson(value: string): string {
-  return value.toLowerCase().replace(/@.*$/, "").replace(/[._-]+/g, " ").replace(/[^a-z0-9 ]+/g, "").replace(/\s+/g, " ").trim();
-}
 function personMatches(filter: string, ...values: Array<string | undefined>): boolean {
   if (!filter) return true;
-  const wanted = normalizePerson(filter);
-  return values.some((value) => {
-    const candidate = normalizePerson(value ?? "");
-    return !!candidate && (candidate === wanted || candidate.includes(wanted) || wanted.includes(candidate));
-  });
+  return values.some((value) => value === filter);
 }
 function collectStatuses(items: WorkItemSummary[]): string[] {
   const set = new Set<string>();
@@ -1074,15 +1152,17 @@ function decodeRef(value: string | null, urlValue?: string | null): WorkItemProv
     return { source, id: decodeURIComponent(id), key: decodedKey, ...(decodedUrl ? { url: decodedUrl } : {}) };
   } catch { return null; }
 }
-function applyBuiltinView(id: string, user: WorkItemsCurrentUser | null, setters: { setQuery: (value: string) => void; setSource: (value: WorkItemSearchSource) => void; setFilters: React.Dispatch<React.SetStateAction<Filters>>; setViewMode: (value: ViewMode) => void; setHiddenStatuses: (value: string[]) => void; setSelectedViewId: (value: string) => void }) {
+function applyBuiltinView(id: string, setters: { setAssignedToMe: (value: boolean) => void; setQuery: (value: string) => void; setSource: (value: WorkItemSearchSource) => void; setFilters: React.Dispatch<React.SetStateAction<Filters>>; setViewMode: (value: ViewMode) => void; setHiddenStatuses: (value: string[]) => void; setSelectedViewId: (value: string) => void }) {
   setters.setQuery("");
   setters.setSource("both");
-  setters.setFilters(id === BUILTIN_MY_WORK ? { ...EMPTY_FILTERS, person: preferredUserToken(user) } : EMPTY_FILTERS);
+  setters.setFilters(EMPTY_FILTERS);
+  setters.setAssignedToMe(id === BUILTIN_MY_WORK);
   setters.setViewMode("list");
   setters.setHiddenStatuses([]);
   setters.setSelectedViewId(id);
 }
-function applySavedView(view: WorkItemSavedView, setters: { setQuery: (value: string) => void; setSource: (value: WorkItemSearchSource) => void; setFilters: (value: Filters) => void; setViewMode: (value: ViewMode) => void; setHiddenStatuses: (value: string[]) => void; setSelectedViewId: (value: string) => void }) {
+function applySavedView(view: WorkItemSavedView, setters: { setAssignedToMe: (value: boolean) => void; setQuery: (value: string) => void; setSource: (value: WorkItemSearchSource) => void; setFilters: (value: Filters) => void; setViewMode: (value: ViewMode) => void; setHiddenStatuses: (value: string[]) => void; setSelectedViewId: (value: string) => void }) {
+  setters.setAssignedToMe(view.assignedToMe === true);
   setters.setQuery(view.query);
   setters.setSource(view.source);
   setters.setFilters(view.filters);
@@ -1100,17 +1180,17 @@ async function saveCurrentView(api: WorkItemsManagementApi, view: Omit<WorkItemS
   } catch (caught) { setters.setError(safeMessage(caught)); }
   finally { setters.setViewsBusy(false); }
 }
-async function deleteCurrentView(api: WorkItemsManagementApi, id: string, user: WorkItemsCurrentUser | null, setters: { setViewsBusy: (value: boolean) => void; setSavedViews: React.Dispatch<React.SetStateAction<WorkItemSavedView[]>>; setQuery: (value: string) => void; setSource: (value: WorkItemSearchSource) => void; setFilters: React.Dispatch<React.SetStateAction<Filters>>; setViewMode: (value: ViewMode) => void; setHiddenStatuses: (value: string[]) => void; setSelectedViewId: (value: string) => void; setError: (value: string | undefined) => void }) {
+async function deleteCurrentView(api: WorkItemsManagementApi, id: string, setters: { setAssignedToMe: (value: boolean) => void; setViewsBusy: (value: boolean) => void; setSavedViews: React.Dispatch<React.SetStateAction<WorkItemSavedView[]>>; setQuery: (value: string) => void; setSource: (value: WorkItemSearchSource) => void; setFilters: React.Dispatch<React.SetStateAction<Filters>>; setViewMode: (value: ViewMode) => void; setHiddenStatuses: (value: string[]) => void; setSelectedViewId: (value: string) => void; setError: (value: string | undefined) => void }) {
   if (isBuiltinView(id)) return;
   setters.setViewsBusy(true); setters.setError(undefined);
   try {
     await api.deleteSavedView(id);
     setters.setSavedViews((current) => current.filter((view) => view.id !== id));
-    applyBuiltinView(BUILTIN_ALL, user, setters);
+    applyBuiltinView(BUILTIN_ALL, setters);
   } catch (caught) { setters.setError(safeMessage(caught)); }
   finally { setters.setViewsBusy(false); }
 }
-type StoredState = { query: string; source: WorkItemSearchSource; filters: Filters; selected: WorkItemProviderRef | null; view: ViewMode; hiddenStatuses: string[]; viewId: string };
+type StoredState = { query: string; source: WorkItemSearchSource; filters: Filters; selected: WorkItemProviderRef | null; view: ViewMode; hiddenStatuses: string[]; viewId: string; assignedToMe: boolean };
 function readInitialState(routeState?: string): StoredState {
   const host = routeState ? new URLSearchParams(routeState) : null;
   const stored = readStoredState();
@@ -1118,6 +1198,8 @@ function readInitialState(routeState?: string): StoredState {
   const source = hash.get("source") ?? stored?.source;
   const view = hash.get("view") ?? stored?.view;
   const viewId = hash.get("viewId") ?? stored?.viewId ?? BUILTIN_ALL;
+  // Older My work links persisted an inferred email as `person`; it is not an explicit filter.
+  const legacyMyWork = viewId === BUILTIN_MY_WORK && (hash.has("viewId") ? !hash.has("assignedToMe") : stored?.assignedToMe === undefined);
   const hiddenStatuses = hash.get("hiddenStatuses")?.split(",").filter(Boolean) ?? (Array.isArray(stored?.hiddenStatuses) ? stored.hiddenStatuses : []);
   return {
     query: hash.get("q") ?? stored?.query ?? "",
@@ -1126,12 +1208,13 @@ function readInitialState(routeState?: string): StoredState {
       status: hash.get("status") ?? stored?.filters?.status ?? "",
       priority: hash.get("priority") ?? stored?.filters?.priority ?? "",
       type: hash.get("type") ?? stored?.filters?.type ?? "",
-      person: hash.get("person") ?? stored?.filters?.person ?? "",
+      person: legacyMyWork ? "" : hash.get("person") ?? stored?.filters?.person ?? "",
     },
     selected: decodeRef(hash.get("selected"), hash.get("selectedUrl")) ?? stored?.selected ?? null,
     view: view === "kanban" ? "kanban" : "list",
     hiddenStatuses,
     viewId,
+    assignedToMe: viewId === BUILTIN_MY_WORK || viewId !== BUILTIN_ALL && (hash.has("assignedToMe") ? hash.get("assignedToMe") === "1" : stored?.assignedToMe === true),
   };
 }
 function safeSessionGet(key: string): string | null { try { return sessionStorage.getItem(key); } catch { return null; } }
@@ -1146,6 +1229,7 @@ function encodeStoredState(state: StoredState): string {
   if (state.source !== "both") params.set("source", state.source);
   if (state.view !== "list") params.set("view", state.view);
   if (state.viewId !== BUILTIN_ALL) params.set("viewId", state.viewId);
+  if (state.assignedToMe) params.set("assignedToMe", "1");
   if (state.hiddenStatuses.length) params.set("hiddenStatuses", state.hiddenStatuses.join(","));
   for (const [key, value] of Object.entries(state.filters)) if (value) params.set(key, value);
   if (state.selected) params.set("selected", encodeRef(state.selected));
