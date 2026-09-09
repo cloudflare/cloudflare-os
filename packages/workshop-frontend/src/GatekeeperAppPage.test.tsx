@@ -59,7 +59,7 @@ describe("GatekeeperAppPage Work Items composition", () => {
   });
 
   it.each([false, true])("discovers existing sources independently of the nav cache and retries failed loads (%s)", async (failSource) => {
-    const shell: GatekeeperAppInfo = { id: "shell", vendorId: "work-items", title: "Work Items", composition: { kind: "work-items" } };
+    const shell: GatekeeperAppInfo = { id: "shell", vendorId: "work_items", title: "Work Items", composition: { kind: "work-items" } };
     const jira: GatekeeperAppInfo = { id: "jira", vendorId: "jira", title: "Jira", composition: { kind: "work-items", role: "jira", embeddedOnly: true } };
     authenticatedApi.listGatekeeperApps.mockResolvedValue([shell, jira]);
     const shellFrame = frame("shell");

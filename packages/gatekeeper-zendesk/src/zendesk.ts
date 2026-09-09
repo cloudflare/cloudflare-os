@@ -80,7 +80,6 @@ import type {
 } from "./types.js";
 
 type Env = Cloudflare.Env & { BASE_URL?: string; CLIENT_ID?: string; CLIENT_SECRET?: string; PUBLIC_BASE_URL?: string };
-type Exports = Record<string, any>;
 type Props = { accountId: string; subdomain: string; ticketId?: string };
 type StoredNonce = { value: string; expiresAt: number; returnUrl?: string };
 type StoredUpload = {
@@ -124,6 +123,8 @@ const EXPORT_CURSOR_PREFIX = "zdx1";
 const EXPORT_CURSOR_MAX = 2_048;
 const MAX_UPLOAD_TOKENS = 10;
 const UPLOAD_TTL_MS = 60 * 60 * 1000;
+// Stable across app opens so staged uploads stay available to the next ticket adapter.
+const MANAGEMENT_FACET = "work-items-management";
 const ACTION_KINDS = [
   { tag: "zendesk.comment", label: "Zendesk comment" },
   { tag: "zendesk.update-fields", label: "Zendesk field update" },
@@ -147,8 +148,9 @@ const logger = createLogger<{ event?: string; error?: unknown; accountId?: strin
   component: "gatekeeper.zendesk",
 });
 
-function exportsOf(ctx: { exports?: Exports } | unknown): Exports {
-  return (ctx as { exports: Exports }).exports;
+// The installed context types omit exports; keep its generated type so classes cannot pass as stubs.
+function exportsOf(ctx: unknown): Cloudflare.Exports {
+  return (ctx as { exports: Cloudflare.Exports }).exports;
 }
 
 function randomNonce(): string {
@@ -212,7 +214,7 @@ function textResponse(message: string, status = 400): Response {
   });
 }
 
-function parseZendeskAccountId(exports: Exports, accountId: string): unknown | null {
+function parseZendeskAccountId(exports: Cloudflare.Exports, accountId: string): DurableObjectId | null {
   try {
     return exports.ZendeskAccount.idFromString(accountId);
   } catch {
@@ -473,6 +475,19 @@ export class ZendeskAccount extends DurableObject<Env> {
     return { returnUrl: stored.returnUrl };
   }
 
+  /** Opens the management UI over an account-owned facet, using only the account's stored identity. */
+  workItemsManagementUi(): RpcStub<RpcTarget> {
+    const subdomain = this.ctx.storage.kv.get<string>("subdomain");
+    if (!subdomain) throw new Error("Zendesk credentials have not been configured.");
+    const exports = exportsOf(this.ctx);
+    const gatekeeper = this.ctx.facets.get<ZendeskGatekeeper>(MANAGEMENT_FACET, () => ({
+      class: exports.ZendeskGatekeeper({ props: { accountId: this.ctx.id.toString(), subdomain } }),
+    }));
+    return new RpcStub(
+      new ZendeskWorkItemsManagementAdapter(gatekeeper),
+    ) as unknown as RpcStub<RpcTarget>;
+  }
+
   async getAccessToken(): Promise<string> {
     const grant = this.ctx.storage.kv.get<ZendeskOAuthGrant>("grant");
     const subdomain = this.ctx.storage.kv.get<string>("subdomain");
@@ -521,7 +536,7 @@ export class ZendeskAccount extends DurableObject<Env> {
     try { await callback.credentialsExpired(); }
     catch (error) { logger.warn("failed to notify Zendesk credential expiry", { event: "credentials.expiry.notify.failed", error }); }
   }
-  async revoke(): Promise<void> { await this.ctx.storage.deleteAlarm(); await this.ctx.storage.deleteAll(); }
+  async revoke(): Promise<void> { this.ctx.facets.delete(MANAGEMENT_FACET); await this.ctx.storage.deleteAlarm(); await this.ctx.storage.deleteAll(); }
   async alarm(): Promise<void> { if (!this.ctx.storage.kv.get<ZendeskOAuthGrant>("grant")) await this.ctx.storage.deleteAll(); }
 }
 
@@ -581,7 +596,7 @@ export class ZendeskUserImpl extends WorkerEntrypoint<Env, Props> implements Gat
     return { iframeHtml: TICKET_CONFIGURATOR_HTML, ui: new RpcStub(new TicketConfiguratorUI(this.ctx.props.subdomain)) };
   }
   async startAppUi(_context: AppUiContext): Promise<GatekeeperUiFrame> {
-    return { iframeHtml: APP_HTML, ui: new RpcStub(new ZendeskWorkItemsManagementAdapter(exportsOf(this.ctx).ZendeskGatekeeper({ props: this.ctx.props }))) };
+    return { iframeHtml: APP_HTML, ui: await this.#account().workItemsManagementUi() };
   }
   async revoke(): Promise<void> { await this.#account().revoke(); }
   async reconnect(options?: GatekeeperReconnectOptions): Promise<{ url: string }> {
@@ -616,7 +631,8 @@ class TicketConfiguratorUI extends RpcTarget {
 
 @validateRpc()
 class ZendeskWorkItemsManagementAdapter extends RpcTarget implements WorkItemsManagementApi {
-  constructor(private readonly gatekeeper: DurableObjectStub<ZendeskGatekeeper>) { super(); }
+  // Facet stubs are Fetchers, not namespace stubs or inert DurableObjectClass descriptors.
+  constructor(private readonly gatekeeper: Fetcher<ZendeskGatekeeper>) { super(); }
   async getCurrentUser(): Promise<WorkItemsCurrentUser> { return this.gatekeeper.getCurrentUser(); }
   async listSavedViews(): Promise<WorkItemSavedView[]> { return []; }
   async saveSavedView(view: WorkItemSavedView): Promise<WorkItemSavedView> { return view; }
@@ -630,7 +646,7 @@ class ZendeskWorkItemsManagementAdapter extends RpcTarget implements WorkItemsMa
 }
 
 class ZendeskManagementTicketAdapter extends RpcTarget implements WorkItemManagementApi {
-  constructor(private readonly gatekeeper: DurableObjectStub<ZendeskGatekeeper>, private readonly ticketId: string) { super(); }
+  constructor(private readonly gatekeeper: Fetcher<ZendeskGatekeeper>, private readonly ticketId: string) { super(); }
   read(): Promise<WorkItemRead> { return this.gatekeeper.readTicket(this.ticketId); }
   readAttachment(id: string): Promise<WorkItemAttachmentContent> { return this.gatekeeper.readAttachment(this.ticketId, id); }
   mediaCapabilities(): Promise<WorkItemMediaCapabilities> { return mediaCapabilities(); }
@@ -800,11 +816,12 @@ export class ZendeskGatekeeper extends DurableObject<Env, Props> implements Gate
   async stageUpload(ticketId: string, input: WorkItemAttachmentUploadInput): Promise<WorkItemAttachmentUploadResult> {
     const id = normalizeTicketId(ticketId);
     const normalized = normalizeUploadInput(input);
+    // Facets cannot schedule alarms. Prune on staging; consumption always checks expiry too.
+    cleanupExpiredUploads(this.ctx.storage.kv);
     const upload = await this.#api().upload(normalized);
     const expiresAtMs = Date.now() + UPLOAD_TTL_MS;
     const stored: StoredUpload = { token: upload.token, ticketId: id, attachment: normalizeAttachment(upload.attachment), expiresAtMs, expiresAt: upload.expires_at ?? new Date(expiresAtMs).toISOString() };
     this.ctx.storage.kv.put(uploadKey(upload.token), stored);
-    await this.ctx.storage.setAlarm(expiresAtMs + 60_000);
     return { attachment: stored.attachment, uploadToken: stored.token, uploadMode: "staged-comment", target: "comment", supportsInline: false, expiresAt: stored.expiresAt };
   }
   async alarm(): Promise<void> { cleanupExpiredUploads(this.ctx.storage.kv); }
