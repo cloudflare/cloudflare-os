@@ -21,6 +21,12 @@ export interface ImageLimits {
   maxDimension: number;
   /** Longest data URL kept, in characters (about 4/3 of the encoded bytes). */
   maxDataUrlLength: number;
+  /**
+   * Longest GIF kept un-flattened, in data URL characters. A GIF is the one input the canvas cannot
+   * re-encode without losing its animation, so it gets a wider budget than a re-encodable image;
+   * one over it is flattened and re-encoded within `maxDataUrlLength` like the rest.
+   */
+  maxGifDataUrlLength: number;
 }
 
 /** What {@link prepareImage} takes beyond the file: any of the limits, and the alt text. */
@@ -32,8 +38,11 @@ export interface PrepareImageOptions extends Partial<ImageLimits> {
 /** Image types accepted from the clipboard, a drop or the file picker. */
 export const IMAGE_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 
-/** Defaults: 1600px on the longest edge and roughly a megabyte of encoded image. */
-export const DEFAULT_IMAGE_LIMITS: ImageLimits = { maxDimension: 1600, maxDataUrlLength: 1_400_000 };
+/**
+ * Defaults: 1600px on the longest edge, roughly a megabyte of encoded image, and about 2 MB for a
+ * GIF kept animated (the budget Docs applied to a GIF before this library).
+ */
+export const DEFAULT_IMAGE_LIMITS: ImageLimits = { maxDimension: 1600, maxDataUrlLength: 1_400_000, maxGifDataUrlLength: 2_700_000 };
 
 /** Encoding quality steps tried in turn until the result fits the budget. */
 const QUALITY_STEPS = [0.86, 0.74, 0.62, 0.5];
@@ -55,16 +64,18 @@ export function imageFilesFrom(transfer: DataTransfer | null): File[] {
 }
 
 /**
- * Downscale and re-encode a file into a data URL within the limits. A GIF that already fits is
- * kept as-is so an animation survives; everything else becomes WebP (or JPEG where WebP is not
- * encodable), at falling quality and then falling size until it fits. Rejects when even the
- * smallest encoding is over budget, or when the file is not an image the browser can decode.
+ * Downscale and re-encode a file into a data URL within the limits. A GIF within `maxDimension`
+ * and `maxGifDataUrlLength` is kept as-is so an animation survives; everything else becomes WebP
+ * (or JPEG where WebP is not encodable), at falling quality and then falling size until it fits
+ * `maxDataUrlLength`. Rejects when even the smallest encoding is over budget, or when the file is
+ * not an image the browser can decode.
  */
 export async function prepareImage(file: File, options: PrepareImageOptions = {}): Promise<PreparedImage> {
   // Each limit falls back on its own, so an option passed as `undefined` does not unset the default.
   const limits: ImageLimits = {
     maxDimension: options.maxDimension ?? DEFAULT_IMAGE_LIMITS.maxDimension,
     maxDataUrlLength: options.maxDataUrlLength ?? DEFAULT_IMAGE_LIMITS.maxDataUrlLength,
+    maxGifDataUrlLength: options.maxGifDataUrlLength ?? DEFAULT_IMAGE_LIMITS.maxGifDataUrlLength,
   };
   const original = await readFileAsDataURL(file);
   const image = await loadImage(original);
@@ -72,7 +83,7 @@ export async function prepareImage(file: File, options: PrepareImageOptions = {}
   const naturalHeight = image.naturalHeight || image.height;
   const alt = options.alt ?? altFromFileName(file.name);
 
-  if (file.type === "image/gif" && original.length <= limits.maxDataUrlLength && Math.max(naturalWidth, naturalHeight) <= limits.maxDimension) {
+  if (file.type === "image/gif" && original.length <= limits.maxGifDataUrlLength && Math.max(naturalWidth, naturalHeight) <= limits.maxDimension) {
     return { src: original, alt, width: naturalWidth, height: naturalHeight };
   }
 

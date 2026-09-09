@@ -5,7 +5,8 @@ import { defineConfig } from "vitest/config";
 /**
  * The Node-side tests of the format-blueprint mechanism, in two projects because they need two
  * environments. Neither belongs in `vitest.config.ts`: that suite runs inside workerd, which has
- * no jsdom and cannot spawn the esbuild binary.
+ * no jsdom and cannot spawn the esbuild binary. `test:run` and the vp `test` task run this config;
+ * `test:watch:blueprints` watches it.
  *
  * - `blueprint-lib`: unit tests of the blueprints' own TypeScript sources
  *   (`format-blueprints/<name>/__tests__/**`). These are gadget modules, so they get a jsdom

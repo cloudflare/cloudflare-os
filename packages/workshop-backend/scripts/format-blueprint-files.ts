@@ -342,14 +342,17 @@ const SPECIFIER_PATTERN = new RegExp(
 const COMPUTED_DYNAMIC_IMPORT_PATTERN = /\bimport\s*\(\s*(?!["'])/u;
 
 /**
- * A `require()` that survived bundling. Both bundles are ES modules and neither gadget runtime
- * supplies `require`, so esbuild rewrites any call it could not resolve at build time -- a computed
- * path, or a literal one, since the entry's externals are ES module imports -- to its `__require`
- * shim, which throws "Dynamic require ... is not supported" when the line runs. It reports no
+ * A reference to `require` that survived bundling. Both bundles are ES modules and neither gadget
+ * runtime supplies `require`, so esbuild rewrites any reference it could not resolve at build time
+ * -- a call with a computed path, or a literal one, since the entry's externals are ES module
+ * imports; `require.resolve(...)`; `typeof require`; a bare `require` passed along -- to its
+ * `__require` shim, which throws "Dynamic require ... is not supported" when called. It reports no
  * warning and, for a computed path, records no import in the metafile, so the output is scanned for
- * the shim instead. Comments cannot trip this either, for the reason above.
+ * the shim instead. The identifier alone is the witness: esbuild emits the shim only when some
+ * reference survives, and renames a source identifier of that name away from it. Comments cannot
+ * trip this either, for the reason above.
  */
-const RESIDUAL_REQUIRE_PATTERN = /\b__require\s*\(/u;
+const RESIDUAL_REQUIRE_PATTERN = /\b__require\b/u;
 
 /**
  * The JavaScript extension TypeScript rewrites to a source one, i.e. `./lib/blocks.js` naming
@@ -383,8 +386,8 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  * from the archive; a relative import that escapes files/ (see {@link ownFileImports}), or a
  * library input from `node_modules`, either of which would inline code the blueprint does not own;
  * a dynamic `import()` of a computed path, which the bundler cannot check (see
- * {@link COMPUTED_DYNAMIC_IMPORT_PATTERN}); and a `require()` the bundler could not resolve away,
- * which would throw when reached (see {@link RESIDUAL_REQUIRE_PATTERN}).
+ * {@link COMPUTED_DYNAMIC_IMPORT_PATTERN}); and a reference to `require` the bundler could not
+ * resolve away, which would throw when reached (see {@link RESIDUAL_REQUIRE_PATTERN}).
  */
 async function bundleTypeScriptSources(
   filesDir: string,
@@ -499,8 +502,8 @@ async function bundleTypeScriptSources(
           `literal; the bundler cannot check it`);
     }
     if (RESIDUAL_REQUIRE_PATTERN.test(text)) {
-      invalid(label, `${entry.name}.ts contains a require() call; the bundle is an ES module and ` +
-          `the gadget runtime has no require`);
+      invalid(label, `${entry.name}.ts references require; the bundle is an ES module and the ` +
+          `gadget runtime has no require`);
     }
     output.set(`${entry.name}.js`, text);
   }));
