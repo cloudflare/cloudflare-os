@@ -392,6 +392,11 @@ interface StoredNonce {
    * reconnect while another is in flight must not change how that other flow lands.
    */
   reconnect?: true;
+  /**
+   * Set while a submission is being validated against Home Assistant, so a concurrent submission
+   * cannot pass the same nonce; cleared again when validation fails so the user can resubmit.
+   */
+  connecting?: true;
 }
 
 type CompleteConnectionResult =
@@ -420,7 +425,10 @@ export class UserAccount extends DurableObject<Env> {
     });
   }
 
-  /** Validates the nonce but does not consume it (so the user can resubmit if validation fails). */
+  /**
+   * Validates the nonce without claiming it, for the GET preview of the form. A submission that
+   * fails validation releases its claim (see completeConnection), so the user can resubmit.
+   */
   async verifyNonceWithoutConsuming(nonce: string): Promise<boolean> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || Date.now() >= stored.expiresAt) return false;
@@ -433,9 +441,14 @@ export class UserAccount extends DurableObject<Env> {
     token: string,
   ): Promise<CompleteConnectionResult> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
-    if (!stored || Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, nonce)) {
+    if (!stored || stored.connecting || Date.now() >= stored.expiresAt
+        || !constantTimeEqual(stored.value, nonce)) {
       return { kind: "invalid_nonce" };
     }
+    // Claim the nonce before the first await. The Durable Object's input gate does not cover the
+    // outbound ping, so a second submission arriving meanwhile would otherwise validate the same
+    // nonce, complete the connection a second time, and later revoke the account this one activated.
+    this.ctx.storage.kv.put<StoredNonce>("nonce", { ...stored, connecting: true });
 
     // Validate that the URL+token can actually talk to HA.
     const creds: HomeAssistantCredentials = { baseUrl, token };
@@ -443,6 +456,7 @@ export class UserAccount extends DurableObject<Env> {
       const rest = new HomeAssistantRest(creds);
       await rest.ping();
     } catch (e: any) {
+      this.#releaseNonceClaim(nonce);
       const msg = e instanceof HomeAssistantError
         ? e.message
         : `Unable to reach Home Assistant: ${e?.message ?? e}`;
@@ -484,6 +498,15 @@ export class UserAccount extends DurableObject<Env> {
 
     await this.ctx.storage.deleteAlarm();
     return { kind: "ok", handoff };
+  }
+
+  // Releases a failed submission's claim without reopening a nonce that another flow replaced while
+  // this request was suspended. Synchronous storage makes the check and put one step.
+  #releaseNonceClaim(nonce: string): void {
+    const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
+    if (!stored || !stored.connecting || !constantTimeEqual(stored.value, nonce)) return;
+    const { connecting: _, ...released } = stored;
+    this.ctx.storage.kv.put<StoredNonce>("nonce", released);
   }
 
   /** Makes the credentials staged under `stageId` live; see GatekeeperUser.commitReconnect. */
