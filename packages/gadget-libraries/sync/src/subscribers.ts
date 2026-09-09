@@ -76,8 +76,10 @@ export class SubscriberRegistry<Callbacks extends object, Info = void> {
    * until its connection breaks or it fails a delivery, and announce its presence when hooks are
    * set: it is seeded with everyone already here, all at once, and then announced to everyone,
    * after the current task so that the call that subscribed it returns first. A newcomer that
-   * fails a seed is gone already: it is dropped and, since nobody has heard of it, announced to
-   * no one. Returns the kept handle, for {@link remove}.
+   * fails a seed is gone already: it is dropped, and its leave is announced, because it was a
+   * member from the moment it was added -- a subscriber added during its seeding window was seeded
+   * with it, and would otherwise show it until its own roster expired it. Returns the kept handle,
+   * for {@link remove}.
    */
   add(subscriber: Callbacks, who: Info): Callbacks {
     const stub = (subscriber as Callbacks & SubscriberStub).dup();
@@ -89,11 +91,14 @@ export class SubscriberRegistry<Callbacks extends object, Info = void> {
     const presence = this.#presence;
     if (presence) {
       queueMicrotask(async () => {
-        // A newcomer gone already -- removed or broken since it was added, or failing a seed -- is
-        // seeded and announced no further: nobody has heard of it.
+        // A newcomer gone already -- removed or broken since it was added -- was announced as it
+        // went (see remove and the broken handler), and is seeded and announced no further.
         if (!this.#subscribers.has(stub)) return;
         const seeds = await Promise.allSettled(others.map((person) => Promise.resolve().then(() => presence.join(stub, person))));
-        if (seeds.some((seed) => seed.status === "rejected")) this.#drop(stub);
+        // One that fails a seed is dropped the same way a failed delivery drops it. Its join was
+        // never broadcast, but a subscriber added while it was seeding took it from the members
+        // and was seeded with it, so its leave has to be announced all the same.
+        if (seeds.some((seed) => seed.status === "rejected")) this.#dropAndAnnounce(stub);
         if (!this.#subscribers.has(stub)) return;
         this.broadcast((each) => presence.join(each, who));
       });

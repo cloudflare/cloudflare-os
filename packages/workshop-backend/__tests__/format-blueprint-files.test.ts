@@ -414,6 +414,38 @@ describe.skipIf(inWorkerd)("format blueprint TypeScript sources", () => {
     expect(files.get("client.js")).not.toMatch(/\bimport\s*\(/u);
   });
 
+  // esbuild rewrites a require() it could not resolve away to a `__require` shim that throws when
+  // reached, without a warning, and for a computed path without a metafile import either.
+  it("rejects a require() that survives into the bundle", async () => {
+    let computed = await sourceTree({
+      "client.ts": 'import { h } from "./lib/helper.js"; console.log(h);',
+      "lib/helper.js": 'const p = "./x.js"; export const h = require(p);',
+    });
+    await expect(readSourceFiles(computed, "example/files")).rejects
+      .toThrow("example/files: client.ts contains a require() call; the bundle is an ES module " +
+          "and the gadget runtime has no require");
+
+    // A literal path is no better: the server's externals are ES module imports, so a require of
+    // one is left to a runtime that has no require.
+    let literal = await sourceTree({
+      "server.ts": 'const m = require("cloudflare:workers"); export default m;',
+    });
+    await expect(readSourceFiles(literal, "example/files")).rejects
+      .toThrow("server.ts contains a require() call");
+  });
+
+  it("counts a module imported across a comment as imported", async () => {
+    let directory = await sourceTree({
+      "client.ts": 'import /* initialize */ "./lib/setup.ts";',
+      "lib/setup.ts": 'document.title = "ready";',
+    });
+
+    let files = await readSourceFiles(directory, "example/files");
+
+    expect([...files.keys()]).toEqual(["client.js"]);
+    expect(files.get("client.js")).toContain('document.title = "ready"');
+  });
+
   it("reports an unresolvable import against the entry", async () => {
     let directory = await sourceTree({
       "server.ts": 'import { missing } from "./lib/missing.ts"; export default missing;',

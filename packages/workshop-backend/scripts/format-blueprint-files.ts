@@ -316,10 +316,21 @@ const UNSUPPORTED_TYPESCRIPT_PATTERN = /\.(?:tsx|mts|cts)$/u;
 const MODULE_PATTERN = /\.[cm]?[jt]s$/u;
 
 /**
- * Every string literal that could be a module specifier: the operand of `from`, of `import` or
- * `import()`, or of `require()`.
+ * What may sit between a keyword and its operand in source: whitespace and comments, in any
+ * number. `import`, a block comment, then `"./lib/setup.ts"` is a legal import, and the scan below
+ * has to see the specifier through the comment, or a module the bundle inlined would be reported
+ * as unimported.
  */
-const SPECIFIER_PATTERN = /\b(?:from|import|require)\s*\(?\s*(?:"([^"\n]*)"|'([^'\n]*)')/gu;
+const GAP = String.raw`(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*`;
+
+/**
+ * Every string literal that could be a module specifier: the operand of `from`, of `import` or
+ * `import()`, or of `require()`, with comments allowed wherever whitespace is. A scan, not a parse,
+ * so it also matches inside a string or a comment; that direction of error is the harmless one
+ * (see {@link importedModules}).
+ */
+const SPECIFIER_PATTERN = new RegExp(
+    String.raw`\b(?:from|import|require)${GAP}\(?${GAP}(?:"([^"\n]*)"|'([^'\n]*)')`, "gu");
 
 /**
  * A dynamic `import()` whose operand is not a string literal. esbuild bundles a literal one like a
@@ -329,6 +340,16 @@ const SPECIFIER_PATTERN = /\b(?:from|import|require)\s*\(?\s*(?:"([^"\n]*)"|'([^
  * it is written.
  */
 const COMPUTED_DYNAMIC_IMPORT_PATTERN = /\bimport\s*\(\s*(?!["'])/u;
+
+/**
+ * A `require()` that survived bundling. Both bundles are ES modules and neither gadget runtime
+ * supplies `require`, so esbuild rewrites any call it could not resolve at build time -- a computed
+ * path, or a literal one, since the entry's externals are ES module imports -- to its `__require`
+ * shim, which throws "Dynamic require ... is not supported" when the line runs. It reports no
+ * warning and, for a computed path, records no import in the metafile, so the output is scanned for
+ * the shim instead. Comments cannot trip this either, for the reason above.
+ */
+const RESIDUAL_REQUIRE_PATTERN = /\b__require\s*\(/u;
 
 /**
  * The JavaScript extension TypeScript rewrites to a source one, i.e. `./lib/blocks.js` naming
@@ -361,8 +382,9 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  * {@link UNSUPPORTED_TYPESCRIPT_PATTERN}); a `lib/` module no entry imports, which would be dropped
  * from the archive; a relative import that escapes files/ (see {@link ownFileImports}), or a
  * library input from `node_modules`, either of which would inline code the blueprint does not own;
- * and a dynamic `import()` of a computed path, which the bundler cannot check (see
- * {@link COMPUTED_DYNAMIC_IMPORT_PATTERN}).
+ * a dynamic `import()` of a computed path, which the bundler cannot check (see
+ * {@link COMPUTED_DYNAMIC_IMPORT_PATTERN}); and a `require()` the bundler could not resolve away,
+ * which would throw when reached (see {@link RESIDUAL_REQUIRE_PATTERN}).
  */
 async function bundleTypeScriptSources(
   filesDir: string,
@@ -416,6 +438,9 @@ async function bundleTypeScriptSources(
     realpath(filesDir),
     realpath(gadgetLibrariesDir()),
   ]);
+  // Every input esbuild inlined into some bundle, as an archive path: what the bundles can witness
+  // of a `lib/` module being wanted.
+  const bundled = new Set<string>();
   await Promise.all(entries.map(async entry => {
     let metafile: Metafile;
     let text: string;
@@ -449,7 +474,10 @@ async function bundleTypeScriptSources(
     // has to be under the libraries directory, and never from node_modules -- a library's npm
     // dependency would be inlined into an archive nothing audits.
     for (const input of Object.keys(metafile.inputs)) {
-      if (files.has(input)) continue;
+      if (files.has(input)) {
+        bundled.add(input);
+        continue;
+      }
       const absolute = resolve(rootDir, input);
       const inLibraries = contains(librariesDir, absolute) &&
           !absolute.split(/[\\/]/u).includes("node_modules");
@@ -470,14 +498,22 @@ async function bundleTypeScriptSources(
       invalid(label, `${entry.name}.ts contains a dynamic import whose path is not a string ` +
           `literal; the bundler cannot check it`);
     }
+    if (RESIDUAL_REQUIRE_PATTERN.test(text)) {
+      invalid(label, `${entry.name}.ts contains a require() call; the bundle is an ES module and ` +
+          `the gadget runtime has no require`);
+    }
     output.set(`${entry.name}.js`, text);
   }));
-  // What esbuild inlined cannot say whether every `lib/` module is wanted: types are erased
-  // before the bundle is written, so a module holding only the shared contract is inlined nowhere.
-  // Reachability is read from the source instead.
+  // A `lib/` module is wanted if some bundle inlined it, or if the source names it: the two are
+  // read together because neither alone sees everything. Types are erased before the bundle is
+  // written, so a module holding only the shared contract is inlined nowhere and only the source
+  // scan can witness it; the scan in turn is a scan (see importedModules), so the metafile is what
+  // vouches for a spelling it does not recognize.
   const imported = importedModules(files, entries.map(entry => `${entry.name}.ts`));
   for (const lib of libSources) {
-    if (!imported.has(lib)) invalid(label, `${lib} is not imported by any entry point`);
+    if (!imported.has(lib) && !bundled.has(lib)) {
+      invalid(label, `${lib} is not imported by any entry point`);
+    }
   }
   return new Map([...output].toSorted(([a], [b]) => compareNames(a, b)));
 }
@@ -500,7 +536,9 @@ function matchesExternal(specifier: string, patterns: readonly string[]): boolea
  * `lib/` module is wanted, and a scan can only over-estimate that (a specifier-shaped string in a
  * comment counts as an import), so the "no entry imports this" build error stays impossible to
  * trigger for a module something really does import -- including one imported only for its types,
- * which no compiled output can witness.
+ * which no compiled output can witness. Comments between a keyword and its specifier are allowed
+ * for (see {@link GAP}); a module the scan still misses is vouched for by the bundle that inlined
+ * it, in {@link bundleTypeScriptSources}.
  */
 function importedModules(
   files: ReadonlyMap<string, string>,

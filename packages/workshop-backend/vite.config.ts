@@ -67,16 +67,17 @@ export default {
        * three rather than one is that the three sets of globals must not see each other, and is
        * written out in the configs.
        *
-       * `tsconfig.blueprints-server.json` stands in for the bare `tsc` rather than joining it: it
-       * *is* this package's own program plus the blueprint servers, because the Workers types
-       * available here drag `src/` into any program that loads them. Running both would type-check
-       * `src/` twice for nothing.
+       * The server config is its own program rather than this package's plus the blueprint servers,
+       * and the bare `tsc` (this package's `src/`) runs beside it: the generated Workers types would
+       * hand a gadget's Durable Object the backend's bindings, which it never receives at runtime.
+       * The config says why.
        *
        * `build:format-blueprints` has already bundled the same sources by the time these run, so a
        * module esbuild cannot resolve fails there first.
        */
       build: {
         command: [
+          'tsc',
           'tsc --project tsconfig.browser.json',
           'tsc --project tsconfig.blueprints-server.json',
           'tsc --project tsconfig.blueprints-client.json',
