@@ -847,6 +847,40 @@ describe("connect initiation nonce", () => {
     expect(context.storage.kv.get<ConnectedServer>("server")?.auth).toBe("none");
     expect(context.storage.kv.get("mcpSessionId")).toBe("public-session");
   });
+
+  it("revokes the retired OAuth grant when a reconnect observes a server that takes none", async () => {
+    // The stage carries no tokens and no discovery, so the commit would otherwise leave the old
+    // tokens live while dropping the discovery a later revoke() needs to reach them: a grant nobody
+    // could ever revoke, disconnect included.
+    const context = fakeContext();
+    const { revoked } = stubOAuthServer();
+    const reconnectComplete = vi.fn(async (_stageId: string) => HANDOFF);
+    context.storage.kv.put("server", server("https://mcp.example/mcp"));
+    context.storage.kv.put("callback", { reconnectComplete });
+    context.storage.kv.put("tokens", {
+      access_token: "old-token", refresh_token: "old-refresh", token_type: "Bearer", expiresAt: 1,
+    });
+    context.storage.kv.put("oauthClient", { client_id: "client-id" });
+    context.storage.kv.put("oauthDiscovery", {
+      authorizationServerMetadata: { revocation_endpoint: "https://auth.example/revoke" },
+    });
+    const account = new PublicServerAccount(context as never, {});
+    const nonce = "e".repeat(64);
+    await account.prepareReconnect(nonce);
+    expect((await account.beginConnect(nonce, null)).kind).toBe("done");
+    // Nothing is revoked until the Workshop confirms the reconnect: the old grant still serves.
+    expect(revoked).toEqual([]);
+    expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token).toBe("old-token");
+
+    await account.commitReconnect(reconnectComplete.mock.calls[0][0]);
+    expect(context.storage.kv.get<ConnectedServer>("server")?.auth).toBe("none");
+    expect(context.storage.kv.get("tokens")).toBeUndefined();
+    expect(context.storage.kv.get("oauthDiscovery")).toBeUndefined();
+    expect(revoked).toEqual([
+      "token=old-token&token_type_hint=access_token&client_id=client-id",
+      "token=old-refresh&token_type_hint=refresh_token&client_id=client-id",
+    ]);
+  });
 });
 
 describe("resolveConnectTarget", () => {

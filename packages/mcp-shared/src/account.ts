@@ -787,7 +787,19 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     if (!sameEndpoint(staged.server.endpoint, this.requireServer().endpoint)) {
       throw new Error("No reconnect is awaiting confirmation. Please try again.");
     }
-    if (staged.tokens) this.ctx.storage.kv.put<OAuthTokens>("tokens", staged.tokens);
+    const kv = this.ctx.storage.kv;
+    if (staged.tokens) {
+      kv.put<OAuthTokens>("tokens", staged.tokens);
+    } else {
+      // The reconnect observed a server that takes no OAuth credential, so the live grant is retired
+      // rather than replaced. Revoked now, with the discovery and client it was issued under: the
+      // commit below drops those, after which revoke() could no longer reach it.
+      const tokens = kv.get<OAuthTokens>("tokens");
+      const discovery = kv.get<OAuthDiscoveryState>("oauthDiscovery");
+      const client = kv.get<StoredOAuthClientInformation>("oauthClient");
+      if (tokens && discovery && client) await this.revokeTokens(tokens, discovery, client);
+      kv.delete("tokens");
+    }
     // The live session was opened under the credentials being replaced, so it goes with them, as do
     // the server record the flow observed and the registration and discovery a refresh will need.
     this.setSessionId(staged.sessionId ?? null);
