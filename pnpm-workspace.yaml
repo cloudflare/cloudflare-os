@@ -24,7 +24,7 @@ catalog:
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
   vite: 7.3.6
   vite-plus: ^0.2.8
-  vitest: ^4.1.10
+  vitest: ^4.1.11
   wrangler: ^4.128.0
 
 overrides:
