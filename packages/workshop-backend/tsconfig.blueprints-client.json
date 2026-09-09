@@ -27,6 +27,9 @@
     // Blueprint modules import each other by on-disk name (`./lib/blocks.ts`), the way esbuild
     // resolves them when it bundles the archive.
     "allowImportingTsExtensions": true,
+    // Each entry is bundled alone, so an entry with no import or export must still be a module here
+    // rather than a global script sharing its declarations with another blueprint's.
+    "moduleDetection": "force",
     // `gadgets:<name>/<side>` names a library in packages/gadget-libraries, which the build inlines
     // into the bundle (see scripts/format-blueprint-files.ts); tsc reads the same entry.
     "paths": { "gadgets:*": ["../gadget-libraries/*"] },

@@ -6,10 +6,10 @@
 // the running gadget and the agent that later edits it see one JavaScript file per side, as they
 // do for a blueprint written in plain JavaScript.
 
-import { access, lstat, readdir, readFile } from "node:fs/promises";
+import { access, lstat, readdir, readFile, realpath } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { gzipSync, gunzipSync } from "node:zlib";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Y from "yjs";
 import type { Metafile, Plugin } from "esbuild";
@@ -260,6 +260,41 @@ function gadgetLibraryImports(entry: EntryPoint): Plugin {
   };
 }
 
+/**
+ * Rejects a relative import written in the blueprint that resolves outside its files/ tree.
+ *
+ * Containment is decided where the import is written, not where it lands: a `../../x` from
+ * `client.ts` is refused even if it would land somewhere the build otherwise inlines from, such as
+ * a gadget library. The libraries have one door, the `gadgets:` specifier, so a blueprint cannot
+ * reach a library's `src/` module by path and the metafile check in {@link bundleTypeScriptSources}
+ * only ever sees library inputs that a library's own imports brought in. Imports written inside a
+ * library pass through untouched; that same metafile check keeps them out of `node_modules`.
+ */
+function ownFileImports(filesDir: string): Plugin {
+  return {
+    name: "own-file-imports",
+    setup(pluginBuild) {
+      // A Go regular expression, so no `u` flag: esbuild compiles the filter itself.
+      pluginBuild.onResolve({ filter: /^\.\.?\// }, args => {
+        if (!args.importer || !contains(filesDir, args.importer)) return undefined;
+        if (contains(filesDir, resolve(dirname(args.importer), args.path))) return undefined;
+        const importer = relative(filesDir, args.importer).replaceAll("\\", "/");
+        return { errors: [{ text: `${importer} imports ${args.path}, which is outside the ` +
+            `blueprint's files` }] };
+      });
+    },
+  };
+}
+
+/**
+ * Whether `path` is `directory` or under it. `relative` answers with a `..` first segment when it
+ * is not, or with an absolute path when the two are on different drives, which is outside too.
+ */
+function contains(directory: string, path: string): boolean {
+  const rel = relative(directory, path);
+  return !isAbsolute(rel) && rel.split(/[\\/]/u)[0] !== "..";
+}
+
 /** Where a blueprint's TypeScript modules live; everything under it is an input to the entries. */
 const LIB_PREFIX = "lib/";
 
@@ -287,6 +322,15 @@ const MODULE_PATTERN = /\.[cm]?[jt]s$/u;
 const SPECIFIER_PATTERN = /\b(?:from|import|require)\s*\(?\s*(?:"([^"\n]*)"|'([^'\n]*)')/gu;
 
 /**
+ * A dynamic `import()` whose operand is not a string literal. esbuild bundles a literal one like a
+ * static import and leaves a computed one in the output as written, where it would resolve inside
+ * the sandbox against nothing the bundle checked. Comments cannot trip this: esbuild drops ordinary
+ * ones from the output, and a template literal with no substitutions is folded to a string before
+ * it is written.
+ */
+const COMPUTED_DYNAMIC_IMPORT_PATTERN = /\bimport\s*\(\s*(?!["'])/u;
+
+/**
  * The JavaScript extension TypeScript rewrites to a source one, i.e. `./lib/blocks.js` naming
  * `lib/blocks.ts`. It is the only such rewrite a gadget module can need: the other dialects
  * TypeScript spells this way are rejected before any specifier is resolved (see
@@ -311,11 +355,14 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  * fails on, but not for URLs: `import x from "https://..."` is left in the output as an external
  * without a word, so the bundle's surviving imports are checked against the entry's allowlist here.
  *
- * Rejected, rather than silently mis-shipped: an entry present as both `x.ts` and `x.js`; a `.ts`
- * file that is neither an entry nor under `lib/`; a TypeScript dialect the archive has no place for
- * (see {@link UNSUPPORTED_TYPESCRIPT_PATTERN}); a `lib/` module no entry imports, which would be
- * dropped from the archive; and an import that escapes files/ other than into the libraries, which
- * would inline code the blueprint does not own.
+ * Rejected, rather than silently mis-shipped: an entry or a `lib/` module present as both `x.ts`
+ * and `x.js`, where TypeScript would type the one and the bundle ship the other; a `.ts` file that
+ * is neither an entry nor under `lib/`; a TypeScript dialect the archive has no place for (see
+ * {@link UNSUPPORTED_TYPESCRIPT_PATTERN}); a `lib/` module no entry imports, which would be dropped
+ * from the archive; a relative import that escapes files/ (see {@link ownFileImports}), or a
+ * library input from `node_modules`, either of which would inline code the blueprint does not own;
+ * and a dynamic `import()` of a computed path, which the bundler cannot check (see
+ * {@link COMPUTED_DYNAMIC_IMPORT_PATTERN}).
  */
 async function bundleTypeScriptSources(
   filesDir: string,
@@ -336,6 +383,11 @@ async function bundleTypeScriptSources(
       continue;
     }
     if (path.startsWith(LIB_PREFIX)) {
+      const twin = path.replace(/\.ts$/u, ".js");
+      if (files.has(twin)) {
+        invalid(label, `${path} and ${twin} both define the same module; TypeScript would type ` +
+            `the .ts while the bundle ships the .js`);
+      }
       libSources.add(path);
       continue;
     }
@@ -358,16 +410,22 @@ async function bundleTypeScriptSources(
   // Loaded on demand: esbuild drives a native binary, and the JavaScript-only path through here
   // (including the importer and the archive tests that run inside workerd) never needs it.
   const { build } = await import("esbuild");
+  // esbuild reports every path it touches with symlinks resolved (a temporary directory on macOS
+  // sits under one), so the roots it is compared against are resolved the same way.
+  const [rootDir, librariesDir] = await Promise.all([
+    realpath(filesDir),
+    realpath(gadgetLibrariesDir()),
+  ]);
   await Promise.all(entries.map(async entry => {
     let metafile: Metafile;
     let text: string;
     try {
       const result = await build({
-        absWorkingDir: filesDir,
+        absWorkingDir: rootDir,
         entryPoints: [`${entry.name}.ts`],
         bundle: true,
         external: [...entry.external],
-        plugins: [gadgetLibraryImports(entry)],
+        plugins: [ownFileImports(rootDir), gadgetLibraryImports(entry)],
         format: "esm",
         platform: entry.platform,
         target: GADGET_TARGET,
@@ -386,14 +444,14 @@ async function bundleTypeScriptSources(
     } catch (err) {
       invalid(label, `${entry.name}.ts failed to bundle: ${errorMessage(err)}`);
     }
-    // Inputs are relative to files/; a library's are relative paths out of it, which is the one
-    // place an input may come from besides the blueprint's own files (never node_modules: a
-    // library's npm dependency would be inlined into an archive nothing audits).
-    const librariesDir = gadgetLibrariesDir();
+    // Inputs are relative to files/. The plugins above decide what resolves, so this is defense in
+    // depth over what was actually inlined: an input that is not one of the blueprint's own files
+    // has to be under the libraries directory, and never from node_modules -- a library's npm
+    // dependency would be inlined into an archive nothing audits.
     for (const input of Object.keys(metafile.inputs)) {
       if (files.has(input)) continue;
-      const absolute = resolve(filesDir, input);
-      const inLibraries = !relative(librariesDir, absolute).startsWith("..") &&
+      const absolute = resolve(rootDir, input);
+      const inLibraries = contains(librariesDir, absolute) &&
           !absolute.split(/[\\/]/u).includes("node_modules");
       if (!inLibraries) {
         invalid(label, `${entry.name}.ts imports ${input}, which is outside the blueprint's files ` +
@@ -407,6 +465,10 @@ async function bundleTypeScriptSources(
               `runtime does not supply`);
         }
       }
+    }
+    if (COMPUTED_DYNAMIC_IMPORT_PATTERN.test(text)) {
+      invalid(label, `${entry.name}.ts contains a dynamic import whose path is not a string ` +
+          `literal; the bundler cannot check it`);
     }
     output.set(`${entry.name}.js`, text);
   }));
@@ -468,7 +530,8 @@ function importedModules(
  * Every spelling a bundler would try that could name a module of the blueprint's own, since which
  * one resolves is the bundler's business: the path as written, an omitted extension, a directory's
  * index module, and the TypeScript source behind a JavaScript extension. A specifier reaching above
- * files/ resolves to nothing here -- esbuild reports that as an import outside the blueprint.
+ * files/ resolves to nothing here -- the bundle rejects that as an import outside the blueprint
+ * (see {@link ownFileImports}).
  */
 function resolveWithinFiles(importer: string, specifier: string): string[] {
   const segments = importer.split("/").slice(0, -1);

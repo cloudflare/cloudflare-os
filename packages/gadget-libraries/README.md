@@ -25,7 +25,10 @@ the type-check programs reach it by path.
 
 A library may import another (`gadgets:ui/client` from a library built on it, say); the blueprint
 build resolves that import the same way. A client entry may not import a library's server side, and
-the build rejects a blueprint that does: it would drag a Durable Object into the iframe.
+the build rejects a blueprint that does: it would drag a Durable Object into the iframe. Nor may a
+blueprint import a library module by relative path (`../../gadget-libraries/ui/src/el.ts`); the
+build rejects any relative import that leaves the blueprint's `files/`, so the specifier is the only
+door.
 
 ## Rules for a library
 
@@ -35,9 +38,10 @@ the build rejects a blueprint that does: it would drag a Durable Object into the
 - **No npm.** What a library imports is inlined into a blueprint's archive, which nothing audits
   afterwards, so the blueprint build rejects an input from `node_modules`. A library is written
   against the platform alone, like a gadget.
-- **Readable.** The inlined code is what the agent reads and edits in an instantiated gadget, so
-  the bundle is not minified and the doc comments in `src/` are for that reader as much as for this
-  repository.
+- **Readable.** The inlined code is what the agent reads and edits in an instantiated gadget. The
+  bundle is not minified, so a library's names and structure survive into it and should read well
+  on their own; its comments do not survive, because esbuild drops ordinary comments whatever the
+  minify settings, so the doc comments in `src/` are for this repository's readers.
 - **Lint applies.** Unlike a blueprint's `files/`, which the repo's lint ignores as user-authored
   gadget source, this is platform code and is checked like the rest of the repo.
 
