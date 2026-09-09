@@ -9,8 +9,8 @@ const here = dirname(fileURLToPath(import.meta.url));
  * modules, so they get a jsdom document by default; a pure module's test opts into node with a
  * `// @vitest-environment node` header. The server entry is tested with `cloudflare:workers`
  * mocked -- the real Durable Object is exercised by the Workshop backend's workerd suite. A
- * library's import of another (`gadgets:ui/client`) resolves here to that library's entry in this
- * tree, as it does in the blueprint build that inlines them.
+ * library's import of another (`gadgets:ui/client`), external in its bundle and resolved through the
+ * gadget's pins at load time, resolves here to that library's entry in this tree.
  */
 export default defineConfig({
   resolve: {

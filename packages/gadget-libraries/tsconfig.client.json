@@ -22,8 +22,8 @@
     // Library modules import each other by on-disk name (`./src/blocks.ts`), the way esbuild
     // resolves them when it bundles them.
     "allowImportingTsExtensions": true,
-    // A library's import of another (`gadgets:ui/client`) resolves to that library's entry in this
-    // tree, as it does in the blueprint build that inlines them.
+    // A library's import of another (`gadgets:ui/client`) is external in its bundle and resolves
+    // through the gadget's pins at load time; here it resolves to that library's entry in this tree.
     "paths": {
       "gadgets:*/client": ["./*/client.ts"],
       "gadgets:*/server": ["./*/server.ts"]

@@ -1,0 +1,5 @@
+{
+  "name": "sync",
+  "version": "1.1.0",
+  "notes": "Collaboration plumbing for a gadget with one Durable Object and many browsers: the server's mutation queue, subscriber registry with presence seeding and versioned upserts; the client's save scheduler with retry backoff, presence roster and reporter, and the subscriber built on the host's RpcTarget. 1.1.0: SubscriberRegistry.broadcast() delivers without waiting -- a failing subscriber is dropped, a hung one holds up only itself, and a callback may re-enter the object's queue -- and returns void; remove() is synchronous; has() reports whether a handle is still registered."
+}

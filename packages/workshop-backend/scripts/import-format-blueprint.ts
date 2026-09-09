@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { loadBundledLibraries } from "./bundled-gadget-libraries.ts";
 import {
   extractFiles,
   findInterruptedImportBackups,
@@ -241,6 +242,12 @@ try {
     await mkdir(dirname(path), {recursive: true});
     await writeFile(path, source);
   }
+  // The staged tree is read the way the blueprint build will read it -- pins checked against the
+  // libraries this deployment bundles -- before it replaces anything, so an archive whose gadget
+  // could not load here fails with the existing source untouched. The rebuild at the end of this
+  // script is the same check again, over the installed tree.
+  await readSourceFiles(join(stagedDir, "files"), `${entry.name}/files`,
+      {libraries: await loadBundledLibraries()});
   if (!scaffold && entry.layout === "extracted") await rename(targetDir, backupDir);
   await rename(stagedDir, targetDir);
   await rm(backupDir, {recursive: true, force: true});

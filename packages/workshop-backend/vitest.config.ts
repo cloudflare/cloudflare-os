@@ -34,8 +34,8 @@ const textModules: Plugin = {
  * tests import modules directly; the main Worker and a test-only SQLite DO binding support the
  * Overseer cost-persistence integration test without loading the full deployment configuration.
  */
-// A blueprint's `gadgets:<name>/<side>` import is inlined by the blueprint build; a test that
-// imports a bundled blueprint's server.ts directly gets the library's source the same way.
+// A gadget's `gadgets:<name>/<side>` import resolves through its pins when the kernel loads it; a
+// test that imports a bundled blueprint's server.ts directly gets the library's source instead.
 const gadgetLibraries = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'gadget-libraries')
 
 export default defineConfig({
@@ -50,6 +50,8 @@ export default defineConfig({
       miniflare: {
         compatibilityDate: '2026-09-04',
         compatibilityFlags: ['experimental', 'nodejs_compat'],
+        // The gadget-libraries suite loads a gadget through the real dynamic loader.
+        workerLoaders: { LOADER: {} },
         durableObjects: {
           TEST_OVERSEER: { className: 'OverseerDurableObject', useSQLite: true },
         },

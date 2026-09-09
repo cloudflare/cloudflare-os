@@ -61,6 +61,7 @@ it("watches a root covering every entry in the table", () => {
       "packages/workshop-backend",
       process.env.FORMAT_BLUEPRINTS_DIR ?? "format-blueprints",
     ),
+    "packages/gadget-libraries",
     "packages/integration-tests/fixtures",
     "packages/integration-tests/fixtures/gatekeeper-test",
     "tsconfig.json",

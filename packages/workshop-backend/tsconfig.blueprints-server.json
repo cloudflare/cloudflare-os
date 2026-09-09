@@ -30,9 +30,10 @@
     // resolves them when it bundles the archive. Program-wide; see the note above about `src/`.
     "allowImportingTsExtensions": true,
     // `paths` replaces rather than extends the base's, so its two entries are repeated here. The
-    // third: `gadgets:<name>/<side>` names a library in packages/gadget-libraries, which the build
-    // inlines into the bundle (see scripts/format-blueprint-files.ts); tsc reads the same entry.
-    // Program-wide too, and harmless to `src/`, which imports nothing by that scheme.
+    // third: `gadgets:<name>/<side>` names a library in packages/gadget-libraries; the bundler
+    // leaves the import in place and the runtime supplies the module (see
+    // scripts/format-blueprint-files.ts). Program-wide too, and harmless to `src/`, which imports
+    // nothing by that scheme.
     "paths": {
       "@gadgets/typed-storage": ["../typed-storage/src/index.ts"],
       "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"],

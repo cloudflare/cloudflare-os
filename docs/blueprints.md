@@ -128,6 +128,14 @@ A deployment can also ship blueprints as data. `packages/workshop-backend/format
 
 The first `/api` request a deployment serves installs any whose manifest fingerprint has changed. The fingerprint covers its title, description, author, revision, output presentation, and generated archive content hash. Each bundled blueprint is promoted only once ever -- an upgrade never undoes an admin's later removal or overrides.
 
+## Gadget libraries
+
+A gadget may import shared code instead of carrying its own copy: `import { el } from "gadgets:ui/client"` in its `client.js`, `import { MutationQueue } from "gadgets:sync/server"` in its `server.js`. The libraries live in `packages/gadget-libraries/<name>/` and are bundled by the Workshop build into the Worker (`build:gadget-libraries`, one client and one server ES module per library, each with a content hash, plus the library's TypeScript declarations); the deployment ships exactly those bundles and stores no library version anywhere. The kernel supplies them at load time -- in the sandboxed iframe through an inline import map whose entries are `data:` modules the frontend fetches once per content hash (`UiBundle.libraries`, `GadgetClient.getLibraryCode`), in the Durable Object through the dynamic loader's module map, and in a browser-mode export through the same import map under a per-render nonce.
+
+Which libraries a gadget uses is a file in its own tree, `gadget.json`: `{"libraries": {"sync": "latest", "ui": "latest"}}` -- every library the gadget loads, transitively, since a library's own `gadgets:` imports resolve through the pins of the gadget loading it. `latest` is the shipped bundle, so every workspace pinned that way runs the deployment's current library the way a hosted document updates under its author; a library therefore migrates its stored shape on load, since no upgrade step runs between versions. The pin file is read from the committed files, or from a chat's proposed files, so a chat can propose a pin change and run the gadget against it in its preview. The blueprint build checks a bundled blueprint's imports against its pins (every import pinned, on the right side, naming a library the deployment bundles; every pin imported); the kernel refuses to instantiate a blueprint whose pins do not resolve and fails the load of a gadget whose `gadget.json` is malformed or names a library the deployment does not ship. The bundled Docs, Sheets and Slides blueprints are built on `ui` and `sync`.
+
+**How the agent learns a library's interface.** No bundle carries doc comments, so the agent does not read a library's code. Each library ships its TypeScript declarations (emitted from the libraries' own tsconfigs by `build:gadget-library-types`, doc comments intact), and the read-only `describeGadgetLibrary(name)` tool prints them with the library's version, notes and dependencies -- in every workspace, and to sub-agents too. `listGadgetLibraries` lists what the deployment ships and, given a gadget, which of them it pins. `describeBinding` for a gadget whose committed `server.js` re-exports its `Gadget` class from a library points at `describeGadgetLibrary` rather than at the file.
+
 ## Creating and Managing Blueprints
 
 Blueprints are managed through the **Blueprint** button in the gadget editor header. The UI allows:
@@ -160,7 +168,7 @@ When someone opens a blueprint link (`/blueprint/<id>`), they see the **Blueprin
    - Creates gatekeepers from the user's binding assignments (pipelined for performance).
    - Returns the new Overseer stub, and the UI redirects to the new gadget.
 
-The new gadget is independent from the blueprint source: it has its own storage, chat history, and bindings. There is currently no mechanism for automatic updates from the blueprint to existing instances (though the Yjs-based storage format could support this in the future).
+The new gadget is independent from the blueprint source: it has its own storage, chat history, and bindings, and its code is a copy -- `initializeFromBlueprint` writes the blueprint's files as a parentless commit. There is no mechanism that pushes a blueprint's later versions into existing instances. What does reach them is the *library* a blueprint's code imports (see "Gadget libraries" above): a gadget pinned to `latest` runs whatever the deployment currently ships, so a library fix reaches every workspace built on it at the next deploy, while the gadget's own code stays as it was instantiated.
 
 ### Instantiation by the agent
 

@@ -19,6 +19,8 @@ export type WorkshopObservabilityFields = {
   gadgetId: string;
   gatekeeperId: number | string;
   hookId: number;
+  /** The libraries a gadget load resolved, as `specifier@hash-prefix`. */
+  libraries: string[];
   logBytes: number;
   modelId: string;
   observerId: string;
@@ -37,6 +39,8 @@ export type WorkshopObservabilityFields = {
   toolCallId: string;
   toolName: string;
   vendorId: string;
+  /** A workpiece (gadget or worktree) within the workspace `gadgetId` names. */
+  workpieceId: number;
 };
 
 /** Ambient observability fields for one Workshop operation. */

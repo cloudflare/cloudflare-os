@@ -14,6 +14,8 @@ neutral sidebars so the slide canvas remains the visual focus.
 - `client.js` — Design tokens, the component registry, slide renderer,
   block interactions (drag, resize, inline text edit), and the builder
   shell (slide list, inspector, palette, control bar, present mode).
+- `gadget.json` — which shared gadget libraries this deck loads, and where
+  from.
 
 In the repository these two modules are TypeScript (`client.ts`, `server.ts`
 and the shared `lib/protocol.ts` types under
@@ -25,13 +27,12 @@ and the shared `lib/protocol.ts` types under
 Three pieces of this deck are not its own: the element builder, the two
 steps that read an uploaded image, and the object the Durable Object calls
 back. They are shared with the other document-style gadgets and are
-imported from the libraries in `packages/gadget-libraries`, which the build
-inlines into the two files installed here:
+imported from the libraries the deployment ships:
 
-```ts
+```js
 import { el, loadImage, readFileAsDataURL } from "gadgets:ui/client";
-import { createSubscriber } from "gadgets:sync/client";   // client.ts
-import { SubscriberRegistry } from "gadgets:sync/server"; // server.ts
+import { createSubscriber } from "gadgets:sync/client";   // client.js
+import { SubscriberRegistry } from "gadgets:sync/server"; // server.js
 ```
 
 - **`ui`** — `el(tag, props, children)` builds every element in
@@ -48,8 +49,11 @@ import { SubscriberRegistry } from "gadgets:sync/server"; // server.ts
   viewer sees the same slides and no cursors are shared — so the registry
   is built with no presence hooks and is a plain fan-out.
 
+`gadget.json` pins both to `latest`, the bundles the running deployment
+serves, so a deck created from it follows the library the deployment ships.
 Everything else here — the tokens, the `COMPONENTS` registry, the layout and
-snapping code, the deck document and its undo history — is this blueprint's.
+snapping code, the deck document and its undo history — is this blueprint's,
+and a library change may not alter what a viewer sees.
 
 ## Slide formats
 

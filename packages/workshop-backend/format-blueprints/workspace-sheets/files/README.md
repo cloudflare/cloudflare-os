@@ -156,8 +156,12 @@ Formatting keys accepted by the server are `b` (bold), `i` (italic), `u` (underl
 
 ## Architecture
 
-Both sides are built on the shared gadget libraries in `packages/gadget-libraries`, which the build
-inlines into the `client.js` and `server.js` it ships.
+The browser side is built on the shared gadget libraries the deployment ships. `gadget.json` pins
+them:
+
+```json
+{"libraries": {"sync": "latest", "ui": "latest"}}
+```
 
 `gadgets:ui/client` draws the chrome: the element builder, the shared toolbar icons and controls
 (icon and segment buttons, groups, colour pickers, the dropdown behind the number-format menu), the

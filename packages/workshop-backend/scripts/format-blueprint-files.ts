@@ -6,13 +6,18 @@
 // the running gadget and the agent that later edits it see one JavaScript file per side, as they
 // do for a blueprint written in plain JavaScript.
 
-import { access, lstat, readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { gzipSync, gunzipSync } from "node:zlib";
-import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import * as Y from "yjs";
-import type { Metafile, Plugin } from "esbuild";
+import type { Metafile } from "esbuild";
+import {
+  type GadgetPins,
+  LIBRARY_SIDES,
+  parseLibrarySpecifier,
+  readPins,
+} from "../src/gadget-libraries.ts";
 
 const MAGIC = 0xec2e2d3a2300e317n;
 const VERSION = 1;
@@ -161,6 +166,7 @@ export function buildContent(files: Map<string, string>, label: string): Uint8Ar
 export async function readSourceFiles(
   filesDir: string,
   label: string,
+  options: ReadSourceOptions = {},
 ): Promise<Map<string, string>> {
   const files = new Map<string, string>();
   let totalBytes = 0;
@@ -192,73 +198,36 @@ export async function readSourceFiles(
 
   await visit(filesDir, "");
   validateFilePaths(files.keys(), label);
-  return await bundleTypeScriptSources(filesDir, files, label);
+  const output = await bundleTypeScriptSources(filesDir, files, label);
+  checkLibraryPins(output, label, options.libraries);
+  return output;
 }
+
+export type ReadSourceOptions = {
+  /**
+   * The libraries the deployment bundles, each with the names of the libraries it imports (see
+   * scripts/gadget-libraries-source.ts). When given, a pin naming any other library fails the
+   * build, and a library's own dependencies must be pinned too; when omitted -- the archive tests,
+   * and an importer that only needs the files -- only the blueprint's direct imports are checked.
+   */
+  libraries?: ReadonlyMap<string, readonly string[]>;
+};
 
 /**
  * The two gadget entry points, each bundled for the runtime that loads it: the client runs as an
  * ES module inside a sandboxed browser iframe, the server as a Durable Object class in workerd.
  *
- * `external` is what that runtime supplies, and it is little: the iframe supplies nothing, and the
- * Durable Object gets workerd's own `cloudflare:*`. Everything else a blueprint imports has to be a
- * file it owns or a gadget library (see {@link gadgetLibraryImports}), so a bare `import "yjs"`
- * fails this build rather than going missing inside the sandbox.
+ * `external` is what that runtime supplies, and it is little: both sides get the gadget libraries
+ * the deployment ships (`gadgets:<name>/<side>`, resolved through the pins in the blueprint's
+ * `gadget.json` -- see {@link checkLibraryPins}), and the Durable Object gets workerd's own
+ * `cloudflare:*`. Everything else a blueprint imports has to be a file it owns, so a bare
+ * `import "yjs"` fails this build rather than going missing inside the sandbox; a library may
+ * bundle npm packages, a gadget may not.
  */
 const ENTRY_POINTS = [
-  { name: "client", platform: "browser", external: [] },
-  { name: "server", platform: "neutral", external: ["cloudflare:*"] },
+  { name: "client", platform: "browser", external: ["gadgets:*"] },
+  { name: "server", platform: "neutral", external: ["cloudflare:*", "gadgets:*"] },
 ] as const;
-
-type EntryPoint = (typeof ENTRY_POINTS)[number];
-
-/**
- * Where the shared gadget libraries live: `gadgets:<name>/<side>` names `<name>/<side>.ts` in
- * `packages/gadget-libraries`. Resolved lazily, since this module is also loaded inside workerd by
- * the archive tests, where nothing bundles.
- */
-const gadgetLibrariesDir = (): string =>
-  resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "gadget-libraries");
-
-/** The shape of a library specifier: the library's directory name and the side imported. */
-const LIBRARY_SPECIFIER = /^gadgets:([a-z][a-z0-9-]*)\/(client|server)$/u;
-
-/**
- * Resolves a blueprint's `gadgets:<name>/<side>` imports to the library's entry in
- * `packages/gadget-libraries`, so esbuild inlines what the entry uses into the bundle the way it
- * inlines a `lib/` module. The archive stays self-contained: a gadget created from the blueprint
- * carries its own copy of the library as of its instantiation, and nothing resolves the specifier
- * at runtime.
- *
- * The side has to be the entry's -- a client that imported `gadgets:x/server` would drag a Durable
- * Object into the iframe -- and the library has to exist; a library's own import of another library
- * resolves through the same rule. Each failure is reported as the import that caused it.
- */
-function gadgetLibraryImports(entry: EntryPoint): Plugin {
-  return {
-    name: "gadget-library-imports",
-    setup(pluginBuild) {
-      // A Go regular expression, so no `u` flag: esbuild compiles the filter itself.
-      pluginBuild.onResolve({ filter: /^gadgets:/ }, async args => {
-        const parsed = LIBRARY_SPECIFIER.exec(args.path);
-        if (!parsed) {
-          return { errors: [{ text: `${args.path} is not a library ` +
-              `(gadgets:<name>/client or gadgets:<name>/server)` }] };
-        }
-        const [, name, side] = parsed;
-        if (side !== entry.name) {
-          return { errors: [{ text: `imports ${args.path} from the ${entry.name} side` }] };
-        }
-        const path = join(gadgetLibrariesDir(), name, `${side}.ts`);
-        try {
-          await access(path);
-        } catch {
-          return { errors: [{ text: `no gadget library named ${name}` }] };
-        }
-        return { path };
-      });
-    },
-  };
-}
 
 /** Where a blueprint's TypeScript modules live; everything under it is an input to the entries. */
 const LIB_PREFIX = "lib/";
@@ -306,16 +275,16 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  *
  * Bundles are readable rather than minified, because the agent edits the installed file. The only
  * imports that survive are the ones the entry's runtime supplies (see {@link ENTRY_POINTS}); every
- * other specifier has to resolve to a file the blueprint owns or to a gadget library (see
- * {@link gadgetLibraryImports}). esbuild enforces that for bare specifiers, which it resolves or
- * fails on, but not for URLs: `import x from "https://..."` is left in the output as an external
- * without a word, so the bundle's surviving imports are checked against the entry's allowlist here.
+ * other specifier has to resolve to a file the blueprint owns. esbuild enforces that for bare
+ * specifiers, which it resolves or fails on, but not for URLs: `import x from "https://..."` is
+ * left in the output as an external without a word, so the bundle's surviving imports are checked
+ * against the entry's allowlist here.
  *
  * Rejected, rather than silently mis-shipped: an entry present as both `x.ts` and `x.js`; a `.ts`
  * file that is neither an entry nor under `lib/`; a TypeScript dialect the archive has no place for
  * (see {@link UNSUPPORTED_TYPESCRIPT_PATTERN}); a `lib/` module no entry imports, which would be
- * dropped from the archive; and an import that escapes files/ other than into the libraries, which
- * would inline code the blueprint does not own.
+ * dropped from the archive; and an import that escapes files/, which would inline code the
+ * blueprint does not own.
  */
 async function bundleTypeScriptSources(
   filesDir: string,
@@ -324,7 +293,7 @@ async function bundleTypeScriptSources(
 ): Promise<Map<string, string>> {
   const output = new Map<string, string>();
   const libSources = new Set<string>();
-  const entries: EntryPoint[] = [];
+  const entries: Array<(typeof ENTRY_POINTS)[number]> = [];
   for (const [path, source] of files) {
     if (DECLARATION_PATTERN.test(path)) continue;
     if (UNSUPPORTED_TYPESCRIPT_PATTERN.test(path)) {
@@ -367,7 +336,6 @@ async function bundleTypeScriptSources(
         entryPoints: [`${entry.name}.ts`],
         bundle: true,
         external: [...entry.external],
-        plugins: [gadgetLibraryImports(entry)],
         format: "esm",
         platform: entry.platform,
         target: GADGET_TARGET,
@@ -386,18 +354,9 @@ async function bundleTypeScriptSources(
     } catch (err) {
       invalid(label, `${entry.name}.ts failed to bundle: ${errorMessage(err)}`);
     }
-    // Inputs are relative to files/; a library's are relative paths out of it, which is the one
-    // place an input may come from besides the blueprint's own files (never node_modules: a
-    // library's npm dependency would be inlined into an archive nothing audits).
-    const librariesDir = gadgetLibrariesDir();
     for (const input of Object.keys(metafile.inputs)) {
-      if (files.has(input)) continue;
-      const absolute = resolve(filesDir, input);
-      const inLibraries = !relative(librariesDir, absolute).startsWith("..") &&
-          !absolute.split(/[\\/]/u).includes("node_modules");
-      if (!inLibraries) {
-        invalid(label, `${entry.name}.ts imports ${input}, which is outside the blueprint's files ` +
-            `and the gadget libraries`);
+      if (!files.has(input)) {
+        invalid(label, `${entry.name}.ts imports ${input}, which is outside the blueprint's files`);
       }
     }
     for (const bundle of Object.values(metafile.outputs)) {
@@ -429,6 +388,88 @@ function matchesExternal(specifier: string, patterns: readonly string[]): boolea
   return patterns.some(pattern => pattern.endsWith("*")
       ? specifier.startsWith(pattern.slice(0, -1))
       : specifier === pattern);
+}
+
+/**
+ * Checks that a blueprint's library imports and its `gadget.json` pins agree, on the files the
+ * archive ships (so a blueprint written in JavaScript is checked exactly like a bundled one).
+ *
+ * Every `gadgets:<name>/<side>` a side's entry reaches must be pinned, must name that side (a
+ * client that imports `gadgets:x/server` would drag a Durable Object into the iframe), and when
+ * `libraries` is given must name a library the deployment ships -- and so must every library those
+ * import, transitively, since a library's own `gadgets:` imports resolve through the pins of the
+ * gadget loading it; every pin must be imported by something, directly or through a library, since
+ * an unused pin would still be resolved on every load. The import scan is the same over-estimate
+ * {@link importedModules} makes, so an unpinned specifier in a comment fails the build too; the fix
+ * is the pin or the comment.
+ */
+export function checkLibraryPins(
+  files: ReadonlyMap<string, string>,
+  label: string,
+  libraries: ReadonlyMap<string, readonly string[]> | undefined,
+): void {
+  let pins: GadgetPins;
+  try {
+    pins = readPins(files);
+  } catch (err) {
+    invalid(label, errorMessage(err));
+  }
+  const imported = new Set<string>();
+  for (const side of LIBRARY_SIDES) {
+    for (const [importer, specifier] of libraryImports(files, `${side}.js`)) {
+      const parsed = parseLibrarySpecifier(specifier);
+      if (!parsed) {
+        invalid(label, `${importer} imports ${specifier}, which is not a library ` +
+            `(gadgets:<name>/client or gadgets:<name>/server)`);
+      }
+      if (parsed.side !== side) {
+        invalid(label, `${importer} imports ${specifier} from the ${side} side`);
+      }
+      if (!pins.has(parsed.name)) {
+        invalid(label, `${importer} imports ${specifier}, which gadget.json does not pin`);
+      }
+      if (libraries && !libraries.has(parsed.name)) {
+        invalid(label, `${importer} imports ${specifier}, but the deployment bundles no library ` +
+            `named ${parsed.name}`);
+      }
+      imported.add(parsed.name);
+    }
+  }
+  if (libraries) {
+    // What the imported libraries import in turn: the gadget pins those too.
+    for (const name of imported) {
+      for (const dependency of libraries.get(name) ?? []) {
+        if (imported.has(dependency)) continue;
+        if (!pins.has(dependency)) {
+          invalid(label, `gadget.json must also pin ${dependency}, which the ${name} library imports`);
+        }
+        imported.add(dependency);
+      }
+    }
+  }
+  for (const name of pins.keys()) {
+    if (!imported.has(name)) invalid(label, `gadget.json pins ${name}, which nothing imports`);
+  }
+}
+
+/**
+ * The `gadgets:` specifiers written in the files reachable from `entryPath`, each with the file
+ * that wrote it. The walk is {@link importedModules}'s, over the same specifier scan.
+ */
+function libraryImports(
+  files: ReadonlyMap<string, string>,
+  entryPath: string,
+): Array<[importer: string, specifier: string]> {
+  const found: Array<[string, string]> = [];
+  for (const path of importedModules(files, [entryPath])) {
+    const source = MODULE_PATTERN.test(path) ? files.get(path) : undefined;
+    if (source === undefined) continue;
+    for (const [, doubleQuoted, singleQuoted] of source.matchAll(SPECIFIER_PATTERN)) {
+      const specifier = doubleQuoted ?? singleQuoted!;
+      if (specifier.startsWith("gadgets:")) found.push([path, specifier]);
+    }
+  }
+  return found;
 }
 
 /**

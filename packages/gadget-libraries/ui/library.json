@@ -1,0 +1,5 @@
+{
+  "name": "ui",
+  "version": "1.0.0",
+  "notes": "DOM helpers shared by the document-style gadgets: the el() element builder, the SVG icon factory and a table of toolbar icons, toolbar controls (icon and segment buttons, groups, colour pickers, a custom dropdown), the in-page prompt that stands in for window.prompt, a save-status indicator, relative timestamps, and image reading and downscaling. Client-only; its server module exports nothing but a `clientOnly` flag."
+}

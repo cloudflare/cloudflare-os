@@ -37,7 +37,10 @@ const EXPORT_DOCUMENT_URL = "https://gadget-export.invalid/";
 // TODO: CSP and request interception do not cover WebRTC/STUN. The same gap exists for Gadgets
 // running inside an iframe in the user's browser. We should close the gap in both places. For now,
 // extending the same gap to remotely-rendered gadgets is acceptable.
-const EXPORT_DOCUMENT_CSP = "default-src 'none'; frame-src 'none'; script-src data:; " +
+// `script-src` admits `data:` modules plus exactly one inline script: the import map that names
+// the gadget's libraries, which the platform only allows inline. Its nonce is minted per render.
+const exportDocumentCsp = (nonce: string): string =>
+  `default-src 'none'; frame-src 'none'; script-src data: 'nonce-${nonce}'; ` +
   "style-src data: 'unsafe-inline'; img-src data: blob:; media-src data: blob:; " +
   "font-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; " +
   "connect-src 'none'; sandbox allow-scripts;";
@@ -130,26 +133,49 @@ function scriptUrl(source: string): string {
   return `data:text/javascript;charset=utf-8,${encodeURIComponent(source)}`;
 }
 
-function makeExportHtml(clientCode: string, formatId: string): string {
+/**
+ * What the export renders: the gadget's client.js and the client libraries its pins resolve to
+ * (see resolveLibraries in gadget-library-resolution.ts), each served under its specifier.
+ */
+export type ExportBundle = {
+  /** The gadget's `client.js`, run as the export's module. */
+  jsCode: string;
+  /** Each client library the gadget imports, keyed by the `gadgets:<name>/client` it imports. */
+  libraries: {specifier: string, code: string}[];
+};
+
+function makeExportHtml(bundle: ExportBundle, formatId: string, nonce: string): string {
   let clientPrefix = String.raw`//# sourceURL=client.js
 const { gadget, RpcStub, RpcTarget } = globalThis.__workshopExportRuntime;
 delete globalThis.__workshopExportRuntime;
 `;
-  let clientUrl = scriptUrl(clientPrefix + clientCode);
+  let clientUrl = scriptUrl(clientPrefix + bundle.jsCode);
   let runtimeUrl = scriptUrl(
       `globalThis.gadgetExportFormatId = ${JSON.stringify(formatId)};\n` +
       `globalThis.__workshopExportClientUrl = ${JSON.stringify(clientUrl)};\n` +
       BROWSER_EXPORT_RUNTIME);
 
+  // Import maps must be inline and precede the first module load; the runtime's `import()` of the
+  // client module comes after. base64 rather than percent-encoding: a library is minified UTF-8
+  // and the map has to hold it verbatim.
+  let importMap = bundle.libraries.length === 0 ? "" : `
+  <script type="importmap" nonce="${nonce}">${JSON.stringify({imports: Object.fromEntries(
+      bundle.libraries.map(({specifier, code}) => [specifier, moduleDataUrl(code)]))})
+      .replaceAll("<", "\\u003c")}</script>`;
+
   return `<!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8">
+  <meta charset="utf-8">${importMap}
 </head>
 <body>
   <script src="${runtimeUrl}"></script>
 </body>
 </html>`;
+}
+
+function moduleDataUrl(source: string): string {
+  return `data:text/javascript;base64,${new TextEncoder().encode(source).toBase64()}`;
 }
 
 /**
@@ -161,7 +187,7 @@ delete globalThis.__workshopExportRuntime;
  */
 export async function renderGadgetInBrowser(
   browserBinding: BrowserRun,
-  clientCode: string,
+  bundle: ExportBundle,
   documentTitle: string,
   gadget: RpcStub<any>,
   format: GadgetExportFormat,
@@ -209,6 +235,7 @@ export async function renderGadgetInBrowser(
         format.contentType === "application/pdf" ? "print" : "screen",
       );
       await page.setRequestInterception(true);
+      let nonce = crypto.randomUUID();
       page.on("request", (request) => {
         let url = request.url();
         if (request.isNavigationRequest()) {
@@ -216,8 +243,8 @@ export async function renderGadgetInBrowser(
             void request.respond({
               status: 200,
               contentType: "text/html",
-              headers: {"Content-Security-Policy": EXPORT_DOCUMENT_CSP},
-              body: makeExportHtml(clientCode, format.id),
+              headers: {"Content-Security-Policy": exportDocumentCsp(nonce)},
+              body: makeExportHtml(bundle, format.id, nonce),
             });
           } else {
             void request.abort();
