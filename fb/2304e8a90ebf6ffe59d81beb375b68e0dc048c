@@ -1,0 +1,33 @@
+packages/gadget-libraries/ui/src/images.ts
+  s_f7ac050e40ad3e::t_697fc7e001e39c 24-29,41-45,67-71,78,86
+packages/workshop-backend/scripts/format-blueprint-files.ts
+  s_f7ac050e40ad3e::t_f09ab503fe9984 345-349,351-353,355,389-390,505-506
+packages/gadget-libraries/ui/__tests__/images.test.ts
+  s_f7ac050e40ad3e::t_697fc7e001e39c 177,181-196,202
+packages/workshop-backend/vitest.blueprints.config.ts
+  s_f7ac050e40ad3e::t_697fc7e001e39c 8-9
+packages/workshop-backend/format-blueprints/workspace-sheets/files/client.ts
+  s_f7ac050e40ad3e::t_f09ab503fe9984 1222-1228,1232-1235,1269-1273,1281-1287,1289
+packages/workshop-backend/package.json
+  s_f7ac050e40ad3e::t_697fc7e001e39c 14
+packages/workshop-backend/__tests__/format-blueprint-files.test.ts
+  s_f7ac050e40ad3e::t_f09ab503fe9984 417-420,426-427,435-443
+packages/gadget-libraries/ui/README.md
+  s_f7ac050e40ad3e::t_697fc7e001e39c 28,73-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fb2304e8a90ebf6ffe59d81beb375b68e0dc048c",
+  "prompts": {},
+  "sessions": {
+    "s_f7ac050e40ad3e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63f09b14-0f5c-4bb1-baad-8ef528ed20cf",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

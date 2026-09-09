@@ -1,0 +1,139 @@
+packages/workshop-backend/tsconfig.blueprints-tests.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 30-32
+scripts/vite.config.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 35-39
+packages/workshop-backend/scripts/build-gadget-library-types.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 1-39
+AGENTS.md
+  s_a640e72b36f6d8::t_a7e964ddb380f4 21,66
+packages/workshop-backend/format-blueprints/workspace-slides/blueprint.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 16
+packages/workshop-backend/src/agent.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 19-21,320-362,364-367,371-372,377,573-575,577,731-732,945-952,1030,1908-1909,1911-1912,1988-1989,2499-2501,2649-2658,2926-2927,3151-3211,3385-3386,3389
+packages/workshop-backend/format-blueprints/workspace-sheets/files/gadget.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 1-6
+packages/workshop-backend/format-blueprints/workspace-slides/files/gadget.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 1-6
+packages/gadget-libraries/tsconfig.client.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 25-26
+packages/workshop-backend/format-blueprints/workspace-slides/files/README.md
+  s_a640e72b36f6d8::t_a7e964ddb380f4 17-18,30,32,34-35,52-53,55-56
+packages/workshop-backend/tsconfig.blueprints-server.json
+  s_a640e72b36f6d8::t_420471f110b855 39-41
+packages/workshop-backend/format-blueprints/workspace-docs/blueprint.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 17
+packages/workshop-backend/vite.config.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 4,25,28-58,66-73,75-76,80,82-83,111,130
+packages/workshop-backend/scripts/format-blueprint-files.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 9,15-20,169,201-203,206-215,220-225,228-229,235-238,344-347,353,365,405-406,419,438,440-441,488-568
+  s_a640e72b36f6d8::t_1d950fcd61629d 354,443
+  s_a640e72b36f6d8::t_a236fc1c28c33e 569
+  s_f7ac050e40ad3e::t_38224050c1e27e 355-356
+packages/workshop-shared/src/api.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 1448-1449,1453-1476,3060-3063,3069,3251-3278,4043-4050
+  s_a640e72b36f6d8::t_e525c76b9a53a2 4051
+packages/workshop-backend/scripts/build-gadget-libraries.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 1-329
+packages/gadget-libraries/package.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 5,10,14
+packages/workshop-backend/scripts/gadget-libraries-source.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 1-113
+packages/workshop-backend/format-blueprints/workspace-slides/files/client.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 21-22
+packages/gadget-libraries/ui/library.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 1-5
+packages/workshop-backend/format-blueprints/workspace-sheets/blueprint.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 16
+packages/integration-tests/src/worker-inputs.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 70-71
+packages/workshop-backend/package.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 9,11-13,15,23
+packages/workshop-backend/format-blueprints/workspace-docs/files/README.md
+  s_a640e72b36f6d8::t_a7e964ddb380f4 7-9
+packages/workshop-backend/scripts/import-format-blueprint.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 9,245-250
+packages/workshop-backend/format-blueprints/workspace-docs/files/gadget.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 1-6
+packages/workshop-backend/scripts/bundled-gadget-libraries.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 1-31
+packages/workshop-backend/src/overseer.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 64-68,4892-4895,4916-4921,5106-5132,5134-5137,5164,5167,6812-6817,6837-6839,6848-6872,9026-9027,9030-9031,9047-9048,10118-10122,12182-12191,12529-12532,12801-12806
+  s_a640e72b36f6d8::t_c8466d15ef5977 12807
+packages/workshop-backend/vitest.blueprints.config.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 20-23
+docs/blueprints.md
+  s_a640e72b36f6d8::t_a7e964ddb380f4 131-138,171
+packages/workshop-backend/__tests__/gadget-libraries.test.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 1-460
+packages/workshop-backend/src/gadget-libraries.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 1-116
+packages/workshop-backend/__tests__/format-blueprint-files.test.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 13-19,44,400-424,495,497-506,509-518,521-529,531-533,536-701,704-706,708-709,714-720,723,725-726,730-731,734,736-738,742,745-763,765-843
+packages/workshop-backend/format-blueprints/workspace-docs/files/client.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 4-8
+packages/gadget-libraries/tsconfig.tests.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 20-21
+packages/gadget-libraries/ui/README.md
+  s_a640e72b36f6d8::t_a7e964ddb380f4 10-11
+packages/workshop-backend/format-blueprints/workspace-sheets/files/README.md
+  s_a640e72b36f6d8::t_a7e964ddb380f4 159-164
+packages/gadget-libraries/sync/library.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 1-5
+packages/workshop-backend/src/browser-export.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 40-43,136-147,152,158-165,169,177-180,190,238,246-247
+packages/workshop-backend/tsconfig.blueprints-client.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 33-34
+packages/workshop-backend/vitest.config.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 37-38,53-54
+scripts/build-format-blueprints.test.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 1,232-287,370-396
+  s_a640e72b36f6d8::t_c446c7b6b2e522 397
+packages/workshop-backend/src/gadget-library-resolution.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 1-135
+scripts/run-dev-server.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 297-302,330-334,337-346
+packages/gadget-libraries/vitest.config.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 12-13
+packages/gadget-libraries/tsconfig.server.json
+  s_a640e72b36f6d8::t_a7e964ddb380f4 17-18
+packages/workshop-backend/__tests__/browser-export.test.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 212,328-359,377,413,466,499
+.gitignore
+  s_a640e72b36f6d8::t_a7e964ddb380f4 12-15
+packages/workshop-backend/format-blueprints/README.md
+  s_a640e72b36f6d8::t_a7e964ddb380f4 20,31-48,67-72,77,92-93
+packages/workshop-backend/scripts/build-format-blueprints.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 22,25,101-102,119-120,135-136,139
+packages/workshop-backend/src/observability.ts
+  s_a640e72b36f6d8::t_a7e964ddb380f4 22-23,42-43
+packages/gadget-libraries/README.md
+  s_a640e72b36f6d8::t_a7e964ddb380f4 3-13,19-21,27-57,61-86
+packages/workshop-backend/wrangler.jsonc
+  s_a640e72b36f6d8::t_a7e964ddb380f4 7-9
+pnpm-lock.yaml
+  s_a640e72b36f6d8::t_1b307e74f58acb 935-937
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6da3d90b07a8d9d8cbc8caf259e85151a57f7fbe",
+  "prompts": {},
+  "sessions": {
+    "s_a640e72b36f6d8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "537f9b15-2069-4a19-b899-146ed10343d1",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f7ac050e40ad3e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63f09b14-0f5c-4bb1-baad-8ef528ed20cf",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
