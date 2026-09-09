@@ -1,0 +1,27 @@
+{
+  "name": "@gadgets/gadget-libraries",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Libraries the bundled format blueprints import as `gadgets:<name>/client` and `gadgets:<name>/server`. Inlined by the Workshop backend's blueprint build; not a deployable Worker and never imported by one.",
+  "type": "module",
+  "exports": {
+    "./sync/client": "./sync/client.ts",
+    "./sync/server": "./sync/server.ts",
+    "./sync/*": "./sync/src/*.ts",
+    "./ui/client": "./ui/client.ts",
+    "./ui/server": "./ui/server.ts",
+    "./ui/*": "./ui/src/*.ts"
+  },
+  "scripts": {
+    "test:run": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@gadgets/scripts": "workspace:*",
+    "@types/node": "^26.1.0",
+    "jsdom": "^26.1.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

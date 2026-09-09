@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MutationQueue, SubscriberRegistry } from "../format-blueprints/workspace-sheets/files/lib/sync/server.ts";
+import { MutationQueue, SubscriberRegistry } from "gadgets:sync/server";
 import { ExportHandler, Gadget } from "../format-blueprints/workspace-sheets/files/server.ts";
 import { workbookToXlsx } from "../format-blueprints/workspace-sheets/files/lib/xlsx.ts";
 import { createZip, crc32 } from "../format-blueprints/workspace-sheets/files/lib/zip.ts";

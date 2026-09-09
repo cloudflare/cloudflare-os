@@ -409,4 +409,59 @@ describe.skipIf(inWorkerd)("format blueprint TypeScript sources", () => {
     let files = await readSourceFiles(supplied, "example/files");
     expect(files.get("server.js")).toMatch(/from "cloudflare:workers";/u);
   });
+
+  describe("gadget library imports", () => {
+    it("inlines a library's entry and what it reaches, from packages/gadget-libraries", async () => {
+      let directory = await sourceTree({
+        "client.ts": [
+          'import { el } from "gadgets:ui/client";',
+          'document.body.append(el("div", { text: "hi" }));',
+        ].join("\n"),
+        "server.ts": 'export { MutationQueue } from "gadgets:sync/server";',
+      });
+
+      let files = await readSourceFiles(directory, "example/files");
+
+      // Nothing of the specifier survives: the archive is self-contained, and a gadget created from
+      // it carries its copy of the library.
+      expect([...files.keys()]).toEqual(["client.js", "server.js"]);
+      expect(files.get("client.js")).toContain("function el(");
+      expect(files.get("client.js")).not.toContain("gadgets:");
+      expect(files.get("server.js")).toContain("MutationQueue = class");
+      expect(files.get("server.js")).not.toContain("gadgets:");
+    });
+
+    it.each([
+      ["client", "server"],
+      ["server", "client"],
+    ] as const)("rejects %s.ts importing a library's %s side", async (entry, side) => {
+      let directory = await sourceTree({
+        [`${entry}.ts`]: `import * as ui from "gadgets:ui/${side}";\nexport default ui;\n`,
+      });
+
+      await expect(readSourceFiles(directory, "example/files")).rejects
+        .toThrow(new RegExp(`${entry}\\.ts failed to bundle: .*imports gadgets:ui/${side} from ` +
+            `the ${entry} side`, "su"));
+    });
+
+    it("rejects a library the repository does not have", async () => {
+      let directory = await sourceTree({
+        "client.ts": 'import { x } from "gadgets:nope/client";\nx();\n',
+      });
+
+      await expect(readSourceFiles(directory, "example/files")).rejects
+        .toThrow(/client\.ts failed to bundle: .*no gadget library named nope/su);
+    });
+
+    it.each(["gadgets:ui", "gadgets:ui/lib", "gadgets:ui/client/index.js", "gadgets:Ui/client"])(
+      "rejects %s, which is not a library specifier", async specifier => {
+        let directory = await sourceTree({
+          "client.ts": `import * as ui from "${specifier}";\nexport default ui;\n`,
+        });
+
+        await expect(readSourceFiles(directory, "example/files")).rejects
+          .toThrow(new RegExp(`client\\.ts failed to bundle: .*${specifier.replaceAll("/", "\\/")} ` +
+              `is not a library \\(gadgets:<name>\\/client or gadgets:<name>\\/server\\)`, "su"));
+      });
+  });
 });

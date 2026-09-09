@@ -18,14 +18,14 @@
  *  Present mode (F) hides all chrome and fills the viewport.
  *
  *  The element builder, the two image-reading steps and the subscriber
- *  `RpcTarget` come from the shared `lib/ui` and `lib/sync` modules, the
- *  copies every document-style blueprint carries. Everything below them —
+ *  `RpcTarget` come from the shared `ui` and `sync` libraries, which the
+ *  build inlines into this file. Everything below them —
  *  the design tokens, the COMPONENTS registry, the slide renderer and the
  *  builder shell — is this deck's own.
  * ========================================================================= */
 
-import { type ElChild, el, loadImage, readFileAsDataURL } from "./lib/ui/client.ts";
-import { type SyncHost, createSubscriber } from "./lib/sync/client.ts";
+import { type ElChild, el, loadImage, readFileAsDataURL } from "gadgets:ui/client";
+import { type SyncHost, createSubscriber } from "gadgets:sync/client";
 import type {
   Block,
   BlockInput,

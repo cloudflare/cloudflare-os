@@ -1,11 +1,11 @@
 // ---------------------------------------------------------------------------
 // Docs — a Google-Docs-style editor. Builds the entire UI in JS.
 //
-// Built on the shared modules under lib/: `lib/ui` draws the chrome (elements,
-// icons, toolbar controls, the prompt, the status dot, image downscaling) and
-// `lib/sync` runs the collaboration loop (save scheduling, presence, the
-// callback target). The editing commands, the paste sanitizer, the block model
-// and the export are this gadget's own.
+// Built on the shared gadget libraries (packages/gadget-libraries), which the
+// build inlines: `ui` draws the chrome (elements, icons, toolbar controls, the
+// prompt, the status dot, image downscaling) and `sync` runs the collaboration
+// loop (save scheduling, presence, the callback target). The editing commands,
+// the paste sanitizer, the block model and the export are this gadget's own.
 // ---------------------------------------------------------------------------
 
 import {
@@ -22,7 +22,7 @@ import {
   promptInline,
   segBtn,
   statusIndicator,
-} from "./lib/ui/client.ts";
+} from "gadgets:ui/client";
 import {
   PresenceReporter,
   PresenceRoster,
@@ -31,8 +31,8 @@ import {
   type SyncHost,
   collaboratorFor,
   createSubscriber,
-} from "./lib/sync/client.ts";
-import type { CustomSelect, CustomSelectOptions, PreparedImage, PromptOptions } from "./lib/ui/client.ts";
+} from "gadgets:sync/client";
+import type { CustomSelect, CustomSelectOptions, PreparedImage, PromptOptions } from "gadgets:ui/client";
 import type {
   BlockContent,
   DocCursor,
