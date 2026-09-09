@@ -388,12 +388,13 @@ describe("Workspace Docs DOCX package", () => {
 
   it("keeps empty lines as empty paragraphs and drops breaks that end a block", async () => {
     const {entries} = await readZip(await documentToDocx({blocks: [block(
-        "<p>one<br></p><p><br></p><p>two<br><br>three</p>")]}));
+        "<p>one<br></p><p><br></p><p>two<br> <b>three</b></p>")]}));
     const xml = text(entries, "word/document.xml");
     expect(xml.match(/<w:p>/g)).toHaveLength(3);
     expect(xml).toContain('<w:p><w:pPr><w:pStyle w:val="Normal"/></w:pPr></w:p>');
-    expect(xml.match(/<w:br\/>/g)).toHaveLength(2);
+    expect(xml.match(/<w:br\/>/g)).toHaveLength(1);
     expect(xml).toContain(">one</w:t></w:r></w:p>");
+    expect(xml).toContain('<w:r><w:br/></w:r><w:r><w:rPr><w:b/><w:bCs/></w:rPr><w:t xml:space="preserve">three</w:t>');
   });
 
   it("maps quotes, code blocks, inline code, and horizontal rules", async () => {
@@ -632,14 +633,27 @@ describe("Workspace Docs DOCX package", () => {
   it("skips hidden elements and links that wrap no content", async () => {
     const anchors = Array.from({length: 1000}, (_, index) => `<a href="https://example.com/${index}"></a>`).join("");
     const html = `<p hidden>draft</p><p><span style="display: none">secret</span>${anchors}shown` +
-      '<a href="https://example.com/kept">kept</a></p><dl><dt>term<dd>definition<dt><b>bold term</dt></dl>';
+      '<span style="display:none !important">also secret</span>' +
+      `<a href="https://example.com/kept">kept</a><a href="https://example.com/${"\u4e2d".repeat(3000)}">wide</a></p>` +
+      "<dl><dt>term<dd>definition<dt><b>bold term</dt></dl>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     for (const value of ["draft", "secret"]) expect(xml).not.toContain(value);
     expect(xml).toContain(">shown</w:t>");
+    expect(xml).toContain(">wide</w:t>");
     expect(text(entries, "word/_rels/document.xml.rels").match(/relationships\/hyperlink/g)).toHaveLength(1);
     expect(runContaining(xml, "definition")).not.toContain("<w:b/>");
     expect(xml.match(/<w:p>/g)).toHaveLength(4);
+  });
+
+  it("gives editor images their own paragraph while other images stay inline", async () => {
+    const source = dataUrl("image/png", png(4, 2));
+    const {entries} = await readZip(await documentToDocx({blocks: [block(
+        `<p>before<img class="doc-image" src="${source}" alt="block">after<img src="${source}" alt="inline">end</p>`)]}));
+    const xml = text(entries, "word/document.xml");
+    expect(xml.match(/<w:p>/g)).toHaveLength(3);
+    expect(xml).toContain('descr="block"></wp:docPr>');
+    expect(xml).toMatch(/>after<\/w:t><\/w:r><w:r><w:drawing>[\s\S]*descr="inline"[\s\S]*>end<\/w:t>/);
   });
 
   it("ignores self-closing foreign elements without rejecting surrounding content", async () => {

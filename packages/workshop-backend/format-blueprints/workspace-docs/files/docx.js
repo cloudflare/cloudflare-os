@@ -47,6 +47,8 @@ const BULLET_GLYPHS = ["&#x2022;", "&#x25E6;", "&#x25AA;"];
 // Word numbering formats, indexed by abstract numbering id; `<ol type>` maps onto the last four.
 const LIST_KINDS = ["bullet", "decimal", "lowerLetter", "upperLetter", "lowerRoman", "upperRoman"];
 const LIST_TYPES = {a: "lowerLetter", A: "upperLetter", i: "lowerRoman", I: "upperRoman"};
+// The only attributes the walk reads; everything else is dropped at parse time.
+const STORED_ATTRIBUTES = ["style", "class", "hidden", "href", "src", "alt", "width", "type", "start", "value", "face", "size", "color"];
 
 // --- XML text ----------------------------------------------------------------------------------
 
@@ -133,7 +135,7 @@ function normalizeSnapshot(document) {
   const modified = source.lastModified == null ? NaN : new Date(source.lastModified).getTime();
   return {
     fragments,
-    title: String(source.title ?? ""),
+    title: String(source.title ?? "").slice(0, 1024),
     modified: Number.isFinite(modified) ? new Date(modified).toISOString() : null,
   };
 }
@@ -191,7 +193,10 @@ async function parseHtml(fragments, namedEntities) {
           throw new Error(`DOCX HTML nesting exceeds the ${DOCX_LIMITS.depth}-level export limit.`);
         }
         const attrs = {};
-        for (const [name, value] of element.attributes) attrs[name] = decodeHtmlEntities(value, namedEntities);
+        for (const name of STORED_ATTRIBUTES) {
+          const value = element.getAttribute(name);
+          if (value != null) attrs[name] = decodeHtmlEntities(value, namedEntities);
+        }
         const node = {tag, attrs, children: []};
         stack.at(-1).children.push(node);
         try {
@@ -235,7 +240,7 @@ function cssDeclarations(style) {
     const colon = part.indexOf(":");
     if (colon < 0) continue;
     const name = part.slice(0, colon).trim().toLowerCase();
-    const value = part.slice(colon + 1).trim();
+    const value = part.slice(colon + 1).replace(/!important\s*$/i, "").trim();
     if (name && value && !["inherit", "unset", "initial"].includes(value.toLowerCase())) {
       declarations.push([name, value]);
     }
@@ -408,7 +413,7 @@ function canonicalHyperlink(value) {
   }
   if (!["http:", "https:", "mailto:", "tel:"].includes(url.protocol) || url.username || url.password) return null;
   if ((url.protocol === "http:" || url.protocol === "https:") && !url.hostname) return null;
-  return url.href;
+  return url.href.length <= 8192 ? url.href : null; // Percent-encoding can grow the target several-fold.
 }
 
 // --- Images ------------------------------------------------------------------------------------
@@ -420,7 +425,7 @@ function imageDimensions(mime, bytes) {
   const ascii = (offset, length) => String.fromCharCode(...bytes.subarray(offset, offset + length));
   const uint24 = (offset) => bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16);
   if (mime === "image/png") {
-    if (bytes.length < 24 || view.getUint32(0) !== 0x89504e47 || ascii(12, 4) !== "IHDR") return null;
+    if (bytes.length < 24 || view.getUint32(0) !== 0x89504e47 || view.getUint32(4) !== 0x0d0a1a0a || ascii(12, 4) !== "IHDR") return null;
     return {width: view.getUint32(16), height: view.getUint32(20)};
   }
   if (mime === "image/gif") {
@@ -513,7 +518,7 @@ class DocumentBuilder {
     } else {
       paragraph.runs.push(run);
     }
-    paragraph.endsWithSpace = run.type === "text" ? run.text.endsWith(" ") : run.type === "break";
+    paragraph.endsWithSpace = run.type === "text" && run.text.endsWith(" ");
   }
 
   text(context, value) {
@@ -538,8 +543,11 @@ class DocumentBuilder {
     this.addRun(context, {type: "text", text, format, key, hyperlink: this.hyperlink(context.hyperlink)});
   }
 
+  // Text after a line break starts a new line, so leading whitespace collapses away there too.
   break(context) {
-    ++this.open(context).pendingBreaks;
+    const paragraph = this.open(context);
+    ++paragraph.pendingBreaks;
+    paragraph.endsWithSpace = true;
   }
 
   relationship(type, target, targetMode) {
@@ -634,7 +642,8 @@ function walk(builder, node, parent) {
     paragraph: deriveParagraph(parent.paragraph, declarations),
     style: blockStyle(node, declarations) ?? parent.style,
   };
-  const block = BLOCK_TAGS.has(tag);
+  // Editor images are `display: block`, so each one stands in its own paragraph.
+  const block = BLOCK_TAGS.has(tag) || (tag === "img" && /(?:^|\s)doc-image(?:\s|$)/.test(node.attrs.class || ""));
   if (block) builder.close();
   switch (tag) {
     case "br":
@@ -642,6 +651,7 @@ function walk(builder, node, parent) {
       return;
     case "img":
       builder.image(context, node);
+      if (block) builder.close();
       return;
     case "hr":
       builder.paragraphs.push({...context.paragraph, style: context.style, runs: [], horizontalRule: true});
@@ -716,9 +726,7 @@ function runProperties(format, hyperlink) {
 }
 
 // Text is emitted in bounded `<w:t>` slices, with tabs and newlines (preformatted text) as `<w:tab/>`
-// and `<w:br/>`, scanning the run in place so a huge run never becomes a huge string or array.
-const SEPARATOR = /[\t\n]/g;
-
+// and `<w:br/>`, scanning one chunk at a time so a huge run never becomes a huge string or array.
 function* textRunXml(run) {
   if (run.hyperlink) yield `<w:hyperlink r:id="${run.hyperlink}" w:history="1">`;
   yield `<w:r>${runProperties(run.format, run.hyperlink)}`;
@@ -730,11 +738,12 @@ function* textRunXml(run) {
       ++offset;
       continue;
     }
-    SEPARATOR.lastIndex = offset;
-    let end = Math.min(SEPARATOR.exec(text)?.index ?? text.length, offset + TEXT_CHUNK_SIZE);
-    if (end < text.length && (text.charCodeAt(end - 1) & 0xfc00) === 0xd800) --end;
-    yield `<w:t xml:space="preserve">${xmlText(text.slice(offset, end))}</w:t>`;
-    offset = end;
+    const chunk = text.slice(offset, offset + TEXT_CHUNK_SIZE);
+    const separator = chunk.search(/[\t\n]/);
+    let length = separator < 0 ? chunk.length : separator;
+    if (offset + length < text.length && (chunk.charCodeAt(length - 1) & 0xfc00) === 0xd800) --length;
+    yield `<w:t xml:space="preserve">${xmlText(chunk.slice(0, length))}</w:t>`;
+    offset += length;
   }
   yield "</w:r>";
   if (run.hyperlink) yield "</w:hyperlink>";

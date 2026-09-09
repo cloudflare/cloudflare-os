@@ -486,8 +486,11 @@ const styleSel = customSelect({
   onChange: (value) => {
     restoreRange();
     const previousBlock = currentBlock();
-    // formatBlock is a no-op on an existing blockquote; drop the wrapper styles to make it a quote.
-    if (value === "BLOCKQUOTE" && isIndentationWrapper(previousBlock)) previousBlock.removeAttribute("style");
+    // formatBlock is a no-op on an existing blockquote; drop the wrapper's styles to make it a quote.
+    if (value === "BLOCKQUOTE" && isIndentationWrapper(previousBlock)) {
+      for (const property of ["margin", "border", "padding"]) previousBlock.style.removeProperty(property);
+      if (!previousBlock.style.length) previousBlock.removeAttribute("style");
+    }
     if (value === "TITLE") {
       document.execCommand("formatBlock", false, "H1");
       const block = currentBlock();
