@@ -1,6 +1,6 @@
 // The document's Durable Object. The collaboration plumbing -- the mutation
 // queue, the subscribed browsers, and the per-block optimistic concurrency --
-// is the shared `lib/sync/` modules'; the block model, the ordering rule, the legacy
+// is the sync library's; the block model, the ordering rule, the legacy
 // conversion and the Markdown export are this gadget's own.
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import {
@@ -12,7 +12,7 @@ import {
   normalizeBaseVersion,
   normalizeCollaborator,
   operationStatus,
-} from "./lib/sync/server.ts";
+} from "gadgets:sync/server";
 import type {
   ApplyOperationResult,
   BlockUpsert,

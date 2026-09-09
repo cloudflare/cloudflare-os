@@ -2,28 +2,28 @@
 
 A single-document, Google-Docs-style rich-text editor with Durable Object persistence, live block updates, collaborator presence, and conflict-safe concurrent editing.
 
-## Shared modules
+## Shared libraries
 
-The chrome and the collaboration loop are not this gadget's own. They are the modules under
-`lib/ui/` and `lib/sync/`, which the Docs, Sheets and Slides blueprints carry as copies, so a
-change to one belongs in each.
+This blueprint is built on the shared gadget libraries in `packages/gadget-libraries` (see that
+package's README). The build inlines what it imports into the `client.js` and `server.js` it ships,
+so a gadget created from it carries its own copy of the libraries as of its creation.
 
-- `lib/ui/` draws the chrome: the `el` element builder, the shared icon table, the toolbar's
-  buttons, groups, colour pickers and dropdown, the in-page prompt that stands in for the sandbox's
-  blocked `window.prompt`, the save-status dot, and the reading and downscaling of a picked, dropped
-  or pasted image.
-- `lib/sync/client.ts` runs the browser's half of the collaboration loop: the debounced, serialized,
-  retrying save scheduler, the presence roster and its throttled reporter, and the `RpcTarget` the
-  server calls back.
-- `lib/sync/server.ts` runs the object's half: the mutation queue, the subscriber registry with its
+- `gadgets:ui/client` draws the chrome: the `el` element builder, the shared icon table, the
+  toolbar's buttons, groups, colour pickers and dropdown, the in-page prompt that stands in for the
+  sandbox's blocked `window.prompt`, the save-status dot, and the reading and downscaling of a
+  picked, dropped or pasted image.
+- `gadgets:sync/client` runs the browser's half of the collaboration loop: the debounced,
+  serialized, retrying save scheduler, the presence roster and its throttled reporter, and the
+  `RpcTarget` the server calls back.
+- `gadgets:sync/server` runs the object's half: the mutation queue, the subscriber registry with its
   presence announcements, and the per-block optimistic concurrency.
 
 Everything on top of them is this gadget's own: the editing commands, the paste sanitizer, the block
 model and its ordering rule, where a remote caret is drawn, and the export formats.
 
 In the repository the source is TypeScript under `format-blueprints/workspace-docs/files/` (`client.ts`,
-`server.ts`, the shared `lib/protocol.ts` contract and the `lib/ui/` and `lib/sync/` modules), which the
-build bundles into the `client.js` and `server.js` this gadget runs.
+`server.ts` and the shared `lib/protocol.ts` contract), which the build bundles into the `client.js` and
+`server.js` this gadget runs.
 
 ## Architecture
 

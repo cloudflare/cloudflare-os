@@ -13,12 +13,10 @@ workspace-docs/
   blueprint.json
   files/
     README.md
-    client.ts         import { el, iconBtn } from "./lib/ui/client.ts"
-    server.ts         import { MutationQueue } from "./lib/sync/server.ts"
+    client.ts         import { el, iconBtn } from "gadgets:ui/client"
+    server.ts         import { MutationQueue } from "gadgets:sync/server"
     lib/
       protocol.ts     the document, operation and RPC types both sides share
-      ui/             the DOM helpers the client's chrome is built from
-      sync/           the collaboration plumbing both sides share
 ```
 
 `files/` is the gadget's code and may contain nested directories. `blueprint.json` contains its
@@ -26,6 +24,18 @@ install ID, presentation, provenance,
 bindings, blueprint `version`, and bundled `revision`. The build converts these files into the same
 gzip-compressed Yjs `.gadget` representation used by uploaded blueprints and embeds it in the
 generated Worker module. No binary archive is committed.
+
+### Libraries
+
+A blueprint may import the shared **gadget libraries** in `packages/gadget-libraries` (see that
+package's README): `gadgets:<name>/client` from its client, `gadgets:<name>/server` from its server.
+The build resolves each to the library's entry in that package and inlines what the entry uses into
+the shipped `client.js` / `server.js`, as it does a `lib/` module, so the archive stays
+self-contained and a gadget created from the blueprint carries its own copy of the library as of its
+instantiation. A client may not import a library's server side (it would drag a Durable Object into
+the iframe), and a library is the one thing an import may reach outside `files/` for. The Docs,
+Sheets and Slides blueprints are built on the `ui` and `sync` libraries, with their own domain code
+in `files/`.
 
 ### TypeScript sources
 
@@ -36,9 +46,7 @@ than minified -- so the installed gadget, and the agent that later edits it, see
 JavaScript file per side, the same as for a blueprint written in plain JavaScript. Those `lib/`
 modules are build input only and are not stored, and `.d.ts` files are dropped. The bundled Docs,
 Sheets and Slides blueprints are written this way, each with a `lib/protocol.ts` holding the types
-its client and server share (imported type-only, so nothing of it ships), and each carrying its own
-copy of the DOM helpers and collaboration plumbing the three have in common under `lib/ui/` and
-`lib/sync/` -- a change to one of those modules belongs in each copy.
+its client and server share (imported type-only, so nothing of it ships).
 
 Everything else under `files/` (the README, assets) passes through unchanged, and may be imported
 for its contents if the bundler has a loader for it: JSON is inlined, a stylesheet is not (a gadget
@@ -54,8 +62,9 @@ rather than a module that goes missing inside the sandbox.
 
 The build rejects a tree that would otherwise ship something other than what was written: an entry
 present as both `.ts` and `.js`, a `.ts` file outside the entry/`lib/` layout, TypeScript spelled
-`.tsx`/`.mts`/`.cts` (neither runtime has a loader for it), a `lib/` module no entry imports, or
-an import that reaches outside `files/`.
+`.tsx`/`.mts`/`.cts` (neither runtime has a loader for it), a `lib/` module no entry imports, an
+import that reaches outside `files/` (other than a library import), or a library import of the wrong
+side or of a library that does not exist.
 
 `pnpm build` type-checks all of it, through one config per set of globals -- the three must not see
 each other's, since a Durable Object has no `document`, iframe code cannot import
@@ -69,7 +78,9 @@ each other's, since a Durable Object has no `document`, iframe code cannot impor
 
 Each follows its entry's imports, so a `lib/` module is checked under the globals of whichever side
 imports it, and a module both sides import under both -- which is what keeps a shared module honest
-without forcing a server-only one to compile against the DOM.
+without forcing a server-only one to compile against the DOM. A `gadgets:<name>/<side>` import is
+mapped by `paths` to the library's entry in `packages/gadget-libraries`, so a blueprint is checked
+against the real signatures it imports.
 
 Unit tests of `lib/` modules live in the blueprint's `__tests__/` and run under `pnpm test` via
 `vitest.blueprints.config.ts` (jsdom by default; a pure module's test can declare

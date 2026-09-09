@@ -15,34 +15,35 @@ neutral sidebars so the slide canvas remains the visual focus.
   block interactions (drag, resize, inline text edit), and the builder
   shell (slide list, inspector, palette, control bar, present mode).
 
-In the repository these two modules are TypeScript (`client.ts`, `server.ts`,
-the shared `lib/protocol.ts` types and the `lib/ui/` and `lib/sync/` modules
-under `format-blueprints/workspace-slides/files/`), which the build bundles
-into the `client.js` and `server.js` installed here.
+In the repository these two modules are TypeScript (`client.ts`, `server.ts`
+and the shared `lib/protocol.ts` types under
+`format-blueprints/workspace-slides/files/`), which the build bundles into the
+`client.js` and `server.js` installed here.
 
-## Shared modules
+## Gadget libraries
 
 Three pieces of this deck are not its own: the element builder, the two
 steps that read an uploaded image, and the object the Durable Object calls
-back. They are shared with the other document-style gadgets as copies under
-`lib/ui/` and `lib/sync/` (a change to one belongs in each):
+back. They are shared with the other document-style gadgets and are
+imported from the libraries in `packages/gadget-libraries`, which the build
+inlines into the two files installed here:
 
 ```ts
-import { el, loadImage, readFileAsDataURL } from "./lib/ui/client.ts";
-import { createSubscriber } from "./lib/sync/client.ts";   // client.ts
-import { SubscriberRegistry } from "./lib/sync/server.ts"; // server.ts
+import { el, loadImage, readFileAsDataURL } from "gadgets:ui/client";
+import { createSubscriber } from "gadgets:sync/client";   // client.ts
+import { SubscriberRegistry } from "gadgets:sync/server"; // server.ts
 ```
 
-- **`lib/ui/`** — `el(tag, props, children)` builds every element in
+- **`ui`** — `el(tag, props, children)` builds every element in
   `client.js`; `readFileAsDataURL` and `loadImage` are the two halves of
   `fileToImageDataURL`, whose encoding rule (SVG verbatim, PNG kept as PNG,
   the original on any canvas failure) stays here because it is the deck's.
-  The shared icons, toolbar controls and prompt are for the gadgets with a
-  formatting bar; this deck draws its own `ICONS` as complete SVGs and has
-  no toolbar of that shape, so it carries none of them.
-- **`lib/sync/`** — `createSubscriber(RpcTarget, { deckChanged })` builds the
+  The library's own icons, toolbar controls and prompt are for the gadgets
+  with a formatting bar; this deck draws its own `ICONS` as complete SVGs
+  and has no toolbar of that shape, so it imports none of them.
+- **`sync`** — `createSubscriber(RpcTarget, { deckChanged })` builds the
   callback target (the RPC layer only calls prototype methods, which is
-  what the shared module gets right), and `SubscriberRegistry` holds the
+  what the library gets right), and `SubscriberRegistry` holds the
   connected browsers in the Durable Object. A deck has no presence — every
   viewer sees the same slides and no cursors are shared — so the registry
   is built with no presence hooks and is a plain fan-out.
@@ -320,7 +321,7 @@ need to touch styles when adding a new field type.
 - **Image** blocks store their data inside `props.src` as either an
   external URL (loaded normally by `<img>` — note this is one of the few
   network paths the sandbox still allows) or as an inlined `data:` URI.
-  Uploads are read with the shared `readFileAsDataURL` from `lib/ui/`, and raster
+  Uploads are read with the `ui` library's `readFileAsDataURL`, and raster
   images larger than `MAX_IMAGE_DIM` (1600px on the longest side) are
   downscaled on canvas before being inlined, so the deck JSON doesn't
   balloon. SVG files are passed through verbatim. The custom `image` field

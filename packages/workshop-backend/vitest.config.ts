@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
 import { defineConfig } from 'vitest/config'
 import { cloudflareTest } from '@cloudflare/vitest-pool-workers'
@@ -33,7 +34,14 @@ const textModules: Plugin = {
  * tests import modules directly; the main Worker and a test-only SQLite DO binding support the
  * Overseer cost-persistence integration test without loading the full deployment configuration.
  */
+// A blueprint's `gadgets:<name>/<side>` import is inlined by the blueprint build; a test that
+// imports a bundled blueprint's server.ts directly gets the library's source the same way.
+const gadgetLibraries = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'gadget-libraries')
+
 export default defineConfig({
+  resolve: {
+    alias: [{ find: /^gadgets:([a-z][a-z0-9-]*)\/(client|server)$/u, replacement: `${gadgetLibraries}/$1/$2.ts` }],
+  },
   plugins: [
     textModules,
     capnwebValidate(),

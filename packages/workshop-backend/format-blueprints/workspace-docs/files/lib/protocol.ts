@@ -2,9 +2,9 @@
 // the browser sends it, and the RPC surface each sees of the other. Type-only -- both entries import
 // it with `import type`, so nothing here reaches the bundled client.js or server.js.
 //
-// The shared sync vocabulary (a collaborator, an operation's status) is exported from both of
-// `lib/sync/`'s entries; it is taken from the server's here because `OperationStatus` is only there.
-import type { Collaborator, OperationStatus } from "./sync/server.ts";
+// The sync library's vocabulary (a collaborator, an operation's status) is exported from both of
+// its entries; it is taken from the server's here because `OperationStatus` is only there.
+import type { Collaborator, OperationStatus } from "gadgets:sync/server";
 
 /** A top-level block's identity and content, as the client serializes it from the DOM. */
 export interface BlockContent {
