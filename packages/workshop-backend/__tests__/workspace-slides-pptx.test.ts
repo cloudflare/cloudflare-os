@@ -742,11 +742,16 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(xml).not.toContain("SVG not included");
   });
 
-  it("embeds the <svg> node from wrapped markup and SVG files uploaded through the image control", async () => {
+  it("embeds the first <svg> element from wrapped markup and SVG files uploaded through the image control", async () => {
     const inner = '<svg viewBox="0 0 10 20"><rect width="10" height="20"/></svg>';
     const uploaded = `data:image/svg+xml;base64,${base64(encoder.encode(inner))}`;
+    const nested = '<svg viewBox="0 0 4 4" data-x="a>b"><svg><rect/></svg><svg/></svg>';
     const zip = await readZip(deckToPptx(oneSlide([
-      block("svg", {markup: `<div class="wrap">${inner}</div><p>trailer</p>`}, {x: 0, y: 0, w: 200, h: 200}),
+      // A wrapper, a trailer and a sibling element: only the first <svg> is what the browser shows.
+      block("svg", {markup: `<div class="wrap">${inner}</div><p>trailer</p><svg><circle/></svg>`}, {x: 0, y: 0, w: 200, h: 200}),
+      block("svg", {markup: `${nested}<svg><text>sibling</text></svg>`}),
+      block("svg", {markup: '<svg width="8" height="4"/><svg><text>sibling</text></svg>'}),
+      block("svg", {markup: "<svg><rect/>"}),
       block("image", {src: uploaded, fit: "contain", radius: 50}, {x: 0, y: 0, w: 200, h: 200}),
       block("image", {src: uploaded, fit: "cover", radius: 50}, {x: 0, y: 0, w: 200, h: 200}),
       block("image", {src: `data:image/svg+xml;base64,${base64(encoder.encode("<p>not svg</p>"))}`}),
@@ -754,14 +759,19 @@ describe("Workspace Slides PPTX rendering", () => {
     const xml = partText(zip, "ppt/slides/slide1.xml");
 
     // The wrapper markup is dropped, and the pasted and uploaded copies of the element share a part.
-    expect(zip.names.filter(name => name.startsWith("ppt/media/"))).toEqual(["ppt/media/image1.svg"]);
+    expect(zip.names.filter(name => name.startsWith("ppt/media/"))).toEqual([
+      "ppt/media/image1.svg", "ppt/media/image2.svg", "ppt/media/image3.svg", "ppt/media/image4.svg",
+    ]);
     expect(partText(zip, "ppt/media/image1.svg")).toBe(inner);
+    expect(partText(zip, "ppt/media/image2.svg")).toBe(nested);
+    expect(partText(zip, "ppt/media/image3.svg")).toBe('<svg width="8" height="4"/>');
+    expect(partText(zip, "ppt/media/image4.svg")).toBe("<svg><rect/>");
     expect(shapeByName(xml, "Block 1 svg")).toContain(`<a:off x="${50 * 10160}" y="0"/><a:ext cx="${100 * 10160}" cy="${200 * 10160}"/>`);
     // A letterboxed picture never reaches the block's rounded corners, so only a filling one is rounded.
-    const contain = shapeByName(xml, "Block 2 image");
+    const contain = shapeByName(xml, "Block 5 image");
     expect(contain).toContain(`<a:off x="${50 * 10160}" y="0"/>`);
     expect(contain).toContain('<a:prstGeom prst="rect">');
-    const cover = shapeByName(xml, "Block 3 image");
+    const cover = shapeByName(xml, "Block 6 image");
     expect(cover).toContain('<a:srcRect l="0" t="25000" r="0" b="25000"/>');
     expect(cover).toContain('<a:prstGeom prst="roundRect">');
     expect(xml).toContain("Malformed image data");

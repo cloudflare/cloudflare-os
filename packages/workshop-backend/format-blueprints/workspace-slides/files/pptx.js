@@ -734,16 +734,50 @@ function svgAspect(rootTag) {
   return width && height ? width / height : null;
 }
 
-// The `<svg>` element within `markup` -- what the browser renders when the paste has wrapper
-// markup around it -- or null when there is none.
+// Index just past the `>` closing the tag that opens at `index`, skipping quoted attribute values;
+// -1 if the tag is unterminated.
+function tagEnd(markup, index) {
+  let quote = "";
+  for (let i = index; i < markup.length; ++i) {
+    const char = markup[i];
+    if (quote) {
+      if (char === quote) quote = "";
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === ">") {
+      return i + 1;
+    }
+  }
+  return -1;
+}
+
+// The first `<svg>` element within `markup` -- the one the browser renders (`querySelector`)
+// when the paste has wrapper markup or siblings around it -- or null when there is none. A
+// linear scan over svg open/close tags tracks nesting so a sibling element is not swept in; an
+// unterminated element runs to the end of the markup.
 function svgElement(markup) {
-  const rootTag = /<svg[\s>][^>]*>?/.exec(markup);
-  if (!rootTag) return null;
-  const end = markup.lastIndexOf("</svg>");
-  return {
-    rootTag: rootTag[0],
-    source: markup.slice(rootTag.index, end >= rootTag.index ? end + "</svg>".length : markup.length),
-  };
+  const tags = /<svg(?=[\s>/])|<\/svg\s*>/g;
+  const first = tags.exec(markup);
+  if (!first || first[0] !== "<svg") return null;
+  const start = first.index;
+  let rootTag = null;
+  let depth = 0;
+  for (let match = first; match; match = tags.exec(markup)) {
+    if (match[0] !== "<svg") {
+      if (--depth === 0) return {rootTag, source: markup.slice(start, match.index + match[0].length)};
+      continue;
+    }
+    const end = tagEnd(markup, match.index);
+    if (end < 0) break;
+    rootTag ??= markup.slice(match.index, end);
+    if (markup[end - 2] === "/") {
+      if (depth === 0) return {rootTag, source: markup.slice(start, end)};
+    } else {
+      ++depth;
+    }
+    tags.lastIndex = end;
+  }
+  return {rootTag: rootTag ?? markup.slice(start), source: markup.slice(start)};
 }
 
 function svgMedia(element, mediaState) {
