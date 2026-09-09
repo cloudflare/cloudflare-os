@@ -27,7 +27,7 @@ const settle = () => act(async () => { await Promise.resolve(); await Promise.re
 describe('OAuthButtons', () => {
   let root: Root | undefined
   let container: HTMLDivElement | undefined
-  const claim = vi.fn<(ticket: string) => Promise<string>>()
+  const claim = vi.fn<(ticket: string) => Promise<string | null>>()
   const attempt = { claim, [Symbol.dispose]() {} } as unknown as RpcStub<LoginAttempt>
   const popup = { closed: false, close: vi.fn<() => void>() } as unknown as Window
 
@@ -110,6 +110,38 @@ describe('OAuthButtons', () => {
     sender.close()
     await vi.waitFor(() => expect(claim).toHaveBeenCalledExactlyOnceWith(TICKET))
     await settle()
+    expect(localStorage.getItem('authToken')).toBe('alice@example.com:secret')
+    expect(onSuccess).toHaveBeenCalledOnce()
+  })
+
+  it('keeps waiting when a broadcast ticket belongs to another attempt', async () => {
+    // A broadcast has no source to filter on, so the channel may carry another tab's sign-in ticket
+    // or an account-connect ticket first. The server answers null for those; ours still lands.
+    vi.spyOn(window, 'open').mockReturnValue(popup)
+    const FOREIGN = 'f'.repeat(64)
+    claim.mockImplementation(async ticket => ticket === TICKET ? 'alice@example.com:secret' : null)
+    const rpcStub = {
+      startGatekeeperLogin: async () => ({ url: 'https://gk.example/login', attempt }),
+    } as unknown as RpcStub<PublicApi>
+    const onSuccess = mount(rpcStub)
+
+    await clickSignIn()
+    await settle()
+    const sender = new BroadcastChannel(CONNECT_HANDOFF_MESSAGE_TYPE)
+    // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no targetOrigin.
+    sender.postMessage({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: FOREIGN })
+    await vi.waitFor(() => expect(claim).toHaveBeenCalledExactlyOnceWith(FOREIGN))
+    await settle()
+    expect(localStorage.getItem('authToken')).toBeNull()
+    expect(onSuccess).not.toHaveBeenCalled()
+    expect(container!.textContent).not.toMatch(/expired|verified|Could not/)
+
+    // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no targetOrigin.
+    sender.postMessage({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: TICKET })
+    sender.close()
+    await vi.waitFor(() => expect(claim).toHaveBeenCalledWith(TICKET))
+    await settle()
+    expect(claim).toHaveBeenCalledTimes(2)
     expect(localStorage.getItem('authToken')).toBe('alice@example.com:secret')
     expect(onSuccess).toHaveBeenCalledOnce()
   })

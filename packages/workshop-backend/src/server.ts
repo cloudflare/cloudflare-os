@@ -630,7 +630,7 @@ class LoginAttemptImpl extends RpcTarget implements LoginAttempt {
     super();
   }
 
-  async claim(ticket: string): Promise<string> {
+  async claim(ticket: string): Promise<string | null> {
     return await this.pending.claim(ticket);
   }
 }

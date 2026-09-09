@@ -25,9 +25,9 @@ const CANCELLED = Symbol('sign-in cancelled')
  * The ticket arrives over one of two transports. Normally the popup posts it to its opener. A
  * provider that isolates its pages with COOP severs that opener mid-flow, though (Google stages
  * this), and the handoff page then falls back to a same-origin BroadcastChannel — which reaches us
- * because in production the login page shares an origin with the handoff page. A broadcast ticket
- * here is ours: the connect listener never coexists with the login buttons in the same browser, as
- * auth state lives in shared localStorage.
+ * because in production the login page shares an origin with the handoff page. A broadcast has no
+ * source to filter on, so a ticket heard there may be another tab's sign-in or an account-connect
+ * ticket; the server answers such a claim with null, and we keep listening for ours.
  */
 export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButtonsProps) {
   const [error, setError] = useState<string | null>(null)
@@ -84,7 +84,6 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
       // attempt is torn down.
       const token = await new Promise<string>((resolve, reject) => {
         let settled = false
-        let claiming = false
         let poll: number | null = null
         const channel = 'BroadcastChannel' in globalThis
           ? new BroadcastChannel(CONNECT_HANDOFF_MESSAGE_TYPE)
@@ -103,13 +102,13 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           dispose()
           fn()
         }
-        // A ticket is single-use and only one transport carries it, so the first claim is the one.
+        // Claims may overlap: a foreign ticket answered with null must not hold up the real one
+        // behind it, and `finish` settles only once.
         function claimTicket(ticket: string) {
-          if (settled || claiming) return
-          claiming = true
+          if (settled) return
           stopPolling()
           attempt.claim(ticket)
-            .then(t => finish(() => resolve(t)))
+            .then(t => { if (t !== null) finish(() => resolve(t)) })
             .catch(e => finish(() => reject(e instanceof Error ? e : new Error('Could not sign in'))))
         }
         function onMessage(event: MessageEvent) {

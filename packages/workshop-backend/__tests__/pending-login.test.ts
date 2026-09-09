@@ -36,7 +36,8 @@ const fresh = () => env.TEST_PENDING_LOGIN.getByName(`pending-login-${++counter}
 // promise left to `.rejects` is also flagged as an unhandled rejection by the pool).
 async function claim(stub: DurableObjectStub<PendingLogin>, ticket: string): Promise<string> {
   try {
-    return `token:${await stub.claim(ticket)}`;
+    const token = await stub.claim(ticket);
+    return token === null ? "null" : `token:${token}`;
   } catch (err) {
     return `error:${(err as Error).message}`;
   }
@@ -53,13 +54,14 @@ describe("PendingLogin", () => {
         Date.now() + PENDING_HANDOFF_LIFETIME_MS);
     });
 
-    // Holding the attempt is not enough: the attacker's own tab never sees the ticket.
+    // Holding the attempt is not enough: the attacker's own tab never sees the ticket. And a ticket
+    // for some other attempt (the window hears every same-origin broadcast) neither releases the
+    // token nor spends the result, so the right ticket still can.
     const other = fresh();
     await other.deliver("victim@example.com:session", hash);
-    expect(await claim(other, (await newSecretToken()).secret.toHex()))
-      .toBe("error:This sign-in attempt could not be verified. Please try again.");
-    expect(await claim(other, "not-a-ticket"))
-      .toBe("error:This sign-in attempt has expired. Please try again.");
+    expect(await claim(other, (await newSecretToken()).secret.toHex())).toBe("null");
+    expect(await claim(other, "not-a-ticket")).toBe("null");
+    expect(await claim(other, secret.toHex())).toBe("token:victim@example.com:session");
 
     expect(await claim(stub, secret.toHex())).toBe("token:alice@example.com:session");
     expect(await claim(stub, secret.toHex()))

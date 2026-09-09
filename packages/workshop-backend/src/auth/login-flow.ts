@@ -14,7 +14,7 @@
 //      to the PendingLogin DO under the hash of a fresh handoff ticket, which complete() returns for
 //      the gatekeeper's final page to post to its opener (see connect-handoff.ts).
 //   4. The opener calls `attempt.claim(ticket)`, and the PendingLogin DO releases the token only for
-//      a matching ticket.
+//      a matching ticket; a ticket for some other attempt is answered with null and changes nothing.
 //
 // The sign-in URL is a bearer capability, so step 4 is what binds the session to the browser that
 // started the attempt: whoever holds `attempt` but never receives the ticket — an attacker who
@@ -91,20 +91,30 @@ export class PendingLogin extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Release the token to the holder of the matching ticket. Single use: the result is removed before
-   * it is checked, so neither a wrong ticket nor a repeat gets a second try.
+   * Release the token to the holder of the matching ticket. A ticket that is not this attempt's
+   * (the window may hear every same-origin broadcast) yields null and leaves the result in place.
+   * Single use otherwise: the ticket is hashed before the read, so the read, check and removal of a
+   * matching result happen in one step under the input gate and a repeat gets no second try.
    */
-  async claim(ticket: string): Promise<string> {
+  async claim(ticket: string): Promise<string | null> {
+    const hash = /^[0-9a-f]{64}$/.test(ticket) ? await hashSecret(Uint8Array.fromHex(ticket)) : null;
     const result = this.ctx.storage.kv.get<PendingResult>(RESULT_KEY);
+    if (!result || Date.now() >= result.expiresAt) {
+      await this.#clear();
+      throw new Error(EXPIRED_MESSAGE);
+    }
+    if ("error" in result) {
+      await this.#clear();
+      throw new Error(result.error);
+    }
+    if (hash !== result.ticketHash) return null;
+    await this.#clear();
+    return result.token;
+  }
+
+  async #clear(): Promise<void> {
     this.ctx.storage.kv.delete(RESULT_KEY);
     await this.ctx.storage.deleteAlarm();
-    if (!result || Date.now() >= result.expiresAt) throw new Error(EXPIRED_MESSAGE);
-    if ("error" in result) throw new Error(result.error);
-    if (!/^[0-9a-f]{64}$/.test(ticket) ||
-        await hashSecret(Uint8Array.fromHex(ticket)) !== result.ticketHash) {
-      throw new Error("This sign-in attempt could not be verified. Please try again.");
-    }
-    return result.token;
   }
 
   async alarm(): Promise<void> {

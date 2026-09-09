@@ -40,12 +40,14 @@ export interface LoginAttempt extends RpcTarget {
   /**
    * Redeem the handoff ticket the sign-in popup posted to this window (the `ticket` of a
    * `CONNECT_HANDOFF_MESSAGE_TYPE` message, exactly as for `AuthenticatedApi.completeConnectHandoff`)
-   * for a session token (to store and pass to `authenticate()`, same format as `login()`). Rejects if
-   * the gatekeeper reported a failure, the ticket does not match this attempt, or the attempt has
-   * expired or was already claimed. Holding this stub alone never yields a token: the sign-in URL is a
-   * bearer capability, and only the browser that finished it receives the ticket.
+   * for a session token (to store and pass to `authenticate()`, same format as `login()`). Resolves
+   * null when the ticket belongs to a different attempt (a broadcast can carry another window's), in
+   * which case the attempt is untouched and the caller keeps listening. Rejects if the gatekeeper
+   * reported a failure or the attempt has expired or was already claimed. Holding this stub alone
+   * never yields a token: the sign-in URL is a bearer capability, and only the browser that finished
+   * it receives the ticket.
    */
-  claim(ticket: string): Promise<string>;
+  claim(ticket: string): Promise<string | null>;
 }
 
 /** Public API exposed to the internet. */
