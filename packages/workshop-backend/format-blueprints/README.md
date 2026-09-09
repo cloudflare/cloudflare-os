@@ -17,6 +17,7 @@ workspace-docs/
     server.ts         import { MutationQueue } from "gadgets:sync/server"
     lib/
       protocol.ts     the document, operation and RPC types both sides share
+    gadget.json       {"libraries": {"sync": "latest", "ui": "latest"}}
 ```
 
 `files/` is the gadget's code and may contain nested directories. `blueprint.json` contains its
@@ -27,15 +28,24 @@ generated Worker module. No binary archive is committed.
 
 ### Libraries
 
-A blueprint may import the shared **gadget libraries** in `packages/gadget-libraries` (see that
-package's README): `gadgets:<name>/client` from its client, `gadgets:<name>/server` from its server.
-The build resolves each to the library's entry in that package and inlines what the entry uses into
-the shipped `client.js` / `server.js`, as it does a `lib/` module, so the archive stays
-self-contained and a gadget created from the blueprint carries its own copy of the library as of its
-instantiation. A client may not import a library's server side (it would drag a Durable Object into
-the iframe), and a library is the one thing an import may reach outside `files/` for. The Docs,
-Sheets and Slides blueprints are built on the `ui` and `sync` libraries, with their own domain code
-in `files/`.
+A blueprint may import a **gadget library** -- shared code the deployment ships, `gadgets:<name>/client`
+and `gadgets:<name>/server`, built from `packages/gadget-libraries/<name>/` (see that package's
+README and `docs/blueprints.md`). Its `files/gadget.json` names each library it imports:
+
+```json
+{"libraries": {"sync": "latest", "ui": "latest"}}
+```
+
+A gadget pins every library it loads, *transitively*: a library that imports another makes the
+gadget pin both, and the build says which pin is missing when it is not.
+
+The build checks the two against each other: every `gadgets:` import reachable from `client.js` or
+`server.js` must be pinned, must name the side it is imported from (a client may not import
+`gadgets:x/server`), and must name a library that exists in `packages/gadget-libraries`; and every
+pin must be imported by something. The import survives into the archive, and the Workshop resolves
+it when it loads the gadget. The Docs, Sheets and Slides blueprints are built on the `ui` and `sync`
+libraries, with their own domain code in `files/`; the agent learns a library's interface through its
+`describeGadgetLibrary` tool.
 
 ### TypeScript sources
 
@@ -54,17 +64,17 @@ carries its CSS in the module that injects it). A file a bundle inlined is still
 only TypeScript is build input: one side of a blueprint may be `.ts` while the other is still plain
 `.js`, and the un-migrated side keeps importing the `lib/*.js` module it always did.
 
-`cloudflare:*` is the only import left for the runtime to resolve, and only on the server: the
-client is loaded as an ES module in a sandboxed iframe with nothing to resolve a bare import
-against, and the server as a Durable Object whose module map holds the gadget's own files.
-Everything else a blueprint imports must be a file it owns, so `import "yjs"` is a build error
-rather than a module that goes missing inside the sandbox.
+`cloudflare:*` and `gadgets:*` are the only imports left for the runtime to resolve: the client is
+loaded as an ES module in a sandboxed iframe whose import map holds exactly the libraries its
+`gadget.json` pins, and the server as a Durable Object whose module map holds the same. Everything
+else a blueprint imports must be a file it owns, so `import "yjs"` is a build error rather than a
+module that goes missing inside the sandbox -- a *library* may bundle npm packages, a gadget may
+not.
 
 The build rejects a tree that would otherwise ship something other than what was written: an entry
 present as both `.ts` and `.js`, a `.ts` file outside the entry/`lib/` layout, TypeScript spelled
 `.tsx`/`.mts`/`.cts` (neither runtime has a loader for it), a `lib/` module no entry imports, an
-import that reaches outside `files/` (other than a library import), or a library import of the wrong
-side or of a library that does not exist.
+import that reaches outside `files/`, or a library import that disagrees with `gadget.json`.
 
 `pnpm build` type-checks all of it, through one config per set of globals -- the three must not see
 each other's, since a Durable Object has no `document`, iframe code cannot import
@@ -79,8 +89,8 @@ each other's, since a Durable Object has no `document`, iframe code cannot impor
 Each follows its entry's imports, so a `lib/` module is checked under the globals of whichever side
 imports it, and a module both sides import under both -- which is what keeps a shared module honest
 without forcing a server-only one to compile against the DOM. A `gadgets:<name>/<side>` import is
-mapped by `paths` to the library's entry in `packages/gadget-libraries`, so a blueprint is checked
-against the real signatures it imports.
+mapped by `paths` to the library's source entry in `packages/gadget-libraries`, so a blueprint is
+checked against the real signatures it imports.
 
 Unit tests of `lib/` modules live in the blueprint's `__tests__/` and run under `pnpm test` via
 `vitest.blueprints.config.ts` (jsdom by default; a pure module's test can declare

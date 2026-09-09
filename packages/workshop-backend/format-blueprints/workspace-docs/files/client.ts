@@ -1,11 +1,11 @@
 // ---------------------------------------------------------------------------
 // Docs — a Google-Docs-style editor. Builds the entire UI in JS.
 //
-// Built on the shared gadget libraries (packages/gadget-libraries), which the
-// build inlines: `ui` draws the chrome (elements, icons, toolbar controls, the
-// prompt, the status dot, image downscaling) and `sync` runs the collaboration
-// loop (save scheduling, presence, the callback target). The editing commands,
-// the paste sanitizer, the block model and the export are this gadget's own.
+// Built on the deployment's shared gadget libraries: `ui` draws the
+// chrome (elements, icons, toolbar controls, the prompt, the status dot, image
+// downscaling) and `sync` runs the collaboration loop (save scheduling,
+// presence, the callback target). The editing commands, the paste sanitizer,
+// the block model and the export are this gadget's own.
 // ---------------------------------------------------------------------------
 
 import {

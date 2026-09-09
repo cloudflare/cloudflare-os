@@ -294,8 +294,12 @@ function runBuild(
   });
 }
 
-// Everything Wrangler needs generated before it bundles: the backend's format blueprint module
-// (gitignored, so absent on a clean checkout) and each gatekeeper's UI.
+// Everything Wrangler needs generated before it bundles: the backend's gadget-library and format
+// blueprint modules (gitignored, so absent on a clean checkout) and each gatekeeper's UI.
+//
+// The backend's three generators run in sequence, in the order `package.json`'s `test:run` chains
+// them: the library types feed the library bundles, and the blueprint build loads the generated
+// library module to check each blueprint's pins against the libraries the deployment bundles.
 //
 // The UI groups go through `vp` rather than a loop over `gatekeepers` so they run in parallel and
 // hit the task cache; `vp run` takes one task name, hence two invocations. `vp` selects packages by
@@ -323,14 +327,23 @@ const VP_PREFLIGHT_BUILDS = [
   { label: "gatekeeper app UIs", args: ["exec", "vp", "run", "-r", "--cache", "build:app:dev"] },
 ];
 const vpEnv = vpRunEnv({ concurrentRuns: VP_PREFLIGHT_BUILDS.length });
+const BACKEND_GENERATORS = [
+  { label: "gadget library types", script: "build-gadget-library-types.ts" },
+  { label: "gadget libraries", script: "build-gadget-libraries.ts" },
+  { label: "format blueprints", script: "build-format-blueprints.ts" },
+];
 try {
   await Promise.all([
-    runBuild(
-      "format blueprints",
-      process.execPath,
-      [join(WORKSHOP_BACKEND_DIR, "scripts", "build-format-blueprints.ts")],
-      WORKSHOP_BACKEND_DIR,
-    ),
+    (async () => {
+      for (const { label, script } of BACKEND_GENERATORS) {
+        await runBuild(
+          label,
+          process.execPath,
+          [join(WORKSHOP_BACKEND_DIR, "scripts", script)],
+          WORKSHOP_BACKEND_DIR,
+        );
+      }
+    })(),
     ...VP_PREFLIGHT_BUILDS.map(({ label, args }) =>
         runBuild(label, ...pnpmCommand(args), ROOT, vpEnv)),
   ]);

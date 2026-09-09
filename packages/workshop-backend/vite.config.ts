@@ -1,7 +1,7 @@
 // Vite+ per-package settings. The `test` task definition is shared by every package whose tests run
 // under vitest and ships as `@gadgets/scripts/vitest-task`.
 import {
-  TESTS_WITH_TIMEOUT_ENV, vitestTask, withTestTimeout,
+  vitestTask, withTestTimeout,
 } from '@gadgets/scripts/vitest-task'
 
 /**
@@ -22,7 +22,39 @@ export default {
        */
       'build:format-blueprints': {
         command: 'node scripts/build-format-blueprints.ts',
+        dependsOn: ['build:gadget-libraries'],
         cache: false,
+      },
+      /**
+       * Bundles `packages/gadget-libraries` into `src/generated/gadget-libraries.ts`, declarations
+       * included. Uncached like its siblings: it reads a sibling package's whole tree, and the
+       * generated module is what the dependents fingerprint. `build:format-blueprints` depends on
+       * it because a blueprint's `gadget.json` pins are checked against the libraries that exist.
+       */
+      'build:gadget-libraries': {
+        command: 'node scripts/build-gadget-libraries.ts',
+        dependsOn: ['build:gadget-library-types'],
+        cache: false,
+      },
+      /**
+       * Emits every library's `.d.ts` into `dist/gadget-library-types/<side>/`, which
+       * `build:gadget-libraries` reads into the generated module for the agent's
+       * `describeGadgetLibrary`. Cached with the `build:app` shape: the emit writes into this
+       * package, so its output tree leaves `input` (workspace-wide, since automatic tracking
+       * reaches the libraries package the programs compile; `src/generated` goes with it, since
+       * the sibling generators rewrite it and this emit reads none of it), and the explicit
+       * `output` makes a cache hit restore the tree, because the consumer reads it rather than
+       * rebuilding it. The two programs are the libraries' own tsconfigs, so a library type error
+       * fails here first.
+       */
+      'build:gadget-library-types': {
+        command: 'node scripts/build-gadget-library-types.ts',
+        input: [
+          { auto: true },
+          { pattern: '!**/dist/**', base: 'workspace' },
+          { pattern: '!**/src/generated/**', base: 'workspace' },
+        ],
+        output: ['dist/gadget-library-types/**'],
       },
       'build:browser-runtime': {
         command: withTestTimeout('node build-browser-runtime.mjs'),
@@ -31,32 +63,25 @@ export default {
       /**
        * Builds the validated entrypoint shared by integration-test file workers.
        *
-       * Cached with the `build:app` shape: the build writes `.wrangler/validate/` back into the
-       * package automatic tracking treats as input, so without dropping that tree from `input`
-       * nothing ever caches. Workspace-wide, since tracking reaches past this package and any
-       * sibling that ran `wrangler dev` would otherwise guarantee a miss. The explicit `output`
-       * matters as much: a cache hit has to leave the tree on disk, because
-       * `@gadgets/integration-tests` reads it rather than rebuilding it.
+       * Deliberately uncached, like `@gadgets/integration-tests#build:test-gatekeeper`: its
+       * consumer reads `.wrangler/validate/` from disk while its own suite runs, so the tree has to
+       * be written exactly once per run, in dependency order, and then left alone. A cached task
+       * with a declared `output` is not left alone -- vp restores the tree on a hit and discards it
+       * again when one of this task's uncached codegen prerequisites re-runs, so for a moment the
+       * tree is absent or half-extracted, and a file worker booting from it at that moment fails on
+       * a missing entrypoint. Caching also bought nothing: `src/generated/gadget-libraries.ts` is
+       * rewritten by an uncached prerequisite every run, which reads as a changed input.
        *
-       * Its two codegen prerequisites stay uncached, which is what makes this safe: they always
-       * run, so `src/generated/format-blueprints.ts` and the browser-runtime artifacts are current
-       * when this task's fingerprint is taken. Fingerprinting those *generated* files rather than
-       * `FORMAT_BLUEPRINTS_DIR` sidesteps the "env fingerprints the value, not what it points at"
-       * hazard one level down -- an external blueprint edit rewrites the generated module, which is
-       * a tracked input here.
-       *
-       * Caching means this now runs with a stripped environment. `scripts/env-passthrough.test.ts`
-       * is the guard: if capnweb-validate ever starts reading an ambient var, it fails there rather
-       * than replaying a stale tree. The watchdog's own off switch is the one variable declared.
+       * Uncached means the full ambient environment reaches it, so no `env` declaration is needed
+       * (`scripts/env-passthrough.test.ts` and `vitest-task.test.ts` both accept `cache: false`).
        */
       'build:integration-worker': {
         command: withTestTimeout('capnweb-validate build --out .wrangler/validate'),
-        env: TESTS_WITH_TIMEOUT_ENV,
+        cache: false,
         dependsOn: [
-          '@gadgets/typed-storage#build', 'build:format-blueprints', 'build:browser-runtime',
+          '@gadgets/typed-storage#build', 'build:gadget-libraries', 'build:format-blueprints',
+          'build:browser-runtime',
         ],
-        input: [{ auto: true }, { pattern: '!**/.wrangler/**', base: 'workspace' }],
-        output: ['.wrangler/validate/**'],
       },
       /**
        * The three `tsconfig.blueprints-*` configs type-check the TypeScript under
@@ -83,7 +108,7 @@ export default {
           'tsc --project tsconfig.blueprints-client.json',
           'tsc --project tsconfig.blueprints-tests.json',
         ],
-        dependsOn: ['build:format-blueprints', 'build:browser-runtime'],
+        dependsOn: ['build:gadget-libraries', 'build:format-blueprints', 'build:browser-runtime'],
         cache: false,
       },
       /**
@@ -102,7 +127,7 @@ export default {
           'vitest run --config vitest.integration.config.ts',
           'vitest run --config vitest.blueprints.config.ts',
         ]),
-        dependsOn: ['build:format-blueprints', 'build:browser-runtime'],
+        dependsOn: ['build:gadget-libraries', 'build:format-blueprints', 'build:browser-runtime'],
       },
     },
   },

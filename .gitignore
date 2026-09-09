@@ -9,6 +9,10 @@ packages/gatekeeper-*/src/generated/*-configurator-ui.js*
 packages/gatekeeper-*/src/generated/app.txt
 # Bundled format blueprints (regenerated at build time from FORMAT_BLUEPRINTS_DIR).
 packages/workshop-backend/src/generated/format-blueprints.ts
+# Bundled gadget libraries and their source maps (regenerated at build time from packages/gadget-libraries;
+# the declarations they carry are emitted under the package's dist/).
+packages/workshop-backend/src/generated/gadget-libraries.ts
+packages/workshop-backend/src/generated/gadget-libraries/
 packages/workshop-backend/src/generated/browser-export-runtime.txt
 packages/workshop-backend/src/generated/html-sanitizer-runtime.txt
 packages/workshop-backend/src/generated/browser-export-page.js

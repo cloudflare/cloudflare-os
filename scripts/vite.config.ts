@@ -32,6 +32,11 @@ export default {
         command: withTestTimeout("node --test 'scripts/**/*.test.ts'"),
         env: TESTS_WITH_TIMEOUT_ENV,
         cwd: "..",
+        // `build-format-blueprints.test.ts` spawns the blueprint generator and importer directly,
+        // and both load `workshop-backend`'s generated gadget-libraries module (gitignored, so
+        // absent on a clean checkout) to check pins against the libraries the deployment bundles.
+        // Ordered after the task that writes it, so `pnpm test` on a fresh clone does not race.
+        dependsOn: ["@gadgets/workshop-backend#build:gadget-libraries"],
         // Workspace-wide, matching `cwd`: the suites read across `packages/` and the root manifests,
         // and a guard that stopped seeing a file it asserts about would cache-hit its way to a
         // stale pass.

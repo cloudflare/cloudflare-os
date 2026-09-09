@@ -7,8 +7,8 @@ timestamps, and the reading and downscaling of a pasted image. This library is t
 imported as `gadgets:ui/client`. It is DOM-only: nothing here talks RPC or touches storage, and
 nothing here knows what a click means -- every control takes the gadget's action as an argument.
 
-`gadgets:ui/server` exists so that every library has both entries and a blueprint's server may
-import any of them uniformly. It exports one flag, `clientOnly`, and nothing else.
+`gadgets:ui/server` exists because the build bundles both sides of every library. It exports one
+flag, `clientOnly`, and nothing else.
 
 ## What it exports
 

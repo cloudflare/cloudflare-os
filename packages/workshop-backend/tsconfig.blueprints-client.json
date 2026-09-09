@@ -30,8 +30,8 @@
     // Each entry is bundled alone, so an entry with no import or export must still be a module here
     // rather than a global script sharing its declarations with another blueprint's.
     "moduleDetection": "force",
-    // `gadgets:<name>/<side>` names a library in packages/gadget-libraries, which the build inlines
-    // into the bundle (see scripts/format-blueprint-files.ts); tsc reads the same entry.
+    // `gadgets:<name>/<side>` names a library in packages/gadget-libraries; the bundler leaves the
+    // import in place and the runtime supplies the module (see scripts/format-blueprint-files.ts).
     "paths": { "gadgets:*": ["../gadget-libraries/*"] },
     "types": [],
     "noEmit": true

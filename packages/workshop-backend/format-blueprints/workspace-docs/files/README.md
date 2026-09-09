@@ -4,9 +4,9 @@ A single-document, Google-Docs-style rich-text editor with Durable Object persis
 
 ## Shared libraries
 
-This blueprint is built on the shared gadget libraries in `packages/gadget-libraries` (see that
-package's README). The build inlines what it imports into the `client.js` and `server.js` it ships,
-so a gadget created from it carries its own copy of the libraries as of its creation.
+This blueprint is built on the deployment's shared gadget libraries. `gadget.json` pins `ui` and
+`sync` to `latest`, so every workspace created from it runs the bundles the deployment currently
+ships (see `packages/gadget-libraries/README.md`).
 
 - `gadgets:ui/client` draws the chrome: the `el` element builder, the shared icon table, the
   toolbar's buttons, groups, colour pickers and dropdown, the in-page prompt that stands in for the

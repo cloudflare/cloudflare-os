@@ -1,0 +1,6 @@
+{
+  "libraries": {
+    "sync": "latest",
+    "ui": "latest"
+  }
+}

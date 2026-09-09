@@ -18,8 +18,8 @@
  *  Present mode (F) hides all chrome and fills the viewport.
  *
  *  The element builder, the two image-reading steps and the subscriber
- *  `RpcTarget` come from the shared `ui` and `sync` libraries, which the
- *  build inlines into this file. Everything below them —
+ *  `RpcTarget` come from the shared `ui` and `sync` libraries, which
+ *  `gadget.json` pins to the deployment's bundles. Everything below them —
  *  the design tokens, the COMPONENTS registry, the slide renderer and the
  *  builder shell — is this deck's own.
  * ========================================================================= */

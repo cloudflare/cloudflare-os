@@ -209,7 +209,7 @@ function render(
   let { gadget, harness } = makeHarness(pdfChunks, closePdf);
   let stream = renderGadgetInBrowser(
     {} as BrowserRun,
-    "export default {}",
+    {jsCode: "export default {}", libraries: []},
     "Test Gadget",
     gadget as never,
     {
@@ -325,6 +325,38 @@ describe("renderGadgetInBrowser", () => {
     expect(harness.blobRequestContinued()).toBe(true);
   });
 
+  it("maps the gadget's libraries with an inline import map the CSP nonces", async () => {
+    let { gadget, harness } = makeHarness();
+    let stream = renderGadgetInBrowser(
+      {} as BrowserRun,
+      {jsCode: 'import "gadgets:page/client";', libraries: [
+        {specifier: "gadgets:page/client", code: "export const héllo = '</script>';"},
+      ]},
+      "Test Gadget",
+      gadget as never,
+      {id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf", fileExtension: ".pdf"},
+    );
+    expect(await collect(await stream)).toBe("%PDF-1.4");
+    let document = harness.exportDocument();
+    let nonce = /<script type="importmap" nonce="([^"]+)">/.exec(document)?.[1];
+    expect(nonce).toMatch(/^[0-9a-f-]{36}$/);
+    expect(harness.exportDocumentCsp()).toContain(`script-src data: 'nonce-${nonce}'`);
+    let map = JSON.parse(/<script type="importmap"[^>]*>(.*?)<\/script>/s.exec(document)![1]!);
+    let url: string = map.imports["gadgets:page/client"];
+    expect(url).toMatch(/^data:text\/javascript;base64,/);
+    expect(new TextDecoder().decode(Uint8Array.fromBase64(url.split(",")[1]!)))
+        .toBe("export const héllo = '</script>';");
+    // The map's text never closes its own tag early: one closing tag each for it and the runtime.
+    expect(document.match(/<\/script>/g)).toHaveLength(2);
+  });
+
+  it("emits no import map for a gadget without libraries", async () => {
+    let { stream, harness } = render();
+    await collect(await stream);
+    expect(harness.exportDocument()).not.toContain("importmap");
+    expect(harness.exportDocumentCsp()).toMatch(/script-src data: 'nonce-[0-9a-f-]{36}'/);
+  });
+
   it("exports an inert snapshot with locally bundled DOMPurify", async () => {
     let { stream, harness } = render(undefined, true, "text/html");
 
@@ -342,7 +374,7 @@ describe("renderGadgetInBrowser", () => {
 
     let stream = renderGadgetInBrowser(
       {} as BrowserRun,
-      "export default {}",
+      {jsCode: "export default {}", libraries: []},
       "Test Gadget",
       gadget as never,
       {
@@ -378,7 +410,7 @@ describe("renderGadgetInBrowser", () => {
 
     let stream = renderGadgetInBrowser(
       {} as BrowserRun,
-      "export default {}",
+      {jsCode: "export default {}", libraries: []},
       "Test Gadget",
       gadget as never,
       {
@@ -431,7 +463,7 @@ describe("renderGadgetInBrowser", () => {
       launch.mockReturnValue(pendingLaunch.promise);
       let result = renderGadgetInBrowser(
         {} as BrowserRun,
-        "export default {}",
+        {jsCode: "export default {}", libraries: []},
         "Test Gadget",
         { [Symbol.dispose]: () => { gadgetDisposed = true; } } as never,
         {
@@ -464,7 +496,7 @@ describe("renderGadgetInBrowser", () => {
 
     await expect(renderGadgetInBrowser(
       {} as BrowserRun,
-      "export default {}",
+      {jsCode: "export default {}", libraries: []},
       "Test Gadget",
       { [Symbol.dispose]: () => { gadgetDisposed = true; } } as never,
       {

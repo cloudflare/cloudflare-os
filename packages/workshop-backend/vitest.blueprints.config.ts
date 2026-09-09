@@ -17,10 +17,10 @@ import { defineConfig } from "vitest/config";
  *   tests, where the bundling cases skip themselves.
  */
 
-// A blueprint's `gadgets:<name>/<side>` import is inlined by the blueprint build; a blueprint test
-// that imports a module reaching one gets the library's source the same way (as vitest.config.ts
-// does for the workerd suite). Only `blueprint-lib` needs it: the build tests drive esbuild, which
-// resolves the specifier itself.
+// A gadget's `gadgets:<name>/<side>` import resolves through its pins when the kernel loads it; a
+// blueprint test that imports a module reaching one gets the library's source instead (as
+// vitest.config.ts does for the workerd suite). Only `blueprint-lib` needs it: the build tests
+// drive esbuild, which leaves the specifier in place as an external.
 const gadgetLibraries = resolve(dirname(fileURLToPath(import.meta.url)), "..", "gadget-libraries");
 
 export default defineConfig({

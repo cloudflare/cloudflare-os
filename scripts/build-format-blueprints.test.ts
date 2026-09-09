@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -229,6 +229,62 @@ describe("format blueprint scripts", () => {
     assert.equal(unchanged.revision, 1);
   });
 
+  it("validates imported library pins before replacing existing source", async () => {
+    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    temporaryDirectories.push(directory);
+    await mkdir(join(directory, "example", "files"), {recursive: true});
+    await writeFile(join(directory, "example", "blueprint.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(join(directory, "example", "files/client.js"), "// original\n");
+    let generatedModule = await temporaryOutFile();
+    let build = spawnSync(process.execPath, [buildScript, "--out", generatedModule], {
+      cwd: packageRoot,
+      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+      encoding: "utf8",
+    });
+    assert.equal(build.status, 0, build.stderr);
+    let generatedBefore = await readFile(generatedModule, "utf8");
+
+    // A pin nothing imports, a bundled library imported unpinned, and a pin to a library no
+    // deployment bundles: each gadget would fail to load, so none may replace the source that works.
+    let cases: Array<[Map<string, string>, RegExp]> = [
+      [new Map([
+        ["client.js", 'import { el } from "gadgets:ui/client";\nel();\n'],
+        ["gadget.json", '{"libraries": {"nope": "latest", "ui": "latest"}}\n'],
+      ]), /gadget\.json pins nope, which nothing imports/],
+      [new Map([
+        ["client.js", 'import { el } from "gadgets:ui/client";\nel();\n'],
+      ]), /client\.js imports gadgets:ui\/client, which gadget\.json does not pin/],
+      [new Map([
+        ["client.js", 'import { x } from "gadgets:nope/client";\nx();\n'],
+        ["gadget.json", '{"libraries": {"nope": "latest"}}\n'],
+      ]), /the deployment bundles no library named nope/],
+    ];
+    for (let [files, message] of cases) {
+      let archivePath = join(directory, ".broken.gadget");
+      await writeArchive(archivePath, 2, files);
+
+      let result = spawnSync(process.execPath,
+        [importScript, archivePath, "format.example", "--out", generatedModule], {
+          cwd: packageRoot,
+          env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+          encoding: "utf8",
+        });
+
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, message);
+      assert.equal(await readFile(join(directory, "example/files/client.js"), "utf8"),
+        "// original\n");
+      await assert.rejects(readFile(join(directory, "example/files/gadget.json")), {code: "ENOENT"});
+      let unchanged = JSON.parse(await readFile(join(directory, "example/blueprint.json"), "utf8"));
+      assert.equal(unchanged.revision, 1);
+      assert.equal(await readFile(generatedModule, "utf8"), generatedBefore);
+      // No interrupted-import leftovers either: the next import must not recover a broken tree.
+      let leftovers = (await readdir(directory)).filter(name => name.startsWith(".example."));
+      assert.deepEqual(leftovers, []);
+    }
+  });
+
   it("rejects extracted files ignored by Git", async () => {
     let directory = await mkdtemp(join(packageRoot, "format-blueprints-test-"));
     temporaryDirectories.push(directory);
@@ -309,6 +365,34 @@ describe("format blueprint scripts", () => {
     assert.match(result.stderr, /blueprint ID format\.example is already used by example/);
     await assert.rejects(readFile(join(directory, "format.example/blueprint.json")),
       {code: "ENOENT"});
+  });
+
+  it("checks a legacy archive's library pins like an extracted blueprint's", async () => {
+    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    temporaryDirectories.push(directory);
+    await writeFile(join(directory, "example.json"), `${JSON.stringify(presentation, null, 2)}\n`);
+    await writeArchive(join(directory, "example.gadget"), 1,
+      new Map([["client.js", 'import { el } from "gadgets:ui/client";\nel();\n']]));
+
+    let unpinned = spawnSync(process.execPath, [buildScript, "--out", await temporaryOutFile()], {
+      cwd: packageRoot,
+      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+      encoding: "utf8",
+    });
+    assert.equal(unpinned.status, 1);
+    assert.match(unpinned.stderr,
+      /example: client\.js imports gadgets:ui\/client, which gadget\.json does not pin/);
+
+    await writeArchive(join(directory, "example.gadget"), 1, new Map([
+      ["client.js", 'import { el } from "gadgets:ui/client";\nel();\n'],
+      ["gadget.json", '{"libraries": {"ui": "latest"}}\n'],
+    ]));
+    let pinned = spawnSync(process.execPath, [buildScript, "--out", await temporaryOutFile()], {
+      cwd: packageRoot,
+      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+      encoding: "utf8",
+    });
+    assert.equal(pinned.status, 0, pinned.stderr);
   });
 
   it("builds legacy archives and migrates them on import", async () => {

@@ -16,6 +16,9 @@ import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
 import { webFetch as webFetchImpl, WebFetchEnv, formatWebFetchResult } from "./web-fetch";
 import { AgentCatalogSnapshot, formatAlwaysAvailableResourcesPrompt } from "./agent-catalog";
 import { formatInstanceInstructions } from "./admin-config";
+import { LIBRARY_SIDES, type LibrarySide, librarySpecifier, readPins } from "./gadget-libraries";
+import { bundledLibrary } from "./gadget-library-resolution";
+import { GADGET_LIBRARIES } from "./generated/gadget-libraries";
 import type { AiGatewayLogRoute } from "./ai-gateway";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
 import type { ModelHandle } from "./ai-models";
@@ -314,20 +317,64 @@ export type AgentGadgetInfo = {
   output?: BlueprintOutput;
 };
 
+/** Sorts a side's declarations so its entry (`client.d.ts`, `server.d.ts`) precedes its `src/`. */
+function declarationEntryFirst(a: {path: string}, b: {path: string}): number {
+  return Number(a.path.includes("/")) - Number(b.path.includes("/"));
+}
+
+/**
+ * The text of the agent's `describeGadgetLibrary` tool for the bundled library `name`: its
+ * manifest, one sentence on how a gadget's `server.js` relates to it, and its declarations as one
+ * fenced TypeScript block per file, headed by the specifier(s) the file belongs to and its path --
+ * the modules both sides share first, then the server's, then the client's, each side's entry
+ * before its `src/` modules. `side` narrows to one side (shared modules included). Throws, naming
+ * the libraries that exist, for a name the deployment does not bundle.
+ */
+export function describeGadgetLibrary(name: string, side?: LibrarySide): string {
+  let library = bundledLibrary(name);
+  if (!library) {
+    let names = GADGET_LIBRARIES.map(candidate => candidate.name);
+    throw new Error(`This deployment ships no gadget library named ${JSON.stringify(name)}` +
+        (names.length > 0 ? `; it ships ${names.join(", ")}.` : `, or any other.`));
+  }
+  let sides: LibrarySide[] = side ? [side] : ["server", "client"];
+  let header = (declaration: {side: LibrarySide | "both"; path: string}): string =>
+      (declaration.side === "both" ? LIBRARY_SIDES : [declaration.side])
+          .map(s => librarySpecifier(name, s)).join(" and ") + `: ${declaration.path}`;
+  let groups = [
+    library.declarations.filter(d => d.side === "both"),
+    ...sides.map(s => library.declarations.filter(d => d.side === s).toSorted(declarationEntryFirst)),
+  ];
+  let blocks = groups.flat().map(d => `\`\`\`typescript\n// ${header(d)}\n${d.text.trimEnd()}\n\`\`\``);
+  let specifiers = sides.map(s => `\`${librarySpecifier(name, s)}\``).join(" and ");
+  return `Gadget library ${name} ${library.version}` +
+      (library.dependencies.length > 0
+          ? ` (imports ${library.dependencies.join(", ")}, which a Gadget loading it pins too)`
+          : ``) + `\n\n` +
+      `${library.notes}\n\n` +
+      `A Gadget built on this library imports ${specifiers} and pins it in its gadget.json ` +
+      `(\`{"libraries": {${JSON.stringify(name)}: "latest"}}\`, plus every library it imports in ` +
+      `turn). A server.js that is \`export { Gadget, ... } from "gadgets:${name}/server"\` gives ` +
+      `its env stub the methods \`class Gadget\` declares below. The declarations, with the doc ` +
+      `comments the bundles omit:\n\n` +
+      blocks.join("\n\n") + `\n`;
+}
+
 // Resolves a `describeBinding` tool argument (a name in the chat's env) to its human-readable
-// description. Shared by the live tool and the replay path so the two can't drift. (Replay of
-// logs from before named chat bindings may pass a number -- a capsule index in the old numeric
-// env -- which no longer resolves; the model sees the same "no such binding" error it would get
-// if it used one today.)
+// description. Shared by the live tool and the replay of logs that predate the recorded output, so
+// the two can't drift. (Replay of logs from before named chat bindings may pass a number -- a
+// capsule index in the old numeric env -- which no longer resolves; the model sees the same "no
+// such binding" error it would get if it used one today.)
 async function resolveBindingDescription(
     name: string | number,
     chatBindings: Map<string, ChatBindingEntry>,
-    hooks: Pick<AgentHooks, "describeBinding">): Promise<string> {
+    hooks: Pick<AgentHooks, "describeBinding">,
+    chatId: number): Promise<string> {
   let entry = chatBindings.get(`${name}`);
   if (!entry) throw new Error(`There is no binding named "${name}" in your env.`);
   switch (entry.type) {
     case "workpiece":
-      return hooks.describeBinding(`env.${name}`, entry.id);
+      return hooks.describeBinding(`env.${name}`, entry.id, chatId);
     case "value":
       return `env.${name} holds the arguments of an agent callback: \`env.${name}.args\` is the ` +
           `arguments array, and \`env.${name}.resolve(value)\` / \`env.${name}.reject(error)\` ` +
@@ -523,9 +570,11 @@ export interface AgentHooks {
   /**
    * Describe a workpiece (a gadget or a gatekeeper) reachable as `envName` in the chat's env,
    * for the agent's describeBinding tool. (`envName` is provided here only so that it can be
-   * incorporated into the returned description.)
+   * incorporated into the returned description.) A gadget is described as `chatId` sees its files,
+   * proposed changes included; the tool records the text, so a later head does not change what the
+   * model was told.
    */
-  describeBinding(envName: string, id: WorkpieceId): Promise<string>;
+  describeBinding(envName: string, id: WorkpieceId, chatId: number): Promise<string>;
 
   /**
    * Add a binding to the given gadget, pointing at the given workpiece. The binding is provisional
@@ -678,6 +727,8 @@ When the user asks for a new Gadget, ALWAYS consider starting from a blueprint. 
 Note that users rarely ask for "a Gadget" in those words. They ask for a thing: a doc, a deck, a tracker, a tool that does X. Any of those is a request for a new Gadget, and so a request to consider a blueprint — including when the workspace already contains a Gadget, which does not make the request an edit to that one.
 
 Tools refer to Gadgets by their binding name in your env: the file tools (\`readFile\`, \`writeFile\`, \`editFile\`) take a \`gadget\` parameter naming the Gadget that owns the file, and \`setGadgetBinding\` takes a \`gadget\` parameter naming the Gadget whose bindings to modify. Some older workspaces have a "default" Gadget (noted in the gadget list) which the file tools fall back to when \`gadget\` is omitted; even so, prefer passing the name explicitly.
+
+Gadgets may import shared **gadget libraries** (\`import ... from "gadgets:<name>/client"\` in client.js, \`"gadgets:<name>/server"\` in server.js) instead of carrying all of their code: \`sync\` is the collaboration plumbing (mutation queue, subscribers and presence on the server; save scheduling, presence and the callback target in the browser) and \`ui\` is DOM helpers for document-style Gadgets (element builder, icons, toolbar controls, an in-page prompt, image downscaling). The bundled Docs, Sheets and Slides blueprints are built on them. Which libraries a Gadget uses is declared in its \`gadget.json\` (\`{"libraries": {"sync": "latest", "ui": "latest"}}\`), pinning each to \`latest\`, the version this deployment ships; a Gadget pins every library it loads, including the ones its libraries import in turn, and the Workshop supplies the modules when the Gadget loads. \`listGadgetLibraries\` lists the libraries this deployment ships, and \`describeGadgetLibrary\` shows one's TypeScript declarations with their doc comments -- read it before building on a library, and to learn the RPC methods of a Gadget whose \`server.js\` re-exports its Gadget class from a library rather than reading the library's bundle.
 
 # Writing Gadgets
 
@@ -891,6 +942,14 @@ let READ_FILE_TOOL_DESCRIPTION = `
 Read the content of a file owned by one of the workspace's gadgets. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. This cannot read chat attachments; attachments are provided directly in the conversation.
 `.trim();
 
+let LIST_GADGET_LIBRARIES_TOOL_DESCRIPTION = `
+List the gadget libraries this deployment ships: for each, its name, version and release notes, and -- given a \`workpiece\` -- whether that Gadget's \`gadget.json\` pins it. For a library's interface, call \`describeGadgetLibrary\`.
+`.trim();
+
+let DESCRIBE_GADGET_LIBRARY_TOOL_DESCRIPTION = `
+Describe a gadget library this deployment ships, by name: its version, release notes, the libraries it imports, and its TypeScript declarations with their doc comments -- the interface of \`gadgets:<name>/client\` and \`gadgets:<name>/server\` and of the modules behind them. Read this before building a new Gadget on a library, and to learn the RPC methods of a Gadget whose \`server.js\` re-exports its Gadget class from a library: the methods on its \`env\` stub are the ones the library's \`class Gadget\` declares. Pass \`side\` to see one side only: \`server\` is enough for calling a Gadget's methods.
+`.trim();
+
 let CREATE_GADGET_TOOL_DESCRIPTION = `
 Create a new Gadget in this workspace. The new gadget immediately becomes available in your \`env\` under the \`bindingName\` you choose, which is also how you refer to it in other tools (the \`workpiece\` parameter of the file tools, etc.).
 
@@ -968,7 +1027,7 @@ let EXECUTE_CODE_TOOL_DESCRIPTION = `
 Executes one-off JavaScript code, returning the output it logs to the console. The code runs in a sandbox where it cannot talk to the internet, except through the bindings in its 'env' object; fetch() will not work. Otherwise, the code can call any built-in APIs available in Cloudflare Workers.
 
 The 'env' object contains this chat's named bindings:
-* An entry for each Gadget in the workspace, under the name given in the system prompt's gadget list (or the name you passed to \`createGadget\`): an RPC stub pointing at the Gadget's server-side Durable Object. If the user asks you to interact with a Gadget directly, or asks if you can "see" it, use this stub (read the Gadget's server code to learn what RPC methods it exposes).
+* An entry for each Gadget in the workspace, under the name given in the system prompt's gadget list (or the name you passed to \`createGadget\`): an RPC stub pointing at the Gadget's server-side Durable Object. If the user asks you to interact with a Gadget directly, or asks if you can "see" it, use this stub (\`describeBinding\` names where its RPC methods are declared: the Gadget's own server code, or a gadget library's declarations via \`describeGadgetLibrary\`).
 * An entry for each external resource available to this chat: those listed in the system prompt, those the user grants in messages (shown as \`[Resource Title](env.SOME_NAME)\`), and those you obtain with \`requestConnection\`.
 
 Note that this differs from the \`env\` a Gadget's own code sees: a Gadget's server.js sees only that Gadget's own bindings (listed in the system prompt's gadget list), which are wired up separately with \`setGadgetBinding\`. Your bindings and a Gadget's bindings may point at the same resource under the same or different names.
@@ -1846,9 +1905,11 @@ export async function runAgent(
                   break;
                 }
                 case "describeBinding":
+                  // Recorded since the output was added; logs from before recompute it, against
+                  // whatever the binding is today.
                   toolOutput = {
-                    text: await resolveBindingDescription(
-                        toolCall.input.name, chatBindings, hooks),
+                    text: toolCall.output ?? await resolveBindingDescription(
+                        toolCall.input.name, chatBindings, hooks, chatId),
                   };
                   break;
                 case "setBindingHook":
@@ -1924,6 +1985,8 @@ export async function runAgent(
                 case "listBlueprints":
                 case "listConnectableResources":
                 case "requestConnection":
+                case "listGadgetLibraries":
+                case "describeGadgetLibrary":
                   toolOutput = {text: toolCall.output ?? ""};
                   break;
                 default:
@@ -2433,7 +2496,9 @@ export async function runAgent(
               `in its own storage, not text in its code. To read or change what it contains, call ` +
               `its RPC methods from \`executeCode\`` +
               (envName !== undefined ? ` (\`env.${envName}\`)` : ``) +
-              `; read its README.md or server.js to learn the methods it offers for this. Do NOT ` +
+              `; read its README.md or server.js to learn the methods it offers for this (when ` +
+              `server.js re-exports them from a gadget library, describeGadgetLibrary shows ` +
+              `them). Do NOT ` +
               `edit its code to change its content. Edit the code only if the user asks to change ` +
               `how the ${info.output.noun} itself works (its editor, layout, or features).`);
         }
@@ -2580,6 +2645,16 @@ export async function runAgent(
     content: [{type: "text" as const, text}],
     details: notes,
   });
+
+  // A gadget's files as this turn sees them: session content for a pinned gadget, its head commit
+  // (fixed for the turn) otherwise -- the same split readFile makes.
+  let currentGadgetFiles = async (workpieceId: WorkpieceId): Promise<ReadonlyMap<string, string>> => {
+    if (!pinnedGadgets.has(workpieceId)) {
+      let head = observeHead(workpieceId);
+      if (head !== undefined) return await hooks.readCommitFiles(head);
+    }
+    return sessionContent.get(workpieceId) ?? new Map();
+  };
 
   // Schema fragment for the file tools' workpiece reference. Note that although historical logs
   // allow these tool calls to omit this param, is is required in all new tool calls, hence we do
@@ -2848,7 +2923,8 @@ export async function runAgent(
       }),
       execute: async (toolCallId, {name}) => {
         try {
-          return toolResult(await resolveBindingDescription(name, chatBindings, hooks));
+          let output = await resolveBindingDescription(name, chatBindings, hooks, chatId);
+          return toolResult(output, {output});
         } catch (error) {
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)
@@ -3072,6 +3148,67 @@ export async function runAgent(
       }
     }),
 
+    listGadgetLibraries: defineTool({
+      name: "listGadgetLibraries",
+      label: "List gadget libraries",
+      description: LIST_GADGET_LIBRARIES_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        workpiece: Type.Optional(Type.String({
+          description: "Env binding name of a Gadget whose gadget.json pins to report; omit to " +
+              "list the libraries alone.",
+        })),
+      }),
+      execute: async (toolCallId, {workpiece}) => {
+        try {
+          let pins: ReadonlyMap<string, unknown> | undefined;
+          if (workpiece !== undefined) {
+            let resolved =
+                hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
+            pins = readPins(await currentGadgetFiles(resolved.workpieceId));
+          }
+          let lines = GADGET_LIBRARIES.map(library => `* ${library.name} ${library.version}` +
+              (library.dependencies.length > 0 ? ` (imports ${library.dependencies.join(", ")})` : ``) +
+              (pins === undefined ? `` : pins.has(library.name)
+                  ? `, pinned latest by ${JSON.stringify(workpiece)}` : `, not pinned by ${JSON.stringify(workpiece)}`) +
+              `: ${library.notes}`);
+          let unbundled = pins ? [...pins.keys()].filter(name => !bundledLibrary(name)) : [];
+          for (let name of unbundled) {
+            lines.push(`* ${name}: pinned by ${JSON.stringify(workpiece)}, but this deployment ` +
+                `ships no library by that name; the Gadget cannot load until the pin is removed.`);
+          }
+          let output = lines.length > 0
+              ? lines.join("\n") + `\n\nCall describeGadgetLibrary(name) for a library's interface.`
+              : "This deployment ships no gadget libraries.";
+          return toolResult(output, {output});
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      }
+    }),
+
+    describeGadgetLibrary: defineTool({
+      name: "describeGadgetLibrary",
+      label: "Describe gadget library",
+      description: DESCRIBE_GADGET_LIBRARY_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        name: Type.String({description: "The library's name: the <name> in gadgets:<name>/server."}),
+        side: Type.Optional(Type.Union([Type.Literal("client"), Type.Literal("server")], {
+          description: "Show only this side's declarations (a module both sides share is shown " +
+              "with either). Omit for both.",
+        })),
+      }),
+      execute: async (toolCallId, {name, side}) => {
+        try {
+          let output = describeGadgetLibrary(name, side);
+          return toolResult(output, {output});
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      }
+    }),
+
     listBlueprints: defineTool({
       name: "listBlueprints",
       label: "List blueprints",
@@ -3245,8 +3382,11 @@ export async function runAgent(
   if (agentContext.spawnerConfig) {
     // Restrict sub-agents to a narrower set of tools: they can inspect and call bindings in code
     // (which is how they read reference knowledge), but not the full editing/connection surface.
+    // A binding built on a gadget library declares its methods in the library, so that read-only
+    // lookup comes along.
     tools = {
       describeBinding: tools.describeBinding,
+      describeGadgetLibrary: tools.describeGadgetLibrary,
       executeCode: tools.executeCode,
       ...(callbackInitiated ? {giveUp: tools.giveUp} : {}),
     };

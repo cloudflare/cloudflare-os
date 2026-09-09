@@ -67,8 +67,8 @@ const WORKER_INPUTS: WorkerInput[] = [
   // decides what gets emitted.
   { kind: "dir", path: "packages/typed-storage", excludeDirs: BUILT },
   { kind: "dir", path: formatBlueprintsDir },
-  // Inlined into the blueprints' archives by the blueprint build, so a library edit is a Worker
-  // change too.
+  // Bundled into the Workshop's `src/generated` by `build:gadget-libraries`, so a library edit is
+  // a Worker change too.
   { kind: "dir", path: "packages/gadget-libraries", excludeDirs: BUILT },
   // The fixture gatekeeper the harness boots beside the Workshop. Split for the same reason the
   // backend is: `build:test-gatekeeper` validates this fixture into its own `.wrangler`, which is

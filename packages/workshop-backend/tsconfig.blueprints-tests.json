@@ -27,9 +27,9 @@
     // Each entry is bundled alone, so an entry with no import or export must still be a module here
     // rather than a global script sharing its declarations with another blueprint's.
     "moduleDetection": "force",
-    // `gadgets:<name>/<side>` names a library in packages/gadget-libraries, which the build inlines
-    // into the bundle (see scripts/format-blueprint-files.ts); a test that imports a blueprint
-    // module reaching one reads the same entry.
+    // `gadgets:<name>/<side>` names a library in packages/gadget-libraries, which the runtime
+    // supplies to a gadget (see scripts/format-blueprint-files.ts); a test that imports a blueprint
+    // module reaching one reads the library's source instead.
     "paths": { "gadgets:*": ["../gadget-libraries/*"] },
     "types": ["node"],
     "noEmit": true

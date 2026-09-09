@@ -1444,25 +1444,36 @@ export type OutputSummary = {
  * and to the Gadget's server.
  */
 export type UiBundle = {
-  // URL from which the main bundle of UI code can be downloaded. This download contains all the
-  // Gadget's client-side assets. The URL is content-addressed to make it highly cacheable, even
-  // across multiple Gadgets sharing the same implementation (blueprint).
-  //
-  // TODO: Specify the format of what this URL returns. A raw HTML page doesn't quite work because
-  //   the client needs to initialize the sandbox with some platform libraries before loading the
-  //   Gadget itself.
-//  url: string;
-
   /**
-   * Returns the raw JS code to execute in the Gadget iframe.
-   * TODO: For now we just return the code but we should switch to serving over HTTP as described
-   *   above, for caching. Or... maybe we should actually serve over RPC, but also employ the
-   *   Cache API in the browser? Or some other local storage?
+   * The gadget's own `client.js`, an ES module the frontend runs in the sandbox as a `data:` module.
+   * A few lines of glue for a gadget built on a library; the whole UI for a self-contained gadget.
    */
   jsCode: string;
 
-  // Other metadata could be placed here in the future, e.g. to specify what version of support
-  // libraries should be loaded.
+  /**
+   * The gadget libraries `jsCode` imports (`gadgets:<name>/client`), as references rather than
+   * code: the frontend maps each specifier in the sandbox's import map to the module fetched once
+   * per `hash` through `GadgetClient.getLibraryCode()`, so gadgets pinning the same library share
+   * one download per session. Absent or empty when the gadget imports no library. Which library a
+   * gadget uses comes from its own `gadget.json`; see `GadgetLibraryRef`.
+   */
+  libraries?: GadgetLibraryRef[];
+};
+
+/**
+ * One library a gadget's UI imports. A gadget's `gadget.json` pins each library to `latest`, the
+ * bundle shipped with the running deployment, which every workspace pinned that way runs; the
+ * frontend sees a specifier and the content hash of the module it resolves to.
+ */
+export type GadgetLibraryRef = {
+  /** The import specifier as the gadget writes it, `gadgets:<name>/client`. */
+  specifier: string;
+
+  /**
+   * sha256 (hex) of the module's source. The frontend caches fetched modules by it, so a session
+   * downloads each library once no matter how many gadgets pin it.
+   */
+  hash: string;
 };
 
 /**
@@ -3046,12 +3057,16 @@ export type AiToolCall = {
 } | {
   /**
    * Describe one of the chat's bindings by name. Numeric names appear only in logs persisted
-   * before named chat bindings (they were capsule indices).
+   * before named chat bindings (they were capsule indices). Read-only; the text is recorded so
+   * replay doesn't recompute it against a later head of the gadget (or a later deployment of a
+   * gatekeeper), and it describes the files the chat saw. Absent from logs before it was recorded,
+   * which replay recomputes as before.
    */
   toolName: "describeBinding";
   input: {
     name: string | number;
   };
+  output?: string;
 } | {
   toolName: "setBindingHook";
   input: {
@@ -3231,6 +3246,34 @@ export type AiToolCall = {
      * bindings lack it.
      */
     bindingName?: string;
+  };
+  output?: string;
+} | {
+  /**
+   * List the gadget libraries this deployment ships -- each with its version and release notes --
+   * and, given a gadget, which of them its `gadget.json` pins. Read-only; the text is recorded so
+   * replay doesn't re-resolve it against a later deployment.
+   */
+  toolName: "listGadgetLibraries";
+  input: {
+    /** Env binding name of a gadget, as the file tools take it; omit to list the libraries alone. */
+    workpiece?: string;
+  };
+  output?: string;
+} | {
+  /**
+   * Describe one gadget library the deployment ships: version, notes, dependencies and its
+   * TypeScript declarations, which carry the doc comments the bundles lack. How the agent learns
+   * the RPC surface of a gadget whose `server.js` re-exports a library's class, and what it reads
+   * before building a gadget on a library. Read-only; the text is recorded so replay doesn't
+   * re-resolve it against a later library version.
+   */
+  toolName: "describeGadgetLibrary";
+  input: {
+    /** The library's name, the `<name>` in `gadgets:<name>/server`. */
+    name: string;
+    /** One side's declarations only (modules both sides share are included either way). */
+    side?: "client" | "server";
   };
   output?: string;
 });
@@ -3996,6 +4039,15 @@ export interface GadgetClient extends WorkpieceClient {
    * agent with no code).
    */
   getUiBundle(chatId?: number): Promise<UiBundle | null>;
+
+  /**
+   * The source of one library module the gadget's UI imports, named by the `specifier` of a
+   * `UiBundle.libraries` entry (`gadgets:<name>/client`) and resolved through the gadget's own
+   * `gadget.json` at the same code version as the bundle: the deployment's shipped module for a
+   * `latest` pin. Throws for a specifier the gadget does not pin. The frontend caches the result
+   * by the entry's `hash`, so this is called once per distinct module per session, not per load.
+   */
+  getLibraryCode(specifier: string, chatId?: number): Promise<string>;
 
   // Open an RPC interface to the gadget's server-side Durable Object facet. The frontend may pass
   // this stub into the gadget's iframe sandbox, so that the gadget UI can communicate with its

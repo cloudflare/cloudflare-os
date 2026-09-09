@@ -932,6 +932,9 @@ importers:
       '@gadgets/error-reporting':
         specifier: workspace:*
         version: link:../error-reporting
+      '@gadgets/gadget-libraries':
+        specifier: workspace:*
+        version: link:../gadget-libraries
       '@gadgets/typed-storage':
         specifier: workspace:*
         version: link:../typed-storage
