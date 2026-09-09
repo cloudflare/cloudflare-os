@@ -28,6 +28,7 @@ packages/workshop-backend/scripts/format-blueprint-files.ts
   s_a640e72b36f6d8::t_a7e964ddb380f4 9,15-20,169,201-203,206-215,220-225,228-229,235-238,344-347,353,365,405-406,419,438,440-441,488-568
   s_a640e72b36f6d8::t_1d950fcd61629d 354,443
   s_a640e72b36f6d8::t_a236fc1c28c33e 569
+  s_f7ac050e40ad3e::t_38224050c1e27e 355-356
 packages/workshop-shared/src/api.ts
   s_a640e72b36f6d8::t_a7e964ddb380f4 1448-1449,1453-1476,3060-3063,3069,3251-3278,4043-4050
   s_a640e72b36f6d8::t_e525c76b9a53a2 4051
@@ -122,6 +123,14 @@ pnpm-lock.yaml
       "agent_id": {
         "tool": "claude",
         "id": "537f9b15-2069-4a19-b899-146ed10343d1",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f7ac050e40ad3e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63f09b14-0f5c-4bb1-baad-8ef528ed20cf",
         "model": "claude-fable-5-1"
       },
       "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
