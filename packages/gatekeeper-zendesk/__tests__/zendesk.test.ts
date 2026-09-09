@@ -401,7 +401,14 @@ describe("Zendesk workflow regressions", () => {
     vi.stubGlobal("fetch", fetcher);
     await expect(new ZendeskApi("acme", async () => "token").comments("123")).rejects.toThrow("outside the requested ticket");
     expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(fetcher).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ redirect: "error" }));
+    expect(fetcher).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ redirect: "manual" }));
+  });
+
+  it("rejects redirects without forwarding credentials to the destination", async () => {
+    const fetcher = vi.fn(async () => Response.json({ user: { id: 1 } }, { status: 302, headers: { location: "https://other.example/" } }));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(new ZendeskApi("acme", async () => "token").me()).rejects.toMatchObject({ status: 302 });
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith("https://acme.zendesk.com/api/v2/users/me.json", expect.objectContaining({ redirect: "manual" }));
   });
 
   it("rejects broken, looping, failed, and over-budget history instead of returning partial data", async () => {

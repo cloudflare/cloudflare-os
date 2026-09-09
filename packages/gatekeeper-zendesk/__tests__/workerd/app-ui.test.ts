@@ -66,8 +66,11 @@ type Call = { method: string; url: string; body?: string };
 function stubZendesk(): Call[] {
   const calls: Call[] = [];
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = new URL(String(input instanceof Request ? input.url : input));
-    const method = init?.method ?? "GET";
+    // Validate with the real runtime before mocking HTTP; plain mocks hid unsupported redirect modes.
+    const request = new Request(input, init);
+    expect(request.redirect).toBe("manual");
+    const url = new URL(request.url);
+    const method = request.method;
     calls.push({ method, url: url.toString(), body: init?.body ? String(init.body) : undefined });
     const path = url.pathname;
     if (path === "/oauth/tokens") {
