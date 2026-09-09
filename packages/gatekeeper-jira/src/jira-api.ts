@@ -2,6 +2,8 @@ const ATLASSIAN_AUTH = "https://auth.atlassian.com";
 const ATLASSIAN_API = "https://api.atlassian.com";
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_JSON_BODY_BYTES = 128 * 1024;
+// Search pages and issue details include rich-text descriptions; OAuth responses do not.
+const MAX_REST_JSON_BODY_BYTES = 4 * 1024 * 1024;
 export const MAX_ATTACHMENT_DOWNLOAD_BYTES = 256 * 1024;
 
 /** OAuth scopes for Jira Cloud REST API v3 through Atlassian 3LO. */
@@ -67,10 +69,36 @@ export function jqlLiteral(value: string): string {
   return `"${value.replace(/(["\\])/g, "\\$1")}"`;
 }
 
-async function readJsonBounded(response: Response): Promise<unknown> {
-  const text = await response.text();
-  if (text.length > MAX_JSON_BODY_BYTES) throw new JiraApiError(response.status, "Jira response body exceeded the safety limit");
-  return text ? JSON.parse(text) : undefined;
+async function readJsonBounded(response: Response, limit = MAX_JSON_BODY_BYTES): Promise<unknown> {
+  if (!response.body) return undefined;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > limit) {
+        await reader.cancel().catch(() => {});
+        throw new JiraApiError(response.status, `Jira response body exceeded the safety limit (${limit} bytes)`);
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } catch (error) {
+    if (error instanceof JiraApiError) throw error;
+    throw new JiraApiError(response.status, "Failed to read Jira response body");
+  } finally {
+    reader.releaseLock();
+  }
+  try {
+    return text ? JSON.parse(text) : undefined;
+  } catch {
+    // JSON syntax errors may quote provider content. Never propagate that content.
+    throw new JiraApiError(response.status, "Invalid Jira JSON response");
+  }
 }
 
 async function postToken(body: Record<string, string>): Promise<OAuthGrant> {
@@ -103,7 +131,7 @@ export async function refreshAccessToken(refreshToken: string, clientId: string,
 
 async function getJson<T>(url: string, token: string): Promise<T> {
   const response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-  const parsed = await readJsonBounded(response).catch(error => { throw new JiraApiError(response.status, `Invalid Jira JSON response for ${url}`, error); });
+  const parsed = await readJsonBounded(response);
   if (!response.ok) throw new JiraApiError(response.status, `${response.status} ${response.statusText} for ${url}`, parsed);
   return parsed as T;
 }
@@ -168,7 +196,7 @@ export class JiraApi {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json", ...(init.body instanceof FormData ? { "X-Atlassian-Token": "no-check" } : { "Content-Type": "application/json" }), ...init.headers },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    const parsed = response.status === 204 ? undefined : await readJsonBounded(response).catch(error => { throw new JiraApiError(response.status, `Invalid Jira JSON response for ${path}`, error); });
+    const parsed = response.status === 204 ? undefined : await readJsonBounded(response, MAX_REST_JSON_BODY_BYTES);
     if (!response.ok) throw new JiraApiError(response.status, `${response.status} ${response.statusText} for ${path}`, parsed);
     return parsed as T;
   }
