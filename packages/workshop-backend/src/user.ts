@@ -1560,18 +1560,19 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * requests no gadget-facing resources, so any later resource access is authorized separately.
    */
   async linkConnectedAccountFromLogin(
-      account: Fetcher<GatekeeperUser>, vendorId: string, expiresAt?: Date): Promise<void> {
+      account: Fetcher<GatekeeperUser>, vendorId: string, expiresAt?: Date): Promise<number> {
     let description = await account.describe();
     let uniqueName = description.uniqueName;
 
-    // A repeated sign-in is a re-authorization, so the *fresh* grant is the one we want. If this
-    // identity is already connected for this vendor, refresh that record in place rather than letting
-    // putConnectedAccount's dedup discard the new grant: keeping the stale record would leave billing
-    // broken whenever the old token had expired or was rotated out by this very re-auth — the
-    // opposite of what signing in again should accomplish.
+    // Sign-in grants billing access only. Resource grants own persistent bindings and subscriptions;
+    // preserve them even if expired. Their existing reconnect flow refreshes credentials in place.
     if (uniqueName) {
       let existing = this.#findConnectedAccountByIdentity(vendorId, uniqueName);
       if (existing) {
+        if (existing.description.grantedResourceUrlPatterns?.length) {
+          await account.revoke();
+          return existing.id;
+        }
         // Drop the now-stale grant (a separate gatekeeper-side object from the fresh one), then point
         // the existing record — keeping its id, so UI references stay stable — at the fresh grant.
         try {
@@ -1587,7 +1588,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         existing.credentialExpiresAt = expiresAt;
         existing.credentialsExpired = false;
         this.storage.connectedAccounts.put(existing);
-        return;
+        return existing.id;
       }
     }
 
@@ -1600,6 +1601,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       vendorId,
       credentialExpiresAt: expiresAt,
     });
+    return id;
   }
 
   // Find an existing connected account for the given vendor + identity (uniqueName), excluding
