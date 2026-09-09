@@ -14,6 +14,10 @@ const PX_TO_LINE_EMU = PX_TO_EMU;
 const PX_TO_POINT = PX_TO_EMU / 12700;
 const MAX_DRAWING_COORDINATE = 2147483647;
 const ARIAL_LINE_HEIGHT = 1.15; // (ascender 1854 + descender 434 + lineGap 67) / 2048 em
+// buSzPts is the bullet's font size, not the marker's size: Arial's U+25CF black circle inks a
+// 0.43em disc (glyph bbox 87..430 / 1000). This is the font size whose disc matches the
+// browser's 6px bullet.
+const BULLET_FONT_HUNDREDTHS = Math.round(6 * PX_TO_POINT / 0.43 * 100);
 
 const MAX_SLIDES = 500;
 const MAX_BLOCKS_PER_SLIDE = 1000;
@@ -412,7 +416,7 @@ function* paragraphXml(text, style, options = {}) {
   }
   if (options.bullet) {
     properties += `<a:buClr><a:srgbClr val="${COLORS.tangerine}"/></a:buClr>` +
-      '<a:buSzPts val="1000"/><a:buFont typeface="Arial"/><a:buChar char="&#x25CF;"/>';
+      `<a:buSzPts val="${BULLET_FONT_HUNDREDTHS}"/><a:buFont typeface="Arial"/><a:buChar char="&#x25CF;"/>`;
   } else {
     properties += "<a:buNone/>";
   }
