@@ -321,12 +321,16 @@ function cssBoxLeft(value) {
 // --- Semantic model ----------------------------------------------------------------------------
 
 // Blink's Increase Indent wraps the block in a borderless blockquote; a blockquote whose winning
-// left border is visible is a quotation.
+// left border is visible is a quotation. A border declaration is visible when it names a line
+// style, borderless when it is `none`/`hidden` or a bare width, and ignored when it is invalid.
 function isIndentation(node, declarations) {
   if (node.tag !== "blockquote") return false;
   let borderless = false;
   for (const [name, value] of declarations) {
-    if (name === "border" || name === "border-left") borderless = /^(?:none|0)/i.test(value);
+    if (name !== "border" && name !== "border-left") continue;
+    const lower = value.trim().toLowerCase();
+    if (/\b(?:solid|dashed|dotted|double|groove|ridge|inset|outset)\b/.test(lower)) borderless = false;
+    else if (/\b(?:none|hidden)\b/.test(lower) || cssLength(lower) != null) borderless = true;
   }
   return borderless;
 }
@@ -502,16 +506,24 @@ function imageDimensions(mime, bytes) {
   return null;
 }
 
+// Width in twips for a `width` attribute or declaration: percentages of the content width, lengths,
+// `auto` (intrinsic, null); undefined when the value is invalid.
+function widthTwips(value) {
+  const trimmed = String(value).trim();
+  const percent = /^(\d+(?:\.\d+)?)%$/.exec(trimmed);
+  if (percent) return CONTENT_WIDTH_PIXELS * TWIPS_PER_PIXEL * Math.min(100, Number(percent[1])) / 100;
+  if (trimmed.toLowerCase() === "auto") return null;
+  return cssLength(trimmed) ?? undefined;
+}
+
 // Requested display width in pixels from the `width` attribute or inline style (last valid
-// declaration wins; `auto` selects the intrinsic size), or null when none applies.
+// declaration wins), or null when none applies.
 function requestedWidth(node) {
-  let twips = cssLength(node.attrs.width || "");
+  let twips = widthTwips(node.attrs.width || "") ?? null;
   for (const [name, value] of cssDeclarations(node.attrs.style)) {
     if (name !== "width") continue;
-    const percent = /^(\d+(?:\.\d+)?)%$/.exec(value.trim());
-    if (percent) twips = CONTENT_WIDTH_PIXELS * TWIPS_PER_PIXEL * Math.min(100, Number(percent[1])) / 100;
-    else if (value.trim().toLowerCase() === "auto") twips = null;
-    else twips = cssLength(value) ?? twips;
+    const next = widthTwips(value);
+    if (next !== undefined) twips = next;
   }
   return twips != null && twips >= 0 ? twips / TWIPS_PER_PIXEL : null;
 }
@@ -696,7 +708,11 @@ function walk(builder, node, parent) {
     style: blockStyle(node, declarations) ?? parent.style,
   };
   if (block) builder.close();
-  if (parent.inCell && BLOCK_TAGS.has(tag) && builder.current?.runs.at(-1)?.type === "text") builder.break(context);
+  if (parent.inCell && BLOCK_TAGS.has(tag)) {
+    const paragraph = builder.current;
+    const last = paragraph?.runs.at(-1);
+    if (last && last.type !== "tab" && !paragraph.pendingBreaks) builder.break(context);
+  }
   switch (tag) {
     case "br":
       builder.break(context);
