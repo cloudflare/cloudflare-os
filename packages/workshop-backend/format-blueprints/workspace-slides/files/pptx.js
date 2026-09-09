@@ -1,6 +1,7 @@
 import { createZip, crc32 } from "./zip.js";
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 const PML_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const DML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -32,11 +33,13 @@ const MAX_TOTAL_HIGHLIGHT_WORK = 32000000;
 const MAX_HIGHLIGHT_TRANSITIONS = 4096;
 const MAX_TOTAL_HIGHLIGHT_TRANSITIONS = 32768;
 const TEXT_CHUNK_SIZE = 64 * 1024;
+// The deck's own data-URL strings stay alive alongside the decoded bytes for the whole export, so
+// the aggregate budgets are set for both to fit comfortably inside a Worker's 128 MiB heap.
 const MAX_MEDIA_COUNT = 256;
 const MAX_MEDIA_ENCODED_BYTES = 24 * 1024 * 1024;
-const MAX_TOTAL_MEDIA_ENCODED_BYTES = 96 * 1024 * 1024;
+const MAX_TOTAL_MEDIA_ENCODED_BYTES = 48 * 1024 * 1024;
 const MAX_MEDIA_DECODED_BYTES = 16 * 1024 * 1024;
-const MAX_TOTAL_MEDIA_DECODED_BYTES = 64 * 1024 * 1024;
+const MAX_TOTAL_MEDIA_DECODED_BYTES = 32 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION = 8192;
 const MAX_IMAGE_PIXELS = 16777216;
 const MAX_TOTAL_IMAGE_PIXELS = 67108864;
@@ -255,12 +258,20 @@ function solidFill(color, shapeOpacity = 1) {
   return `<a:solidFill><a:srgbClr val="${color.rgb}">${alphaXml}</a:srgbClr></a:solidFill>`;
 }
 
-function lineXml(color, widthPixels = 0, dashed = false, shapeOpacity = 1, arrow = false) {
+// `dashed` reproduces the browser's fixed `stroke-dasharray: 6 6` (or a CSS dashed border): the
+// preset dash scales with the stroke width, so the 6px dash is expressed relative to it instead.
+function lineXml(color, widthPixels = 0, dashed = false, shapeOpacity = 1, arrow = false, join = "") {
   const width = Math.max(0, Math.min(MAX_DRAWING_COORDINATE,
     Math.round(numberOr(widthPixels, 0, 0, 1000) * PX_TO_LINE_EMU)));
   if (!color || width === 0) return "<a:ln><a:noFill/></a:ln>";
   let xml = `<a:ln w="${width}" cap="rnd">${solidFill(color, shapeOpacity)}`;
-  xml += `<a:prstDash val="${dashed ? "dash" : "solid"}"/>`;
+  if (dashed) {
+    const dash = Math.round(6 / (width / PX_TO_LINE_EMU) * 100000);
+    xml += `<a:custDash><a:ds d="${dash}" sp="${dash}"/></a:custDash>`;
+  } else {
+    xml += '<a:prstDash val="solid"/>';
+  }
+  xml += join;
   if (arrow) xml += '<a:headEnd type="none"/><a:tailEnd type="triangle" w="sm" len="sm"/>';
   return xml + "</a:ln>";
 }
@@ -286,6 +297,21 @@ function presetGeometry(preset, radius, width, height) {
 
 function transformXml(box, extra = "") {
   return `<a:xfrm${extra}><a:off x="${box.x}" y="${box.y}"/><a:ext cx="${box.width}" cy="${box.height}"/></a:xfrm>`;
+}
+
+// A hexagon with its points at the top and bottom: PowerPoint's preset points left and right, so
+// the box is laid out with the long axis horizontal and rotated a quarter turn about its centre.
+// `inset` is the distance from the pointed end to the flat side as a fraction of the short side.
+function pointUpHexagonXml(state, name, box, inset, line) {
+  const id = nextShapeId(state);
+  const centerX = box.x + box.width / 2;
+  const centerY = box.y + box.height / 2;
+  const unrotated = {x: centerX - box.height / 2, y: centerY - box.width / 2, width: box.height, height: box.width};
+  const adjust = Math.round(inset * 100000);
+  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${xmlAttribute(name)}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>` +
+    `<p:spPr>${transformXml(unrotated, ' rot="5400000"')}<a:prstGeom prst="hexagon"><a:avLst>` +
+    `<a:gd name="adj" fmla="val ${adjust}"/><a:gd name="vf" fmla="val 115470"/></a:avLst></a:prstGeom>` +
+    `<a:noFill/>${line}</p:spPr></p:sp>`;
 }
 
 function nextShapeId(state) {
@@ -679,23 +705,51 @@ function findOrAddMedia(bytes, media, mediaState) {
   return entry;
 }
 
+// The value of `name="..."` in an element's opening tag, or null. A plain scan with no nested
+// quantifiers: the tag is authored text and can be long, so parsing must stay linear.
+function svgAttribute(rootTag, name) {
+  const match = new RegExp(String.raw`\s${name}\s*=\s*(?:"([^"]*)"|'([^']*)')`).exec(rootTag);
+  return match ? (match[1] ?? match[2]) : null;
+}
+
+function svgLength(value) {
+  if (value == null) return null;
+  const number = Number(value.trim().replace(/px$/, ""));
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
 // The SVG's intrinsic aspect ratio, from its viewBox or else its width/height attributes, so
 // `fit: "contain"` can letterbox the frame the way the browser's preserveAspectRatio does.
 // Returns null when neither is usable; the frame is then filled.
 function svgAspect(rootTag) {
-  const number = String.raw`[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?`;
-  const viewBox = new RegExp(String.raw`\sviewBox\s*=\s*["']\s*${number}[\s,]+${number}[\s,]+(${number})[\s,]+(${number})\s*["']`)
-    .exec(rootTag);
-  if (viewBox) {
-    const width = Number(viewBox[1]);
-    const height = Number(viewBox[2]);
-    return width > 0 && height > 0 ? width / height : null;
+  const viewBox = svgAttribute(rootTag, "viewBox");
+  if (viewBox != null) {
+    const parts = viewBox.trim().split(/[\s,]+/);
+    const width = parts.length === 4 ? svgLength(parts[2]) : null;
+    const height = parts.length === 4 ? svgLength(parts[3]) : null;
+    return width && height ? width / height : null;
   }
-  const width = new RegExp(String.raw`\swidth\s*=\s*["']\s*(${number})(?:px)?\s*["']`).exec(rootTag);
-  const height = new RegExp(String.raw`\sheight\s*=\s*["']\s*(${number})(?:px)?\s*["']`).exec(rootTag);
-  if (!width || !height) return null;
-  const ratio = Number(width[1]) / Number(height[1]);
-  return Number.isFinite(ratio) && ratio > 0 ? ratio : null;
+  const width = svgLength(svgAttribute(rootTag, "width"));
+  const height = svgLength(svgAttribute(rootTag, "height"));
+  return width && height ? width / height : null;
+}
+
+// The `<svg>` element within `markup` -- what the browser renders when the paste has wrapper
+// markup around it -- or null when there is none.
+function svgElement(markup) {
+  const rootTag = /<svg[\s>][^>]*>?/.exec(markup);
+  if (!rootTag) return null;
+  const end = markup.lastIndexOf("</svg>");
+  return {
+    rootTag: rootTag[0],
+    source: markup.slice(rootTag.index, end >= rootTag.index ? end + "</svg>".length : markup.length),
+  };
+}
+
+function svgMedia(element, mediaState) {
+  return findOrAddMedia(encoder.encode(element.source), {
+    extension: "svg", mime: "image/svg+xml", aspect: svgAspect(element.rootTag), pixels: 0,
+  }, mediaState);
 }
 
 // Embeds the markup as an SVG media part, byte for byte. The deck's SVG is trusted as authored:
@@ -705,31 +759,33 @@ function prepareSvgSource(markup, mediaState) {
   if (!markup) return {placeholder: "Paste SVG markup"};
   const cached = mediaState.bySource.get(markup);
   if (cached) return cached;
-  const rootTag = /<svg[\s>][^>]*>?/.exec(markup);
-  if (!rootTag) {
-    const result = {placeholder: "Invalid SVG"};
-    mediaState.bySource.set(markup, result);
-    return result;
-  }
-  const result = {media: findOrAddMedia(encoder.encode(markup), {
-    extension: "svg", mime: "image/svg+xml", aspect: svgAspect(rootTag[0]), pixels: 0,
-  }, mediaState)};
+  const element = svgElement(markup);
+  const result = element ? {media: svgMedia(element, mediaState)} : {placeholder: "Invalid SVG"};
   mediaState.bySource.set(markup, result);
   return result;
 }
 
+const IMAGE_DATA_URL = /^data:image\/(png|jpeg|svg\+xml);base64,([A-Za-z0-9+/]*={0,2})$/;
+
 function prepareImageSource(value, label, limits, mediaState) {
   if (typeof value !== "string" || value === "") return {placeholder: "No image"};
+  // Before any scan of the value: a deck can reference one large source from thousands of blocks.
+  const cached = mediaState.bySource.get(value);
+  if (cached) return cached;
+  const result = prepareImageData(value, label, limits, mediaState);
+  mediaState.bySource.set(value, result);
+  return result;
+}
+
+function prepareImageData(value, label, limits, mediaState) {
   if (value.length > MAX_MEDIA_ENCODED_BYTES + 64) {
     throw new Error(`${label} exceeds the ${MAX_MEDIA_ENCODED_BYTES}-byte encoded-image limit.`);
   }
-  const match = /^data:image\/(png|jpeg);base64,([A-Za-z0-9+/]*={0,2})$/.exec(value);
+  const match = IMAGE_DATA_URL.exec(value);
   if (!match) {
     boundedText(value, label, limits);
     return {placeholder: value.startsWith("data:") ? "Unsupported or malformed image" : "Remote image not included"};
   }
-  const cached = mediaState.bySource.get(value);
-  if (cached) return cached;
   const payload = match[2];
   if (payload.length > MAX_MEDIA_ENCODED_BYTES) {
     throw new Error(`${label} exceeds the ${MAX_MEDIA_ENCODED_BYTES}-byte encoded-image limit.`);
@@ -739,11 +795,7 @@ function prepareImageSource(value, label, limits, mediaState) {
     throw new Error(`Deck images exceed the ${MAX_TOTAL_MEDIA_ENCODED_BYTES}-byte aggregate encoded-image limit.`);
   }
   const decodedLength = decodedBase64Length(payload);
-  if (decodedLength == null) {
-    const result = {placeholder: "Malformed image data"};
-    mediaState.bySource.set(value, result);
-    return result;
-  }
+  if (decodedLength == null) return {placeholder: "Malformed image data"};
   if (decodedLength > MAX_MEDIA_DECODED_BYTES) {
     throw new Error(`${label} expands beyond the ${MAX_MEDIA_DECODED_BYTES}-byte decoded-image limit.`);
   }
@@ -752,25 +804,25 @@ function prepareImageSource(value, label, limits, mediaState) {
     throw new Error(`Deck images exceed the ${MAX_TOTAL_MEDIA_DECODED_BYTES}-byte aggregate decoded-image limit.`);
   }
   const bytes = decodeBase64(payload, decodedLength);
-  const mime = `image/${match[1]}`;
-  const dimensions = bytes && (mime === "image/png" ? pngDimensions(bytes) : jpegDimensions(bytes));
-  if (!bytes || !dimensions) {
-    const result = {placeholder: "Malformed image data"};
-    mediaState.bySource.set(value, result);
-    return result;
+  if (!bytes) return {placeholder: "Malformed image data"};
+  if (match[1] === "svg+xml") {
+    // The image control passes uploaded SVG files through verbatim (client.js fileToImageDataURL).
+    const element = svgElement(decoder.decode(bytes));
+    return element ? {media: svgMedia(element, mediaState)} : {placeholder: "Malformed image data"};
   }
+  const mime = `image/${match[1]}`;
+  const dimensions = mime === "image/png" ? pngDimensions(bytes) : jpegDimensions(bytes);
+  if (!dimensions) return {placeholder: "Malformed image data"};
   if (dimensions.width > MAX_IMAGE_DIMENSION || dimensions.height > MAX_IMAGE_DIMENSION) {
     throw new Error(`${label} is ${dimensions.width} x ${dimensions.height}; each image dimension must be at most ${MAX_IMAGE_DIMENSION}px.`);
   }
   if (dimensions.width * dimensions.height > MAX_IMAGE_PIXELS) {
     throw new Error(`${label} is ${dimensions.width} x ${dimensions.height}; images may contain at most ${MAX_IMAGE_PIXELS} pixels.`);
   }
-  const result = {media: findOrAddMedia(bytes, {
+  return {media: findOrAddMedia(bytes, {
     extension: mime === "image/png" ? "png" : "jpeg", mime,
     aspect: dimensions.width / dimensions.height, pixels: dimensions.width * dimensions.height,
   }, mediaState)};
-  mediaState.bySource.set(value, result);
-  return result;
 }
 
 function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
@@ -882,17 +934,24 @@ function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
   };
 }
 
-const BRAND_BAR_ELEMENTS = new Set(["svg", "defs", "linearGradient", "stop", "rect"]);
+// The seed decks' bottom bar (client.js BOTTOM_BAR_SVG and the seed slides' copies): a 1200x12
+// strip whose only content is one three-stop gradient in the brand colors, filling one rect. The
+// check is structural -- exactly these elements in this order with these stop colors -- so other
+// artwork sharing the size or palette is embedded as an SVG picture instead.
+const BRAND_BAR_ELEMENTS = ["svg", "defs", "linearGradient", "stop", "stop", "stop", "rect"];
+const BRAND_BAR_STOPS = ["#FF6633", "#F6821F", "#FBAD41"];
 
-// The seed decks' bottom bar: a 1200x12 strip in the three brand colors built only from gradient
-// primitives. Authored content (text, paths) is embedded as an SVG picture instead.
 function isBrandBar(markup) {
-  if (!/viewBox=["']0 0 1200 12["']/.test(markup)) return false;
-  if (!["#FF6633", "#F6821F", "#FBAD41"].every(color => markup.includes(color))) return false;
-  for (const match of markup.matchAll(/<\s*([A-Za-z][\w:-]*)/g)) {
-    if (!BRAND_BAR_ELEMENTS.has(match[1])) return false;
+  const elements = [];
+  for (const match of markup.matchAll(/<([A-Za-z][\w:-]*)([^>]*)>/g)) elements.push(match);
+  if (elements.length !== BRAND_BAR_ELEMENTS.length ||
+      elements.some((element, index) => element[1] !== BRAND_BAR_ELEMENTS[index])) {
+    return false;
   }
-  return true;
+  if (svgAttribute(elements[0][0], "viewBox")?.trim().split(/[\s,]+/).join(" ") !== "0 0 1200 12") return false;
+  const stops = elements.slice(3, 6).map(stop => svgAttribute(stop[0], "stop-color")?.toUpperCase());
+  if (stops.some((color, index) => color !== BRAND_BAR_STOPS[index])) return false;
+  return /^url\(#[^)]*\)$/.test(svgAttribute(elements[6][0], "fill") || "");
 }
 
 function prepareDeck(deck) {
@@ -1081,7 +1140,7 @@ function* renderLogo(state, block, name) {
     // Chrome tracks after the last glyph too, so the browser's text box is the advance sum plus one
     // more letter-spacing; the dot follows it after the 3px flex gap, its bottom 1px above the
     // baseline.
-    const wordmarkWidth = textWidth(text, fontSize, 700, letterSpacing) + letterSpacing;
+    const wordmarkWidth = text ? textWidth(text, fontSize, 700, letterSpacing) + letterSpacing : 0;
     const dot = boxFromPixels(
       x + wordmarkWidth + 3 * scale,
       y + LOGO_BASELINE_PX * scale - 7 * scale,
@@ -1095,18 +1154,18 @@ function* renderLogo(state, block, name) {
   }
 }
 
+// The browser draws the mark as a 68x74 point-up hexagon (stroke 10, round joins) inside an 86-unit
+// square, sized to the icon; everything below is that square scaled by iconSize / 86.
 function* renderGadgetsMark(state, block, name) {
   const small = block.props.size === "small";
   const iconSize = small ? 48 : 59;
   const gap = small ? 18 : 26;
   const fontSize = small ? 40 : 49;
+  const unit = iconSize / 86;
   const x = positionPixels(block.x);
   const y = positionPixels(block.y);
-  yield shapeXml(state, `${name} hexagon`, boxFromPixels(x, y, iconSize, iconSize), {
-    preset: "hexagon",
-    fill: "<a:noFill/>",
-    line: lineXml(parseColor("#FF4801"), 10),
-  });
+  yield pointUpHexagonXml(state, `${name} hexagon`, boxFromPixels(x + 9 * unit, y + 6 * unit, 68 * unit, 74 * unit),
+    19 / 68, lineXml(parseColor("#FF4801"), 10 * unit, false, 1, false, "<a:round/>"));
   const wordmark = "gadgets";
   yield* textShapeXml(state, `${name} wordmark`,
     boxFromPixels(x + iconSize + gap, y + (iconSize - fontSize) / 2,
@@ -1116,12 +1175,27 @@ function* renderGadgetsMark(state, block, name) {
     }, {text: wordmark}, {wrap: false});
 }
 
+// A block with no `w` is an absolutely positioned `width: auto` wrapper in the browser: it
+// shrink-to-fits its content, up to the slide's right edge.
+function autoWidth(block, contentWidth) {
+  if (block.w != null) return sizePixels(block.w, contentWidth);
+  return Math.max(1, Math.min(contentWidth, 1200 - positionPixels(block.x)));
+}
+
+// The widest line of `text` (max-content width), with the same 2% slack as other measured boxes.
+function maxContentWidth(text, fontSize, weight, letterSpacing = "") {
+  const spacing = letterSpacingPixels(letterSpacing, fontSize);
+  let widest = 0;
+  for (const line of linesOf(text)) widest = Math.max(widest, textWidth(line, fontSize, weight, spacing));
+  return Math.max(fontSize * 0.5, widest * 1.02);
+}
+
 function* renderTitle(state, block, name) {
   const props = block.props;
   const fontSize = cssNumber(props.fontSize, 42, 1, 1000);
   const lineHeight = cssNumber(props.lineHeight, 1.08, 0.5, 4);
-  const width = sizePixels(block.w, 900);
   const letterSpacing = props.letterSpacing || "-0.04em";
+  const width = autoWidth(block, maxContentWidth(props.text, fontSize, props.weight || 900, letterSpacing));
   const height = block.h == null
     ? estimateTextHeight(props.text, width, fontSize, lineHeight, props.weight || 900, letterSpacing)
     : sizePixels(block.h, fontSize * lineHeight);
@@ -1139,7 +1213,7 @@ function* renderSubtitle(state, block, name) {
   const props = block.props;
   const fontSize = cssNumber(props.fontSize, 19, 1, 1000);
   const lineHeight = cssNumber(props.lineHeight, 1.5, 0.5, 4);
-  const width = sizePixels(block.w, 650);
+  const width = autoWidth(block, maxContentWidth(props.text, fontSize, props.weight || 500));
   const height = block.h == null ? estimateTextHeight(props.text, width, fontSize, lineHeight, props.weight || 500) : sizePixels(block.h, fontSize * lineHeight);
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
     fontSize,
@@ -1154,7 +1228,7 @@ function* renderText(state, block, name) {
   const props = block.props;
   const fontSize = cssNumber(props.fontSize, 19, 1, 1000);
   const lineHeight = cssNumber(props.lineHeight, 1.6, 0.5, 4);
-  const width = sizePixels(block.w, 400);
+  const width = autoWidth(block, maxContentWidth(props.text, fontSize, props.weight || 400));
   const height = block.h == null ? estimateTextHeight(props.text, width, fontSize, lineHeight, props.weight || 400) : sizePixels(block.h, fontSize * lineHeight);
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
     fontSize,
@@ -1172,11 +1246,13 @@ function* renderBullets(state, block, name) {
   const gap = compact ? 8 : 10;
   const items = [];
   for (const line of linesOf(block.props.text)) {
-    const item = line.trim();
+    // Each item is a `white-space: normal` element in the browser: inner runs collapse to one space.
+    const item = line.replace(/[\t ]+/g, " ").trim();
     if (item) items.push(item);
     if (items.length === 6) break;
   }
-  const width = sizePixels(block.w, 850);
+  // Each row is the 6px marker, the 12px gap and the item's text.
+  const width = autoWidth(block, 18 + Math.max(0, ...items.map(item => maxContentWidth(item, fontSize, 400))));
   let height = 1;
   for (const item of items) height += estimateTextHeight(item, Math.max(1, width - 18), fontSize, lineHeight, 400) + gap;
   if (items.length) height -= gap;
@@ -1199,7 +1275,7 @@ function* renderCard(state, block, name) {
   let y = outer.y + 20;
   const width = Math.max(1, outer.width - 40);
   if (props.eyebrow) {
-    const height = 12;
+    const height = estimateTextHeight(props.eyebrow, width, 10, 1.2, 600, "0.05em");
     yield* textShapeXml(state, `${name} eyebrow`, boxFromPixels(x, y, width, height), {
       fontSize: 10, weight: 600, letterSpacing: "0.05em", lineHeight: 1.2,
       color: parseColor("#FF6633"), align: "left",
@@ -1235,7 +1311,8 @@ function* renderBox(state, block, name) {
   const titleHeight = props.title ? estimateTextHeight(props.title, width, 16, 1.3, 600, "-0.02em") : 0;
   const bodyHeight = props.body ? estimateTextHeight(props.body, width, 14, 1.45, 400) : 0;
   const contentHeight = titleHeight + (props.body ? 6 + bodyHeight : 0);
-  let y = outer.y + Math.max(14, (outer.height - contentHeight) / 2);
+  // The padded flex column centres its content; an overfull stack overflows above and below alike.
+  let y = outer.y + (outer.height - contentHeight) / 2;
   if (props.title) {
     yield* textShapeXml(state, `${name} title`, boxFromPixels(outer.x + 14, y, width, titleHeight), {
       fontSize: 16, weight: 600, letterSpacing: "-0.02em", lineHeight: 1.3,
@@ -1258,8 +1335,9 @@ function* renderTonePill(state, block, name) {
     tangerine: "#F6821F",
     ruby: "#FF6633",
   }[props.tone] || "#F6821F";
-  const width = block.w == null ? naturalTextWidth(props.text, 11, 850, 0.06 * 11) + 24 : sizePixels(block.w, 80);
-  const height = block.h == null ? 24 : sizePixels(block.h, 24);
+  // An intrinsic inline-block in the browser: the wrapper's w/h size only the wrapper around it.
+  const width = naturalTextWidth(props.text, 11, 850, 0.06 * 11) + 24;
+  const height = 24;
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
     fontSize: 11, weight: 850, letterSpacing: "0.06em", lineHeight: 1,
     color: parseColor(tone), align: "center",
@@ -1366,12 +1444,14 @@ function* renderImage(state, block, name) {
   const target = pixelBox(block, 600, 675);
   let box = target;
   let crop = null;
-  if (props.fit === "cover") {
+  if (media.aspect != null && props.fit === "cover") {
     crop = imageCrop(media.aspect, target.width, target.height);
-  } else if (props.fit !== "fill") {
+  } else if (media.aspect != null && props.fit !== "fill") {
     box = containBox(target, media.aspect);
   }
-  const radius = cssNumber(props.radius, 0, 0, 100000);
+  // The radius clips the block's box in the browser; a letterboxed picture is inset from the box's
+  // corners, so only a picture that fills the box is rounded.
+  const radius = box === target ? cssNumber(props.radius, 0, 0, 100000) : 0;
   yield pictureXml(state, name, boxFromPixels(box.x, box.y, box.width, box.height), media,
     props.relationshipId, props.alt, radius, crop);
 }
@@ -1428,10 +1508,11 @@ function connectorXml(state, name, x1, y1, x2, y2, color, width, dashed) {
 
 function* renderArrow(state, block, name) {
   const props = block.props;
-  const x1 = positionPixels(props.x1, 200);
-  const y1 = positionPixels(props.y1, 400);
-  const x2 = positionPixels(props.x2, 600);
-  const y2 = positionPixels(props.y2, 400);
+  // An omitted endpoint is an absent SVG attribute in the browser, which defaults to 0.
+  const x1 = positionPixels(props.x1);
+  const y1 = positionPixels(props.y1);
+  const x2 = positionPixels(props.x2);
+  const y2 = positionPixels(props.y2);
   const width = props.width ? numberOr(props.width, 2, 0, 1000) : 2;
   const color = arrowColor(props.color || "muted");
   yield connectorXml(state, name, x1, y1, x2, y2, color, width, Boolean(props.dashed));

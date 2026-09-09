@@ -539,7 +539,18 @@ describe("Workspace Slides PPTX rendering", () => {
     }
     expect(bullets).not.toContain(">seven</a:t>");
     expect(occurrences(bullets, '<a:buChar char="&#x25CF;"/>')).toBe(6);
-    expect(shapeByName(xml, "Block 9 box surface")).toContain('<a:prstDash val="dash"/>');
+    // The browser's dash is a fixed 6px; PowerPoint's preset scales with the stroke, so 6px is
+    // expressed relative to the 1px border (600%) and to the 3px arrow (200%).
+    expect(shapeByName(xml, "Block 9 box surface")).toContain('<a:custDash><a:ds d="600000" sp="600000"/></a:custDash>');
+    // The pill is an intrinsic inline-block; the wrapper's w/h do not size it.
+    expect(shapeByName(xml, "Block 10 tonePill")).toContain(`cy="${24 * 10160}"`);
+    // A point-up hexagon: the preset (pointing sideways) laid out long-axis horizontal and rotated,
+    // with the browser's 10-unit stroke scaled to the 48px icon.
+    const hexagon = shapeByName(xml, "Block 3 gadgetsMark hexagon");
+    expect(hexagon).toContain('<a:xfrm rot="5400000">');
+    expect(hexagon).toContain(`<a:ext cx="${Math.round(74 * 48 / 86 * 10160)}" cy="${Math.round(68 * 48 / 86 * 10160)}"/>`);
+    expect(hexagon).toContain(`<a:ln w="${Math.round(10 * 48 / 86 * 10160)}" cap="rnd">`);
+    expect(hexagon).toContain("<a:round/>");
     expect(shapeByName(xml, "Block 10 tonePill")).toContain(">STATUS</a:t>");
     expect(shapeByName(xml, "Block 11 divider")).toContain('<a:alpha val="25000"/>');
 
@@ -549,7 +560,7 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(ellipse).toContain('<a:ln w="20320" cap="rnd"><a:solidFill><a:srgbClr val="ABCDEF"><a:alpha val="50000"/>');
     expect(shapeByName(xml, "Block 13 shape")).toContain('<a:gd name="adj" fmla="val 20000"/>');
     const arrow = shapeByName(xml, "Block 16 arrow");
-    expect(arrow).toContain('<a:prstDash val="dash"/>');
+    expect(arrow).toContain('<a:custDash><a:ds d="200000" sp="200000"/></a:custDash>');
     expect(arrow).toContain('<a:tailEnd type="triangle" w="sm" len="sm"/>');
   });
 
@@ -592,8 +603,9 @@ describe("Workspace Slides PPTX rendering", () => {
   });
 
   it("renders solid, inset, and cover backgrounds plus the brand bar as native shapes", async () => {
-    const brandBar = '<svg viewBox="0 0 1200 12"><stop stop-color="#FF6633"/>' +
-      '<stop stop-color="#F6821F"/><stop stop-color="#FBAD41"/></svg>';
+    const brandBar = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 12" preserveAspectRatio="none">' +
+      '<defs><linearGradient id="g"><stop stop-color="#FF6633"/><stop offset=".5" stop-color="#F6821F"/>' +
+      '<stop offset="1" stop-color="#FBAD41"/></linearGradient></defs><rect width="1200" height="12" fill="url(#g)"/></svg>';
     const zip = await readZip(deckToPptx({slides: [
       {id: "solid", background: {color: "#123456", inset: false}, blocks: [
         block("svg", {markup: brandBar}, {x: 0, y: 663, w: 1200, h: 12}),
@@ -694,9 +706,11 @@ describe("Workspace Slides PPTX rendering", () => {
   it("embeds authored SVG verbatim as svgBlip pictures, letterboxed by its viewBox", async () => {
     const chart = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">' +
       '<script>alert(1)</script><text x="0" y="50">Q3 &amp; Q4</text></svg>';
-    // Brand-bar geometry and colors, but with authored content: not the seed decks' plain bar.
-    const notBrandBar = '<svg viewBox="0 0 1200 12"><stop stop-color="#FF6633"/>' +
-      '<stop stop-color="#F6821F"/><stop stop-color="#FBAD41"/><text>Q3</text></svg>';
+    // Brand-bar size and palette, but not its structure (an extra rect): the seed decks' plain
+    // bar is the only SVG replaced natively.
+    const notBrandBar = '<svg viewBox="0 0 1200 12"><defs><linearGradient id="g"><stop stop-color="#FF6633"/>' +
+      '<stop stop-color="#F6821F"/><stop stop-color="#FBAD41"/></linearGradient></defs>' +
+      '<rect width="1200" height="12" fill="url(#g)"/><rect width="10" height="12" fill="#fff"/></svg>';
     const zip = await readZip(deckToPptx(oneSlide([
       block("svg", {markup: chart, fit: "contain", background: "#fff4e6"}, {x: 0, y: 0, w: 400, h: 400}),
       block("svg", {markup: chart, fit: "stretch"}, {x: 0, y: 0, w: 400, h: 400}),
@@ -726,6 +740,76 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(shapeByName(xml, "Block 5 svg")).toContain("<p:blipFill>");
     expect(xml).not.toContain("<a:gradFill");
     expect(xml).not.toContain("SVG not included");
+  });
+
+  it("embeds the <svg> node from wrapped markup and SVG files uploaded through the image control", async () => {
+    const inner = '<svg viewBox="0 0 10 20"><rect width="10" height="20"/></svg>';
+    const uploaded = `data:image/svg+xml;base64,${base64(encoder.encode(inner))}`;
+    const zip = await readZip(deckToPptx(oneSlide([
+      block("svg", {markup: `<div class="wrap">${inner}</div><p>trailer</p>`}, {x: 0, y: 0, w: 200, h: 200}),
+      block("image", {src: uploaded, fit: "contain", radius: 50}, {x: 0, y: 0, w: 200, h: 200}),
+      block("image", {src: uploaded, fit: "cover", radius: 50}, {x: 0, y: 0, w: 200, h: 200}),
+      block("image", {src: `data:image/svg+xml;base64,${base64(encoder.encode("<p>not svg</p>"))}`}),
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+
+    // The wrapper markup is dropped, and the pasted and uploaded copies of the element share a part.
+    expect(zip.names.filter(name => name.startsWith("ppt/media/"))).toEqual(["ppt/media/image1.svg"]);
+    expect(partText(zip, "ppt/media/image1.svg")).toBe(inner);
+    expect(shapeByName(xml, "Block 1 svg")).toContain(`<a:off x="${50 * 10160}" y="0"/><a:ext cx="${100 * 10160}" cy="${200 * 10160}"/>`);
+    // A letterboxed picture never reaches the block's rounded corners, so only a filling one is rounded.
+    const contain = shapeByName(xml, "Block 2 image");
+    expect(contain).toContain(`<a:off x="${50 * 10160}" y="0"/>`);
+    expect(contain).toContain('<a:prstGeom prst="rect">');
+    const cover = shapeByName(xml, "Block 3 image");
+    expect(cover).toContain('<a:srcRect l="0" t="25000" r="0" b="25000"/>');
+    expect(cover).toContain('<a:prstGeom prst="roundRect">');
+    expect(xml).toContain("Malformed image data");
+  });
+
+  it("parses SVG dimensions in linear time and consults the source cache before scanning", () => {
+    const hostile = `<svg viewBox="${"1".repeat(100_000)}"><rect/></svg>`;
+    let started = performance.now();
+    deckToPptx(oneSlide([block("svg", {markup: hostile})]));
+    expect(performance.now() - started).toBeLessThan(500);
+
+    // One 4 MB source referenced from every block on a slide: scanned and decoded once, not per
+    // reference (its padding makes it a malformed PNG, so the cached result is a placeholder).
+    const unpadded = dataUrl("png", pngFixture(1, 1)).replace(/=+$/, "");
+    const source = unpadded + "A".repeat(4 * 1024 * 1024 + (4 - unpadded.length % 4) % 4);
+    started = performance.now();
+    deckToPptx(oneSlide(Array.from({length: 1000}, () => block("image", {src: source}))));
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  it("lays out blocks without authored sizes as the browser does", async () => {
+    const zip = await readZip(deckToPptx(oneSlide([
+      block("title", {text: "word ".repeat(80), fontSize: 28}, {x: 36, y: 76}),
+      block("text", {text: "short\nlonger line", fontSize: 20}, {x: 100, y: 0}),
+      block("bulletList", {text: "a   b\tc\none"}, {x: 0, y: 300}),
+      block("arrow", {x2: 600, y2: 400, color: "ruby"}),
+      block("tonePill", {text: "STATUS"}, {x: 100, y: 100, w: 300, h: 100}),
+      block("box", {title: "Title", body: "Body copy that wraps onto several lines"}, {x: 100, y: 100, w: 220, h: 40}),
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+
+    // width: auto shrink-to-fits up to the slide's right edge (1200 - x), never a fixed default.
+    expect(shapeByName(xml, "Block 1 title")).toContain(`<a:ext cx="${(1200 - 36) * 10160}"`);
+    // The widest line ("longer line", 4613 Arial units) plus the 2% one-line slack.
+    const text = shapeByName(xml, "Block 2 text");
+    expect(Number(/<a:ext cx="(\d+)"/.exec(text)![1])).toBe(Math.round(4.613 * 20 * 1.02 * 10160));
+    // Items collapse inner whitespace like the browser's white-space: normal.
+    expect(shapeByName(xml, "Block 3 bulletList")).toContain(">a b c</a:t>");
+    // Omitted endpoints are absent SVG attributes, i.e. 0: from (0,0) to (600,400).
+    expect(shapeByName(xml, "Block 4 arrow")).toContain(`<a:off x="0" y="0"/><a:ext cx="${600 * 10160}" cy="${400 * 10160}"/>`);
+    // The pill stays intrinsic despite the 300x100 wrapper.
+    expect(shapeByName(xml, "Block 5 tonePill")).toContain(`cy="${24 * 10160}"`);
+    expect(shapeByName(xml, "Block 5 tonePill")).not.toContain(`cx="${300 * 10160}"`);
+    // An overfull box centres its stack, overflowing above and below alike.
+    const titleHeight = 16 * 1.3 + 2;
+    const bodyHeight = 2 * 14 * 1.45 + 2;
+    const contentHeight = titleHeight + 6 + bodyHeight;
+    expect(shapeByName(xml, "Block 6 box title")).toContain(`y="${Math.round((100 + (40 - contentHeight) / 2) * 10160)}"`);
   });
 
   it("exports a safe blank slide for empty or malformed decks", async () => {
