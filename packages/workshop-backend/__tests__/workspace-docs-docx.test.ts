@@ -687,6 +687,7 @@ describe("Workspace Docs DOCX package", () => {
     const html = `<p hidden>draft</p><p><span style="display: none">secret</span>${anchors}shown` +
       '<span style="display:none !important">also secret</span><span style="display:none;display:inline">reshown</span>' +
       '<span style="display:none!important;display:inline">still secret</span><span style="display:none;display:bogus">bogus secret</span>' +
+      '<span style="display:none;display:block flow">reflowed</span><span style="display:none;display:table-bogus">table secret</span>' +
       `<a href="https://example.com/kept">kept</a><a href="https://example.com/${"\u4e2d".repeat(3000)}">wide</a></p>` +
       "<dl><dt>term<dd>definition<dt><b>bold term</dt></dl>" +
       "<details><summary>Summary</summary><summary>second secret</summary><p>collapsed secret</p></details>" +
@@ -695,7 +696,7 @@ describe("Workspace Docs DOCX package", () => {
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     for (const value of ["draft", "secret"]) expect(xml).not.toContain(value);
-    for (const value of ["shownreshown", "wide", "Summary", "Open", "expanded", "shown dialog"]) expect(xml).toContain(`>${value}</w:t>`);
+    for (const value of ["shownreshownreflowed", "wide", "Summary", "Open", "expanded", "shown dialog"]) expect(xml).toContain(`>${value}</w:t>`);
     expect(text(entries, "word/_rels/document.xml.rels").match(/relationships\/hyperlink/g)).toHaveLength(1);
     expect(runContaining(xml, "definition")).not.toContain("<w:b/>");
     expect(xml.match(/<w:p>/g)).toHaveLength(8);

@@ -52,8 +52,12 @@ const LIST_KINDS = ["bullet", "decimal", "lowerLetter", "upperLetter", "lowerRom
 const LIST_TYPES = {a: "lowerLetter", A: "upperLetter", i: "lowerRoman", I: "upperRoman"};
 // The only attributes the walk reads; everything else is dropped at parse time.
 const STORED_ATTRIBUTES = ["style", "class", "hidden", "open", "href", "src", "alt", "width", "type", "start", "value", "face", "size", "color"];
-// `display` values the browser accepts; an invalid declaration cannot override an earlier valid one.
-const DISPLAY_VALUE = /^(?:none|contents|(?:inline-)?(?:block|flex|grid|table)|inline|list-item|flow-root|table-[a-z-]+|ruby(?:-[a-z-]+)?)$/i;
+// `display` values the browser accepts (single or multi-keyword); an invalid declaration cannot
+// override an earlier valid one.
+const DISPLAY_KEYWORD = "none|contents|block|inline|run-in|flow|flow-root|list-item|flex|grid|table|ruby|" +
+  "inline-block|inline-flex|inline-grid|inline-table|table-(?:row|cell|caption|column|(?:row|header|footer|column)-group)|" +
+  "ruby-(?:base|text)(?:-container)?";
+const DISPLAY_VALUE = new RegExp(`^(?:${DISPLAY_KEYWORD})(?:\\s+(?:${DISPLAY_KEYWORD}))*$`, "i");
 
 // --- XML text ----------------------------------------------------------------------------------
 
