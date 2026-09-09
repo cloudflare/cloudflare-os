@@ -124,6 +124,12 @@ function styleId(xml: string, reference: string): string | undefined {
   return / s="(\d+)"/.exec(cellXml(xml, reference))?.[1];
 }
 
+function columnName(index: number): string {
+  let name = "";
+  for (let value = index + 1; value > 0; value = Math.floor((value - 1) / 26)) name = String.fromCharCode(65 + (value - 1) % 26) + name;
+  return name;
+}
+
 function handler(): ExportHandler {
   return Object.create(ExportHandler.prototype) as ExportHandler;
 }
@@ -665,10 +671,10 @@ describe("Workspace Sheets XLSX", () => {
     expect(worksheet).toContain('<row r="4" hidden="1"><c r="A4"');
     expect(worksheet).toContain('<row r="5" hidden="1"></row>');
     expect(worksheet).toContain('<autoFilter ref="A1:A5"><filterColumn colId="0"><filters><filter val="keep"/></filters></filterColumn></autoFilter>');
-    // A blank literal is a value that was not selected; the formula row cannot be judged.
+    // Nothing selected hides every row, including the formula row that cannot be judged.
     const none = text(entries, "xl/worksheets/sheet2.xml");
     expect(none).toContain('<row r="2" hidden="1">');
-    expect(none).toContain('<row r="3"><c r="B3">');
+    expect(none).toContain('<row r="3" hidden="1"><c r="B3">');
     expect(none).toContain('<autoFilter ref="A1:B3"></autoFilter>');
   });
 
@@ -730,7 +736,14 @@ describe("Workspace Sheets XLSX", () => {
           {id: "single", type: "line", range: "A1:A2"},
         ],
       })},
-      cells: {data: {}},
+      cells: {data: {
+        A1: cell("Total"), A2: cell("5"),
+        B2: cell("Q1"), C2: cell("Q2"),
+        A3: cell("East"), B3: cell("1"), C3: cell("2"),
+        A4: cell("West"), B4: cell("3"), C4: cell("4"),
+        A5: cell("North"), B5: cell("5"), C5: cell("=B5*2"),
+        A6: cell("South"), B6: cell("7"), C6: cell("8"),
+      }},
     }));
 
     expect(entries.has("xl/worksheets/_rels/sheet1.xml.rels")).toBe(true);
@@ -792,6 +805,38 @@ describe("Workspace Sheets XLSX", () => {
     expect(contentTypes).not.toContain('Extension="vml"');
   });
 
+  it("selects series the way the grid does, then applies Excel's series limit", async () => {
+    const cells: Record<string, {value: unknown; fmt: Record<string, unknown> | null; version: number}> = {A1: cell("Label"), A2: cell("x"), A3: cell("y")};
+    // B and C hold no numbers; D..IY (256 columns) do, the last of them as a formula.
+    cells.B2 = cell("text");
+    cells.C1 = cell("header only");
+    for (let column = 3; column < 3 + 256; ++column) {
+      cells[`${columnName(column)}2`] = cell(column === 3 + 255 ? "=A2" : String(column));
+    }
+    const {entries} = await readZip(workbookToXlsx({
+      sheetOrder: ["data", "empty"],
+      sheets: {
+        data: sheet("Data", {cols: 260, charts: [{id: "wide", type: "line", range: "A1:IZ3"}, {id: "pie", type: "pie", range: "A1:IZ3"}]}),
+        empty: sheet("Empty", {charts: [{id: "text", type: "line", range: "A1:B3"}]}),
+      },
+      cells: {data: cells, empty: {A1: cell("Name"), B1: cell("Note"), A2: cell("x"), B2: cell("words")}},
+    }));
+
+    const wide = text(entries, "xl/charts/chart1.xml");
+    expect(wide.match(/<c:ser>/g)).toHaveLength(255);
+    expect(wide).not.toContain("<c:f>'Data'!$B$");
+    expect(wide).not.toContain("<c:f>'Data'!$C$");
+    expect(wide).toContain("<c:f>'Data'!$D$2:$D$3</c:f>");
+    expect(wide).toContain("<c:f>'Data'!$IX$2:$IX$3</c:f>");
+    expect(wide).not.toContain("<c:f>'Data'!$IY$");
+    const pie = text(entries, "xl/charts/chart2.xml");
+    expect(pie.match(/<c:ser>/g)).toHaveLength(1);
+    expect(pie).toContain("<c:f>'Data'!$D$2:$D$3</c:f>");
+    // A chart over text only draws a placeholder in the grid and is not exported.
+    expect(entries.has("xl/charts/chart3.xml")).toBe(false);
+    expect(text(entries, "xl/worksheets/sheet2.xml")).not.toContain("<drawing");
+  });
+
   it("numbers drawing, chart and comment parts across sheets and orders sheet relationships", async () => {
     const chart = {id: "c", type: "line", range: "A1:B3"};
     const comment = {id: "k", ref: "A1", text: "note"};
@@ -801,7 +846,7 @@ describe("Workspace Sheets XLSX", () => {
         first: sheet("First", {charts: [chart], comments: [comment]}),
         second: sheet("Second", {charts: [chart, chart], comments: Array.from({length: 1500}, () => comment)}),
       },
-      cells: {first: {B1: cell("https://example.com/")}, second: {}},
+      cells: {first: {B1: cell("https://example.com/"), B2: cell("1")}, second: {B2: cell("1")}},
     }));
 
     expect(text(entries, "xl/worksheets/sheet1.xml")).toContain('<hyperlinks><hyperlink ref="B1" r:id="rId1"/></hyperlinks><drawing r:id="rId2"/><legacyDrawing r:id="rId3"/>');
@@ -1006,6 +1051,34 @@ describe("Workspace Sheets document snapshots", () => {
     expect(callback.dup).not.toHaveBeenCalled();
     expect(fixture.subscribers.size).toBe(0);
     await expect(fixture.applyOperation(setCell("A1", "still works"))).resolves.toMatchObject({status: "applied"});
+  });
+
+  it("clamps chart and pivot ranges to their sheet and rejects ones clients could not walk", async () => {
+    const fixture = inMemoryGadget();
+    const pivot = {sourceSheetId: "sheet", rowField: "a", columnField: "", valueField: "b", aggregate: "sum"};
+    await fixture.applyOperation({senderId: "test", structure: {
+      sheetOrder: ["pivot", "sheet", "orphan", "big"],
+      sheets: {
+        sheet: {...sheet("Sheet", {rows: 50, cols: 4}), charts: [
+          {id: "beyond", type: "line", range: "A1:XFD1048576"},
+          {id: "single", type: "line", range: "b2"},
+          {id: "outside", type: "line", range: "E60:F70"},
+        ]},
+        pivot: {...sheet("Pivot"), pivot: {...pivot, sourceRange: "A1:ZZ50000"}},
+        orphan: {...sheet("Orphan"), pivot: {...pivot, sourceSheetId: "missing", sourceRange: "A1:B2"}},
+        // Within the sheet, but 35 million cells: every client would hang walking it.
+        big: {...sheet("Big", {rows: 50000, cols: 702}), charts: [
+          {id: "huge", type: "line", range: "A1:ZZ50000"},
+          {id: "large", type: "line", range: "A1:D50000"},
+        ], pivot: {...pivot, sourceSheetId: "big", sourceRange: "A1:E50000"}},
+      },
+    }});
+    const document = await fixture.getDocument();
+    expect(document.sheets.sheet.charts.map((chart: {range: string}) => chart.range)).toEqual(["A1:D50", "B2", ""]);
+    expect(document.sheets.big.charts.map((chart: {range: string}) => chart.range)).toEqual(["", "A1:D50000"]);
+    expect(document.sheets.big.pivot.sourceRange).toBe("");
+    expect(document.sheets.pivot.pivot.sourceRange).toBe("A1:D50");
+    expect(document.sheets.orphan.pivot.sourceRange).toBe("");
   });
 });
 

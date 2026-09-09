@@ -111,6 +111,14 @@ export class Gadget extends DurableObject {
           comments: Object.prototype.hasOwnProperty.call(incoming, "comments") ? incoming.comments : existing.comments,
           pivot: Object.prototype.hasOwnProperty.call(incoming, "pivot") ? incoming.pivot : existing.pivot,
         });
+      }
+      // A pivot's range lives on its source sheet, which may appear later in the order.
+      for (const sheet of Object.values(nextSheets)) {
+        if (!sheet.pivot) continue;
+        const source = nextSheets[sheet.pivot.sourceSheetId];
+        sheet.pivot.sourceRange = source ? sanitizeRange(sheet.pivot.sourceRange, source.rows, source.cols, false) : "";
+      }
+      for (const id of order) {
         if (!(await this.ctx.storage.get("cells:" + id))) {
           await this.ctx.storage.put("cells:" + id, {});
         }
@@ -283,6 +291,21 @@ function clampInt(v, lo, hi, dflt) {
   return Math.max(lo, Math.min(hi, n));
 }
 
+// Clients walk chart and pivot ranges cell by cell, so a range outside the sheet or beyond this
+// many cells would hang every client that opens the workbook. It is clamped to the sheet and
+// rejected (empty) when still too large.
+const MAX_RANGE_CELLS = 200000;
+function sanitizeRange(text, rows, cols, allowSingle) {
+  const match = /^([A-Z]+)([1-9]\d*)(?::([A-Z]+)([1-9]\d*))?$/.exec(String(text || "").toUpperCase());
+  if (!match || (!match[3] && !allowSingle)) return "";
+  const first = parseCsvCellRef(match[1] + match[2]);
+  const last = match[3] ? parseCsvCellRef(match[3] + match[4]) : first;
+  const top = Math.min(first.row, last.row), left = Math.min(first.column, last.column);
+  const bottom = Math.min(Math.max(first.row, last.row), rows - 1), right = Math.min(Math.max(first.column, last.column), cols - 1);
+  if (top > bottom || left > right || (bottom - top + 1) * (right - left + 1) > MAX_RANGE_CELLS) return "";
+  return csvCellRef(top, left) + (match[3] ? ":" + csvCellRef(bottom, right) : "");
+}
+
 function sanitizeDims(dims) {
   const out = {};
   if (dims && typeof dims === "object") {
@@ -296,17 +319,18 @@ function sanitizeDims(dims) {
 }
 
 function sheetMeta(s) {
+  const rows = clampInt(s.rows, 1, 50000, DEFAULT_ROWS), cols = clampInt(s.cols, 1, 702, DEFAULT_COLS);
   return {
     id: String(s.id),
     name: String(s.name || "Sheet").slice(0, 60),
-    rows: clampInt(s.rows, 1, 50000, DEFAULT_ROWS),
-    cols: clampInt(s.cols, 1, 702, DEFAULT_COLS),
+    rows,
+    cols,
     colWidths: sanitizeDims(s.colWidths),
     rowHeights: sanitizeDims(s.rowHeights),
     frozenRows: clampInt(s.frozenRows, 0, 50, 0),
     frozenCols: clampInt(s.frozenCols, 0, 50, 0),
-    filter: sanitizeFilter(s.filter, clampInt(s.rows, 1, 50000, DEFAULT_ROWS), clampInt(s.cols, 1, 702, DEFAULT_COLS)),
-    charts: sanitizeCharts(s.charts),
+    filter: sanitizeFilter(s.filter, rows, cols),
+    charts: sanitizeCharts(s.charts, rows, cols),
     comments: sanitizeComments(s.comments),
     pivot: sanitizePivot(s.pivot),
   };
@@ -317,6 +341,7 @@ function sanitizePivot(pivot) {
   const aggregates = new Set(["sum", "count", "average", "min", "max"]);
   return {
     sourceSheetId: String(pivot.sourceSheetId || "").slice(0, 80),
+    // Shape only; applyOperationLocked bounds it against the source sheet.
     sourceRange: /^([A-Z]+[1-9]\d*):([A-Z]+[1-9]\d*)$/.test(String(pivot.sourceRange || "").toUpperCase()) ? String(pivot.sourceRange).toUpperCase() : "",
     rowField: String(pivot.rowField || "").slice(0, 200),
     columnField: String(pivot.columnField || "").slice(0, 200),
@@ -342,12 +367,12 @@ function sanitizeComments(comments) {
   })).filter((comment) => comment.text.trim());
 }
 
-function sanitizeCharts(charts) {
+function sanitizeCharts(charts, rows, cols) {
   if (!Array.isArray(charts)) return [];
   return charts.slice(0, 50).map((chart, index) => ({
     id: String(chart?.id || "chart_" + index).slice(0, 80),
     type: ["line", "pie", "area", "stackedBar"].includes(chart?.type) ? chart.type : "line",
-    range: /^([A-Z]+[1-9]\d*)(:([A-Z]+[1-9]\d*))?$/.test(String(chart?.range || "").toUpperCase()) ? String(chart.range).toUpperCase() : "",
+    range: sanitizeRange(chart?.range, rows, cols, true),
     title: String(chart?.title || "").slice(0, 200),
     xAxisTitle: String(chart?.xAxisTitle || "").slice(0, 120),
     yAxisTitle: String(chart?.yAxisTitle || "").slice(0, 120),

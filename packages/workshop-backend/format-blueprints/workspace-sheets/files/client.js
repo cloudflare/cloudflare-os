@@ -1293,12 +1293,12 @@ const FUNCTION_HELP = {
   MIN: ["MIN(value1, [value2, …])", "Returns the smallest number."],
   MAX: ["MAX(value1, [value2, …])", "Returns the largest number."],
   MEDIAN: ["MEDIAN(value1, [value2, …])", "Returns the median value."],
-  ROUND: ["ROUND(value, places)", "Rounds a number to a specified precision."],
+  ROUND: ["ROUND(value, [places])", "Rounds a number to a specified precision (default 0)."],
   ROUNDUP: ["ROUNDUP(value, places)", "Rounds a number away from zero."],
   ROUNDDOWN: ["ROUNDDOWN(value, places)", "Rounds a number toward zero."],
   IF: ["IF(condition, value_if_true, [value_if_false])", "Returns values based on a condition."],
   IFS: ["IFS(condition1, value1, [condition2, value2, …])", "Tests multiple conditions in order."],
-  IFERROR: ["IFERROR(value, fallback)", "Returns a fallback when a value is an error."],
+  IFERROR: ["IFERROR(value, [fallback])", "Returns a fallback (default blank) when a value is an error."],
   IFNA: ["IFNA(value, fallback)", "Returns a fallback for #N/A."],
   AND: ["AND(condition1, [condition2, …])", "Returns TRUE when every condition is true."],
   OR: ["OR(condition1, [condition2, …])", "Returns TRUE when any condition is true."],
@@ -1679,15 +1679,20 @@ async function doSave() {
       }
     }
     if (result.status === "conflict" && result.conflicts) {
-      // Rebase each rejected local intent onto the latest server version.
+      // Rebase each rejected local intent onto the latest server version. An edit queued while
+      // this save was in flight is the newer intent: the model already shows it, so only its base
+      // version moves.
       const intents = new Map(cellOps.map((op) => [op.sheetId + "!" + op.ref, op]));
       for (const cf of result.conflicts) {
+        const key = cf.sheetId + "!" + cf.ref;
+        const newer = pendingCellOps.get(key);
+        if (newer) { newer.baseVersion = cf.cell?.version || 0; continue; }
         const cells = model.cells[cf.sheetId] || (model.cells[cf.sheetId] = {});
-        const intent = intents.get(cf.sheetId + "!" + cf.ref);
+        const intent = intents.get(key);
         if (!intent) { cells[cf.ref] = { ...cf.cell }; continue; }
         if (intent.value == null && intent.fmt == null) delete cells[cf.ref];
         else cells[cf.ref] = { value: intent.value ?? "", fmt: intent.fmt ?? null, version: cf.cell?.version || 0 };
-        pendingCellOps.set(cf.sheetId + "!" + cf.ref, { ...intent, baseVersion: cf.cell?.version || 0 });
+        pendingCellOps.set(key, { ...intent, baseVersion: cf.cell?.version || 0 });
       }
       setStatus("synced", "Resolving edit…");
       scheduleSave(40);
@@ -2939,6 +2944,8 @@ function sortFilteredRange(column, ascending) {
   for (let row = filter.row + 1; row <= (filter.endRow ?? curSheet().rows - 1); row++) values.set(row, engine.computeRef(activeSheetId, rcToRef(row, column)));
   reorderFilteredRows((left, right) => {
     const a = values.get(left.currentRow) ?? "", b = values.get(right.currentRow) ?? "";
+    // Blank rows (the unused tail of the filter range) stay after populated rows in both directions.
+    if (a === "" || b === "") return a === b ? 0 : a === "" ? 1 : -1;
     const comparison = typeof a === "number" && typeof b === "number"
       ? a - b
       : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
@@ -3517,6 +3524,15 @@ function formulaCursorInQuote(value, cursor) {
   }
   return !!quote;
 }
+// Arrow keys pick grid references only in "point mode": right after a reference chosen through
+// the grid, or with the caret just after an operator, separator or `(`. Elsewhere they move the
+// caret, so an existing formula can be edited as text.
+function formulaPointModeActive() {
+  if (formulaPick?.picked) return true;
+  const start = cellEditor.selectionStart ?? cellEditor.value.length;
+  if (start !== (cellEditor.selectionEnd ?? start) || formulaCursorInQuote(cellEditor.value, start)) return false;
+  return /[=(,+\-*/^&<>]\s*$/.test(cellEditor.value.slice(0, start));
+}
 function insertFormulaComma() {
   const start = cellEditor.selectionStart ?? cellEditor.value.length, end = cellEditor.selectionEnd ?? start;
   clearFormulaPick();
@@ -3680,7 +3696,10 @@ function formulaReferenceBoundsAtCaret(value, caret) {
   return null;
 }
 function cycleReferenceToken(text) {
-  return text.replace(/(?<![A-Z0-9_])(\$?)([A-Z]{1,3})(\$?)([1-9]\d*)(?![A-Z0-9_])/gi, (match, fixedColumn, column, fixedRow, row) => {
+  // A sheet name such as `Q1` looks like a cell; only the endpoint after `!` cycles.
+  const bang = text.lastIndexOf("!");
+  const prefix = text.slice(0, bang + 1);
+  return prefix + text.slice(bang + 1).replace(/(?<![A-Z0-9_])(\$?)([A-Z]{1,3})(\$?)([1-9]\d*)(?![A-Z0-9_])/gi, (match, fixedColumn, column, fixedRow, row) => {
     const state = { column: !!fixedColumn, row: !!fixedRow };
     let next;
     if (!state.column && !state.row) next = { column: true, row: true };
@@ -3761,8 +3780,8 @@ function updatePickedFormulaRange(r1, c1, r2 = r1, c2 = c1, reset = false) {
       while (insertion > 1 && cellEditor.value[insertion - 1] === ")") insertion--;
       start = end = insertion;
     }
-    formulaPick = { textStart: start, textEnd: end, r1, c1, r2, c2 };
-  } else { formulaPick.r2 = r2; formulaPick.c2 = c2; }
+    formulaPick = { textStart: start, textEnd: end, r1, c1, r2, c2, picked: true };
+  } else { formulaPick.r2 = r2; formulaPick.c2 = c2; formulaPick.picked = true; }
   const reference = formulaRangeText(formulaPick.r1, formulaPick.c1, formulaPick.r2, formulaPick.c2);
   cellEditor.value = cellEditor.value.slice(0, formulaPick.textStart) + reference + cellEditor.value.slice(formulaPick.textEnd);
   formulaPick.textEnd = formulaPick.textStart + reference.length;
@@ -3844,8 +3863,10 @@ function formulaReferenceAtCell(row, column) {
   matches.sort((a, b) => (a.r2 - a.r1 + 1) * (a.c2 - a.c1 + 1) - (b.r2 - b.r1 + 1) * (b.c2 - b.c1 + 1));
   return matches[0] || null;
 }
+// `picked` marks a reference placed or chosen through the grid; a reference merely under the text
+// caret leaves the arrow keys to caret navigation.
 function activateFormulaReference(reference, moveCaret = true) {
-  formulaPick = { ...reference }; formulaPickGestureComplete = false;
+  formulaPick = { ...reference, picked: moveCaret }; formulaPickGestureComplete = false;
   if (moveCaret) {
     cellEditor.setSelectionRange(reference.textEnd, reference.textEnd);
     formulaInput.value = cellEditor.value; formulaInput.setSelectionRange(reference.textEnd, reference.textEnd);
@@ -4013,10 +4034,11 @@ function completeFormulaParentheses(value) {
   if (quote) return null;
   return value + ")".repeat(depth);
 }
+// Argument counts the evaluator accepts; a rule is omitted where any count evaluates.
 const FORMULA_ARGUMENT_RULES = {
   VLOOKUP: [3, 4], HLOOKUP: [3, 4], INDEX: [2, 3], MATCH: [2, 3],
-  IF: [2, 3], IFERROR: [2, 2], IFNA: [2, 2], COUNTIF: [2, 2], SUMIF: [2, 3], AVERAGEIF: [2, 3],
-  HYPERLINK: [1, 2], LEFT: [1, 2], RIGHT: [1, 2], MID: [3, 3], ROUND: [2, 2],
+  IF: [2, 3], IFERROR: [1, 2], IFNA: [2, 2], COUNTIF: [2, 2], SUMIF: [2, 3], AVERAGEIF: [2, 3],
+  HYPERLINK: [1, 2], LEFT: [1, 2], RIGHT: [1, 2], MID: [3, 3], ROUND: [1, 2],
   DATE: [3, 3], DATEDIF: [3, 3], EDATE: [2, 2], CHOOSE: [2, Infinity],
 };
 function validateFormula(value) {
@@ -4114,13 +4136,13 @@ cellEditor.addEventListener("keydown", (e) => {
   if (cellEditor.value.startsWith("=") && e.key === "," && !formulaCursorInQuote(cellEditor.value, cellEditor.selectionStart)) {
     e.preventDefault(); insertFormulaComma(); e.stopPropagation(); return;
   }
-  if (cellEditor.value.startsWith("=") && e.key === "(") {
+  if (cellEditor.value.startsWith("=") && e.key === "(" && !formulaCursorInQuote(cellEditor.value, cellEditor.selectionStart)) {
     e.preventDefault(); clearFormulaPick();
     const start = cellEditor.selectionStart, end = cellEditor.selectionEnd;
     cellEditor.value = cellEditor.value.slice(0, start) + "()" + cellEditor.value.slice(end);
     cellEditor.setSelectionRange(start + 1, start + 1); formulaInput.value = cellEditor.value; syncEditorSize(); updateFormulaAssist(); e.stopPropagation(); return;
   }
-  if (cellEditor.value.startsWith("=") && e.key === ")" && cellEditor.value[cellEditor.selectionStart] === ")") {
+  if (cellEditor.value.startsWith("=") && e.key === ")" && cellEditor.value[cellEditor.selectionStart] === ")" && !formulaCursorInQuote(cellEditor.value, cellEditor.selectionStart)) {
     e.preventDefault();
     const next = cellEditor.selectionStart + 1;
     cellEditor.setSelectionRange(next, next);
@@ -4133,7 +4155,7 @@ cellEditor.addEventListener("keydown", (e) => {
     e.stopPropagation();
     return;
   }
-  if (!formulaAssistItems.length && cellEditor.value.startsWith("=") && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+  if (!formulaAssistItems.length && cellEditor.value.startsWith("=") && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key) && formulaPointModeActive()) {
     e.preventDefault();
     const directions = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
     moveFormulaPickByKeyboard(directions[e.key][0], directions[e.key][1], e.shiftKey); e.stopPropagation(); return;
@@ -4449,18 +4471,38 @@ gridScroll.addEventListener("paste", (e) => {
   pasteWithoutFormattingPending = false; clearTimeout(pasteModeTimer);
   pasteText(text, { keepFormatting });
 });
+// Applies `rewrite` to the parts of a formula outside string literals and quoted sheet names, so
+// text such as `="A1"` is never mistaken for a reference.
+function rewriteFormulaOutsideQuotes(value, rewrite) {
+  let result = value[0], segment = "", quote = null;
+  for (let index = 1; index < value.length; index++) {
+    const char = value[index];
+    if (quote) {
+      result += char;
+      if ((char === "\\" || char === quote) && value[index + 1] === quote) result += value[++index];
+      else if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") { result += rewrite(segment) + char; segment = ""; quote = char; }
+    else segment += char;
+  }
+  return result + rewrite(segment);
+}
 function shiftedCopyFormula(value, sourceRef, targetRef, isCut) {
   if (isCut || !value?.startsWith("=") || !sourceRef) return value;
   const source = parseRef(sourceRef), target = parseRef(targetRef);
   if (!source || !target) return value;
   const rowDelta = target.r - source.r, colDelta = target.c - source.c;
-  return value.replace(/(?<![A-Z0-9_])(\$?)([A-Z]{1,2})(\$?)([1-9]\d*)(?![A-Z0-9_])/gi, (match, fixedColumn, letters, fixedRow, rowText) => {
+  return rewriteFormulaOutsideQuotes(value, (segment) => segment.replace(/(?<![A-Z0-9_])(\$?)([A-Z]{1,2})(\$?)([1-9]\d*)(?![A-Z0-9_])/gi, (match, fixedColumn, letters, fixedRow, rowText) => {
     let row = Number(rowText) - 1, column = letterToCol(letters);
     if (!fixedRow) row += rowDelta;
     if (!fixedColumn) column += colDelta;
     if (row < 0 || column < 0) return "#REF!";
     return fixedColumn + colToLetter(column) + fixedRow + (row + 1);
-  });
+  }));
+}
+// A cut source is only removed while it still holds what was cut; an edit made in between wins.
+function cutSourceUnchanged(sheetId, snapshot) {
+  const current = model.cells[sheetId]?.[snapshot.sourceRef];
+  return (current?.value ?? null) === snapshot.value && JSON.stringify(current?.fmt ?? null) === JSON.stringify(snapshot.fmt ?? null);
 }
 function clearStoredCell(sheetId, ref) {
   const cells = model.cells[sheetId] || (model.cells[sheetId] = {});
@@ -4510,7 +4552,7 @@ function pasteText(text, { keepFormatting = true } = {}) {
   }
   if (useSnapshot && copyFallback.cut) {
     for (const row of copyFallback.cells) for (const snapshot of row) {
-      if (snapshot?.sourceRef && !destinationRefs.has(copyFallback.sheetId + "!" + snapshot.sourceRef)) clearStoredCell(copyFallback.sheetId, snapshot.sourceRef);
+      if (snapshot?.sourceRef && !destinationRefs.has(copyFallback.sheetId + "!" + snapshot.sourceRef) && cutSourceUnchanged(copyFallback.sheetId, snapshot)) clearStoredCell(copyFallback.sheetId, snapshot.sourceRef);
     }
     copyFallback = null; copyRange = null;
   }

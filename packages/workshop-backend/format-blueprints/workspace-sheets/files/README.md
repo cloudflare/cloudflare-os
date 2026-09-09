@@ -267,16 +267,19 @@ Sorting reorders the stored cells in the grid, so no reordering is needed here. 
 comparing the literal values in the criteria columns; a row whose criteria cell holds a formula stays
 visible, since formulas are not evaluated here, and Excel's **Reapply** refilters it. Criteria are
 written as the grid's raw values, so a formatted number (`$1,234.00`) may not match Excel's displayed
-text until reapplied. A column with nothing selected hides every row but carries no criteria.
+text until reapplied. A column with nothing selected hides every row, formulas included, but carries
+no criteria.
 
 Open comments export as Excel notes; resolved comments are hidden in the grid and omitted. Several
 comments on one cell are joined into one note.
 
 Charts export as native Excel charts of the same type (line, area, pie, stacked bar) over the same
 range, reading headers and labels the way the grid does, with the grid's palette, titles, axis titles
-and legend setting. Series reference the worksheet directly, so Excel computes them on open. A chart
+and legend setting. As in the grid, a column with no numeric value is not a series - a column holding
+formulas is kept, since they are not evaluated here - and Excel's limit of 255 series applies to the
+columns that remain. Series reference the worksheet directly, so Excel computes them on open. A chart
 is positioned at the cell under its grid coordinates, at the same pixel size. Charts without a usable
-data range are skipped.
+data range or series are skipped.
 
 Pivot tables export as their materialized output cells (with their formatting), not as Excel pivot
 tables: the pivot's source definition is dropped and the values no longer refresh.

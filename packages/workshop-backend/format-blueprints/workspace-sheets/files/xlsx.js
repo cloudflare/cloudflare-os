@@ -440,7 +440,8 @@ function literalFilterToken(value) {
 
 // Sorting in the grid reorders the stored cells, so only the header row, the criteria and the sort
 // indicator need exporting. Rows are hidden by the literal values in the criteria columns; a row
-// whose criteria cell holds a formula stays visible, since formulas are not evaluated here.
+// whose criteria cell holds a formula stays visible, since formulas are not evaluated here - unless
+// the column selects nothing (`x:` tokens only), which no value can pass.
 function prepareFilter(sheet) {
   const filter = sheet.metadata.filter;
   if (!filter || typeof filter !== "object") return null;
@@ -458,7 +459,7 @@ function prepareFilter(sheet) {
   for (const [key, tokens] of Object.entries(source)) {
     const column = /^(0|[1-9]\d*)$/.test(key) ? Number(key) : null;
     if (column == null || !columns.includes(column) || !Array.isArray(tokens) || !tokens.length) continue;
-    const criterion = {tokens: new Set(tokens), values: [], blank: false};
+    const criterion = {tokens: new Set(tokens), values: [], blank: false, selectsNothing: tokens.every(token => typeof token === "string" && token.startsWith("x:"))};
     for (const token of tokens) {
       const parsed = filterCriterion(token);
       if (parsed?.blank) criterion.blank = true;
@@ -479,7 +480,7 @@ function prepareFilter(sheet) {
         const cell = sheet.sourceCells[columnName(column + 1) + (row + 1)];
         const value = cell && typeof cell === "object" && cell.value != null ? String(cell.value) : "";
         const token = literalFilterToken(value);
-        if (token != null && !criterion.tokens.has(token)) {
+        if (criterion.selectsNothing || (token != null && !criterion.tokens.has(token))) {
           hiddenRows.push(row + 1);
           break;
         }
@@ -536,6 +537,17 @@ function anchorPosition(pixels, sizes, defaultPixels, maximum) {
   }
 }
 
+// The grid's chartData() drops a column with no numeric value before building its series. Only
+// literals can be judged here, so a column is usable when it holds a number or a formula.
+function usableSeriesColumns(sheet, range, firstColumn) {
+  const usable = new Set();
+  for (const cell of sheet.cells) {
+    if (cell.column < firstColumn || cell.column > range.lastColumn || cell.row < range.firstRow || cell.row > range.lastRow) continue;
+    if (cell.value[0] === "=" || parsedCellValue(cell.value, null).type === "number") usable.add(cell.column);
+  }
+  return [...usable].sort((a, b) => a - b);
+}
+
 // Mirrors the grid's chartData(): with header and label rows on, each remaining column is a series
 // named by its first cell, categorized by the first column. Charts without a usable range are
 // skipped, as the grid draws only a placeholder for them.
@@ -552,7 +564,8 @@ function prepareCharts(sheet) {
     const seriesColumn = range.firstColumn + (firstColumnLabels && range.lastColumn > range.firstColumn ? 1 : 0);
     if (dataRow > range.lastRow || seriesColumn > range.lastColumn) continue;
     const type = CHART_TYPES.has(chart.type) ? chart.type : "line";
-    const seriesCount = Math.min(type === "pie" ? 1 : MAX_SERIES, range.lastColumn - seriesColumn + 1);
+    const columns = usableSeriesColumns(sheet, {...range, firstRow: dataRow}, seriesColumn).slice(0, type === "pie" ? 1 : MAX_SERIES);
+    if (!columns.length) continue;
     const width = count(chart.width, 520, 1200);
     const height = count(chart.height, 320, 900);
     charts.push({
@@ -565,7 +578,7 @@ function prepareCharts(sheet) {
       categoryColumn: seriesColumn > range.firstColumn ? range.firstColumn : null,
       firstRow: dataRow,
       lastRow: range.lastRow,
-      columns: Array.from({length: seriesCount}, (_, index) => seriesColumn + index),
+      columns,
       column: anchorPosition(Number(chart.x ?? 96) - ROW_HEADER_PIXELS, sheet.metadata.colWidths, DEFAULT_COLUMN_PIXELS, MAX_COLUMNS),
       row: anchorPosition(Number(chart.y ?? 44) - COLUMN_HEADER_PIXELS, sheet.metadata.rowHeights, DEFAULT_ROW_PIXELS, MAX_ROWS),
       extent: {cx: width * EMU_PER_PIXEL, cy: height * EMU_PER_PIXEL},
