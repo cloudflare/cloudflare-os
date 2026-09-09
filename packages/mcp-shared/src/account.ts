@@ -163,6 +163,10 @@ type PendingAuthorization = {
   // Connection generation that started this authorization. The callback crosses an arbitrary time
   // gap and must not install tokens after a newer reconnect has replaced the attempt.
   generation: number;
+  // The server record the flow resolved before redirecting. A reconnect leaves the live record
+  // untouched until the commit, so this is the only copy that carries a portal's updated metadata
+  // (a rename, say) across the redirect. Optional for an authorization begun before it was stored.
+  server?: ConnectedServer;
 };
 
 /** The environment an account reads. Each Worker's own `Env` satisfies it structurally. */
@@ -572,7 +576,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
           stage: "oauth",
           reconnect: reconnect ? true : undefined,
         });
-        this.ctx.storage.kv.put<PendingAuthorization>("pendingAuth", { generation });
+        this.ctx.storage.kv.put<PendingAuthorization>("pendingAuth", { generation, server });
         return `${this.ctx.id.toString()}:${oauthNonce}`;
       },
       discoveryState: () => {
@@ -669,10 +673,11 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     const pending = this.ctx.storage.kv.get<PendingAuthorization>("pendingAuth");
     if (!pending) return null;
     const reconnect = stored.reconnect === true;
-    // The challenge that started this flow made OAuth the observed auth mode. A first connect has
-    // already recorded that; a reconnect leaves the live record alone (it may still say `"none"`),
-    // so the mode is restated here for the record this flow stages.
-    const server: ConnectedServer = { ...this.requireServer(), auth: "oauth" };
+    // The record the flow resolved before the redirect, not the live one: a reconnect leaves the
+    // live record alone until the commit, and rebuilding from it would stage a renamed portal under
+    // its old name. The challenge that started this flow made OAuth the observed auth mode, restated
+    // here for the record this flow stages (the live one may still say `"none"`).
+    const server: ConnectedServer = { ...(pending.server ?? this.requireServer()), auth: "oauth" };
     // Single-use: consumed before the exchange, so a replayed callback cannot reach the token endpoint.
     this.ctx.storage.kv.delete("nonce");
     this.ctx.storage.kv.delete("pendingAuth");

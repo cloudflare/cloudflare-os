@@ -168,9 +168,9 @@ describe('useConnectHandoffListener', () => {
   })
 
   it('ignores a marker older than the connect lifetime', async () => {
-    // An abandoned popup's flow can no longer complete once its connect nonce has expired, so its
-    // marker must stop this tab racing its siblings for their tickets.
-    pending(Date.now() - 11 * 60 * 1000)
+    // An abandoned popup's flow can no longer complete once its connect and OAuth nonces have both
+    // expired, so its marker must stop this tab racing its siblings for their tickets.
+    pending(Date.now() - 31 * 60 * 1000)
     mount()
 
     await broadcast({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: TICKET })

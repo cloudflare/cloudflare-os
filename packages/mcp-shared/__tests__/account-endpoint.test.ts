@@ -883,6 +883,38 @@ describe("connect initiation nonce", () => {
     ]);
   });
 
+  it("carries a renamed portal through an OAuth reconnect", async () => {
+    // A deployment restates its portal's name on every connect, and a reconnect adopts it when the
+    // endpoint is unchanged (see `resolveConnectTarget`). The live record is left alone until the
+    // commit, so the OAuth callback must stage the record the flow resolved, not rebuild it from
+    // the live copy, or the rename is silently undone.
+    const context = fakeContext();
+    stubOAuthServer();
+    const reconnectComplete = vi.fn(async (_stageId: string) => HANDOFF);
+    const portal = (serverName: string): ConnectedServer => ({
+      ...server("https://mcp.example/mcp"), provenance: "deployment", serverName,
+    });
+    context.storage.kv.put("server", portal("Old name"));
+    context.storage.kv.put("callback", { reconnectComplete });
+    context.storage.kv.put("tokens", { access_token: "old-token", token_type: "Bearer", expiresAt: 1 });
+    const account = new OAuthFlowAccount(context as never, {});
+    const nonce = "9".repeat(64);
+    await account.prepareReconnect(nonce);
+
+    const outcome = await account.beginConnect(nonce, portal("New name"));
+    expect(outcome.kind).toBe("redirect");
+    expect(context.storage.kv.get<ConnectedServer>("server")?.serverName).toBe("Old name");
+    const state = new URL((outcome as { url: string }).url).searchParams.get("state")!;
+    expect(await account.acceptAuthCode("code", state.slice(state.indexOf(":") + 1)))
+      .toEqual(HANDOFF);
+    expect(context.storage.kv.get<ConnectedServer>("server")?.serverName).toBe("Old name");
+
+    await account.commitReconnect(reconnectComplete.mock.calls[0][0]);
+    expect(context.storage.kv.get<ConnectedServer>("server")).toMatchObject({
+      serverName: "New name", provenance: "deployment", auth: "oauth",
+    });
+  });
+
   it("commits the retiring reconnect before the revocation round trip, not after it", async () => {
     // The revocation is a network call. A disconnect (or a newer reconnect) that finishes while it
     // is in flight must not be overwritten when the commit resumes, so every live write lands first.

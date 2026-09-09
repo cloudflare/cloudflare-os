@@ -87,10 +87,13 @@ export function openConnectWindow(url: string): Window {
 const CONNECT_PENDING_KEY = 'gadgets.connectPending'
 
 /**
- * How long a marker counts: the gatekeepers' connect-nonce lifetime, after which the popup's flow
- * can no longer complete, so a ticket arriving later cannot be this tab's.
+ * How long a marker counts. A ticket can legitimately arrive up to the sum of the gatekeepers'
+ * initiation-nonce lifetime (10 min, e.g. spent on an endpoint form), the fresh OAuth-nonce lifetime
+ * (10 min, spent at the consent screen) and the Workshop's handoff lifetime (2 min) after the popup
+ * opened; anything later cannot be this tab's. Rounded up: the bound exists only so an abandoned
+ * popup's marker does not race sibling tabs forever.
  */
-const CONNECT_PENDING_LIFETIME_MS = 10 * 60 * 1000
+const CONNECT_PENDING_LIFETIME_MS = 30 * 60 * 1000
 
 // Storage can be unavailable (a disabled cookie jar, a sandboxed frame); every access degrades to
 // today's behaviour of redeeming whatever arrives rather than failing the connect.
