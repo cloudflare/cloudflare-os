@@ -1219,8 +1219,19 @@ function queueStructure(): void {
   scheduleSave();
 }
 function queueReplacement(sheetId: string): void {
+  // The replacement is the sheet's whole cell map, local edits included, so a cell op still
+  // queued for the sheet is redundant -- and, since the caller has just moved the sheet's cells
+  // (an inserted row, a sort), keyed by a coordinate that no longer names the cell it edited.
+  // The server applies cell ops after replacements, so it would land on whatever cell now holds
+  // that coordinate. A cell op and a replacement for one sheet coexist only when the op was
+  // queued after the replacement, against the layout the replacement carries.
+  dropCellOpsFor(sheetId);
   pendingReplacements.set(sheetId, JSON.parse(JSON.stringify(model.cells[sheetId] || {})));
   scheduleSave();
+}
+function dropCellOpsFor(sheetId: string): void {
+  const prefix = sheetId + "!";
+  for (const key of [...pendingCellOps.keys()]) if (key.startsWith(prefix)) pendingCellOps.delete(key);
 }
 
 // Debounces, serializes and retries the operation below, and owns the status line.
@@ -1255,9 +1266,11 @@ function scheduleSave(): void {
 // onto a document that moved in the meantime (our own commit, a collaborator's, or both) would
 // silently overwrite whatever moved it. They may only go out against the revision they were built
 // on: after a failure the next attempt asks for the document first, and if its revision is not
-// ours, drops both, adopts the server's copy and sends only the cell ops. The server could not
-// check this for us with a base revision: the revision moves on every cell edit, so a rename
-// would fail whenever anyone typed.
+// ours, drops both, adopts the server's copy and sends only the cell ops -- and only those on
+// sheets no dropped replacement had moved under them, since a cell op is replayable only where
+// its coordinate still names the cell it edited. The server could not check this for us with a
+// base revision: the revision moves on every cell edit, so a rename would fail whenever anyone
+// typed.
 async function sendPendingOperation(): Promise<SaveOutcome> {
   if (resyncBeforeSave) {
     // Rejecting here leaves the flag set; the scheduler counts a failure and tries again.
@@ -1265,7 +1278,15 @@ async function sendPendingOperation(): Promise<SaveOutcome> {
     resyncBeforeSave = false;
     if (doc.revision !== model.revision) {
       pendingStructure = null;
+      // A cell op queued after a replacement is keyed by the layout the replacement built, which
+      // the server may not have: if our commit landed, its snapshot already holds the cells the
+      // replacement carried but not an edit typed after it, which is lost here; if a peer's
+      // landed instead, the op would write into some other cell. Losing an edit after a failed
+      // save is what every failure did before the resync; writing the wrong cell is not. The
+      // undo history presumes that layout too. Cell ops on sheets with no replacement stay queued.
+      for (const sheetId of pendingReplacements.keys()) dropCellOpsFor(sheetId);
       pendingReplacements.clear();
+      undoStack.length = 0; redoStack.length = 0; updateUndoButtons();
       applySnapshot(doc);
       reloadedAfterFailure = true;
     }

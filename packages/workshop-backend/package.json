@@ -11,6 +11,7 @@
     "test:integration": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.ts && vitest run --config vitest.integration.config.ts",
     "test:run": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.ts && vitest run && vitest run --config vitest.integration.config.ts && vitest run --config vitest.blueprints.config.ts",
     "test:watch": "node build-browser-runtime.mjs && node scripts/build-format-blueprints.ts && vitest",
+    "test:watch:blueprints": "vitest --config vitest.blueprints.config.ts",
     "import:format-blueprint": "node scripts/import-format-blueprint.ts"
   },
   "dependencies": {

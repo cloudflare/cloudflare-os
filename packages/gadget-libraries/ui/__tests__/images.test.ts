@@ -174,8 +174,24 @@ describe("prepareImage", () => {
     expect(shrunk.src.startsWith("data:image/webp;base64,")).toBe(true);
     expect(shrunk.width).toBe(1600);
 
-    const heavy = await prepareImage(imageFile("heavy.gif", "image/gif", "200x100", 400), { maxDataUrlLength: 300 });
+    const heavy = await prepareImage(imageFile("heavy.gif", "image/gif", "200x100", 400), { maxGifDataUrlLength: 300 });
     expect(heavy.src.startsWith("data:image/webp;base64,")).toBe(true);
+  });
+
+  it("gives a GIF its own byte budget, wider than a re-encodable image's", async () => {
+    const { encodings } = stubDecoding();
+    // Over the general budget but within the GIF one: kept animated.
+    const kept = await prepareImage(imageFile("anim.gif", "image/gif", "200x100", 400), { maxDataUrlLength: 300, maxGifDataUrlLength: 700 });
+    expect(kept.src.startsWith("data:image/gif;base64,")).toBe(true);
+    expect(encodings).toEqual([]);
+
+    // A PNG of the same weight is over its budget, and re-encoded.
+    const png = await prepareImage(imageFile("still.png", "image/png", "200x100", 400), { maxDataUrlLength: 300, maxGifDataUrlLength: 700 });
+    expect(png.src.startsWith("data:image/webp;base64,")).toBe(true);
+
+    // Passed as undefined, the GIF budget keeps its default.
+    const defaulted = await prepareImage(imageFile("anim.gif", "image/gif", "200x100", 400), { maxDataUrlLength: 300, maxGifDataUrlLength: undefined });
+    expect(defaulted.src.startsWith("data:image/gif;base64,")).toBe(true);
   });
 
   it("takes the alt text and limits from its options", async () => {
@@ -183,7 +199,7 @@ describe("prepareImage", () => {
     const prepared = await prepareImage(imageFile("a.png", "image/png", "800x800"), { alt: "a.png", maxDimension: 400 });
     expect(prepared.alt).toBe("a.png");
     expect(prepared.width).toBe(400);
-    expect(DEFAULT_IMAGE_LIMITS).toEqual({ maxDimension: 1600, maxDataUrlLength: 1_400_000 });
+    expect(DEFAULT_IMAGE_LIMITS).toEqual({ maxDimension: 1600, maxDataUrlLength: 1_400_000, maxGifDataUrlLength: 2_700_000 });
   });
 
   it("keeps a default for a limit passed as undefined", async () => {

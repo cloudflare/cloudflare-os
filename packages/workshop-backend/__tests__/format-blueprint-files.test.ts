@@ -414,16 +414,17 @@ describe.skipIf(inWorkerd)("format blueprint TypeScript sources", () => {
     expect(files.get("client.js")).not.toMatch(/\bimport\s*\(/u);
   });
 
-  // esbuild rewrites a require() it could not resolve away to a `__require` shim that throws when
-  // reached, without a warning, and for a computed path without a metafile import either.
-  it("rejects a require() that survives into the bundle", async () => {
+  // esbuild rewrites a reference to require it could not resolve away to a `__require` shim that
+  // throws when called, without a warning, and for a computed path without a metafile import
+  // either.
+  it("rejects a require that survives into the bundle", async () => {
     let computed = await sourceTree({
       "client.ts": 'import { h } from "./lib/helper.js"; console.log(h);',
       "lib/helper.js": 'const p = "./x.js"; export const h = require(p);',
     });
     await expect(readSourceFiles(computed, "example/files")).rejects
-      .toThrow("example/files: client.ts contains a require() call; the bundle is an ES module " +
-          "and the gadget runtime has no require");
+      .toThrow("example/files: client.ts references require; the bundle is an ES module and the " +
+          "gadget runtime has no require");
 
     // A literal path is no better: the server's externals are ES module imports, so a require of
     // one is left to a runtime that has no require.
@@ -431,7 +432,15 @@ describe.skipIf(inWorkerd)("format blueprint TypeScript sources", () => {
       "server.ts": 'const m = require("cloudflare:workers"); export default m;',
     });
     await expect(readSourceFiles(literal, "example/files")).rejects
-      .toThrow("server.ts contains a require() call");
+      .toThrow("server.ts references require");
+
+    // Nor is a use other than a call: `require.resolve` reaches the same shim, as a member access
+    // rather than a call.
+    let resolved = await sourceTree({
+      "client.ts": 'export const p = require.resolve("./x.js");',
+    });
+    await expect(readSourceFiles(resolved, "example/files")).rejects
+      .toThrow("client.ts references require");
   });
 
   it("counts a module imported across a comment as imported", async () => {

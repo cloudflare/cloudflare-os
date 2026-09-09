@@ -25,7 +25,7 @@ import any of them uniformly. It exports one flag, `clientOnly`, and nothing els
 | `PROMPT_STYLES` | CSS for the dialog's classes, scoped under `.prompt-overlay`/`.prompt-card`, for a gadget whose stylesheet has none. |
 | `statusIndicator({kind?, text?, title?})` | `div.status` > `span.dot.<kind>` + text; `set(kind, text)` is a no-op when nothing changed. |
 | `relativeTime(epochMs, now?)` | `just now`, `3 min ago`, `2 h ago`, `5 d ago`, then the locale date. |
-| `prepareImage(file, options?)` | Data URL within `maxDimension` (1600px) and `maxDataUrlLength` (1.4M chars): GIFs that fit are kept, everything else becomes WebP (JPEG where WebP cannot be encoded) at falling quality, then falling size. `alt` defaults to `altFromFileName`. |
+| `prepareImage(file, options?)` | Data URL within `maxDimension` (1600px) and `maxDataUrlLength` (1.4M chars): a GIF within `maxGifDataUrlLength` (2.7M chars, about 2 MB) is kept animated, everything else becomes WebP (JPEG where WebP cannot be encoded) at falling quality, then falling size. `alt` defaults to `altFromFileName`. |
 | `readFileAsDataURL(file)`, `loadImage(src)` | Its two steps, for a gadget that wants one of them. |
 | `isImageFile`, `imageFilesFrom(transfer)`, `IMAGE_TYPES`, `DEFAULT_IMAGE_LIMITS`, `altFromFileName` | The rest of the image module. |
 
@@ -70,7 +70,8 @@ the library gets that its own copy did not:
 - **`statusIndicator`**: Docs' and Sheets' skip of a repeated state, which the page lacked; the DOM
   is the same three elements all three built by hand.
 - **Images**: the page's algorithm. Docs encoded once at 0.86 and kept a GIF under 2 MB unscaled;
-  the library tries four qualities and then shrinks, and keeps a GIF by data-URL length. Docs used
+  the library tries four qualities and then shrinks, and keeps a GIF by data-URL length, at a
+  budget of its own (`maxGifDataUrlLength`) that defaults to Docs' 2 MB. Docs used
   the raw file name as alt; pass `{alt: file.name}` to keep that. Slides passes SVG through, keeps
   PNG as PNG and falls back to the original on any failure; it can use `readFileAsDataURL` and
   `loadImage` and keep its own conversion. The error messages are the page's.
