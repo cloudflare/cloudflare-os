@@ -148,7 +148,7 @@ describe("Work Items source composition", () => {
   });
 
   it("does not report a listed provider as healthy when its own status is absent", async () => {
-    const jira = sourceApi("jira", { getSourceStatuses: vi.fn(async () => ({ zendesk: { configured: true, connected: true } })) as WorkItemsManagementApi["getSourceStatuses"] });
+    const jira = { ...sourceApi("jira"), getSourceStatuses: vi.fn(async () => ({ zendesk: { configured: true, connected: true } })) };
     const api = await composeWorkItemsApi(hostWithSources({ jira }));
     expect((await api.getSourceStatuses()).jira).toMatchObject({ connected: false, reason: expect.stringContaining("no connection status") });
   });
