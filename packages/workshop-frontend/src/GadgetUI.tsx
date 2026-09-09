@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
-import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
+import { GadgetClient, ConsoleLogEvent, GadgetLibraryRef, UiBundle } from '@gadgets/workshop-shared/api'
+import { base64Utf8 } from './utils/base64'
 
 // We want to inject Cap'n Web into the Gadget. Luckily it has no dependencies, so we can just take
 // the whole module and embed it. We can import the module using ?raw to get a string of the
@@ -102,7 +103,102 @@ window.addEventListener('unhandledrejection', (event) => {
 
 `);
 
-const createSandboxedHtml = (jsCode: string): string => {
+// How long to wait for a UI bundle, or for one of the library modules it imports, before offering a
+// retry instead of a spinner. Not a latency budget: the point at which we conclude the reply is
+// never coming.
+const UI_BUNDLE_LOAD_TIMEOUT_MS = 20_000
+
+// Library modules are cached by content hash for the page's lifetime, so a session downloads each
+// library once no matter how many gadgets pin the same hash. The entry is the in-flight promise, so
+// an RPC that never settles -- the stub disposed under it by a reconnect -- would poison its hash
+// for as long as the page lives. Each entry therefore races the same deadline the load itself has,
+// and both a rejection and that deadline evict it so a later load fetches again.
+//
+// The hash is the key, so the code is checked against it before it is cached: the bundle's refs and
+// the code arrive in two round trips, and a module that changed between them would otherwise be
+// served under a hash every other gadget pinning that hash shares. A mismatch rejects (and so
+// evicts), and the load fails the way any bundle failure does rather than run the wrong module.
+const libraryCodeCache = new Map<string, Promise<string>>()
+
+const sha256Hex = async (text: string): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+const fetchLibraryCode = (
+  gadget: RpcStub<GadgetClient>, ref: GadgetLibraryRef, chatId?: number,
+): Promise<string> => {
+  const cached = libraryCodeCache.get(ref.hash)
+  if (cached) return cached
+
+  const verified = async (): Promise<string> => {
+    const code = await gadget.getLibraryCode(ref.specifier, chatId)
+    if (await sha256Hex(code) !== ref.hash) {
+      throw new Error(`${ref.specifier} did not match the hash the bundle named.`)
+    }
+    return code
+  }
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  const fetched: Promise<string> = Promise.race([
+    verified(),
+    new Promise<never>((_resolve, reject) => {
+      deadline = setTimeout(
+        () => reject(new Error(`Timed out fetching ${ref.specifier}.`)),
+        UI_BUNDLE_LOAD_TIMEOUT_MS,
+      )
+    }),
+  ])
+  fetched.then(() => clearTimeout(deadline), () => {
+    clearTimeout(deadline)
+    if (libraryCodeCache.get(ref.hash) === fetched) libraryCodeCache.delete(ref.hash)
+  })
+  libraryCodeCache.set(ref.hash, fetched)
+  return fetched
+}
+
+// Resolves a bundle's library references to their code, keyed by import specifier.
+const loadLibraries = async (
+  gadget: RpcStub<GadgetClient>, refs: readonly GadgetLibraryRef[], chatId?: number,
+): Promise<ReadonlyMap<string, string>> => {
+  const code = await Promise.all(refs.map(ref => fetchLibraryCode(gadget, ref, chatId)))
+  return new Map(refs.map((ref, index) => [ref.specifier, code[index]]))
+}
+
+// The gadget imports its libraries by bare specifier (`gadgets:<name>/client`), which the sandbox
+// can only resolve through an import map; each entry points at the library's own data: module. The
+// map must precede the module script, and it is served inline, which the CSP's 'unsafe-inline'
+// already admits. `<` is escaped so no specifier can close the script element early.
+const createImportMap = (libraries: ReadonlyMap<string, string>): string => {
+  if (libraries.size === 0) return ''
+  const imports = Object.fromEntries([...libraries].map(([specifier, code]) =>
+    [specifier, `data:text/javascript;base64,${base64Utf8(code)}`]))
+  const json = JSON.stringify({ imports }).replaceAll('<', '\\u003c')
+  return `<script type="importmap">${json}</script>\n    `
+}
+
+// What the iframe was built from, kept so a reconnect can tell whether the server it now talks to
+// serves the same bundle. Libraries are compared by hash in order, since `latest` pins move without
+// any change to the gadget's own code.
+interface LoadedBundle {
+  jsCode: string
+  libraries: readonly GadgetLibraryRef[]
+}
+
+const loadedBundleOf = (bundle: UiBundle | null): LoadedBundle | null =>
+  bundle && {
+    jsCode: bundle.jsCode,
+    libraries: (bundle.libraries ?? []).map(({ specifier, hash }) => ({ specifier, hash })),
+  }
+
+const sameBundle = (loaded: LoadedBundle | null, current: LoadedBundle | null): boolean => {
+  if (loaded === null || current === null) return loaded === current
+  return loaded.jsCode === current.jsCode &&
+    loaded.libraries.length === current.libraries.length &&
+    loaded.libraries.every((ref, index) =>
+      ref.specifier === current.libraries[index].specifier && ref.hash === current.libraries[index].hash)
+}
+
+const createSandboxedHtml = (jsCode: string, libraries: ReadonlyMap<string, string>): string => {
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -110,7 +206,7 @@ const createSandboxedHtml = (jsCode: string): string => {
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src 'none'; script-src data: 'unsafe-inline'; style-src data: 'unsafe-inline'; img-src data:; media-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';">
 </head>
 <body>
-    <script type="module" src="data:text/javascript;charset=utf-8,${INJECTED_CODE_PREFIX}${encodeURIComponent(jsCode)}"></script>
+    ${createImportMap(libraries)}<script type="module" src="data:text/javascript;charset=utf-8,${INJECTED_CODE_PREFIX}${encodeURIComponent(jsCode)}"></script>
 </body>
 </html>`.trim()
 }
@@ -127,9 +223,6 @@ interface GadgetUIProps {
   onIframeEscape?: () => void
 }
 
-// How long to wait for a UI bundle before offering a retry instead of a spinner. Not a latency
-// budget: the point at which we conclude the reply is never coming.
-const UI_BUNDLE_LOAD_TIMEOUT_MS = 20_000
 const RECONNECT_TIMEOUT_MS = 5_000
 
 export default function GadgetUI(props: GadgetUIProps) {
@@ -144,6 +237,11 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   const [isInvalidated, setIsInvalidated] = useState(false)
   const [iframeGeneration, setIframeGeneration] = useState(0)
   const iframeRef = useRef<HTMLIFrameElement>(null)
+  // The bundle the current iframe runs (see LoadedBundle), read by the reconnect effect, which must
+  // not re-run when a load completes.
+  const loadedBundleRef = useRef<LoadedBundle | null>(null)
+  const hasLoadedRef = useRef(false)
+  hasLoadedRef.current = hasLoaded
   const prevReloadTriggerRef = useRef(reloadTrigger)
   // Identifies the newest bundle load, so an older one can't write state after being superseded.
   const loadGenerationRef = useRef(0)
@@ -220,6 +318,24 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       if (!isCurrent()) stub[Symbol.dispose]?.()
     }, () => {})
 
+    // The iframe is kept across a reconnect, so it may now run code the server no longer serves: a
+    // deploy changes a `latest` library with no commit to the gadget, and a collaborator's merge
+    // changes the gadget's own code with no `reloadTrigger` for this client. The reconnect is the
+    // only signal either has, so the bundle is compared to what the iframe was built from, and a
+    // difference invalidates the view, which the load effect rebuilds and the loading state
+    // replaces the iframe for. A transient failure to ask is not a reason to reload.
+    const reloadIfBundleChanged = async () => {
+      let bundle: UiBundle | null
+      try {
+        bundle = await gadget.getUiBundle(chatId)
+      } catch (caught) {
+        if (isCurrent()) console.warn('Could not check the gadget UI bundle after reconnecting:', caught)
+        return
+      }
+      if (!isCurrent() || sameBundle(loadedBundleRef.current, loadedBundleOf(bundle))) return
+      setIsInvalidated(true)
+    }
+
     const reconnect = async () => {
       let timeout: ReturnType<typeof setTimeout> | undefined
       try {
@@ -237,9 +353,11 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         oldStub?.[Symbol.dispose]?.()
       } catch (caught) {
         if (isCurrent()) reloadIframe(caught)
+        return
       } finally {
         if (timeout !== undefined) clearTimeout(timeout)
       }
+      if (hasLoadedRef.current) await reloadIfBundleChanged()
     }
     void reconnect()
   }, [gadget, chatId])
@@ -294,11 +412,13 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         const bundle = await gadget.getUiBundle(chatId)
         if (!isCurrent()) return
         if (bundle) {
-          const html = createSandboxedHtml(bundle.jsCode)
-          setSandboxedHtml(html)
+          const libraries = await loadLibraries(gadget, bundle.libraries ?? [], chatId)
+          if (!isCurrent()) return
+          setSandboxedHtml(createSandboxedHtml(bundle.jsCode, libraries))
         } else {
           setSandboxedHtml(null)
         }
+        loadedBundleRef.current = loadedBundleOf(bundle)
         setHasLoaded(true)
         setIsInvalidated(false)
       } catch (err) {

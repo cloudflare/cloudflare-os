@@ -52,6 +52,7 @@ import {
   Question,
   ArrowUpRight,
   Blueprint,
+  Books,
   GitBranch,
 } from "@phosphor-icons/react";
 import { RpcStub, RpcTarget } from "capnweb";
@@ -619,6 +620,10 @@ function getToolCallSummary(
       return { verb: "Listed connectable resources", target: tc.input.vendorId };
     case "requestConnection":
       return { verb: "Requested connection", target: tc.input.vendorId };
+    case "listGadgetLibraries":
+      return { verb: "Listed gadget libraries", target: tc.input.workpiece };
+    case "describeGadgetLibrary":
+      return { verb: "Described gadget library", target: tc.input.name };
   }
   // Compile-time exhaustiveness check.
   const _exhaustive: never = tc;
@@ -700,6 +705,10 @@ function describeToolCallCount(toolName: AiToolCall["toolName"], count: number):
       return `Listed connectable resources`;
     case "requestConnection":
       return count === 1 ? "Requested a connection" : `Requested ${count} connections`;
+    case "listGadgetLibraries":
+      return `Listed gadget libraries`;
+    case "describeGadgetLibrary":
+      return `Described ${pluralize(count, "gadget library", "gadget libraries")}`;
   }
   const _exhaustive: never = toolName;
   return _exhaustive;
@@ -733,6 +742,9 @@ function getToolIcon(
       return GitBranch;
     case "listBlueprints":
       return Blueprint;
+    case "listGadgetLibraries":
+    case "describeGadgetLibrary":
+      return Books;
     case "observeUserChanges":
       return MagnifyingGlass;
     case "giveUp":
@@ -798,6 +810,8 @@ function getProvisionalToolVerb(toolName: AiToolCall["toolName"]): string {
     case "listBlueprints": return "Listing blueprints";
     case "listConnectableResources": return "Listing connectable resources";
     case "requestConnection": return "Requesting a connection";
+    case "listGadgetLibraries": return "Listing gadget libraries";
+    case "describeGadgetLibrary": return "Describing gadget library";
   }
   const _exhaustive: never = toolName;
   return _exhaustive;
@@ -823,6 +837,8 @@ function describeProvisionalToolCount(toolName: AiToolCall["toolName"], count: n
     case "listBlueprints": return "Listing blueprints";
     case "listConnectableResources": return "Listing connectable resources";
     case "requestConnection": return `Requesting ${pluralize(count, "connection")}`;
+    case "listGadgetLibraries": return "Listing gadget libraries";
+    case "describeGadgetLibrary": return `Describing ${pluralize(count, "gadget library", "gadget libraries")}`;
   }
   const _exhaustive: never = toolName;
   return _exhaustive;
