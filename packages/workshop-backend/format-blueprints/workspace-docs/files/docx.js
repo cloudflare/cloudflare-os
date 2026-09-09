@@ -348,6 +348,9 @@ function deriveFormat(parent, node, declarations) {
       break;
     }
   }
+  // The element's own winning text-decoration; ancestors' decorations propagate and cannot be
+  // cancelled here, so `none` only suppresses what this element itself would add.
+  let decoration = null;
   for (const [name, value] of declarations) {
     const lower = value.toLowerCase();
     if (name === "font-family") {
@@ -364,10 +367,7 @@ function deriveFormat(parent, node, declarations) {
       if (lower === "normal") format.italic = false;
       else if (lower === "italic" || lower === "oblique") format.italic = true;
     } else if (name === "text-decoration" || name === "text-decoration-line") {
-      // Decorations propagate to descendants and cannot be cancelled there, so `none` only means
-      // "adds nothing".
-      if (/\bunderline\b/.test(lower)) format.underline = true;
-      if (/\bline-through\b/.test(lower)) format.strike = true;
+      decoration = lower;
     } else if (name === "color") {
       const color = cssColor(value);
       if (color != null) format.color = color || null;
@@ -375,6 +375,12 @@ function deriveFormat(parent, node, declarations) {
       const color = lower === "transparent" ? "" : cssColor(value);
       if (color != null) format.shading = color || null;
     }
+  }
+  if (decoration != null) {
+    if (/\bunderline\b/.test(decoration)) format.underline = true;
+    else if (!parent.underline) format.underline = /\bnone\b/.test(decoration) ? false : undefined;
+    if (/\bline-through\b/.test(decoration)) format.strike = true;
+    else if (!parent.strike) format.strike = undefined;
   }
   return format;
 }
@@ -684,7 +690,7 @@ class DocumentBuilder {
 // paragraph style, hyperlink target, preformatting, and the enclosing list.
 function walk(builder, node, parent) {
   const tag = node.tag;
-  if (IGNORED_TAGS.has(tag) || "hidden" in node.attrs) return;
+  if (IGNORED_TAGS.has(tag) || "hidden" in node.attrs || (tag === "dialog" && !("open" in node.attrs))) return;
   const declarations = cssDeclarations(node.attrs.style);
   if (declarations.findLast(([name]) => name === "display")?.[1].toLowerCase() === "none") return;
   // Editor images are `display: block`, so each one stands in its own paragraph. Inside a table
@@ -712,6 +718,7 @@ function walk(builder, node, parent) {
       if (block) builder.close();
       return;
     case "hr":
+      if (parent.inCell) return; // Already a line break inside the flattened row.
       builder.open(context).horizontalRule = true;
       builder.close();
       return;
@@ -790,7 +797,9 @@ function runProperties(format, hyperlink) {
   if (format.strike) properties.push("<w:strike/>");
   if (format.color) properties.push(`<w:color w:val="${format.color}"/>`);
   if (format.size) properties.push(`<w:sz w:val="${format.size}"/><w:szCs w:val="${format.size}"/>`);
+  // An explicit `false` only exists to suppress the underline Word's Hyperlink style would add.
   if (format.underline) properties.push('<w:u w:val="single"/>');
+  else if (format.underline === false && hyperlink) properties.push('<w:u w:val="none"/>');
   if (format.shading) properties.push(`<w:shd w:val="clear" w:color="auto" w:fill="${format.shading}"/>`);
   return properties.length ? `<w:rPr>${properties.join("")}</w:rPr>` : "";
 }

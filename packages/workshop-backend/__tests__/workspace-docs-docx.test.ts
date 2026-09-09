@@ -334,6 +334,9 @@ describe("Workspace Docs DOCX package", () => {
       '<span style="text-decoration:underline line-through"><span>nested</span>' +
       '<span style="text-decoration:none">plain</span></span>' +
       '<span style="color:#ff0000"><span style="color:rgba(255,0,0,0);background-color:#f000">clear</span></span>' +
+      '<span style="text-decoration:underline;text-decoration:none">own</span><u style="text-decoration:line-through">struck u</u>' +
+      '<a href="https://example.com/" style="text-decoration:none">bare link</a>' +
+      '<u><a href="https://example.com/" style="text-decoration:none">still under</a></u>' +
       '<span style="background-color:#ff0000"><span style="background-color:rgba(0,0,0,0)">unshaded</span></span></p>';
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
@@ -346,7 +349,13 @@ describe("Workspace Docs DOCX package", () => {
     // Decorations propagate: `text-decoration: none` on a descendant cannot cancel them.
     expect(runContaining(xml, "nestedplain")).toContain('<w:u w:val="single"/>');
     expect(runContaining(xml, "nestedplain")).toContain("<w:strike/>");
-    expect(runContaining(xml, "clearunshaded")).not.toMatch(/w:color|w:shd/);
+    expect(runContaining(xml, "clear")).not.toMatch(/w:color|w:shd/);
+    expect(runContaining(xml, "own")).not.toContain("w:u ");
+    expect(runContaining(xml, "unshaded")).not.toContain("w:shd");
+    expect(runContaining(xml, "struck u")).toContain("<w:strike/>");
+    expect(runContaining(xml, "struck u")).not.toContain("w:u ");
+    expect(runContaining(xml, "bare link")).toContain('<w:u w:val="none"/>');
+    expect(runContaining(xml, "still under")).toContain('<w:u w:val="single"/>');
 
     const inherited = await readZip(await documentToDocx({blocks: [block(
         '<p><span style="font-weight:bold;font-size:20px;color:#123456">' +
@@ -631,7 +640,7 @@ describe("Workspace Docs DOCX package", () => {
 
   it("flattens incidental table rows to paragraphs and cells to tabs while flattening unknown tags", async () => {
     const html = '<table><thead style="color:red"><tr><td>A</td><td><b>B</b></td></tr><tbody><tr><td></td><td>D</td></tr>' +
-      "<tr><td>E<td><i>F</i><tr><td>G</td></tr><tr><td><p>H1</p><p>H2<br></p><p>H3</p></td><td><div>I</div></td></tr></tbody></table>" +
+      "<tr><td>E<td><i>F</i><tr><td>G</td></tr><tr><td><p>H1</p><p>H2<br></p><p>H3</p></td><td><div>I</div><hr>J</td></tr></tbody></table>" +
       '<section><custom>visible</custom><!-- hidden --><script>bad()</script><style>.bad{}</style></section>' +
       "<article>article</article><aside>aside</aside>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
@@ -639,7 +648,9 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml.match(/<w:tab\/>/g)).toHaveLength(4);
     for (const value of ["A", "B", "D", "E", "F", "G", "H1", "H2", "I", "visible", "article", "aside"]) expect(xml).toContain(`>${value}</w:t>`);
     expect(xml).toContain('>H1</w:t></w:r><w:r><w:br/></w:r><w:r><w:t xml:space="preserve">H2</w:t></w:r><w:r><w:br/></w:r>' +
-      '<w:r><w:t xml:space="preserve">H3</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t xml:space="preserve">I</w:t></w:r></w:p>');
+      '<w:r><w:t xml:space="preserve">H3</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t xml:space="preserve">I</w:t></w:r>' +
+      '<w:r><w:br/></w:r><w:r><w:t xml:space="preserve">J</w:t></w:r></w:p>');
+    expect(xml).not.toContain("<w:pBdr>");
     expect(runContaining(xml, "B")).toContain("<w:b/>");
     expect(runContaining(xml, "F")).toContain("<w:i/>");
     expect(runContaining(xml, "G")).not.toContain("<w:i/>");
@@ -677,14 +688,15 @@ describe("Workspace Docs DOCX package", () => {
       `<a href="https://example.com/kept">kept</a><a href="https://example.com/${"\u4e2d".repeat(3000)}">wide</a></p>` +
       "<dl><dt>term<dd>definition<dt><b>bold term</dt></dl>" +
       "<details><summary>Summary</summary><summary>second secret</summary><p>collapsed secret</p></details>" +
-      "<details open><summary>Open</summary><p>expanded</p></details>";
+      "<details open><summary>Open</summary><p>expanded</p></details>" +
+      "<dialog><p>dialog secret</p></dialog><dialog open><p>shown dialog</p></dialog>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     for (const value of ["draft", "secret"]) expect(xml).not.toContain(value);
-    for (const value of ["shownreshown", "wide", "Summary", "Open", "expanded"]) expect(xml).toContain(`>${value}</w:t>`);
+    for (const value of ["shownreshown", "wide", "Summary", "Open", "expanded", "shown dialog"]) expect(xml).toContain(`>${value}</w:t>`);
     expect(text(entries, "word/_rels/document.xml.rels").match(/relationships\/hyperlink/g)).toHaveLength(1);
     expect(runContaining(xml, "definition")).not.toContain("<w:b/>");
-    expect(xml.match(/<w:p>/g)).toHaveLength(7);
+    expect(xml.match(/<w:p>/g)).toHaveLength(8);
   });
 
   it("gives editor images their own paragraph while other images stay inline", async () => {
