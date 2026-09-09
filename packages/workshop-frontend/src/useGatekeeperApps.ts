@@ -17,7 +17,8 @@ export function navigableGatekeeperApps(apps: GatekeeperAppInfo[]): GatekeeperAp
 
 /** Selects explicitly declared embedded sources for one composite app, failing closed on bad metadata. */
 export function isFirstPartyWorkItemsShell(app: GatekeeperAppInfo | undefined): app is GatekeeperAppInfo {
-  return app?.vendorId === 'work-items'
+  // Vendor IDs are lowercased binding suffixes: GATEKEEPER_WORK_ITEMS -> work_items.
+  return app?.vendorId === 'work_items'
     && app.composition?.kind === 'work-items'
     && app.composition.role === undefined
     && app.composition.embeddedOnly !== true

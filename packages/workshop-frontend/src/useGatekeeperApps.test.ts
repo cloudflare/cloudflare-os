@@ -5,7 +5,7 @@ import { compositeSourceApps, isFirstPartyWorkItemsShell, navigableGatekeeperApp
 describe('navigableGatekeeperApps', () => {
   it('hides embedded composite sources but preserves shells and ordinary apps', () => {
     const apps: GatekeeperAppInfo[] = [
-      {id: 'shell', vendorId: 'work-items', title: 'Work Items', composition: {kind: 'work-items'}},
+      {id: 'shell', vendorId: 'work_items', title: 'Work Items', composition: {kind: 'work-items'}},
       {id: 'jira', vendorId: 'jira', title: 'Jira', composition: {
         kind: 'work-items', role: 'jira', embeddedOnly: true,
       }},
@@ -18,8 +18,14 @@ describe('navigableGatekeeperApps', () => {
 
 describe('compositeSourceApps', () => {
   const shell: GatekeeperAppInfo = {
-    id: 'shell', vendorId: 'work-items', title: 'Work Items', composition: {kind: 'work-items'},
+    id: 'shell', vendorId: 'work_items', title: 'Work Items', composition: {kind: 'work-items'},
   }
+
+  it('recognizes the deployed binding vendor ID, not the presentation kind', () => {
+    expect(isFirstPartyWorkItemsShell(shell)).toBe(true)
+    expect(isFirstPartyWorkItemsShell({...shell, vendorId: 'work-items'})).toBe(false)
+    expect(isFirstPartyWorkItemsShell({...shell, composition: {kind: 'work_items'}})).toBe(false)
+  })
 
   it('returns only explicit embedded sources with the shell kind', () => {
     const matching: GatekeeperAppInfo = {

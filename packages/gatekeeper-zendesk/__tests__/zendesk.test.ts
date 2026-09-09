@@ -862,3 +862,153 @@ describe("Zendesk native OAuth return URLs", () => {
   });
 
 });
+
+/**
+ * The account-owned facet that backs the Work Items app UI.
+ *
+ * The workerd suite (`__tests__/workerd/app-ui.test.ts`) proves the wiring against the real runtime;
+ * these tests cover what that runtime cannot yet do -- staging an upload sets an alarm, and
+ * miniflare does not implement alarms on facets. The fake below is deliberately faithful on the one
+ * point the shipped bug turned on: `exports.ZendeskGatekeeper({props})` hands back an inert
+ * description of a class, and only `facets.get` turns it into something with methods.
+ */
+describe("Zendesk Work Items app UI facet", () => {
+  const env = { BASE_URL: "https://workshop.example/gatekeeper/zendesk", CLIENT_ID: "client", CLIENT_SECRET: "secret" };
+  const accountId = "5".repeat(64);
+  const TICKET = { id: 123, subject: "Login fails", description: "Cannot sign in.", status: "open", updated_at: "2026-09-04T00:00:00Z" };
+
+  type FacetClass = { props: { accountId: string; subdomain: string; ticketId?: string } };
+
+  async function accountWithFacets(subdomain = "acme") {
+    const { ZendeskAccount, ZendeskGatekeeper } = await import("../src/zendesk");
+    const { kv, storage } = makeTestStorage();
+    kv.set("subdomain", subdomain);
+    kv.set("grant", { accessToken: "token", expiresAt: null });
+    const facet = makeTestStorage();
+    const live = new Map<string, unknown>();
+    const opened: Array<{ name: string; durableClass: FacetClass }> = [];
+    const accountRef: { current?: unknown } = {};
+    const account = new ZendeskAccount({
+      id: { toString: () => accountId },
+      storage,
+      facets: {
+        get(name: string, start: () => { class: FacetClass }) {
+          const durableClass = start().class;
+          opened.push({ name, durableClass });
+          // One live object per facet name, exactly like the runtime: a second `get` under the same
+          // name reaches the object the first one created, storage and all.
+          if (!live.has(name)) {
+            live.set(name, new ZendeskGatekeeper({
+              props: durableClass.props,
+              storage: facet.storage,
+              exports: { ZendeskAccount: { idFromString: (id: string) => id, get: () => accountRef.current } },
+            } as never, env as never));
+          }
+          return live.get(name);
+        },
+      },
+      exports: {
+        // What `ctx.exports.ZendeskGatekeeper({props})` really returns: a `DurableObjectClass`,
+        // which carries the props and nothing else. Calling `sourceStatuses()` on it is the
+        // production failure.
+        ZendeskGatekeeper: (options: { props: FacetClass["props"] }): FacetClass => ({ props: options.props }),
+        ZendeskAccount: { idFromString: (id: string) => id, get: () => accountRef.current },
+      },
+    } as never, env as never);
+    accountRef.current = account;
+    return { account, opened, facetKv: facet.kv };
+  }
+
+  /** The Node mock of `cloudflare:workers` keeps the wrapped target on `.value`. */
+  function unwrap<T>(stub: unknown): T {
+    return (stub as { value: T }).value;
+  }
+
+  function stubZendesk(): ReturnType<typeof vi.fn> {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      if (url.pathname === "/api/v2/users/me.json") return Response.json({ user: { id: 7, name: "Agent", email: "agent@example.test" } });
+      if (url.pathname === "/api/v2/search.json") return Response.json({ results: [TICKET], count: 1, next_page: null });
+      if (url.pathname === "/api/v2/tickets/123.json") return Response.json({ ticket: TICKET });
+      if (url.pathname === "/api/v2/tickets/123/comments.json") return Response.json({ comments: [{ id: 1, author_id: 8, plain_body: "Still broken.", public: true, attachments: [] }], users: [{ id: 8, name: "Customer" }], meta: { has_more: false } });
+      if (url.pathname === "/api/v2/tickets/123/audits.json") return Response.json({ audits: [], users: [], meta: { has_more: false } });
+      if (url.pathname === "/api/v2/uploads.json") return Response.json({ upload: { token: "upload-token-1", expires_at: "2026-09-05T00:00:00Z", attachment: { id: 55, file_name: "note.txt", content_type: "text/plain", size: 5 } } });
+      return Response.json({ error: `unexpected ${url.pathname}` }, { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    return fetcher as never;
+  }
+
+  it("opens the gatekeeper on the account's own id and stored subdomain, never a caller's", async () => {
+    const { account, opened } = await accountWithFacets();
+    stubZendesk();
+
+    account.workItemsManagementUi();
+    account.workItemsManagementUi();
+
+    expect(opened).toHaveLength(2);
+    expect(new Set(opened.map(entry => entry.name)).size).toBe(1);
+    for (const entry of opened) {
+      expect(entry.durableClass.props).toEqual({ accountId, subdomain: "acme" });
+      expect(entry.durableClass.props).not.toHaveProperty("ticketId");
+    }
+  });
+
+  it("refuses to open before the account has a stored subdomain", async () => {
+    const { ZendeskAccount } = await import("../src/zendesk");
+    const { storage } = makeTestStorage();
+    const account = new ZendeskAccount({ id: { toString: () => accountId }, storage, facets: { get: vi.fn() } } as never, env as never);
+    expect(() => account.workItemsManagementUi()).toThrow(/credentials have not been configured/);
+  });
+
+  it("hands the adapter something callable, not the DurableObjectClass", async () => {
+    const { account, opened } = await accountWithFacets();
+    const fetcher = stubZendesk();
+
+    const ui = unwrap<{
+      getSourceStatuses(): Promise<unknown>;
+      search(request: unknown): Promise<{ items: Array<{ key: string; url: string }> }>;
+      item(ref: unknown): Promise<unknown>;
+    }>(account.workItemsManagementUi());
+
+    // The value `ctx.exports.ZendeskGatekeeper({props})` actually returns, which the old code passed
+    // straight into the adapter. It carries props and nothing else -- no gatekeeper methods at all.
+    const durableClass = opened[0].durableClass as FacetClass & { sourceStatuses?: unknown };
+    expect(durableClass.sourceStatuses).toBeUndefined();
+
+    await expect(ui.getSourceStatuses()).resolves.toMatchObject({ zendesk: { configured: true, connected: true } });
+
+    const page = await ui.search({ source: "zendesk", query: "login" });
+    expect(page.items.map(item => item.key)).toEqual(["ZD-123"]);
+    expect(page.items[0].url).toBe("https://acme.zendesk.com/agent/tickets/123");
+
+    const ticket = unwrap<{ read(): Promise<{ detail: { item: { title: string } } }> }>(await ui.item({ source: "zendesk", id: "123" }));
+    await expect(ticket.read()).resolves.toMatchObject({ detail: { item: { title: "Login fails" } } });
+
+    const hosts = new Set(fetcher.mock.calls.map(([input]) => new URL(String(input)).hostname));
+    expect(hosts).toEqual(new Set(["acme.zendesk.com"]));
+  });
+
+  it("keeps one facet per account, so an upload staged in one app-UI open is usable in the next", async () => {
+    const { account, facetKv } = await accountWithFacets();
+    const fetcher = stubZendesk();
+
+    const first = unwrap<{ item(ref: unknown): Promise<unknown> }>(account.workItemsManagementUi());
+    const staged = await unwrap<{ createAttachment(input: unknown): Promise<{ uploadToken: string }> }>(
+      await first.item({ source: "zendesk", id: "123" }),
+    ).createAttachment({ name: "note.txt", contentType: "text/plain", target: "comment", data: new Uint8Array([104, 101, 108, 108, 111]) });
+    expect(staged.uploadToken).toBe("upload-token-1");
+    expect(facetKv.get("upload:upload-token-1")).toMatchObject({ ticketId: "123" });
+
+    // A per-open facet name would give this second surface an empty store, and the token would be
+    // rejected as "invalid, expired, consumed, or belongs to another ticket".
+    const second = unwrap<{ item(ref: unknown): Promise<unknown> }>(account.workItemsManagementUi());
+    await unwrap<{ addComment(input: unknown): Promise<unknown> }>(
+      await second.item({ source: "zendesk", id: "123" }),
+    ).addComment({ body: "Attaching the log.", visibility: "internal", attachmentTokens: [staged.uploadToken] });
+
+    const update = fetcher.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "PUT");
+    expect(JSON.parse(String((update![1] as RequestInit).body)).ticket.comment.uploads).toEqual(["upload-token-1"]);
+    expect(facetKv.get("upload:upload-token-1")).toBeUndefined();
+  });
+});
