@@ -43,6 +43,8 @@ const BLOCK_TAGS = new Set([
   "thead", "tr", "ul",
 ]);
 const HEADING_STYLES = {h1: "Heading1", h2: "Heading2", h3: "Heading3", h4: "Heading3", h5: "Heading3", h6: "Heading3"};
+// Blocks that take up space even when empty, unlike a bare `div`.
+const PARAGRAPH_TAGS = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre"]);
 const BULLET_GLYPHS = ["&#x2022;", "&#x25E6;", "&#x25AA;"];
 // Word numbering formats, indexed by abstract numbering id; `<ol type>` maps onto the last four.
 const LIST_KINDS = ["bullet", "decimal", "lowerLetter", "upperLetter", "lowerRoman", "upperRoman"];
@@ -373,20 +375,22 @@ function deriveFormat(parent, node, declarations) {
 
 function deriveParagraph(parent, declarations) {
   const paragraph = {...parent};
-  const indent = (value) => {
-    const twips = cssLength(value);
-    if (twips != null) paragraph.left = Math.max(0, Math.min(14_400, (paragraph.left || 0) + twips));
-  };
+  // Declarations on one element cascade (the last one wins); only the winner adds to the indent.
+  let marginLeft = null;
+  let paddingLeft = null;
   for (const [name, value] of declarations) {
     const lower = value.toLowerCase();
     if (name === "text-align") {
       if (lower === "left" || lower === "start") paragraph.alignment = "left";
       else if (lower === "center" || lower === "right" || lower === "justify") paragraph.alignment = lower;
-    } else if (name === "margin-left" || name === "padding-left") {
-      indent(value);
-    } else if (name === "margin" || name === "padding") {
-      const left = cssBoxLeft(value);
-      if (left) indent(left);
+    } else if (name === "margin-left") {
+      marginLeft = value;
+    } else if (name === "margin") {
+      marginLeft = cssBoxLeft(value);
+    } else if (name === "padding-left") {
+      paddingLeft = value;
+    } else if (name === "padding") {
+      paddingLeft = cssBoxLeft(value);
     } else if (name === "text-indent") {
       const twips = cssLength(value);
       if (twips != null) paragraph.firstLine = Math.max(-7200, Math.min(7200, twips));
@@ -395,7 +399,10 @@ function deriveParagraph(parent, declarations) {
       if (multiple >= 0.5 && multiple <= 10) {
         paragraph.line = Math.round(multiple * 240);
         paragraph.lineRule = "auto";
-      } else if (lower !== "normal") {
+      } else if (lower === "normal") {
+        delete paragraph.line;
+        delete paragraph.lineRule;
+      } else {
         const twips = cssLength(value);
         if (twips > 0 && twips <= 20_000) {
           paragraph.line = twips;
@@ -403,6 +410,10 @@ function deriveParagraph(parent, declarations) {
         }
       }
     }
+  }
+  for (const value of [marginLeft, paddingLeft]) {
+    const twips = value == null ? null : cssLength(value);
+    if (twips != null) paragraph.left = Math.max(0, Math.min(14_400, (paragraph.left || 0) + twips));
   }
   return paragraph;
 }
@@ -476,7 +487,7 @@ function requestedWidth(node) {
   const percent = /^(\d+(?:\.\d+)?)%$/.exec(source.trim());
   if (percent) return CONTENT_WIDTH_PIXELS * Math.min(100, Number(percent[1])) / 100;
   const twips = cssLength(source);
-  return twips > 0 ? twips / TWIPS_PER_PIXEL : null;
+  return twips != null && twips >= 0 ? twips / TWIPS_PER_PIXEL : null;
 }
 
 // --- Document builder --------------------------------------------------------------------------
@@ -587,7 +598,7 @@ class DocumentBuilder {
     const match = /^data:image\/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=]+)$/i.exec(source);
     if (match) {
       const payload = match[2];
-      const decodedBytes = Math.floor(payload.length * 3 / 4);
+      const decodedBytes = Math.floor(payload.length * 3 / 4) - (payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0);
       if (decodedBytes > DOCX_LIMITS.imageBytes) {
         throw new Error(`DOCX image exceeds the ${DOCX_LIMITS.imageBytes}-byte per-image export limit.`);
       }
@@ -622,7 +633,9 @@ class DocumentBuilder {
       this.text(context, alt || "[Image unavailable]");
       return;
     }
-    let width = Math.min(CONTENT_WIDTH_PIXELS, requestedWidth(node) || image.width);
+    const requested = requestedWidth(node);
+    if (requested === 0) return; // Sized away in the editor; nothing is displayed.
+    let width = Math.min(CONTENT_WIDTH_PIXELS, requested || image.width);
     let height = width * image.height / image.width;
     if (height > CONTENT_HEIGHT_PIXELS) {
       width *= CONTENT_HEIGHT_PIXELS / height;
@@ -702,11 +715,15 @@ function walk(builder, node, parent) {
       if (parent.cells++) builder.addRun(context, {type: "tab"});
       break;
   }
+  const paragraphCount = builder.paragraphs.length;
   for (const child of node.children) {
     if (typeof child === "string") builder.text(context, child);
     else walk(builder, child, context);
   }
-  if (tag === "li" && context.list && !context.list.marked) builder.open(context); // Empty item.
+  // An empty list item still shows its marker, and an empty paragraph-like block still takes space.
+  const empty = (tag === "li" && context.list && !context.list.marked) ||
+    (PARAGRAPH_TAGS.has(tag) && builder.paragraphs.length === paragraphCount);
+  if (empty) builder.open(context);
   if (block) builder.close();
 }
 

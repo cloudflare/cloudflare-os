@@ -283,6 +283,9 @@ describe("Workspace Docs DOCX package", () => {
     expect(optionalXml).toContain(">one</w:t>");
     expect(optionalXml).toContain(">two</w:t>");
 
+    const emptyBlocks = await readZip(await documentToDocx({blocks: [block("<p>A</p><p></p><h2> </h2><div></div><p>B</p>")]}));
+    expect(text(emptyBlocks.entries, "word/document.xml").match(/<w:p>/g)).toHaveLength(4);
+
     const isolatedBlocks = await readZip(await documentToDocx({blocks: [
       block("<script>unterminated", "first"), block("<p>still visible</p>", "second"),
     ]}));
@@ -356,7 +359,8 @@ describe("Workspace Docs DOCX package", () => {
     const html = '<p style="text-align:center;margin-left:16px;text-indent:8px;line-height:2">' +
       '<span style="font-family:Georgia, serif;font-size:16px;color:rgb(17, 34, 51);background-color:#fff3a3">styled</span>' +
       '<font face="Courier New" size="5" color="#abc">font</font>' +
-      '<span style="text-align:right;margin-left:100px">inline</span></p>';
+      '<span style="text-align:right;margin-left:100px">inline</span></p>' +
+      '<div style="line-height:2;margin-left:40px;margin-left:0"><p style="line-height:normal;margin:0 0 0 8px;margin-left:16px">cascade</p></div>';
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     expect(xml).toContain('<w:spacing w:line="480" w:lineRule="auto"/>');
@@ -364,6 +368,7 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).toContain('<w:jc w:val="center"/>');
     expect(xml).not.toContain('w:val="right"');
     expect(xml).toContain(">inline</w:t>");
+    expect(xml).toContain('<w:pPr><w:pStyle w:val="Normal"/><w:ind w:left="240"/></w:pPr><w:r><w:t xml:space="preserve">cascade</w:t>');
     const styled = runContaining(xml, "styled");
     expect(styled).toContain('w:ascii="Georgia"');
     expect(styled).toContain('<w:sz w:val="24"/>');
@@ -668,11 +673,14 @@ describe("Workspace Docs DOCX package", () => {
   it("gives editor images their own paragraph while other images stay inline", async () => {
     const source = dataUrl("image/png", png(4, 2));
     const {entries} = await readZip(await documentToDocx({blocks: [block(
-        `<p>before<img class="doc-image" src="${source}" alt="block">after<img src="${source}" alt="inline">end</p>`)]}));
+        `<p>before<img class="doc-image" src="${source}" alt="block">after<img src="${source}" alt="inline">end` +
+        `<img src="${source}" alt="gone" style="width:0%"><img src="${source}" alt="gone" width="0"></p>`)]}));
     const xml = text(entries, "word/document.xml");
     expect(xml.match(/<w:p>/g)).toHaveLength(3);
     expect(xml).toContain('descr="block"></wp:docPr>');
     expect(xml).toMatch(/>after<\/w:t><\/w:r><w:r><w:drawing>[\s\S]*descr="inline"[\s\S]*>end<\/w:t>/);
+    expect(xml).not.toContain("gone");
+    expect(xml.match(/<w:drawing>/g)).toHaveLength(2);
   });
 
   it("ignores self-closing foreign elements without rejecting surrounding content", async () => {
@@ -693,6 +701,11 @@ describe("Workspace Docs DOCX package", () => {
 
     const oversized = `data:image/png;base64,${"A".repeat(DOCX_LIMITS.imageBytes * 4 / 3 + 4)}`;
     await expect(documentToDocx({blocks: [block(`<img src="${oversized}">`)]})).rejects.toThrow("per-image export limit");
+
+    // Exactly at the limit, with Base64 padding, is still allowed.
+    const exact = `data:image/png;base64,${png(1, 1, DOCX_LIMITS.imageBytes - 70).toBase64()}`;
+    expect(exact.endsWith("=")).toBe(true);
+    await expect(documentToDocx({blocks: [block(`<img src="${exact}">`)]})).resolves.toBeInstanceOf(ReadableStream);
   });
 });
 
