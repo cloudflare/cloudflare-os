@@ -345,7 +345,11 @@ PresentationML package. Text, cards, boxes, pills, basic shapes, dividers,
 arrows, and the two brand marks become editable native PowerPoint objects
 rather than a screenshot. Source block order remains the shape z-order. The
 known bottom brand bar and orange cover treatment are native gradients.
-Dot-grid backgrounds are omitted.
+Dot-grid backgrounds are omitted. Colors may be hex, `rgb()`/`rgba()`, or the
+basic CSS names (`white`, `black`, `gray`, `red`, `orange`, ...); other names
+fall back to the component default. PresentationML cannot clip text, so card
+text asks the consumer to shrink-to-fit (`normAutofit`) instead of the browser's
+`overflow: hidden`, and auto-height blocks grow to their content (`spAutoFit`).
 
 The 1200 x 675 canvas maps to standard widescreen PowerPoint at 12,192,000 x
 6,858,000 EMU. Positions, dimensions, and CSS font sizes all use the canvas's

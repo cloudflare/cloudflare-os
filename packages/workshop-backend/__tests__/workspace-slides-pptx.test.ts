@@ -711,6 +711,47 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(shapeByName(xml, "Block 4 text")).toContain("<a:noAutofit/>");
   });
 
+  it("accepts named and functional CSS colors and falls back for unknown ones", async () => {
+    const zip = await readZip(deckToPptx(oneSlide([
+      block("shape", {fill: "red", stroke: "Navy", strokeWidth: 1}, {w: 10, h: 10}),
+      block("shape", {fill: "rgb(0, 128, 255)"}, {w: 10, h: 10}),
+      block("shape", {fill: "rgba(100% 0% 0% / 0.5)"}, {w: 10, h: 10}),
+      block("shape", {fill: "rebeccapurple"}, {w: 10, h: 10}),
+      block("text", {text: "fallback", color: "rgb(1,2)"}),
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+
+    const named = shapeByName(xml, "Block 1 shape");
+    expect(named).toContain('<a:solidFill><a:srgbClr val="FF0000">');
+    expect(named).toContain('<a:ln w="10160" cap="rnd"><a:solidFill><a:srgbClr val="000080">');
+    expect(shapeByName(xml, "Block 2 shape")).toContain('<a:srgbClr val="0080FF">');
+    expect(shapeByName(xml, "Block 3 shape")).toContain('<a:srgbClr val="FF0000"><a:alpha val="50000"/>');
+    expect(shapeByName(xml, "Block 4 shape")).toContain("<a:noFill/>");
+    expect(shapeByName(xml, "Block 5 text")).toContain('<a:srgbClr val="000000">'); // the text default
+  });
+
+  it("collapses whitespace in inline-only props and shrinks card text to its surface", async () => {
+    const zip = await readZip(deckToPptx(oneSlide([
+      block("box", {title: "One\ntwo", body: "line\n\n  break"}, {w: 220, h: 110}),
+      block("card", {eyebrow: "eye\nbrow", title: "Card\ttitle", body: "kept\nbreak"}, {w: 280, h: 260}),
+      block("sectionLabel", {text: "two\nlines"}),
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+
+    const box = shapeByName(xml, "Block 1 box body");
+    expect(box).toContain(">line break</a:t>");
+    expect(box).not.toContain("<a:br/>");
+    expect(shapeByName(xml, "Block 1 box title")).toContain(">One two</a:t>");
+    expect(shapeByName(xml, "Block 2 card eyebrow")).toContain(">EYE BROW</a:t>");
+    expect(shapeByName(xml, "Block 2 card title")).toContain(">Card title</a:t>");
+    const body = shapeByName(xml, "Block 2 card body");
+    expect(body).toContain("<a:br/>"); // card bodies are pre-wrap in the browser
+    for (const part of ["eyebrow", "title", "body"]) {
+      expect(shapeByName(xml, `Block 2 card ${part}`)).toContain("<a:normAutofit/>");
+    }
+    expect(shapeByName(xml, "Block 3 sectionLabel")).toContain(">TWO LINES</a:t>");
+  });
+
   it("gives empty card and box titles no height, like the browser's empty element", async () => {
     const zip = await readZip(deckToPptx(oneSlide([
       block("card", {eyebrow: "", title: "", body: "Body"}, {x: 0, y: 0, w: 280, h: 260}),
@@ -760,6 +801,16 @@ describe("Workspace Slides PPTX resource limits", () => {
     })).toThrow("Deck has 501 slides; PowerPoint export supports at most 500");
     expect(() => deckToPptx(oneSlide(Array.from({length: 1001}, () => null))))
       .toThrow("Slide 1 has 1001 blocks; the export limit is 1000 per slide");
+  });
+
+  it("exports many references to one large text block without holding the deck text twice", async () => {
+    // Structured-clone decks can alias one block object many times; the export must not build
+    // per-character ropes over the resulting 7.9 MB of text.
+    const shared = block("text", {text: "lorem ipsum & dolor <sit> amet ".repeat(3_225)}, {w: 760});
+    expect(shared.props.text.length).toBeGreaterThan(99_000);
+    const zip = await readZip(deckToPptx(oneSlide(Array.from({length: 79}, () => shared))));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+    expect(occurrences(xml, "&amp; dolor &lt;sit&gt; amet")).toBe(79 * 3_225);
   });
 
   it("reports aggregate text and line-break limits", () => {

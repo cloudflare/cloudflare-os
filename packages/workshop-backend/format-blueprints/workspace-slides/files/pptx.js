@@ -57,29 +57,36 @@ function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+// Normalizes CR/CRLF to LF and replaces characters XML 1.0 cannot carry (controls, lone
+// surrogates, U+FFFE/U+FFFF) with U+FFFD. Copies clean spans, not characters: per-character
+// concatenation builds a rope the size of the deck text, which a Worker heap cannot afford.
 function normalizeXml(value) {
   const input = String(value ?? "");
-  let output = "";
+  const parts = [];
+  let start = 0;
   for (let i = 0; i < input.length; ++i) {
     const code = input.charCodeAt(i);
-    if (code === 13) {
-      if (input.charCodeAt(i + 1) === 10) ++i;
-      output += "\n";
-    } else if (code >= 0xd800 && code <= 0xdbff) {
+    if (code === 9 || code === 10 || (code >= 0x20 && code <= 0xd7ff) ||
+        (code >= 0xe000 && code <= 0xfffd)) continue;
+    if (code >= 0xd800 && code <= 0xdbff) {
       const low = input.charCodeAt(i + 1);
-      if (low >= 0xdc00 && low <= 0xdfff) output += input[i] + input[++i];
-      else output += "\ufffd";
-    } else if (code >= 0xdc00 && code <= 0xdfff) {
-      output += "\ufffd";
-    } else if (code === 9 || code === 10 ||
-        (code >= 0x20 && code <= 0xd7ff) ||
-        (code >= 0xe000 && code <= 0xfffd && code !== 0xfffe && code !== 0xffff)) {
-      output += input[i];
-    } else {
-      output += "\ufffd";
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        ++i;
+        continue;
+      }
     }
+    parts.push(input.slice(start, i));
+    if (code === 13) {
+      parts.push("\n");
+      if (input.charCodeAt(i + 1) === 10) ++i;
+    } else {
+      parts.push("\ufffd");
+    }
+    start = i + 1;
   }
-  return output;
+  if (start === 0) return input;
+  parts.push(input.slice(start));
+  return parts.join("");
 }
 
 function xmlAttribute(value) {
@@ -87,19 +94,17 @@ function xmlAttribute(value) {
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
-function* escapedTextChunks(value) {
-  let chunk = "";
-  for (const character of value) {
-    if (character === "&") chunk += "&amp;";
-    else if (character === "<") chunk += "&lt;";
-    else if (character === ">") chunk += "&gt;";
-    else chunk += character;
-    if (chunk.length >= 16384) {
-      yield chunk;
-      chunk = "";
-    }
+// Yields `value` with &, < and > escaped, as the clean spans between them.
+function* escapedText(value) {
+  let start = 0;
+  for (let i = 0; i < value.length; ++i) {
+    const code = value.charCodeAt(i);
+    if (code !== 38 && code !== 60 && code !== 62) continue;
+    if (i > start) yield value.slice(start, i);
+    yield code === 38 ? "&amp;" : code === 60 ? "&lt;" : "&gt;";
+    start = i + 1;
   }
-  if (chunk) yield chunk;
+  if (start < value.length) yield value.slice(start);
 }
 
 // Encodes a string generator into ~64 KiB byte chunks, so the ZIP's CompressionStream sees a few
@@ -190,20 +195,53 @@ function blockBox(block, defaultWidth, defaultHeight) {
   );
 }
 
+// The basic CSS named colors (CSS Level 1 plus orange). The editor's color fields write hex, so
+// other names -- only reachable by authoring props over the GADGET binding -- fall back.
+const NAMED_COLORS = {
+  black: "000000", silver: "C0C0C0", gray: "808080", grey: "808080", white: "FFFFFF",
+  maroon: "800000", red: "FF0000", purple: "800080", fuchsia: "FF00FF", magenta: "FF00FF",
+  green: "008000", lime: "00FF00", olive: "808000", yellow: "FFFF00", navy: "000080",
+  blue: "0000FF", teal: "008080", aqua: "00FFFF", cyan: "00FFFF", orange: "FFA500",
+};
+
+// {rgb, alpha} for #rgb[a]/#rrggbb[aa], rgb()/rgba() with 0-255 or percentage channels, and the
+// named colors above; null for `transparent`; undefined for anything else.
+function parseCssColor(input) {
+  const lower = input.toLowerCase();
+  if (lower === "transparent") return null;
+  if (Object.hasOwn(NAMED_COLORS, lower)) return {rgb: NAMED_COLORS[lower], alpha: 1};
+  const hex = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(lower);
+  if (hex) {
+    const digits = hex[1].length <= 4 ? hex[1].replace(/./g, "$&$&") : hex[1];
+    return {
+      rgb: digits.slice(0, 6).toUpperCase(),
+      alpha: digits.length === 8 ? parseInt(digits.slice(6), 16) / 255 : 1,
+    };
+  }
+  const functional = /^rgba?\(([^()]*)\)$/.exec(lower);
+  if (!functional) return undefined;
+  const parts = functional[1].trim().split(/\s*[,/]\s*|\s+/);
+  if (parts.length !== 3 && parts.length !== 4) return undefined;
+  const channels = parts.map((part, index) => {
+    const percent = part.endsWith("%");
+    const number = Number(percent ? part.slice(0, -1) : part);
+    const maximum = index === 3 ? 1 : 255;
+    return Math.max(0, Math.min(maximum, percent ? number / 100 * maximum : number));
+  });
+  if (channels.some(Number.isNaN)) return undefined;
+  return {
+    rgb: channels.slice(0, 3).map(channel => Math.round(channel).toString(16).padStart(2, "0"))
+      .join("").toUpperCase(),
+    alpha: channels.length === 4 ? channels[3] : 1,
+  };
+}
+
 function parseColor(value, fallback = null) {
   let input = typeof value === "string" ? value.trim() : "";
   if (!input && fallback) input = fallback;
-  if (input.toLowerCase() === "transparent") return null;
-  const match = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(input);
-  if (!match) return fallback && input !== fallback ? parseColor(fallback) : null;
-  let hex = match[1];
-  if (hex.length === 3 || hex.length === 4) {
-    hex = Array.from(hex, character => character + character).join("");
-  }
-  return {
-    rgb: hex.slice(0, 6).toUpperCase(),
-    alpha: hex.length === 8 ? parseInt(hex.slice(6), 16) / 255 : 1,
-  };
+  const color = parseCssColor(input);
+  if (color !== undefined) return color;
+  return fallback && input !== fallback ? parseColor(fallback) : null;
 }
 
 function solidFill(color, shapeOpacity = 1) {
@@ -392,7 +430,7 @@ function* paragraphXml(text, style, options = {}) {
     if (!lineBreak && (!marks || marks[end] === marks[start])) continue;
     if (end > start) {
       yield marks && marks[start] ? highlightRun : normalRun;
-      yield* escapedTextChunks(text.slice(start, end));
+      yield* escapedText(text.slice(start, end));
       yield "</a:t></a:r>";
     }
     if (lineBreak && end < text.length) yield "<a:br/>";
@@ -400,6 +438,11 @@ function* paragraphXml(text, style, options = {}) {
   }
   yield `<a:endParaRPr ${runProperties(style)}</a:endParaRPr></a:p>`;
 }
+
+// PresentationML text cannot be clipped. "grow" lets the consumer extend an auto-height box to
+// its own wrapping; "shrink" asks it to scale text down inside a fixed surface (the card), the
+// nearest native equivalent of the browser's overflow: hidden.
+const AUTOFIT_XML = {grow: "<a:spAutoFit/>", shrink: "<a:normAutofit/>"};
 
 function* textShapeXml(state, name, box, style, source, options = {}) {
   const id = nextShapeId(state);
@@ -417,7 +460,7 @@ function* textShapeXml(state, name, box, style, source, options = {}) {
     `<a:bodyPr wrap="${wrap}" anchor="${anchor}" lIns="${emuLength(insets.left || 0)}" ` +
     `rIns="${emuLength(insets.right || 0)}" tIns="${emuLength(insets.top || 0)}" ` +
     `bIns="${emuLength(insets.bottom || 0)}">` +
-    `${options.autofit ? "<a:spAutoFit/>" : "<a:noAutofit/>"}</a:bodyPr><a:lstStyle/>`;
+    `${AUTOFIT_XML[options.autofit] || "<a:noAutofit/>"}</a:bodyPr><a:lstStyle/>`;
   if (source.items) {
     for (let i = 0; i < source.items.length; ++i) {
       yield* paragraphXml(source.items[i], style, {
@@ -695,13 +738,15 @@ function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
   const label = `Slide ${slideIndex + 1}, block ${blockIndex + 1}`;
   const type = boundedText(blockSource.type, `${label} type`, limits) || "unknown";
   const text = (key, maximum) => boundedText(propsSource[key], `${label} ${key}`, limits, maximum);
+  // Props the browser renders with `white-space: normal`/`nowrap`: line breaks collapse to spaces.
+  const inlineText = key => text(key).replace(/[\t\n ]+/g, " ").trim();
   const props = {};
   switch (type) {
     case "sectionLabel":
-      props.text = text("text").toUpperCase();
+      props.text = inlineText("text").toUpperCase();
       break;
     case "logo":
-      props.text = propsSource.text == null ? "Workspace" : text("text");
+      props.text = propsSource.text == null ? "Workspace" : inlineText("text");
       props.variant = text("variant");
       props.scale = sourceScalar(propsSource.scale);
       props.accentDot = propsSource.accentDot;
@@ -734,18 +779,18 @@ function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
       props.treatment = text("treatment");
       break;
     case "card":
-      props.eyebrow = text("eyebrow");
-      props.title = text("title");
+      props.eyebrow = inlineText("eyebrow");
+      props.title = inlineText("title");
       props.body = text("body");
       break;
     case "box":
-      props.title = text("title");
-      props.body = text("body");
+      props.title = inlineText("title");
+      props.body = inlineText("body");
       props.dashed = propsSource.dashed;
       break;
     case "tonePill":
       props.tone = text("tone");
-      props.text = text("text").toUpperCase();
+      props.text = inlineText("text").toUpperCase();
       break;
     case "divider":
       props.color = text("color");
@@ -777,7 +822,7 @@ function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
       props.x2 = sourceScalar(propsSource.x2);
       props.y2 = sourceScalar(propsSource.y2);
       props.color = text("color");
-      props.label = text("label");
+      props.label = inlineText("label");
       props.dashed = propsSource.dashed;
       props.width = sourceScalar(propsSource.width);
       break;
@@ -1028,7 +1073,7 @@ function* renderTitle(state, block, name) {
     lineHeight,
     color: parseColor(props.color, "#2B0B05"),
     align: "left",
-  }, {text: props.text, highlightMarks: props.highlightMarks}, {autofit: block.h == null});
+  }, {text: props.text, highlightMarks: props.highlightMarks}, {autofit: block.h == null && "grow"});
 }
 
 function* renderSubtitle(state, block, name) {
@@ -1043,7 +1088,7 @@ function* renderSubtitle(state, block, name) {
     lineHeight,
     color: parseColor(props.color, "#7B6254"),
     align: "left",
-  }, {text: props.text}, {autofit: block.h == null});
+  }, {text: props.text}, {autofit: block.h == null && "grow"});
 }
 
 function* renderText(state, block, name) {
@@ -1058,7 +1103,7 @@ function* renderText(state, block, name) {
     lineHeight,
     color: parseColor(props.color, "#000000"),
     align: ["left", "center", "right"].includes(props.align) ? props.align : "left",
-  }, {text: props.text}, {autofit: block.h == null});
+  }, {text: props.text}, {autofit: block.h == null && "grow"});
 }
 
 function* renderBullets(state, block, name) {
@@ -1079,7 +1124,7 @@ function* renderBullets(state, block, name) {
   if (block.h != null) height = sizePixels(block.h, height);
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
     fontSize, weight: 400, lineHeight, color: parseColor("#000000"), align: "left",
-  }, {items, spacingAfter: gap}, {autofit: block.h == null});
+  }, {items, spacingAfter: gap}, {autofit: block.h == null && "grow"});
 }
 
 function* renderCard(state, block, name) {
@@ -1099,7 +1144,7 @@ function* renderCard(state, block, name) {
     yield* textShapeXml(state, `${name} eyebrow`, boxFromPixels(x, y, width, height), {
       fontSize: 10, weight: 600, letterSpacing: "0.05em", lineHeight: 1.2,
       color: parseColor("#FF6633"), align: "left",
-    }, {text: props.eyebrow.toUpperCase()});
+    }, {text: props.eyebrow.toUpperCase()}, {autofit: "shrink"});
     y += height + 12;
   }
   // An empty title is a zero-height element in the browser; only the flex gap remains.
@@ -1108,14 +1153,14 @@ function* renderCard(state, block, name) {
     yield* textShapeXml(state, `${name} title`, boxFromPixels(x, y, width, titleHeight), {
       fontSize: 18, weight: 600, letterSpacing: "-0.02em", lineHeight: 1.3,
       color: parseColor("#000000"), align: "left",
-    }, {text: props.title});
+    }, {text: props.title}, {autofit: "shrink"});
   }
   y += titleHeight + 12;
   yield* textShapeXml(state, `${name} body`,
     boxFromPixels(x, y, width, Math.max(1, outer.y + outer.height - 20 - y)), {
       fontSize: 15, weight: 400, lineHeight: 1.5,
       color: parseColor("#747474"), align: "left",
-    }, {text: props.body});
+    }, {text: props.body}, {autofit: "shrink"});
 }
 
 function* renderBox(state, block, name) {
