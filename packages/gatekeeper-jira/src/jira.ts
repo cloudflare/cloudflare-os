@@ -284,12 +284,13 @@ function okResult(structuredContent: unknown): McpCallResult {
   return { status: "ok", content: [{ type: "text", text }], text, structuredContent };
 }
 
-function storedActionResult(staged: StagedActionState | undefined, actionId: number): McpCallResult {
+function storedActionResult(staged: StagedActionState | undefined, actionId: number, liveApplying: boolean): McpCallResult {
   if (!staged) return { status: "failed", message: `No stored result is available yet for Jira action ${actionId}.` };
+  if (staged.state === "applying" && !liveApplying) return { status: "failed", message: `Jira action ${actionId} has an unknown outcome after interruption. Verify the issue and its history before submitting a new action; the write may have reached Jira and will not be retried.` };
   if (staged.state === "pending" || staged.state === "applying") return { status: "pending", actionId, message: `Jira action ${actionId} is ${staged.state}.` };
   if (staged.state === "approved") return okResult({ state: "approved", actionId, result: staged.result });
   if (staged.state === "rejected") return { status: "rejected", message: `Jira action ${actionId} was rejected.` };
-  return { status: "failed", message: staged.error ?? `Jira action ${actionId} failed.` };
+  return { status: "failed", message: `${staged.error ?? `Jira action ${actionId} failed.`} Verify the issue and its history before submitting a new action; the write may have reached Jira.` };
 }
 
 function parseToolString(args: Record<string, unknown>, key: string, pattern?: RegExp, max = 1000): string {
@@ -901,11 +902,31 @@ class JiraCursor<T> extends RpcTarget implements Cursor<T> {
 }
 
 type StoredAction = { kind: "create"; fields: Record<string, unknown> } | { kind: "update"; issue: string; fields: Record<string, unknown> } | { kind: "transition"; issue: string; body: Record<string, unknown> } | { kind: "comment"; issue: string; markdown: string } | { kind: "upload"; issue: string; filename: string; mimeType?: string; bytes: ArrayBuffer } | { kind: "link"; issue: string; globalId: string; url: string; title: string; summary?: string };
+
+// Quote outbound values as data, including embedded Markdown fences, rather than letting a
+// comment or filename change the approval's presentation. Never include attachment bytes.
+function actionPreview(action: StoredAction): string {
+  const payload = action.kind === "upload"
+    ? { issue: action.issue, filename: action.filename, mimeType: action.mimeType ?? "application/octet-stream", sizeBytes: action.bytes.byteLength }
+    : action.kind === "create" ? { fields: action.fields }
+    : action.kind === "update" ? { issue: action.issue, fields: action.fields }
+    : action.kind === "transition" ? { issue: action.issue, ...action.body }
+    : action.kind === "comment" ? { issue: action.issue, comment: action.markdown }
+    : { issue: action.issue, globalId: action.globalId, url: action.url, title: action.title, summary: action.summary };
+  const text = JSON.stringify(payload, null, 2);
+  let fenceLength = 3;
+  for (const match of text.matchAll(/`+/g)) fenceLength = Math.max(fenceLength, match[0].length + 1);
+  const fence = "`".repeat(fenceLength);
+  return `### Outbound Jira values\n\n${fence}json\n${text}\n${fence}`;
+}
 type ActionStager = {
   stageAction(queue: RpcStub<ApprovalQueue>, action: StoredAction, title: string, description: string, auto?: boolean): Promise<number>;
   getCodingSessionActionResult(actionId: number): Promise<McpCallResult>;
 };
 abstract class BaseGatekeeper<Session, Props extends BaseProps = BaseProps> extends DurableObject<Env, Props> implements Gatekeeper<Session> {
+  // Only distinguishes a live request from an orphan after restart. The durable claim remains
+  // the authority for replay prevention; losing this set must never make an action retryable.
+  #applyingActions = new Set<number>();
   // Bindings persist their cloudId, so tokens are requested for that site: one made before site
   // selection, or for a site the connection no longer uses, is refused rather than silently served.
   #api(): JiraApi { return new JiraApi({ cloudId: this.ctx.props.cloudId, webBase: this.ctx.props.webBase, getToken: () => this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId)).getAccessTokenForSite(this.ctx.props.cloudId) }); }
@@ -926,17 +947,27 @@ abstract class BaseGatekeeper<Session, Props extends BaseProps = BaseProps> exte
     this.ctx.storage.kv.put("nextAction", id + 1);
     this.ctx.storage.kv.put<StagedActionState>(`action:${id}`, { state: "pending", action, createdAt: Date.now() });
     try {
-      await queue.submitAction(id, { title, description, implementsRevert: false, actionKind: { tag: action.kind === "comment" ? "jira.comment" : `jira.${action.kind}`, label: title }, autoApprovable: auto, awaitDecision: action.kind !== "comment" });
+      await queue.submitAction(id, { title, description: `${description}\n\n${actionPreview(action)}`, implementsRevert: false, actionKind: { tag: action.kind === "comment" ? "jira.comment" : `jira.${action.kind}`, label: title }, autoApprovable: auto, awaitDecision: action.kind !== "comment" });
     } catch (error) {
-      this.ctx.storage.kv.delete(`action:${id}`);
+      // submitAction may have dispatched applyAction before its response failed. Keep any
+      // claimed/terminal state so the write cannot be mistaken for an unattempted action.
+      if (this.ctx.storage.kv.get<StagedActionState>(`action:${id}`)?.state === "pending") this.ctx.storage.kv.delete(`action:${id}`);
       logger.warn("failed to submit Jira action", { event: "action.submit.failed", actionId: id, error });
       throw error;
     }
     return id;
   }
   async applyAction(id: number): Promise<void> {
-    const staged = this.ctx.storage.kv.get<StagedActionState>(`action:${id}`); if (!staged) return;
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error("Invalid Jira action id.");
+    const staged = this.ctx.storage.kv.get<StagedActionState>(`action:${id}`);
+    if (!staged) throw new Error("Jira action is unavailable. Verify the issue before submitting a new action.");
+    if (staged.state === "approved") return;
+    if (staged.state === "rejected") throw new Error("Jira action was rejected. Submit a new action if the change is still intended.");
+    if (staged.state !== "pending") throw new Error("Jira action is in progress or its outcome is ambiguous. Read the issue and its history before submitting a new action; do not blindly repeat the write.");
+    // Claim synchronously before scope checks, token RPCs, or HTTP can interleave. A durable
+    // applying state also prevents replay after restart; it is not safe to expire this claim.
     this.ctx.storage.kv.put<StagedActionState>(`action:${id}`, { ...staged, state: "applying" });
+    this.#applyingActions.add(id);
     try {
       const action = staged.action;
       await this.assertActionInScope(action);
@@ -951,10 +982,17 @@ abstract class BaseGatekeeper<Session, Props extends BaseProps = BaseProps> exte
     } catch (error) {
       this.ctx.storage.kv.put<StagedActionState>(`action:${id}`, { ...staged, state: "failed", error: error instanceof Error ? error.message : String(error) });
       throw error;
+    } finally {
+      this.#applyingActions.delete(id);
     }
   }
-  async rejectAction(id: number): Promise<void> { const staged = this.ctx.storage.kv.get<StagedActionState>(`action:${id}`); if (staged) this.ctx.storage.kv.put<StagedActionState>(`action:${id}`, { ...staged, state: "rejected" }); }
-  getCodingSessionActionResult(actionId: number): Promise<McpCallResult> { return Promise.resolve(storedActionResult(this.ctx.storage.kv.get<StagedActionState>(`action:${actionId}`), actionId)); }
+  async rejectAction(id: number): Promise<void> {
+    const staged = this.ctx.storage.kv.get<StagedActionState>(`action:${id}`);
+    if (!staged || staged.state === "rejected") return;
+    if (staged.state !== "pending") throw new Error("Jira action has already been claimed. Verify its outcome in Jira; it cannot be rejected now.");
+    this.ctx.storage.kv.put<StagedActionState>(`action:${id}`, { ...staged, state: "rejected" });
+  }
+  getCodingSessionActionResult(actionId: number): Promise<McpCallResult> { return Promise.resolve(storedActionResult(this.ctx.storage.kv.get<StagedActionState>(`action:${actionId}`), actionId, this.#applyingActions.has(actionId))); }
   getActionResult(actionId: number): Promise<McpCallResult> { return this.getCodingSessionActionResult(actionId); }
   async revertAction(_id: number): Promise<{ message: string }> { return { message: "Jira changes are not automatically reverted; use Jira's history to undo the approved change if needed." }; }
   protected async assertActionInScope(_action: StoredAction): Promise<void> {}
@@ -1040,7 +1078,7 @@ class JiraPendingIssueSession extends RpcTarget implements JiraIssue {
   async #resolve(): Promise<JiraIssue> {
     const outcome = await this.owner.getCodingSessionActionResult(this.actionId);
     if (outcome.status === "pending") throw new Error("Jira issue creation is pending. Retry this same issue session after creation completes; do not create another issue.");
-    if (outcome.status !== "ok") throw new Error(`Jira issue creation ${outcome.status}. This issue session cannot be used.`);
+    if (outcome.status !== "ok") throw new Error(`Jira issue creation ${outcome.status}. ${outcome.message ?? "This issue session cannot be used."}`);
     const result = (outcome.structuredContent as { result?: { key?: string } } | undefined)?.result;
     if (!result?.key) throw new Error("Jira issue creation completed without an issue key.");
     return new JiraIssueSession(this.owner, this.api, this.queue, this.webBase, normalizeJiraIssueKey(result.key));
@@ -1061,14 +1099,14 @@ class JiraIssueSession extends RpcTarget implements JiraIssue {
   constructor(readonly owner: ActionStager, readonly api: JiraApi, readonly queue: RpcStub<ApprovalQueue>, readonly webBase: string, readonly issueKey: string) { super(); }
   async getDetails(): Promise<JiraIssueDetails> { const issue = await this.api.getIssue(this.issueKey); await this.queue.authorizeObservation({ title: "Read Jira issue", description: `Read Jira issue ${issue.key}: ${issue.fields.summary ?? ""}` }); return normIssueDetails(this.webBase, issue); }
   async listTransitions(): Promise<JiraTransition[]> { const result = (await this.api.transitions(this.issueKey)).transitions.map(normTransition); await this.queue.authorizeObservation({ title: "List Jira transitions", description: `Listed workflow transitions for ${this.issueKey}.` }); return result; }
-  async update(fields: JiraIssueUpdate): Promise<void> { const f = updateFields(fields); await this.stage({ kind: "update", issue: this.issueKey, fields: f }, `Update Jira issue ${this.issueKey}`, `Update fields on Jira issue ${this.issueKey}.`); }
-  async transition(transition: string, options?: JiraTransitionOptions): Promise<void> { const transitions = await this.api.transitions(this.issueKey); const match = transitions.transitions.find(t => t.id === transition || t.name.toLowerCase() === transition.toLowerCase()); if (!match) throw new Error(`No transition named or ID ${transition} is currently available.`); const body: Record<string, unknown> = { transition: { id: match.id } }; if (options?.fields) body.fields = updateFields(options.fields); if (options?.commentMarkdown) body.update = { comment: [{ add: { body: markdownToAdf(options.commentMarkdown) } }] }; await this.stage({ kind: "transition", issue: this.issueKey, body }, `Transition Jira issue ${this.issueKey}`, `Move Jira issue ${this.issueKey} using transition ${match.name}.`); }
+  async update(fields: JiraIssueUpdate): Promise<void> { const f = updateFields(fields); await this.#stage({ kind: "update", issue: this.issueKey, fields: f }, `Update Jira issue ${this.issueKey}`, `Update fields on Jira issue ${this.issueKey}.`); }
+  async transition(transition: string, options?: JiraTransitionOptions): Promise<void> { const transitions = await this.api.transitions(this.issueKey); const match = transitions.transitions.find(t => t.id === transition || t.name.toLowerCase() === transition.toLowerCase()); if (!match) throw new Error(`No transition named or ID ${transition} is currently available.`); const body: Record<string, unknown> = { transition: { id: match.id } }; if (options?.fields) body.fields = updateFields(options.fields); if (options?.commentMarkdown) body.update = { comment: [{ add: { body: markdownToAdf(options.commentMarkdown) } }] }; await this.#stage({ kind: "transition", issue: this.issueKey, body }, `Transition Jira issue ${this.issueKey}`, `Move Jira issue ${this.issueKey} using transition ${match.name}.`); }
   async listComments(options?: JiraPageOptions): Promise<Cursor<JiraComment>> { return new JiraCursor(clampPageSize(options?.maxResults), async (start, max) => { const rows = (await this.api.listComments(this.issueKey, start, max)).comments.map(normComment); await this.queue.authorizeObservation({ title: "List Jira comments", description: `Listed ${rows.length} comments on ${this.issueKey}.` }); return rows; }); }
-  async addComment(markdown: string): Promise<void> { const body = validateComment(markdown); await this.stage({ kind: "comment", issue: this.issueKey, markdown: body }, `Comment on Jira issue ${this.issueKey}`, body.slice(0, 500), true); }
+  async addComment(markdown: string): Promise<void> { const body = validateComment(markdown); await this.#stage({ kind: "comment", issue: this.issueKey, markdown: body }, `Comment on Jira issue ${this.issueKey}`, body.slice(0, 500), true); }
   async listAttachments(): Promise<JiraAttachment[]> { const issue = await this.api.getIssue(this.issueKey); const rows = issue.fields.attachment?.map(normAttachment) ?? []; await this.queue.authorizeObservation({ title: "List Jira attachments", description: `Listed ${rows.length} attachments on ${this.issueKey}.` }); return rows; }
   async downloadAttachment(id: string): Promise<JiraAttachmentDownload> { const issue = await this.api.getIssue(this.issueKey); const meta = issue.fields.attachment?.find(a => a.id === id); if (!meta?.content) throw new Error("Attachment not found on this issue."); const bytes = await this.api.downloadAttachment(meta.content, MAX_ATTACHMENT_DOWNLOAD_BYTES); await this.queue.authorizeObservation({ title: "Download Jira attachment", description: `Downloaded attachment ${meta.filename} from ${this.issueKey}.` }); return { id, filename: meta.filename, mimeType: meta.mimeType, bytes }; }
-  async uploadAttachment(options: JiraUploadAttachmentOptions): Promise<JiraAttachment> { const upload = validateUpload(options); await this.stage({ kind: "upload", issue: this.issueKey, filename: upload.filename, mimeType: upload.mimeType, bytes: upload.bytes }, `Upload Jira attachment ${upload.filename}`, `Upload ${upload.filename} to ${this.issueKey}.`); return { id: "pending", filename: upload.filename, mimeType: upload.mimeType, size: upload.bytes.byteLength }; }
-  async stage(action: StoredAction, title: string, description: string, auto = false): Promise<void> { await this.owner.stageAction(this.queue, action, title, description, auto); }
+  async uploadAttachment(options: JiraUploadAttachmentOptions): Promise<JiraAttachment> { const upload = validateUpload(options); await this.#stage({ kind: "upload", issue: this.issueKey, filename: upload.filename, mimeType: upload.mimeType, bytes: upload.bytes }, `Upload Jira attachment ${upload.filename}`, `Upload ${upload.filename} to ${this.issueKey}.`); return { id: "pending", filename: upload.filename, mimeType: upload.mimeType, size: upload.bytes.byteLength }; }
+  async #stage(action: StoredAction, title: string, description: string, auto = false): Promise<void> { await this.owner.stageAction(this.queue, action, title, description, auto); }
   async listTools(): Promise<McpToolInfo[]> { return JIRA_CODING_TOOLS; }
   async callTool(name: string, args?: Record<string, unknown>): Promise<McpCallResult> { return callCodingTool(this.owner, this.api, this.queue, this.webBase, { issueKey: this.issueKey }, name, args ?? {}); }
   getCodingSessionActionResult(actionId: number): Promise<McpCallResult> { return this.owner.getCodingSessionActionResult(actionId); }
