@@ -1773,7 +1773,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   // Drop a pending handoff that will never activate. A staged connect holds a victim's (or just an
   // abandoned) grant in a reachable gatekeeper DO, so it is revoked, best-effort. A staged restore
-  // left nothing live: the gatekeeper's staged credentials expire on their own.
+  // left nothing live: the gatekeeper's staged credentials stop being committable on their own
+  // (commitStagedCredentials refuses an expired stage), though they stay stored until the next
+  // reconnect overwrites them; deleting them from here is a follow-up.
   async #dropPendingConnect(pending: PendingHandoffRecord): Promise<void> {
     if (pending.kind === "connect" && pending.connect) {
       try {

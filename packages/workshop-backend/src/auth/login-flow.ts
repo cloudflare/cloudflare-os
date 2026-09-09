@@ -14,7 +14,8 @@
 //      to the PendingLogin DO under the hash of a fresh handoff ticket, which complete() returns for
 //      the gatekeeper's final page to post to its opener (see connect-handoff.ts).
 //   4. The opener calls `attempt.claim(ticket)`, and the PendingLogin DO releases the token only for
-//      a matching ticket; a ticket for some other attempt is answered with null and changes nothing.
+//      a matching ticket; a ticket for some other attempt is answered with null and changes nothing,
+//      whether it arrives before or after this attempt's result has been delivered.
 //
 // The sign-in URL is a bearer capability, so step 4 is what binds the session to the browser that
 // started the attempt: whoever holds `attempt` but never receives the ticket — an attacker who
@@ -41,10 +42,19 @@ import {
 
 const logger = createWorkshopLogger("workshop.auth");
 
-type PendingOutcome = { token: string; ticketHash: string } | { error: string };
+// `pending` is the attempt as started, before the OAuth callback has delivered anything: it lets
+// claim() tell "not this attempt's ticket, yet" from an expired or never-started attempt.
+type PendingOutcome = { pending: true } | { token: string; ticketHash: string } | { error: string };
 // `expiresAt` bounds the result absolutely: the alarm wipes it too, but claim() must not depend on
 // the alarm having fired on time.
 type PendingResult = PendingOutcome & { expiresAt: number };
+
+/**
+ * How long a started attempt waits for the gatekeeper to deliver, matching the gatekeepers' own
+ * connect-nonce lifetime. The shorter PENDING_HANDOFF_LIFETIME_MS is for a delivered result and
+ * would expire a user who is still at the provider's consent screen.
+ */
+export const LOGIN_PENDING_LIFETIME_MS = 10 * 60 * 1000;
 
 // The connected account a sign-in persisted, by the user DO that owns it (see `PendingLogin.link`).
 type AccountLink = { userId: string; accountId: number };
@@ -55,12 +65,19 @@ const EXPIRED_MESSAGE = "This sign-in attempt has expired. Please try again.";
 
 /**
  * Bridges a login result from the (separate) OAuth-callback invocation back to the browser that
- * started the attempt. The result is written to storage: the ticket reaches the browser only after
- * deliver() has returned, so claim() always follows it, but nothing keeps this DO in memory across
- * that gap. The result lives for PENDING_HANDOFF_LIFETIME_MS at most; an alarm then wipes an
- * unclaimed token. An account link (`link`) is kept for as long as the account exists.
+ * started the attempt. Everything is written to storage, since nothing keeps this DO in memory
+ * between the calls: begin() marks the attempt as started (for LOGIN_PENDING_LIFETIME_MS), so that
+ * a foreign ticket the browser hears in the meantime is answered with null rather than mistaken for
+ * an expired attempt; deliver()/fail() replace the marker with the result, which lives for
+ * PENDING_HANDOFF_LIFETIME_MS at most. An alarm then wipes whatever is left unclaimed. An account
+ * link (`link`) is kept for as long as the account exists.
  */
 export class PendingLogin extends DurableObject<Cloudflare.Env> {
+  /** Called by PublicApi.startGatekeeperLogin before the gatekeeper flow starts. */
+  async begin(): Promise<void> {
+    await this.#store({ pending: true }, LOGIN_PENDING_LIFETIME_MS);
+  }
+
   /** Called by LoginConnectCallbackImpl on success, with the hash of the ticket that may claim it. */
   async deliver(token: string, ticketHash: string): Promise<void> {
     await this.#store({ token, ticketHash });
@@ -71,8 +88,8 @@ export class PendingLogin extends DurableObject<Cloudflare.Env> {
     await this.#store({ error: reason });
   }
 
-  async #store(result: PendingOutcome): Promise<void> {
-    const expiresAt = Date.now() + PENDING_HANDOFF_LIFETIME_MS;
+  async #store(result: PendingOutcome, lifetimeMs = PENDING_HANDOFF_LIFETIME_MS): Promise<void> {
+    const expiresAt = Date.now() + lifetimeMs;
     this.ctx.storage.kv.put<PendingResult>(RESULT_KEY, { ...result, expiresAt });
     await this.ctx.storage.setAlarm(expiresAt);
   }
@@ -92,9 +109,10 @@ export class PendingLogin extends DurableObject<Cloudflare.Env> {
 
   /**
    * Release the token to the holder of the matching ticket. A ticket that is not this attempt's
-   * (the window may hear every same-origin broadcast) yields null and leaves the result in place.
-   * Single use otherwise: the ticket is hashed before the read, so the read, check and removal of a
-   * matching result happen in one step under the input gate and a repeat gets no second try.
+   * (the window may hear every same-origin broadcast) yields null and leaves the result — or the
+   * still-pending attempt, whose ticket hash is not known yet — in place. Single use otherwise: the
+   * ticket is hashed before the read, so the read, check and removal of a matching result happen in
+   * one step under the input gate and a repeat gets no second try.
    */
   async claim(ticket: string): Promise<string | null> {
     const hash = /^[0-9a-f]{64}$/.test(ticket) ? await hashSecret(Uint8Array.fromHex(ticket)) : null;
@@ -103,6 +121,7 @@ export class PendingLogin extends DurableObject<Cloudflare.Env> {
       await this.#clear();
       throw new Error(EXPIRED_MESSAGE);
     }
+    if ("pending" in result) return null;
     if ("error" in result) {
       await this.#clear();
       throw new Error(result.error);

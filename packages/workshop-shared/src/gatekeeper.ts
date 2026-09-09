@@ -452,6 +452,13 @@ export type GatekeeperConnectOptions = {
 export const CONNECT_HANDOFF_MESSAGE_TYPE = "gadgets.connect-handoff.v1";
 
 /**
+ * The `type` field of the envelope `{type, ticket}` the Workshop posts back on the same
+ * `BroadcastChannel` once it has redeemed a broadcast ticket, so the completion page stops repeating
+ * the handoff and closes. Never sent to an opener: the Workshop closes that popup itself.
+ */
+export const CONNECT_HANDOFF_ACK_MESSAGE_TYPE = "gadgets.connect-handoff-ack.v1";
+
+/**
  * What the browser tab that finished a connect flow must deliver to the Workshop, as returned by
  * `GatekeeperConnectCallback.complete()` / `reconnectComplete()`.
  *
@@ -462,6 +469,9 @@ export const CONNECT_HANDOFF_MESSAGE_TYPE = "gadgets.connect-handoff.v1";
  * browser drops the ticket if the opener is anyone else (sign-in popups keep their opener); or, for
  * a connect popup the Workshop disowned before navigating it, a `BroadcastChannel` that the page
  * opens only when it is itself on `targetOrigin` — the browser scopes the channel to that origin.
+ * Over the channel the page repeats the envelope until a Workshop tab acknowledges it
+ * (`CONNECT_HANDOFF_ACK_MESSAGE_TYPE`), since a tab whose session is mid-reconnect would miss a
+ * one-shot broadcast; the ticket is single-use server-side, so the repeats are harmless.
  * Opaque to gatekeepers: they only render it into the completion page (see `connectHandoffPageHtml`
  * in gatekeeper-kit).
  */
