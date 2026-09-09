@@ -355,12 +355,15 @@ describe("Workspace Docs DOCX package", () => {
   it("converts font, size, color, shading, alignment, indentation, and line height", async () => {
     const html = '<p style="text-align:center;margin-left:16px;text-indent:8px;line-height:2">' +
       '<span style="font-family:Georgia, serif;font-size:16px;color:rgb(17, 34, 51);background-color:#fff3a3">styled</span>' +
-      '<font face="Courier New" size="5" color="#abc">font</font></p>';
+      '<font face="Courier New" size="5" color="#abc">font</font>' +
+      '<span style="text-align:right;margin-left:100px">inline</span></p>';
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     expect(xml).toContain('<w:spacing w:line="480" w:lineRule="auto"/>');
     expect(xml).toContain('<w:ind w:left="240" w:firstLine="120"/>');
     expect(xml).toContain('<w:jc w:val="center"/>');
+    expect(xml).not.toContain('w:val="right"');
+    expect(xml).toContain(">inline</w:t>");
     const styled = runContaining(xml, "styled");
     expect(styled).toContain('w:ascii="Georgia"');
     expect(styled).toContain('<w:sz w:val="24"/>');
@@ -644,13 +647,13 @@ describe("Workspace Docs DOCX package", () => {
   it("skips hidden elements and links that wrap no content", async () => {
     const anchors = Array.from({length: 1000}, (_, index) => `<a href="https://example.com/${index}"></a>`).join("");
     const html = `<p hidden>draft</p><p><span style="display: none">secret</span>${anchors}shown` +
-      '<span style="display:none !important">also secret</span>' +
+      '<span style="display:none !important">also secret</span><span style="display:none;display:inline">reshown</span>' +
       `<a href="https://example.com/kept">kept</a><a href="https://example.com/${"\u4e2d".repeat(3000)}">wide</a></p>` +
       "<dl><dt>term<dd>definition<dt><b>bold term</dt></dl>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     for (const value of ["draft", "secret"]) expect(xml).not.toContain(value);
-    expect(xml).toContain(">shown</w:t>");
+    expect(xml).toContain(">shownreshown</w:t>");
     expect(xml).toContain(">wide</w:t>");
     expect(text(entries, "word/_rels/document.xml.rels").match(/relationships\/hyperlink/g)).toHaveLength(1);
     expect(runContaining(xml, "definition")).not.toContain("<w:b/>");

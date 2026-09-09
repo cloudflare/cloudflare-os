@@ -639,15 +639,16 @@ function walk(builder, node, parent) {
   const tag = node.tag;
   if (IGNORED_TAGS.has(tag) || "hidden" in node.attrs) return;
   const declarations = cssDeclarations(node.attrs.style);
-  if (declarations.some(([name, value]) => name === "display" && value.toLowerCase() === "none")) return;
+  if (declarations.findLast(([name]) => name === "display")?.[1].toLowerCase() === "none") return;
+  // Editor images are `display: block`, so each one stands in its own paragraph.
+  const block = BLOCK_TAGS.has(tag) || (tag === "img" && /(?:^|\s)doc-image(?:\s|$)/.test(node.attrs.class || ""));
   const context = {
     ...parent,
     format: deriveFormat(parent.format, node, declarations),
-    paragraph: deriveParagraph(parent.paragraph, declarations),
+    // Alignment, indentation, and line height only apply to block containers.
+    paragraph: block ? deriveParagraph(parent.paragraph, declarations) : parent.paragraph,
     style: blockStyle(node, declarations) ?? parent.style,
   };
-  // Editor images are `display: block`, so each one stands in its own paragraph.
-  const block = BLOCK_TAGS.has(tag) || (tag === "img" && /(?:^|\s)doc-image(?:\s|$)/.test(node.attrs.class || ""));
   if (block) builder.close();
   switch (tag) {
     case "br":
