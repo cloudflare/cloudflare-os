@@ -360,7 +360,7 @@ describe("Workspace Docs DOCX package", () => {
       '<span style="font-family:Georgia, serif;font-size:16px;color:rgb(17, 34, 51);background-color:#fff3a3">styled</span>' +
       '<font face="Courier New" size="5" color="#abc">font</font>' +
       '<span style="text-align:right;margin-left:100px">inline</span></p>' +
-      '<div style="line-height:2;margin-left:40px;margin-left:0"><p style="line-height:normal;margin:0 0 0 8px;margin-left:16px">cascade</p></div>';
+      '<div style="line-height:2;margin-left:40px;margin-left:0"><p style="line-height:normal;margin:0 0 0 8px;margin-left:16px;margin-left:bogus">cascade</p></div>';
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     expect(xml).toContain('<w:spacing w:line="480" w:lineRule="auto"/>');

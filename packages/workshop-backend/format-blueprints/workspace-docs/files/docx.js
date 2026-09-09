@@ -375,7 +375,8 @@ function deriveFormat(parent, node, declarations) {
 
 function deriveParagraph(parent, declarations) {
   const paragraph = {...parent};
-  // Declarations on one element cascade (the last one wins); only the winner adds to the indent.
+  // Declarations on one element cascade: the last one that parses wins, and only it adds to the
+  // indent (an invalid declaration is dropped, as the browser drops it).
   let marginLeft = null;
   let paddingLeft = null;
   for (const [name, value] of declarations) {
@@ -383,14 +384,10 @@ function deriveParagraph(parent, declarations) {
     if (name === "text-align") {
       if (lower === "left" || lower === "start") paragraph.alignment = "left";
       else if (lower === "center" || lower === "right" || lower === "justify") paragraph.alignment = lower;
-    } else if (name === "margin-left") {
-      marginLeft = value;
-    } else if (name === "margin") {
-      marginLeft = cssBoxLeft(value);
-    } else if (name === "padding-left") {
-      paddingLeft = value;
-    } else if (name === "padding") {
-      paddingLeft = cssBoxLeft(value);
+    } else if (name === "margin-left" || name === "margin") {
+      marginLeft = cssLength(name === "margin" ? cssBoxLeft(value) ?? "" : value) ?? marginLeft;
+    } else if (name === "padding-left" || name === "padding") {
+      paddingLeft = cssLength(name === "padding" ? cssBoxLeft(value) ?? "" : value) ?? paddingLeft;
     } else if (name === "text-indent") {
       const twips = cssLength(value);
       if (twips != null) paragraph.firstLine = Math.max(-7200, Math.min(7200, twips));
@@ -411,8 +408,7 @@ function deriveParagraph(parent, declarations) {
       }
     }
   }
-  for (const value of [marginLeft, paddingLeft]) {
-    const twips = value == null ? null : cssLength(value);
+  for (const twips of [marginLeft, paddingLeft]) {
     if (twips != null) paragraph.left = Math.max(0, Math.min(14_400, (paragraph.left || 0) + twips));
   }
   return paragraph;
@@ -623,6 +619,8 @@ class DocumentBuilder {
   }
 
   image(context, node) {
+    const requested = requestedWidth(node);
+    if (requested === 0) return; // Sized away in the editor; nothing is displayed.
     if (++this.imageCount > DOCX_LIMITS.images) {
       throw new Error(`DOCX image count exceeds the ${DOCX_LIMITS.images}-image export limit.`);
     }
@@ -633,8 +631,6 @@ class DocumentBuilder {
       this.text(context, alt || "[Image unavailable]");
       return;
     }
-    const requested = requestedWidth(node);
-    if (requested === 0) return; // Sized away in the editor; nothing is displayed.
     let width = Math.min(CONTENT_WIDTH_PIXELS, requested || image.width);
     let height = width * image.height / image.width;
     if (height > CONTENT_HEIGHT_PIXELS) {
