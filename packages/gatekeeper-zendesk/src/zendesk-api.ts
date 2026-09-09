@@ -70,7 +70,7 @@ async function tokenRequest(subdomain: string, body: unknown): Promise<ZendeskOA
   const res = await fetch(`${baseUrl(subdomain)}/oauth/tokens`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
-    redirect: "error",
+    redirect: "manual",
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
@@ -129,7 +129,7 @@ export class ZendeskApi {
     const res = await fetch(`${baseUrl(this.subdomain)}${path}`, {
       ...init,
       headers: { Accept: "application/json", Authorization: `Bearer ${token}`, ...init.headers },
-      redirect: "error",
+      redirect: "manual",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (res.status === 204) return undefined as T;
@@ -200,7 +200,7 @@ export class ZendeskApi {
     const res = await fetch(`${baseUrl(this.subdomain)}/api/v2/uploads.json?filename=${encodeURIComponent(input.name)}`, {
       method: "POST",
       headers: { Authorization: `Bearer ${await this.getToken()}`, "Content-Type": input.contentType, Accept: "application/json" },
-      redirect: "error",
+      redirect: "manual",
       body: input.data as BodyInit,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
@@ -216,7 +216,7 @@ export class ZendeskApi {
   async downloadAttachment(url: string, maxBytes = MAX_ATTACHMENT_BYTES): Promise<{ data: Uint8Array; contentType?: string }> {
     const parsed = new URL(url);
     if (parsed.origin !== baseUrl(this.subdomain) || parsed.username || parsed.password) throw new Error("Attachment URL is outside the connected Zendesk subdomain.");
-    const res = await fetch(parsed.toString(), { headers: { Authorization: `Bearer ${await this.getToken()}` }, redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    const res = await fetch(parsed.toString(), { headers: { Authorization: `Bearer ${await this.getToken()}` }, redirect: "manual", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
     if (!res.ok) throw new ZendeskApiError(res.status, `Zendesk attachment download failed: ${res.statusText}`);
     const len = Number(res.headers.get("content-length") ?? "0");
     if (len > maxBytes) throw new Error("Zendesk attachment exceeded the configured size limit.");
