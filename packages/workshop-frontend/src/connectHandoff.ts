@@ -71,8 +71,30 @@ export function openConnectWindow(url: string): Window {
   const popup = window.open('', 'gadgets-connect', 'popup,width=520,height=680')
   if (!popup) throw new Error('Pop-up blocked. Please allow pop-ups and try again.')
   if (gatekeeperOrigin() === window.location.origin) popup.opener = null
+  markConnectPending()
   popup.location.replace(url)
   return popup
+}
+
+/**
+ * Set in this tab's `sessionStorage` by `openConnectWindow`, so `useConnectHandoffListener` knows a
+ * broadcast ticket is one this tab asked for. Per-tab and reload-stable, which is exactly the scope
+ * wanted: the tab that opened the popup redeems, its siblings stay quiet.
+ */
+const CONNECT_PENDING_KEY = 'gadgets.connectPending'
+
+// Storage can be unavailable (a disabled cookie jar, a sandboxed frame); every access degrades to
+// today's behaviour of redeeming whatever arrives rather than failing the connect.
+function markConnectPending(): void {
+  try { sessionStorage.setItem(CONNECT_PENDING_KEY, '1') } catch { /* fall back to redeeming all */ }
+}
+
+function hasPendingConnect(): boolean {
+  try { return sessionStorage.getItem(CONNECT_PENDING_KEY) !== null } catch { return true }
+}
+
+function clearPendingConnect(): void {
+  try { sessionStorage.removeItem(CONNECT_PENDING_KEY) } catch { /* nothing to clear */ }
 }
 
 /**
@@ -83,10 +105,14 @@ export function openConnectWindow(url: string): Window {
  * envelopes are considered; anything else is ignored silently. A popup that posted is closed once
  * the Workshop has accepted the ticket; a broadcast has no source, so that page closes itself.
  *
- * Security rests on the ticket being scoped to the user who started the flow, not on which window
- * sent it — so a Workshop tab that reloaded mid-flow still completes, and a phished handoff page
- * opened directly in the victim's own browser broadcasts to the victim's tabs, whose redemption the
- * server refuses as expired (the ticket belongs to the attacker's session).
+ * Security rests on the ticket being scoped server-side to the user who started the flow, not on
+ * which window sent it. The `sessionStorage` marker `openConnectWindow` sets only decides *which of
+ * that user's tabs* redeems a broadcast: the one that opened the popup, surviving a reload, since
+ * the storage is per-tab and reload-stable; its siblings stay silent instead of racing it and
+ * toasting "expired". A connect whose tab was closed expires and is revoked like an abandoned one.
+ * A phished handoff page opened directly in the victim's own browser broadcasts to
+ * tabs none of which holds a marker, so nothing even reaches the server; a `message` event needs no
+ * marker, its source being the popup this tab itself holds.
  *
  * Pass `null` to listen for nothing: a ticket must be redeemed exactly once, so only one listener may
  * be live per window (see `ConnectHandoffListener` and the blueprint page).
@@ -113,7 +139,10 @@ export function useConnectHandoffListener(
       : null
     channel?.addEventListener('message', (event: MessageEvent) => {
       const ticket = parseHandoffEnvelope(event.data)
-      if (ticket !== null) redeem(ticket, null)
+      if (ticket === null || !hasPendingConnect()) return
+      // One connect, one redemption: the marker is spent whether or not the server accepts.
+      clearPendingConnect()
+      redeem(ticket, null)
     })
     return () => {
       window.removeEventListener('message', onMessage)

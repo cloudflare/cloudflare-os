@@ -92,6 +92,18 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
         function stopPolling() {
           if (poll !== null) { clearInterval(poll); poll = null }
         }
+        function startPolling() {
+          if (poll !== null) return
+          poll = window.setInterval(() => {
+            if (!popup.closed) return
+            // Not necessarily a cancellation: a provider that swaps browsing context groups (COOP)
+            // reports the popup closed while the flow is still running, and its ticket will arrive
+            // over the channel. So just hand the buttons back and keep listening; if the user really
+            // closed it, nothing arrives and the attempt ends with the next one or on unmount.
+            stopPolling()
+            if (mountedRef.current) setPending(null)
+          }, 500)
+        }
         function finish(fn: () => void) {
           if (settled) return
           settled = true
@@ -103,12 +115,18 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           fn()
         }
         // Claims may overlap: a foreign ticket answered with null must not hold up the real one
-        // behind it, and `finish` settles only once.
+        // behind it, and `finish` settles only once. Polling pauses during a claim so a popup that
+        // closes itself on completion is not read as a cancellation, and resumes after a foreign
+        // ticket, or closing the popup afterwards would leave the buttons stuck.
         function claimTicket(ticket: string) {
           if (settled) return
           stopPolling()
           attempt.claim(ticket)
-            .then(t => { if (t !== null) finish(() => resolve(t)) })
+            .then(t => {
+              if (settled) return
+              if (t === null) startPolling()
+              else finish(() => resolve(t))
+            })
             .catch(e => finish(() => reject(e instanceof Error ? e : new Error('Could not sign in'))))
         }
         function onMessage(event: MessageEvent) {
@@ -125,15 +143,7 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           const ticket = parseHandoffEnvelope(event.data)
           if (ticket !== null) claimTicket(ticket)
         })
-        poll = window.setInterval(() => {
-          if (!popup.closed) return
-          // Not necessarily a cancellation: a provider that swaps browsing context groups (COOP)
-          // reports the popup closed while the flow is still running, and its ticket will arrive over
-          // the channel. So just hand the buttons back and keep listening; if the user really closed
-          // it, nothing arrives and the attempt ends with the next one or on unmount.
-          stopPolling()
-          if (mountedRef.current) setPending(null)
-        }, 500)
+        startPolling()
         attemptRef.current = () => finish(() => reject(CANCELLED))
       })
       // Best-effort: after a COOP swap the handle is dead, and the page closes itself anyway.

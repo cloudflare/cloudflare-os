@@ -35,6 +35,10 @@ async function broadcast(...messages: unknown[]) {
   channel.close()
 }
 
+// What `openConnectWindow` leaves behind in this tab: the marker that makes a broadcast ticket ours.
+const CONNECT_PENDING_KEY = 'gadgets.connectPending'
+const pending = () => sessionStorage.setItem(CONNECT_PENDING_KEY, '1')
+
 describe('useConnectHandoffListener', () => {
   let root: Root | undefined
   let container: HTMLDivElement | undefined
@@ -55,6 +59,7 @@ describe('useConnectHandoffListener', () => {
     vi.restoreAllMocks()
     completeConnectHandoff.mockReset()
     onError.mockReset()
+    sessionStorage.clear()
   })
 
   it('redeems a well-formed ticket from the gatekeeper origin and closes the popup', async () => {
@@ -73,6 +78,7 @@ describe('useConnectHandoffListener', () => {
   it('redeems a ticket broadcast on the same-origin channel, closing nothing itself', async () => {
     // A disowned popup on our own origin has no opener to post to; it broadcasts and closes itself.
     completeConnectHandoff.mockResolvedValue(undefined)
+    pending()
     mount()
 
     await broadcast({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: TICKET })
@@ -82,7 +88,40 @@ describe('useConnectHandoffListener', () => {
     expect(onError).not.toHaveBeenCalled()
   })
 
+  it('ignores a broadcast ticket when this tab opened no connect', async () => {
+    // Every Workshop tab on the origin hears the channel; only the one that opened the popup redeems,
+    // so the others neither race it nor toast that the attempt expired.
+    mount()
+
+    await broadcast({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: TICKET })
+    await settle()
+
+    expect(completeConnectHandoff).not.toHaveBeenCalled()
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('redeems a broadcast ticket after this tab opened a connect, then forgets it', async () => {
+    completeConnectHandoff.mockRejectedValue(new Error('This connection attempt has expired.'))
+    const popup = { opener: null, location: { replace: vi.fn<(url: string) => void>() } }
+    vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
+    mount()
+    openConnectWindow('https://gk.example/connect')
+    expect(sessionStorage.getItem(CONNECT_PENDING_KEY)).toBe('1')
+
+    await broadcast({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: TICKET })
+    await settle()
+    expect(completeConnectHandoff).toHaveBeenCalledExactlyOnceWith(TICKET)
+    // Spent on the first redemption, accepted or not: a second broadcast is not this tab's.
+    expect(sessionStorage.getItem(CONNECT_PENDING_KEY)).toBeNull()
+    expect(onError).toHaveBeenCalledExactlyOnceWith('This connection attempt has expired.')
+
+    await broadcast({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: 'b'.repeat(64) })
+    await settle()
+    expect(completeConnectHandoff).toHaveBeenCalledOnce()
+  })
+
   it('ignores a malformed broadcast', async () => {
+    pending()
     mount()
 
     await broadcast(
@@ -137,6 +176,7 @@ describe('useConnectHandoffListener', () => {
   })
 
   it('stops listening once unmounted, on both transports', async () => {
+    pending()
     mount()
     act(() => root?.unmount())
     root = undefined

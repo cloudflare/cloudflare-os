@@ -117,13 +117,15 @@ describe('OAuthButtons', () => {
   it('keeps waiting when a broadcast ticket belongs to another attempt', async () => {
     // A broadcast has no source to filter on, so the channel may carry another tab's sign-in ticket
     // or an account-connect ticket first. The server answers null for those; ours still lands.
-    vi.spyOn(window, 'open').mockReturnValue(popup)
+    const own = { closed: false, close: vi.fn<() => void>() } as unknown as Window
+    vi.spyOn(window, 'open').mockReturnValue(own)
     const FOREIGN = 'f'.repeat(64)
     claim.mockImplementation(async ticket => ticket === TICKET ? 'alice@example.com:secret' : null)
     const rpcStub = {
       startGatekeeperLogin: async () => ({ url: 'https://gk.example/login', attempt }),
     } as unknown as RpcStub<PublicApi>
     const onSuccess = mount(rpcStub)
+    const button = () => container!.querySelector('button')!
 
     await clickSignIn()
     await settle()
@@ -135,6 +137,14 @@ describe('OAuthButtons', () => {
     expect(localStorage.getItem('authToken')).toBeNull()
     expect(onSuccess).not.toHaveBeenCalled()
     expect(container!.textContent).not.toMatch(/expired|verified|Could not/)
+    expect(button().disabled).toBe(true)
+
+    // The foreign claim paused the popup-closed poll; closing the popup now must still hand the
+    // buttons back rather than leave them stuck until the right ticket arrives.
+    ;(own as { closed: boolean }).closed = true
+    await act(() => new Promise(resolve => setTimeout(resolve, 600)))
+    expect(button().disabled).toBe(false)
+    expect(container!.textContent).not.toContain('cancelled')
 
     // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no targetOrigin.
     sender.postMessage({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: TICKET })
