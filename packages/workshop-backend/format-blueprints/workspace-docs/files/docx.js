@@ -54,14 +54,22 @@ const LIST_KINDS = ["bullet", "decimal", "lowerLetter", "upperLetter", "lowerRom
 const LIST_TYPES = {a: "lowerLetter", A: "upperLetter", i: "lowerRoman", I: "upperRoman"};
 // The only attributes the walk reads; everything else is dropped at parse time.
 const STORED_ATTRIBUTES = ["style", "class", "hidden", "open", "href", "src", "alt", "width", "type", "start", "value", "face", "size", "color"];
-// `display` values per the CSS Display grammar: a single box, internal, or legacy keyword, an
-// outside/inside pair, or a list-item form. An invalid declaration cannot override a valid one.
-const DISPLAY_VALUE = new RegExp("^(?:" + [
-  "none|contents|inline-block|inline-flex|inline-grid|inline-table",
-  "table-(?:row|cell|caption|column|(?:row|header|footer|column)-group)|ruby-(?:base|text)(?:-container)?",
-  "(?:(?:block|inline|run-in)(?:\\s+(?:flow|flow-root|flex|grid|table|ruby))?)|flow|flow-root|flex|grid|table|ruby",
-  "(?:(?:block|inline|run-in)\\s+)?(?:(?:flow|flow-root)\\s+)?list-item",
-].join("|") + ")$", "i");
+// `display` per the CSS Display grammar: a single box, internal, or legacy keyword, or (in any
+// order) at most one outside keyword, one inside keyword, and `list-item` (which only pairs with
+// `flow`/`flow-root`). An invalid declaration cannot override a valid one.
+const DISPLAY_SINGLE = /^(?:none|contents|inline-(?:block|flex|grid|table)|table-(?:row|cell|caption|column|(?:row|header|footer|column)-group)|ruby-(?:base|text)(?:-container)?)$/;
+const DISPLAY_OUTSIDE = ["block", "inline", "run-in"];
+const DISPLAY_INSIDE = ["flow", "flow-root", "flex", "grid", "table", "ruby"];
+
+function validDisplay(value) {
+  const tokens = value.trim().toLowerCase().split(/\s+/);
+  if (tokens.length === 1 && DISPLAY_SINGLE.test(tokens[0])) return true;
+  const outside = tokens.filter((token) => DISPLAY_OUTSIDE.includes(token)).length;
+  const inside = tokens.filter((token) => DISPLAY_INSIDE.includes(token)).length;
+  const listItem = tokens.filter((token) => token === "list-item").length;
+  return outside <= 1 && inside <= 1 && listItem <= 1 && outside + inside + listItem === tokens.length &&
+    (!listItem || tokens.every((token) => !DISPLAY_INSIDE.slice(2).includes(token)));
+}
 
 // --- XML text ----------------------------------------------------------------------------------
 
@@ -708,7 +716,7 @@ function walk(builder, node, parent) {
   const tag = node.tag;
   if (IGNORED_TAGS.has(tag) || "hidden" in node.attrs || (tag === "dialog" && !("open" in node.attrs))) return;
   const declarations = cssDeclarations(node.attrs.style);
-  const display = declarations.findLast(([name, value]) => name === "display" && DISPLAY_VALUE.test(value.trim()));
+  const display = declarations.findLast(([name, value]) => name === "display" && validDisplay(value));
   if (display?.[1].trim().toLowerCase() === "none") return;
   // Editor images are `display: block`, so each one stands in its own paragraph. Inside a table
   // cell, blocks flatten into the row paragraph, separated by line breaks.
