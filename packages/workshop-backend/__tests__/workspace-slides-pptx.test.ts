@@ -467,6 +467,19 @@ describe("Workspace Slides PPTX rendering", () => {
     // ignores wrap="none" and breaks anything wider than its box onto a second line).
     const wordmarkWidth = Number(/<a:ext cx="(\d+)"/.exec(wordmark)![1]);
     expect(wordmarkWidth).toBeGreaterThanOrEqual(Math.round(5.335 * 24 * 0.62 * 10160));
+    // Natural line spacing, so the first-line baseline is Arial's 0.905em below the box top in
+    // every consumer; the box is raised so that baseline lands where the browser's line-height-1
+    // layout puts it (0.83em), and the dot's bottom sits 1px above it, like the browser's.
+    expect(wordmark).toContain('<a:spcPct val="100000"/>');
+    const fontPx = 24 * 0.62;
+    const baseline = 40 + fontPx * 0.83;
+    expect(wordmark).toContain(`<a:off x="${1013 * 10160}" y="${Math.round((baseline - fontPx * 0.905) * 10160)}"/>`);
+    const dot = shapeByName(xml, "Block 1 logo accent dot");
+    const dotY = Number(/<a:off x="\d+" y="(\d+)"/.exec(dot)![1]);
+    expect(dotY + 6 * 0.62 * 10160).toBeCloseTo((baseline - 0.62) * 10160, -2);
+    // Tracking after the last glyph as Chrome does, then the 3px flex gap.
+    const dotX = Number(/<a:off x="(\d+)"/.exec(dot)![1]);
+    expect(dotX).toBeCloseTo((1013 + (5.335 - 9 * 0.02) * fontPx + 3 * 0.62) * 10160, -2);
     expect(shapeByName(xml, "Block 2 sectionLabel")).toContain('<a:bodyPr wrap="none"');
     expect(shapeByName(xml, "Block 3 text")).toContain('<a:bodyPr wrap="square"');
     expect(shapeByName(xml, "Block 3 text")).toContain('<a:off x="365760" y="2072640"/>');

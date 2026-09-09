@@ -1053,22 +1053,38 @@ function* renderSectionLabel(state, block, name) {
   yield* textShapeXml(state, name, box, style, {text: props.text}, {wrap: false});
 }
 
+// The browser lays the wordmark out at line-height 1 and baseline-aligns the dot to it. Arial's
+// ascent is 0.905em and its natural line height 1.15em, so with a 1em line box the baseline sits
+// at 0.905 - 0.075 = 0.83em below the block's top. Consumers apply spcPct to the first line too, so
+// the text is emitted at natural spacing (baseline 0.905em below the box top) and the box is
+// raised by the difference to land the baseline where the browser's is.
+const LOGO_FONT_PX = 24;
+const LOGO_BASELINE_PX = LOGO_FONT_PX * (0.905 - (ARIAL_LINE_HEIGHT - 1) / 2);
+const LOGO_BOX_OFFSET_PX = LOGO_FONT_PX * 0.905 - LOGO_BASELINE_PX;
+
 function* renderLogo(state, block, name) {
   const props = block.props;
   const scale = cssNumber(props.scale, 1, 0.01, 20);
   const text = props.text;
-  const fontSize = 24 * scale;
-  const textWidth = naturalTextWidth(text, fontSize, 700, -0.02 * fontSize);
-  const textBox = boxFromPixels(positionPixels(block.x), positionPixels(block.y), textWidth + 8 * scale, 29 * scale);
+  const fontSize = LOGO_FONT_PX * scale;
+  const letterSpacing = -0.02 * fontSize;
+  const x = positionPixels(block.x);
+  const y = positionPixels(block.y);
+  const textBox = boxFromPixels(x, y - LOGO_BOX_OFFSET_PX * scale,
+    naturalTextWidth(text, fontSize, 700, letterSpacing) + 8 * scale, fontSize * ARIAL_LINE_HEIGHT);
   const color = props.variant === "dark" ? parseColor("#000000") : parseColor("#FFFFFF");
   yield* textShapeXml(state, `${name} wordmark`, textBox, {
-    fontSize, weight: 700, letterSpacing: "-0.02em", lineHeight: 1,
+    fontSize, weight: 700, letterSpacing: "-0.02em", lineHeight: ARIAL_LINE_HEIGHT,
     color, align: "left",
   }, {text}, {wrap: false});
   if (props.accentDot !== false) {
+    // Chrome tracks after the last glyph too, so the browser's text box is the advance sum plus one
+    // more letter-spacing; the dot follows it after the 3px flex gap, its bottom 1px above the
+    // baseline.
+    const wordmarkWidth = textWidth(text, fontSize, 700, letterSpacing) + letterSpacing;
     const dot = boxFromPixels(
-      positionPixels(block.x) + textWidth + 3 * scale,
-      positionPixels(block.y) + 18 * scale,
+      x + wordmarkWidth + 3 * scale,
+      y + LOGO_BASELINE_PX * scale - 7 * scale,
       6 * scale,
       6 * scale,
     );
