@@ -332,7 +332,9 @@ describe("Workspace Docs DOCX package", () => {
     const html = '<p><b>bold<span style="font-weight:normal">reset</span></b>' +
       '<i>italic<span style="font-style:normal">upright</span></i><u>under</u><s>strike</s>' +
       '<span style="text-decoration:underline line-through"><span>nested</span>' +
-      '<span style="text-decoration:none">plain</span></span></p>';
+      '<span style="text-decoration:none">plain</span></span>' +
+      '<span style="color:rgba(255,0,0,0);background-color:#f000">clear</span>' +
+      '<span style="background-color:#ff0000"><span style="background-color:rgba(0,0,0,0)">unshaded</span></span></p>';
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     expect(runContaining(xml, "bold")).toContain("<w:b/>");
@@ -345,6 +347,7 @@ describe("Workspace Docs DOCX package", () => {
     expect(runContaining(xml, "nested")).toContain("<w:strike/>");
     expect(runContaining(xml, "plain")).toContain('<w:u w:val="none"/>');
     expect(runContaining(xml, "plain")).toContain('<w:strike w:val="0"/>');
+    expect(runContaining(xml, "clearunshaded")).not.toMatch(/w:color|w:shd/);
 
     const inherited = await readZip(await documentToDocx({blocks: [block(
         '<p><span style="font-weight:bold;font-size:20px;color:#123456">' +
@@ -360,7 +363,7 @@ describe("Workspace Docs DOCX package", () => {
       '<span style="font-family:Georgia, serif;font-size:16px;color:rgb(17, 34, 51);background-color:#fff3a3">styled</span>' +
       '<font face="Courier New" size="5" color="#abc">font</font>' +
       '<span style="text-align:right;margin-left:100px">inline</span></p>' +
-      '<div style="line-height:2;margin-left:40px;margin-left:0"><p style="line-height:normal;margin:0 0 0 8px;margin-left:16px;margin-left:bogus">cascade</p><p style="margin-left:16px;margin-left:auto">auto</p></div>';
+      '<div style="line-height:2;margin-left:40px;margin-left:0"><p style="line-height:normal;margin:0 0 0 8px;margin-left:16px;margin-left:bogus">cascade</p><p style="margin-left:16px;margin-left:auto">auto</p><p style="padding-left:16px;padding-left:auto">pad</p></div>';
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     expect(xml).toContain('<w:spacing w:line="480" w:lineRule="auto"/>');
@@ -370,6 +373,7 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).toContain(">inline</w:t>");
     expect(xml).toContain('<w:pPr><w:pStyle w:val="Normal"/><w:ind w:left="240"/></w:pPr><w:r><w:t xml:space="preserve">cascade</w:t>');
     expect(xml).toContain('<w:spacing w:line="480" w:lineRule="auto"/><w:ind w:left="0"/></w:pPr><w:r><w:t xml:space="preserve">auto</w:t>');
+    expect(xml).toContain('<w:spacing w:line="480" w:lineRule="auto"/><w:ind w:left="240"/></w:pPr><w:r><w:t xml:space="preserve">pad</w:t>');
     const styled = runContaining(xml, "styled");
     expect(styled).toContain('w:ascii="Georgia"');
     expect(styled).toContain('<w:sz w:val="24"/>');
@@ -483,6 +487,9 @@ describe("Workspace Docs DOCX package", () => {
     const numbering = text(entries, "word/numbering.xml");
     expect(numbering.match(/<w:abstractNum /g)).toHaveLength(2);
     expect(numbering.match(/<w:num w:numId=/g)).toHaveLength(4);
+
+    const emptyLists = await readZip(await documentToDocx({blocks: [block("<ol></ol><ul> </ul><p>text</p>")]}));
+    expect(emptyLists.entries.has("word/numbering.xml")).toBe(false);
     expect(numbering).toContain('<w:num w:numId="1"><w:abstractNumId w:val="1"/>');
     expect(numbering).toContain('<w:num w:numId="2"><w:abstractNumId w:val="0"/>');
     expect(numbering).toContain('<w:num w:numId="4"><w:abstractNumId w:val="1"/>');
@@ -607,18 +614,19 @@ describe("Workspace Docs DOCX package", () => {
 
   it("replaces invalid, signature-mismatched, and external images with visible safe text", async () => {
     const mismatch = dataUrl("image/jpeg", png(10, 10));
-    const html = `<p><img src="${mismatch}" alt="wrong signature">` +
+    const badGif = `data:image/gif;base64,${btoa("GIF8zz\x01\x00\x01\x00\x00\x00\x00\x3b")}`;
+    const html = `<p><img src="${mismatch}" alt="wrong signature"><img src="${badGif}" alt="bad gif">` +
       '<img src="https://example.com/image.png" alt="external"><img src="data:image/png;base64,%%%">' +
       '<img src="blob:https://example.com/id" alt="blob"></p>';
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
-    for (const value of ["wrong signature", "external", "[Image unavailable]", "blob"]) expect(xml).toContain(value);
+    for (const value of ["wrong signature", "bad gif", "external", "[Image unavailable]", "blob"]) expect(xml).toContain(value);
     expect([...entries.keys()].some((name) => name.startsWith("word/media/"))).toBe(false);
     expect(text(entries, "word/_rels/document.xml.rels")).not.toContain("relationships/image");
   });
 
   it("flattens incidental table rows to paragraphs and cells to tabs while flattening unknown tags", async () => {
-    const html = '<table><tbody><tr><td>A</td><td><b>B</b></td></tr><tr><td></td><td>D</td></tr>' +
+    const html = '<table><thead style="color:red"><tr><td>A</td><td><b>B</b></td></tr><tbody><tr><td></td><td>D</td></tr>' +
       "<tr><td>E<td><i>F</i><tr><td>G</td></tr></tbody></table>" +
       '<section><custom>visible</custom><!-- hidden --><script>bad()</script><style>.bad{}</style></section>' +
       "<article>article</article><aside>aside</aside>";
@@ -629,6 +637,7 @@ describe("Workspace Docs DOCX package", () => {
     expect(runContaining(xml, "B")).toContain("<w:b/>");
     expect(runContaining(xml, "F")).toContain("<w:i/>");
     expect(runContaining(xml, "G")).not.toContain("<w:i/>");
+    expect(runContaining(xml, "D")).not.toContain("<w:color");
     expect(xml).toContain('<w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r><w:tab/></w:r><w:r><w:t xml:space="preserve">D</w:t>');
     expect(xml).not.toContain("bad()");
     expect(xml).not.toContain(".bad{}");
@@ -654,21 +663,21 @@ describe("Workspace Docs DOCX package", () => {
     expect(floodXml.match(/<w:tab\/>/g)).toHaveLength(2);
   });
 
-  it("skips hidden elements and links that wrap no content", async () => {
+  it("skips hidden elements, collapsed details, and links that wrap no content", async () => {
     const anchors = Array.from({length: 1000}, (_, index) => `<a href="https://example.com/${index}"></a>`).join("");
     const html = `<p hidden>draft</p><p><span style="display: none">secret</span>${anchors}shown` +
       '<span style="display:none !important">also secret</span><span style="display:none;display:inline">reshown</span>' +
       '<span style="display:none!important;display:inline">still secret</span>' +
       `<a href="https://example.com/kept">kept</a><a href="https://example.com/${"\u4e2d".repeat(3000)}">wide</a></p>` +
-      "<dl><dt>term<dd>definition<dt><b>bold term</dt></dl>";
+      "<dl><dt>term<dd>definition<dt><b>bold term</dt></dl>" +
+      "<details><summary>Summary</summary><p>collapsed secret</p></details><details open><summary>Open</summary><p>expanded</p></details>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     for (const value of ["draft", "secret"]) expect(xml).not.toContain(value);
-    expect(xml).toContain(">shownreshown</w:t>");
-    expect(xml).toContain(">wide</w:t>");
+    for (const value of ["shownreshown", "wide", "Summary", "Open", "expanded"]) expect(xml).toContain(`>${value}</w:t>`);
     expect(text(entries, "word/_rels/document.xml.rels").match(/relationships\/hyperlink/g)).toHaveLength(1);
     expect(runContaining(xml, "definition")).not.toContain("<w:b/>");
-    expect(xml.match(/<w:p>/g)).toHaveLength(4);
+    expect(xml.match(/<w:p>/g)).toHaveLength(7);
   });
 
   it("gives editor images their own paragraph while other images stay inline", async () => {
@@ -695,6 +704,9 @@ describe("Workspace Docs DOCX package", () => {
   it("fails before returning a stream when parser or media limits are exceeded", async () => {
     const deep = "<div>".repeat(DOCX_LIMITS.depth + 1) + "deep";
     await expect(documentToDocx({blocks: [block(deep)]})).rejects.toThrow("nesting exceeds");
+
+    const links = Array.from({length: DOCX_LIMITS.hyperlinks + 1}, (_, index) => `<a href="https://example.com/${index}">x</a>`).join("");
+    await expect(documentToDocx({blocks: [block(`<p>${links}</p>`)]})).rejects.toThrow("hyperlink count exceeds");
 
     const image = dataUrl("image/png", png(1, 1));
     const images = `<p>${`<img src="${image}" alt="x">`.repeat(DOCX_LIMITS.images + 1)}</p>`;

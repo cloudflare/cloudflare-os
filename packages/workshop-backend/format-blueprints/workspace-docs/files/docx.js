@@ -25,6 +25,7 @@ export const DOCX_LIMITS = Object.freeze({
   htmlCharacters: 32 * 1024 * 1024,
   nodes: 200_000,
   depth: 128,
+  hyperlinks: 4096,
   images: 128,
   imageBytes: 8 * 1024 * 1024,
   totalImageBytes: 24 * 1024 * 1024,
@@ -50,7 +51,7 @@ const BULLET_GLYPHS = ["&#x2022;", "&#x25E6;", "&#x25AA;"];
 const LIST_KINDS = ["bullet", "decimal", "lowerLetter", "upperLetter", "lowerRoman", "upperRoman"];
 const LIST_TYPES = {a: "lowerLetter", A: "upperLetter", i: "lowerRoman", I: "upperRoman"};
 // The only attributes the walk reads; everything else is dropped at parse time.
-const STORED_ATTRIBUTES = ["style", "class", "hidden", "href", "src", "alt", "width", "type", "start", "value", "face", "size", "color"];
+const STORED_ATTRIBUTES = ["style", "class", "hidden", "open", "href", "src", "alt", "width", "type", "start", "value", "face", "size", "color"];
 
 // --- XML text ----------------------------------------------------------------------------------
 
@@ -149,6 +150,7 @@ function closeImplied(stack, tag) {
     : tag === "td" || tag === "th" ? [["td", "th"], ["tr", "table"]]
     : tag === "dt" || tag === "dd" ? [["dt", "dd"], ["dl"]]
     : tag === "tr" ? [["tr"], ["table"]]
+    : tag === "thead" || tag === "tbody" || tag === "tfoot" ? [["thead", "tbody", "tfoot"], ["table"]]
     : tag === "a" ? [["a"], []]
     : HEADING_STYLES[tag] ? [["p", ...Object.keys(HEADING_STYLES)], []]
     : BLOCK_TAGS.has(tag) ? [["p"], []] : [[], []];
@@ -255,22 +257,27 @@ function cssDeclarations(style) {
   return declarations.sort((a, b) => a.important - b.important).map(({name, value}) => [name, value]);
 }
 
-// Returns an RRGGBB hex string for `#rgb`, `#rrggbb`, and `rgb()`/`rgba()` colors.
+// Returns an RRGGBB hex string for `#rgb(a)`, `#rrggbb(aa)`, and `rgb()`/`rgba()` colors, "" for a
+// fully transparent color, and null for anything else.
 function cssColor(value) {
   const input = value.trim().toLowerCase();
   const hex = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(input)?.[1];
   if (hex) {
+    if (hex.length === 4 && hex[3] === "0") return "";
+    if (hex.length === 8 && hex.slice(6) === "00") return "";
     if (hex.length <= 4) return (hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2]).toUpperCase();
     return hex.slice(0, 6).toUpperCase();
   }
   const rgb = /^rgba?\(([^)]*)\)$/.exec(input)?.[1];
   if (!rgb) return null;
-  const channels = rgb.split(/\s*[,/]\s*|\s+/).slice(0, 3).map((part) => {
+  const parts = rgb.split(/\s*[,/]\s*|\s+/);
+  const channels = parts.slice(0, 3).map((part) => {
     const number = Number.parseFloat(part);
     const channel = part.endsWith("%") ? number * 2.55 : number;
     return channel >= 0 && channel <= 255 ? Math.round(channel) : NaN;
   });
   if (channels.length < 3 || channels.some(Number.isNaN)) return null;
+  if (parts[3] !== undefined && Number.parseFloat(parts[3]) === 0) return "";
   return channels.map((channel) => channel.toString(16).padStart(2, "0")).join("").toUpperCase();
 }
 
@@ -367,21 +374,24 @@ function deriveFormat(parent, node, declarations) {
       const color = cssColor(value);
       if (color) format.color = color;
     } else if (name === "background-color") {
-      format.shading = lower === "transparent" ? null : cssColor(value) ?? format.shading;
+      const color = lower === "transparent" ? "" : cssColor(value);
+      if (color != null) format.shading = color || null;
     }
   }
   return format;
 }
 
-// A value the browser accepts but Word cannot express (auto, percentages, font-relative units).
-const UNREPRESENTABLE_LENGTH = /^(?:auto|-?(?:\d+\.?\d*|\.\d+)(?:%|r?em|ch|ex|v(?:w|h|min|max)))$/i;
+// A value the browser accepts but Word cannot express (percentages, font-relative units).
+const UNREPRESENTABLE_LENGTH = /^-?(?:\d+\.?\d*|\.\d+)(?:%|r?em|ch|ex|v(?:w|h|min|max))$/i;
 
 // Winning indent in twips after `value`: a length replaces `previous`, an unrepresentable value
-// clears it, and an invalid declaration is dropped as the browser drops it.
-function indentValue(value, previous) {
+// clears it, and an invalid declaration is dropped as the browser drops it. `auto` is valid for
+// margins only.
+function indentValue(value, previous, allowAuto) {
   const twips = cssLength(value);
   if (twips != null) return twips;
-  return UNREPRESENTABLE_LENGTH.test(value.trim()) ? null : previous;
+  const trimmed = value.trim();
+  return UNREPRESENTABLE_LENGTH.test(trimmed) || (allowAuto && /^auto$/i.test(trimmed)) ? null : previous;
 }
 
 function deriveParagraph(parent, declarations) {
@@ -396,9 +406,9 @@ function deriveParagraph(parent, declarations) {
       if (lower === "left" || lower === "start") paragraph.alignment = "left";
       else if (lower === "center" || lower === "right" || lower === "justify") paragraph.alignment = lower;
     } else if (name === "margin-left" || name === "margin") {
-      marginLeft = indentValue(name === "margin" ? cssBoxLeft(value) ?? "" : value, marginLeft);
+      marginLeft = indentValue(name === "margin" ? cssBoxLeft(value) ?? "" : value, marginLeft, true);
     } else if (name === "padding-left" || name === "padding") {
-      paddingLeft = indentValue(name === "padding" ? cssBoxLeft(value) ?? "" : value, paddingLeft);
+      paddingLeft = indentValue(name === "padding" ? cssBoxLeft(value) ?? "" : value, paddingLeft, false);
     } else if (name === "text-indent") {
       const twips = cssLength(value);
       if (twips != null) paragraph.firstLine = Math.max(-7200, Math.min(7200, twips));
@@ -436,7 +446,8 @@ function canonicalHyperlink(value) {
   }
   if (!["http:", "https:", "mailto:", "tel:"].includes(url.protocol) || url.username || url.password) return null;
   if ((url.protocol === "http:" || url.protocol === "https:") && !url.hostname) return null;
-  return url.href.length <= 8192 ? url.href : null; // Percent-encoding can grow the target several-fold.
+  // Word truncates hyperlinks around 2,080 characters, and percent-encoding can grow the target.
+  return url.href.length <= 2048 ? url.href : null;
 }
 
 // --- Images ------------------------------------------------------------------------------------
@@ -452,7 +463,7 @@ function imageDimensions(mime, bytes) {
     return {width: view.getUint32(16), height: view.getUint32(20)};
   }
   if (mime === "image/gif") {
-    if (bytes.length < 10 || ascii(0, 4) !== "GIF8") return null;
+    if (bytes.length < 10 || !["GIF87a", "GIF89a"].includes(ascii(0, 6))) return null;
     return {width: view.getUint16(6, true), height: view.getUint16(8, true)};
   }
   if (mime === "image/webp") {
@@ -586,6 +597,9 @@ class DocumentBuilder {
     if (!target) return null;
     let id = this.hyperlinkIds.get(target);
     if (!id) {
+      if (this.hyperlinkIds.size >= DOCX_LIMITS.hyperlinks) {
+        throw new Error(`DOCX hyperlink count exceeds the ${DOCX_LIMITS.hyperlinks}-target export limit.`);
+      }
       id = this.relationship("hyperlink", target, "External");
       this.hyperlinkIds.set(target, id);
     }
@@ -698,22 +712,25 @@ function walk(builder, node, parent) {
       context.hyperlink = canonicalHyperlink(node.attrs.href) ?? parent.hyperlink;
       break;
     case "ul":
-    case "ol": {
+    case "ol":
+      // The numbering instance is allocated by the first item, so an empty list defines none.
       context.listKind = tag === "ol" ? LIST_TYPES[node.attrs.type] || "decimal" : "bullet";
+      context.listStart = ordinal(node.attrs.start);
       context.level = Math.min(8, parent.level == null ? 0 : parent.level + 1);
-      context.numId = builder.list(context.listKind, context.level, ordinal(node.attrs.start));
+      context.numId = null;
       // A nested list inside an item that has no content of its own still shows the item's marker.
       if (parent.list && !parent.list.marked) builder.open(parent);
       break;
-    }
-    case "li":
-      if (parent.numId == null) break;
+    case "li": {
+      if (parent.listKind == null) break;
       // A `value` restarts numbering for this item and those that follow it in the same list.
-      if (context.listKind !== "bullet" && ordinal(node.attrs.value) != null) {
-        parent.numId = builder.list(context.listKind, context.level, ordinal(node.attrs.value));
+      const value = context.listKind === "bullet" ? null : ordinal(node.attrs.value);
+      if (value != null || parent.numId == null) {
+        parent.numId = builder.list(context.listKind, context.level, value ?? parent.listStart);
       }
       context.list = {numId: parent.numId, level: context.level, marked: false};
       break;
+    }
     case "tr":
       context.cells = 0;
       break;
@@ -723,7 +740,10 @@ function walk(builder, node, parent) {
       break;
   }
   const paragraphCount = builder.paragraphs.length;
-  for (const child of node.children) {
+  // A collapsed `<details>` shows only its summary.
+  const children = tag === "details" && !("open" in node.attrs)
+    ? node.children.filter((child) => child.tag === "summary") : node.children;
+  for (const child of children) {
     if (typeof child === "string") builder.text(context, child);
     else walk(builder, child, context);
   }
