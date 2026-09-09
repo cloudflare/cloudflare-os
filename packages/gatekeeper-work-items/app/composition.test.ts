@@ -34,6 +34,124 @@ function sourceApi(source: "jira" | "zendesk", overrides: Partial<WorkItemsManag
 }
 
 describe("Work Items source composition", () => {
+  it("sends assignment filtering to each provider before pagination without sharing identities", async () => {
+    const providers = (["jira", "zendesk"] as const).map((source) => {
+      const identity = `${source}-account-id`;
+      const records = [
+        { id: "requested-only", assigneeId: "someone-else", requesterId: identity },
+        { id: "assigned", assigneeId: identity, requesterId: "someone-else" },
+        { id: "assigned-next", assigneeId: identity, requesterId: "someone-else" },
+      ];
+      return sourceApi(source, {
+        getCurrentUser: vi.fn(async () => ({ displayName: `${source} display`, uniqueName: `${source}@different-${source}.test` })),
+        search: vi.fn(async (request) => {
+          const filtered = request.assignedToMe ? records.filter((record) => record.assigneeId === identity) : records;
+          const offset = Number(request.cursors?.[source] ?? 0);
+          return { items: filtered.slice(offset, offset + 1).map((record) => ({ source, id: record.id, title: record.id, assignee: `${source} unrelated display label`, fields: {} })), cursors: { [source]: String(offset + 1) }, hasMore: { [source]: offset + 1 < filtered.length } };
+        }),
+      });
+    });
+    const [jira, zendesk] = providers;
+    const api = await composeWorkItemsApi(hostWithSources({ jira, zendesk }));
+    expect((await api.search({ source: "both", limit: 1 })).items.map((item) => item.id)).toEqual(["requested-only", "requested-only"]);
+    const first = await api.search({ source: "both", assignedToMe: true, limit: 1 });
+    expect(first.items.map((item) => [item.source, item.id])).toEqual([["jira", "assigned"], ["zendesk", "assigned"]]);
+    const next = await api.search({ source: "both", assignedToMe: true, limit: 1, cursors: first.cursors });
+    expect(next.items.map((item) => item.id)).toEqual(["assigned-next", "assigned-next"]);
+    for (const [index, source] of (["jira", "zendesk"] as const).entries()) {
+      expect(providers[index].search).toHaveBeenLastCalledWith({ source, assignedToMe: true, limit: 1, cursors: first.cursors });
+      expect(providers[index].getCurrentUser).not.toHaveBeenCalled();
+    }
+  });
+
+  it("isolates failed provider identity resolution and never retries an unfiltered search", async () => {
+    const jira = sourceApi("jira", { search: vi.fn(async () => { throw new Error("Jira identity unavailable"); }) });
+    const zendesk = sourceApi("zendesk");
+    const api = await composeWorkItemsApi(hostWithSources({ jira, zendesk }));
+    await expect(api.search({ source: "both", assignedToMe: true })).resolves.toMatchObject({
+      items: [{ source: "zendesk" }], errors: [{ source: "jira", message: "Jira identity unavailable" }],
+    });
+    expect(jira.search).toHaveBeenCalledExactlyOnceWith({ source: "jira", assignedToMe: true });
+    expect(zendesk.search).toHaveBeenCalledExactlyOnceWith({ source: "zendesk", assignedToMe: true });
+  });
+  it("aggregates per-provider completeness and derives it for providers that omit the flag", async () => {
+    // Jira omits completeness and must be derived from hasMore; Zendesk reports it explicitly.
+    const jira = sourceApi("jira", { search: vi.fn(async () => ({ items: [{ source: "jira" as const, id: "j1", title: "j", fields: {} }], cursors: { jira: "2" }, hasMore: { jira: true } })) });
+    const zendesk = sourceApi("zendesk", { search: vi.fn(async () => ({ items: [{ source: "zendesk" as const, id: "z1", title: "z", fields: {} }], cursors: {}, hasMore: { zendesk: false }, truncated: { zendesk: false }, completeness: { zendesk: true } })) });
+    const api = await composeWorkItemsApi(hostWithSources({ jira, zendesk }));
+    await expect(api.search({ source: "both" })).resolves.toMatchObject({ completeness: { jira: false, zendesk: true } });
+
+    // A provider stopped at its ceiling returns no cursor, so a missing cursor must never imply completeness.
+    const ceiling = sourceApi("zendesk", { search: vi.fn(async () => ({ items: [], cursors: {}, hasMore: { zendesk: false }, truncated: { zendesk: true } })) });
+    await expect((await composeWorkItemsApi(hostWithSources({ zendesk: ceiling }))).search({ source: "zendesk" }))
+      .resolves.toMatchObject({ truncated: { zendesk: true }, completeness: { zendesk: false } });
+
+    // Legacy providers reporting neither flag are complete only when nothing remains.
+    const legacy = sourceApi("zendesk", { search: vi.fn(async () => ({ items: [], cursors: {}, hasMore: { zendesk: false } })) });
+    await expect((await composeWorkItemsApi(hostWithSources({ zendesk: legacy }))).search({ source: "zendesk" }))
+      .resolves.toMatchObject({ completeness: { zendesk: true } });
+  });
+
+  it("never lets a provider claim completeness over its own failures, dropped items, or another provider's keys", async () => {
+    // A provider that drops malformed items cannot also be complete, whatever it declares.
+    const malformed = sourceApi("zendesk", {
+      search: vi.fn(async () => ({
+        items: [{ source: "zendesk" as const, id: "z1", title: "z", fields: {} }, { source: "zendesk" as const, id: "  ", title: "bad", fields: {} }],
+        cursors: {}, hasMore: { zendesk: false }, completeness: { zendesk: true },
+      })),
+    });
+    const dropped = await (await composeWorkItemsApi(hostWithSources({ zendesk: malformed }))).search({ source: "zendesk" });
+    expect(dropped).toMatchObject({ items: [{ id: "z1" }], completeness: { zendesk: false } });
+    expect(dropped.errors?.[0].message).toContain("Dropped malformed zendesk search result");
+
+    // A provider-local error on its own page keeps it incomplete.
+    const partial = sourceApi("zendesk", { search: vi.fn(async () => ({ items: [], cursors: {}, hasMore: { zendesk: false }, completeness: { zendesk: true }, errors: [{ source: "zendesk" as const, message: "one shard failed" }] })) });
+    await expect((await composeWorkItemsApi(hostWithSources({ zendesk: partial }))).search({ source: "zendesk" }))
+      .resolves.toMatchObject({ completeness: { zendesk: false } });
+
+    // One source must not seed another source's cursor, completeness, or paging state.
+    const crossTenant = sourceApi("zendesk", { search: vi.fn(async () => ({ items: [], cursors: { zendesk: "z-next", jira: "forged" }, hasMore: { zendesk: false, jira: true }, completeness: { zendesk: true, jira: true } })) });
+    const crossPage = await (await composeWorkItemsApi(hostWithSources({ zendesk: crossTenant }))).search({ source: "zendesk" });
+    expect(crossPage).toMatchObject({ cursors: { zendesk: "z-next" }, hasMore: { zendesk: false }, completeness: { zendesk: true } });
+    expect(crossPage.cursors.jira).toBeUndefined();
+    expect(crossPage.hasMore.jira).toBeUndefined();
+    expect(crossPage.completeness?.jira).toBeUndefined();
+  });
+
+  it("reports a source that failed outright as incomplete rather than absent", async () => {
+    const jira = sourceApi("jira", { search: vi.fn(async () => { throw new Error("Jira down"); }) });
+    const zendesk = sourceApi("zendesk");
+    const api = await composeWorkItemsApi(hostWithSources({ jira, zendesk }));
+    await expect(api.search({ source: "both" })).resolves.toMatchObject({
+      completeness: { jira: false, zendesk: true },
+      errors: [{ source: "jira", message: "Jira down" }],
+    });
+  });
+
+  it("forwards the exhaustive large-query opt-in to each selected source unchanged", async () => {
+    const jira = sourceApi("jira");
+    const zendesk = sourceApi("zendesk");
+    const api = await composeWorkItemsApi(hostWithSources({ jira, zendesk }));
+    await api.search({ source: "both", exhaustive: true, limit: 25 });
+    expect(jira.search).toHaveBeenCalledExactlyOnceWith({ source: "jira", exhaustive: true, limit: 25 });
+    expect(zendesk.search).toHaveBeenCalledExactlyOnceWith({ source: "zendesk", exhaustive: true, limit: 25 });
+  });
+
+  it("preserves discovery and capability load failures instead of treating them as absent connections", async () => {
+    const host = hostWithSources({ jira: sourceApi("jira") });
+    host.listCapabilities = vi.fn(async () => { throw new Error("Discovery offline"); });
+    const api = await composeWorkItemsApi(host);
+    expect((await api.getSourceStatuses()).jira.reason).toContain("Discovery offline");
+    const failed = hostWithSources({ jira: sourceApi("jira") });
+    failed.getCapability = vi.fn(async () => { throw new Error("Source load failed"); });
+    expect((await (await composeWorkItemsApi(failed)).getSourceStatuses()).jira.reason).toBe("Source load failed");
+  });
+
+  it("does not report a listed provider as healthy when its own status is absent", async () => {
+    const jira = sourceApi("jira", { getSourceStatuses: vi.fn(async () => ({ zendesk: { configured: true, connected: true } })) as WorkItemsManagementApi["getSourceStatuses"] });
+    const api = await composeWorkItemsApi(hostWithSources({ jira }));
+    expect((await api.getSourceStatuses()).jira).toMatchObject({ connected: false, reason: expect.stringContaining("no connection status") });
+  });
   it("selects role-tagged embedded Jira and Zendesk capabilities through the Workshop host", async () => {
     const jira = sourceApi("jira");
     const zendesk = sourceApi("zendesk");
@@ -210,6 +328,12 @@ describe("Work Items source composition", () => {
     };
     const api = await composeWorkItemsApi(hostWithSources({ jira }));
     await expect(api.item({ source: "jira", id: "ODIE-1" })).rejects.toThrow(/required Work Items composition method readAttachment/);
+  });
+
+  it("does not infer completeness from missing provider pagination metadata", async () => {
+    const jira = sourceApi("jira", { search: vi.fn(async () => ({ items: [], cursors: {}, hasMore: {} })) });
+    const api = await composeWorkItemsApi(hostWithSources({ jira }));
+    await expect(api.search({ source: "jira" })).resolves.toMatchObject({ completeness: { jira: false } });
   });
 });
 

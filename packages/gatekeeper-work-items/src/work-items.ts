@@ -18,7 +18,7 @@ import type {
   SupportedResource,
   VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import TYPES_CODE from "./types.txt";
+import TYPES_CODE from "./agent-types.txt";
 import APP_HTML from "./generated/app.txt";
 import type { WorkItemsCurrentUser, WorkItemSavedView, WorkItemsSession, WorkItemsShellMetadataApi } from "./types.js";
 
@@ -107,7 +107,7 @@ export class WorkItemsGatekeeper extends DurableObject<Cloudflare.Env, AccountPr
   async startSession(approvalQueue: NativeRpcStub<ApprovalQueue>): Promise<WorkItemsSession> { return new WorkItemsSessionImpl(approvalQueue.dup()); }
   async getAgentCatalog(authorizer: NativeRpcStub<ObservationAuthorizer>): Promise<AgentCatalog> {
     await authorizer.authorizeObservation({ title: "Read Work Items catalog", description: "Listed the composed Work Items shell capability." });
-    return { entries: [{ id: "work-items:shell", title: "Work Items shell", description: "Use role-tagged Jira and Zendesk source UIs for provider operations." }] };
+    return { entries: [{ id: "work-items:shell", title: "Work Items shell", description: "Readiness marker only: ping() confirms installation, not provider connectivity. Search, reads, and mutations require separately authorized Jira or Zendesk bindings; management UI APIs are not callable on this session." }] };
   }
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
   async removeObserver(_id: string): Promise<void> {}
@@ -164,6 +164,7 @@ export function normalizeSavedView(view: WorkItemSavedView): WorkItemSavedView {
   return {
     id,
     name,
+    ...(view.assignedToMe === true ? { assignedToMe: true } : {}),
     query: boundString(view.query, MAX_QUERY),
     source,
     filters: {

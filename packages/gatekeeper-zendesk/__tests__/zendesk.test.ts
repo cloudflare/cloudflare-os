@@ -1,6 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ZendeskApi, buildAuthorizeUrl, exchangeAuthCode, normalizeSubdomain, ticketUrl } from "../src/zendesk-api";
 import { codingTools, zendeskActionResultToToolResult } from "../src/coding-session";
+import type { ZendeskAccountSession, ZendeskTicketSession } from "../src/types";
+
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 vi.mock("cloudflare:workers", () => ({
   DurableObject: class DurableObject<Env = unknown> {
@@ -37,6 +40,8 @@ function makeTestStorage() {
         get: <T>(key: string): T | undefined => kv.get(key) as T | undefined,
         put: <T>(key: string, value: T): void => { kv.set(key, value); },
         delete: (key: string): void => { kv.delete(key); },
+        list: <T>({ prefix }: { prefix: string }): Array<[string, T]> =>
+          [...kv.entries()].filter(([key]) => key.startsWith(prefix)) as Array<[string, T]>,
       },
       setAlarm: vi.fn(),
       deleteAlarm: vi.fn(),
@@ -104,6 +109,449 @@ describe("Zendesk URL normalization", () => {
 
   it("refuses attachment downloads outside the connected subdomain", async () => {
     await expect(new ZendeskApi("acme", async () => "token").downloadAttachment("https://other.zendesk.com/attachments/1")).rejects.toThrow(/outside the connected/);
+    await expect(new ZendeskApi("acme", async () => "token").downloadAttachment("https://acme.zendesk.com:8443/attachments/1")).rejects.toThrow(/outside the connected/);
+  });
+
+  it("cancels an oversized streaming response before buffering the whole body", async () => {
+    const cancel = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream({
+      pull(controller) { controller.enqueue(new Uint8Array(600_000)); }, cancel,
+    }))));
+    await expect(new ZendeskApi("acme", async () => "token").me()).rejects.toThrow("size limit");
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+async function workflowGatekeeper(ticketId?: string, subdomain = "acme") {
+  const { ZendeskGatekeeper } = await import("../src/zendesk");
+  const { kv, storage } = makeTestStorage();
+  const account = { getAccessToken: async () => "token" };
+  const gatekeeper = new ZendeskGatekeeper({
+    props: { accountId: "account", subdomain, ticketId }, storage,
+    exports: { ZendeskAccount: { idFromString: (id: string) => id, get: () => account } },
+  } as never, {} as never);
+  const queue = { dup() { return this; }, [Symbol.dispose]: vi.fn(), authorizeObservation: vi.fn(), submitAction: vi.fn() };
+  return { gatekeeper, kv, queue };
+}
+
+describe("Zendesk workflow regressions", () => {
+  it("filters assignedToMe by live assignee ID on every coding search page", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    const fetcher = vi.fn(async (url: string) => url.includes("users/me.json")
+      ? Response.json({ user: { id: 17, email: "agent@example.test" } })
+      : Response.json({ results: [{ id: 123, assignee_id: 17, requester_id: 99 }], next_page: "next" }));
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    expect((await session.listTools()).find(tool => tool.name === "zendesk_search_tickets")?.inputSchema).toMatchObject({ properties: { assignedToMe: { type: "boolean" } } });
+    for (const cursor of [undefined, "2"]) {
+      await session.callTool("zendesk_search_tickets", { query: "status:open", assignedToMe: true, limit: 25, cursor });
+    }
+    const urls = fetcher.mock.calls.map(([url]) => new URL(url));
+    expect(urls.map(url => url.pathname)).toEqual(["/api/v2/users/me.json", "/api/v2/search.json", "/api/v2/users/me.json", "/api/v2/search.json"]);
+    expect(urls[1].searchParams.get("query")).toBe("type:ticket assignee:17 status:open");
+    expect(urls[3].searchParams.get("query")).toBe("type:ticket assignee:17 status:open");
+    expect(urls[3].searchParams.get("page")).toBe("2");
+    expect(urls[3].searchParams.get("per_page")).toBe("25");
+    expect(queue.authorizeObservation).toHaveBeenCalledTimes(2);
+    expect(queue.authorizeObservation).toHaveBeenLastCalledWith(expect.objectContaining({ prohibitAllSharing: true }));
+    await gatekeeper.searchTickets({ source: "zendesk", assignedToMe: true, cursors: { zendesk: "3" } });
+    expect(new URL(fetcher.mock.calls.at(-1)![0]).searchParams.get("query")).toBe("type:ticket assignee:17");
+  });
+
+  it("does not resolve identity for unfiltered search and rejects conflicting assignee terms", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    const fetcher = vi.fn(async () => Response.json({ results: [], next_page: null }));
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    await session.callTool("zendesk_search_tickets", { assignedToMe: false });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    fetcher.mockClear();
+    await expect(session.callTool("zendesk_search_tickets", { assignedToMe: true, query: "assignee:99" })).rejects.toThrow("without an assignee term");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each([200, 401, 503])("fails assignedToMe explicitly when identity is unavailable (%s), without unfiltered fallback", async status => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    const fetcher = vi.fn(async () => Response.json(status === 200 ? { user: { id: null } } : { error: "Identity unavailable" }, { status }));
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    await expect(session.callTool("zendesk_search_tickets", { assignedToMe: true })).rejects.toThrow();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith("https://acme.zendesk.com/api/v2/users/me.json", expect.anything());
+    expect(queue.authorizeObservation).not.toHaveBeenCalled();
+  });
+
+  it("retains an ambiguous failed comment and rejects repeated apply attempts without another write", async () => {
+    const { gatekeeper, queue, kv } = await workflowGatekeeper("123");
+    const fetcher = vi.fn(async () => Response.json({ ticket: { id: 123, updated_at: "stamp" } }));
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskTicketSession;
+    const action = await session.addComment({ body: "Do not duplicate" });
+    fetcher.mockClear().mockRejectedValue(new Error("Connection lost after sending request"));
+    await expect(gatekeeper.applyAction(action.actionId)).rejects.toThrow("Connection lost");
+    expect(kv.get(`action:${action.actionId}`)).toMatchObject({ status: "failed", body: "Do not duplicate", updateStamp: "stamp" });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(gatekeeper.applyAction(action.actionId)).rejects.toThrow(/ambiguous.*verify whether it applied/);
+    }
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(gatekeeper.getActionResult(action.actionId)).toMatchObject({ status: "failed" });
+  });
+
+  it("rejects legacy failed, missing, rejected, and in-flight actions rather than resolving unapplied no-ops", async () => {
+    const { gatekeeper, kv } = await workflowGatekeeper();
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    kv.set("result:1", { status: "failed", message: "Old provider failure" });
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/Old provider failure.*verify the outcome/);
+    await expect(gatekeeper.applyAction(2)).rejects.toThrow("unavailable");
+    kv.set("result:3", { status: "rejected" });
+    await expect(gatekeeper.applyAction(3)).rejects.toThrow("rejected");
+    for (const claimedAt of [Date.now(), 0]) {
+      kv.set("action:4", { id: 4, kind: "fields", ticketId: "123", fields: { status: "pending" }, updateStamp: "stamp", status: "applying", claimedAt });
+      await expect(gatekeeper.applyAction(4)).rejects.toThrow(/in progress or its outcome is ambiguous/);
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("never upgrades an invalid ticket resource URL to account-wide access", async () => {
+    const { ZendeskUserImpl } = await import("../src/zendesk");
+    const makeClass = vi.fn(() => ({}));
+    const user = new ZendeskUserImpl({ props: { accountId: "account", subdomain: "acme" }, exports: { ZendeskGatekeeper: makeClass } } as never, {} as never);
+    for (const url of ["https://acme.zendesk.com/agent/tickets/not-a-ticket", "https://acme.zendesk.com/agent/tickets/123/other", "https://acme.zendesk.com/agent", "http://acme.zendesk.com", "https://acme.zendesk.com:8443", "https://other.zendesk.com"]) {
+      await expect(user.getGatekeeperClassFor(url)).rejects.toThrow();
+    }
+    expect(makeClass).not.toHaveBeenCalled();
+    await user.getGatekeeperClassFor("https://acme.zendesk.com/agent/tickets/123");
+    expect(makeClass).toHaveBeenLastCalledWith({ props: { accountId: "account", subdomain: "acme", ticketId: "123" } });
+    await user.getGatekeeperClassFor("https://acme.zendesk.com");
+    expect(makeClass).toHaveBeenLastCalledWith({ props: { accountId: "account", subdomain: "acme", ticketId: undefined } });
+  });
+
+  it("exposes live current-user identity only through an authorized account observation", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    const fetcher = vi.fn(async () => Response.json({ user: { id: 17, name: "Agent", email: "agent@example.test" }, authenticity_token: "never exposed" }));
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    await expect(session.getCurrentUser()).resolves.toEqual({ id: "17", displayName: "Agent", uniqueName: "agent@example.test" });
+    expect(queue.authorizeObservation).toHaveBeenCalledWith(expect.objectContaining({ prohibitAllSharing: true }));
+    expect(fetcher).toHaveBeenCalledWith("https://acme.zendesk.com/api/v2/users/me.json", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer token" }) }));
+    expect(await session.listTools()).toContainEqual(expect.objectContaining({ name: "zendesk_get_current_user", mode: "read" }));
+    await expect(session.callTool("zendesk_get_current_user")).resolves.toMatchObject({ status: "ok", structuredContent: { id: "17" } });
+    queue.authorizeObservation.mockRejectedValue(new Error("observation denied"));
+    await expect(session.getCurrentUser()).rejects.toThrow("observation denied");
+    await expect(session.callTool("zendesk_get_current_user")).rejects.toThrow("observation denied");
+  });
+
+  it("rejects anonymous self responses and does not widen ticket sessions", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper("123");
+    const session = await gatekeeper.startSession(queue as never);
+    expect("getCurrentUser" in session).toBe(false);
+    expect("searchTickets" in session).toBe(false);
+    expect("callTool" in session).toBe(false);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ user: { id: null } })));
+    await expect(gatekeeper.getCurrentUser()).rejects.toThrow("signed-in user");
+  });
+
+  it("keeps shipped numeric search cursors and stops before the provider ceiling", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    const fetcher = vi.fn(async (_url: string) => Response.json({ results: [{ id: 123, subject: "Ticket" }], count: 1001, next_page: "next" }));
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    await expect(session.searchTickets({ query: "status:open", limit: 50, cursor: "2" })).resolves.toMatchObject({ cursors: { zendesk: "3" }, hasMore: { zendesk: true } });
+    const url = new URL(fetcher.mock.calls[0][0] as string);
+    expect(url.pathname).toBe("/api/v2/search.json");
+    expect(url.searchParams.get("query")).toBe("type:ticket status:open");
+    expect(url.searchParams.get("page")).toBe("2");
+    await expect(session.searchTickets({ limit: 50, cursor: "20" })).resolves.toMatchObject({ cursors: {}, hasMore: { zendesk: false }, truncated: { zendesk: true } });
+    await expect(session.searchTickets({ limit: 30, cursor: "33" })).resolves.toMatchObject({ cursors: {}, truncated: { zendesk: true } });
+    fetcher.mockClear();
+    await expect(session.searchTickets({ limit: 50, cursor: "21" })).rejects.toThrow("1,000 results");
+    await expect(session.searchTickets({ limit: 30, cursor: "34" })).rejects.toThrow("1,000 results");
+    expect(fetcher).not.toHaveBeenCalled();
+    fetcher.mockResolvedValue(Response.json({ results: [], count: 1000, next_page: null }));
+    await expect(session.searchTickets({ limit: 50, cursor: "20" })).resolves.toMatchObject({ truncated: { zendesk: false }, completeness: { zendesk: true } });
+  });
+
+  it("pages every match through the export endpoint and only reports completeness on the last page", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    const fetcher = vi.fn(async (input: string) => new URL(input).searchParams.get("page[after]")
+      ? Response.json({ results: [{ id: 2, subject: "Second" }], meta: { has_more: false, after_cursor: null } })
+      : Response.json({ results: [{ id: 1, subject: "First" }], meta: { has_more: true, after_cursor: "MjAyNi0wOS0wOQ==" } }));
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+
+    const first = await session.searchTickets({ query: "status:open", limit: 50, exhaustive: true });
+    expect(first).toMatchObject({ hasMore: { zendesk: true }, truncated: { zendesk: false }, completeness: { zendesk: false } });
+    const url = new URL(fetcher.mock.calls[0][0] as string);
+    expect(url.pathname).toBe("/api/v2/search/export");
+    expect(url.searchParams.get("filter[type]")).toBe("ticket");
+    expect(url.searchParams.get("query")).toBe("status:open");
+    expect(url.searchParams.get("page[size]")).toBe("50");
+    expect(url.searchParams.get("page[after]")).toBeNull();
+
+    const second = await session.searchTickets({ query: "status:open", limit: 50, cursor: first.cursors.zendesk });
+    expect(second).toMatchObject({ items: [{ id: "2" }], cursors: {}, hasMore: { zendesk: false }, completeness: { zendesk: true } });
+    expect(new URL(fetcher.mock.calls[1][0] as string).searchParams.get("page[after]")).toBe("MjAyNi0wOS0wOQ==");
+  });
+
+  it("rejects export cursors that do not belong to this site, query, page size, or path", async () => {
+    const fetcher = vi.fn(async () => Response.json({ results: [], meta: { has_more: true, after_cursor: "next-cursor" } }));
+    vi.stubGlobal("fetch", fetcher);
+    const acme = await workflowGatekeeper();
+    const acmeSession = await acme.gatekeeper.startSession(acme.queue as never) as ZendeskAccountSession;
+    const cursor = (await acmeSession.searchTickets({ query: "status:open", limit: 50, exhaustive: true })).cursors.zendesk!;
+    expect(cursor.startsWith("zdx1.")).toBe(true);
+
+    // Same site, but a cursor must not silently page a different query or page size.
+    await expect(acmeSession.searchTickets({ query: "status:closed", limit: 50, cursor })).rejects.toThrow("different site, query, or page size");
+    await expect(acmeSession.searchTickets({ query: "status:open", limit: 25, cursor })).rejects.toThrow("different site, query, or page size");
+    await expect(acmeSession.searchTickets({ query: "status:open", limit: 50, cursor: "zdx1.00112233445566ff.next" })).rejects.toThrow("different site, query, or page size");
+    await expect(acmeSession.searchTickets({ query: "status:open", limit: 50, cursor: "zdx1.nothex.next" })).rejects.toThrow("export cursor is invalid");
+
+    // A cursor minted against another Zendesk site never pages this one.
+    const other = await workflowGatekeeper(undefined, "globex");
+    const otherSession = await other.gatekeeper.startSession(other.queue as never) as ZendeskAccountSession;
+    await expect(otherSession.searchTickets({ query: "status:open", limit: 50, cursor })).rejects.toThrow("different site, query, or page size");
+
+    // Offset and export pagination order results differently, so the two cursor kinds must never be mixed.
+    fetcher.mockClear();
+    await expect(acmeSession.searchTickets({ query: "status:open", limit: 50, cursor: "2", exhaustive: true })).rejects.toThrow("cannot be mixed");
+    await expect(acmeSession.searchTickets({ query: "type:user", exhaustive: true })).rejects.toThrow("does not accept type:");
+    await expect(acmeSession.searchTickets({ exhaustive: true })).rejects.toThrow("requires a query");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("fails an export page that claims more results without a cursor rather than reporting it complete", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ results: [{ id: 5 }], meta: { has_more: true, after_cursor: null } })));
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    await expect(session.searchTickets({ query: "status:open", limit: 50, exhaustive: true })).rejects.toThrow("missing its next cursor");
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ results: null, meta: { has_more: false } })));
+    await expect(session.searchTickets({ query: "status:open", limit: 50, exhaustive: true })).rejects.toThrow("malformed export search page");
+  });
+
+  it.each([{}, { meta: {} }, { meta: { has_more: "false" } }])("rejects missing or invalid export completion metadata: %j", async metadata => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ results: [], ...metadata })));
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    await expect(session.searchTickets({ query: "status:open", exhaustive: true })).rejects.toThrow("malformed export search page");
+  });
+
+  it("rejects a repeated export continuation instead of looping", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ results: [], meta: { has_more: true, after_cursor: "same" } })));
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    const first = await session.searchTickets({ query: "status:open", exhaustive: true });
+    await expect(session.searchTickets({ query: "status:open", cursor: first.cursors.zendesk })).rejects.toThrow("invalid continuation");
+  });
+
+  it("reads later comments, users, attachments, and audits beyond the old 50-entry cut", async () => {
+    const { gatekeeper } = await workflowGatekeeper();
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+      const url = new URL(input);
+      const after = url.searchParams.get("page[after]");
+      if (url.pathname.endsWith("comments.json")) return Response.json(after ?
+        { comments: [{ id: 2, author_id: 17, body: "Latest", attachments: [{ id: 8, file_name: "later.txt", content_url: "https://acme.zendesk.com/attachments/8" }] }], users: [{ id: 17, name: "Agent" }], meta: { has_more: false } } :
+        { comments: [{ id: 1, body: "First" }], meta: { has_more: true }, links: { next: "https://acme.zendesk.com/api/v2/tickets/123/comments.json?page[after]=next" } });
+      if (url.pathname.endsWith("audits.json")) return Response.json(after ?
+        { audits: [{ id: 51 }], meta: { has_more: false } } :
+        { audits: Array.from({ length: 50 }, (_, id) => ({ id })), meta: { has_more: true }, links: { next: "/api/v2/tickets/123/audits.json?page[after]=next" } });
+      if (url.pathname.startsWith("/attachments/")) return new Response("content");
+      return Response.json({ ticket: { id: 123, assignee_id: 17 } });
+    }));
+    const result = await gatekeeper.readTicket("123");
+    expect(result.comments.map(comment => comment.body)).toEqual(["First", "Latest"]);
+    expect(result.comments[1].author).toBe("Agent");
+    expect(result.comments[1].truncated).toBe(false);
+    expect(result.activity).toHaveLength(51);
+    expect(result.attachments).toEqual([expect.objectContaining({ id: "8", commentId: "2" })]);
+    expect((await gatekeeper.readAttachment("123", "8")).name).toBe("later.txt");
+  });
+
+  it("marks long comment bodies as truncated and authorizes history only after all pages succeed", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    const fetcher = vi.fn(async (url: string) => {
+      if (url.includes("comments.json")) return Response.json({ comments: [{ id: 1, body: "x".repeat(12001) }] });
+      if (url.includes("audits.json")) return Response.json({ audits: [] });
+      return Response.json({ ticket: { id: 123 } });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    const result = await session.readTicket("123");
+    expect(result.comments[0].body).toHaveLength(12000);
+    expect(result.comments[0].truncated).toBe(true);
+    queue.authorizeObservation.mockClear();
+    fetcher.mockImplementation(async url => {
+      if (url.includes("page=2")) return Response.json({ error: "Forbidden" }, { status: 403 });
+      if (url.includes("comments.json")) return Response.json({ comments: [{ id: 1 }], next_page: "/api/v2/tickets/123/comments.json?page=2" });
+      if (url.includes("audits.json")) return Response.json({ audits: [] });
+      return Response.json({ ticket: { id: 123 } });
+    });
+    await expect(session.readTicket("123")).rejects.toMatchObject({ status: 403 });
+    expect(queue.authorizeObservation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "https://evil.example/api/v2/tickets/123/comments.json?page=2",
+    "https://acme.zendesk.com/api/v2/tickets/456/comments.json?page=2",
+    "https://acme.zendesk.com/api/v2/users.json?page=2",
+    "https://user@acme.zendesk.com/api/v2/tickets/123/comments.json?page=2",
+  ])("rejects history pagination outside the ticket: %s", async next => {
+    const fetcher = vi.fn(async () => Response.json({ comments: [], next_page: next }));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(new ZendeskApi("acme", async () => "token").comments("123")).rejects.toThrow("outside the requested ticket");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ redirect: "error" }));
+  });
+
+  it("rejects broken, looping, failed, and over-budget history instead of returning partial data", async () => {
+    const api = new ZendeskApi("acme", async () => "token");
+    const fetcher = vi.fn(async () => Response.json({ comments: [], meta: { has_more: true } }));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(api.comments("123")).rejects.toThrow("missing its next page");
+    fetcher.mockImplementation(async () => Response.json({ comments: [], next_page: "/api/v2/tickets/123/comments.json?page=2" }));
+    await expect(api.comments("123")).rejects.toThrow("repeated a page");
+    fetcher.mockReset().mockResolvedValueOnce(Response.json({ comments: [{ id: 1 }], next_page: "/api/v2/tickets/123/comments.json?page=2" })).mockResolvedValueOnce(Response.json({ error: "Unavailable" }, { status: 503 }));
+    await expect(api.comments("123")).rejects.toMatchObject({ status: 503 });
+    let page = 0;
+    fetcher.mockImplementation(async () => Response.json({ comments: [], next_page: `/api/v2/tickets/123/comments.json?page=${++page}` }));
+    await expect(api.comments("123")).rejects.toThrow("pagination exceeded its limit");
+    expect(page).toBe(100);
+    page = 0;
+    fetcher.mockImplementation(async () => Response.json({ comments: [{ id: page, body: "x".repeat(900_000) }], next_page: `/api/v2/tickets/123/comments.json?page=${++page}` }));
+    await expect(api.comments("123")).rejects.toThrow("history exceeded its size limit");
+    expect(page).toBe(9);
+  });
+
+  it("does not turn a successful approved write into failure by reading history afterward", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper("123");
+    const stamp = "2026-09-09T00:00:00Z";
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) => Response.json({ ticket: { id: 123, updated_at: stamp, status: init?.method === "PUT" ? "pending" : "open" } }));
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskTicketSession;
+    const pending = await session.addComment({ body: "Internal note" });
+    expect(queue.submitAction).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls.every(([, init]) => init?.method !== "PUT")).toBe(true);
+    fetcher.mockClear();
+    await gatekeeper.applyAction(pending.actionId);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ ticket: { comment: { body: "Internal note", public: false, uploads: [] }, safe_update: true, updated_stamp: stamp } });
+    expect(gatekeeper.getActionResult(pending.actionId)).toMatchObject({ status: "ready" });
+    await gatekeeper.applyAction(pending.actionId);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves conflict guards and never automatically retries a write", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper("123");
+    const fetcher = vi.fn(async () => Response.json({ ticket: { id: 123, updated_at: "old" } }));
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskTicketSession;
+    const pending = await session.updateFields({ fields: { status: "pending" } });
+    fetcher.mockClear().mockImplementation(async () => Response.json({ error: "UpdateConflict" }, { status: 409 }));
+    await expect(gatekeeper.applyAction(pending.actionId)).rejects.toMatchObject({ status: 409 });
+    expect(gatekeeper.getActionResult(pending.actionId)).toMatchObject({ status: "failed" });
+    await expect(gatekeeper.applyAction(pending.actionId)).rejects.toThrow(/conflict.*Read the latest ticket.*new action/);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(() => new ZendeskApi("acme", async () => "token").updateTicket("123", {})).toThrow("update stamp");
+  });
+
+  it("rejects oversized writes rather than silently truncating their contents", async () => {
+    const { gatekeeper, queue } = await workflowGatekeeper();
+    const fetcher = vi.fn(async () => Response.json({ ticket: { id: 123, updated_at: "stamp" } }));
+    vi.stubGlobal("fetch", fetcher);
+    const session = await gatekeeper.startSession(queue as never) as ZendeskAccountSession;
+    await expect(session.callTool("zendesk_add_comment", { id: "123", body: "x".repeat(12001) })).rejects.toThrow("12,000");
+    await expect(session.callTool("zendesk_update_fields", { id: "123", fields: { tags: Array(51).fill("tag") } })).rejects.toThrow("value limits");
+    await expect(session.callTool("zendesk_update_fields", { id: "123", fields: { custom_1: "x".repeat(2001) } })).rejects.toThrow("value limits");
+    await expect(session.callTool("zendesk_update_fields", { id: "123", fields: Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`custom_${i}`, true])) })).rejects.toThrow("1 to 10");
+    await expect(session.callTool("zendesk_update_fields", { id: "123", fields: { requester_id: 17 } })).rejects.toThrow("Unsupported Zendesk field");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(queue.submitAction).not.toHaveBeenCalled();
+    await expect(session.callTool("zendesk_add_comment", { id: "123", body: "Note", attachmentTokens: Array(11).fill("token") })).rejects.toThrow("tokens exceed");
+    await expect(session.callTool("zendesk_add_comment", { id: "123", body: "Note", attachmentTokens: ["unknown"] })).rejects.toThrow("invalid, expired, consumed");
+    expect(queue.submitAction).not.toHaveBeenCalled();
+  });
+});
+
+describe("Zendesk token lifecycle regressions", () => {
+  const env = { CLIENT_ID: "client", CLIENT_SECRET: "secret" };
+  async function accountWithGrant(grant: Record<string, unknown>) {
+    const { ZendeskAccount } = await import("../src/zendesk");
+    const { kv, storage } = makeTestStorage();
+    kv.set("subdomain", "acme");
+    kv.set("grant", grant);
+    const callback = { credentialsExpired: vi.fn(), credentialsRestored: vi.fn() };
+    kv.set("callback", callback);
+    const account = new ZendeskAccount({ storage } as never, env as never);
+    return { account, kv, callback };
+  }
+
+  it.each([undefined, null])("does not invent an expiry when expires_in is %s", async expires_in => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ access_token: "access", refresh_token: "refresh", expires_in })));
+    const grant = await exchangeAuthCode({ subdomain: "acme", code: "code", clientId: "client", clientSecret: "secret", redirectUri: "https://example.test/oauth", scope: "read write" });
+    expect(grant.expiresAt).toBeNull();
+    const { account } = await accountWithGrant(grant);
+    await expect(account.getAccessToken()).resolves.toBe("access");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("coalesces concurrent refreshes, rotates tokens, and retains the granted scope", async () => {
+    const { account, kv } = await accountWithGrant({ accessToken: "old", refreshToken: "old-refresh", expiresAt: 0, scope: "read" });
+    const fetcher = vi.fn(async (_url: string, _init?: RequestInit) => Response.json({ access_token: "new", refresh_token: "new-refresh", expires_in: 1800 }));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(Promise.all([account.getAccessToken(), account.getAccessToken(), account.getAccessToken()])).resolves.toEqual(["new", "new", "new"]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toMatchObject({ refresh_token: "old-refresh", scope: "read" });
+    expect(kv.get("grant")).toMatchObject({ accessToken: "new", refreshToken: "new-refresh", scope: "read" });
+  });
+
+  it("reports invalid_grant as expired but leaves transient failures retryable", async () => {
+    const { account, kv, callback } = await accountWithGrant({ accessToken: "old", refreshToken: "refresh", expiresAt: 0 });
+    const fetcher = vi.fn(async () => Response.json({ error: "invalid_grant" }, { status: 400 }));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(account.getAccessToken()).rejects.toMatchObject({ status: 401 });
+    await expect(account.getAccessToken()).rejects.toMatchObject({ status: 401 });
+    expect(callback.credentialsExpired).toHaveBeenCalledTimes(1);
+    kv.delete("expiredNotified");
+    callback.credentialsExpired.mockClear();
+    fetcher.mockImplementationOnce(async () => Response.json({ error: "Unavailable" }, { status: 503 }));
+    await expect(account.getAccessToken()).rejects.toMatchObject({ status: 503 });
+    expect(callback.credentialsExpired).not.toHaveBeenCalled();
+    fetcher.mockImplementationOnce(async () => Response.json({ access_token: "new", expires_in: 1800 }));
+    await expect(account.getAccessToken()).resolves.toBe("new");
+  });
+
+  it("does not restore a grant revoked while refresh is in flight", async () => {
+    const { account, kv } = await accountWithGrant({ accessToken: "old", refreshToken: "refresh", expiresAt: 0 });
+    vi.stubGlobal("fetch", vi.fn(async () => { kv.delete("grant"); return Response.json({ access_token: "new", expires_in: 1800 }); }));
+    await expect(account.getAccessToken()).rejects.toThrow("credentials changed");
+    expect(kv.get("grant")).toBeUndefined();
+  });
+
+  it("preserves legacy non-expiring tokens but probes the provider for connection health", async () => {
+    const { ZendeskUserImpl } = await import("../src/zendesk");
+    const { account, callback } = await accountWithGrant({ accessToken: "legacy", expiresAt: 0 });
+    const fetcher = vi.fn(async () => Response.json({ error: "Unauthorized" }, { status: 401 }));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(account.getAccessToken()).resolves.toBe("legacy");
+    expect(fetcher).not.toHaveBeenCalled();
+    const user = new ZendeskUserImpl({ props: { accountId: "account", subdomain: "acme" }, exports: { ZendeskAccount: { idFromString: (id: string) => id, get: () => account } } } as never, env as never);
+    await expect(user.getConnectionStatus()).resolves.toMatchObject({ state: "expired" });
+    expect(callback.credentialsExpired).toHaveBeenCalledTimes(1);
+  });
+
+  it("resets identity and expiry notification on reconnect without changing the bound subdomain", async () => {
+    const { account, kv, callback } = await accountWithGrant({ accessToken: "old", expiresAt: 0 });
+    kv.set("identity", { id: 1 });
+    kv.set("expiredNotified", true);
+    await account.prepareReconnect("nonce");
+    await expect(account.beginOAuth("nonce", "other")).rejects.toThrow("original Zendesk subdomain");
+    const begun = await account.beginOAuth("nonce", "acme");
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ access_token: "new" })));
+    await account.acceptAuthCode("code", begun!.oauthNonce);
+    expect(callback.credentialsRestored).toHaveBeenCalledTimes(1);
+    expect(kv.get("identity")).toBeUndefined();
+    expect(kv.get("expiredNotified")).toBeUndefined();
   });
 });
 
@@ -177,7 +625,8 @@ describe("Zendesk coding-session MCP compatibility", () => {
       status: "failed",
       message: expect.stringContaining("provider unavailable"),
     });
-    expect(kv.get("action:7")).toBeUndefined();
+    expect(kv.get("action:7")).toMatchObject({ status: "failed", updateStamp: "2026-09-04T00:00:00Z" });
+    await expect(gatekeeper.applyAction(7)).rejects.toThrow(/ambiguous.*verify whether it applied/);
   });
 });
 

@@ -117,7 +117,7 @@ function makeAccount(callback: { complete: ReturnType<typeof vi.fn>; credentials
     if (url === "https://auth.atlassian.com/oauth/token") {
       return json({ access_token: "access", refresh_token: "refresh", expires_in: 3600, scope: "read:jira-work" });
     }
-    if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json([]);
+    if (url === "https://api.atlassian.com/oauth/token/accessible-resources") return json([{ id: "site", name: "Site", url: "https://example.atlassian.net", scopes: ["read:jira-work"] }]);
     if (url === "https://api.atlassian.com/me") return json({ account_id: "acct" });
     throw new Error(`unexpected URL ${url}`);
   }));

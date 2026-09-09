@@ -15,7 +15,7 @@ import type {
   WorkItemsManagementApi,
 } from "../src/types";
 
-type SavedView = { id: string; name: string; query: string; source: "both" | "jira" | "zendesk"; filters: { status: string; priority: string; type: string; person: string }; view: "list" | "kanban"; hiddenStatuses: string[] };
+type SavedView = { id: string; name: string; query: string; source: "both" | "jira" | "zendesk"; filters: { status: string; priority: string; type: string; person: string }; view: "list" | "kanban"; hiddenStatuses: string[]; assignedToMe?: boolean };
 
 const statuses = {
   jira: { configured: true, connected: true },
@@ -82,6 +82,66 @@ describe("WorkItemsPage", () => {
     await render(api);
     expect(api.search).toHaveBeenLastCalledWith(expect.objectContaining({ source: "jira", query: "login" }));
     expect(host.textContent).toContain("Jira login is slow");
+  });
+
+  it("reports a complete result set only when every searched provider exhausted its source", async () => {
+    const api = createApi({ page: { items: [jiraItem, zendeskItem], cursors: {}, hasMore: { jira: false, zendesk: false }, completeness: { jira: true, zendesk: true } } });
+    await render(api);
+    expect(completenessNote()?.dataset.complete).toBe("true");
+    expect(completenessNote()?.textContent).toContain("Showing all 2 matching items.");
+  });
+
+  it("never claims completeness at a provider ceiling and offers the exhaustive search instead", async () => {
+    history.replaceState(null, "", "/#q=status%3Aopen");
+    const search = vi.fn<WorkItemsManagementApi["search"]>(async (request) => request.exhaustive
+      ? { items: [jiraItem, zendeskItem], cursors: {}, hasMore: { jira: false, zendesk: false }, truncated: { jira: false, zendesk: false }, completeness: { jira: true, zendesk: true } }
+      : { items: [zendeskItem], cursors: {}, hasMore: { jira: false, zendesk: false }, truncated: { jira: false, zendesk: true }, completeness: { jira: true, zendesk: false } });
+    await render(createApi({ search }));
+
+    // A ceiling returns no cursor, so "Load more" is absent — the note must still refuse to call this complete.
+    expect(completenessNote()?.dataset.complete).toBe("false");
+    expect(completenessNote()?.textContent).toContain("Zendesk stopped at its provider result ceiling");
+    expect(completenessNote()?.textContent).not.toContain("Showing all");
+
+    await clickText("Load all matching results");
+    expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ exhaustive: true }));
+    expect(completenessNote()?.dataset.complete).toBe("true");
+    expect(completenessNote()?.textContent).toContain("from an exhaustive search");
+    expect(completenessNote()?.querySelector("button")).toBeNull();
+  });
+
+  it("asks for a query instead of offering an empty export at the result ceiling", async () => {
+    await render(createApi({ page: { items: [zendeskItem], cursors: {}, hasMore: { jira: false, zendesk: false }, truncated: { zendesk: true } } }));
+    expect(completenessNote()?.dataset.complete).toBe("false");
+    expect(completenessNote()?.textContent).toContain("add search terms or use My work");
+    expect(completenessNote()?.querySelector("button")).toBeNull();
+  });
+
+  it("keeps appended pages incomplete when an earlier page truncated, failed, or dropped items", async () => {
+    const search = vi.fn<WorkItemsManagementApi["search"]>(async (request) => request.cursors?.jira
+      ? { items: [jacobItem], cursors: {}, hasMore: { jira: false }, completeness: { jira: true } }
+      : {
+          items: [jiraItem], cursors: { jira: "2" }, hasMore: { jira: true, zendesk: false },
+          truncated: { jira: false, zendesk: true }, completeness: { jira: false, zendesk: false },
+          errors: [{ source: "zendesk", message: "Dropped malformed zendesk search result: id required" }],
+        });
+    await render(createApi({ search }));
+    expect(completenessNote()?.textContent).toContain("Jira has more pages to load");
+
+    await clickText("Load more");
+    expect(host.textContent).toContain("Jacob owned issue");
+    // Jira finished on the appended page, but Zendesk's earlier loss is sticky.
+    expect(completenessNote()?.dataset.complete).toBe("false");
+    expect(completenessNote()?.textContent).toContain("Zendesk results are missing because its search failed");
+    expect(completenessNote()?.textContent).not.toContain("Jira");
+  });
+
+  it("derives completeness conservatively for a provider that omits the flag", async () => {
+    const api = createApi({ page: { items: [jiraItem], cursors: { jira: "2" }, hasMore: { jira: true, zendesk: false } } });
+    await render(api);
+    expect(completenessNote()?.dataset.complete).toBe("false");
+    expect(completenessNote()?.textContent).toContain("Jira has more pages to load");
+    expect(completenessNote()?.querySelector("button")).toBeNull();
   });
 
   it("prefers initial host route state over hash and storage", async () => {
@@ -365,7 +425,7 @@ describe("WorkItemsPage", () => {
     await render(api);
     expect(api.search).toHaveBeenLastCalledWith(expect.objectContaining({ source: "zendesk" }));
     expect(host.textContent).toContain("Customer cannot export");
-    expect(host.textContent).not.toContain("Conflict");
+    expect(host.textContent).toContain("Conflict");
 
     const unavailableApi = createApi({
       items: [jiraItem],
@@ -376,7 +436,7 @@ describe("WorkItemsPage", () => {
     host.textContent = "";
     await render(unavailableApi);
     expect(unavailableApi.search).not.toHaveBeenCalled();
-    expect(host.textContent).toContain("Provider setup");
+    expect(host.textContent).toContain("Work items are unavailable");
     expect(host.textContent).not.toContain("Couldn’t load work items");
   });
 
@@ -391,6 +451,22 @@ describe("WorkItemsPage", () => {
     expect(host.textContent).toContain("Jira login is slow");
   });
 
+  it("offers connector management and capability reload without claiming an empty search", async () => {
+    const openConnectors = vi.fn<() => Promise<void>>(async () => {});
+    const retryProviders = vi.fn<() => Promise<void>>(async () => {});
+    const api = createApi({ items: [], statuses: { jira: { configured: false, connected: false, reason: "Source missing" }, zendesk: { configured: false, connected: false } } });
+    await render(api, { openConnectors, retryProviders });
+    await clickText("Connect or manage Jira");
+    expect(openConnectors).toHaveBeenCalledOnce();
+    await clickText("Retry Jira");
+    expect(retryProviders).toHaveBeenCalledOnce();
+    expect(api.search).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("Work items are unavailable");
+    openConnectors.mockRejectedValueOnce(new Error("Navigation failed"));
+    await clickText("Connect or manage Zendesk");
+    expect(host.textContent).toContain("Navigation failed");
+  });
+
   it("does not search with stale statuses when status refresh fails", async () => {
     const api = createApi({ items: [jiraItem] });
     await render(api);
@@ -399,6 +475,14 @@ describe("WorkItemsPage", () => {
     await clickText("Refresh work items");
     expect(api.search).not.toHaveBeenCalled();
     expect(host.textContent).toContain("status failed");
+  });
+
+  it("issues exactly one replacement search on refresh with unchanged statuses", async () => {
+    const api = createApi({ items: [jiraItem] });
+    await render(api);
+    api.search.mockClear();
+    await clickText("Refresh work items");
+    expect(api.search).toHaveBeenCalledOnce();
   });
 
   it("loads more from only providers that still have more results", async () => {
@@ -433,15 +517,111 @@ describe("WorkItemsPage", () => {
     expect(host.textContent).toContain("Jira login is slow");
   });
 
-  it("defaults to all work and filters My work only when selected", async () => {
-    const api = createApi({ items: [jiraItem, jacobItem], currentUser: { displayName: "Jacob Beck", uniqueName: "jacob.beck@example.com" } });
+  it("queries My work before pagination, even when the assignee is absent from the all-items page", async () => {
+    const api = createApi({ search: async (request) => ({ items: request.assignedToMe ? [jacobItem] : [jiraItem], cursors: { jira: "next" }, hasMore: { jira: true } }) });
     await render(api);
-    expect(host.textContent).toContain("Jacob owned issue");
+    expect(host.textContent).not.toContain("Jacob owned issue");
     expect(host.textContent).toContain("Jira login is slow");
     await clickText("My work");
+    expect(api.search).toHaveBeenLastCalledWith(expect.objectContaining({ assignedToMe: true, source: "both", cursors: undefined }));
     expect(host.textContent).toContain("Jacob owned issue");
     expect(host.textContent).not.toContain("Jira login is slow");
-    expect([...host.querySelectorAll<HTMLSelectElement>(".filter-select select")].at(3)?.value).toBe("jacob.beck@example.com");
+    expect([...host.querySelectorAll<HTMLSelectElement>(".filter-select select")].at(3)?.value).toBe("");
+    await clickText("Load more");
+    expect(api.search).toHaveBeenLastCalledWith(expect.objectContaining({ assignedToMe: true, source: "jira", cursors: { jira: "next" } }));
+    await clickText("All items");
+    expect(api.search.mock.lastCall?.[0].assignedToMe).toBeUndefined();
+    expect(api.search.mock.lastCall?.[0].cursors).toBeUndefined();
+    expect(api.getCurrentUser).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back to all items or retain old results when provider identity resolution fails", async () => {
+    const api = createApi({ search: async (request) => {
+      if (request.assignedToMe) throw new Error("Unable to resolve provider identity");
+      return { items: [jiraItem], cursors: {}, hasMore: {} };
+    } });
+    api.getCurrentUser.mockRejectedValue(new Error("Display identity unavailable"));
+    await render(api);
+    await clickText("My work");
+    expect(host.textContent).toContain("Unable to resolve provider identity");
+    expect(host.textContent).toContain("Work items are unavailable");
+    expect(host.textContent).not.toContain(jiraItem.title);
+    expect(api.search.mock.calls.slice(1).every(([request]) => request.assignedToMe === true)).toBe(true);
+    await clickText("Retry");
+    expect(api.search.mock.lastCall?.[0].assignedToMe).toBe(true);
+  });
+
+  it("keeps the explicit person filter separate and exact within My work", async () => {
+    const items = [{ ...jiraItem, assignee: "ada@one.test" }, { ...jacobItem, assignee: "ada@two.test" }];
+    const api = createApi({ items });
+    await render(api, { initialRouteState: "viewId=builtin%3Amy-work&assignedToMe=1&person=ada%40one.test" });
+    expect(api.search.mock.lastCall?.[0].assignedToMe).toBe(true);
+    expect(host.textContent).toContain(jiraItem.title);
+    expect(host.textContent).not.toContain(jacobItem.title);
+    await clickText("Clear");
+    expect(host.textContent).toContain(jacobItem.title);
+    expect(api.search.mock.lastCall?.[0].assignedToMe).toBe(true);
+  });
+
+  it("migrates old My work links away from the inferred email filter", async () => {
+    const api = createApi({ items: [zendeskItem] });
+    await render(api, { initialRouteState: "viewId=builtin%3Amy-work&person=old-jira%40example.com" });
+    expect(api.search.mock.lastCall?.[0].assignedToMe).toBe(true);
+    expect(host.textContent).toContain(zendeskItem.title);
+    expect([...host.querySelectorAll<HTMLSelectElement>(".filter-select select")].at(3)?.value).toBe("");
+  });
+
+  it("does not inherit stored assignment intent when opening the explicit All items view", async () => {
+    sessionStorage.setItem("work-items:v2", JSON.stringify({ viewId: "builtin:my-work", assignedToMe: true }));
+    const api = createApi({ items: [jiraItem] });
+    await render(api, { initialRouteState: "viewId=builtin%3Aall" });
+    expect(api.search.mock.lastCall?.[0].assignedToMe).toBeUndefined();
+  });
+
+  it("saves and restores provider-side assignment without broadening the search", async () => {
+    const api = createApi({ items: [jacobItem] });
+    await render(api, { initialRouteState: "viewId=builtin%3Amy-work" });
+    await changeText(host.querySelector<HTMLInputElement>(".save-view-name input")!, "Assigned bugs");
+    await clickText("Save view");
+    expect(api.saveSavedView).toHaveBeenCalledWith(expect.objectContaining({ assignedToMe: true, filters: EMPTY_TEST_FILTERS }));
+    await clickText("All items");
+    await clickText("Assigned bugs");
+    expect(api.search.mock.lastCall?.[0].assignedToMe).toBe(true);
+  });
+
+  it("waits for saved assignment intent before issuing the first search", async () => {
+    const view: SavedView = { id: "custom:mine", name: "Mine", query: "", source: "both", assignedToMe: true, filters: EMPTY_TEST_FILTERS, view: "list", hiddenStatuses: [] };
+    const deferred = createDeferred<SavedView[]>();
+    const api = createApi({ items: [jacobItem] });
+    api.listSavedViews.mockImplementation(() => deferred.promise);
+    await render(api, { initialRouteState: "viewId=custom%3Amine" });
+    expect(api.search).not.toHaveBeenCalled();
+    await act(async () => { deferred.resolve([view]); });
+    expect(api.search).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ assignedToMe: true }));
+  });
+
+  it("keeps failed saved-view loading distinct from empty work and retries without an all-items fallback", async () => {
+    const view: SavedView = { id: "custom:mine", name: "Mine", query: "", source: "both", assignedToMe: true, filters: EMPTY_TEST_FILTERS, view: "list", hiddenStatuses: [] };
+    const api = createApi({ items: [jacobItem] });
+    api.listSavedViews.mockRejectedValueOnce(new Error("Saved views offline"));
+    await render(api, { initialRouteState: "viewId=custom%3Amine" });
+    expect(api.search).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("Saved views offline");
+    expect(host.textContent).toContain("Work items are unavailable");
+    api.listSavedViews.mockResolvedValue([view]);
+    await clickText("Retry");
+    expect(api.search).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ assignedToMe: true }));
+  });
+
+  it("does not restore a slow saved view over a subsequently selected built-in view", async () => {
+    const deferred = createDeferred<SavedView[]>();
+    const api = createApi({ items: [jiraItem] });
+    api.listSavedViews.mockImplementation(() => deferred.promise);
+    await render(api, { initialRouteState: "viewId=custom%3Amine" });
+    await clickText("My work");
+    await act(async () => { deferred.resolve([{ id: "custom:mine", name: "Mine", query: "", source: "both", filters: EMPTY_TEST_FILTERS, view: "list", hiddenStatuses: [] }]); });
+    expect(api.search.mock.calls.every(([request]) => request.assignedToMe === true)).toBe(true);
+    expect([...host.querySelectorAll("button")].find((button) => button.textContent === "My work")?.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("applies, saves, and deletes durable custom views without prompts", async () => {
@@ -689,6 +869,10 @@ describe("WorkItemsPage", () => {
     expect(itemApi.addComment).toHaveBeenCalledWith({ body: "[Attachment: screenshot.png](work-items-attachment://a1)", visibility: "public" });
   });
 });
+
+function completenessNote() {
+  return host.querySelector<HTMLElement>(".search-completeness");
+}
 
 async function render(api: WorkItemsManagementApi, routeStateHost?: WorkItemsRouteStateHost) {
   await act(async () => {

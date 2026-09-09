@@ -50,14 +50,21 @@ export async function composeWorkItemsApi(host: HostCompositionApi): Promise<Wor
 }
 
 async function loadSources(host: HostCompositionApi): Promise<LoadedSources> {
-  const capabilities = await host.listCapabilities().catch(() => []);
+  let capabilities: GatekeeperAppInfo[];
+  try { capabilities = await host.listCapabilities(); }
+  catch (caught) {
+    const reason = `Provider discovery failed: ${safeMessage(caught)}`;
+    return { sources: {}, errors: { jira: reason, zendesk: reason } };
+  }
   const selected = new Map<WorkItemProviderKind, GatekeeperAppInfo>();
   for (const app of capabilities) {
     const role = validWorkItemsSourceRole(app);
     if (role) selected.set(role, app);
   }
   const loaded = await Promise.all([...selected].map(async ([source, app]) => {
-    const capability = await host.getCapability(app.id).catch(() => null);
+    let capability: WorkItemsSourceManagementApi | null;
+    try { capability = await host.getCapability(app.id); }
+    catch (caught) { return { source, error: safeMessage(caught) } as const; }
     if (!capability) return { source, error: `No ${source} Work Items source is connected.` } as const;
     const error = missingMethod(capability, REQUIRED_SOURCE_METHODS, `${source} Work Items source`);
     if (error) return { source, error } as const;
@@ -107,6 +114,9 @@ class CompositeWorkItemsApi implements WorkItemsManagementApi {
       items,
       cursors: Object.assign({}, ...pages.map((page) => page.ok ? page.page.cursors : {})),
       hasMore: Object.assign({}, ...pages.map((page) => page.ok ? page.page.hasMore : { [page.error.source]: false })),
+      truncated: Object.assign({}, ...pages.map((page) => page.ok ? page.page.truncated : { [page.error.source]: false })),
+      // A source that never answered cannot have exhausted anything.
+      completeness: Object.assign({}, ...pages.map((page) => page.ok ? page.page.completeness : { [page.error.source]: false })),
       ...(errors.length ? { errors } : {}),
     };
   }
@@ -123,7 +133,7 @@ class CompositeWorkItemsApi implements WorkItemsManagementApi {
     if (!capability) return { configured: false, connected: false, reason: this.sourceErrors[source] ?? `No ${source} Work Items source is connected.` };
     try {
       const statuses = await capability.getSourceStatuses();
-      return statuses[source] ?? { configured: true, connected: true };
+      return statuses[source] ?? { configured: true, connected: false, reason: "Provider returned no connection status. Retry loading providers." };
     } catch (caught) {
       return { configured: true, connected: false, reason: safeMessage(caught) };
     }
@@ -133,7 +143,19 @@ class CompositeWorkItemsApi implements WorkItemsManagementApi {
     try {
       const page = await this.requireSource(source).search({ ...request, source });
       const { items, errors } = normalizeSearchItems(source, page.items);
-      return { ok: true, page: { ...page, items }, errors: [...(page.errors ?? []), ...errors] };
+      const providerErrors = [...(page.errors ?? []), ...errors];
+      return {
+        ok: true,
+        errors: providerErrors,
+        page: {
+          items,
+          // A source may only speak for itself; scoping stops one provider seeding another provider's cursor or status.
+          cursors: scopeToSource(source, page.cursors, isNonEmptyString),
+          hasMore: scopeToSource(source, page.hasMore, isBoolean),
+          truncated: scopeToSource(source, page.truncated, isBoolean),
+          completeness: { [source]: resolveCompleteness(source, page, providerErrors) },
+        },
+      };
     } catch (caught) {
       return { ok: false, error: { source, message: safeMessage(caught) } };
     }
@@ -163,6 +185,26 @@ class CompositeWorkItemApi implements WorkItemManagementApi {
     return this.primary.linkTo(providerSelectionRef(normalizedOther));
   }
   [Symbol.dispose](): void { disposeWorkItemApi(this.primary); }
+}
+
+function isBoolean(value: unknown): value is boolean { return typeof value === "boolean"; }
+function isNonEmptyString(value: unknown): value is string { return typeof value === "string" && value !== ""; }
+
+function scopeToSource<T>(source: WorkItemProviderKind, map: Partial<Record<WorkItemProviderKind, unknown>> | undefined, valid: (value: unknown) => value is T): Partial<Record<WorkItemProviderKind, T>> {
+  const value = map?.[source];
+  return valid(value) ? { [source]: value } : {};
+}
+
+/**
+ * Resolves whether one provider exhausted its entire matching source. A provider that reports `completeness` is
+ * trusted only to say "incomplete": any local failure or dropped item overrides a `true` it cannot know about.
+ * Providers that omit it — Jira today — are derived conservatively from `hasMore`, `truncated`, and errors.
+ */
+function resolveCompleteness(source: WorkItemProviderKind, page: WorkItemSearchPage, errors: WorkItemProviderError[]): boolean {
+  if (errors.some((error) => error.source === source)) return false;
+  if (page.hasMore?.[source] === true || page.truncated?.[source] === true) return false;
+  const declared = page.completeness?.[source];
+  return isBoolean(declared) ? declared : page.hasMore?.[source] === false;
 }
 
 function normalizeSearchItems(source: WorkItemProviderKind, items: WorkItemSearchPage["items"]): { items: WorkItemSearchPage["items"]; errors: WorkItemProviderError[] } {

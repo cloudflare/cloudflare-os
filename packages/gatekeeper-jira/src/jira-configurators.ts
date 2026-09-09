@@ -55,7 +55,7 @@ export class JiraConfiguratorUI extends RpcTarget implements JiraConfiguratorRpc
       try {
         const api = apiFor(site, getToken);
         const jql = /^[A-Z][A-Z0-9_]{1,31}-\d+$/i.test(search) ? `key = ${jqlLiteral(parseIssueKeyOrId(search))}` : (search ? `text ~ ${jqlLiteral(search)} ORDER BY updated DESC` : "ORDER BY updated DESC");
-        const page = await api.searchIssues(jql, 0, Math.min(20, OPTION_LIMIT - options.length));
+        const page = await api.searchIssues(jql, undefined, Math.min(20, OPTION_LIMIT - options.length));
         options.push(...page.issues.map(issue => ({ value: `${site.url}/browse/${issue.key}`, title: `${issue.key}: ${issue.fields.summary ?? "Untitled"}`, subtitle: site.name })));
       } catch {
         continue;

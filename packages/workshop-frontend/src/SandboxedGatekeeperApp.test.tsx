@@ -48,6 +48,8 @@ vi.mock("./AuthContext", () => ({
 Object.defineProperty(window, "scrollTo", { value: vi.fn<() => void>(), configurable: true });
 
 interface TestHost extends RpcTarget {
+  openWorkItemsConnectors(): Promise<void>;
+  retryWorkItemsProviders(): Promise<void>;
   listCapabilities(): Promise<GatekeeperAppInfo[]>;
   getCapability(id: string): Promise<RpcStub<RpcTarget> | null>;
   subscribeTheme(receiver: GatekeeperAppThemeReceiver): Promise<GatekeeperAppTheme>;
@@ -98,6 +100,7 @@ describe("SandboxedGatekeeperApp navigation", () => {
   });
 
   it("provides the deployment theme and routes bounded iframe requests", async () => {
+    const retryProviders = vi.fn<() => void>();
     const frame = {
       iframeHtml: "<!doctype html><title>Scheduler</title>",
       ui: new RpcStub(new EmptyUi()),
@@ -118,6 +121,7 @@ describe("SandboxedGatekeeperApp navigation", () => {
         codingSessionAvailable
         workItemHandoffs
         onRequestCodingSession={requestCodingSession}
+        onRetryProviders={retryProviders}
       />,
     });
     const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: "/" });
@@ -128,7 +132,7 @@ describe("SandboxedGatekeeperApp navigation", () => {
     const history = createMemoryHistory({ initialEntries: ["/"] });
     const router = createRouter({
       history,
-      routeTree: rootRoute.addChildren([indexRoute, gadgetRoute]),
+      routeTree: rootRoute.addChildren([indexRoute, gadgetRoute, createRoute({ getParentRoute: () => rootRoute, path: "/gatekeepers" })]),
     });
 
     container = document.createElement("div");
@@ -207,6 +211,12 @@ describe("SandboxedGatekeeperApp navigation", () => {
     await expect(host.requestCodingSession("jira", "1001", "AI-3540", undefined, "bad\ntitle")).rejects.toThrow(
       "Invalid coding session title",
     );
+    await host.retryWorkItemsProviders();
+    expect(retryProviders).toHaveBeenCalledOnce();
+    await act(async () => {
+      await host!.openWorkItemsConnectors();
+      await vi.waitFor(() => expect(router.state.location.pathname).toBe("/gatekeepers"));
+    });
   });
 
   it("does not expose Work Item Code handoffs to other gatekeeper apps", async () => {
@@ -242,6 +252,8 @@ describe("SandboxedGatekeeperApp navigation", () => {
     await expect(host.requestCodingSession("jira", "1001", "AI-3540", undefined, "Work on AI-3540"))
       .rejects.toThrow("not available to this app");
     expect(requestCodingSession).not.toHaveBeenCalled();
+    await expect(host.openWorkItemsConnectors()).rejects.toThrow("Not available to this app");
+    await expect(host.retryWorkItemsProviders()).rejects.toThrow("Not available to this app");
   });
 
   it("reloads the sandbox when Work Items source capabilities appear after the UI session starts", async () => {

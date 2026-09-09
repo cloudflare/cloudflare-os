@@ -87,7 +87,7 @@ describe("Jira API action behavior", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const api = new JiraApi({ cloudId: "cloud-1", webBase: "https://acme.atlassian.net", getToken: async () => "tok" });
-    const ui = new JiraWorkItemUI(api, { getSites: async () => [], getAccessToken: async () => "tok", getIdentity: async () => null, getDefaultProject: async () => null, setDefaultProject: async () => null }, "https://acme.atlassian.net", "ENG-1");
+    const ui = new JiraWorkItemUI(api, { getSites: async () => [], getAccessToken: async () => "tok", getAccessTokenForSite: async () => "tok", getSelectedSite: async () => null, getIdentity: async () => null, getDefaultProject: async () => null, setDefaultProject: async () => null }, "https://acme.atlassian.net", "ENG-1");
 
     const read = await ui.read();
     expect(read.updateOptions.allowedFields).toContain("description");
@@ -112,20 +112,19 @@ describe("Jira API action behavior", () => {
     });
   });
 
-  it("keeps Jira Work Items refs site-qualified across multi-site search and attachment reads", async () => {
+  it("keeps Jira Work Items refs on the selected site and refuses refs from other granted sites", async () => {
+    const selected = { id: "cloud-2", name: "Two", url: "https://two.atlassian.net", scopes: ["read:jira-work"] };
     const account = {
-      getSites: async () => [
-        { id: "cloud-1", name: "One", url: "https://one.atlassian.net", scopes: ["read:jira-work"] },
-        { id: "cloud-2", name: "Two", url: "https://two.atlassian.net", scopes: ["read:jira-work"] },
-      ],
+      getSites: async () => [{ id: "cloud-1", name: "One", url: "https://one.atlassian.net", scopes: ["read:jira-work"] }, selected],
       getAccessToken: async () => "tok",
+      getAccessTokenForSite: async (cloudId: string) => { if (cloudId !== "cloud-2") throw new Error(`Token requested for unselected site ${cloudId}.`); return "tok"; },
+      getSelectedSite: async () => selected,
       getIdentity: async () => null,
       getDefaultProject: async () => null,
       setDefaultProject: async () => null,
     };
     const fetchMock = vi.fn(async (url: string) => {
-      if (url.includes("/cloud-1/") && url.endsWith("/search")) return ok({ issues: [], total: 0 });
-      if (url.includes("/cloud-2/") && url.endsWith("/search")) return ok({ issues: [issue("ENG-2", "Second site")], total: 1 });
+      if (url.includes("/cloud-2/") && url.endsWith("/search/jql")) return ok({ issues: [issue("ENG-2", "Second site")], isLast: true });
       if (url.includes("/cloud-2/") && url.includes("/issue/ENG-2")) return ok(issue("ENG-2", "Second site", [{ id: "att-2", filename: "note.txt", mimeType: "text/plain", size: 2, content: "https://two.atlassian.net/secure/attachment/att-2/note.txt" }]));
       if (url === "https://two.atlassian.net/secure/attachment/att-2/note.txt") return new Response("ok", { status: 200, headers: { "content-length": "2" } });
       throw new Error(`unexpected URL ${url}`);
@@ -140,7 +139,8 @@ describe("Jira API action behavior", () => {
 
     const item = await ui.item(page.items[0]);
     await expect(item.readAttachment("att-2")).resolves.toMatchObject({ name: "note.txt", contentType: "text/plain" });
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/cloud-1/rest/api/3/issue/ENG-2"))).toBe(false);
+    await expect(ui.item({ source: "jira", id: "https://one.atlassian.net/browse/ENG-9" })).rejects.toThrow(/limited to two\.atlassian\.net/);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/cloud-1/"))).toBe(false);
   });
 
   it("persists, returns, and clears a validated default Jira project", async () => {
@@ -162,12 +162,12 @@ describe("Jira API action behavior", () => {
     await expect(account.getDefaultProject()).resolves.toBeNull();
   });
 
-  it("denies a default project outside the granted Jira sites", async () => {
+  it("denies a default project outside the selected Jira site", async () => {
     const account = makeStoredAccount();
     vi.stubGlobal("fetch", vi.fn(async () => ok({ id: "200", key: "PAY", name: "Payments" })));
 
     await expect(account.setDefaultProject("https://two.atlassian.net/projects/PAY"))
-      .rejects.toThrow(/granted Jira site/);
+      .rejects.toThrow(/selected Jira site/);
   });
 });
 

@@ -1,4 +1,4 @@
-/** A marker session for the Work Items shell account. */
+/** Readiness marker only, with no search/read/mutation API. Use separately authorized Jira or Zendesk bindings for provider operations, not the UI-only interfaces below. */
 export interface WorkItemsSession {
   /** Returns a short readiness string for smoke tests and agent discovery. */
   ping(): Promise<string>;
@@ -245,6 +245,8 @@ export type WorkItemSearchSource = WorkItemProviderKind | "both";
 
 /** Bounded work item search request. */
 export type WorkItemSearchRequest = {
+  /** Filter by this provider account's current assignee before pagination. Providers must fail rather than search all items when identity cannot be resolved. */
+  assignedToMe?: boolean;
   /** Source to search, or both with provider-isolated partial failures. */
   source: WorkItemSearchSource;
   /** Optional provider text query. Empty searches use the provider default. */
@@ -253,6 +255,12 @@ export type WorkItemSearchRequest = {
   limit?: number;
   /** Optional per-provider cursor map. */
   cursors?: Partial<Record<WorkItemProviderKind, string>>;
+  /**
+   * Asks providers that support it to page their entire matching source instead of stopping at a result ceiling.
+   * Providers without such a path ignore it. Set it on the first page and keep it unchanged while paging: providers
+   * may use a different endpoint and ordering, so cursors are not interchangeable between the two modes.
+   */
+  exhaustive?: boolean;
 };
 
 /** Bounded provider search error for partial-result pages. */
@@ -265,7 +273,19 @@ export type WorkItemProviderError = {
   status?: number;
 };
 
-/** Search page returned by the Work Items management API. */
+/**
+ * Search page returned by the Work Items management API.
+ *
+ * Completeness contract — the minimal rules every producer and consumer must follow:
+ * - `completeness[p] === true` means provider `p` exhausted its entire matching source for this query: no further
+ *   pages, no ceiling truncation, no dropped or failed results. Only then may a caller call the results complete.
+ * - `completeness[p] === false` means anything else: more pages remain, a provider ceiling truncated the match set,
+ *   the provider failed, or malformed items were dropped.
+ * - Omitting `p` is legal for providers that do not report it. Consumers must then derive conservatively:
+ *   complete only when `hasMore[p] !== true` and `truncated[p] !== true` and no `errors` entry names `p`.
+ * - A missing cursor is never evidence of completeness; a provider stopped at a ceiling also returns no cursor.
+ * - When appending pages, a provider stays incomplete if any earlier page truncated, errored, or dropped items.
+ */
 export type WorkItemSearchPage = {
   /** Normalized items from all successful selected providers. */
   items: WorkItemSummary[];
@@ -273,6 +293,10 @@ export type WorkItemSearchPage = {
   cursors: Partial<Record<WorkItemProviderKind, string>>;
   /** Whether each provider reported more data. */
   hasMore: Partial<Record<WorkItemProviderKind, boolean>>;
+  /** Whether each provider stopped at a hard result ceiling while further matches existed. */
+  truncated?: Partial<Record<WorkItemProviderKind, boolean>>;
+  /** Whether each provider exhausted its entire matching source. Omitted providers are derived conservatively. */
+  completeness?: Partial<Record<WorkItemProviderKind, boolean>>;
   /** Provider-local failures when searching both. */
   errors?: WorkItemProviderError[];
 };
@@ -299,6 +323,8 @@ export type WorkItemSavedViewFilters = {
 
 /** Admin-created Work Items saved search/view stored on the shell account. */
 export type WorkItemSavedView = {
+  /** Restricts searches to the current assignee independently in each provider. */
+  assignedToMe?: boolean;
   /** Stable user-supplied identifier used for replacement and deletion. */
   id: string;
   /** Human-readable saved view name. */
@@ -343,11 +369,11 @@ export type WorkItemLinkResult = {
 
 /** Provider-source root capability consumed by the composite Work Items shell UI. */
 export interface WorkItemsSourceManagementApi {
-  /** Reads the connected source identity for display and the built-in My Work filter. */
+  /** Reads connected source identity for display only; assignment searches resolve identity within each provider. */
   getCurrentUser(): Promise<WorkItemsCurrentUser>;
   /** Reads provider configuration and connection status for the represented source. */
   getSourceStatuses(): Promise<WorkItemSourceStatuses>;
-  /** Searches this source. The shell passes this source's exact selector, never `both`. */
+  /** Searches this source. The shell passes this source's exact selector, never `both`. Report `completeness` for this source when the provider can; the shell derives it conservatively otherwise. */
   search(request: WorkItemSearchRequest): Promise<WorkItemSearchPage>;
   /** Selects one item and returns a narrow per-item capability. The client must dispose it. */
   item(ref: WorkItemProviderRef): Promise<WorkItemManagementApi>;
@@ -367,7 +393,7 @@ export interface WorkItemsShellMetadataApi {
 
 /** Composite Work Items management root capability used by the shell UI. */
 export interface WorkItemsManagementApi {
-  /** Reads the connected source identity used for display and the built-in My Work filter. */
+  /** Reads a display identity only. Never use this merged metadata to filter provider assignments. */
   getCurrentUser(): Promise<WorkItemsCurrentUser>;
   /** Lists normalized saved Work Items views stored on this shell account. */
   listSavedViews(): Promise<WorkItemSavedView[]>;
@@ -377,7 +403,7 @@ export interface WorkItemsManagementApi {
   deleteSavedView(id: string): Promise<void>;
   /** Reads provider configuration and shared-connection statuses. */
   getSourceStatuses(): Promise<WorkItemSourceStatuses>;
-  /** Searches Jira, Zendesk, or both; both-provider searches isolate provider failures. */
+  /** Searches Jira, Zendesk, or both; both-provider searches isolate provider failures and report per-provider `completeness`. */
   search(request: WorkItemSearchRequest): Promise<WorkItemSearchPage>;
   /** Selects one item and returns a narrow per-item capability. The client must dispose it. */
   item(ref: WorkItemProviderRef): Promise<WorkItemManagementApi>;

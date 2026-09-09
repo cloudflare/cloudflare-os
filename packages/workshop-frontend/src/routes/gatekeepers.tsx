@@ -445,7 +445,10 @@ type ModalTarget =
   | { kind: 'manage'; accountId: number }
   | null
 
-function ConnectorsPage() {
+// Legacy multi-site Jira accounts need a non-destructive way to select their site through OAuth.
+const SITE_SCOPED_RECONNECT_VENDOR_IDS = new Set(['jira'])
+
+export function ConnectorsPage() {
   useDocumentTitle('Connections')
   const siteName = useSiteName()
   const { hub } = useHub()
@@ -724,6 +727,15 @@ function ConnectorsPage() {
         }
       : undefined
 
+  // Expired accounts already surface "Reconnect" on their card; site-scoped vendors need the same
+  // action while healthy, and the manage modal is the only place it fits.
+  const activeAccountCanReconnect =
+    !!activeAccount &&
+    (!activeAccount.credentialsValid ||
+      SITE_SCOPED_RECONNECT_VENDOR_IDS.has(activeAccount.vendorId))
+  const activeAccountReconnecting =
+    !!activeAccount && reconnectingAccountId === activeAccount.id
+
   // True when the connect modal targets an ambient gatekeeper (added directly, no OAuth flow).
   const isTargetAmbient =
     modalTarget?.kind === 'connect' && !!activeVendor?.description.autoProvisionsAccount
@@ -904,8 +916,16 @@ function ConnectorsPage() {
           ensuringResourceUrlPatterns={ensuringResourceUrlPatterns}
           disconnecting={disconnecting}
           onDisconnect={handleDisconnect}
+          onReconnect={
+            activeAccount && activeAccountCanReconnect
+              ? () => handleReconnect(activeAccount.id)
+              : undefined
+          }
+          reconnecting={activeAccountReconnecting}
           onOpenChange={(open) => {
-            if (!open && !connecting && !disconnecting) handleCloseModal()
+            if (!open && !connecting && !disconnecting && !activeAccountReconnecting) {
+              handleCloseModal()
+            }
           }}
         />
       )}
