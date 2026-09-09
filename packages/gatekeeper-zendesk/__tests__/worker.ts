@@ -5,7 +5,10 @@
 // way to turn a props-carrying `DurableObjectClass` into a running object -- exists on Durable
 // Objects alone. That asymmetry is the whole reason `ZendeskAccount` owns the management facet.
 
-import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject, RpcStub, WorkerEntrypoint } from "cloudflare:workers";
+import type { ZendeskGatekeeper } from "../src/zendesk.js";
+import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
+import type { ZendeskAccountSession } from "../src/types.js";
 
 // Named rather than `export *`: the loopback bindings on `ctx.exports` are built from the module's
 // declared exports, and the vendor's OAuth completion reaches for `ctx.exports.ZendeskUserImpl`.
@@ -33,6 +36,23 @@ export class TestConnectCallback extends WorkerEntrypoint {
 }
 
 export class TestHooks extends DurableObject<Cloudflare.Env> {
+  /** Opens a props-scoped facet so session tests exercise real RPC and durable action storage. */
+  #gatekeeper(props: GatekeeperProps): Fetcher<ZendeskGatekeeper> {
+    const exports = (this.ctx as unknown as { exports: Cloudflare.Exports }).exports;
+    return this.ctx.facets.get<ZendeskGatekeeper>(`session:${props.accountId}:${props.ticketId ?? "account"}`, () => ({
+      class: exports.ZendeskGatekeeper({ props }),
+    }));
+  }
+  /** Returns the account session, never the non-serializable facet stub itself. */
+  async startAccountSession(props: Omit<GatekeeperProps, "ticketId">, queue: RpcStub<ApprovalQueue>): Promise<ZendeskAccountSession> {
+    const gatekeeper = this.#gatekeeper(props);
+    // Fetcher's mapped generic bindHook type differs from the local RpcStub type; runtime RPC is identical.
+    return await gatekeeper.startSession(queue as unknown as Parameters<typeof gatekeeper.startSession>[0]) as unknown as ZendeskAccountSession;
+  }
+  /** Delivers an approval to the same test facet. */
+  async applyAction(props: GatekeeperProps, id: number): Promise<void> {
+    await this.#gatekeeper(props).applyAction(id);
+  }
   /**
    * Calls a gatekeeper method on the `DurableObjectClass` itself -- exactly what
    * `startAppUi` used to hand the Work Items adapter -- and reports what came back.

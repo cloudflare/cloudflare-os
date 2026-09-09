@@ -117,8 +117,23 @@ export type WorkItemLinkResult = { globalId: string; jiraId: string; zendeskTick
 /** Comment input. Zendesk defaults to internal unless public is explicit. */
 export type WorkItemCommentInput = { body: string; visibility?: "internal" | "public"; attachmentTokens?: string[] };
 
-/** Bounded allowlisted ticket field patch. */
+/** Bounded allowlisted ticket field patch: subject, status, priority, type, assignee_id, group_id, tags, custom_<id>. Subject must be a nonblank string of 1–300 characters without NUL bytes; it replaces the ticket title. */
 export type WorkItemFieldPatch = { fields: Record<string, string | number | boolean | null | string[]> };
+
+/** Creates one ticket with a subject (1–300 characters) and initial comment (1–12,000 characters). */
+export type ZendeskCreateTicketInput = {
+  /** Ticket subject. */
+  subject: string;
+  /** Initial comment; defaults to internal. Attachments and author impersonation are unsupported. */
+  comment: { body: string; visibility?: "internal" | "public" };
+  /** Existing Zendesk requester ID, a positive safe integer. Omit to use Zendesk's default requester. */
+  requesterId?: number;
+  /** Up to 10 fields: status, priority, type, assignee_id, group_id, tags, custom_<id>. Unlike updates, fields.subject is rejected; set subject only at the top level. */
+  fields?: WorkItemFieldPatch["fields"];
+};
+
+/** Provider-assigned identity returned when ticket creation completes; no fabricated pending ticket ID. */
+export type ZendeskTicketCreationResult = ZendeskTicketRef & { url: string };
 
 /** Coding-session tool metadata. */
 export type ZendeskCodingSessionToolInfo = { name: string; title?: string; description?: string; mode: "read" | "action"; classifiedBy: "server-annotation" | "default"; inputSchema?: unknown };
@@ -132,6 +147,8 @@ export type ZendeskCodingSessionToolResult =
 
 /** Account-wide Zendesk API for searching and selecting tickets in one approved subdomain. */
 export interface ZendeskAccountSession {
+  /** Creates a ticket and returns its narrow capability. While creation is pending, its methods fail promptly; retry the same capability, never create another ticket. Dispose it when finished. Pending tickets are not included in search results. */
+  createTicket(input: ZendeskCreateTicketInput): Promise<ZendeskTicketSession>;
   /** Reads the currently signed-in Zendesk user's id, display name, and email (when available). */
   getCurrentUser(): Promise<ZendeskCurrentUser>;
   /** Searches up to 1,000 tickets, or every match when `exhaustive` is set on the first page. Keep query, limit, and `exhaustive` unchanged while paging; offset and export cursors cannot be mixed. Offset pagination can duplicate results when tickets change. Trust `completeness.zendesk`, not the absence of a cursor, before calling a result set complete. */
@@ -140,7 +157,7 @@ export interface ZendeskAccountSession {
   readTicket(ticketId: string): Promise<WorkItemRead>;
   /** Returns a narrow capability for one ticket. Dispose the returned stub when finished. */
   ticket(ticketId: string): Promise<ZendeskTicketSession>;
-  /** Polls the result of a previously queued Zendesk action. */
+  /** Polls the result of a previously queued Zendesk action. An interrupted write reports failed with an unknown outcome, not success or an automatic retry; verify Zendesk before submitting another action. */
   getActionResult(actionId: number): Promise<ZendeskCodingSessionToolResult>;
   /** Lists tool descriptors that coding sessions may expose for this Zendesk account. */
   listTools(): Promise<ZendeskCodingSessionToolInfo[]>;
@@ -160,7 +177,7 @@ export interface ZendeskTicketSession {
   mediaCapabilities(): Promise<WorkItemMediaCapabilities>;
   /** Adds an internal comment by default, or a public comment when explicitly requested. */
   addComment(input: WorkItemCommentInput): Promise<ZendeskQueuedAction<WorkItemDetail>>;
-  /** Updates allowlisted fields. tags replaces the existing tag list. A concurrent ticket change fails with a conflict; read the ticket and resubmit the intended change. Oversized values are rejected, not truncated. */
+  /** Updates allowlisted fields including subject (nonblank, 1–300 characters, no NUL bytes). Pending subjects appear as the title in read(). tags replaces the existing tag list. A concurrent ticket change fails with a conflict; read the ticket and resubmit the intended change. Oversized values are rejected, not truncated. */
   updateFields(patch: WorkItemFieldPatch): Promise<ZendeskQueuedAction<WorkItemDetail>>;
 }
 
@@ -194,7 +211,7 @@ export interface WorkItemManagementApi {
   createAttachment(input: WorkItemAttachmentUploadInput): Promise<WorkItemAttachmentUploadResult>;
   /** Adds a comment, defaulting to internal unless public is explicit, then returns refreshed detail. */
   addComment(input: WorkItemCommentInput): Promise<WorkItemDetail>;
-  /** Updates allowlisted fields and returns refreshed authoritative detail. */
+  /** Updates allowlisted fields including subject (nonblank, 1–300 characters, no NUL bytes) and returns refreshed authoritative detail. */
   updateFields(patch: WorkItemFieldPatch): Promise<WorkItemDetail>;
   /** Zendesk transitions are unsupported and this method throws. */
   transition(transitionId: string): Promise<WorkItemDetail>;
