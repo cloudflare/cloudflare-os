@@ -1,5 +1,8 @@
 import type { ConfigEnv, UserConfig, UserConfigExport } from 'vite'
 import { describe, expect, it, vi } from 'vitest'
+import { TanStackRouterVite } from '@tanstack/router-plugin/vite'
+
+vi.mock('@tanstack/router-plugin/vite', () => ({ TanStackRouterVite: vi.fn<typeof TanStackRouterVite>(() => []) }))
 
 vi.mock('vite', async (importOriginal) => {
   const actual = await importOriginal<typeof import('vite')>()
@@ -21,6 +24,11 @@ async function resolveConfig(value: UserConfigExport): Promise<UserConfig> {
 }
 
 describe('Vite development proxy', () => {
+  it('disables automatic route splitting to prevent missing chunks from forcing a reload', async () => {
+    await resolveConfig(config)
+    expect(TanStackRouterVite).toHaveBeenLastCalledWith({ target: 'react', autoCodeSplitting: false })
+  })
+
   it('uses loaded environment values for the proxy and source maps', async () => {
     const resolved = await resolveConfig(config)
     expect(resolved.server?.proxy).toMatchObject({

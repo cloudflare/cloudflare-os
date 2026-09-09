@@ -24,6 +24,7 @@ import OpenCodeWorkbench from '../components/sessions/OpenCodeWorkbench'
 import LazySessionTerminal from '../components/sessions/LazySessionTerminal'
 import { useSessionsContext } from '../components/sessions/SessionsContext'
 import { useUiFeatureFlag } from '../FeatureFlagsContext'
+import WorkbenchLoadBoundary from '../components/sessions/WorkbenchLoadBoundary'
 
 export const Route = createFileRoute('/sessions')({ component: SessionsPage })
 const PiWorkbench = lazy(() => import('../components/sessions/PiWorkbench'))
@@ -236,16 +237,18 @@ function SessionsPageBody() {
               ) : (
                 <>
                   <div className={surface === 'agent' ? 'h-full min-h-0 min-w-0' : 'hidden'}>
-                    <Suspense fallback={<CenteredMessage>Loading agent workbench…</CenteredMessage>}>
-                      <PiWorkbench
-                        key={`pi:${activeSession.id}`}
-                        sessionId={activeSession.id}
-                        runtime={activeSession.runtime}
-                        initialInput={initialInput}
-                        onInitialInputSent={() => markInitialInputSent(activeSession.id)}
-                        onSessionUnavailable={refresh}
-                      />
-                    </Suspense>
+                    <WorkbenchLoadBoundary>
+                      <Suspense fallback={<CenteredMessage>Loading agent workbench…</CenteredMessage>}>
+                        <PiWorkbench
+                          key={`pi:${activeSession.id}`}
+                          sessionId={activeSession.id}
+                          runtime={activeSession.runtime}
+                          initialInput={initialInput}
+                          onInitialInputSent={() => markInitialInputSent(activeSession.id)}
+                          onSessionUnavailable={refresh}
+                        />
+                      </Suspense>
+                    </WorkbenchLoadBoundary>
                   </div>
                   {terminalOpened && (
                     <div className={surface === 'terminal' ? 'h-full min-h-0 min-w-0' : 'hidden'}>

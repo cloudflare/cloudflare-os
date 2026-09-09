@@ -64,6 +64,8 @@ describe('LazySessionTerminal', () => {
 
     expect(rendered.container.textContent).toContain('Could not load the terminal client.')
     expect(rendered.container.textContent).toContain('Reload the page to try again.')
+    expect(rendered.container.textContent).toContain('Reloading may lose unsent messages and unsaved changes.')
+    expect(rendered.container.querySelector('button')?.textContent).toBe('Reload page')
 
     await rendered.unmount()
   })

@@ -92,6 +92,7 @@ describe('editor import failures', () => {
       expect(container.querySelector('[role="alert"]')?.textContent).toContain('Reload the page to try again')
       expect(container.textContent).toContain('switching files cannot retry this load')
       expect(container.textContent).toContain('Reload page')
+      expect(container.textContent).toContain('Reloading may lose unsent messages and unsaved changes.')
       expect(container.querySelector('button')).toBe(chat)
       expect(container.querySelector('nav')).toBe(sidebar)
       expect(dispose).not.toHaveBeenCalled()

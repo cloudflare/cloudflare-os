@@ -240,6 +240,7 @@ export const ChatInput = ({
   onConsumeConsoleLogs = () => "",
   onDiscardConsoleLogs = () => {},
   newChat = false,
+  provisionalWorkspace = false,
   offerFormats = false,
   autoFocus = false,
   minRows = 2,
@@ -265,13 +266,16 @@ export const ChatInput = ({
    * to support lazy provisional-gadget creation on the Home page.
    */
   getOverseer: () => Promise<RpcStub<Overseer>> | RpcStub<Overseer>;
+  /** Home abandons this workspace on pause; its capsule IDs must revert to resource URLs. */
+  provisionalWorkspace?: boolean;
+  /** Return false when an abandoned send must leave the composer's draft intact. */
   onSend: (
     message: string | SlashCommandRequest,
     modelId: string | null,
     capsules?: CapsuleSpecifier[],
     attachments?: ChatAttachmentHandle[],
     formats?: MessageFormatRef[],
-  ) => Promise<void> | void;
+  ) => Promise<void | false> | void | false;
   isAgentActive: boolean;
   models: AiChatAuthorInfo[];
   selectedModel: string | null;
@@ -344,12 +348,17 @@ export const ChatInput = ({
   const vendorBranding = useVendorBranding(authenticatedApi);
   const selectedSlashCommandRef = useRef(selectedSlashCommand);
   selectedSlashCommandRef.current = selectedSlashCommand;
-  const sendInFlightRef = useRef(false);
+  const sendInFlightRef = useRef<object | null>(null);
+  // Capture this generation before any preparation (including slash resolution). A mounted
+  // boolean alone becomes true again on Activity reveal and would revive an old continuation.
+  const lifetime = useMemo(() => ({ active: false, generation: 0 }), [authenticatedApi, chatKey, draftStorageKey]);
   const pendingAttachmentsRef = useRef<PendingAttachment[]>([]);
+  // Each staged file owns a duplicate of the capability that uploaded it. Cleanup must never call
+  // getOverseer: on Home that accessor creates a workspace, and a replacement may own different IDs.
+  const attachmentOwnersRef = useRef(new Map<string, { owner: RpcStub<Overseer>; ref: ChatAttachmentHandle }>());
   pendingAttachmentsRef.current = pendingAttachments;
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const attachmentDragDepthRef = useRef(0);
-  const mountedRef = useRef(true);
   const [activeUrl, setActiveUrl] = useState<{
     text: string;
     start: number;
@@ -517,21 +526,24 @@ export const ChatInput = ({
 
   // Seed the composer from an external suggestion (Home task cards). Re-runs whenever the nonce
   // changes so picking the same suggestion twice still works. Focus + move the cursor to the end.
+  const consumedSeedNonce = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (seedNonce === undefined) return;
+    if (seedNonce === undefined || consumedSeedNonce.current === seedNonce) return;
+    consumedSeedNonce.current = seedNonce;
     draftRestoreGenerationRef.current++;
     const text = seedText ?? "";
     setSelectedSlashCommand(null);
     setCapsules([]);
     setFormatTokens([]);
     setInputValue(text);
-    requestAnimationFrame(() => {
+    const frame = requestAnimationFrame(() => {
       const ta = composerTextareaRef.current;
       if (!ta) return;
       ta.focus();
       ta.setSelectionRange(text.length, text.length);
       autoResizeTextarea(ta, minRows, newChat ? 10 : 4);
     });
+    return () => cancelAnimationFrame(frame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedNonce]);
   const capsulesRef = useRef(capsules);
@@ -627,51 +639,81 @@ export const ChatInput = ({
     if (composerTextareaRef.current) composerTextareaRef.current.style.cursor = "";
   }, [isBlocked]);
 
-  const deleteStagedAttachment = (ref: ChatAttachmentHandle) => {
-    void (async () => {
-      try {
-        const overseer = await getOverseer();
-        await overseer.deleteChatAttachment(ref.id);
-      } catch {
-        // Best-effort cleanup; the parent may have already disposed the Overseer while unmounting.
-      }
-    })();
+  const releaseAttachment = (id: string, deleteFile: boolean) => {
+    const staged = attachmentOwnersRef.current.get(id);
+    if (!staged) return;
+    attachmentOwnersRef.current.delete(id);
+    try {
+      // RPC retains its own references for the call, so our duplicate can be released immediately.
+      if (deleteFile) void staged.owner.deleteChatAttachment(staged.ref.id).catch(() => {});
+    } finally {
+      staged.owner[Symbol.dispose]();
+    }
   };
 
-  useEffect(() => {
-    mountedRef.current = true;
+  useLayoutEffect(() => {
+    lifetime.active = true;
+    setIsSending(false);
+    setPendingAttachments([]);
     return () => {
-      mountedRef.current = false;
+      lifetime.active = false;
+      lifetime.generation++;
+      sendInFlightRef.current = null;
+      setActiveUrl(null);
+      setAttachModalOpen(false);
+      if (provisionalWorkspace && (capsulesRef.current.length > 0 || selectedSlashCommandRef.current)) {
+        // State survives Activity, but Home's workspace does not. Use the existing draft codec to
+        // turn its chips back into URLs and shift format ranges, without discarding edited text.
+        // Leave command text unresolved too: provider command IDs belong to the old workspace.
+        draftRestoreGenerationRef.current++;
+        const draft = serializeComposerDraft(inputValueRef.current,
+          capsulesRef.current.map(({ start, length, description }) => ({ start, length, url: description.url })),
+          formatTokensRef.current);
+        const restored = decorateComposerDraft(draft, formatTokensRef.current.map(format => format.logo), CAPSULE_LOGO_SLOT);
+        inputValueRef.current = restored.text;
+        capsulesRef.current = [];
+        formatTokensRef.current = restored.formats;
+        selectedSlashCommandRef.current = null;
+        setInputValue(restored.text);
+        setCapsules([]);
+        setFormatTokens(restored.formats);
+        setSelectedSlashCommand(null);
+        writeComposerDraft(draftStorageKey, draft);
+      }
       const attachments = pendingAttachmentsRef.current;
       pendingAttachmentsRef.current = [];
       for (const attachment of attachments) {
         if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
       }
-      for (const attachment of attachments) {
-        if (attachment.ref) deleteStagedAttachment(attachment.ref);
-      }
+      for (const id of attachmentOwnersRef.current.keys()) releaseAttachment(id, true);
     };
-  }, []);
+  }, [lifetime, provisionalWorkspace]);
 
   const uploadPendingAttachment = async (id: string, blob: Blob, mimeType: string, name?: string) => {
+    const generation = lifetime.generation;
+    const current = () => lifetime.active && lifetime.generation === generation &&
+      pendingAttachmentsRef.current.some(attachment => attachment.id === id);
+    let owner: RpcStub<Overseer> | undefined;
     try {
       const content = new Uint8Array(await blob.arrayBuffer());
-      if (!mountedRef.current || !pendingAttachmentsRef.current.some((attachment) => attachment.id === id)) return;
-      const overseer = await getOverseer();
-      if (!mountedRef.current || !pendingAttachmentsRef.current.some((attachment) => attachment.id === id)) return;
-      const ref = await overseer.uploadChatAttachment({
+      if (!current()) return;
+      owner = (await getOverseer()).dup();
+      if (!current()) return;
+      const ref = await owner.uploadChatAttachment({
         mimeType,
         content,
         name,
       }, selectedModel);
-      if (!mountedRef.current || !pendingAttachmentsRef.current.some((attachment) => attachment.id === id)) {
-        deleteStagedAttachment(ref);
+      if (!current()) {
+        void owner.deleteChatAttachment(ref.id).catch(() => {});
         return;
       }
+      attachmentOwnersRef.current.set(id, { owner, ref });
+      owner = undefined; // Ownership moves to the staged file until remove, send, or teardown.
       setPendingAttachments((prev) => prev.map((attachment) => attachment.id === id ? { ...attachment, uploadState: "ready", ref } : attachment));
     } catch (err: any) {
+      if (!current()) return;
       console.error("Failed to upload chat attachment:", err);
-      if (!mountedRef.current) return;
       reportIssue('chat.attachment-upload', err)
       setPendingAttachments((prev) => prev.map((attachment) => attachment.id === id ? {
         ...attachment,
@@ -679,10 +721,14 @@ export const ChatInput = ({
         error: err?.message || "Upload failed",
       } : attachment));
       toasts.add({ title: err?.message || "Failed to upload attachment", variant: "error" });
+    } finally {
+      owner?.[Symbol.dispose]();
     }
   };
 
   const addFiles = async (files: FileList | File[]) => {
+    if (!lifetime.active) return;
+    const generation = lifetime.generation;
     const attachmentFiles = Array.from(files);
 
     const initialRoom = MAX_PENDING_ATTACHMENTS - pendingAttachmentsRef.current.length;
@@ -702,7 +748,7 @@ export const ChatInput = ({
       file,
       ...(await prepareChatAttachment(file)),
     })));
-    if (!mountedRef.current) return;
+    if (!lifetime.active || lifetime.generation !== generation) return;
 
     for (const result of prepared) {
       if (result.status === "rejected") {
@@ -741,7 +787,7 @@ export const ChatInput = ({
     const attachment = pendingAttachmentsRef.current.find((attachment) => attachment.id === id);
     if (attachment) {
       if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
-      if (attachment.ref) deleteStagedAttachment(attachment.ref);
+      releaseAttachment(id, true);
     }
     pendingAttachmentsRef.current = pendingAttachmentsRef.current.filter((attachment) => attachment.id !== id);
     setPendingAttachments((prev) => prev.filter((attachment) => attachment.id !== id));
@@ -929,7 +975,11 @@ export const ChatInput = ({
       return;
     }
 
-    sendInFlightRef.current = true;
+    if (!lifetime.active) return;
+    const generation = lifetime.generation;
+    const send = {};
+    sendInFlightRef.current = send;
+    const current = () => lifetime.active && lifetime.generation === generation && sendInFlightRef.current === send;
     setIsSending(true);
     const sendingDraftKey = draftStorageKey;
     try {
@@ -989,10 +1039,12 @@ export const ChatInput = ({
         try {
           match = await slashCommandPicker.resolveExact(parsed);
         } catch (error) {
+          if (!current()) return;
           console.error("Failed to resolve slash command:", error);
           toasts.add({ title: "Couldn't load slash commands", variant: "error" });
           return;
         }
+        if (!current()) return;
         if (!match) {
           toasts.add({ title: "Choose a slash command", variant: "error" });
           return;
@@ -1071,15 +1123,18 @@ export const ChatInput = ({
           typeof message === "string" ? message : message.args,
           [...formatTokens].toSorted((a, b) => a.start - b.start));
 
-      await onSend(message, selectedModel,
+      if (!current()) return;
+      const sent = await onSend(message, selectedModel,
           capsuleSpecifiers?.length ? capsuleSpecifiers : undefined,
           readyAttachments.length ? readyAttachments : undefined,
           formatRefs);
+      if (sent === false || !current()) return;
       writeComposerDraft(sendingDraftKey, undefined);
       if (loadedDraftKeyRef.current !== sendingDraftKey) return;
       draftEditedRef.current = false;
       for (const attachment of attachmentsSnapshot) {
         if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+        releaseAttachment(attachment.id, false);
       }
       setInputValue("");
       setCapsules([]);
@@ -1087,9 +1142,13 @@ export const ChatInput = ({
       setFormatTokens([]);
       pendingAttachmentsRef.current = [];
       setPendingAttachments([]);
+    } catch (error) {
+      if (current()) throw error;
     } finally {
-      sendInFlightRef.current = false;
-      if (mountedRef.current) setIsSending(false);
+      if (current()) {
+        sendInFlightRef.current = null;
+        setIsSending(false);
+      }
     }
   };
 
@@ -1114,8 +1173,12 @@ export const ChatInput = ({
   // Called when the user selects an account in the CapsuleOverlay.
   // Creates a capsule gatekeeper, fetches its description, and replaces the URL
   // in the input text with the resource title highlighted as a capsule.
+  // Capture at render, not callback invocation: a modal can deliver its callback only after the
+  // originating activation has already ended. Even the same API's hide/reveal must invalidate it.
+  const capsuleGeneration = lifetime.generation;
+  const currentCapsuleGeneration = () => lifetime.active && lifetime.generation === capsuleGeneration;
   const handleCapsuleCreate = async (accountId: number, vendorId: string) => {
-    if (!activeUrl) return;
+    if (!activeUrl || !currentCapsuleGeneration()) return;
 
     try {
       // Create the capsule gatekeeper.
@@ -1126,11 +1189,14 @@ export const ChatInput = ({
       }
 
       try {
+        if (!currentCapsuleGeneration()) return;
         // Fetch ID and description in parallel (promise pipelining).
         const [id, description] = await Promise.all([
           gk.getId(),
           gk.describe(),
         ]);
+        if (!currentCapsuleGeneration() ||
+            inputValueRef.current.slice(activeUrl.start, activeUrl.end) !== activeUrl.text) return;
 
         // Snapshot the activeUrl position before any state updates.
         const urlStart = activeUrl.start;
@@ -1158,6 +1224,7 @@ export const ChatInput = ({
         setActiveUrl(null);
 
         requestAnimationFrame(() => {
+          if (!currentCapsuleGeneration()) return;
           composerTextareaRef.current?.focus();
           moveCaret(splice.caret);
         });
@@ -1165,6 +1232,7 @@ export const ChatInput = ({
         gk[Symbol.dispose]();
       }
     } catch (err) {
+      if (!currentCapsuleGeneration()) return;
       console.error("Failed to create capsule:", err);
     }
   };
@@ -1263,6 +1331,7 @@ export const ChatInput = ({
     ]);
 
     requestAnimationFrame(() => {
+      if (!currentCapsuleGeneration()) return;
       composerTextareaRef.current?.focus();
       moveCaret(splice.caret);
     });
@@ -1272,13 +1341,18 @@ export const ChatInput = ({
   // Inserts a capsule at the previously-saved cursor position.
   const handleAttachCreated = async (gk: RpcStub<GatekeeperClient<any>>) => {
     try {
+      if (!currentCapsuleGeneration()) return;
+      const insertPos = attachCursorPosRef.current;
       // Fetch everything in parallel (promise pipelining).
       const [id, description, creationSpec] = await Promise.all([
         gk.getId(), gk.describe(), gk.getCreationSpec(),
       ]);
-      insertCapsuleAt(attachCursorPosRef.current, id, description,
+      if (!currentCapsuleGeneration()) return;
+      insertCapsuleAt(insertPos, id, description,
           creationSpec.type === "gatekeeper" ? creationSpec.vendorId : undefined);
       setAttachModalOpen(false);
+    } catch (error) {
+      if (currentCapsuleGeneration()) throw error;
     } finally {
       gk[Symbol.dispose]();
     }
