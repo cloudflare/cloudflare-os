@@ -1,0 +1,34 @@
+// Type-checks each bundled format blueprint's `files/server.ts` -- the gadget's Durable Object --
+// and the `files/lib/**/*.ts` modules it imports, under the Workers runtime types.
+//
+// It is this package's own program (`tsconfig.json`) plus those entries, rather than a second
+// program beside it, and the `build` task runs it *instead of* the bare `tsc`. The Workers types
+// reachable from here are the generated `worker-configuration.d.ts`
+// (`@cloudflare/workers-types` is not a dependency of this package), and its
+// `Cloudflare.GlobalProps.mainModule: typeof import("./src/server")` pulls the backend's `src/`
+// into any program that loads it. A standalone program would therefore re-check `src/` anyway --
+// and, worse, would report phantom errors, because it would load the `src/` modules without the
+// ambient declarations (`Env` vars, `*.txt` modules) that `include: ["src"]` brings in. Sharing one
+// program costs nothing and gets those for free.
+//
+// The client side stays separate (`tsconfig.blueprints-client.json`): the two gadget runtimes need
+// different globals, and neither side's should leak into the other -- a Durable Object must not see
+// `document`, and iframe code must not be able to import `cloudflare:workers`.
+//
+// Only the entry is listed, not `lib/`: tsc follows imports, so a `lib/` module a server imports is
+// checked here, while a DOM-touching editor module the server never reaches is checked only by the
+// client program.
+//
+// Sharing one program has one deliberate cost: `allowImportingTsExtensions` is a program-wide
+// option, so `src/` is now checked with it on too. That is accepted rather than worked around --
+// `src/` writes no `.ts` specifier today, and the option only widens what resolves, so nothing in
+// `src/` type-checks differently because of it.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Blueprint modules import each other by on-disk name (`./lib/blocks.ts`), the way esbuild
+    // resolves them when it bundles the archive. Program-wide; see the note above about `src/`.
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src", "format-blueprints/*/files/server.ts"]
+}

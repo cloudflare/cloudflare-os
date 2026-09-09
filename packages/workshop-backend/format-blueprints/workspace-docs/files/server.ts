@@ -1,33 +1,89 @@
+// The document's Durable Object. The collaboration plumbing -- the mutation
+// queue, the subscribed browsers, and the per-block optimistic concurrency --
+// is the shared `lib/sync/` modules'; the block model, the ordering rule, the legacy
+// conversion and the Markdown export are this gadget's own.
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import {
+  type Collaborator,
+  MutationQueue,
+  SubscriberRegistry,
+  type VersionConflict,
+  applyVersioned,
+  normalizeBaseVersion,
+  normalizeCollaborator,
+  operationStatus,
+} from "./lib/sync/server.ts";
+import type {
+  ApplyOperationResult,
+  BlockUpsert,
+  DocPresenceEvent,
+  DocumentEvent,
+  DocumentInit,
+  DocumentSnapshot,
+  GadgetStub,
+  GoogleDocInfo,
+  GoogleDocMetadata,
+  GoogleDocSyncResult,
+  Operation,
+  OperationEvent,
+  PresenceUpdate,
+  StoredBlock,
+  StoredDocument,
+  SubscriberCallbacks,
+} from "./lib/protocol.ts";
 
 const DEFAULT_TITLE = "Untitled document";
 
-export class Gadget extends DurableObject {
-  constructor(ctx, env) {
+// The optional Google Doc binding a deployment may configure, as this gadget uses it: a Doc's
+// metadata and its Markdown content, and the two writes that replace or extend that content.
+interface GoogleDocBinding {
+  getMetadata(): Promise<GoogleDocMetadata>;
+  getContent(): Promise<string>;
+  appendText(markdown: string): Promise<unknown>;
+  replaceText(oldMarkdown: string, newMarkdown: string): Promise<unknown>;
+}
+
+/** The bindings this Durable Object may be given; there are none it requires. */
+interface GadgetEnv {
+  GOOGLE_DOC?: GoogleDocBinding;
+}
+
+/** An object as it arrives over RPC, before its fields are checked. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+// Props is `unknown` so that `ctx` is the plain `DurableObjectState` the constructor receives.
+export class Gadget extends DurableObject<GadgetEnv, unknown> implements GadgetStub {
+  mutations: MutationQueue;
+  subscribers: SubscriberRegistry<SubscriberCallbacks, Collaborator>;
+
+  constructor(ctx: DurableObjectState, env: GadgetEnv) {
     super(ctx, env);
     this.ctx = ctx;
-    this.subscribers = new Map();
     // RPC calls may overlap at await points. Chain mutations so each operation
     // observes and commits one authoritative document state in strict order.
-    this.mutationQueue = Promise.resolve();
+    this.mutations = new MutationQueue();
+    // Presence is announced in this gadget's own callback vocabulary: a caret
+    // with no position yet on arrival, and a bare id on departure.
+    this.subscribers = new SubscriberRegistry({
+      join: (subscriber, who) => subscriber.presence({
+        type: "join", clientId: who.clientId, name: who.name, color: who.color, blockId: null,
+      }),
+      leave: (subscriber, who) => subscriber.presence({ type: "leave", clientId: who.clientId }),
+    });
   }
 
-  enqueueMutation(fn) {
-    const result = this.mutationQueue.then(fn);
-    this.mutationQueue = result.catch(() => {});
-    return result;
-  }
-
-  async loadDocument() {
-    let doc = await this.ctx.storage.get("document:v2");
+  async loadDocument(): Promise<DocumentSnapshot> {
+    let doc = await this.ctx.storage.get<StoredDocument>("document:v2");
     if (doc) return doc;
 
     // Keep old documents readable. The first v2 client converts the legacy HTML
     // into stable top-level blocks and calls initializeBlocks().
     const [content, title, lastModified] = await Promise.all([
-      this.ctx.storage.get("content"),
-      this.ctx.storage.get("title"),
-      this.ctx.storage.get("lastModified"),
+      this.ctx.storage.get<string>("content"),
+      this.ctx.storage.get<string>("title"),
+      this.ctx.storage.get<number>("lastModified"),
     ]);
     return {
       revision: 0,
@@ -38,16 +94,16 @@ export class Gadget extends DurableObject {
     };
   }
 
-  async getDocument() {
+  async getDocument(): Promise<DocumentSnapshot> {
     return this.loadDocument();
   }
 
-  initializeBlocks(args) {
-    return this.enqueueMutation(() => this.initializeBlocksLocked(args));
+  initializeBlocks(args: DocumentInit): Promise<StoredDocument> {
+    return this.mutations.run(() => this.initializeBlocksLocked(args));
   }
 
-  async initializeBlocksLocked({ blocks, title, senderId }) {
-    let current = await this.ctx.storage.get("document:v2");
+  async initializeBlocksLocked({ blocks, title, senderId }: DocumentInit): Promise<StoredDocument> {
+    let current = await this.ctx.storage.get<StoredDocument>("document:v2");
     const cleanBlocks = sanitizeBlocks(blocks);
     const cleanTitle = String(title || DEFAULT_TITLE);
 
@@ -70,7 +126,7 @@ export class Gadget extends DurableObject {
       lastModified: now,
     };
     await this.ctx.storage.put("document:v2", current);
-    await this.broadcast({
+    this.broadcast({
       type: "snapshot",
       senderId,
       document: current,
@@ -81,15 +137,15 @@ export class Gadget extends DurableObject {
   // Explicit full-document writer for agents/importers. Unlike initializeBlocks,
   // this always applies, so callers never need to inspect revision state or
   // construct per-block applyOperation payloads just to populate a document.
-  setDocument(args) {
-    return this.enqueueMutation(() => this.setDocumentLocked(args));
+  setDocument(args: DocumentInit): Promise<StoredDocument> {
+    return this.mutations.run(() => this.setDocumentLocked(args));
   }
 
-  async setDocumentLocked({ blocks, title, senderId }) {
-    const previous = await this.ctx.storage.get("document:v2");
-    const previousById = new Map((previous?.blocks || []).map((block) => [block.id, block]));
+  async setDocumentLocked({ blocks, title, senderId }: DocumentInit): Promise<StoredDocument> {
+    const previous = await this.ctx.storage.get<StoredDocument>("document:v2");
+    const previousById = new Map((previous?.blocks || []).map((block): [string, StoredBlock] => [block.id, block]));
     const cleanBlocks = sanitizeBlocks(blocks);
-    const document = {
+    const document: StoredDocument = {
       revision: (previous?.revision || 0) + 1,
       title: String(title || DEFAULT_TITLE),
       blocks: cleanBlocks.map((block) => ({
@@ -100,56 +156,49 @@ export class Gadget extends DurableObject {
       lastModified: Date.now(),
     };
     await this.ctx.storage.put("document:v2", document);
-    await this.broadcast({ type: "snapshot", senderId, document });
+    this.broadcast({ type: "snapshot", senderId, document });
     return document;
   }
 
   // Apply a compact batch of block changes. The mutation queue is the single
   // authoritative order for all collaborators.
-  applyOperation(operation) {
-    return this.enqueueMutation(() => this.applyOperationLocked(operation));
+  applyOperation(operation: Operation): Promise<ApplyOperationResult> {
+    return this.mutations.run(() => this.applyOperationLocked(operation));
   }
 
-  async applyOperationLocked(operation) {
-    let doc = await this.ctx.storage.get("document:v2");
+  async applyOperationLocked(operation: Operation): Promise<ApplyOperationResult> {
+    let doc = await this.ctx.storage.get<StoredDocument>("document:v2");
     if (!doc) throw new Error("Document must be initialized first.");
 
-    const byId = new Map(doc.blocks.map((block) => [block.id, block]));
-    const accepted = [];
-    const conflicts = [];
-
-    for (const incoming of sanitizeBlocks(operation.upserts || [])) {
-      const current = byId.get(incoming.id);
-      const expected = Number(incoming.baseVersion || 0);
-      if (current && expected !== current.version) {
-        conflicts.push(current);
-        continue;
-      }
-      if (!current && expected !== 0) continue;
-      const next = { id: incoming.id, html: incoming.html, version: (current?.version || 0) + 1 };
-      byId.set(next.id, next);
-      accepted.push(next);
-    }
-
-    const deletedIds = [];
-    for (const deletion of operation.deletes || []) {
-      const id = String(deletion?.id || "");
-      const current = byId.get(id);
-      if (!current) continue;
-      if (Number(deletion.baseVersion || 0) !== current.version) {
-        conflicts.push(current);
-        continue;
-      }
-      byId.delete(id);
-      deletedIds.push(id);
-    }
+    const outcome = applyVersioned(doc.blocks, {
+      upserts: sanitizeBlocks(operation.upserts || []),
+      deletes: (operation.deletes || []).map((deletion) => ({
+        id: String(deletion?.id || ""),
+        baseVersion: normalizeBaseVersion(deletion?.baseVersion),
+      })),
+    }, {
+      // Every accepted upsert takes a new version, even one whose HTML already
+      // matches what is stored: the reply is how a client learns which version
+      // its draft now rests on, and a block left out of it would keep looking
+      // unsaved to the sender.
+      isUnchanged: () => false,
+    });
+    const byId = outcome.items;
+    const { accepted, deletedIds } = outcome;
+    // A rejection travels as the authoritative block, which the client rebases
+    // its draft onto. An upsert naming a block someone else deleted has nothing
+    // to rebase onto and is dropped instead: the client re-creates it from its
+    // draft on the next save, with no base version.
+    const conflicts = outcome.conflicts
+      .filter((conflict): conflict is Extract<VersionConflict<StoredBlock>, { reason: "stale" }> => conflict.reason === "stale")
+      .map((conflict) => conflict.current);
 
     // Ordering is intentionally last-writer-wins. Text/content remains guarded
     // by per-block versions, while inserts, moves and list restructuring stay
     // responsive and deterministic.
     const requestedOrder = Array.isArray(operation.order) ? operation.order.map(String) : [];
-    const order = [];
-    const seen = new Set();
+    const order: string[] = [];
+    const seen = new Set<string>();
     for (const id of requestedOrder) {
       if (byId.has(id) && !seen.has(id)) { order.push(id); seen.add(id); }
     }
@@ -161,22 +210,22 @@ export class Gadget extends DurableObject {
     }
 
     const titleChanged = typeof operation.title === "string" && operation.title !== doc.title;
-    const changed = accepted.length || deletedIds.length || titleChanged ||
+    const changed = outcome.changed || titleChanged ||
       order.join("\n") !== doc.blocks.map((b) => b.id).join("\n");
 
     if (!changed) {
-      return { status: conflicts.length ? "conflict" : "unchanged", revision: doc.revision, conflicts };
+      return { status: operationStatus(false, conflicts), revision: doc.revision, conflicts };
     }
 
     doc = {
       revision: doc.revision + 1,
       title: typeof operation.title === "string" ? operation.title : doc.title,
-      blocks: order.map((id) => byId.get(id)),
+      blocks: order.map((id) => byId.get(id)!),
       lastModified: Date.now(),
     };
     await this.ctx.storage.put("document:v2", doc);
 
-    const event = {
+    const event: OperationEvent = {
       type: "operation",
       senderId: operation.senderId,
       revision: doc.revision,
@@ -186,44 +235,23 @@ export class Gadget extends DurableObject {
       order,
       lastModified: doc.lastModified,
     };
-    await this.broadcast(event);
+    this.broadcast(event);
     return {
-      status: conflicts.length ? "conflict" : "applied",
+      status: operationStatus(true, conflicts),
       ...event,
       conflicts,
     };
   }
 
-  async subscribe(callback, client = {}) {
-    const dup = callback.dup();
-    const existing = Array.from(this.subscribers.values());
-    const info = {
-      callback: dup,
-      clientId: String(client.clientId || ""),
-      name: String(client.name || "Guest").slice(0, 40),
-      color: String(client.color || "#e1632e"),
-    };
-    this.subscribers.set(dup, info);
-    dup.onRpcBroken(() => {
-      this.subscribers.delete(dup);
-      this.broadcastPresence({ type: "leave", clientId: info.clientId });
-    });
-    queueMicrotask(async () => {
-      // Seed the newcomer with collaborators who were already connected.
-      for (const person of existing) {
-        try {
-          await dup.presence({ type: "join", clientId: person.clientId, name: person.name, color: person.color, blockId: null });
-        } catch (e) { break; }
-      }
-      await this.broadcastPresence({
-        type: "join", clientId: info.clientId, name: info.name, color: info.color, blockId: null,
-      });
-    });
+  async subscribe(callback: SubscriberCallbacks, client: Partial<Collaborator> = {}): Promise<DocumentSnapshot> {
+    // The registry keeps the stub, seeds the newcomer with everyone already
+    // connected, announces it to them, and drops it when its connection breaks.
+    this.subscribers.add(callback, normalizeCollaborator(client));
     return this.loadDocument();
   }
 
-  async updatePresence(presence) {
-    const event = {
+  async updatePresence(presence: PresenceUpdate): Promise<void> {
+    const event: DocPresenceEvent = {
       type: "cursor",
       clientId: String(presence.clientId || ""),
       name: String(presence.name || "Guest").slice(0, 40),
@@ -236,42 +264,36 @@ export class Gadget extends DurableObject {
       focusOffset: Math.max(0, Number(presence.focusOffset || 0)),
       at: Date.now(),
     };
-    await this.broadcastPresence(event);
+    this.broadcastPresence(event);
   }
 
   // Best-effort fast path for pagehide. Clients also expire stale presence via
   // heartbeats because browsers cannot guarantee that unload RPC completes.
-  async leavePresence(clientId) {
-    await this.broadcastPresence({
+  async leavePresence(clientId: string): Promise<void> {
+    this.broadcastPresence({
       type: "leave",
       clientId: String(clientId || ""),
       at: Date.now(),
     });
   }
 
-  async broadcast(event) {
-    const calls = [];
-    for (const [stub] of this.subscribers) {
-      calls.push(Promise.resolve(stub.operation(event)).catch(() => this.subscribers.delete(stub)));
-    }
-    await Promise.all(calls);
+  // Delivery is the registry's: issued at once and never awaited, so a slow or
+  // failing browser holds up neither the mutation nor the other subscribers.
+  broadcast(event: DocumentEvent): void {
+    this.subscribers.broadcast((subscriber) => subscriber.operation(event));
   }
 
-  async broadcastPresence(event) {
-    const calls = [];
-    for (const [stub] of this.subscribers) {
-      calls.push(Promise.resolve(stub.presence(event)).catch(() => this.subscribers.delete(stub)));
-    }
-    await Promise.all(calls);
+  broadcastPresence(event: DocPresenceEvent): void {
+    this.subscribers.broadcast((subscriber) => subscriber.presence(event));
   }
 
-  async getGoogleDocInfo() {
+  async getGoogleDocInfo(): Promise<GoogleDocInfo | null> {
     if (!this.env.GOOGLE_DOC) return null;
     const metadata = await this.env.GOOGLE_DOC.getMetadata();
     return { title: metadata.title, lastModified: metadata.lastModified };
   }
 
-  async syncToGoogleDoc({ markdown }) {
+  async syncToGoogleDoc({ markdown }: { markdown: string }): Promise<GoogleDocSyncResult> {
     if (!this.env.GOOGLE_DOC) throw new Error("GOOGLE_DOC binding is not configured.");
     const next = String(markdown || "").trim() || " ";
     const current = await this.env.GOOGLE_DOC.getContent();
@@ -282,47 +304,58 @@ export class Gadget extends DurableObject {
   }
 }
 
-function sanitizeBlocks(blocks) {
+function sanitizeBlocks(blocks: unknown): BlockUpsert[] {
   if (!Array.isArray(blocks)) return [];
-  const result = [];
-  const seen = new Set();
-  for (const value of blocks) {
-    const id = String(value?.id || "").slice(0, 100);
-    const html = String(value?.html || "");
+  const result: BlockUpsert[] = [];
+  const seen = new Set<string>();
+  for (const value of blocks as unknown[]) {
+    const block = isRecord(value) ? value : null;
+    const id = String(block?.id || "").slice(0, 100);
+    const html = String(block?.html || "");
     if (!id || seen.has(id) || html.length > 10_000_000) continue;
     seen.add(id);
-    result.push({ id, html, baseVersion: Number(value?.baseVersion || 0) });
+    result.push({ id, html, baseVersion: normalizeBaseVersion(block?.baseVersion) });
   }
   return result;
 }
 
 
-const DOC_EXPORT_FORMATS = [
+// An export format as the Workshop lists it: a `server` format is produced by ExportHandler.export,
+// a `browser` one by the client, opened with `gadgetExportFormatId` set.
+interface ExportFormat {
+  id: string;
+  label: string;
+  mode: "server" | "browser";
+  contentType: string;
+  fileExtension: string;
+}
+
+const DOC_EXPORT_FORMATS: ExportFormat[] = [
   { id: "markdown", label: "Markdown", mode: "server", contentType: "text/markdown", fileExtension: ".md" },
   { id: "html", label: "HTML", mode: "browser", contentType: "text/html", fileExtension: ".html" },
   { id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf", fileExtension: ".pdf" },
 ];
 
 export class ExportHandler extends WorkerEntrypoint {
-  async getExportFormats() {
+  async getExportFormats(): Promise<ExportFormat[]> {
     return DOC_EXPORT_FORMATS;
   }
 
-  async export(gadget, id) {
+  async export(gadget: GadgetStub, id: string): Promise<ReadableStream<Uint8Array>> {
     if (id !== "markdown") throw new Error("Unsupported document export format: " + id);
     const document = await gadget.getDocument();
     const html = document.blocks
       ? document.blocks.map((block) => block.html).join("")
       : document.legacyContent || "";
-    return new Response(htmlToMarkdown(html)).body;
+    return new Response(htmlToMarkdown(html)).body!;
   }
 }
 
-function htmlToMarkdown(html) {
+function htmlToMarkdown(html: string): string {
   const tokens = String(html).match(/<!--[\s\S]*?-->|<![^>]*>|<[^>]+>|[^<]+/g) || [];
-  const lists = [];
-  const links = [];
-  const blockquotes = [];
+  const lists: { type: "ul" | "ol"; count: number }[] = [];
+  const links: string[] = [];
+  const blockquotes: number[] = [];
   let markdown = "";
   let inPre = false;
 
@@ -411,17 +444,18 @@ function htmlToMarkdown(html) {
   return clean ? clean + "\n" : "";
 }
 
-function readHtmlAttribute(source, name) {
+function readHtmlAttribute(source: string, name: string): string {
   const pattern = new RegExp(name + "\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))", "i");
   const match = pattern.exec(source);
   return decodeHtml(match ? match[1] ?? match[2] ?? match[3] ?? "" : "");
 }
 
-function decodeHtml(value) {
-  return String(value).replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (_, entity) => {
+function decodeHtml(value: string): string {
+  return String(value).replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (_: string, entity: string) => {
     const lower = entity.toLowerCase();
     if (lower.startsWith("#x")) return String.fromCodePoint(Number.parseInt(lower.slice(2), 16));
     if (lower.startsWith("#")) return String.fromCodePoint(Number.parseInt(lower.slice(1), 10));
-    return { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " }[lower];
+    const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " };
+    return named[lower];
   });
 }

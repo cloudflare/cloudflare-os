@@ -156,6 +156,23 @@ Formatting keys accepted by the server are `b` (bold), `i` (italic), `u` (underl
 
 ## Architecture
 
+Both sides are built on the modules under `lib/ui/` and `lib/sync/`, which the Docs, Sheets and
+Slides blueprints carry as copies (a change to one belongs in each).
+
+`lib/ui/` draws the chrome: the element builder, the shared toolbar icons and controls (icon and
+segment buttons, groups, colour pickers, the dropdown behind the number-format menu), the in-page
+prompt that stands in for the `window.prompt` the sandbox blocks, and the save-status dot.
+`lib/sync/client.ts` and `lib/sync/server.ts` are the collaboration loop: the debounced,
+serialized, retrying save scheduler, the presence roster and heartbeat, the subscriber object the
+server calls back on, and in the Durable Object the mutation queue and the subscriber registry with
+its presence announcements (whose broadcasts are never awaited, so a callback may re-enter the
+queue). The cell model, the formula engine, the grid, the sheet tabs and the exports are this
+gadget's own.
+
+In the repository the source is TypeScript under `format-blueprints/workspace-sheets/files/`
+(`client.ts`, `server.ts`, `lib/protocol.ts`, `lib/formula.ts`, `lib/xlsx.ts`, `lib/zip.ts` and the shared `lib/ui/`
+and `lib/sync/` modules), which the build bundles into the `client.js` and `server.js` shipped here.
+
 ### `client.js`
 
 Builds the entire browser interface in JavaScript. It contains:
@@ -164,7 +181,7 @@ Builds the entire browser interface in JavaScript. It contains:
 - Cell editing, formatting, sorting, and structural operations
 - Formula tokenization, parsing, evaluation, and display formatting
 - Clipboard and keyboard support
-- A local model with debounced saves
+- A local model whose saves are queued per cell and flushed by the shared scheduler in `lib/sync/`
 - RPC callbacks for live server operations and presence events
 
 Formula evaluation happens in the browser. The engine caches computed cells, detects circular references, supports ranges and cross-sheet references, and displays standard errors including `#DIV/0!`, `#VALUE!`, `#REF!`, `#NAME?`, `#N/A`, `#NUM!`, and `#CYCLE!`.
@@ -174,18 +191,19 @@ Formula evaluation happens in the browser. The engine caches computed cells, det
 Exports the Durable Object class `Gadget`, which is the authoritative persistence and synchronization layer. It:
 
 - Stores spreadsheet metadata and each sheet's cells in Durable Object storage
-- Serializes mutations and document snapshots through an in-memory queue
+- Serializes mutations and document snapshots through the shared mutation queue
 - Applies per-cell optimistic concurrency using cell versions
 - Uses last-writer-wins semantics for document structure
-- Broadcasts operations and presence events to subscribed clients after the queue releases, best-effort and without awaiting them, so a callback may itself read or write the document and a hung subscriber holds up only its own client
+- Broadcasts operations and presence events through the shared subscriber registry after the queue releases, best-effort and without awaiting them, so a callback may itself read or write the document and a hung subscriber holds up only its own client
 - Sanitizes titles, dimensions, cell contents, references, and formatting
 - Advertises and produces the server-side workbook and CSV exports
 
-### `xlsx.js` and `zip.js`
+### XLSX and ZIP modules (bundled into `server.js`)
 
-`xlsx.js` converts a complete document snapshot into a streaming XLSX workbook: sparse worksheet XML
-with inline strings, deduplicated styles, and frozen panes. `zip.js` is a dependency-free streaming
-ZIP writer (raw DEFLATE via `CompressionStream`, incremental CRC32, data descriptors).
+The XLSX module converts a complete document snapshot into a streaming XLSX workbook: sparse
+worksheet XML with inline strings, deduplicated styles, and frozen panes. The ZIP module is a
+dependency-free streaming ZIP writer (raw DEFLATE via `CompressionStream`, incremental CRC32, data
+descriptors). Both are bundled into `server.js`.
 
 ## Storage model
 
@@ -198,7 +216,11 @@ Default sheets have 100 rows and 26 columns. Server validation permits up to 50,
 
 ## Collaboration notes
 
-The server and client synchronization code support multiple connected clients and live updates. Remote collaborator badges and selection overlays are currently disabled in the UI, so the app presents as a single-user spreadsheet even though remote operations still synchronize.
+The server and client synchronization code support multiple connected clients and live updates. Each
+tab introduces itself with the guest name and colour `lib/sync/` derives from its client ID, and
+reports its selected range on its throttle and heartbeat. Remote collaborator badges and
+selection overlays are currently disabled in the UI, so the app presents as a single-user spreadsheet
+even though remote operations still synchronize.
 
 ## Current limitations
 

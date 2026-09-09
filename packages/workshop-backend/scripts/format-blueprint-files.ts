@@ -1,11 +1,17 @@
 // Gadgets are Git-backed, but blueprint archive version 1 intentionally retains its historical
 // gzip-compressed Yjs snapshot wire format. Instantiation decodes that snapshot into a Git commit.
+//
+// A blueprint's files/ tree may be authored in TypeScript: `client.ts` and `server.ts` are each
+// bundled with their `lib/**/*.ts` imports into the `client.js` / `server.js` the archive ships, so
+// the running gadget and the agent that later edits it see one JavaScript file per side, as they
+// do for a blueprint written in plain JavaScript.
 
 import { lstat, readdir, readFile } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { join } from "node:path";
 import * as Y from "yjs";
+import type { Metafile } from "esbuild";
 
 const MAGIC = 0xec2e2d3a2300e317n;
 const VERSION = 1;
@@ -144,6 +150,13 @@ export function buildContent(files: Map<string, string>, label: string): Uint8Ar
   return gzipSync(update, {level: 9});
 }
 
+/**
+ * Reads a blueprint's files/ tree into the file map its archive will hold.
+ *
+ * Every regular file under `filesDir` is read as UTF-8 and validated as a portable archive path; a
+ * tree holding TypeScript is then compiled by {@link bundleTypeScriptSources}, so the returned map
+ * is what the installed gadget sees, not what is on disk.
+ */
 export async function readSourceFiles(
   filesDir: string,
   label: string,
@@ -178,7 +191,241 @@ export async function readSourceFiles(
 
   await visit(filesDir, "");
   validateFilePaths(files.keys(), label);
-  return files;
+  return await bundleTypeScriptSources(filesDir, files, label);
+}
+
+/**
+ * The two gadget entry points, each bundled for the runtime that loads it: the client runs as an
+ * ES module inside a sandboxed browser iframe, the server as a Durable Object class in workerd.
+ *
+ * `external` is what that runtime supplies, and it is little: the iframe supplies nothing, and the
+ * Durable Object gets workerd's own `cloudflare:*`. Everything else a blueprint imports has to be a
+ * file it owns, so a bare `import "yjs"` fails this build rather than going missing inside the
+ * sandbox.
+ */
+const ENTRY_POINTS = [
+  { name: "client", platform: "browser", external: [] },
+  { name: "server", platform: "neutral", external: ["cloudflare:*"] },
+] as const;
+
+/** Where a blueprint's TypeScript modules live; everything under it is an input to the entries. */
+const LIB_PREFIX = "lib/";
+
+/** The ECMAScript level both gadget runtimes accept, and what the blueprint tsconfigs target. */
+const GADGET_TARGET = "es2022";
+
+/** Declaration files carry no code: dropped rather than compiled. */
+const DECLARATION_PATTERN = /\.d\.[cm]?ts$/u;
+
+/**
+ * TypeScript spellings a gadget module may not use. Each would type-check but reach the archive
+ * as raw TypeScript or not at all, so they are rejected rather than half-supported: JSX has no
+ * runtime here (the client is hand-written DOM code), and the ESM/CJS variants say nothing a
+ * blueprint needs -- both bundles are ES modules.
+ */
+const UNSUPPORTED_TYPESCRIPT_PATTERN = /\.(?:tsx|mts|cts)$/u;
+
+/** The files the reachability scan reads: those that can name another module. */
+const MODULE_PATTERN = /\.[cm]?[jt]s$/u;
+
+/**
+ * Every string literal that could be a module specifier: the operand of `from`, of `import` or
+ * `import()`, or of `require()`.
+ */
+const SPECIFIER_PATTERN = /\b(?:from|import|require)\s*\(?\s*(?:"([^"\n]*)"|'([^'\n]*)')/gu;
+
+/**
+ * The JavaScript extension TypeScript rewrites to a source one, i.e. `./lib/blocks.js` naming
+ * `lib/blocks.ts`. It is the only such rewrite a gadget module can need: the other dialects
+ * TypeScript spells this way are rejected before any specifier is resolved (see
+ * {@link UNSUPPORTED_TYPESCRIPT_PATTERN}).
+ */
+const JAVASCRIPT_EXTENSION = /\.js$/u;
+
+/**
+ * Replaces the TypeScript in a files/ tree with the JavaScript the archive ships.
+ *
+ * `client.ts` and `server.ts` each become `client.js` / `server.js`, bundling whatever they import
+ * from `lib/`; those `lib/` modules are inputs to the bundles and are not stored themselves.
+ * `.d.ts` files carry no code and are dropped. Every other file passes through unchanged -- a
+ * bundle inlining one (a JSON data file, say) does not remove it, because a module the archive
+ * still ships may import it too -- so a blueprint written in JavaScript builds exactly as it did
+ * before TypeScript was allowed here.
+ *
+ * Bundles are readable rather than minified, because the agent edits the installed file. The only
+ * imports that survive are the ones the entry's runtime supplies (see {@link ENTRY_POINTS}); every
+ * other specifier has to resolve to a file the blueprint owns. esbuild enforces that for bare
+ * specifiers, which it resolves or fails on, but not for URLs: `import x from "https://..."` is
+ * left in the output as an external without a word, so the bundle's surviving imports are checked
+ * against the entry's allowlist here.
+ *
+ * Rejected, rather than silently mis-shipped: an entry present as both `x.ts` and `x.js`; a `.ts`
+ * file that is neither an entry nor under `lib/`; a TypeScript dialect the archive has no place for
+ * (see {@link UNSUPPORTED_TYPESCRIPT_PATTERN}); a `lib/` module no entry imports, which would be
+ * dropped from the archive; and an import that escapes files/, which would inline code the
+ * blueprint does not own.
+ */
+async function bundleTypeScriptSources(
+  filesDir: string,
+  files: Map<string, string>,
+  label: string,
+): Promise<Map<string, string>> {
+  const output = new Map<string, string>();
+  const libSources = new Set<string>();
+  const entries: Array<(typeof ENTRY_POINTS)[number]> = [];
+  for (const [path, source] of files) {
+    if (DECLARATION_PATTERN.test(path)) continue;
+    if (UNSUPPORTED_TYPESCRIPT_PATTERN.test(path)) {
+      invalid(label, `${path} is not a gadget module: gadget TypeScript is plain .ts, not .tsx, ` +
+          `.mts or .cts`);
+    }
+    if (!path.endsWith(".ts")) {
+      output.set(path, source);
+      continue;
+    }
+    if (path.startsWith(LIB_PREFIX)) {
+      libSources.add(path);
+      continue;
+    }
+    const entry = ENTRY_POINTS.find(candidate => `${candidate.name}.ts` === path);
+    if (!entry) {
+      invalid(label, `${path} is not a gadget module: only client.ts, server.ts and ` +
+          `${LIB_PREFIX}**/*.ts are compiled`);
+    }
+    if (files.has(`${entry.name}.js`)) {
+      invalid(label, `${path} and ${entry.name}.js both define the ${entry.name} entry`);
+    }
+    entries.push(entry);
+  }
+  if (entries.length === 0) {
+    const [orphan] = libSources;
+    if (orphan) invalid(label, `${orphan} has no client.ts or server.ts to bundle it`);
+    return output;
+  }
+
+  // Loaded on demand: esbuild drives a native binary, and the JavaScript-only path through here
+  // (including the importer and the archive tests that run inside workerd) never needs it.
+  const { build } = await import("esbuild");
+  await Promise.all(entries.map(async entry => {
+    let metafile: Metafile;
+    let text: string;
+    try {
+      const result = await build({
+        absWorkingDir: filesDir,
+        entryPoints: [`${entry.name}.ts`],
+        bundle: true,
+        external: [...entry.external],
+        format: "esm",
+        platform: entry.platform,
+        target: GADGET_TARGET,
+        charset: "utf8",
+        minify: false,
+        sourcemap: false,
+        write: false,
+        metafile: true,
+        logLevel: "silent",
+        // A blueprint's compile must not pick up whichever tsconfig sits above its directory --
+        // FORMAT_BLUEPRINTS_DIR can name a tree anywhere.
+        tsconfigRaw: {},
+      });
+      metafile = result.metafile;
+      text = result.outputFiles[0]!.text;
+    } catch (err) {
+      invalid(label, `${entry.name}.ts failed to bundle: ${errorMessage(err)}`);
+    }
+    for (const input of Object.keys(metafile.inputs)) {
+      if (!files.has(input)) {
+        invalid(label, `${entry.name}.ts imports ${input}, which is outside the blueprint's files`);
+      }
+    }
+    for (const bundle of Object.values(metafile.outputs)) {
+      for (const imported of bundle.imports) {
+        if (imported.external && !matchesExternal(imported.path, entry.external)) {
+          invalid(label, `${entry.name}.ts imports ${imported.path}, which the ${entry.name} ` +
+              `runtime does not supply`);
+        }
+      }
+    }
+    output.set(`${entry.name}.js`, text);
+  }));
+  // What esbuild inlined cannot say whether every `lib/` module is wanted: types are erased
+  // before the bundle is written, so a module holding only the shared contract is inlined nowhere.
+  // Reachability is read from the source instead.
+  const imported = importedModules(files, entries.map(entry => `${entry.name}.ts`));
+  for (const lib of libSources) {
+    if (!imported.has(lib)) invalid(label, `${lib} is not imported by any entry point`);
+  }
+  return new Map([...output].toSorted(([a], [b]) => compareNames(a, b)));
+}
+
+/**
+ * Whether `specifier` is one of the `external` patterns of an entry point: the pattern itself, or
+ * anything under a pattern ending in `*` -- the only wildcard {@link ENTRY_POINTS} uses, and the
+ * shape esbuild's own `external` matching gives it.
+ */
+function matchesExternal(specifier: string, patterns: readonly string[]): boolean {
+  return patterns.some(pattern => pattern.endsWith("*")
+      ? specifier.startsWith(pattern.slice(0, -1))
+      : specifier === pattern);
+}
+
+/**
+ * The blueprint's own files reachable from `entryPaths` by following import specifiers.
+ *
+ * A scan of the source rather than a parse of it, and deliberately so: it exists to prove that a
+ * `lib/` module is wanted, and a scan can only over-estimate that (a specifier-shaped string in a
+ * comment counts as an import), so the "no entry imports this" build error stays impossible to
+ * trigger for a module something really does import -- including one imported only for its types,
+ * which no compiled output can witness.
+ */
+function importedModules(
+  files: ReadonlyMap<string, string>,
+  entryPaths: string[],
+): Set<string> {
+  const reached = new Set(entryPaths);
+  const queue = [...entryPaths];
+  for (let path = queue.pop(); path !== undefined; path = queue.pop()) {
+    const source = MODULE_PATTERN.test(path) ? files.get(path) : undefined;
+    if (source === undefined) continue;
+    for (const [, doubleQuoted, singleQuoted] of source.matchAll(SPECIFIER_PATTERN)) {
+      const specifier = doubleQuoted ?? singleQuoted!;
+      if (!specifier.startsWith("./") && !specifier.startsWith("../")) continue;
+      for (const candidate of resolveWithinFiles(path, specifier)) {
+        if (!files.has(candidate) || reached.has(candidate)) continue;
+        reached.add(candidate);
+        queue.push(candidate);
+      }
+    }
+  }
+  return reached;
+}
+
+/**
+ * The archive paths a relative `specifier` written in `importer` could name.
+ *
+ * Every spelling a bundler would try that could name a module of the blueprint's own, since which
+ * one resolves is the bundler's business: the path as written, an omitted extension, a directory's
+ * index module, and the TypeScript source behind a JavaScript extension. A specifier reaching above
+ * files/ resolves to nothing here -- esbuild reports that as an import outside the blueprint.
+ */
+function resolveWithinFiles(importer: string, specifier: string): string[] {
+  const segments = importer.split("/").slice(0, -1);
+  for (const segment of specifier.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment !== "..") {
+      segments.push(segment);
+      continue;
+    }
+    if (segments.length === 0) return [];
+    segments.pop();
+  }
+  const path = segments.join("/");
+  if (path === "") return [];
+  const candidates = [path, `${path}.ts`, `${path}.js`, `${path}/index.ts`, `${path}/index.js`];
+  if (JAVASCRIPT_EXTENSION.test(path)) {
+    candidates.push(path.replace(JAVASCRIPT_EXTENSION, ".ts"));
+  }
+  return candidates;
 }
 
 function validateFilePaths(paths: Iterable<string>, label: string): void {

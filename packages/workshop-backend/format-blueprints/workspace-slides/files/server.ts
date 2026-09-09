@@ -1,4 +1,17 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { SubscriberRegistry } from "./lib/sync/server.ts";
+import type {
+  Block,
+  BlockInput,
+  BlockPatch,
+  Deck,
+  DeckCallbacks,
+  GadgetStub,
+  Slide,
+  SlideInput,
+  SlidePatch,
+  UndoState,
+} from "./lib/protocol.ts";
 
 /**
  * The Gadget stores a single "deck" document under the "deck" key:
@@ -23,16 +36,27 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
  * store with realtime broadcast. Mutations are coarse: any change re-sends
  * the whole deck, which keeps clients trivially in sync and makes undo
  * (future) easy.
+ *
+ * The connected browsers are held by the sync library's SubscriberRegistry.
+ * A deck has no presence — everyone sees the same slide data and cursors are
+ * not shared — so the registry is built with no presence hooks and is a plain
+ * fan-out: it keeps each subscriber's stub, drops and releases one whose
+ * connection breaks or whose delivery fails, and isolates the rest from it.
  */
 
 const STORAGE_KEY = "deck";
 const MAX_UNDO = 50;
 
-export class Gadget extends DurableObject {
-  constructor(state, env) {
+export class Gadget extends DurableObject<unknown> implements GadgetStub {
+  state: DurableObjectState;
+  subscribers: SubscriberRegistry<DeckCallbacks>;
+  undoStack: Deck[];
+  redoStack: Deck[];
+
+  constructor(state: DurableObjectState, env: unknown) {
     super(state, env);
     this.state = state;
-    this.subscribers = new Set();
+    this.subscribers = new SubscriberRegistry();
     // Undo/redo stacks live in memory only — they're transient and
     // shared across every connected client (one global history for the
     // whole deck). On DO restart history is lost, which we consider
@@ -42,36 +66,36 @@ export class Gadget extends DurableObject {
   }
 
   // -------- undo / redo ---------------------------------------------------
-  async getUndoState() {
+  async getUndoState(): Promise<UndoState> {
     return {
       canUndo: this.undoStack.length > 0,
       canRedo: this.redoStack.length > 0,
     };
   }
 
-  async undo() {
+  async undo(): Promise<boolean> {
     if (this.undoStack.length === 0) return false;
-    const prev = this.undoStack.pop();
-    const current = await this.state.storage.get(STORAGE_KEY);
+    const prev = this.undoStack.pop()!;
+    const current = await this.state.storage.get<Deck>(STORAGE_KEY);
     if (current) this.redoStack.push(current);
     await this.state.storage.put(STORAGE_KEY, prev);
-    await this.#broadcast(prev);
+    this.#broadcast(prev);
     return true;
   }
 
-  async redo() {
+  async redo(): Promise<boolean> {
     if (this.redoStack.length === 0) return false;
-    const next = this.redoStack.pop();
-    const current = await this.state.storage.get(STORAGE_KEY);
+    const next = this.redoStack.pop()!;
+    const current = await this.state.storage.get<Deck>(STORAGE_KEY);
     if (current) this.undoStack.push(current);
     await this.state.storage.put(STORAGE_KEY, next);
-    await this.#broadcast(next);
+    this.#broadcast(next);
     return true;
   }
 
   // -------- read ----------------------------------------------------------
-  async getDeck() {
-    let d = await this.state.storage.get(STORAGE_KEY);
+  async getDeck(): Promise<Deck> {
+    let d = await this.state.storage.get<Deck>(STORAGE_KEY);
     // Defensive: if the storage was empty OR holds an older-schema document
     // (the previous version of this Gadget stored field overrides under
     // numeric keys rather than a `slides` array), wipe and seed.
@@ -83,7 +107,7 @@ export class Gadget extends DurableObject {
   }
 
   // -------- slide ops -----------------------------------------------------
-  async addSlide(atIndex, slide) {
+  async addSlide(atIndex?: number | null, slide?: SlideInput): Promise<string> {
     const d = await this.getDeck();
     const s = slide || newBlankSlide();
     if (!s.id) s.id = genId();
@@ -95,23 +119,24 @@ export class Gadget extends DurableObject {
     s.blocks = (s.blocks || []).map(b => b.id ? b : { ...b, id: genId() });
     const i = (atIndex == null || atIndex < 0 || atIndex > d.slides.length)
       ? d.slides.length : atIndex;
-    d.slides.splice(i, 0, s);
+    // A caller-supplied slide is a Slide by now: its id and its blocks' ids were filled in above.
+    d.slides.splice(i, 0, s as Slide);
     await this.#save(d);
     return s.id;
   }
 
-  async removeSlide(slideId) {
+  async removeSlide(slideId: string): Promise<void> {
     const d = await this.getDeck();
     d.slides = d.slides.filter(s => s.id !== slideId);
     if (d.slides.length === 0) d.slides.push(newBlankSlide());
     await this.#save(d);
   }
 
-  async duplicateSlide(slideId) {
+  async duplicateSlide(slideId: string): Promise<string | null> {
     const d = await this.getDeck();
     const i = d.slides.findIndex(s => s.id === slideId);
     if (i < 0) return null;
-    const copy = JSON.parse(JSON.stringify(d.slides[i]));
+    const copy: Slide = JSON.parse(JSON.stringify(d.slides[i]));
     copy.id = genId();
     copy.blocks = (copy.blocks || []).map(b => ({ ...b, id: genId() }));
     d.slides.splice(i + 1, 0, copy);
@@ -119,7 +144,7 @@ export class Gadget extends DurableObject {
     return copy.id;
   }
 
-  async moveSlide(slideId, toIndex) {
+  async moveSlide(slideId: string, toIndex: number): Promise<void> {
     const d = await this.getDeck();
     const i = d.slides.findIndex(s => s.id === slideId);
     if (i < 0) return;
@@ -129,7 +154,7 @@ export class Gadget extends DurableObject {
     await this.#save(d);
   }
 
-  async updateSlide(slideId, patch) {
+  async updateSlide(slideId: string, patch: SlidePatch): Promise<void> {
     const d = await this.getDeck();
     const s = d.slides.find(s => s.id === slideId);
     if (!s) return;
@@ -140,11 +165,11 @@ export class Gadget extends DurableObject {
   }
 
   // -------- block ops -----------------------------------------------------
-  async addBlock(slideId, block, atIndex) {
+  async addBlock(slideId: string, block: BlockInput, atIndex?: number | null): Promise<string | null> {
     const d = await this.getDeck();
     const s = d.slides.find(s => s.id === slideId);
     if (!s) return null;
-    const b = { id: genId(), ...block };
+    const b: Block = { id: genId(), ...block };
     if (!b.id) b.id = genId();
     if (atIndex == null) s.blocks.push(b);
     else s.blocks.splice(atIndex, 0, b);
@@ -152,7 +177,7 @@ export class Gadget extends DurableObject {
     return b.id;
   }
 
-  async updateBlock(slideId, blockId, patch) {
+  async updateBlock(slideId: string, blockId: string, patch: BlockPatch): Promise<void> {
     const d = await this.getDeck();
     const s = d.slides.find(s => s.id === slideId);
     if (!s) return;
@@ -166,7 +191,7 @@ export class Gadget extends DurableObject {
     await this.#save(d);
   }
 
-  async removeBlock(slideId, blockId) {
+  async removeBlock(slideId: string, blockId: string): Promise<void> {
     const d = await this.getDeck();
     const s = d.slides.find(s => s.id === slideId);
     if (!s) return;
@@ -174,7 +199,7 @@ export class Gadget extends DurableObject {
     await this.#save(d);
   }
 
-  async reorderBlock(slideId, blockId, toIndex) {
+  async reorderBlock(slideId: string, blockId: string, toIndex: number): Promise<void> {
     const d = await this.getDeck();
     const s = d.slides.find(s => s.id === slideId);
     if (!s) return;
@@ -187,28 +212,26 @@ export class Gadget extends DurableObject {
   }
 
   // -------- bulk ----------------------------------------------------------
-  async setDeck(deck) {
+  async setDeck(deck: Deck): Promise<void> {
     await this.#save(deck);
   }
 
-  async resetAll() {
+  async resetAll(): Promise<Deck> {
     const d = initialDeck();
     await this.#save(d);
     return d;
   }
 
   // -------- realtime ------------------------------------------------------
-  async subscribe(cb) {
-    const dup = cb.dup();
-    this.subscribers.add(dup);
-    dup.onRpcBroken(() => this.subscribers.delete(dup));
+  async subscribe(cb: DeckCallbacks): Promise<void> {
+    this.subscribers.add(cb);
   }
 
-  async #save(deck) {
+  async #save(deck: Deck): Promise<void> {
     // Snapshot the previous deck onto the undo stack before overwriting.
     // The very first save (no prior deck in storage) doesn't push, and
     // calls from undo/redo bypass this method so they don't recurse.
-    const prev = await this.state.storage.get(STORAGE_KEY);
+    const prev = await this.state.storage.get<Deck>(STORAGE_KEY);
     if (prev) {
       this.undoStack.push(prev);
       if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
@@ -216,26 +239,25 @@ export class Gadget extends DurableObject {
       this.redoStack = [];
     }
     await this.state.storage.put(STORAGE_KEY, deck);
-    await this.#broadcast(deck);
+    this.#broadcast(deck);
   }
 
-  async #broadcast(deck) {
-    const meta = {
+  // Delivery is the registry's: issued at once and never awaited, so a slow or
+  // failing browser holds up neither the save nor the other subscribers.
+  #broadcast(deck: Deck): void {
+    const meta: UndoState = {
       canUndo: this.undoStack.length > 0,
       canRedo: this.redoStack.length > 0,
     };
-    for (const sub of this.subscribers) {
-      try { sub.deckChanged(deck, meta); }
-      catch (e) { this.subscribers.delete(sub); }
-    }
+    this.subscribers.broadcast(sub => sub.deckChanged(deck, meta));
   }
 }
 
-function genId() {
+function genId(): string {
   return crypto.randomUUID().slice(0, 8);
 }
 
-function newBlankSlide() {
+function newBlankSlide(): Slide {
   return {
     id: genId(),
     background: { color: "#F6821F", inset: false, coverOrange: true },
@@ -252,7 +274,7 @@ function newBlankSlide() {
   };
 }
 
-function initialDeck() {
+function initialDeck(): Deck {
   // Build the four-slide starter deck. Clone all source objects so later
   // edits cannot mutate the blueprint used by future instances or resetAll().
   const deck = structuredClone(INITIAL_DECK);
@@ -261,7 +283,7 @@ function initialDeck() {
   return deck;
 }
 
-const GET_STARTED_SLIDE = {
+const GET_STARTED_SLIDE: Slide = {
   id: "4f8c2d91",
   background: { color: "#FFFFFF", inset: false, dotGrid: 0 },
   blocks: [
@@ -303,7 +325,7 @@ const GET_STARTED_SLIDE = {
   ],
 };
 
-const KEY_TAKEAWAYS_SLIDE = {
+const KEY_TAKEAWAYS_SLIDE: Slide = {
   id: "6a7e5ae2",
   background: { color: "#FFFFFF", inset: false, dotGrid: 0 },
   blocks: [
@@ -324,7 +346,7 @@ const KEY_TAKEAWAYS_SLIDE = {
   ],
 };
 
-const INITIAL_DECK = {
+const INITIAL_DECK: Deck = {
   themeVersion: "workspace.1",
   slides: [
     {
@@ -434,7 +456,7 @@ const INITIAL_DECK = {
 };
 
 // Retained for compatibility with older code paths and as a component demo.
-function defaultDeck() {
+function defaultDeck(): Deck {
   return {
     slides: [
       // ----- Slide 1: cover ------------------------------------------------
@@ -532,7 +554,7 @@ export class ExportHandler extends WorkerEntrypoint {
     return SLIDES_EXPORT_FORMATS;
   }
 
-  async export(_gadget, id) {
+  async export(_gadget: GadgetStub, id: string): Promise<never> {
     throw new Error("Unsupported slides export format: " + id);
   }
 }

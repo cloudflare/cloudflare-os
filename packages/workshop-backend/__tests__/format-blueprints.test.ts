@@ -17,6 +17,16 @@ async function readBlueprintFile(
   return doc.getMap<Y.Text>().get(filename)?.toString() ?? "";
 }
 
+/**
+ * Whether `code` exports `name`, in either shape a blueprint's installed JavaScript can have: hand
+ * written (`export class Foo`), or produced by the TypeScript build, which rewrites the declaration
+ * to a `var` and gathers every export into one trailing `export { ... }` list.
+ */
+function exportsName(code: string, name: string): boolean {
+  return new RegExp(`export\\s+(?:class|function|const|let|var)\\s+${name}\\b`, "u").test(code) ||
+    new RegExp(`export\\s*\\{[^}]*\\b${name}\\b[^}]*\\}`, "su").test(code);
+}
+
 // Minimal in-memory stand-ins for the two bindings the installer writes to. They record what was
 // written so the test can assert on the installed blueprint the way a reader would see it.
 function makeEnv() {
@@ -91,7 +101,9 @@ describe("bundled format blueprints", () => {
     let entry = FORMAT_BLUEPRINTS.find(blueprint => blueprint.blueprintId === "format.document")!;
     let client = await readBlueprintFile(entry, "client.js");
 
-    expect(client).toContain('["html", "pdf"].includes(globalThis.gadgetExportFormatId)');
+    // The TypeScript build rewrites the source; what survives is the export-mode check itself.
+    expect(client).toContain('["html", "pdf"].includes(');
+    expect(client).toContain("gadgetExportFormatId");
     expect(client).toContain('document.documentElement.classList.add("document-export")');
     expect(client).toContain("app.replaceChildren(canvas)");
   });
@@ -108,7 +120,8 @@ describe("bundled format blueprints", () => {
         'id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf"',
       ],
       "format.spreadsheet": [
-        'const CSV_FORMAT_PREFIX = "csv:"',
+        // `const` in the source; the TypeScript build emits `var`.
+        'CSV_FORMAT_PREFIX = "csv:"',
         'id: "xlsx"',
         'label: "Excel Workbook"',
         'contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"',
@@ -119,11 +132,24 @@ describe("bundled format blueprints", () => {
 
     for (let entry of FORMAT_BLUEPRINTS) {
       let serverCode = await readBlueprintFile(entry, "server.js");
-      expect(serverCode, entry.blueprintId).toContain("export class ExportHandler");
+      expect(exportsName(serverCode, "ExportHandler"),
+        `${entry.blueprintId}: server.js exports ExportHandler`).toBe(true);
       for (let declaration of expectedFormats[entry.blueprintId] ?? []) {
         expect(serverCode, `${entry.blueprintId}: ${declaration}`).toContain(declaration);
       }
     }
+  });
+
+  // The export assertion above is only as good as its shape matching, and its two shapes come from
+  // two different producers (a hand-written blueprint, and esbuild), so neither the suite nor a
+  // reader can see them side by side anywhere else.
+  it.each<[string, boolean]>([
+    ["export class ExportHandler {}\n", true],
+    ["var ExportHandler = class {\n};\nexport {\n  ExportHandler,\n  Gadget\n};\n", true],
+    ["class ExportHandler {}\nnew ExportHandler();\n", false],
+    ["export {\n  Gadget\n};\n// ExportHandler moved out.\n", false],
+  ])("recognizes an ExportHandler export in %j", (code, expected) => {
+    expect(exportsName(code, "ExportHandler")).toBe(expected);
   });
 
   // Skipped when the deployment bundles nothing, which FORMAT_BLUEPRINTS_DIR makes a supported

@@ -16,7 +16,33 @@
  *    - draggable + resizable blocks with inline editable text
  *
  *  Present mode (F) hides all chrome and fills the viewport.
+ *
+ *  The element builder, the two image-reading steps and the subscriber
+ *  `RpcTarget` come from the shared `lib/ui` and `lib/sync` modules, the
+ *  copies every document-style blueprint carries. Everything below them —
+ *  the design tokens, the COMPONENTS registry, the slide renderer and the
+ *  builder shell — is this deck's own.
  * ========================================================================= */
+
+import { type ElChild, el, loadImage, readFileAsDataURL } from "./lib/ui/client.ts";
+import { type SyncHost, createSubscriber } from "./lib/sync/client.ts";
+import type {
+  Block,
+  BlockInput,
+  BlockPatch,
+  BlockProps,
+  Deck,
+  DeckCallbacks,
+  GadgetStub,
+  PropValue,
+  Slide,
+  SlideInput,
+} from "./lib/protocol.ts";
+
+// The bindings the Workshop's iframe bootstrap defines before this module runs: the RPC stub to
+// this gadget's Durable Object, and Cap'n Web's RpcTarget for the callbacks it is handed.
+declare const gadget: GadgetStub;
+declare const RpcTarget: SyncHost["RpcTarget"];
 
 /* ----------------------- Design tokens ----------------------------------- */
 const C = {
@@ -39,12 +65,12 @@ const C = {
 // values, but authored slide components are deliberately restricted to the
 // branded white-slide colors.
 const TONES = ["neutral", "tangerine", "ruby"];
-const toneFill = {
+const toneFill: Record<string, string> = {
   neutral:    "#FFFFFF",
   tangerine: "#FFFFFF",
   ruby:      "#FFFFFF",
 };
-const toneColor = {
+const toneColor: Record<string, string> = {
   neutral:    "#747474",
   tangerine: "#F6821F",
   ruby:      "#FF6633",
@@ -59,15 +85,15 @@ const WORDMARK = '"FT Kunst Grotesk", Inter, Arial, sans-serif';
 const EASE        = "cubic-bezier(0.23, 1, 0.32, 1)";        // strong ease-out
 const EASE_IN_OUT = "cubic-bezier(0.77, 0, 0.175, 1)";       // strong ease-in-out
 
-const isSlidesExport = ["html", "pdf"].includes(globalThis.gadgetExportFormatId);
+const isSlidesExport = ["html", "pdf"].includes((globalThis as { gadgetExportFormatId?: string }).gadgetExportFormatId ?? "");
 if (isSlidesExport) document.documentElement.classList.add("slides-export");
 
 /* ----------------------- App state --------------------------------------- */
-let deck            = { slides: [] };
+let deck: Deck      = { slides: [] };
 let currentIndex    = 0;
 let editMode        = false;
 let presenting      = false;
-let selectedBlockId = null;
+let selectedBlockId: string | null = null;
 let stageScale      = 1;
 let advancedOpen    = false;   // remembered across inspector re-renders
 let librarySearch   = "";      // filter text for component library
@@ -76,67 +102,79 @@ let slideSearch     = "";      // filter text for slide list
 // We store a deep clone WITHOUT the id so paste always produces a fresh block.
 // Lives only in this tab — not persisted, not shared between clients, since
 // "copy a block from one deck and paste it into another" isn't a real flow.
-let clipboardBlock  = null;
+let clipboardBlock: BlockInput | null = null;
 // Server-side undo/redo availability, refreshed whenever the deck changes
 // (or via getUndoState() at boot). The undo stack lives on the server and
 // is shared across all connected clients — a global history for the deck.
 let canUndo         = false;
 let canRedo         = false;
 
-const stageRef = { el: null, wrap: null };
-const shellRef = {};
+const stageRef: { el: HTMLDivElement | null; wrap: HTMLDivElement | null } = { el: null, wrap: null };
 
-/* ----------------------- DOM helpers ------------------------------------- */
-function el(tag, props = {}, children = []) {
-  const e = document.createElement(tag);
-  for (const k in props) {
-    const v = props[k];
-    if (v == null) continue;
-    if (k === "style") Object.assign(e.style, v);
-    else if (k === "class") e.className = v;
-    else if (k === "html") e.innerHTML = v;
-    else if (k === "text") e.textContent = v;
-    else if (k === "data") Object.assign(e.dataset, v);
-    else if (k.startsWith("on") && typeof v === "function")
-      e.addEventListener(k.slice(2).toLowerCase(), v);
-    else e.setAttribute(k, v);
-  }
-  for (const c of (children || [])) {
-    if (c == null || c === false) continue;
-    if (typeof c === "string" || typeof c === "number")
-      e.appendChild(document.createTextNode(String(c)));
-    else e.appendChild(c);
-  }
-  return e;
+/* The shell's long-lived elements, filled in by mountShell(). */
+interface ShellRefs {
+  root?: HTMLDivElement;
+  leftPanel?: HTMLDivElement;
+  rightPanel?: HTMLDivElement;
+  inspectorBody?: HTMLDivElement;
+  slideList?: HTMLDivElement;
+  counter?: HTMLButtonElement;
+  bar?: HTMLDivElement;
+  exitBtn?: HTMLButtonElement;
+  jumpMenu?: HTMLDivElement;
+  editBtn?: HTMLButtonElement;
+  fsBtn?: HTMLButtonElement;
+  undoBtn?: HTMLButtonElement;
+  redoBtn?: HTMLButtonElement;
+  undoDivider?: HTMLDivElement;
+  printDeck?: HTMLDivElement;
+  fit?: () => void;
 }
-function svg(tag, attrs = {}, children = []) {
+const shellRef: ShellRefs = {};
+
+/* ----------------------- DOM helpers -------------------------------------
+ *
+ * `el` is the ui library's element builder. The SVG helpers below stay here:
+ * slide components draw into the SVG namespace, which the library's HTML-only
+ * builder does not reach. */
+function svg<K extends keyof SVGElementTagNameMap>(
+  tag: K,
+  attrs: Record<string, string | number | null | undefined> = {},
+  children: (Node | null | undefined)[] = [],
+): SVGElementTagNameMap[K] {
   const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
   for (const k in attrs) {
     const v = attrs[k];
     if (v == null) continue;
-    e.setAttribute(k, v);
+    e.setAttribute(k, String(v));
   }
   for (const c of (children || [])) if (c) e.appendChild(c);
   return e;
 }
-function svgFromString(s) {
+/* `-webkit-backdrop-filter` is set beside `backdropFilter` for Safari. The
+ * CSSOM exposes it as `WebkitBackdropFilter`, which lib.dom does not declare,
+ * so the style objects that carry it are asserted to this. */
+type VendorStyle = Partial<CSSStyleDeclaration> & { WebkitBackdropFilter?: string };
+
+function svgFromString(s: string): ChildNode {
   const t = document.createElement("template");
   t.innerHTML = s.trim();
-  return t.content.firstChild;
+  // Callers pass literal markup, so the template always holds a node.
+  return t.content.firstChild!;
 }
-function hexA(hex, a) {
+function hexA(hex: string, a: number): string {
   const h = hex.replace("#", "");
   const r = parseInt(h.slice(0, 2), 16);
   const g = parseInt(h.slice(2, 4), 16);
   const b = parseInt(h.slice(4, 6), 16);
   return `rgba(${r},${g},${b},${a})`;
 }
-function escapeHtml(s) {
+function escapeHtml(s: string): string {
   return String(s).replace(/[&<>"']/g, ch => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-  }[ch]));
+  } as Record<string, string>)[ch]);
 }
-function escapeRegex(s) {
+function escapeRegex(s: string): string {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
@@ -153,7 +191,35 @@ function escapeRegex(s) {
  *   { key, label, type: "text"|"multiline"|"number"|"select"|"checkbox", ... }
  */
 
-const COMPONENTS = {
+/* One inspector field. The union is discriminated on `type`, so a "select"
+ * always carries its options and a "number" its range. */
+type FieldSchema =
+  | { key: string; label: string; type: "text" | "multiline" | "checkbox" | "color" | "image" | "svg"; advanced?: boolean }
+  | { key: string; label: string; type: "number"; min?: number; max?: number; step?: number; advanced?: boolean }
+  | { key: string; label: string; type: "select"; options: string[]; advanced?: boolean };
+
+/* What the shell hands a component's render(): the block, and the binder
+ * for inline-editable text. */
+interface RenderCtx {
+  block: Block;
+  inlineText(elem: HTMLElement, propKey: string, transform?: (raw: string) => string): HTMLElement;
+}
+
+/* A freshly added block before the server mints its id: everything but
+ * `id` and `type`. */
+type BlockDefaults = Omit<Block, "id" | "type">;
+
+interface ComponentDef {
+  name: string;
+  defaultBlock?: () => BlockDefaults;
+  fields?: FieldSchema[];
+  resizableW?: boolean;
+  resizableH?: boolean;
+  fullBleed?: boolean;
+  render(props: BlockProps, ctx: RenderCtx): HTMLElement | SVGElement;
+}
+
+const COMPONENTS: Record<string, ComponentDef> = {
   sectionLabel: {
     name: "Section label",
     defaultBlock: () => ({
@@ -741,7 +807,7 @@ const COMPONENTS = {
       // Parse & sanitize: drop <script> tags, strip on* attributes, then
       // size the root <svg> to fill the block. The Gadget is a single-user
       // app, but it's cheap to keep pasted markup from running JS.
-      let node = null;
+      let node: SVGSVGElement | null = null;
       try {
         const tmp = document.createElement("div");
         tmp.innerHTML = raw;
@@ -755,7 +821,7 @@ const COMPONENTS = {
         return wrap;
       }
       node.querySelectorAll("script").forEach(s => s.remove());
-      const walk = (n) => {
+      const walk = (n: Element) => {
         for (const a of Array.from(n.attributes || [])) {
           if (a.name.toLowerCase().startsWith("on")) n.removeAttribute(a.name);
         }
@@ -804,9 +870,9 @@ const COMPONENTS = {
         min: 0, max: 675, advanced: true },
     ],
     render(props) {
-      const color = {
+      const color = ({
         muted: "#747474", tangerine: "#F6821F", ruby: "#FF6633",
-      }[props.color || "muted"];
+      } as Record<string, string>)[props.color || "muted"];
       const svgEl = svg("svg", {
         width: 1200, height: 675, viewBox: "0 0 1200 675",
         style: "position:absolute;left:0;top:0;pointer-events:none;width:1200px;height:675px;",
@@ -830,8 +896,8 @@ const COMPONENTS = {
       if (props.dashed) line.setAttribute("stroke-dasharray", "6 6");
       svgEl.appendChild(line);
       if (props.label) {
-        const mx = (props.x1 + props.x2) / 2;
-        const my = (props.y1 + props.y2) / 2 - 8;
+        const mx = (props.x1! + props.x2!) / 2;
+        const my = (props.y1! + props.y2!) / 2 - 8;
         const t = svg("text", {
           x: mx, y: my, "text-anchor": "middle",
           fill: color, "font-size": "12", "font-weight": "800",
@@ -868,7 +934,7 @@ const COMPONENT_CATEGORIES = [
   { name: "Diagram",    types: ["arrow"] },
 ];
 
-const COMP_DESC = {
+const COMP_DESC: Record<string, string> = {
   title:        "Display headline",
   subtitle:     "Supporting copy",
   text:         "Free-form text",
@@ -886,7 +952,7 @@ const COMP_DESC = {
 
 /* Tiny monochrome icons used in the library + selected-block header.
  * 14×14, currentColor-stroked so they pick up hover state. */
-const COMP_ICON = {
+const COMP_ICON: Record<string, string> = {
   title:        `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M2.5 4h11M8 4v9"/></svg>`,
   subtitle:     `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 6.5h8M8 6.5v5.5"/></svg>`,
   text:         `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 5h10M3 8h10M3 11h6"/></svg>`,
@@ -926,7 +992,9 @@ const BOTTOM_BAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120
  *  clones and inserts one; the two footer buttons call these. Everything
  *  they produce is a normal editable block, so users can tweak freely.
  * ===================================================================== */
-function makeTitleSlide() {
+type SlideTemplate = Omit<SlideInput, "blocks"> & { blocks: BlockInput[] };
+
+function makeTitleSlide(): SlideTemplate {
   return {
     background: { color: "#F6821F", inset: false, coverOrange: true },
     blocks: [
@@ -942,7 +1010,7 @@ function makeTitleSlide() {
   };
 }
 
-function makeContentSlide() {
+function makeContentSlide(): SlideTemplate {
   return {
     background: { color: "#FFFFFF", inset: false, dotGrid: 0 },
     blocks: [
@@ -966,7 +1034,7 @@ function makeContentSlide() {
 // Compliance-first content structures. These use exact reference-canvas
 // geometry so authors start from the corporate grid instead of freehand
 // cards. Every element remains an ordinary editable block.
-function makeTwoColumnSlide() {
+function makeTwoColumnSlide(): SlideTemplate {
   const slide = makeContentSlide();
   slide.blocks = slide.blocks.filter(b => b.type !== "text");
   for (const x of [36, 609]) {
@@ -982,7 +1050,7 @@ function makeTwoColumnSlide() {
   return slide;
 }
 
-function makeFourColumnSlide() {
+function makeFourColumnSlide(): SlideTemplate {
   const slide = makeContentSlide();
   slide.blocks = slide.blocks.filter(b => b.type !== "text");
   [34, 328, 622, 916].forEach((x, i) => {
@@ -1017,7 +1085,7 @@ function DotGrid(opacity = 0.42) {
 
 /* ====================== Slide rendering ================================== */
 
-function currentSlide() {
+function currentSlide(): Slide | null {
   return deck.slides[currentIndex] || null;
 }
 
@@ -1027,8 +1095,8 @@ function currentSlide() {
  * left-sidebar slide search (so typing matches any text in any block),
  * and by `slideLabel()` to surface the most representative line under
  * each thumbnail row. */
-function slideText(slide) {
-  const parts = [];
+function slideText(slide: Slide): string {
+  const parts: string[] = [];
   for (const b of (slide.blocks || [])) {
     const p = b.props || {};
     for (const k in p) {
@@ -1041,7 +1109,7 @@ function slideText(slide) {
 
 /* Best-effort one-line label for a slide row. Priority: first non-empty
  * title → subtitle → text → sectionLabel → "Untitled". */
-function slideLabel(slide) {
+function slideLabel(slide: Slide): string {
   const priority = ["title", "subtitle", "text", "sectionLabel"];
   for (const type of priority) {
     for (const b of (slide.blocks || [])) {
@@ -1058,7 +1126,7 @@ function slideLabel(slide) {
   return "Untitled";
 }
 
-function filteredSlideIndices() {
+function filteredSlideIndices(): number[] {
   const q = slideSearch.trim().toLowerCase();
   if (!q) return deck.slides.map((_, i) => i);
   return deck.slides
@@ -1066,7 +1134,7 @@ function filteredSlideIndices() {
     .filter(i => i >= 0);
 }
 
-function renderSlide(slide) {
+function renderSlide(slide: Slide): HTMLDivElement {
   const frame = el("div", {
     class: "slide-frame",
     style: {
@@ -1108,7 +1176,7 @@ function renderSlide(slide) {
   if (editMode) {
     frame.addEventListener("pointerdown", (e) => {
       if (e.target === frame ||
-          (e.target.classList && e.target.classList.contains("slide-bg-hit"))) {
+          (e.target instanceof Element && e.target.classList.contains("slide-bg-hit"))) {
         selectBlock(null);
       }
     });
@@ -1119,7 +1187,7 @@ function renderSlide(slide) {
   return frame;
 }
 
-function renderBlock(slide, block) {
+function renderBlock(slide: Slide, block: Block): HTMLElement | SVGElement {
   const def = COMPONENTS[block.type];
   if (!def) {
     return el("div", {
@@ -1133,7 +1201,7 @@ function renderBlock(slide, block) {
     });
   }
 
-  const ctx = {
+  const ctx: RenderCtx = {
     block,
     inlineText: (elem, propKey, transform) =>
       bindInlineText(elem, slide, block, propKey, transform),
@@ -1149,7 +1217,7 @@ function renderBlock(slide, block) {
       // text, etc). Instead, keep the SVG transparent to clicks and add
       // an invisible wide hit-line on top of the visible graphics.
       content.style.pointerEvents = "none";
-      const onSelect = (e) => {
+      const onSelect = (e: PointerEvent) => {
         e.stopPropagation();
         selectBlock(block.id);
       };
@@ -1176,7 +1244,7 @@ function renderBlock(slide, block) {
         // Show endpoint handles
         const handles = renderArrowHandles(slide, block);
         const layer = el("div", { style: {
-          position: "absolute", left: 0, top: 0,
+          position: "absolute", left: "0", top: "0",
           width: "1200px", height: "675px", pointerEvents: "none",
         }});
         layer.appendChild(content);
@@ -1234,8 +1302,8 @@ function renderBlock(slide, block) {
  * (This two-click pattern matches Figma/Keynote and avoids re-rendering
  * the editable mid-focus.)
  */
-function bindInlineText(elem, slide, block, propKey, transform) {
-  const raw = (block.props || {})[propKey] ?? "";
+function bindInlineText(elem: HTMLElement, slide: Slide, block: Block, propKey: string, transform?: (raw: string) => string): HTMLElement {
+  const raw = ((block.props || {})[propKey] ?? "") as string;
   const isSelected = block.id === selectedBlockId;
   if (editMode && isSelected) {
     elem.contentEditable = "plaintext-only";
@@ -1287,11 +1355,11 @@ const SNAP_THRESHOLD = 6;
  * SNAP_THRESHOLD of a target, the position locks to it and a subtle
  * orange guide line is drawn. Hold Alt/Option to disable snapping.
  */
-function attachBlockInteractions(wrap, slide, block, def) {
+function attachBlockInteractions(wrap: HTMLDivElement, slide: Slide, block: Block, def: ComponentDef): void {
   wrap.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     // Clicks inside contentEditable text are handled by the text element.
-    if (e.target.isContentEditable) return;
+    if (e.target instanceof HTMLElement && e.target.isContentEditable) return;
     e.stopPropagation();
 
     const startX = e.clientX, startY = e.clientY;
@@ -1306,7 +1374,7 @@ function attachBlockInteractions(wrap, slide, block, def) {
     const wasSelected = block.id === selectedBlockId;
     let dragged = false;
 
-    const onMove = (ev) => {
+    const onMove = (ev: PointerEvent) => {
       const dx = (ev.clientX - startX) / stageScale;
       const dy = (ev.clientY - startY) / stageScale;
       if (!dragged && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) dragged = true;
@@ -1316,7 +1384,7 @@ function attachBlockInteractions(wrap, slide, block, def) {
 
       // Alt/Option temporarily disables snap so the user can always nudge
       // a block one pixel off a guide.
-      let guidesV = [], guidesH = [];
+      let guidesV: number[] = [], guidesH: number[] = [];
       if (!ev.altKey) {
         const snap = applySnap(nx, ny, bw, bh, targets);
         nx = snap.x; ny = snap.y;
@@ -1352,8 +1420,10 @@ function attachBlockInteractions(wrap, slide, block, def) {
  * slide bounds + center. Returns lists of vertical lines (x values) and
  * horizontal lines (y values). We skip the block being dragged, and skip
  * full-bleed blocks (arrows) which don't have a meaningful bounding box. */
-function computeSnapTargets(slide, draggingBlock) {
-  const verts = [], horiz = [];
+interface SnapTargets { verts: number[]; horiz: number[] }
+
+function computeSnapTargets(slide: Slide, draggingBlock: Block): SnapTargets {
+  const verts: number[] = [], horiz: number[] = [];
   // Slide bounds and center — useful for centering things on the canvas.
   verts.push(0, 600, 1200);
   horiz.push(0, 337.5, 675);
@@ -1362,7 +1432,7 @@ function computeSnapTargets(slide, draggingBlock) {
     if (b.id === draggingBlock.id) continue;
     const bdef = COMPONENTS[b.type];
     if (!bdef || bdef.fullBleed) continue;
-    const node = stageRef.el?.querySelector(`[data-block-id="${b.id}"]`);
+    const node = stageRef.el?.querySelector<HTMLElement>(`[data-block-id="${b.id}"]`);
     const x = b.x ?? 0;
     const y = b.y ?? 0;
     const w = b.w ?? (node ? node.offsetWidth : 0);
@@ -1386,7 +1456,7 @@ function computeSnapTargets(slide, draggingBlock) {
  * plus the guide lines (in slide coords) that should be drawn to visualize
  * the snap. We snap each axis independently so the user can pick up a
  * horizontal alignment without losing free movement vertically. */
-function applySnap(nx, ny, bw, bh, targets) {
+function applySnap(nx: number, ny: number, bw: number, bh: number, targets: SnapTargets) {
   // Candidates on the dragged block, paired with the offset needed to
   // express the result as a top-left coordinate.
   const xCands = [
@@ -1400,7 +1470,7 @@ function applySnap(nx, ny, bw, bh, targets) {
     { pos: ny + bh,      offset: -bh },
   ];
 
-  let bestX = null;
+  let bestX: { d: number; x: number; guide: number } | null = null;
   for (const c of xCands) {
     for (const t of targets.verts) {
       const d = Math.abs(t - c.pos);
@@ -1409,7 +1479,7 @@ function applySnap(nx, ny, bw, bh, targets) {
       }
     }
   }
-  let bestY = null;
+  let bestY: { d: number; y: number; guide: number } | null = null;
   for (const c of yCands) {
     for (const t of targets.horiz) {
       const d = Math.abs(t - c.pos);
@@ -1431,9 +1501,9 @@ function applySnap(nx, ny, bw, bh, targets) {
  * layer so we can clear it cheaply without disturbing the rest of the
  * slide. The layer is positioned inside the 1200×675 frame (NOT the
  * scaled stage), so guide coordinates are in slide units. */
-function drawSnapGuides(frame, xs, ys) {
+function drawSnapGuides(frame: HTMLElement | null, xs: number[], ys: number[]): void {
   if (!frame) return;
-  let layer = frame.querySelector('[data-snap-layer]');
+  let layer = frame.querySelector<HTMLDivElement>('[data-snap-layer]');
   if (!layer) {
     layer = el("div", {
       "data-snap-layer": "1",
@@ -1478,7 +1548,7 @@ function clearSnapGuides() {
 }
 
 /* Bottom-right corner resize handle. */
-function addResizeHandle(wrap, slide, block, def) {
+function addResizeHandle(wrap: HTMLDivElement, slide: Slide, block: Block, def: ComponentDef): void {
   const handle = el("div", {
     style: {
       position: "absolute", right: "-6px", bottom: "-6px",
@@ -1494,7 +1564,7 @@ function addResizeHandle(wrap, slide, block, def) {
     const startX = e.clientX, startY = e.clientY;
     const origW = block.w ?? wrap.offsetWidth;
     const origH = block.h ?? wrap.offsetHeight;
-    const onMove = (ev) => {
+    const onMove = (ev: PointerEvent) => {
       const dx = (ev.clientX - startX) / stageScale;
       const dy = (ev.clientY - startY) / stageScale;
       if (def.resizableW) {
@@ -1512,7 +1582,7 @@ function addResizeHandle(wrap, slide, block, def) {
     const onUp = async () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      const patch = {};
+      const patch: BlockPatch = {};
       if (def.resizableW) patch.w = block.w;
       if (def.resizableH) patch.h = block.h;
       await gadget.updateBlock(slide.id, block.id, patch);
@@ -1525,10 +1595,10 @@ function addResizeHandle(wrap, slide, block, def) {
 }
 
 /* Endpoint handles for an arrow block. */
-function renderArrowHandles(slide, block) {
-  const handles = [];
+function renderArrowHandles(slide: Slide, block: Block): HTMLDivElement[] {
+  const handles: HTMLDivElement[] = [];
   for (const which of ["1", "2"]) {
-    const x = block.props["x" + which], y = block.props["y" + which];
+    const x = block.props["x" + which] as number, y = block.props["y" + which] as number;
     const h = el("div", {
       style: {
         position: "absolute",
@@ -1545,7 +1615,7 @@ function renderArrowHandles(slide, block) {
       h.style.cursor = "grabbing";
       const startX = e.clientX, startY = e.clientY;
       const ox = x, oy = y;
-      const onMove = (ev) => {
+      const onMove = (ev: PointerEvent) => {
         const nx = Math.round(ox + (ev.clientX - startX) / stageScale);
         const ny = Math.round(oy + (ev.clientY - startY) / stageScale);
         block.props["x" + which] = nx;
@@ -1572,7 +1642,7 @@ function renderArrowHandles(slide, block) {
 
 /* ====================== Selection ======================================== */
 
-function selectBlock(id) {
+function selectBlock(id: string | null): void {
   if (selectedBlockId === id) return;
   selectedBlockId = id;
   render();
@@ -1608,7 +1678,7 @@ function renderInspector() {
   const block = slide && slide.blocks.find(b => b.id === selectedBlockId);
   if (block) {
     const def = COMPONENTS[block.type];
-    panel.appendChild(renderSelectedBlock(slide, block, def));
+    panel.appendChild(renderSelectedBlock(slide!, block, def));
   } else {
     panel.appendChild(renderEmptyHint());
   }
@@ -1616,7 +1686,7 @@ function renderInspector() {
 
 /* ---- Section helpers --------------------------------------------------- */
 
-function sectionLabel(text, extra) {
+function sectionLabel(text: string, extra?: HTMLElement): HTMLDivElement {
   const row = el("div", {
     style: {
       display: "flex", alignItems: "center",
@@ -1634,7 +1704,7 @@ function sectionLabel(text, extra) {
   return row;
 }
 
-function sectionBlock(children, opts = {}) {
+function sectionBlock(children: ElChild[], opts: { padding?: string; border?: boolean } = {}): HTMLDivElement {
   return el("div", {
     style: {
       padding: opts.padding || "18px 16px 0",
@@ -1646,7 +1716,7 @@ function sectionBlock(children, opts = {}) {
 
 /* ---- Component library ------------------------------------------------- */
 
-function renderComponentLibrary() {
+function renderComponentLibrary(): HTMLDivElement {
   const wrap = el("div", { style: { padding: "14px 12px 6px" }});
   const card = el("div", {
     style: {
@@ -1680,12 +1750,14 @@ function renderComponentLibrary() {
       fontSize: "12px", fontFamily: FONT,
       padding: "0", letterSpacing: "0",
     },
-    oninput: (e) => {
+    oninput: (e: Event) => {
+      if (!(e.target instanceof HTMLInputElement)) return;
       librarySearch = e.target.value;
       refreshLibraryList();
     },
-    onkeydown: (e) => {
+    onkeydown: (e: Event) => {
       e.stopPropagation();
+      if (!(e instanceof KeyboardEvent && e.target instanceof HTMLInputElement)) return;
       if (e.key === "Escape") {
         if (librarySearch) {
           librarySearch = "";
@@ -1759,7 +1831,7 @@ function renderComponentLibrary() {
   return wrap;
 }
 
-function filteredComponents() {
+function filteredComponents(): string[] {
   const q = librarySearch.trim().toLowerCase();
   if (!q) return PALETTE_ORDER.slice();
   return PALETTE_ORDER.filter(t => {
@@ -1770,7 +1842,7 @@ function filteredComponents() {
   });
 }
 
-function populateLibraryList(list) {
+function populateLibraryList(list: HTMLElement): void {
   list.innerHTML = "";
   const matches = filteredComponents();
   if (matches.length === 0) {
@@ -1807,18 +1879,18 @@ function populateLibraryList(list) {
 
 /* Surgically replace just the list children when typing — avoids
  * re-rendering the whole inspector and stealing focus from the input. */
-function refreshLibraryList() {
-  const list = shellRef.inspectorBody?.querySelector('[data-library-list="1"]');
+function refreshLibraryList(): void {
+  const list = shellRef.inspectorBody?.querySelector<HTMLDivElement>('[data-library-list="1"]');
   if (!list) return;
   populateLibraryList(list);
-  const clear = shellRef.inspectorBody?.querySelector('[data-library-clear="1"]');
+  const clear = shellRef.inspectorBody?.querySelector<HTMLButtonElement>('[data-library-clear="1"]');
   if (clear) {
     clear.style.opacity = librarySearch ? "1" : "0";
     clear.style.pointerEvents = librarySearch ? "auto" : "none";
   }
 }
 
-function libraryItem(type) {
+function libraryItem(type: string): HTMLButtonElement {
   const def = COMPONENTS[type];
   const item = el("button", {
     "data-press": "1",
@@ -1904,7 +1976,7 @@ function libraryItem(type) {
 
 /* ---- Slide section ----------------------------------------------------- */
 
-function renderSlideSection(slide) {
+function renderSlideSection(slide: Slide): HTMLDivElement {
   const wrap = sectionBlock([
     sectionLabel("Slide"),
     el("div", { style: { display: "flex", flexDirection: "column", gap: "4px" }}, [
@@ -1930,7 +2002,7 @@ function renderSlideSection(slide) {
 
 /* ---- Selected block inspector ----------------------------------------- */
 
-function renderSelectedBlock(slide, block, def) {
+function renderSelectedBlock(slide: Slide, block: Block, def: ComponentDef | undefined): HTMLDivElement {
   const wrap = sectionBlock([], { border: true, padding: "16px 16px 18px" });
 
   // --- Header: icon + name + small "selected" caption ---
@@ -1990,7 +2062,7 @@ function renderSelectedBlock(slide, block, def) {
       flexDirection: "column", gap: "4px" }});
     for (const f of basicFields) {
       const v = (block.props || {})[f.key] ?? propDefaults[f.key];
-      const cb = (nv) => patchBlockProp(slide, block, f.key, nv);
+      const cb = (nv: PropValue) => patchBlockProp(slide, block, f.key, nv);
       fieldsWrap.appendChild(renderField(f, v, cb));
     }
     wrap.appendChild(fieldsWrap);
@@ -2007,7 +2079,7 @@ function renderSelectedBlock(slide, block, def) {
   return wrap;
 }
 
-function renderBlockActions(slide, block) {
+function renderBlockActions(slide: Slide, block: Block): HTMLDivElement {
   const actions = el("div", {
     style: {
       display: "grid",
@@ -2019,11 +2091,14 @@ function renderBlockActions(slide, block) {
   const dup = compactIconBtn(
     `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
     "Duplicate", async () => {
-      const copy = JSON.parse(JSON.stringify(block));
+      const copy: BlockInput = JSON.parse(JSON.stringify(block));
       delete copy.id;
       copy.x = (copy.x ?? 0) + 24;
       copy.y = (copy.y ?? 0) + 24;
       const newId = await gadget.addBlock(slide.id, copy);
+      // null: the slide is gone -- deleted by another client, whose deck update has already
+      // replaced ours -- so there is nothing to add locally.
+      if (newId === null) return;
       slide.blocks.push({ ...copy, id: newId });
       selectedBlockId = newId;
       render(); renderInspector();
@@ -2066,7 +2141,7 @@ function renderBlockActions(slide, block) {
   return actions;
 }
 
-function renderAdvancedDisclosure(slide, block, def, advancedFields) {
+function renderAdvancedDisclosure(slide: Slide, block: Block, def: ComponentDef | undefined, advancedFields: FieldSchema[]): HTMLDivElement {
   const wrap = el("div", { style: { marginTop: "14px" }});
   const toggle = el("button", {
     "data-press": "1",
@@ -2134,7 +2209,7 @@ function renderAdvancedDisclosure(slide, block, def, advancedFields) {
   const propDefaults = (def?.defaultBlock ? (def.defaultBlock().props || {}) : {});
   for (const f of advancedFields) {
     const v = (block.props || {})[f.key] ?? propDefaults[f.key];
-    const cb = (nv) => patchBlockProp(slide, block, f.key, nv);
+    const cb = (nv: PropValue) => patchBlockProp(slide, block, f.key, nv);
     body.appendChild(renderField(f, v, cb));
   }
 
@@ -2142,7 +2217,7 @@ function renderAdvancedDisclosure(slide, block, def, advancedFields) {
   return wrap;
 }
 
-function renderEmptyHint() {
+function renderEmptyHint(): HTMLDivElement {
   const wrap = sectionBlock([], { border: true, padding: "28px 20px 36px" });
   wrap.style.display = "flex";
   wrap.style.flexDirection = "column";
@@ -2174,23 +2249,23 @@ function renderEmptyHint() {
   return wrap;
 }
 
-async function patchBlock(slide, block, patch) {
+async function patchBlock(slide: Slide, block: Block, patch: BlockPatch): Promise<void> {
   Object.assign(block, patch);
   await gadget.updateBlock(slide.id, block.id, patch);
   render();
 }
-async function patchBlockProp(slide, block, key, value) {
+async function patchBlockProp(slide: Slide, block: Block, key: string, value: PropValue): Promise<void> {
   block.props = { ...(block.props || {}), [key]: value };
   await gadget.updateBlock(slide.id, block.id, { props: { [key]: value } });
   render();
 }
 
 /* Update inspector x/y/w/h while dragging without a full re-render. */
-function updateInspectorPositionFields(block) {
+function updateInspectorPositionFields(block: Block): void {
   if (!shellRef.inspectorBody) return;
   for (const [k, dk] of [["x", "pos-x"], ["y", "pos-y"],
-                          ["w", "pos-w"], ["h", "pos-h"]]) {
-    const input = shellRef.inspectorBody.querySelector(`input[data-key="${dk}"]`);
+                          ["w", "pos-w"], ["h", "pos-h"]] as const) {
+    const input = shellRef.inspectorBody.querySelector<HTMLInputElement>(`input[data-key="${dk}"]`);
     if (input) input.value = String(block[k] ?? 0);
   }
 }
@@ -2203,7 +2278,7 @@ function updateInspectorPositionFields(block) {
  * defined in mountShell so hover/focus states are consistent without
  * per-element listeners. */
 
-function fieldRow(label, control, opts = {}) {
+function fieldRow(label: string, control: HTMLElement, opts: { stacked?: boolean } = {}): HTMLDivElement {
   if (opts.stacked) {
     return el("div", { style: { padding: "4px 0" }}, [
       el("div", {
@@ -2238,59 +2313,68 @@ function fieldRow(label, control, opts = {}) {
     control,
   ]);
 }
-function renderField(f, v, cb) {
+/* The inspector's values are whatever the block's props hold; each widget
+ * below is told the scalar type its field type implies. */
+function renderField(f: FieldSchema, v: PropValue | undefined, cb: (v: PropValue) => void): HTMLDivElement {
   switch (f.type) {
-    case "multiline":  return multilineField(f.label, v ?? "", cb);
-    case "number":     return numberField(f.label, v ?? 0, cb, f);
+    case "multiline":  return multilineField(f.label, (v ?? "") as string, cb);
+    case "number":     return numberField(f.label, (v ?? 0) as number, cb, f);
     case "select":     return selectField(f.label, v, cb, f.options);
     case "checkbox":   return checkField(f.label, !!v, cb);
-    case "color":      return colorField(f.label, v ?? "#000000", cb);
-    case "image":      return imageField(f.label, v ?? "", cb);
-    case "svg":        return svgField(f.label, v ?? "", cb);
+    case "color":      return colorField(f.label, (v ?? "#000000") as string, cb);
+    case "image":      return imageField(f.label, (v ?? "") as string, cb);
+    case "svg":        return svgField(f.label, (v ?? "") as string, cb);
     case "text":
-    default:           return textField(f.label, v ?? "", cb);
+    default:           return textField(f.label, (v ?? "") as string, cb);
   }
 }
-function textField(label, value, cb) {
+function textField(label: string, value: string, cb: (v: string) => void): HTMLDivElement {
   const input = el("input", {
     type: "text", value,
     class: "field-input",
-    onblur: (e) => { if (e.target.value !== value) cb(e.target.value); },
-    onkeydown: (e) => {
+    onblur: (e: Event) => { if (e.target instanceof HTMLInputElement && e.target.value !== value) cb(e.target.value); },
+    onkeydown: (e: Event) => {
       e.stopPropagation();
-      if (e.key === "Enter") e.target.blur();
+      if (e instanceof KeyboardEvent && e.key === "Enter" && e.target instanceof HTMLInputElement) e.target.blur();
     },
   });
   return fieldRow(label, input);
 }
-function multilineField(label, value, cb) {
+function multilineField(label: string, value: string, cb: (v: string) => void): HTMLDivElement {
   const ta = el("textarea", {
     class: "field-input field-textarea",
-    onblur: (e) => { if (e.target.value !== value) cb(e.target.value); },
-    onkeydown: (e) => e.stopPropagation(),
+    onblur: (e: Event) => { if (e.target instanceof HTMLTextAreaElement && e.target.value !== value) cb(e.target.value); },
+    onkeydown: (e: Event) => e.stopPropagation(),
   });
   ta.value = value;
   return fieldRow(label, ta, { stacked: true });
 }
-function numberField(label, value, cb, opts = {}, attrs = {}) {
+function numberField(
+  label: string,
+  value: number,
+  cb: (v: number) => void,
+  opts: { min?: number; max?: number; step?: number } = {},
+  attrs: { dataKey?: string } = {},
+): HTMLDivElement {
   const input = el("input", {
     type: "number", value, step: opts.step ?? 1,
     min: opts.min, max: opts.max,
     "data-key": attrs.dataKey || "",
     class: "field-input",
-    onchange: (e) => {
+    onchange: (e: Event) => {
+      if (!(e.target instanceof HTMLInputElement)) return;
       const n = Number(e.target.value);
       if (!Number.isNaN(n) && n !== value) cb(n);
     },
-    onkeydown: (e) => e.stopPropagation(),
+    onkeydown: (e: Event) => e.stopPropagation(),
   });
   return fieldRow(label, input);
 }
-function selectField(label, value, cb, options) {
+function selectField(label: string, value: PropValue | undefined, cb: (v: string) => void, options: string[]): HTMLDivElement {
   const sel = el("select", {
     class: "field-input field-select",
-    onchange: (e) => cb(e.target.value),
-    onkeydown: (e) => e.stopPropagation(),
+    onchange: (e: Event) => { if (e.target instanceof HTMLSelectElement) cb(e.target.value); },
+    onkeydown: (e: Event) => e.stopPropagation(),
   });
   for (const o of options) {
     const opt = el("option", { value: o, text: o });
@@ -2299,18 +2383,18 @@ function selectField(label, value, cb, options) {
   }
   return fieldRow(label, sel);
 }
-function checkField(label, value, cb) {
+function checkField(label: string, value: boolean, cb: (v: boolean) => void): HTMLDivElement {
   const cbox = el("input", {
     type: "checkbox",
     class: "field-check",
-    onchange: (e) => cb(e.target.checked),
+    onchange: (e: Event) => { if (e.target instanceof HTMLInputElement) cb(e.target.checked); },
   });
   cbox.checked = !!value;
   return fieldRow(label, el("div", {
     style: { display: "inline-flex", alignItems: "center" },
   }, [cbox]));
 }
-function colorField(label, value, cb) {
+function colorField(label: string, value: string, cb: (v: string) => void): HTMLDivElement {
   const wrap = el("div", {
     style: { display: "flex", gap: "6px", alignItems: "stretch" },
   });
@@ -2334,18 +2418,18 @@ function colorField(label, value, cb) {
       padding: "0", border: "none", background: "transparent",
       cursor: "pointer", opacity: "0",
     },
-    onchange: (e) => { swatchWrap.style.background = e.target.value; cb(e.target.value); },
-    oninput:  (e) => { swatchWrap.style.background = e.target.value; },
+    onchange: (e: Event) => { if (!(e.target instanceof HTMLInputElement)) return; swatchWrap.style.background = e.target.value; cb(e.target.value); },
+    oninput:  (e: Event) => { if (e.target instanceof HTMLInputElement) swatchWrap.style.background = e.target.value; },
   });
   swatchWrap.appendChild(sw);
   const tx = el("input", {
     type: "text", value,
     class: "field-input",
     style: { flex: "1", fontVariantNumeric: "tabular-nums" },
-    onblur: (e) => { if (e.target.value !== value) cb(e.target.value); },
-    onkeydown: (e) => {
+    onblur: (e: Event) => { if (e.target instanceof HTMLInputElement && e.target.value !== value) cb(e.target.value); },
+    onkeydown: (e: Event) => {
       e.stopPropagation();
-      if (e.key === "Enter") e.target.blur();
+      if (e instanceof KeyboardEvent && e.key === "Enter" && e.target instanceof HTMLInputElement) e.target.blur();
     },
   });
   wrap.appendChild(swatchWrap); wrap.appendChild(tx);
@@ -2368,30 +2452,17 @@ function colorField(label, value, cb) {
 const MAX_IMAGE_DIM       = 1600;
 const IMAGE_DOWNSCALE_MIN = 400_000;  // bytes — below this we keep the original
 
-async function readFileAsDataURL(file) {
-  return await new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload  = () => res(r.result);
-    r.onerror = () => rej(r.error || new Error("read failed"));
-    r.readAsDataURL(file);
-  });
-}
-
-async function loadImage(src) {
-  return await new Promise((res, rej) => {
-    const img = new Image();
-    img.onload  = () => res(img);
-    img.onerror = () => rej(new Error("decode failed"));
-    img.src = src;
-  });
-}
-
 /* Convert a File to a data URL, downscaling raster images larger than
- * MAX_IMAGE_DIM on the longest side. SVG goes through verbatim. */
-async function fileToImageDataURL(file) {
+ * MAX_IMAGE_DIM on the longest side. SVG goes through verbatim.
+ *
+ * `readFileAsDataURL` and `loadImage` are the ui library's; the encoding rule
+ * is the deck's own, because a slide keeps a PNG a PNG (a chart's transparency
+ * matters more here than the last few kilobytes) and falls back to the file as
+ * uploaded whenever the canvas cannot re-encode it. */
+async function fileToImageDataURL(file: File): Promise<string> {
   if (file.type === "image/svg+xml") return await readFileAsDataURL(file);
   const original = await readFileAsDataURL(file);
-  let img;
+  let img: HTMLImageElement;
   try { img = await loadImage(original); }
   catch { return original; }
   const longest = Math.max(img.naturalWidth, img.naturalHeight);
@@ -2400,7 +2471,7 @@ async function fileToImageDataURL(file) {
   const canvas = document.createElement("canvas");
   canvas.width  = Math.max(1, Math.round(img.naturalWidth  * scale));
   canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d")!;
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   // PNGs preserve transparency; everything else goes to JPEG at 0.85.
   const isPng = file.type === "image/png";
@@ -2410,11 +2481,11 @@ async function fileToImageDataURL(file) {
   } catch { return original; }
 }
 
-function imageField(label, value, cb) {
+function imageField(label: string, value: string, cb: (v: string) => void): HTMLDivElement {
   // Wrap cb so that any change also refreshes the inspector. The image
   // field has visible state in its own UI (preview + size label +
   // upload/clear visibility) so a slide-only re-render isn't enough.
-  const apply = async (v) => {
+  const apply = async (v: string) => {
     await cb(v);
     renderInspector();
   };
@@ -2461,7 +2532,8 @@ function imageField(label, value, cb) {
     type: "file",
     accept: "image/*",
     style: { display: "none" },
-    onchange: async (e) => {
+    onchange: async (e: Event) => {
+      if (!(e.target instanceof HTMLInputElement)) return;
       const f = e.target.files && e.target.files[0];
       if (!f) return;
       try {
@@ -2508,13 +2580,14 @@ function imageField(label, value, cb) {
     placeholder: "or paste image URL / data:URI",
     value: value && value.startsWith("data:") ? "" : value,
     class: "field-input",
-    onblur: (e) => {
+    onblur: (e: Event) => {
+      if (!(e.target instanceof HTMLInputElement)) return;
       const v = e.target.value.trim();
       if (v !== value) apply(v);
     },
-    onkeydown: (e) => {
+    onkeydown: (e: Event) => {
       e.stopPropagation();
-      if (e.key === "Enter") e.target.blur();
+      if (e instanceof KeyboardEvent && e.key === "Enter" && e.target instanceof HTMLInputElement) e.target.blur();
     },
   });
 
@@ -2538,7 +2611,7 @@ function imageField(label, value, cb) {
   return fieldRow(label, wrap, { stacked: true });
 }
 
-function formatBytes(n) {
+function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
@@ -2549,7 +2622,7 @@ function formatBytes(n) {
  * Big monospace textarea for pasting raw SVG markup. We don't try to
  * validate here — `svg` component's render() does the parsing and shows
  * an "Invalid SVG" placeholder on the slide if it can't parse. */
-function svgField(label, value, cb) {
+function svgField(label: string, value: string, cb: (v: string) => void): HTMLDivElement {
   const ta = el("textarea", {
     class: "field-input field-textarea",
     placeholder: '<svg width="..." height="..." viewBox="...">...</svg>',
@@ -2563,14 +2636,14 @@ function svgField(label, value, cb) {
       overflowWrap: "normal",
       overflowX: "auto",
     },
-    onblur: (e) => { if (e.target.value !== value) cb(e.target.value); },
-    onkeydown: (e) => e.stopPropagation(),
+    onblur: (e: Event) => { if (e.target instanceof HTMLTextAreaElement && e.target.value !== value) cb(e.target.value); },
+    onkeydown: (e: Event) => e.stopPropagation(),
   });
   ta.value = value;
   return fieldRow(label, ta, { stacked: true });
 }
 
-function compactIconBtn(iconHtml, title, onClick, opts = {}) {
+function compactIconBtn(iconHtml: string, title: string, onClick: EventListener, opts: { danger?: boolean } = {}): HTMLButtonElement {
   const danger = opts.danger;
   const b = el("button", {
     title, "aria-label": title, onclick: onClick,
@@ -2614,19 +2687,19 @@ function compactIconBtn(iconHtml, title, onClick, opts = {}) {
  * visibly distinct from its source. The pasted block is selected.
  * ----------------------------------------------------------------------- */
 
-function copySelectedBlock() {
+function copySelectedBlock(): boolean {
   const slide = currentSlide();
   if (!slide || !selectedBlockId) return false;
   const block = slide.blocks.find(b => b.id === selectedBlockId);
   if (!block) return false;
   // Deep clone & strip id — paste mints a new one.
-  const clone = JSON.parse(JSON.stringify(block));
+  const clone: BlockInput = JSON.parse(JSON.stringify(block));
   delete clone.id;
   clipboardBlock = clone;
   return true;
 }
 
-async function cutSelectedBlock() {
+async function cutSelectedBlock(): Promise<void> {
   const slide = currentSlide();
   if (!slide || !selectedBlockId) return;
   if (!copySelectedBlock()) return;
@@ -2637,11 +2710,11 @@ async function cutSelectedBlock() {
   render(); renderInspector();
 }
 
-async function pasteClipboardBlock() {
+async function pasteClipboardBlock(): Promise<void> {
   if (!clipboardBlock) return;
   const slide = currentSlide();
   if (!slide) return;
-  const copy = JSON.parse(JSON.stringify(clipboardBlock));
+  const copy: BlockInput = JSON.parse(JSON.stringify(clipboardBlock));
   delete copy.id;
   // Nudge so the pasted block doesn't sit perfectly on top of its source.
   // Arrows have x/y=0 (full-bleed); for them, shift the endpoints instead.
@@ -2655,19 +2728,22 @@ async function pasteClipboardBlock() {
     copy.y = (copy.y ?? 0) + 24;
   }
   const newId = await gadget.addBlock(slide.id, copy);
+  // null: the slide is gone -- deleted by another client, whose deck update has already
+  // replaced ours -- so there is nothing to add locally.
+  if (newId === null) return;
   slide.blocks.push({ ...copy, id: newId });
   selectedBlockId = newId;
   render(); renderInspector();
 }
 
-async function duplicateSelectedBlock() {
+async function duplicateSelectedBlock(): Promise<void> {
   // Equivalent to copy + paste-to-same-slide, but doesn't disturb the
   // clipboard. Mirrors the inspector's duplicate icon button.
   const slide = currentSlide();
   if (!slide || !selectedBlockId) return;
   const block = slide.blocks.find(b => b.id === selectedBlockId);
   if (!block) return;
-  const copy = JSON.parse(JSON.stringify(block));
+  const copy: BlockInput = JSON.parse(JSON.stringify(block));
   delete copy.id;
   if (copy.type === "arrow" && copy.props) {
     copy.props = { ...copy.props,
@@ -2679,6 +2755,9 @@ async function duplicateSelectedBlock() {
     copy.y = (copy.y ?? 0) + 24;
   }
   const newId = await gadget.addBlock(slide.id, copy);
+  // null: the slide is gone -- deleted by another client, whose deck update has already
+  // replaced ours -- so there is nothing to add locally.
+  if (newId === null) return;
   slide.blocks.push({ ...copy, id: newId });
   selectedBlockId = newId;
   render(); renderInspector();
@@ -2694,19 +2773,19 @@ async function duplicateSelectedBlock() {
  * are updated on every broadcast.
  * ----------------------------------------------------------------------- */
 
-async function doUndo() {
+async function doUndo(): Promise<void> {
   if (!canUndo) return;
   try { await gadget.undo(); } catch {}
   // The server will broadcast the new deck state (and updated meta) via
-  // the Subscriber; no local state changes are needed here.
+  // the subscriber; no local state changes are needed here.
 }
 
-async function doRedo() {
+async function doRedo(): Promise<void> {
   if (!canRedo) return;
   try { await gadget.redo(); } catch {}
 }
 
-function updateUndoButtons() {
+function updateUndoButtons(): void {
   // Undo/redo are an editing concern, so the buttons (and their flanking
   // divider) are hidden entirely outside edit mode. The keyboard
   // shortcuts still work everywhere — they're cheap and harmless.
@@ -2715,7 +2794,7 @@ function updateUndoButtons() {
     shellRef.undoDivider.style.display = show ? "block" : "none";
   }
   for (const [b, enabled] of [[shellRef.undoBtn, canUndo],
-                              [shellRef.redoBtn, canRedo]]) {
+                              [shellRef.redoBtn, canRedo]] as const) {
     if (!b) continue;
     b.style.display = show ? "inline-flex" : "none";
     b.style.opacity = enabled ? "1" : "0.32";
@@ -2726,19 +2805,22 @@ function updateUndoButtons() {
 
 /* ====================== Add block ======================================== */
 
-async function addBlockOfType(type) {
+async function addBlockOfType(type: string): Promise<void> {
   const slide = currentSlide();
   if (!slide) return;
   const def = COMPONENTS[type];
-  const base = def.defaultBlock ? def.defaultBlock() : { x: 100, y: 200, props: {} };
+  const base: BlockDefaults = def.defaultBlock ? def.defaultBlock() : { x: 100, y: 200, props: {} };
   // Offset successive added blocks so they don't stack.
   const sameType = slide.blocks.filter(b => b.type === type).length;
   base.x = (base.x ?? 100) + sameType * 16;
   base.y = (base.y ?? 200) + sameType * 16;
-  const block = { type, ...base };
+  const block: BlockInput = { type, ...base };
   const id = await gadget.addBlock(slide.id, block);
+  // null: the slide is gone -- deleted by another client, whose deck update has already replaced
+  // ours -- so there is nothing to add locally.
+  if (id === null) return;
   block.id = id;
-  slide.blocks.push(block);
+  slide.blocks.push(block as Block);
   selectedBlockId = id;
   render(); renderInspector();
 }
@@ -2748,8 +2830,8 @@ async function addBlockOfType(type) {
 /* Add a slide after the current one. Pass a template object (e.g.
  * makeTitleSlide() / makeContentSlide()) to seed its layout; omit it for a
  * blank content slide (server's newBlankSlide, which is a cover). */
-async function addSlide(template) {
-  const seed = template ? JSON.parse(JSON.stringify(template)) : undefined;
+async function addSlide(template?: SlideTemplate): Promise<void> {
+  const seed: SlideInput | undefined = template ? JSON.parse(JSON.stringify(template)) : undefined;
   const id = await gadget.addSlide(currentIndex + 1, seed);
   const newDeck = await gadget.getDeck();
   deck = newDeck;
@@ -2758,7 +2840,7 @@ async function addSlide(template) {
   selectedBlockId = null;
   render(); renderSlideList(); renderInspector(); updateCounter();
 }
-async function moveSlideTo(fromIndex, toIndex) {
+async function moveSlideTo(fromIndex: number, toIndex: number): Promise<void> {
   if (fromIndex === toIndex) return;
   const slide = deck.slides[fromIndex];
   if (!slide) return;
@@ -2772,7 +2854,7 @@ async function moveSlideTo(fromIndex, toIndex) {
   renderSlideList(); updateCounter();
 }
 
-async function duplicateSlideById(slideId) {
+async function duplicateSlideById(slideId: string): Promise<void> {
   const newId = await gadget.duplicateSlide(slideId);
   deck = await gadget.getDeck();
   const i = deck.slides.findIndex(s => s.id === newId);
@@ -2781,7 +2863,7 @@ async function duplicateSlideById(slideId) {
   render(); renderSlideList(); renderInspector(); updateCounter();
 }
 
-async function removeSlideById(slideId) {
+async function removeSlideById(slideId: string): Promise<void> {
   const wasCurrent = currentSlide()?.id === slideId;
   await gadget.removeSlide(slideId);
   deck = await gadget.getDeck();
@@ -2810,7 +2892,7 @@ const ICONS = {
   copy: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
 };
 
-function mountShell() {
+function mountShell(): void {
   document.body.style.margin = "0";
   document.body.style.padding = "0";
   document.body.style.background = "#faf9f7";
@@ -3110,10 +3192,10 @@ function mountShell() {
     },
   });
   const closeAddMenu = () => { addMenu.style.display = "none"; };
-  const addOption = (label, detail, factory) => {
+  const addOption = (label: string, detail: string, factory: () => SlideTemplate) => {
     const option = el("button", {
       "data-press": "1",
-      onclick: (e) => {
+      onclick: (e: Event) => {
         e.stopPropagation(); closeAddMenu(); addSlide(factory());
       },
       style: {
@@ -3155,7 +3237,7 @@ function mountShell() {
   });
   const caret = el("button", {
     title: "Choose slide layout", "aria-label": "Choose slide layout",
-    onclick: (e) => {
+    onclick: (e: Event) => {
       e.stopPropagation();
       addMenu.style.display = addMenu.style.display === "flex" ? "none" : "flex";
     },
@@ -3171,7 +3253,7 @@ function mountShell() {
   leftFooter.appendChild(addControl);
   leftPanel.appendChild(leftFooter);
   document.addEventListener("click", (e) => {
-    if (!leftFooter.contains(e.target)) closeAddMenu();
+    if (!(e.target instanceof Node && leftFooter.contains(e.target))) closeAddMenu();
   });
   root.appendChild(leftPanel);
 
@@ -3232,10 +3314,11 @@ function mountShell() {
       WebkitBackdropFilter: "blur(14px) saturate(140%)",
       boxShadow: "0 12px 36px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.04)",
       zIndex: "10", fontFamily: FONT,
-    },
+    } as VendorStyle,
   });
 
-  const iconBtn = ({ icon, title, onClick, variant = "ghost", size = 38 }) => {
+  const iconBtn = ({ icon, title, onClick, variant = "ghost", size = 38 }:
+    { icon: string; title: string; onClick: EventListener; variant?: string; size?: number }) => {
     const b = el("button", {
       title, "aria-label": title, onclick: onClick,
       "data-icon-btn": "1",
@@ -3277,7 +3360,7 @@ function mountShell() {
       display: "inline-flex", alignItems: "center", justifyContent: "center",
       transition: "background 160ms var(--ease)",
     },
-    onclick: (e) => { e.stopPropagation(); toggleJumpMenu(); },
+    onclick: (e: Event) => { e.stopPropagation(); toggleJumpMenu(); },
   });
   counter.addEventListener("mouseenter", () =>
     counter.style.background = "rgba(255,245,232,0.08)");
@@ -3331,7 +3414,7 @@ function mountShell() {
       opacity: "0",
       transition: "opacity 180ms var(--ease), background 160ms var(--ease)",
       zIndex: "12",
-    },
+    } as VendorStyle,
   });
   exitBtn.innerHTML = ICONS.collapse;
   exitBtn.addEventListener("mouseenter", () => exitBtn.style.opacity = "1");
@@ -3354,12 +3437,12 @@ function mountShell() {
       WebkitBackdropFilter: "blur(14px) saturate(140%)",
       boxShadow: "0 16px 40px rgba(0,0,0,0.5)",
       zIndex: "11",
-    },
+    } as VendorStyle,
   });
   stageWrap.appendChild(jumpMenu);
   document.addEventListener("click", (e) => {
     if (jumpMenu.style.display !== "none" &&
-        !jumpMenu.contains(e.target) && e.target !== counter) {
+        !(e.target instanceof Node && jumpMenu.contains(e.target)) && e.target !== counter) {
       jumpMenu.style.display = "none";
     }
   });
@@ -3407,7 +3490,7 @@ function mountShell() {
 
   // Keyboard
   document.addEventListener("keydown", (e) => {
-    if (e.target && (e.target.isContentEditable ||
+    if (e.target instanceof HTMLElement && (e.target.isContentEditable ||
         e.target.tagName === "INPUT" ||
         e.target.tagName === "TEXTAREA" ||
         e.target.tagName === "SELECT")) return;
@@ -3460,9 +3543,9 @@ function mountShell() {
       const slide = currentSlide();
       const block = slide && slide.blocks.find(b => b.id === selectedBlockId);
       if (block) {
-        slide.blocks = slide.blocks.filter(b => b.id !== block.id);
+        slide!.blocks = slide!.blocks.filter(b => b.id !== block.id);
         selectedBlockId = null;
-        gadget.removeBlock(slide.id, block.id);
+        gadget.removeBlock(slide!.id, block.id);
         render(); renderInspector();
       }
     } else if (e.key === "Escape") {
@@ -3476,10 +3559,10 @@ function mountShell() {
 /* Render a slide at a small fixed width by scaling its full-fidelity DOM.
  * We render with `editMode` forced off so the thumbnail never shows
  * selection outlines or contentEditable affordances. */
-function renderSlideThumbnail(slide, width = 156) {
+function renderSlideThumbnail(slide: Slide, width = 156): HTMLDivElement {
   const prevEdit = editMode, prevSel = selectedBlockId;
   editMode = false; selectedBlockId = null;
-  let frame;
+  let frame: HTMLDivElement;
   try { frame = renderSlide(slide); }
   finally { editMode = prevEdit; selectedBlockId = prevSel; }
   const scale = width / 1200;
@@ -3501,7 +3584,7 @@ function renderSlideThumbnail(slide, width = 156) {
 }
 
 /* Tiny per-row action button (duplicate / delete) revealed on row hover. */
-function thumbActionBtn(iconHtml, title, onClick, danger = false) {
+function thumbActionBtn(iconHtml: string, title: string, onClick: EventListener, danger = false): HTMLButtonElement {
   const b = el("button", {
     title, "aria-label": title,
     "data-icon-btn": "1",
@@ -3516,7 +3599,7 @@ function thumbActionBtn(iconHtml, title, onClick, danger = false) {
       cursor: "pointer",
       backdropFilter: "blur(8px)",
       WebkitBackdropFilter: "blur(8px)",
-    },
+    } as VendorStyle,
   });
   b.innerHTML = iconHtml;
   b.addEventListener("mouseenter", () => {
@@ -3530,14 +3613,14 @@ function thumbActionBtn(iconHtml, title, onClick, danger = false) {
   return b;
 }
 
-function updateCounter() {
+function updateCounter(): void {
   if (shellRef.counter) {
     shellRef.counter.textContent =
       `${currentIndex + 1} / ${deck.slides.length}`;
   }
 }
 
-function toggleJumpMenu() {
+function toggleJumpMenu(): void {
   const menu = shellRef.jumpMenu;
   if (!menu) return;
   if (menu.style.display === "grid") { menu.style.display = "none"; return; }
@@ -3572,15 +3655,15 @@ function toggleJumpMenu() {
   menu.style.display = "grid";
 }
 
-function togglePresent() {
+function togglePresent(): void {
   presenting = !presenting;
   if (presenting && editMode) editMode = false;
   if (shellRef.bar) shellRef.bar.style.display = presenting ? "none" : "flex";
   if (shellRef.exitBtn)
     shellRef.exitBtn.style.display = presenting ? "inline-flex" : "none";
   if (shellRef.jumpMenu) shellRef.jumpMenu.style.display = "none";
-  shellRef.leftPanel.style.display = (editMode && !presenting) ? "flex" : "none";
-  shellRef.rightPanel.style.display = (editMode && !presenting) ? "flex" : "none";
+  shellRef.leftPanel!.style.display = (editMode && !presenting) ? "flex" : "none";
+  shellRef.rightPanel!.style.display = (editMode && !presenting) ? "flex" : "none";
   const b = shellRef.fsBtn;
   if (b) {
     b.innerHTML = presenting ? ICONS.collapse : ICONS.expand;
@@ -3593,7 +3676,7 @@ function togglePresent() {
   render();
 }
 
-function toggleEdit() {
+function toggleEdit(): void {
   editMode = !editMode;
   if (editMode && presenting) presenting = false;
   selectedBlockId = null;
@@ -3604,14 +3687,14 @@ function toggleEdit() {
     b.dataset.variant = editMode ? "accent" : "ghost";
     b.title = editMode ? "Done editing (E)" : "Edit (E)";
   }
-  shellRef.leftPanel.style.display = editMode ? "flex" : "none";
-  shellRef.rightPanel.style.display = editMode ? "flex" : "none";
+  shellRef.leftPanel!.style.display = editMode ? "flex" : "none";
+  shellRef.rightPanel!.style.display = editMode ? "flex" : "none";
   updateUndoButtons();
   shellRef.fit?.();
   render(); renderSlideList(); renderInspector();
 }
 
-function go(i) {
+function go(i: number): void {
   const n = deck.slides.length;
   if (n === 0) return;
   currentIndex = ((i % n) + n) % n;
@@ -3620,7 +3703,7 @@ function go(i) {
   render(); renderSlideList(); renderInspector();
 }
 
-function render() {
+function render(): void {
   if (!stageRef.el) return;
   stageRef.el.innerHTML = "";
   const slide = currentSlide();
@@ -3628,7 +3711,7 @@ function render() {
   stageRef.el.appendChild(renderSlide(slide));
 }
 
-function renderPrintDeck() {
+function renderPrintDeck(): void {
   const printDeck = shellRef.printDeck;
   if (!printDeck) return;
   const prevEdit = editMode, prevSelection = selectedBlockId;
@@ -3662,7 +3745,7 @@ window.matchMedia("print").addEventListener("change", (event) => {
  * wrapper) with the icon, input, and clear button laid out in a row,
  * with the surrounding `header` div providing the bottom-border
  * separator that the library card's border-bottom plays the role of. */
-function buildSlideSearchHeader() {
+function buildSlideSearchHeader(): HTMLDivElement {
   const header = el("div", {
     style: {
       padding: "9px 12px",
@@ -3691,13 +3774,15 @@ function buildSlideSearchHeader() {
       fontSize: "12px", fontFamily: FONT,
       padding: "0", letterSpacing: "0",
     },
-    oninput: (e) => {
+    oninput: (e: Event) => {
+      if (!(e.target instanceof HTMLInputElement)) return;
       slideSearch = e.target.value;
       renderSlideList();
       updateSlideSearchClear();
     },
-    onkeydown: (e) => {
+    onkeydown: (e: Event) => {
       e.stopPropagation();
+      if (!(e instanceof KeyboardEvent && e.target instanceof HTMLInputElement)) return;
       if (e.key === "Escape") {
         if (slideSearch) {
           slideSearch = "";
@@ -3755,8 +3840,8 @@ function buildSlideSearchHeader() {
   return header;
 }
 
-function updateSlideSearchClear() {
-  const c = document.querySelector('[data-slide-search-clear="1"]');
+function updateSlideSearchClear(): void {
+  const c = document.querySelector<HTMLButtonElement>('[data-slide-search-clear="1"]');
   if (c) {
     c.style.opacity = slideSearch ? "1" : "0";
     c.style.pointerEvents = slideSearch ? "auto" : "none";
@@ -3764,13 +3849,13 @@ function updateSlideSearchClear() {
 }
 
 /* Index of the slide currently being dragged in the side list. */
-let dragSrcIndex = null;
+let dragSrcIndex: number | null = null;
 
-function clearDropIndicators(list) {
+function clearDropIndicators(list: HTMLElement): void {
   list.querySelectorAll("[data-drop-line]").forEach(e => e.remove());
 }
 
-function renderSlideList() {
+function renderSlideList(): void {
   const list = shellRef.slideList;
   if (!list) return;
   list.innerHTML = "";
@@ -3903,7 +3988,7 @@ function renderSlideList() {
   }
 }
 
-function attachSlideDragHandlers(row, list, i) {
+function attachSlideDragHandlers(row: HTMLDivElement, list: HTMLElement, i: number): void {
   // Native HTML5 drag-and-drop for reordering. Works inside the sandbox
   // and gets a free drag-image from the browser.
   row.addEventListener("dragstart", (e) => {
@@ -3911,8 +3996,8 @@ function attachSlideDragHandlers(row, list, i) {
     row.style.opacity = "0.4";
     row.style.cursor = "grabbing";
     try {
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", String(i));
+      e.dataTransfer!.effectAllowed = "move";
+      e.dataTransfer!.setData("text/plain", String(i));
     } catch {}
   });
   row.addEventListener("dragend", () => {
@@ -3924,7 +4009,7 @@ function attachSlideDragHandlers(row, list, i) {
   row.addEventListener("dragover", (e) => {
     if (dragSrcIndex == null) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
+    e.dataTransfer!.dropEffect = "move";
     const rect = row.getBoundingClientRect();
     const before = (e.clientY - rect.top) < rect.height / 2;
     clearDropIndicators(list);
@@ -3960,7 +4045,10 @@ function attachSlideDragHandlers(row, list, i) {
 
 /* ====================== Realtime ========================================= */
 
-class Subscriber extends RpcTarget {
+/* The object the Durable Object calls back. The sync library builds it over
+ * the bootstrap's RpcTarget, so the callback lands on the prototype, which is
+ * the only place the RPC layer looks. */
+const subscriber = () => createSubscriber<DeckCallbacks>(RpcTarget, {
   deckChanged(newDeck, meta) {
     // The server passes `{canUndo, canRedo}` as a second arg; refresh
     // the button state alongside the rest of the UI. (Old/missing meta
@@ -3987,8 +4075,8 @@ class Subscriber extends RpcTarget {
         selectedBlockId = null;
     }
     render(); renderSlideList(); renderInspector(); updateCounter();
-  }
-}
+  },
+});
 
 /* ====================== Boot ============================================= */
 
@@ -3996,14 +4084,14 @@ class Subscriber extends RpcTarget {
   try {
     deck = (await gadget.getDeck()) || { slides: [] };
   } catch (e) { deck = { slides: [] }; }
-  try { await gadget.subscribe(new Subscriber()); } catch (e) {}
+  try { await gadget.subscribe(subscriber()); } catch (e) {}
   mountShell();
   updateCounter();
   render();
   renderSlideList();
   if (isSlidesExport) {
     renderPrintDeck();
-    shellRef.root.remove();
+    shellRef.root!.remove();
   }
   // Initial undo-button state. Subsequent updates piggy-back on
   // deckChanged broadcasts.

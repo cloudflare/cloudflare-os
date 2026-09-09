@@ -1,0 +1,32 @@
+// Type-checks the unit tests a bundled format blueprint keeps beside its sources
+// (`format-blueprints/<name>/__tests__/**`), and with them the `files/lib/**/*.ts` modules they
+// import. Run by the `build` task in vite.config.ts.
+//
+// Separate from `tsconfig.blueprints-client.json` for one reason: a test is Node code and a gadget
+// module is not. Tests load fixtures (`node:fs`) and run under vitest, so this program declares
+// `node` types; the client program declares none, so a gadget module that reached for a Node global
+// fails there even though its own test compiles.
+//
+// Vitest's own types come from the `vitest` import, and DOM is present because the blueprint tests
+// run in jsdom by default (see vitest.blueprints.config.ts). `vite/client` is deliberately absent:
+// it is not resolvable from this package, so a fixture is loaded with `readFileSync` rather than a
+// `?raw` import.
+//
+// `files: []` alongside `include`: a blueprint set with no tests at all is a valid state, and
+// without it tsc reports "no inputs found" as an error.
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // Blueprint modules import each other by on-disk name (`./lib/blocks.ts`), the way esbuild
+    // resolves them when it bundles the archive; a test imports them the same way.
+    "allowImportingTsExtensions": true,
+    "types": ["node"],
+    "noEmit": true
+  },
+  "files": [],
+  "include": ["format-blueprints/*/__tests__/**/*.ts"]
+}
