@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/components/auth/OAuthButtons.tsx
+  s_db771eccf555f0::t_8f310bcd6da219 95-97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "969e561731a5f7d91153b98c047ad58d24d40706",
+  "prompts": {},
+  "sessions": {
+    "s_db771eccf555f0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b7e01f8-7cff-4694-987e-6a299d99151d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
