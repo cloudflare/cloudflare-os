@@ -52,6 +52,8 @@ const LIST_KINDS = ["bullet", "decimal", "lowerLetter", "upperLetter", "lowerRom
 const LIST_TYPES = {a: "lowerLetter", A: "upperLetter", i: "lowerRoman", I: "upperRoman"};
 // The only attributes the walk reads; everything else is dropped at parse time.
 const STORED_ATTRIBUTES = ["style", "class", "hidden", "open", "href", "src", "alt", "width", "type", "start", "value", "face", "size", "color"];
+// `display` values the browser accepts; an invalid declaration cannot override an earlier valid one.
+const DISPLAY_VALUE = /^(?:none|contents|(?:inline-)?(?:block|flex|grid|table)|inline|list-item|flow-root|table-[a-z-]+|ruby(?:-[a-z-]+)?)$/i;
 
 // --- XML text ----------------------------------------------------------------------------------
 
@@ -366,8 +368,8 @@ function deriveFormat(parent, node, declarations) {
     } else if (name === "font-style") {
       if (lower === "normal") format.italic = false;
       else if (lower === "italic" || lower === "oblique") format.italic = true;
-    } else if (name === "text-decoration" || name === "text-decoration-line") {
-      decoration = lower;
+    } else if ((name === "text-decoration" || name === "text-decoration-line") && /\b(?:none|underline|overline|line-through)\b/.test(lower)) {
+      decoration = lower; // A declaration without a line keyword is invalid (or color-only) and ignored.
     } else if (name === "color") {
       const color = cssColor(value);
       if (color != null) format.color = color || null;
@@ -692,7 +694,8 @@ function walk(builder, node, parent) {
   const tag = node.tag;
   if (IGNORED_TAGS.has(tag) || "hidden" in node.attrs || (tag === "dialog" && !("open" in node.attrs))) return;
   const declarations = cssDeclarations(node.attrs.style);
-  if (declarations.findLast(([name]) => name === "display")?.[1].toLowerCase() === "none") return;
+  const display = declarations.findLast(([name, value]) => name === "display" && DISPLAY_VALUE.test(value.trim()));
+  if (display?.[1].trim().toLowerCase() === "none") return;
   // Editor images are `display: block`, so each one stands in its own paragraph. Inside a table
   // cell, blocks flatten into the row paragraph, separated by line breaks.
   const block = !parent.inCell && (BLOCK_TAGS.has(tag) || (tag === "img" && /(?:^|\s)doc-image(?:\s|$)/.test(node.attrs.class || "")));

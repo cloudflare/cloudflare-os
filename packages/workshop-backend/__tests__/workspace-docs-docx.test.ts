@@ -335,6 +335,7 @@ describe("Workspace Docs DOCX package", () => {
       '<span style="text-decoration:none">plain</span></span>' +
       '<span style="color:#ff0000"><span style="color:rgba(255,0,0,0);background-color:#f000">clear</span></span>' +
       '<span style="text-decoration:underline;text-decoration:none">own</span><u style="text-decoration:line-through">struck u</u>' +
+      '<span style="text-decoration:underline;text-decoration:bogus">kept</span>' +
       '<a href="https://example.com/" style="text-decoration:none">bare link</a>' +
       '<u><a href="https://example.com/" style="text-decoration:none">still under</a></u>' +
       '<span style="background-color:#ff0000"><span style="background-color:rgba(0,0,0,0)">unshaded</span></span></p>';
@@ -353,6 +354,7 @@ describe("Workspace Docs DOCX package", () => {
     expect(runContaining(xml, "own")).not.toContain("w:u ");
     expect(runContaining(xml, "unshaded")).not.toContain("w:shd");
     expect(runContaining(xml, "struck u")).toContain("<w:strike/>");
+    expect(runContaining(xml, "kept")).toContain('<w:u w:val="single"/>');
     expect(runContaining(xml, "struck u")).not.toContain("w:u ");
     expect(runContaining(xml, "bare link")).toContain('<w:u w:val="none"/>');
     expect(runContaining(xml, "still under")).toContain('<w:u w:val="single"/>');
@@ -684,7 +686,7 @@ describe("Workspace Docs DOCX package", () => {
     const anchors = Array.from({length: 1000}, (_, index) => `<a href="https://example.com/${index}"></a>`).join("");
     const html = `<p hidden>draft</p><p><span style="display: none">secret</span>${anchors}shown` +
       '<span style="display:none !important">also secret</span><span style="display:none;display:inline">reshown</span>' +
-      '<span style="display:none!important;display:inline">still secret</span>' +
+      '<span style="display:none!important;display:inline">still secret</span><span style="display:none;display:bogus">bogus secret</span>' +
       `<a href="https://example.com/kept">kept</a><a href="https://example.com/${"\u4e2d".repeat(3000)}">wide</a></p>` +
       "<dl><dt>term<dd>definition<dt><b>bold term</dt></dl>" +
       "<details><summary>Summary</summary><summary>second secret</summary><p>collapsed secret</p></details>" +
