@@ -1,5 +1,5 @@
 import { classifyRpcError, logRpcFailure } from "../rpcErrors";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useKumoToastManager } from "@cloudflare/kumo";
 import { ChatInput } from "../ChatInput";
@@ -9,6 +9,7 @@ import { useAuthenticatedApi } from "../AuthContext";
 import { RpcStub } from "capnweb";
 import {
   Overseer,
+  AuthenticatedApi,
   AiChatAuthorInfo,
   CapsuleSpecifier,
   ChatAttachmentHandle,
@@ -47,17 +48,39 @@ export function HomePageContent({ prompt }: HomeSearch) {
   return <GenericHomePageContent prompt={prompt} />;
 }
 
+// Each activation gets a new identity, even when Activity reveals the same API again. Callbacks
+// retained by a child from a previous activation cannot mint new capabilities on its behalf.
+function useHomeLifetime(api: RpcStub<AuthenticatedApi>) {
+  const [lifetime, setLifetime] = useState<{ api: typeof api; active: boolean } | null>(null);
+  useLayoutEffect(() => {
+    const current = { api, active: true };
+    setLifetime(current);
+    return () => { current.active = false; };
+  }, [api]);
+  return lifetime?.api === api ? lifetime : null;
+}
+
 function FinanceHomePageContent() {
   const { financeStatus } = useHub();
   const { authenticatedApi } = useAuthenticatedApi();
   const navigate = useNavigate();
   const toasts = useKumoToastManager();
   const [creating, setCreating] = useState(false);
+  const creationRef = useRef<{ stub: RpcStub<Overseer> } | null>(null);
+  const lifetime = useHomeLifetime(authenticatedApi);
+  useLayoutEffect(() => {
+    setCreating(false);
+    return () => {
+      creationRef.current?.stub[Symbol.dispose]();
+      creationRef.current = null;
+    };
+  }, [authenticatedApi]);
   useDocumentTitle('Finance');
 
   if (!financeStatus?.authorized) return null;
 
   const openOrCreate = async () => {
+    if (!lifetime?.active || creationRef.current) return;
     if ('workspaceId' in financeStatus) {
       navigate({ to: '/workspace/$id', params: { id: financeStatus.workspaceId }, search: {} });
       return;
@@ -70,15 +93,22 @@ function FinanceHomePageContent() {
       {},
       'finance',
     );
+    const creation = { stub: overseer };
+    creationRef.current = creation;
     try {
       const { id } = await overseer.getMetadata();
+      if (creationRef.current !== creation) return;
       navigate({ to: '/workspace/$id', params: { id }, search: {} });
     } catch (err) {
+      if (creationRef.current !== creation) return;
       logRpcFailure('Failed to create Finance workspace:', err, { reportSite: 'finance.create' });
       toasts.add({ title: 'Failed to create Finance workspace', variant: 'error' });
     } finally {
-      overseer[Symbol.dispose]();
-      setCreating(false);
+      if (creationRef.current === creation) {
+        overseer[Symbol.dispose]();
+        creationRef.current = null;
+        setCreating(false);
+      }
     }
   };
 
@@ -123,7 +153,7 @@ function GenericHomePageContent({ prompt }: HomeSearch) {
 
   const [models, setModels] = useState<AiChatAuthorInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
-  const sendPendingRef = useRef(false);
+  const sendPendingRef = useRef<object | null>(null);
   // Bumped each time a task suggestion is picked; the composer re-seeds its text off the nonce.
   const [seed, setSeed] = useState<{ text: string; nonce: number } | null>(null);
 
@@ -162,20 +192,26 @@ function GenericHomePageContent({ prompt }: HomeSearch) {
   // Pre-create a provisional gadget as soon as the user starts interacting, so that navigation
   // after submit is instant. Same pattern as before — disposed on unmount if never consumed.
   const provisionalOverseerRef = useRef<{ stub: RpcStub<Overseer>; hub: string } | null>(null);
+  const lifetime = useHomeLifetime(authenticatedApi);
 
   const ensureProvisionalGadget = useCallback(() => {
+    // A retained callback must not mint capabilities after teardown or through an obsolete API.
+    if (!lifetime?.active) throw new Error('Home is no longer active');
     if (!provisionalOverseerRef.current) {
       const overseer = authenticatedApi.newGadget(hub);
       provisionalOverseerRef.current = { stub: overseer, hub };
     }
-  }, [authenticatedApi, hub]);
+  }, [authenticatedApi, hub, lifetime]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     return () => {
+      // Disposing a capability does not cancel in-flight replies. Invalidate sends on route exit,
+      // Activity hiding, or API replacement so a late reply cannot navigate or touch a new draft.
+      sendPendingRef.current = null;
       provisionalOverseerRef.current?.stub[Symbol.dispose]();
       provisionalOverseerRef.current = null;
     };
-  }, []);
+  }, [authenticatedApi]);
 
   const handleSend = useCallback(
     async (
@@ -184,25 +220,30 @@ function GenericHomePageContent({ prompt }: HomeSearch) {
       capsules?: CapsuleSpecifier[],
       attachments?: ChatAttachmentHandle[],
       formats?: MessageFormatRef[],
-    ) => {
-      if (sendPendingRef.current) return;
-      sendPendingRef.current = true;
+    ): Promise<void | false> => {
+      if (!lifetime?.active || sendPendingRef.current) return false;
+      const send = {};
+      sendPendingRef.current = send;
       try {
         ensureProvisionalGadget();
         const provisional = provisionalOverseerRef.current!;
         const overseer = provisional.stub;
         const { id } = await overseer.getMetadata();
+        if (sendPendingRef.current !== send) return false;
         // If the workspace was pre-created for the currently selected hub, skip the extra round-trip.
         // A last-second hub switch is still stamped immediately before starting activity.
         if (provisional.hub !== hub) {
           await authenticatedApi.updateProvisionalWorkspaceOrigin(id, hub);
+          if (sendPendingRef.current !== send) return false;
         }
         const chat = await overseer.newChat(message, modelId, capsules, attachments, formats);
+        if (sendPendingRef.current !== send) return false;
         provisionalOverseerRef.current?.stub[Symbol.dispose]();
         provisionalOverseerRef.current = null;
         // Open the conversation we just started.
         navigate({ to: "/workspace/$id", params: { id }, search: { chat } });
       } catch (err) {
+        if (sendPendingRef.current !== send) return false;
         const transient = logRpcFailure("Failed to create gadget:", err,
             { reportSite: "workspace.create" });
         // A retry reuses the provisional gadget while the draft contains gadget-scoped references.
@@ -215,10 +256,10 @@ function GenericHomePageContent({ prompt }: HomeSearch) {
         }
         throw err;
       } finally {
-        sendPendingRef.current = false;
+        if (sendPendingRef.current === send) sendPendingRef.current = null;
       }
     },
-    [authenticatedApi, ensureProvisionalGadget, hub, navigate, toasts],
+    [authenticatedApi, ensureProvisionalGadget, hub, navigate, toasts, lifetime],
   );
 
   const getOverseer = useCallback((): RpcStub<Overseer> => {
@@ -273,12 +314,13 @@ function GenericHomePageContent({ prompt }: HomeSearch) {
           selectedModel={selectedModel}
           onModelChange={handleModelChange}
           newChat
+          provisionalWorkspace
           offerFormats
           autoFocus
           minRows={3}
           seedText={seed?.text}
           seedNonce={seed?.nonce}
-          onInputIntent={ensureProvisionalGadget}
+          onInputIntent={() => { if (lifetime?.active) ensureProvisionalGadget(); }}
           sendingStatusLabel="Starting workspace…"
           draftStorageKey={currentUser
             ? composerDraftStorageKey(currentUser.id, `home:${hub}`)

@@ -50,8 +50,10 @@ class TerminalLoadBoundary extends Component<{
           <div className="border-b border-kumo-danger/20 bg-kumo-danger/10 px-3 py-2 text-xs text-kumo-danger" role="alert">
             Could not load the terminal client.
           </div>
-          <div className="flex min-h-0 flex-1 items-center justify-center bg-kumo-tint/30 px-6 text-center text-xs text-kumo-subtle">
-            Reload the page to try again.
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-kumo-tint/30 px-6 text-center text-xs text-kumo-subtle">
+            <p>Reload the page to try again.</p>
+            <p>Reloading may lose unsent messages and unsaved changes. Copy any work you can before reloading.</p>
+            <button type="button" className="underline" onClick={() => window.location.reload()}>Reload page</button>
           </div>
         </section>
       )

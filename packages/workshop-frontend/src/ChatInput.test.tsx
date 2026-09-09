@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act, type ComponentProps, type ReactNode } from "react";
+import { Activity, act, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatAttachmentHandle, Overseer } from "@gadgets/workshop-shared/api";
@@ -9,6 +9,7 @@ import { ChatInput } from "./ChatInput";
 import { readComposerDraft, writeComposerDraft } from "./composerDraft";
 
 const mocks = vi.hoisted(() => ({
+  authenticatedApi: {},
   addToast: vi.fn<(toast: unknown) => void>(),
   formatIcon: vi.fn<() => Promise<string | undefined>>(async () => undefined),
 }));
@@ -29,7 +30,7 @@ vi.mock("@cloudflare/kumo", () => {
     }),
   };
 });
-vi.mock("./AuthContext", () => ({ useAuthenticatedApi: () => ({ authenticatedApi: {} }) }));
+vi.mock("./AuthContext", () => ({ useAuthenticatedApi: () => ({ authenticatedApi: mocks.authenticatedApi }) }));
 vi.mock("./useVendorBranding", () => ({ useVendorBranding: () => new Map() }));
 vi.mock("./errorReporting", () => ({ reportIssue: vi.fn<() => void>() }));
 vi.mock("./CapsuleOverlay", () => ({ default: () => null, CAPSULE_OVERLAY_GAP: 8 }));
@@ -153,13 +154,49 @@ describe("extracted ChatInput runtime", () => {
     expect(readComposerDraft(props.draftStorageKey)?.text).toBe("Typed before authentication");
   });
 
+  it("keeps the draft and allows retry when the owner abandons an asynchronous send", async () => {
+    let finish!: (sent: false) => void;
+    props.onSend = vi.fn<Props['onSend']>(() => new Promise<false>(resolve => { finish = resolve; }));
+    await render();
+    await edit('Keep this draft');
+    await act(async () => send().click());
+    await act(async () => finish(false));
+    expect(textarea().value).toBe('Keep this draft');
+    expect(readComposerDraft(props.draftStorageKey)?.text).toBe('Keep this draft');
+    expect(send().disabled).toBe(false);
+    expect(mocks.addToast).not.toHaveBeenCalled();
+  });
+
+  it('consumes a seed once across Activity reveal, preserves edits and storage, and accepts a new nonce', async () => {
+    props.seedText = 'Suggested task';
+    props.seedNonce = 1;
+    root = createRoot(container);
+    const show = async (mode: 'visible' | 'hidden') => {
+      await act(async () => root!.render(<Activity mode={mode}><ChatInput {...props} /></Activity>));
+    };
+    await show('visible');
+    await frame();
+    await edit('My edited task');
+    await show('hidden');
+    await show('visible');
+    await frame();
+    expect(textarea().value).toBe('My edited task');
+    expect(readComposerDraft(props.draftStorageKey)?.text).toBe('My edited task');
+    props.seedNonce = 2;
+    await show('visible');
+    await frame();
+    expect(textarea().value).toBe('Suggested task');
+    expect(readComposerDraft(props.draftStorageKey)?.text).toBe('Suggested task');
+  });
+
   it("blocks sending during upload and passes the same attachment handle without deleting it", async () => {
     let finishUpload!: (handle: ChatAttachmentHandle) => void;
     const uploadChatAttachment = vi.fn<Overseer["uploadChatAttachment"]>(() => new Promise<ChatAttachmentHandle>((resolve) => {
       finishUpload = resolve;
     }));
     const deleteChatAttachment = vi.fn<Overseer["deleteChatAttachment"]>();
-    props.getOverseer = vi.fn<Props["getOverseer"]>(() => ({ uploadChatAttachment, deleteChatAttachment }) as unknown as
+    const owner = { uploadChatAttachment, deleteChatAttachment, [Symbol.dispose]: vi.fn<() => void>() };
+    props.getOverseer = vi.fn<Props["getOverseer"]>(() => ({ dup: () => owner }) as unknown as
       Awaited<ReturnType<Props["getOverseer"]>>);
     await render();
     const file = new File(["hello"], "notes.txt", { type: "text/plain" });

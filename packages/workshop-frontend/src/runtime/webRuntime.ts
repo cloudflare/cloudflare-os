@@ -38,8 +38,9 @@ export function createWebRuntime(): WorkshopRuntime {
       return null
     },
     async openExternal(url: string) {
-      const popup = window.open(url, '_blank', 'noopener')
-      if (!popup) window.location.assign(url)
+      // `noopener` returns null even when the new tab opens successfully. It cannot
+      // detect popup blocking; never navigate away from the user's work as a fallback.
+      window.open(url, '_blank', 'noopener')
     },
     async openOAuthTrampoline(url: string) {
       await this.openExternal(url)

@@ -25,6 +25,7 @@ class EditorErrorBoundary extends Component<{ children: ReactNode }, { failed: b
       return (
         <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-kumo-subtle">
           <p>The code editor could not load. Reload the page to try again; switching files cannot retry this load.</p>
+          <p>Reloading may lose unsent messages and unsaved changes. Copy any work you can before reloading.</p>
           <WorkshopButton onClick={() => window.location.reload()}>Reload page</WorkshopButton>
         </div>
       )

@@ -70,7 +70,9 @@ export default defineConfig(({ mode }) => {
       },
     },
     plugins: [
-      TanStackRouterVite({ target: 'react', autoCodeSplitting: true }),
+      // TanStack's lazy route wrapper reloads on missing chunks, discarding unsent work.
+      // Keep routes eager; heavy editors/terminals retain their explicit React.lazy boundaries.
+      TanStackRouterVite({ target: 'react', autoCodeSplitting: false }),
       react(),
       tailwindcss(),
       tsconfigPaths(),
