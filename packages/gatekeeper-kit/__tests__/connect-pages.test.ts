@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { CONNECT_HANDOFF_MESSAGE_TYPE } from "@gadgets/workshop-shared/gatekeeper";
+import {
+  CONNECT_HANDOFF_ACK_MESSAGE_TYPE, CONNECT_HANDOFF_MESSAGE_TYPE,
+} from "@gadgets/workshop-shared/gatekeeper";
 import {
   connectHandoffPageHtml,
   connectMutationError,
@@ -76,9 +78,27 @@ describe("connectHandoffPageHtml", () => {
     expect(html).toContain(
       `else if (window.location.origin === target && "BroadcastChannel" in window)`);
     expect(html).toContain(
-      `new BroadcastChannel(${JSON.stringify(CONNECT_HANDOFF_MESSAGE_TYPE)}).postMessage(envelope)`);
+      `var channel = new BroadcastChannel(${JSON.stringify(CONNECT_HANDOFF_MESSAGE_TYPE)});`);
+    expect(html).toContain("channel.postMessage(envelope);");
     // The opener wins when there is one: sign-in and the dev server rely on it.
     expect(html.indexOf("opener.postMessage")).toBeLessThan(html.indexOf("new BroadcastChannel"));
+  });
+
+  it("repeats a broadcast until the Workshop acknowledges this ticket, then closes", () => {
+    // A Workshop tab whose session is mid-reconnect misses a one-shot broadcast, and the connect
+    // would fail silently. The ticket is single-use server-side, so repeating it is safe; the ack
+    // for this ticket is what ends the repeats.
+    const html = connectHandoffPageHtml(HANDOFF);
+
+    expect(html).toContain("setInterval(function () { channel.postMessage(envelope); }, 1000)");
+    expect(html).toContain(`e.data.type === ${JSON.stringify(CONNECT_HANDOFF_ACK_MESSAGE_TYPE)}`);
+    expect(html).toContain("e.data.ticket === envelope.ticket");
+    // Gives up after 30 s with the "couldn't reach" text rather than closing on a timer: the
+    // channel branch returns before the 2 s fallback close, which is for the opener branch only.
+    expect(html).toContain("setTimeout(function () { clearInterval(repeat); unreachable(); }, 30000)");
+    const channelBranch = html.slice(html.indexOf("var channel"), html.indexOf("} else {"));
+    expect(channelBranch).toContain("return;");
+    expect(channelBranch).not.toContain("2000");
   });
 
   it("cannot be broken out of by the ticket or origin it embeds", () => {
@@ -109,9 +129,10 @@ describe("connectHandoffPageHtml", () => {
     const html = connectHandoffPageHtml(HANDOFF);
 
     expect(html).toContain("if (opener && !opener.closed)");
-    expect(html).toContain("window.close()");
+    expect(html).toContain("setTimeout(function () { window.close(); }, 2000)");
     // The "couldn't reach" branch returns before the close timer, so the message stays readable.
-    expect(html.indexOf("return;")).toBeLessThan(html.indexOf("window.close()"));
+    expect(html.lastIndexOf("return;")).toBeLessThan(
+      html.indexOf("setTimeout(function () { window.close(); }, 2000)"));
     expect(html).toContain("couldn't reach the Workshop");
     expect(html).toContain("start the connection again");
     expect(html).toContain(`<meta name="referrer" content="strict-origin-when-cross-origin">`);

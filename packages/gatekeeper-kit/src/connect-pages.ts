@@ -1,6 +1,7 @@
 /** Hardened HTML and browser request guards for gatekeeper connect flows. */
 
 import {
+  CONNECT_HANDOFF_ACK_MESSAGE_TYPE,
   CONNECT_HANDOFF_MESSAGE_TYPE,
   type ConnectHandoff,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -147,7 +148,12 @@ function scriptLiteral(value: unknown): string {
  * - A `BroadcastChannel` named `CONNECT_HANDOFF_MESSAGE_TYPE`, when this page is itself on the
  *   Workshop's origin and has no opener. The Workshop disowns connect popups before navigating them
  *   (so no provider page ever holds a handle to the Workshop window), and a same-origin channel is
- *   the only thing a disowned popup can still reach; the browser scopes it to that origin.
+ *   the only thing a disowned popup can still reach; the browser scopes it to that origin. The
+ *   envelope is repeated every second until a Workshop tab answers with a
+ *   `CONNECT_HANDOFF_ACK_MESSAGE_TYPE` envelope for this ticket (a tab whose session is
+ *   mid-reconnect would miss a one-shot broadcast, and the connect would fail silently); the ticket
+ *   is single-use server-side, so the repeats are harmless. After 30 seconds unacknowledged the
+ *   page gives up and tells the user, as below.
  *
  * Without either it can reach no Workshop, so it tells the user to go back and start again; a flow
  * opened from a phished link on another origin ends here with its ticket unredeemed. The connection
@@ -185,15 +191,31 @@ export function connectHandoffPageHtml(handoff: ConnectHandoff): string {
 (function () {
   var envelope = ${scriptLiteral(envelope)};
   var target = ${scriptLiteral(origin)};
+  function unreachable() {
+    document.getElementById("title").textContent = "This window couldn't reach the Workshop";
+    document.getElementById("detail").textContent =
+      "Go back to the Workshop tab and start the connection again.";
+  }
   var opener = window.opener;
   if (opener && !opener.closed) {
     opener.postMessage(envelope, target);
   } else if (window.location.origin === target && "BroadcastChannel" in window) {
-    new BroadcastChannel(${scriptLiteral(CONNECT_HANDOFF_MESSAGE_TYPE)}).postMessage(envelope);
+    // Repeated until a Workshop tab acknowledges this ticket: a tab mid-reconnect misses a one-shot
+    // broadcast, and the ticket is single-use server-side, so repeating is safe.
+    var channel = new BroadcastChannel(${scriptLiteral(CONNECT_HANDOFF_MESSAGE_TYPE)});
+    var repeat = setInterval(function () { channel.postMessage(envelope); }, 1000);
+    channel.postMessage(envelope);
+    channel.onmessage = function (e) {
+      if (e.data && e.data.type === ${scriptLiteral(CONNECT_HANDOFF_ACK_MESSAGE_TYPE)} &&
+          e.data.ticket === envelope.ticket) {
+        clearInterval(repeat);
+        window.close();
+      }
+    };
+    setTimeout(function () { clearInterval(repeat); unreachable(); }, 30000);
+    return;
   } else {
-    document.getElementById("title").textContent = "This window couldn't reach the Workshop";
-    document.getElementById("detail").textContent =
-      "Go back to the Workshop tab and start the connection again.";
+    unreachable();
     return;
   }
   // The Workshop closes this window once it has redeemed the ticket; this is the fallback.

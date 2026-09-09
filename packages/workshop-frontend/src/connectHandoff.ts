@@ -7,7 +7,9 @@
 import { useEffect } from 'react'
 import type { RpcStub } from 'capnweb'
 import type { AuthenticatedApi } from '@gadgets/workshop-shared/api'
-import { CONNECT_HANDOFF_MESSAGE_TYPE } from '@gadgets/workshop-shared/gatekeeper'
+import {
+  CONNECT_HANDOFF_ACK_MESSAGE_TYPE, CONNECT_HANDOFF_MESSAGE_TYPE,
+} from '@gadgets/workshop-shared/gatekeeper'
 
 /** Host the backend (and, through the router, every gatekeeper) is served from. */
 export function getBackendHost(): string {
@@ -79,18 +81,30 @@ export function openConnectWindow(url: string): Window {
 /**
  * Set in this tab's `sessionStorage` by `openConnectWindow`, so `useConnectHandoffListener` knows a
  * broadcast ticket is one this tab asked for. Per-tab and reload-stable, which is exactly the scope
- * wanted: the tab that opened the popup redeems, its siblings stay quiet.
+ * wanted: the tab that opened the popup redeems, its siblings stay quiet. Holds the time it was
+ * set, so an abandoned popup's marker ages out instead of racing sibling tabs forever.
  */
 const CONNECT_PENDING_KEY = 'gadgets.connectPending'
+
+/**
+ * How long a marker counts: the gatekeepers' connect-nonce lifetime, after which the popup's flow
+ * can no longer complete, so a ticket arriving later cannot be this tab's.
+ */
+const CONNECT_PENDING_LIFETIME_MS = 10 * 60 * 1000
 
 // Storage can be unavailable (a disabled cookie jar, a sandboxed frame); every access degrades to
 // today's behaviour of redeeming whatever arrives rather than failing the connect.
 function markConnectPending(): void {
-  try { sessionStorage.setItem(CONNECT_PENDING_KEY, '1') } catch { /* fall back to redeeming all */ }
+  try { sessionStorage.setItem(CONNECT_PENDING_KEY, String(Date.now())) } catch { /* fall back to redeeming all */ }
 }
 
 function hasPendingConnect(): boolean {
-  try { return sessionStorage.getItem(CONNECT_PENDING_KEY) !== null } catch { return true }
+  try {
+    const marked = sessionStorage.getItem(CONNECT_PENDING_KEY)
+    return marked !== null && Date.now() - Number(marked) < CONNECT_PENDING_LIFETIME_MS
+  } catch {
+    return true
+  }
 }
 
 function clearPendingConnect(): void {
@@ -103,16 +117,21 @@ function clearPendingConnect(): void {
  * on our own origin; the browser scopes the channel to that origin) and `message` events from the
  * gatekeeper origin (a popup that kept its opener, as under the dev server). Only well-formed
  * envelopes are considered; anything else is ignored silently. A popup that posted is closed once
- * the Workshop has accepted the ticket; a broadcast has no source, so that page closes itself.
+ * the Workshop has accepted the ticket. A broadcast has no source, so that page repeats its
+ * envelope (a tab whose session is mid-reconnect would miss a one-shot) until this tab answers with
+ * a `CONNECT_HANDOFF_ACK_MESSAGE_TYPE` envelope once the redemption succeeded, then closes itself.
  *
  * Security rests on the ticket being scoped server-side to the user who started the flow, not on
  * which window sent it. The `sessionStorage` marker `openConnectWindow` sets only decides *which of
  * that user's tabs* redeems a broadcast: the one that opened the popup, surviving a reload, since
  * the storage is per-tab and reload-stable; its siblings stay silent instead of racing it and
- * toasting "expired". A connect whose tab was closed expires and is revoked like an abandoned one.
- * A phished handoff page opened directly in the victim's own browser broadcasts to
- * tabs none of which holds a marker, so nothing even reaches the server; a `message` event needs no
- * marker, its source being the popup this tab itself holds.
+ * toasting "expired". The marker is spent only by a successful redemption, so a sibling's or a
+ * sign-in ticket heard first (which the server rejects) does not cost this tab its own, and it ages
+ * out after the connect-nonce lifetime so an abandoned popup's marker stops racing siblings. A
+ * connect whose tab was closed expires and is revoked like an abandoned one. A phished handoff page
+ * opened directly in the victim's own browser broadcasts to tabs none of which holds a marker, so
+ * nothing even reaches the server; a `message` event needs no marker, its source being the popup
+ * this tab itself holds.
  *
  * Pass `null` to listen for nothing: a ticket must be redeemed exactly once, so only one listener may
  * be live per window (see `ConnectHandoffListener` and the blueprint page).
@@ -123,9 +142,22 @@ export function useConnectHandoffListener(
 ): void {
   useEffect(() => {
     if (!authenticatedApi) return
+    const channel = 'BroadcastChannel' in globalThis
+      ? new BroadcastChannel(CONNECT_HANDOFF_MESSAGE_TYPE)
+      : null
+    // `source` is the popup that posted the ticket, or null for a broadcast, whose page is told to
+    // close by the ack instead.
     const redeem = (ticket: string, source: Window | null) => {
       authenticatedApi.completeConnectHandoff(ticket).then(
-        () => { source?.close?.() },
+        () => {
+          if (source) {
+            source.close?.()
+            return
+          }
+          clearPendingConnect()
+          // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no targetOrigin.
+          channel?.postMessage({ type: CONNECT_HANDOFF_ACK_MESSAGE_TYPE, ticket })
+        },
         (err: unknown) => { onError(err instanceof Error ? err.message : String(err)) },
       )
     }
@@ -134,14 +166,13 @@ export function useConnectHandoffListener(
       if (ticket !== null) redeem(ticket, event.source as Window | null)
     }
     window.addEventListener('message', onMessage)
-    const channel = 'BroadcastChannel' in globalThis
-      ? new BroadcastChannel(CONNECT_HANDOFF_MESSAGE_TYPE)
-      : null
+    // Tickets already tried on this session: the page repeats its broadcast until acked, and a
+    // sibling tab's page may repeat too, so a ticket is redeemed (and a failure toasted) once.
+    const attempted = new Set<string>()
     channel?.addEventListener('message', (event: MessageEvent) => {
       const ticket = parseHandoffEnvelope(event.data)
-      if (ticket === null || !hasPendingConnect()) return
-      // One connect, one redemption: the marker is spent whether or not the server accepts.
-      clearPendingConnect()
+      if (ticket === null || attempted.has(ticket) || !hasPendingConnect()) return
+      attempted.add(ticket)
       redeem(ticket, null)
     })
     return () => {

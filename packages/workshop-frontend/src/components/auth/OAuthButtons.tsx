@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { RpcStub } from 'capnweb'
 import { PublicApi, AuthVendorInfo } from '@gadgets/workshop-shared/api'
-import { CONNECT_HANDOFF_MESSAGE_TYPE } from '@gadgets/workshop-shared/gatekeeper'
+import {
+  CONNECT_HANDOFF_ACK_MESSAGE_TYPE, CONNECT_HANDOFF_MESSAGE_TYPE,
+} from '@gadgets/workshop-shared/gatekeeper'
 import { Button, Banner } from '@cloudflare/kumo'
 import { connectHandoffTicket, parseHandoffEnvelope } from '../../connectHandoff'
 
@@ -126,8 +128,14 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           attempt.claim(ticket)
             .then(t => {
               if (settled) return
-              if (t === null) startPolling()
-              else finish(() => resolve(t))
+              if (t === null) {
+                startPolling()
+                return
+              }
+              // A popup whose opener COOP severed broadcasts, and repeats until acknowledged.
+              // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no targetOrigin.
+              channel?.postMessage({ type: CONNECT_HANDOFF_ACK_MESSAGE_TYPE, ticket })
+              finish(() => resolve(t))
             })
             .catch(e => finish(() => reject(e instanceof Error ? e : new Error('Could not sign in'))))
         }

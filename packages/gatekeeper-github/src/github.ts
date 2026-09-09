@@ -27,7 +27,7 @@ import {
   GitHubApi,
   GitHubApiError,
   exchangeAuthCode,
-  revokeOAuthGrant,
+  revokeOAuthToken,
   type ConditionalRequestResult,
   type GitHubCompareResponse,
   type GitHubIssueCommentResponse,
@@ -1329,8 +1329,8 @@ export class UserAccount extends DurableObject<Env> {
         throw error;
       }
       // Auth-only sign-in grants are transient: the caller read the email via complete(), so
-      // schedule a prompt self-destruct. We do NOT call the provider revoke endpoint (it could
-      // invalidate the user's other grants for this OAuth app); we just drop our local copy.
+      // schedule a prompt self-destruct. Only the local copy is dropped, with no provider revoke
+      // call: the token grants nothing worth revoking, and this is the sign-in path.
       if (this.ctx.storage.kv.get<boolean>("ephemeral")) {
         await this.ctx.storage.setAlarm(Date.now() + 2 * 60 * 1000);
         return handoff;
@@ -1387,10 +1387,10 @@ export class UserAccount extends DurableObject<Env> {
     const accessToken = this.ctx.storage.kv.get<string>("accessToken");
     if (accessToken && this.env.CLIENT_ID && this.env.CLIENT_SECRET) {
       try {
-        await revokeOAuthGrant(accessToken, this.env.CLIENT_ID, this.env.CLIENT_SECRET);
+        await revokeOAuthToken(accessToken, this.env.CLIENT_ID, this.env.CLIENT_SECRET);
       } catch (error) {
-        logger.error("failed to revoke GitHub OAuth grant", {
-          event: "oauth.grant.revoke.failed", error,
+        logger.error("failed to revoke GitHub OAuth token", {
+          event: "oauth.token.revoke.failed", error,
         });
       }
     }

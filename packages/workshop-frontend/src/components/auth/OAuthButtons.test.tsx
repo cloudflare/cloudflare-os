@@ -6,7 +6,9 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type { AuthVendorInfo, LoginAttempt, PublicApi } from '@gadgets/workshop-shared/api'
-import { CONNECT_HANDOFF_MESSAGE_TYPE } from '@gadgets/workshop-shared/gatekeeper'
+import {
+  CONNECT_HANDOFF_ACK_MESSAGE_TYPE, CONNECT_HANDOFF_MESSAGE_TYPE,
+} from '@gadgets/workshop-shared/gatekeeper'
 import { gatekeeperOrigin } from '../../connectHandoff'
 import OAuthButtons from './OAuthButtons'
 
@@ -105,13 +107,18 @@ describe('OAuthButtons', () => {
     expect(claim).not.toHaveBeenCalled()
 
     const sender = new BroadcastChannel(CONNECT_HANDOFF_MESSAGE_TYPE)
+    // The page repeats its broadcast until a Workshop window acknowledges the ticket.
+    const acked = new Promise<unknown>(resolve => {
+      sender.addEventListener('message', (event: MessageEvent) => resolve(event.data), { once: true })
+    })
     // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no targetOrigin.
     sender.postMessage({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: TICKET })
-    sender.close()
     await vi.waitFor(() => expect(claim).toHaveBeenCalledExactlyOnceWith(TICKET))
     await settle()
     expect(localStorage.getItem('authToken')).toBe('alice@example.com:secret')
     expect(onSuccess).toHaveBeenCalledOnce()
+    expect(await acked).toEqual({ type: CONNECT_HANDOFF_ACK_MESSAGE_TYPE, ticket: TICKET })
+    sender.close()
   })
 
   it('keeps waiting when a broadcast ticket belongs to another attempt', async () => {

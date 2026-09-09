@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GitHubApi,
+  revokeOAuthToken,
   type GitHubIssueResponse,
 } from "../src/github-api";
 import {
@@ -197,5 +198,27 @@ describe("GitHubApi git reads", () => {
     await api.listPullRequestCommitsConditional("cloudflare", "workerd", 42, 3, 50);
     expect(url().pathname).toBe("/repos/cloudflare/workerd/pulls/42/commits");
     expect(Object.fromEntries(url().searchParams)).toEqual({ page: "3", per_page: "50" });
+  });
+});
+
+describe("revokeOAuthToken", () => {
+  it("revokes only the given token, never the whole grant", async () => {
+    // `/applications/{id}/grant` would revoke every token the user holds for the app, taking a
+    // working connection down with the duplicate or abandoned one being dropped.
+    let requestUrl: URL | undefined;
+    let init: RequestInit | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, options?: RequestInit) => {
+      requestUrl = new URL(String(input));
+      init = options;
+      return new Response(null, { status: 204 });
+    }));
+
+    await revokeOAuthToken("gho_token", "client/id", "client-secret");
+
+    expect(init?.method).toBe("DELETE");
+    expect(requestUrl?.pathname).toBe("/applications/client%2Fid/token");
+    expect(JSON.parse(String(init?.body))).toEqual({ access_token: "gho_token" });
+    expect(new Headers(init?.headers).get("Authorization"))
+      .toBe(`Basic ${btoa("client/id:client-secret")}`);
   });
 });

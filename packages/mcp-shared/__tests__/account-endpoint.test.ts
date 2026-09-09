@@ -133,9 +133,11 @@ class PublicServerAccount extends McpAccountBase<AccountEnv> {
 
 afterEach(() => vi.unstubAllGlobals());
 
-// An authorization server that registers any client and exchanges any code.
-function stubOAuthServer() {
-  vi.stubGlobal("fetch", async (input: string) => {
+// An authorization server that registers any client, exchanges any code, and revokes any token,
+// recording the bodies of the revocations it is asked for.
+function stubOAuthServer(): { revoked: string[] } {
+  const revoked: string[] = [];
+  vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("oauth-protected-resource")) {
       return Response.json({
@@ -149,8 +151,13 @@ function stubOAuthServer() {
         authorization_endpoint: "https://auth.example/authorize",
         token_endpoint: "https://auth.example/token",
         registration_endpoint: "https://auth.example/register",
+        revocation_endpoint: "https://auth.example/revoke",
         response_types_supported: ["code"],
       });
+    }
+    if (url === "https://auth.example/revoke") {
+      revoked.push(String(init?.body));
+      return new Response(null, { status: 200 });
     }
     if (url === "https://auth.example/register") {
       return Response.json({
@@ -171,6 +178,7 @@ function stubOAuthServer() {
     }
     return new Response("", { status: 404 });
   });
+  return { revoked };
 }
 
 const HANDOFF = { targetOrigin: "https://workshop.example", ticket: "c".repeat(64) };
@@ -536,6 +544,46 @@ describe("connect initiation nonce", () => {
     expect(context.storage.kv.get("mcpSessionId")).toBe("session-for-access-token");
     expect(context.storage.kv.get("stagedCredentials")).toBeUndefined();
     await expect(account.commitReconnect(stageId)).rejects.toThrow(/No reconnect is awaiting/);
+  });
+
+  it("discards and revokes a reconnect's parked tokens when the probe fails after the exchange", async () => {
+    // The nonce is spent before the exchange, and no alarm sweeps a connected account, so without
+    // this the grant the exchange parked would sit unused and unrevoked until the next reconnect.
+    class ProbeFailsAccount extends OAuthFlowAccount {
+      protected override async probe(
+        server: ConnectedServer, accessToken: string | null,
+      ): Promise<never> {
+        if (accessToken) throw new Error("server rejected the new credentials");
+        return await super.probe(server, accessToken);
+      }
+    }
+    const context = fakeContext();
+    const { revoked } = stubOAuthServer();
+    const reconnectComplete = vi.fn(async (_stageId: string) => HANDOFF);
+    context.storage.kv.put("server", server("https://mcp.example/mcp"));
+    context.storage.kv.put("callback", { reconnectComplete });
+    context.storage.kv.put("tokens", { access_token: "old-token", token_type: "Bearer", expiresAt: 1 });
+    const account = new ProbeFailsAccount(context as never, {});
+    const nonce = "7".repeat(64);
+    await account.prepareReconnect(nonce);
+
+    const outcome = await account.beginConnect(nonce, null);
+    expect(outcome.kind).toBe("redirect");
+    const state = new URL((outcome as { url: string }).url).searchParams.get("state")!;
+    await expect(account.acceptAuthCode("code", state.slice(state.indexOf(":") + 1)))
+      .rejects.toThrow("server rejected the new credentials");
+
+    expect(reconnectComplete).not.toHaveBeenCalled();
+    expect(context.storage.kv.get("reconnectTokens")).toBeUndefined();
+    expect(context.storage.kv.get("reconnectOauthClient")).toBeUndefined();
+    expect(context.storage.kv.get("reconnectOauthDiscovery")).toBeUndefined();
+    expect(context.storage.kv.get("stagedCredentials")).toBeUndefined();
+    expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token)
+      .toBe("old-token");
+    expect(revoked).toEqual([
+      "token=access-token&token_type_hint=access_token&client_id=client-id",
+      "token=refresh-token&token_type_hint=refresh_token&client_id=client-id",
+    ]);
   });
 
   it("stages an overlapping reconnect even after an earlier one is committed", async () => {

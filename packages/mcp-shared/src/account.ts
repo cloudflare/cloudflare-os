@@ -695,9 +695,61 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     if (!tokens) throw new Error("The authorization server returned no access token.");
     this.ctx.storage.kv.delete("oauthVerifier");
 
-    const probed = await this.probe(server, tokens.access_token);
-    if (!this.isCurrentConnection(server, pending.generation)) return null;
-    return await this.complete(server, probed, pending.generation, reconnect);
+    try {
+      const probed = await this.probe(server, tokens.access_token);
+      if (!this.isCurrentConnection(server, pending.generation)) return null;
+      return await this.complete(server, probed, pending.generation, reconnect);
+    } catch (err) {
+      // A first connect that fails here is deleted by the abandonment alarm. A reconnect is on a
+      // connected account, which the alarm leaves alone, so the grant the exchange parked would
+      // otherwise sit unused and unrevoked until the next reconnect overwrote it.
+      if (reconnect) await this.discardParkedReconnect(server, pending.generation);
+      throw err;
+    }
+  }
+
+  // Removes and returns what a reconnect flow parked off the live keys: the tokens `saveTokens`
+  // stored, and the client registration and discovery the flow used.
+  private takeParkedReconnect(): {
+    tokens: OAuthTokens | undefined;
+    client: StoredOAuthClientInformation | undefined;
+    discovery: OAuthDiscoveryState | undefined;
+  } {
+    const take = <T>(key: string): T | undefined => {
+      const value = this.ctx.storage.kv.get<T>(key);
+      this.ctx.storage.kv.delete(key);
+      return value;
+    };
+    return {
+      tokens: take<OAuthTokens>(RECONNECT_TOKENS_KEY),
+      client: take<StoredOAuthClientInformation>(RECONNECT_CLIENT_KEY),
+      discovery: take<OAuthDiscoveryState>(RECONNECT_DISCOVERY_KEY),
+    };
+  }
+
+  // Drops a reconnect's parked grant when its flow failed after the exchange, revoking the tokens
+  // best-effort. Only while the flow's connection is still current: a newer `prepareReconnect`
+  // has reset the scratch keys and owns whatever is under them now.
+  private async discardParkedReconnect(server: ConnectedServer, generation: number): Promise<void> {
+    if (!this.isCurrentConnection(server, generation)) return;
+    const { tokens, client, discovery } = this.takeParkedReconnect();
+    if (tokens && discovery && client) await this.revokeTokens(tokens, discovery, client);
+  }
+
+  // Best effort: a server that does not implement RFC 7009 must not block a disconnect.
+  private async revokeTokens(
+    tokens: OAuthTokens, discovery: OAuthDiscoveryState, client: StoredOAuthClientInformation,
+  ): Promise<void> {
+    try {
+      const fetchFn = sdkFetch(this.fetchOptions());
+      await revokeToken(discovery, client, tokens.access_token, "access_token", fetchFn);
+      if (tokens.refresh_token) {
+        await revokeToken(discovery, client, tokens.refresh_token, "refresh_token", fetchFn);
+      }
+    } catch (err) {
+      this.log().warn("failed to revoke MCP tokens",
+        { event: "oauth.token.revoke.failed", error: err });
+    }
   }
 
   // The tokens `saveTokens` just stored: live for a first connect, parked for a reconnect.
@@ -788,18 +840,14 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       // something to confirm), the session the probe opened with them, the server record as this
       // flow observed it, and the client registration and discovery the flow used. The live record
       // has not been touched, and is not until the Workshop names this id in `commitReconnect`.
-      const take = <T>(key: string): T | undefined => {
-        const value = this.ctx.storage.kv.get<T>(key);
-        this.ctx.storage.kv.delete(key);
-        return value;
-      };
-      const tokens = take<OAuthTokens>(RECONNECT_TOKENS_KEY) ?? null;
+      const parked = this.takeParkedReconnect();
+      const tokens = parked.tokens ?? null;
       const stageId = stageCredentials<StagedReconnect>(this.ctx.storage.kv, {
         tokens,
         sessionId,
         server: observed,
-        client: take<StoredOAuthClientInformation>(RECONNECT_CLIENT_KEY),
-        discovery: take<OAuthDiscoveryState>(RECONNECT_DISCOVERY_KEY),
+        client: parked.client,
+        discovery: parked.discovery,
       }, Date.now());
       handoff = await callback.reconnectComplete(
         stageId, tokens?.expiresAt ? new Date(tokens.expiresAt) : undefined);
@@ -1037,19 +1085,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     const tokens = this.ctx.storage.kv.get<OAuthTokens>("tokens");
     const discovery = this.ctx.storage.kv.get<OAuthDiscoveryState>("oauthDiscovery");
     const client = this.ctx.storage.kv.get<StoredOAuthClientInformation>("oauthClient");
-    if (tokens && discovery && client) {
-      // Best effort: a server that does not implement RFC 7009 must not block the disconnect.
-      try {
-        const fetchFn = sdkFetch(this.fetchOptions());
-        await revokeToken(discovery, client, tokens.access_token, "access_token", fetchFn);
-        if (tokens.refresh_token) {
-          await revokeToken(discovery, client, tokens.refresh_token, "refresh_token", fetchFn);
-        }
-      } catch (err) {
-        this.log().warn("failed to revoke MCP tokens",
-          { event: "oauth.token.revoke.failed", error: err });
-      }
-    }
+    if (tokens && discovery && client) await this.revokeTokens(tokens, discovery, client);
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
   }

@@ -413,14 +413,21 @@ export async function exchangeAuthCode(
   };
 }
 
-export async function revokeOAuthGrant(
+/**
+ * Revokes one OAuth token, and only that token. The neighbouring `/applications/{id}/grant`
+ * endpoint revokes every token the user holds for this OAuth app at once, which took a working
+ * connection down whenever a duplicate or an abandoned pending connect for the same user was
+ * revoked; a user may legitimately hold several tokens (one per connected account, plus the
+ * transient sign-in grant).
+ */
+export async function revokeOAuthToken(
   accessToken: string,
   clientId: string,
   clientSecret: string,
 ): Promise<void> {
   await request<void>(
     "DELETE",
-    `/applications/${encodeURIComponent(clientId)}/grant`,
+    `/applications/${encodeURIComponent(clientId)}/token`,
     {
       auth: "basic",
       basicAuth: {
