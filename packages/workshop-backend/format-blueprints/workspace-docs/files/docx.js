@@ -143,6 +143,7 @@ function normalizeSnapshot(document) {
 function closeImplied(stack, tag) {
   const [closes, within] = tag === "li" ? [["li"], ["ul", "ol"]]
     : tag === "td" || tag === "th" ? [["td", "th"], ["tr", "table"]]
+    : tag === "dt" || tag === "dd" ? [["dt", "dd"], ["dl"]]
     : tag === "tr" ? [["tr"], ["table"]]
     : BLOCK_TAGS.has(tag) ? [["p"], []] : [[], []];
   for (let index = stack.length - 1; index > 0 && closes.length; --index) {
@@ -518,11 +519,8 @@ class DocumentBuilder {
   text(context, value) {
     const text = cleanXml(value);
     if (context.preformatted) {
-      // Newlines become line breaks; like `<br>`, a break that ends the block is dropped.
-      text.split(/\r\n?|\n/).forEach((line, index) => {
-        if (index) this.break(context);
-        if (line) this.textRun(context, line);
-      });
+      // Newlines stay in the run and become `<w:br/>` when the XML is written.
+      this.textRun(context, text.replace(/\r\n?/g, "\n"));
       return;
     }
     let collapsed = text.replace(/[\t\n\f\r ]+/g, " ");
@@ -537,7 +535,7 @@ class DocumentBuilder {
     const format = context.format;
     const key = [format.bold, format.italic, format.underline, format.strike, format.font, format.size,
       format.color, format.shading].join("|");
-    this.addRun(context, {type: "text", text, format, key, hyperlink: context.hyperlink});
+    this.addRun(context, {type: "text", text, format, key, hyperlink: this.hyperlink(context.hyperlink)});
   }
 
   break(context) {
@@ -550,7 +548,9 @@ class DocumentBuilder {
     return id;
   }
 
+  // Relationships are allocated when content is emitted under the link, not when `<a>` is seen.
   hyperlink(target) {
+    if (!target) return null;
     let id = this.hyperlinkIds.get(target);
     if (!id) {
       id = this.relationship("hyperlink", target, "External");
@@ -601,7 +601,7 @@ class DocumentBuilder {
       throw new Error(`DOCX image count exceeds the ${DOCX_LIMITS.images}-image export limit.`);
     }
     const image = this.decodeImage(node.attrs.src || "");
-    const alt = cleanXml(node.attrs.alt || "");
+    const alt = cleanXml((node.attrs.alt || "").slice(0, 8192));
     if (!image) {
       // External and blob URLs cannot be fetched from here; keep the picture's place visible.
       this.text(context, alt || "[Image unavailable]");
@@ -614,7 +614,7 @@ class DocumentBuilder {
       height = CONTENT_HEIGHT_PIXELS;
     }
     this.addRun(context, {
-      type: "image", image, alt, hyperlink: context.hyperlink, drawingId: this.imageCount,
+      type: "image", image, alt, hyperlink: this.hyperlink(context.hyperlink), drawingId: this.imageCount,
       cx: Math.max(1, Math.round(width * EMUS_PER_PIXEL)),
       cy: Math.max(1, Math.round(height * EMUS_PER_PIXEL)),
     });
@@ -625,8 +625,9 @@ class DocumentBuilder {
 // paragraph style, hyperlink target, preformatting, and the enclosing list.
 function walk(builder, node, parent) {
   const tag = node.tag;
-  if (IGNORED_TAGS.has(tag)) return;
+  if (IGNORED_TAGS.has(tag) || "hidden" in node.attrs) return;
   const declarations = cssDeclarations(node.attrs.style);
+  if (declarations.some(([name, value]) => name === "display" && value.toLowerCase() === "none")) return;
   const context = {
     ...parent,
     format: deriveFormat(parent.format, node, declarations),
@@ -645,16 +646,18 @@ function walk(builder, node, parent) {
     case "hr":
       builder.paragraphs.push({...context.paragraph, style: context.style, runs: [], horizontalRule: true});
       return;
-    case "pre":
+    case "pre": {
       context.preformatted = true;
-      // HTML drops the newline immediately after `<pre>`.
-      if (typeof node.children[0] === "string") node.children[0] = node.children[0].replace(/^\r?\n/, "");
-      break;
-    case "a": {
-      const target = canonicalHyperlink(node.attrs.href);
-      if (target) context.hyperlink = builder.hyperlink(target);
+      // HTML renders neither the newline right after `<pre>` nor the one right before `</pre>`.
+      const first = node.children[0];
+      if (typeof first === "string") node.children[0] = first.replace(/^\r?\n/, "");
+      const last = node.children.at(-1);
+      if (typeof last === "string") node.children[node.children.length - 1] = last.replace(/\r?\n$/, "");
       break;
     }
+    case "a":
+      context.hyperlink = canonicalHyperlink(node.attrs.href) ?? parent.hyperlink;
+      break;
     case "ul":
     case "ol": {
       context.listKind = tag === "ol" ? LIST_TYPES[node.attrs.type] || "decimal" : "bullet";
@@ -712,19 +715,26 @@ function runProperties(format, hyperlink) {
   return properties.length ? `<w:rPr>${properties.join("")}</w:rPr>` : "";
 }
 
-// Text is emitted in bounded `<w:t>` slices so a single huge run never becomes one huge string.
+// Text is emitted in bounded `<w:t>` slices, with tabs and newlines (preformatted text) as `<w:tab/>`
+// and `<w:br/>`, scanning the run in place so a huge run never becomes a huge string or array.
+const SEPARATOR = /[\t\n]/g;
+
 function* textRunXml(run) {
   if (run.hyperlink) yield `<w:hyperlink r:id="${run.hyperlink}" w:history="1">`;
   yield `<w:r>${runProperties(run.format, run.hyperlink)}`;
-  const parts = run.text.split("\t");
-  for (let index = 0; index < parts.length; ++index) {
-    if (index) yield "<w:tab/>";
-    for (let offset = 0; offset < parts[index].length;) {
-      let end = Math.min(parts[index].length, offset + TEXT_CHUNK_SIZE);
-      if (end < parts[index].length && (parts[index].charCodeAt(end - 1) & 0xfc00) === 0xd800) --end;
-      yield `<w:t xml:space="preserve">${xmlText(parts[index].slice(offset, end))}</w:t>`;
-      offset = end;
+  const text = run.text;
+  for (let offset = 0; offset < text.length;) {
+    const character = text[offset];
+    if (character === "\t" || character === "\n") {
+      yield character === "\t" ? "<w:tab/>" : "<w:br/>";
+      ++offset;
+      continue;
     }
+    SEPARATOR.lastIndex = offset;
+    let end = Math.min(SEPARATOR.exec(text)?.index ?? text.length, offset + TEXT_CHUNK_SIZE);
+    if (end < text.length && (text.charCodeAt(end - 1) & 0xfc00) === 0xd800) --end;
+    yield `<w:t xml:space="preserve">${xmlText(text.slice(offset, end))}</w:t>`;
+    offset = end;
   }
   yield "</w:r>";
   if (run.hyperlink) yield "</w:hyperlink>";

@@ -402,8 +402,8 @@ describe("Workspace Docs DOCX package", () => {
     const xml = text(entries, "word/document.xml");
     expect(xml).toContain('<w:pStyle w:val="Quote"/>');
     expect(xml).toContain('<w:pStyle w:val="CodeBlock"/>');
-    expect(xml).toContain('<w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr><w:r><w:t xml:space="preserve"> a  b</w:t></w:r>' +
-      '<w:r><w:br/></w:r><w:r><w:tab/><w:t xml:space="preserve">c</w:t></w:r></w:p>');
+    expect(xml).toContain('<w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr><w:r><w:t xml:space="preserve"> a  b</w:t>' +
+      '<w:br/><w:tab/><w:t xml:space="preserve">c</w:t></w:r></w:p>');
     expect(runContaining(xml, "code")).toContain('w:ascii="Courier New"');
     expect(xml).toContain('<w:bottom w:val="single"');
   });
@@ -575,9 +575,9 @@ describe("Workspace Docs DOCX package", () => {
         `<p><a href="https://example.com/image"><img src="${source}" alt="linked"></a></p>`)]}));
     const xml = text(entries, "word/document.xml");
     const rels = text(entries, "word/_rels/document.xml.rels");
-    expect(xml).toContain('<a:hlinkClick r:id="rId3"/>');
-    expect(rels).toContain('Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"');
-    expect(rels).toContain('Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"');
+    expect(xml).toContain('<a:hlinkClick r:id="rId4"/>');
+    expect(rels).toContain('Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"');
+    expect(rels).toContain('Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"');
   });
 
   it("replaces invalid, signature-mismatched, and external images with visible safe text", async () => {
@@ -610,7 +610,7 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml.match(/<w:p>/g)).toHaveLength(7);
   });
 
-  it("bounds the work done for oversized text runs and inline styles", async () => {
+  it("bounds the work done for oversized text runs, separators, and inline styles", async () => {
     const chunk = 64 * 1024;
     const long = "x".repeat(chunk - 1) + "\ud83d\ude00" + "y".repeat(chunk);
     const style = "color:#123456;" + "a:b;".repeat(1_000_000);
@@ -621,6 +621,25 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).not.toContain("\ufffd");
     expect(xml.match(/<w:r>/g)).toHaveLength(1);
     expect(xml).toContain('<w:r><w:rPr><w:color w:val="123456"/></w:rPr><w:t xml:space="preserve">xxx');
+
+    const flood = await readZip(await documentToDocx({blocks: [block(`<pre>${"\n".repeat(300_000)}\t\t${"a\n".repeat(200_000)}</pre>`)]}));
+    const floodXml = text(flood.entries, "word/document.xml");
+    expect(floodXml.match(/<w:r>/g)).toHaveLength(1);
+    expect(floodXml.match(/<w:br\/>/g)).toHaveLength(300_000 - 1 + 200_000 - 1);
+    expect(floodXml.match(/<w:tab\/>/g)).toHaveLength(2);
+  });
+
+  it("skips hidden elements and links that wrap no content", async () => {
+    const anchors = Array.from({length: 1000}, (_, index) => `<a href="https://example.com/${index}"></a>`).join("");
+    const html = `<p hidden>draft</p><p><span style="display: none">secret</span>${anchors}shown` +
+      '<a href="https://example.com/kept">kept</a></p><dl><dt>term<dd>definition<dt><b>bold term</dt></dl>';
+    const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
+    const xml = text(entries, "word/document.xml");
+    for (const value of ["draft", "secret"]) expect(xml).not.toContain(value);
+    expect(xml).toContain(">shown</w:t>");
+    expect(text(entries, "word/_rels/document.xml.rels").match(/relationships\/hyperlink/g)).toHaveLength(1);
+    expect(runContaining(xml, "definition")).not.toContain("<w:b/>");
+    expect(xml.match(/<w:p>/g)).toHaveLength(4);
   });
 
   it("ignores self-closing foreign elements without rejecting surrounding content", async () => {
