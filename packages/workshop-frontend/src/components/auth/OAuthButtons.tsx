@@ -92,7 +92,9 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
         function stopPolling() {
           if (poll !== null) { clearInterval(poll); poll = null }
         }
-        function startPolling() {
+        // An arrow, not a declaration: only a closure created after the null check above sees
+        // `popup` narrowed.
+        const startPolling = () => {
           if (poll !== null) return
           poll = window.setInterval(() => {
             if (!popup.closed) return
