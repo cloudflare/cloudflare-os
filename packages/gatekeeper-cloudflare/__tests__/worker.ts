@@ -5,7 +5,7 @@
 // `ctx.exports.X({props})` is only reachable through `ctx.facets`, which is the same way the overseer
 // instantiates a gatekeeper in production.
 
-import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { GatekeeperUserVerifier, GitCache, GitObjectType, GitOid }
   from "@gadgets/workshop-shared/gatekeeper";
 import type { CloudflareObservabilityGatekeeper } from "../src/cloudflare.js";
@@ -109,4 +109,36 @@ export class TestHooks extends DurableObject<Env> {
       return error instanceof Error ? error.message : String(error);
     }
   }
+}
+
+// Export notification classes directly so the Workers test runner can discover them for ctx.exports.
+export { CloudflareNotificationReceiver, CloudflareNotificationsGatekeeper,
+  CloudflareNotificationHookController } from "../src/notifications.js";
+
+const notificationEvents: string[] = [];
+let rejectNotification = false;
+let rejectedNotificationHook: string | undefined;
+let denyNotificationObservation = false;
+class NotificationTestQueue extends RpcTarget {
+  async authorizeObservation(): Promise<void> {
+    notificationEvents.push("authorize");
+    if (denyNotificationObservation) throw new Error("Observation denied");
+  }
+}
+class NotificationTestCallback extends RpcTarget {
+  constructor(private hookId: string) { super(); }
+  async onNotification(value: { id: string }): Promise<void> {
+    notificationEvents.push(`callback:${JSON.stringify({ ...value, subscriber: this.hookId })}`);
+    if (rejectNotification && (!rejectedNotificationHook || rejectedNotificationHook === this.hookId)) throw new Error("callback rejected");
+  }
+}
+export class NotificationTestHooks extends WorkerEntrypoint {
+  async startHook() { return { callback: new NotificationTestCallback((this.ctx.props as { hookId: string }).hookId), approvalQueue: new NotificationTestQueue() }; }
+  async reset(reject: boolean, denyObservation = false, rejectedHook?: string) {
+    notificationEvents.length = 0;
+    rejectNotification = reject;
+    rejectedNotificationHook = rejectedHook;
+    denyNotificationObservation = denyObservation;
+  }
+  async read() { return [...notificationEvents]; }
 }

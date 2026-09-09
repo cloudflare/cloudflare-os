@@ -10,8 +10,11 @@
 import { describe, expect, it } from "vitest";
 import accountConfigurator from "../src/configurator/cloudflare-account-configurator-ui.js";
 import workerConfigurator from "../src/configurator/cloudflare-worker-configurator-ui.js";
+import notifications from "../src/configurator/cloudflare-notifications-configurator-ui.js";
 import {
   accountObservabilityUrl,
+  accountNotificationsUrl,
+  parseNotificationsResourceUrl,
   parseObservabilityResourceUrl,
   workerObservabilityUrl,
 } from "../src/resources.js";
@@ -66,4 +69,13 @@ describe("configurator resource URLs", () => {
       values: { accountId: ACCOUNT_ID, workerName: "api-worker" },
     })).toBe(true);
   });
+});
+
+it("round-trips and prefills a notification account with its setup status", async () => {
+  const url = notifications.resourceUrl({ values: { accountId: ACCOUNT_ID }, ui: noUi });
+  expect(url).toBe(accountNotificationsUrl(ACCOUNT_ID));
+  expect(parseNotificationsResourceUrl(url)).toEqual({ accountId: ACCOUNT_ID });
+  expect(notifications.isReady({ values: { accountId: "not-an-account" } })).toBe(false);
+  expect(await notifications.initialValuesFromResourceUrl({ resourceUrl: url, resourceUrlPattern: "",
+    ui: { listAccounts: async () => [], getSetupStatus: async () => ({ summary: "Ready" }) } })).toEqual({ accountId: ACCOUNT_ID, status: "Ready", statusDetails: null });
 });

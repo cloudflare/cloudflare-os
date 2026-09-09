@@ -1,6 +1,6 @@
 # Gatekeeper Cloudflare
 
-This package provides Cloudflare OAuth integration for Gadgets. It serves three purposes:
+This package provides Cloudflare OAuth integration for Gadgets. It serves four purposes:
 
 - **Sign-in:** when `cloudflare` is in the deployment's `AUTH_GATEKEEPERS` allowlist, "Continue with
   Cloudflare" appears on the login page. The grant reads the account email (verified by Cloudflare,
@@ -17,6 +17,8 @@ This package provides Cloudflare OAuth integration for Gadgets. It serves three 
   defensively discard foreign-service events. Distributed trace summaries are account-only because
   their names, timing, services, and counts describe the whole cross-service trace; a Worker binding
   can still retrieve its own events for a known trace ID.
+
+- **Notifications:** account-scoped generic webhooks, approved workspace callbacks, and subscriber handoff. See setup below.
 
 Observability connections request `workers-observability.read`. The OAuth client must allow that
 scope or Cloudflare will omit/reject it. Existing billing-only connections can add the grant when the
@@ -186,3 +188,104 @@ trailing slash, `http` not `https` for localhost.
 
 `CLIENT_ID` / `CLIENT_SECRET` are missing. Ensure they're set (per-package `.env` or seeded from the
 root `.dev.vars`), then restart the dev server.
+
+## Cloudflare Notifications
+
+Notifications are another resource of the **existing Cloudflare connector**, using its OAuth
+connection and incremental grants. There is no separate Notifications vendor, worker, OAuth client,
+or billing/sign-in flow. The account resource is `https://dash.cloudflare.com/<accountId>/notifications`.
+
+### Set up a subscription
+
+1. Allow **Notifications Write** (`notifications.write`) on your Cloudflare OAuth client. Make it
+   optional if that client also supports sign-in or billing. Existing connections request this grant
+   when the Notifications resource is first selected; billing-only and auth-only grants do not gain it.
+2. Add **Cloudflare Notifications** to a workspace and select the account.
+3. Register a persistent callback, then enable the resulting hook in **Connections**. Enabling creates
+   one authenticated generic webhook destination for that connection/account.
+4. Create or edit a notification policy in Cloudflare and select the **Cloudflare OS** webhook
+   destination. Alert types and policy configuration are managed entirely in Cloudflare.
+5. Use Cloudflare's **Save and Test** to verify ingress. `getStatus()` reports the destination ID
+   and last test and receive times. It never returns credentials.
+
+```ts
+await env.CLOUDFLARE_NOTIFICATIONS.subscribe(callback, {
+  alertTypes: ["workers_observability_real_time_issue"],
+});
+// callback implements: onNotification(notification): Promise<void>
+const health = await env.CLOUDFLARE_NOTIFICATIONS.getStatus();
+```
+
+`subscribe(callback)` receives all types sent to this destination. Optional `alertTypes` and
+`policyIds` filters combine with AND; an empty list matches nothing. The callback receives normalized
+account/type/time, optional policy/name/text/correlation/event-state metadata, and the original
+product-specific `data`. Treat all evidence and notification text as untrusted input, never as agent
+instructions or authorization.
+
+### Delivery and lifecycle
+
+The receiver verifies `cf-webhook-auth`, accepts Cloudflare's documented `{"text":"…"}` test message,
+and checks the account in every event. Request bodies are capped at 512 KiB while streaming, not after
+an unbounded allocation. API keys are random 256-bit values; only their SHA-256 verifier is retained
+locally. Provider requests are fixed-origin, bounded, time-limited, and do not follow redirects.
+
+A successful event returns **204 after all matching subscribers accept it**. Callback or authorization
+failure returns **500**, allowing ANS to retry. There is no local delivery queue, retry loop, or alarm.
+Callbacks must accept events promptly (within ten seconds), for example by creating an agent task;
+long-running work and errors after that handoff belong to the consumer.
+
+Successful handoffs are remembered per subscriber, so an ANS retry skips subscribers that already
+accepted the event. A SHA-256 of the JSON envelope identifies duplicates while keeping different
+policies and start/end events distinct. Receipts contain no payloads and are retained for up to 15 days,
+bounded to the newest 10,000 receipts per connection/account. Concurrent duplicates share a handoff.
+A crash or timeout after a callback commits can still cause redelivery: use `notification.id` to make
+side effects idempotent. Delivery order is not guaranteed, and delivery stops if ANS exhausts its retries.
+
+A connection supports 100 hooks. Each callback is preceded by Workshop observation authorization.
+Notifications bindings are private to their owner. Disabling a hook stops future handoffs but preserves
+the webhook so existing notification policies retain their destination. Disconnecting Cloudflare stops ingress and delivery,
+then removes this connection's provider resources. Cleanup failures retain credentials for retry;
+reconnect first if credentials have expired. Signing in again preserves resource connections, including
+expired ones; use the connection's reconnect flow to refresh those credentials in place. Provider-side
+setup is reconciled by the exact webhook URL, allowing recovery from interrupted creation without taking
+over similarly named destinations owned by other connections. No existing notification policies are
+rewritten by setup.
+
+### Local development
+
+Run `pnpm run-local`, then open `http://localhost:8787`. To connect a real Cloudflare account, create a
+private OAuth client in **Manage account → OAuth clients** with response type **Code**, grants
+**Authorization Code + Refresh Token**, authentication **Client Secret Basic**, and callback:
+
+```text
+http://localhost:8787/gatekeeper/cloudflare/oauth
+```
+
+Allow User Details Read, Account Settings Read, AI Gateway Read/Run, Workers Observability Read, and
+Notifications Write. Keep resource scopes optional. Put credentials in the root **gitignored**
+`.dev.vars` (do not commit it):
+
+```dotenv
+CLOUDFLARE_OAUTH_CLIENT_ID=<client ID>
+CLOUDFLARE_OAUTH_CLIENT_SECRET=<client secret>
+```
+
+### Live notification testing
+
+Use a deployed test instance with a public HTTPS address for real ANS delivery. Configure the test
+OAuth client with the deployed callback URL (`https://<test-host>/gatekeeper/cloudflare/oauth`)
+and store its credentials using the deployment's normal secret configuration.
+
+Connect the test Cloudflare account, enable a notification subscription, and use **Save and Test** on
+its webhook destination in Cloudflare. Confirm that the test timestamp appears in the connection's
+Details. For event delivery, trigger a notification policy attached to that destination and verify the
+subscriber receives it. Test a failing subscriber to verify HTTP 500 and ANS redelivery, then confirm
+successful subscribers are not invoked again.
+
+Local development remains useful for UI changes and automated tests; live webhook verification runs
+against the deployed instance.
+
+References: [generic webhook schema](https://developers.cloudflare.com/notifications/reference/webhook-payload-schema/),
+[webhook setup](https://developers.cloudflare.com/notifications/get-started/configure-webhooks/),
+[OAuth clients](https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/),
+[webhook API](https://developers.cloudflare.com/api/resources/alerting/subresources/destinations/subresources/webhooks/methods/create/).

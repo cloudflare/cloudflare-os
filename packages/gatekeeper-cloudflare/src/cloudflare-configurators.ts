@@ -1,3 +1,4 @@
+import type { CloudflareNotificationsSetupStatus } from "./configurator/cloudflare-configurator-types";
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { listAccounts } from "./cloudflare-api.js";
@@ -56,4 +57,15 @@ export class CloudflareWorkerConfiguratorUI extends CloudflareAccountConfigurato
       .slice(0, OPTION_LIMIT)
       .map(value => ({ value: value.value, title: value.value }));
   }
+}
+
+/** Read-only human setup status; no account management capability is exposed to the iframe. */
+@validateRpc()
+export class CloudflareNotificationsConfiguratorUI extends CloudflareAccountConfiguratorUI {
+  #status: (accountId: string) => Promise<CloudflareNotificationsSetupStatus>;
+  constructor(getToken: () => Promise<string | null>, status: (accountId: string) => Promise<CloudflareNotificationsSetupStatus>) {
+    super(getToken);
+    this.#status = status;
+  }
+  async getSetupStatus(accountId: string): Promise<CloudflareNotificationsSetupStatus> { return this.#status(accountId); }
 }

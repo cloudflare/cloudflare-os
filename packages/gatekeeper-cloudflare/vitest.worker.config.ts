@@ -1,5 +1,6 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import capnwebValidate from "capnweb-validate/vite";
+import { kCurrentWorker } from "miniflare";
 import { defineConfig } from "vitest/config";
 
 /**
@@ -17,7 +18,9 @@ export default defineConfig({
         // Kept in step with wrangler.jsonc; a drift here tests a runtime we do not deploy.
         compatibilityDate: "2026-09-04",
         compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
+        serviceBindings: { NOTIFICATION_TEST_HOOKS: { name: kCurrentWorker, entrypoint: "NotificationTestHooks" } },
         durableObjects: {
+          NOTIFICATION_RECEIVER: { className: "CloudflareNotificationReceiver", useSQLite: true },
           USER_ACCOUNT: { className: "UserAccount", useSQLite: true },
           OBSERVABILITY_GATEKEEPER: {
             className: "CloudflareObservabilityGatekeeper",

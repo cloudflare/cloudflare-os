@@ -7,7 +7,7 @@
 const CF_OAUTH_AUTH_URL = "https://dash.cloudflare.com/oauth2/auth";
 const CF_OAUTH_TOKEN_URL = "https://dash.cloudflare.com/oauth2/token";
 
-import { observabilityScopesForResources } from "./resources.js";
+import { observabilityScopesForResources, NOTIFICATIONS_RESOURCE, NOTIFICATIONS_SCOPE } from "./resources.js";
 
 /**
  * Scopes for the AI Gateway billing/BYOK flow: read account details and route inference
@@ -25,7 +25,10 @@ export const BILLING_SCOPES = [
 
 /** Persistent billing scopes plus the explicitly selected gadget resources. */
 export function persistentScopesForResources(resourceUrlPatterns?: string[]): string[] {
-  return [...BILLING_SCOPES, ...observabilityScopesForResources(resourceUrlPatterns)];
+  return [...BILLING_SCOPES,
+    ...observabilityScopesForResources(resourceUrlPatterns?.filter(p => p !== NOTIFICATIONS_RESOURCE.urlPattern)),
+    ...(resourceUrlPatterns === undefined || resourceUrlPatterns.includes(NOTIFICATIONS_RESOURCE.urlPattern) ? [NOTIFICATIONS_SCOPE] : []),
+  ];
 }
 
 /**

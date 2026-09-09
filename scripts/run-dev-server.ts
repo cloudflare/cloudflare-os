@@ -486,6 +486,7 @@ const SHARED_GATEKEEPER_CREDS: Record<string, { id: string; secret: string }> = 
 // `.dev.vars` is gitignored, so it cannot leave the machine. Secrets travel the same way
 // `CLIENT_SECRET` already does, via SHARED_GATEKEEPER_CREDS above.
 const PASSTHROUGH_GATEKEEPER_VARS: Record<string, string[]> = {
+  "gatekeeper-cloudflare": ["NOTIFICATIONS_WEBHOOK_BASE_URL", "NOTIFICATIONS_MTLS_SHA256"],
   "gatekeeper-mcp-portal": [
     "MCP_PORTAL_URL", "MCP_PORTAL_NAME", "MCP_PORTAL_AUTH", "MCP_PORTAL_TOKEN",
     "MCP_PORTAL_TRUST_ANNOTATIONS", "MCP_PORTAL_HIDDEN_SERVER_IDS", "MCP_ALLOW_INSECURE",

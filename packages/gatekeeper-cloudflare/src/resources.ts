@@ -79,3 +79,34 @@ export function grantedObservabilityResourcePatterns(scopes: string[]): string[]
     ? OBSERVABILITY_RESOURCES.map(resource => resource.urlPattern)
     : [];
 }
+
+export const NOTIFICATIONS_RESOURCE: SupportedResource = {
+  urlPattern: `${DASHBOARD_ORIGIN}/:accountId/notifications`,
+  title: "Cloudflare Notifications",
+  description: "Receive Cloudflare notifications through a managed webhook.",
+  grantable: true,
+};
+
+export function accountNotificationsUrl(accountId: string): string {
+  return `${DASHBOARD_ORIGIN}/${assertCloudflareAccountId(accountId)}/notifications`;
+}
+
+export function parseNotificationsResourceUrl(url: string): { accountId: string } {
+  try {
+    const parsed = new URL(url);
+    const segments = parsed.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+    const accountId = assertCloudflareAccountId(segments[0] ?? "");
+    if (parsed.origin === DASHBOARD_ORIGIN && segments.length === 2 &&
+        segments[1] === "notifications") return { accountId };
+  } catch {
+    // Normalize URL parsing and validation failures.
+  }
+  throw new Error(`Unsupported Cloudflare Notifications URL: ${url}`);
+}
+
+
+export const NOTIFICATIONS_SCOPE = "notifications.write";
+export const CLOUDFLARE_RESOURCES = [...OBSERVABILITY_RESOURCES, NOTIFICATIONS_RESOURCE];
+export function grantedCloudflareResourcePatterns(scopes: string[]): string[] {
+  return [...grantedObservabilityResourcePatterns(scopes), ...(scopes.includes(NOTIFICATIONS_SCOPE) ? [NOTIFICATIONS_RESOURCE.urlPattern] : [])];
+}
