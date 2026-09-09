@@ -468,6 +468,7 @@ describe("Workspace Docs DOCX package", () => {
       '<blockquote style="margin: 0 0 0 40px; border: none; padding: 0px;">inner</blockquote></blockquote>' +
       '<blockquote style="margin-left:60px;border-left:none">custom</blockquote>' +
       '<blockquote style="margin-left:40px">quoted indent</blockquote>' +
+      '<blockquote style="border:none;border-left:3px solid red">bordered again</blockquote>' +
       "<blockquote>quoted</blockquote>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
@@ -476,7 +477,7 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).toContain('<w:pStyle w:val="Normal"/><w:ind w:left="1200"/>');
     expect(xml).toContain('<w:pStyle w:val="Normal"/><w:ind w:left="900"/>');
     expect(xml).toContain('<w:pStyle w:val="Quote"/><w:ind w:left="600"/>');
-    expect(xml.match(/<w:pStyle w:val="Quote"/g)).toHaveLength(2);
+    expect(xml.match(/<w:pStyle w:val="Quote"/g)).toHaveLength(3);
   });
 
   it("creates native mixed nested lists and separate numbering instances for restarts", async () => {
@@ -556,7 +557,7 @@ describe("Workspace Docs DOCX package", () => {
     const jpegUrl = dataUrl("image/jpeg", jpeg(64, 32));
     const gifUrl = dataUrl("image/gif", gif(20, 10));
     const webpUrl = dataUrl("image/webp", webp(30, 15));
-    const html = `<p><img src="${pngUrl}" alt="A &amp; B" style="width:800px">` +
+    const html = `<p><img src="${pngUrl}" alt="A &amp; B" style="width:800px;width:bogus">` +
       `<img src="${pngUrl}" alt="repeat"><img src="${jpegUrl}" alt="jpeg">` +
       `<img src="${gifUrl}" alt="gif"><img src="${webpUrl}" alt="webp"></p>`;
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
@@ -627,13 +628,14 @@ describe("Workspace Docs DOCX package", () => {
 
   it("flattens incidental table rows to paragraphs and cells to tabs while flattening unknown tags", async () => {
     const html = '<table><thead style="color:red"><tr><td>A</td><td><b>B</b></td></tr><tbody><tr><td></td><td>D</td></tr>' +
-      "<tr><td>E<td><i>F</i><tr><td>G</td></tr></tbody></table>" +
+      "<tr><td>E<td><i>F</i><tr><td>G</td></tr><tr><td><p>H1</p><p>H2</p></td><td><div>I</div></td></tr></tbody></table>" +
       '<section><custom>visible</custom><!-- hidden --><script>bad()</script><style>.bad{}</style></section>' +
       "<article>article</article><aside>aside</aside>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
-    expect(xml.match(/<w:tab\/>/g)).toHaveLength(3);
-    for (const value of ["A", "B", "D", "E", "F", "G", "visible", "article", "aside"]) expect(xml).toContain(`>${value}</w:t>`);
+    expect(xml.match(/<w:tab\/>/g)).toHaveLength(4);
+    for (const value of ["A", "B", "D", "E", "F", "G", "H1", "H2", "I", "visible", "article", "aside"]) expect(xml).toContain(`>${value}</w:t>`);
+    expect(xml).toContain('>H1</w:t></w:r><w:r><w:br/></w:r><w:r><w:t xml:space="preserve">H2</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t xml:space="preserve">I</w:t></w:r></w:p>');
     expect(runContaining(xml, "B")).toContain("<w:b/>");
     expect(runContaining(xml, "F")).toContain("<w:i/>");
     expect(runContaining(xml, "G")).not.toContain("<w:i/>");
@@ -641,7 +643,7 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).toContain('<w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r><w:tab/></w:r><w:r><w:t xml:space="preserve">D</w:t>');
     expect(xml).not.toContain("bad()");
     expect(xml).not.toContain(".bad{}");
-    expect(xml.match(/<w:p>/g)).toHaveLength(7);
+    expect(xml.match(/<w:p>/g)).toHaveLength(8);
   });
 
   it("bounds the work done for oversized text runs, separators, and inline styles", async () => {

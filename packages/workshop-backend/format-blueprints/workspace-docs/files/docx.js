@@ -320,11 +320,15 @@ function cssBoxLeft(value) {
 
 // --- Semantic model ----------------------------------------------------------------------------
 
-// Blink's Increase Indent wraps the block in a borderless blockquote; a blockquote with its own
-// border kept is a quotation.
+// Blink's Increase Indent wraps the block in a borderless blockquote; a blockquote whose winning
+// left border is visible is a quotation.
 function isIndentation(node, declarations) {
-  return node.tag === "blockquote" &&
-    declarations.some(([name, value]) => (name === "border" || name === "border-left") && /^(?:none|0)/i.test(value));
+  if (node.tag !== "blockquote") return false;
+  let borderless = false;
+  for (const [name, value] of declarations) {
+    if (name === "border" || name === "border-left") borderless = /^(?:none|0)/i.test(value);
+  }
+  return borderless;
 }
 
 function blockStyle(node, declarations) {
@@ -498,13 +502,17 @@ function imageDimensions(mime, bytes) {
   return null;
 }
 
-// Requested display width in pixels from the `width` attribute or inline style, if any.
+// Requested display width in pixels from the `width` attribute or inline style (last valid
+// declaration wins; `auto` selects the intrinsic size), or null when none applies.
 function requestedWidth(node) {
-  let source = node.attrs.width || "";
-  for (const [name, value] of cssDeclarations(node.attrs.style)) if (name === "width") source = value;
-  const percent = /^(\d+(?:\.\d+)?)%$/.exec(source.trim());
-  if (percent) return CONTENT_WIDTH_PIXELS * Math.min(100, Number(percent[1])) / 100;
-  const twips = cssLength(source);
+  let twips = cssLength(node.attrs.width || "");
+  for (const [name, value] of cssDeclarations(node.attrs.style)) {
+    if (name !== "width") continue;
+    const percent = /^(\d+(?:\.\d+)?)%$/.exec(value.trim());
+    if (percent) twips = CONTENT_WIDTH_PIXELS * TWIPS_PER_PIXEL * Math.min(100, Number(percent[1])) / 100;
+    else if (value.trim().toLowerCase() === "auto") twips = null;
+    else twips = cssLength(value) ?? twips;
+  }
   return twips != null && twips >= 0 ? twips / TWIPS_PER_PIXEL : null;
 }
 
@@ -677,8 +685,9 @@ function walk(builder, node, parent) {
   if (IGNORED_TAGS.has(tag) || "hidden" in node.attrs) return;
   const declarations = cssDeclarations(node.attrs.style);
   if (declarations.findLast(([name]) => name === "display")?.[1].toLowerCase() === "none") return;
-  // Editor images are `display: block`, so each one stands in its own paragraph.
-  const block = BLOCK_TAGS.has(tag) || (tag === "img" && /(?:^|\s)doc-image(?:\s|$)/.test(node.attrs.class || ""));
+  // Editor images are `display: block`, so each one stands in its own paragraph. Inside a table
+  // cell, blocks flatten into the row paragraph, separated by line breaks.
+  const block = !parent.inCell && (BLOCK_TAGS.has(tag) || (tag === "img" && /(?:^|\s)doc-image(?:\s|$)/.test(node.attrs.class || "")));
   const context = {
     ...parent,
     format: deriveFormat(parent.format, node, declarations),
@@ -687,6 +696,7 @@ function walk(builder, node, parent) {
     style: blockStyle(node, declarations) ?? parent.style,
   };
   if (block) builder.close();
+  if (parent.inCell && BLOCK_TAGS.has(tag) && builder.current?.runs.at(-1)?.type === "text") builder.break(context);
   switch (tag) {
     case "br":
       builder.break(context);
@@ -737,6 +747,7 @@ function walk(builder, node, parent) {
     case "td":
     case "th":
       if (parent.cells++) builder.addRun(context, {type: "tab"});
+      context.inCell = true;
       break;
   }
   const paragraphCount = builder.paragraphs.length;
