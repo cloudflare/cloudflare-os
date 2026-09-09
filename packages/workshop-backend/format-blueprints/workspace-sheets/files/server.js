@@ -106,6 +106,10 @@ export class Gadget extends DurableObject {
           rowHeights: incoming.rowHeights ?? existing.rowHeights,
           frozenRows: incoming.frozenRows ?? existing.frozenRows,
           frozenCols: incoming.frozenCols ?? existing.frozenCols,
+          filter: Object.prototype.hasOwnProperty.call(incoming, "filter") ? incoming.filter : existing.filter,
+          charts: Object.prototype.hasOwnProperty.call(incoming, "charts") ? incoming.charts : existing.charts,
+          comments: Object.prototype.hasOwnProperty.call(incoming, "comments") ? incoming.comments : existing.comments,
+          pivot: Object.prototype.hasOwnProperty.call(incoming, "pivot") ? incoming.pivot : existing.pivot,
         });
         if (!(await this.ctx.storage.get("cells:" + id))) {
           await this.ctx.storage.put("cells:" + id, {});
@@ -301,7 +305,90 @@ function sheetMeta(s) {
     rowHeights: sanitizeDims(s.rowHeights),
     frozenRows: clampInt(s.frozenRows, 0, 50, 0),
     frozenCols: clampInt(s.frozenCols, 0, 50, 0),
+    filter: sanitizeFilter(s.filter, clampInt(s.rows, 1, 50000, DEFAULT_ROWS), clampInt(s.cols, 1, 702, DEFAULT_COLS)),
+    charts: sanitizeCharts(s.charts),
+    comments: sanitizeComments(s.comments),
+    pivot: sanitizePivot(s.pivot),
   };
+}
+
+function sanitizePivot(pivot) {
+  if (!pivot || typeof pivot !== "object") return null;
+  const aggregates = new Set(["sum", "count", "average", "min", "max"]);
+  return {
+    sourceSheetId: String(pivot.sourceSheetId || "").slice(0, 80),
+    sourceRange: /^([A-Z]+[1-9]\d*):([A-Z]+[1-9]\d*)$/.test(String(pivot.sourceRange || "").toUpperCase()) ? String(pivot.sourceRange).toUpperCase() : "",
+    rowField: String(pivot.rowField || "").slice(0, 200),
+    columnField: String(pivot.columnField || "").slice(0, 200),
+    valueField: String(pivot.valueField || "").slice(0, 200),
+    aggregate: aggregates.has(pivot.aggregate) ? pivot.aggregate : "sum",
+    showRowTotals: pivot.showRowTotals !== false,
+    showColumnTotals: pivot.showColumnTotals !== false,
+    filterField: String(pivot.filterField || "").slice(0, 200),
+    filterValues: Array.isArray(pivot.filterValues)
+      ? [...new Set(pivot.filterValues.map((value) => String(value).slice(0, 1000)))].slice(0, 500)
+      : (pivot.filterValue ? [String(pivot.filterValue).slice(0, 1000)] : []),
+  };
+}
+
+function sanitizeComments(comments) {
+  if (!Array.isArray(comments)) return [];
+  return comments.slice(0, 2000).map((comment, index) => ({
+    id: String(comment?.id || "comment_" + index).slice(0, 80),
+    ref: /^[A-Z]+[1-9]\d*$/.test(String(comment?.ref || "").toUpperCase()) ? String(comment.ref).toUpperCase() : "A1",
+    text: String(comment?.text || "").slice(0, 4000),
+    createdAt: Math.max(0, Math.round(Number(comment?.createdAt)) || Date.now()),
+    resolved: comment?.resolved === true,
+  })).filter((comment) => comment.text.trim());
+}
+
+function sanitizeCharts(charts) {
+  if (!Array.isArray(charts)) return [];
+  return charts.slice(0, 50).map((chart, index) => ({
+    id: String(chart?.id || "chart_" + index).slice(0, 80),
+    type: ["line", "pie", "area", "stackedBar"].includes(chart?.type) ? chart.type : "line",
+    range: /^([A-Z]+[1-9]\d*)(:([A-Z]+[1-9]\d*))?$/.test(String(chart?.range || "").toUpperCase()) ? String(chart.range).toUpperCase() : "",
+    title: String(chart?.title || "").slice(0, 200),
+    xAxisTitle: String(chart?.xAxisTitle || "").slice(0, 120),
+    yAxisTitle: String(chart?.yAxisTitle || "").slice(0, 120),
+    legend: chart?.legend !== false,
+    firstRowHeaders: chart?.firstRowHeaders !== false,
+    firstColLabels: chart?.firstColLabels !== false,
+    smooth: chart?.smooth === true,
+    x: clampInt(chart?.x, 48, 5000, 96),
+    y: clampInt(chart?.y, 28, 5000, 44),
+    width: clampInt(chart?.width, 280, 1200, 520),
+    height: clampInt(chart?.height, 200, 900, 320),
+  }));
+}
+
+function sanitizeFilter(filter, rows, cols) {
+  if (!filter || typeof filter !== "object") return null;
+  const row = clampInt(filter.row, 0, Math.max(0, rows - 1), 0);
+  const criteria = {};
+  if (filter.criteria && typeof filter.criteria === "object") {
+    for (const [column, values] of Object.entries(filter.criteria)) {
+      if (!/^\d+$/.test(column)) continue;
+      const col = Number(column);
+      if (col < 0 || col >= cols || !Array.isArray(values)) continue;
+      const clean = [...new Set(values.map((value) => String(value).slice(0, 8192)))].slice(0, 500);
+      if (clean.length) criteria[col] = clean;
+    }
+  }
+  const endRow = clampInt(filter.endRow, row, Math.max(row, rows - 1), rows - 1);
+  const columns = Array.isArray(filter.columns)
+    ? [...new Set(filter.columns.map(Number).filter((column) => Number.isInteger(column) && column >= 0 && column < cols))].slice(0, cols)
+    : Array.from({ length: cols }, (_, column) => column);
+  const expectedRows = Math.max(0, endRow - row);
+  const incomingOrder = Array.isArray(filter.rowOrder) ? filter.rowOrder.map(Number) : [];
+  const rowOrder = incomingOrder.length === expectedRows && incomingOrder.every(Number.isFinite)
+    ? incomingOrder.map((value) => Math.round(value))
+    : Array.from({ length: expectedRows }, (_, index) => row + 1 + index);
+  const sortColumn = Number(filter.sort?.column);
+  const sort = Number.isInteger(sortColumn) && columns.includes(sortColumn) && (filter.sort?.direction === "asc" || filter.sort?.direction === "desc")
+    ? { column: sortColumn, direction: filter.sort.direction }
+    : null;
+  return { row, endRow, columns, criteria, rowOrder, sort };
 }
 
 const FMT_KEYS = new Set(["b", "i", "u", "s", "c", "bg", "a", "nf", "d", "fs", "wrap"]);

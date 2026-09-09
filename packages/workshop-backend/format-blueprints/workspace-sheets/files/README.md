@@ -6,29 +6,42 @@ A lightweight, persistent spreadsheet Gadget with a familiar grid interface, for
 
 - Editable spreadsheet title and multiple sheet tabs
 - Add, rename, duplicate, and delete sheets
-- Cell and range selection with keyboard navigation
-- Formula bar and A1-style references
+- Cell and range selection with keyboard navigation, plus an Excel-style drag-to-fill handle
+- Formula bar, A1-style references, searchable function picker, inline autocomplete, live syntax guidance, actionable validation errors, and draggable formula-range handles
 - Cross-sheet references such as `Sheet2!A1` and `'Sales Data'!B4`
+- Clickable HTTP/HTTPS cell links and `HYPERLINK(url, label)` formulas with open/copy actions
 - 100+ spreadsheet functions across math, statistics, logic, text, lookup, date/time, and information categories
 - Number, currency, percent, scientific, date, and time formatting
-- Bold, italic, underline, strikethrough, text color, fill color, alignment, and wrapping
+- Bold, italic, underline, strikethrough, text color, fill color, alignment, wrapping, and text overflow into adjacent empty cells
 - Row and column insertion, deletion, and resizing
 - Range sorting, AutoSum, copy/paste via TSV, and local undo/redo for cell edits
+- Persistent filter rows with per-column, multi-value dropdown filters and reversible sorting
+- Line, pie, area, and stacked bar charts created from selected ranges, with an adjustable right-side settings panel, drag positioning, and rich SVG copy
+- Persistent cell comments with in-cell markers, hover previews, a consolidated sidebar, and resolve/delete actions
+- Distinctly styled pivot tables generated from selected ranges with row, column, value, aggregation, row/column total, and multi-value filter settings
 - Automatic persistent saving with optimistic per-cell conflict detection
 - Real-time operation and presence synchronization in the server architecture
-- Excel workbook and per-sheet CSV export
+- Excel workbook export (cells, layout, filters, charts, comments and links) and per-sheet CSV export
 
 ## Using the spreadsheet
 
-- Click a cell to select it.
-- Double-click a cell, press **F2**, or begin typing to edit it.
+- Click a cell to select it. Click a row or column header to select the whole row or column; Shift-click another header to extend a contiguous selection. Cmd-click on macOS or Ctrl-click on Windows/Linux to add non-adjacent cells, rows, or columns. Choosing a row or column header drops any individual-cell ranges while retaining other whole-row or whole-column selections.
+- Double-click a cell, press **F2**, or begin typing to edit it. Drag the small handle at the selection’s bottom-right to fill neighboring rows or columns; copied formulas adjust relative references while `$A$1`, `$A1`, and `A$1` preserve their absolute column and/or row components.
+- HTTP/HTTPS values are displayed as links. Cmd/Ctrl-click a link to open it, or right-click for **Open link** and **Copy link**. Use `=HYPERLINK("https://example.com","Example")` for custom link text.
+- While building a formula, click or drag cells to insert a live cell/range reference without leaving the editor. All currently referenced cells are highlighted; clicking an already-selected individual reference toggles it out of aggregate functions such as SUM and AVERAGE, preventing duplicate point selections. Clicking within the formula bar immediately synchronizes its caret and selection with the in-cell editor. Clicking an existing highlighted reference activates that whole reference for resizing; a normal click elsewhere replaces the active reference. Only typing a comma or using Cmd-click on macOS / Ctrl-click on Windows/Linux adds another reference such as `C3, C5`; Shift extends the current range. Click row or column headers for full-row/full-column ranges, or use Arrow keys and Shift+Arrow to select and extend references. Place the caret within a specific range endpoint and use the toolbar **$** control or Ctrl/Cmd+Shift+L to cycle only that reference through `A1`, `$A$1`, `A$1`, and `$A1`. Function parentheses are inserted as a pair, missing closing parentheses are completed on submission, and unmatched or missing required parentheses keep the editor open.
+- Formula error cells provide hover diagnostics with a likely cause and highlight the suspicious formula segment when it can be identified.
 - Start formulas with `=`, for example:
   - `=SUM(A1:A10)`
   - `=IF(B2>100,"High","Low")`
-  - `=VLOOKUP(E2,A2:C20,3,FALSE)`
+  - `=VLOOKUP(E2,A2:C20,3,FALSE)` (`TRUE` and `FALSE` are accepted as logical values without parentheses)
+  - `=COUNTIF(A2:A20,'Complete')` (single-quoted text is accepted in addition to double quotes)
   - `=Sheet2!A1*2`
 - Use the name box to jump to a cell or range such as `D12` or `A1:C8`.
-- Right-click the grid for cut/copy/paste and row or column actions.
+- Use the filter toolbar button to detect the current data table automatically. The app identifies the likely header row (including tables below a title row) and adds dropdowns only to columns containing data. Selecting a range first explicitly sets the filter range and its top row as the header.
+- Highlight a data range and use the chart toolbar button to create a line, pie, area, or stacked bar chart. The right-side settings panel controls chart type, range, titles, headers, labels, and legend; it can be collapsed at any time. Drag a chart by its header to reposition it. **Copy SVG** uses a rich clipboard format that may not be accepted by every destination.
+- Select a cell and use the comment toolbar button or right-click → **Comment** to add a comment in place. Comment markers reveal text on hover. The layered right sidebar shows top-level **Charts**, **Pivot tables**, and **Comments** destinations when available, with back navigation into their lists and details.
+- Select a table including its header row and use the pivot toolbar button or right-click → **Create pivot table**. The result is generated on a new sheet with distinct pivot styling and automatically sized columns; configure row, column, value, aggregation, and optional multi-value filters from the Pivot tables section of the sidebar.
+- Right-click the grid for cut/copy/paste, **Paste without formatting**, and row or column actions. Menu paste works for cells copied or cut inside the spreadsheet; browser security requires Ctrl/Cmd+V for content copied from another application. Pasted blocks expand from the active cell, repeat across compatible selected ranges, preserve internal formatting when requested, adjust copied relative formulas, and move cells only after an internal cut is pasted.
 - Double-click a sheet tab to rename it; right-click it to duplicate or delete it.
 
 ## Keyboard shortcuts
@@ -41,6 +54,8 @@ A lightweight, persistent spreadsheet Gadget with a familiar grid interface, for
 | Tab / Shift + Tab | Move right / left |
 | Delete / Backspace | Clear selected cells |
 | Ctrl/Cmd + C, X, V | Copy, cut, paste |
+| Ctrl/Cmd + Shift + V | Paste without source formatting |
+| Ctrl/Cmd + Shift + L | Cycle the formula reference under the caret through relative/absolute forms |
 | Ctrl/Cmd + Z | Undo |
 | Ctrl/Cmd + Y or Ctrl/Cmd + Shift + Z | Redo |
 | Ctrl/Cmd + B | Bold |
@@ -184,14 +199,15 @@ Exports the Durable Object class `Gadget`, which is the authoritative persistenc
 ### `xlsx.js` and `zip.js`
 
 `xlsx.js` converts a complete document snapshot into a streaming XLSX workbook: sparse worksheet XML
-with inline strings, deduplicated styles, and frozen panes. `zip.js` is a dependency-free streaming
-ZIP writer (raw DEFLATE via `CompressionStream`, incremental CRC32, data descriptors).
+with inline strings, deduplicated styles, frozen panes, autofilters, hyperlinks, legacy-note
+comments (with their VML shapes) and DrawingML charts. `zip.js` is a dependency-free streaming ZIP
+writer (raw DEFLATE via `CompressionStream`, incremental CRC32, data descriptors).
 
 ## Storage model
 
 The server stores:
 
-- `meta`: revision, title, sheet order, sheet metadata, and modification time
+- `meta`: revision, title, sheet order, sheet metadata (including filter-row criteria), and modification time
 - `cells:<sheetId>`: a map of A1 references to `{ value, fmt, version }`
 
 Default sheets have 100 rows and 26 columns. Server validation permits up to 50,000 rows and 702 columns per sheet. Cell values are limited to 8,192 characters, and titles are limited to 200 characters.
@@ -228,18 +244,39 @@ commas, a leading `$` or a trailing `%`. Everything else is text; date-looking t
 
 Formulas are written without cached results and the workbook requests a full recalculation on open,
 so Excel evaluates them itself. To keep them valid there, the exporter rewrites cross-sheet
-references to the exported worksheet names, prefixes OOXML "future functions" (`IFS`, `CONCAT`, ...)
-with `_xlfn.`, renames `ERRORTYPE()` to `ERROR.TYPE()`, and drops whitespace between a function
-name and its `(`. A formula that is empty, structurally unbalanced (unterminated string or quoted
-name, mismatched parentheses or brackets — the grid's parser tolerates these) or that would exceed
-Excel's 8,192-character limit after rewriting is exported as text, since one such formula makes
-Excel report the whole workbook as damaged. Formula semantics are otherwise not translated (for
-example `^` associativity differs, and a reference outside the grid such as `XFE1` is empty here
-but `#NAME?` in Excel), and compatibility with Excel is not claimed beyond this.
+references to the exported worksheet names, converts single-quoted and backslash-escaped string
+literals (`'Complete'`, `"say \"hi\""`) to Excel's double-quote form, prefixes OOXML "future
+functions" (`IFS`, `CONCAT`, ...) with `_xlfn.`, renames `ERRORTYPE()` to `ERROR.TYPE()`, and drops
+whitespace between a function name and its `(`. A formula that is empty, structurally unbalanced
+(unterminated string or quoted name, mismatched parentheses or brackets — the grid's parser tolerates
+these) or that would exceed Excel's 8,192-character limit after rewriting is exported as text, since
+one such formula makes Excel report the whole workbook as damaged. Formula semantics are otherwise
+not translated (for example `^` associativity differs, and a reference outside the grid such as
+`XFE1` is empty here but `#NAME?` in Excel), and compatibility with Excel is not claimed beyond this.
 
 Worksheet names are made Excel-safe: invalid characters become `_`, blank names become `Sheet`,
 names are cut to 31 characters, and case-insensitive collisions get ` (2)`, ` (3)`, ... suffixes.
 References resolve to the first worksheet with a matching source name, as in the grid.
 
-Filters, charts, comments and pivot tables are not exported; cells already materialized from them
-export as ordinary values.
+Cells whose literal text is an `http(s)` URL (unless formatted as text) become Excel hyperlinks with
+the grid's link styling; `HYPERLINK()` formulas need no translation.
+
+A filter row exports as an Excel autofilter over the same range, with dropdown buttons only on the
+grid's filter columns, the sort indicator, and each column's selected values as filter criteria.
+Sorting reorders the stored cells in the grid, so no reordering is needed here. Rows are hidden by
+comparing the literal values in the criteria columns; a row whose criteria cell holds a formula stays
+visible, since formulas are not evaluated here, and Excel's **Reapply** refilters it. Criteria are
+written as the grid's raw values, so a formatted number (`$1,234.00`) may not match Excel's displayed
+text until reapplied. A column with nothing selected hides every row but carries no criteria.
+
+Open comments export as Excel notes; resolved comments are hidden in the grid and omitted. Several
+comments on one cell are joined into one note.
+
+Charts export as native Excel charts of the same type (line, area, pie, stacked bar) over the same
+range, reading headers and labels the way the grid does, with the grid's palette, titles, axis titles
+and legend setting. Series reference the worksheet directly, so Excel computes them on open. A chart
+is positioned at the cell under its grid coordinates, at the same pixel size. Charts without a usable
+data range are skipped.
+
+Pivot tables export as their materialized output cells (with their formatting), not as Excel pivot
+tables: the pivot's source definition is dropped and the values no longer refresh.
