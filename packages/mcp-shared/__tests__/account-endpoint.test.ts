@@ -119,6 +119,16 @@ class OAuthFlowAccount extends McpAccountBase<AccountEnv> {
   }
 }
 
+// A server that answers `initialize` with or without a credential.
+class PublicServerAccount extends McpAccountBase<AccountEnv> {
+  protected baseUrl(): string { return "https://gatekeeper.example"; }
+  protected log(): never { return testLog as never; }
+  protected mintAccount(): never { return {} as never; }
+  protected override async probe(): Promise<never> {
+    return { info: { serverInfo: { name: "Acme" } }, sessionId: "public-session" } as never;
+  }
+}
+
 afterEach(() => vi.unstubAllGlobals());
 
 // An authorization server that registers any client and exchanges any code.
@@ -448,7 +458,7 @@ describe("connect initiation nonce", () => {
     });
     const account = new AuthChallengeAccount(context as never, {});
     const nonce = "b".repeat(64);
-    await account.prepareReconnect(nonce);
+    await account.setCallback({} as never, nonce);
 
     await expect(account.beginConnect(nonce, {
       ...server("https://portal.example/mcp"), auth: "none", provenance: "deployment",
@@ -603,6 +613,127 @@ describe("connect initiation nonce", () => {
     expect(tokenRequests.filter(body => body.includes("refresh_token"))).toEqual([]);
     expect(context.storage.kv.get("tokens")).toEqual(live);
     expect(context.storage.kv.get("stagedCredentials")).toBeUndefined();
+  });
+
+  it("keeps a reconnect's client, discovery and server record off the live keys until commit", async () => {
+    // The tokens were already escrowed, but the SDK also writes the client registration and
+    // discovery state as it goes, and the flow rewrote the server record mid-way. A reconnect URL in
+    // the wrong hands could then change what the live account refreshes against, or its name.
+    const context = fakeContext();
+    stubOAuthServer();
+    const reconnectComplete = vi.fn(async (_stageId: string) => HANDOFF);
+    const liveServer = { ...server("https://mcp.example/mcp"), serverName: "Old name" };
+    // A registration with another issuer's stamp, so the flow has to register afresh; discovery
+    // that names the authorization server but has no metadata cached, so the flow refetches it.
+    const liveClient = { client_id: "old-client", issuer: "https://other.example" };
+    const liveDiscovery = { authorizationServerUrl: "https://auth.example" };
+    context.storage.kv.put("server", liveServer);
+    context.storage.kv.put("callback", { complete: vi.fn(async () => HANDOFF), reconnectComplete });
+    context.storage.kv.put("tokens", { access_token: "old-token", token_type: "Bearer", expiresAt: 1 });
+    context.storage.kv.put("oauthClient", liveClient);
+    context.storage.kv.put("oauthDiscovery", liveDiscovery);
+    const account = new OAuthFlowAccount(context as never, {});
+    const nonce = "9".repeat(64);
+    await account.prepareReconnect(nonce);
+
+    const outcome = await account.beginConnect(nonce, null);
+    expect(outcome.kind).toBe("redirect");
+    const state = new URL((outcome as { url: string }).url).searchParams.get("state")!;
+    expect(await account.acceptAuthCode("code", state.slice(state.indexOf(":") + 1)))
+      .toEqual(HANDOFF);
+
+    expect(reconnectComplete).toHaveBeenCalledOnce();
+    expect(context.storage.kv.get("server")).toEqual(liveServer);
+    expect(context.storage.kv.get("oauthClient")).toEqual(liveClient);
+    expect(context.storage.kv.get("oauthDiscovery")).toEqual(liveDiscovery);
+    expect(context.storage.kv.get("reconnectOauthClient")).toBeUndefined();
+    expect(context.storage.kv.get("reconnectOauthDiscovery")).toBeUndefined();
+
+    await account.commitReconnect(reconnectComplete.mock.calls[0][0]);
+    expect(context.storage.kv.get("server")).toEqual({ ...liveServer, serverName: "Acme" });
+    expect(context.storage.kv.get<{ client_id: string }>("oauthClient")?.client_id)
+      .toBe("client-id");
+    expect(context.storage.kv.get<{ authorizationServerMetadata?: unknown }>("oauthDiscovery")
+      ?.authorizationServerMetadata).toBeDefined();
+    expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token)
+      .toBe("access-token");
+  });
+
+  it("registers a reconnect's client only under the reconnect key", async () => {
+    // With no live registration to copy, dynamic registration during the reconnect must still land
+    // beside the parked tokens rather than on the key the live refresh path reads.
+    const context = fakeContext();
+    stubOAuthServer();
+    context.storage.kv.put("server", server("https://mcp.example/mcp"));
+    context.storage.kv.put("callback", {
+      complete: vi.fn(async () => HANDOFF), reconnectComplete: vi.fn(async () => HANDOFF),
+    });
+    context.storage.kv.put("tokens", { access_token: "old-token", token_type: "Bearer", expiresAt: 1 });
+    const account = new OAuthFlowAccount(context as never, {});
+    const nonce = "a".repeat(64);
+    await account.prepareReconnect(nonce);
+
+    expect((await account.beginConnect(nonce, null)).kind).toBe("redirect");
+
+    expect(context.storage.kv.get("oauthClient")).toBeUndefined();
+    expect(context.storage.kv.get("oauthDiscovery")).toBeUndefined();
+    expect(context.storage.kv.get<{ client_id: string }>("reconnectOauthClient")?.client_id)
+      .toBe("client-id");
+    expect(context.storage.kv.get("reconnectOauthDiscovery")).toBeDefined();
+  });
+
+  it("does not let a reconnect's refused code exchange invalidate the live client", async () => {
+    // On `invalid_client` the SDK invalidates the client registration and retries. Pointed at the
+    // live key, that would have deleted the registration the live tokens still refresh under.
+    const context = fakeContext();
+    stubOAuthServer();
+    const upstream = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (String(input) !== "https://auth.example/token") return upstream(input, init);
+      return Response.json({ error: "invalid_client" }, { status: 401 });
+    });
+    const liveClient = { client_id: "old-client", issuer: "https://auth.example" };
+    context.storage.kv.put("server", server("https://mcp.example/mcp"));
+    context.storage.kv.put("callback", {
+      complete: vi.fn(async () => HANDOFF), reconnectComplete: vi.fn(async () => HANDOFF),
+    });
+    context.storage.kv.put("tokens", { access_token: "old-token", token_type: "Bearer", expiresAt: 1 });
+    context.storage.kv.put("oauthClient", liveClient);
+    const account = new OAuthFlowAccount(context as never, {});
+    const nonce = "b".repeat(64);
+    await account.prepareReconnect(nonce);
+
+    const outcome = await account.beginConnect(nonce, null);
+    expect(outcome.kind).toBe("redirect");
+    const state = new URL((outcome as { url: string }).url).searchParams.get("state")!;
+    await expect(account.acceptAuthCode("code", state.slice(state.indexOf(":") + 1)))
+      .rejects.toThrow();
+
+    expect(context.storage.kv.get("oauthClient")).toEqual(liveClient);
+    expect(context.storage.kv.get<{ access_token: string }>("tokens")?.access_token)
+      .toBe("old-token");
+  });
+
+  it("stages an observed auth-mode change rather than flipping the live record", async () => {
+    // An OAuth account whose server now answers unauthenticated: the reconnect learns `"none"`, but
+    // `getAuthorization()` reads the live mode to decide whether to send the live tokens, so the
+    // flip must wait for the commit like everything else the reconnect learned.
+    const context = fakeContext();
+    const reconnectComplete = vi.fn(async (_stageId: string) => HANDOFF);
+    context.storage.kv.put("server", server("https://mcp.example/mcp"));
+    context.storage.kv.put("callback", { complete: vi.fn(async () => HANDOFF), reconnectComplete });
+    context.storage.kv.put("tokens", { access_token: "old-token", token_type: "Bearer", expiresAt: 1 });
+    const account = new PublicServerAccount(context as never, {});
+    const nonce = "d".repeat(64);
+    await account.prepareReconnect(nonce);
+
+    expect((await account.beginConnect(nonce, null)).kind).toBe("done");
+
+    expect(reconnectComplete).toHaveBeenCalledOnce();
+    expect(context.storage.kv.get<ConnectedServer>("server")?.auth).toBe("oauth");
+    await account.commitReconnect(reconnectComplete.mock.calls[0][0]);
+    expect(context.storage.kv.get<ConnectedServer>("server")?.auth).toBe("none");
+    expect(context.storage.kv.get("mcpSessionId")).toBe("public-session");
   });
 });
 

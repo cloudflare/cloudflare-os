@@ -116,14 +116,27 @@ export type ConnectOutcome =
   | { kind: "invalid" };
 
 // What a reconnect leaves in escrow until the Workshop confirms it (see `commitReconnect`): the new
-// tokens (null for a public / preissued-token server that has no credential of its own) and the
-// transport session the probe opened with them. Both go live together, so nothing a reconnect
-// learned touches the live record before the Workshop has redeemed the ticket.
-type StagedReconnect = { tokens: OAuthTokens | null; sessionId: string | null };
+// tokens (null for a public / preissued-token server that has no credential of its own), the
+// transport session the probe opened with them, the server record as the flow observed it (its auth
+// mode and reported name), and the OAuth client registration and discovery the tokens were issued
+// under, which a later refresh needs. Everything goes live together, so nothing a reconnect learned
+// touches the live record before the Workshop has redeemed the ticket.
+type StagedReconnect = {
+  tokens: OAuthTokens | null;
+  sessionId: string | null;
+  server: ConnectedServer;
+  client?: StoredOAuthClientInformation;
+  discovery?: OAuthDiscoveryState;
+};
 
-// Where a reconnect's freshly issued tokens wait between `saveTokens` and the stage `complete`
-// writes. Never read by anything serving a request; only the flow that wrote them reads them back.
+// Where a reconnect's OAuth state waits between the provider's writes and the stage `complete`
+// takes: the freshly issued tokens, and the client registration and discovery the flow used (seeded
+// from the live ones by `prepareReconnect`, so an existing registration is reused rather than
+// re-registered). Never read by anything serving a request; only the flow that wrote them reads
+// them back.
 const RECONNECT_TOKENS_KEY = "reconnectTokens";
+const RECONNECT_CLIENT_KEY = "reconnectOauthClient";
+const RECONNECT_DISCOVERY_KEY = "reconnectOauthDiscovery";
 
 // A single-use secret in the connect flow, and the stage it belongs to.
 type StoredNonce = {
@@ -307,6 +320,15 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     this.advanceConnectionGeneration();
     this.ctx.storage.kv.put("expiredNotified", false);
     this.ctx.storage.kv.delete(RECONNECT_TOKENS_KEY);
+    // The flow works on copies of the client registration and discovery, so what it learns (or the
+    // SDK invalidates) stays off the live keys until the commit.
+    for (const [live, scratch] of [
+      ["oauthClient", RECONNECT_CLIENT_KEY], ["oauthDiscovery", RECONNECT_DISCOVERY_KEY],
+    ] as const) {
+      const value = this.ctx.storage.kv.get(live);
+      if (value === undefined) this.ctx.storage.kv.delete(scratch);
+      else this.ctx.storage.kv.put(scratch, value);
+    }
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
@@ -342,8 +364,11 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     const endpointChanged = existing !== undefined && existing.endpoint !== server.endpoint;
     if (endpointChanged) {
       this.ctx.storage.kv.put("server", server);
+      // The reconnect copies go too, or the flow would present the old endpoint's `client_id` to the
+      // new authorization server.
       for (const key of [
         "tokens", "mcpSessionId", "oauthClient", "oauthDiscovery", "oauthVerifier", "pendingAuth",
+        RECONNECT_CLIENT_KEY, RECONNECT_DISCOVERY_KEY,
       ]) {
         this.ctx.storage.kv.delete(key);
       }
@@ -386,7 +411,8 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       // token from every later request. Only an endpoint that answered with no credential at all is.
       const connected: ConnectedServer =
         server.auth === "token" ? server : { ...server, auth: "none" };
-      this.ctx.storage.kv.put("server", connected);
+      // A reconnect's observed record rides the stage (see `complete`); the live one is untouched.
+      if (!reconnect) this.ctx.storage.kv.put("server", connected);
       const handoff = await this.complete(connected, probed, generation, reconnect);
       log.info("connected without authorization", { event: "connect.completed" });
       return { kind: "done", handoff };
@@ -409,7 +435,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       // mode because `getAuthorization()` uses it to decide whether to read the tokens the callback
       // stores.
       const oauthServer: ConnectedServer = { ...server, auth: "oauth" };
-      this.ctx.storage.kv.put("server", oauthServer);
+      if (!reconnect) this.ctx.storage.kv.put("server", oauthServer);
       try {
         return await this.beginOAuth(oauthServer, err.resourceMetadataUrl, generation, reconnect);
       } catch (oauthErr) {
@@ -432,7 +458,10 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
   }
 
   // `reconnect` is the flow's mode (see `StoredNonce.reconnect`): a reconnect keeps the SDK away
-  // from the live tokens in both directions, neither reading nor writing them.
+  // from the live tokens in both directions, neither reading nor writing them, and points its client
+  // registration and discovery at the reconnect copies, so nothing it saves or invalidates reaches
+  // the live keys before the commit. Only the code verifier is shared, since the nonce and
+  // `pendingAuth` slots already serialize flows.
   private oauthProvider(
     server: ConnectedServer,
     generation: number,
@@ -448,6 +477,8 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     };
     const matchesIssuer = (value: { issuer?: string } | undefined, issuer?: string) =>
       value !== undefined && (!issuer || !value.issuer || value.issuer === issuer);
+    const clientKey = reconnect ? RECONNECT_CLIENT_KEY : "oauthClient";
+    const discoveryKey = reconnect ? RECONNECT_DISCOVERY_KEY : "oauthDiscovery";
 
     return {
       redirectUrl: `${this.baseUrl()}/oauth`,
@@ -460,16 +491,16 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       },
       clientInformation: context => {
         current();
-        const client = this.ctx.storage.kv.get<StoredOAuthClientInformation>("oauthClient");
+        const client = this.ctx.storage.kv.get<StoredOAuthClientInformation>(clientKey);
         if (client && typeof client.client_id !== "string") {
-          this.ctx.storage.kv.delete("oauthClient");
+          this.ctx.storage.kv.delete(clientKey);
           return undefined;
         }
         return matchesIssuer(client, context?.issuer) ? client : undefined;
       },
       saveClientInformation: (client, context) => {
         current();
-        this.ctx.storage.kv.put("oauthClient", { ...client, issuer: context?.issuer });
+        this.ctx.storage.kv.put(clientKey, { ...client, issuer: context?.issuer });
       },
       tokens: context => {
         current();
@@ -535,29 +566,28 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       },
       discoveryState: () => {
         current();
-        const state = this.ctx.storage.kv.get<OAuthDiscoveryState>("oauthDiscovery");
+        const state = this.ctx.storage.kv.get<OAuthDiscoveryState>(discoveryKey);
         if (state && typeof state.authorizationServerUrl !== "string") {
-          this.ctx.storage.kv.delete("oauthDiscovery");
+          this.ctx.storage.kv.delete(discoveryKey);
           return undefined;
         }
         return state;
       },
       saveDiscoveryState: state => {
         current();
-        this.ctx.storage.kv.put("oauthDiscovery", state);
+        this.ctx.storage.kv.put(discoveryKey, state);
       },
       invalidateCredentials: scope => {
         current();
         if (scope === "all" || scope === "tokens") {
           // While reconnecting the SDK only ever held the parked tokens, so those are what it is
-          // invalidating; the live ones stay until the Workshop commits.
+          // invalidating; the live ones stay until the Workshop commits. Likewise for the client
+          // and discovery below.
           this.ctx.storage.kv.delete(reconnect ? RECONNECT_TOKENS_KEY : "tokens");
         }
-        if (scope === "all" || scope === "client") this.ctx.storage.kv.delete("oauthClient");
+        if (scope === "all" || scope === "client") this.ctx.storage.kv.delete(clientKey);
         if (scope === "all" || scope === "verifier") this.ctx.storage.kv.delete("oauthVerifier");
-        if (scope === "all" || scope === "discovery") {
-          this.ctx.storage.kv.delete("oauthDiscovery");
-        }
+        if (scope === "all" || scope === "discovery") this.ctx.storage.kv.delete(discoveryKey);
       },
     };
   }
@@ -579,13 +609,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
           fetchFn: sdkFetch(this.fetchOptions()),
         });
       } catch (err) {
-        const tokens = this.ctx.storage.kv.get<OAuthTokens>("tokens");
-        throw safeOAuthError(err, [
-          this.ctx.storage.kv.get<string>("oauthVerifier"),
-          tokens?.access_token,
-          tokens?.refresh_token,
-        ],
-          this.ctx.storage.kv.get<StoredOAuthClientInformation>("oauthClient"));
+        throw this.redactedOAuthError(err, reconnect);
       }
       if (!this.isCurrentConnection(server, generation)) {
         throw new Error("This authorization attempt was replaced by a newer connection.");
@@ -633,8 +657,11 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     }
     const pending = this.ctx.storage.kv.get<PendingAuthorization>("pendingAuth");
     if (!pending) return null;
-    const server = this.requireServer();
     const reconnect = stored.reconnect === true;
+    // The challenge that started this flow made OAuth the observed auth mode. A first connect has
+    // already recorded that; a reconnect leaves the live record alone (it may still say `"none"`),
+    // so the mode is restated here for the record this flow stages.
+    const server: ConnectedServer = { ...this.requireServer(), auth: "oauth" };
     // Single-use: consumed before the exchange, so a replayed callback cannot reach the token endpoint.
     this.ctx.storage.kv.delete("nonce");
     this.ctx.storage.kv.delete("pendingAuth");
@@ -649,14 +676,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         fetchFn: sdkFetch(this.fetchOptions()),
       });
     } catch (err) {
-      const tokens = this.ctx.storage.kv.get<OAuthTokens>("tokens");
-      throw safeOAuthError(err, [
-        code,
-        this.ctx.storage.kv.get<string>("oauthVerifier"),
-        tokens?.access_token,
-        tokens?.refresh_token,
-      ],
-        this.ctx.storage.kv.get<StoredOAuthClientInformation>("oauthClient"));
+      throw this.redactedOAuthError(err, reconnect, code);
     }
     if (result !== "AUTHORIZED") throw new Error("The authorization server requested another redirect.");
     if (!this.isCurrentConnection(server, pending.generation)) return null;
@@ -674,6 +694,22 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     return this.ctx.storage.kv.get<OAuthTokens>(reconnect ? RECONNECT_TOKENS_KEY : "tokens");
   }
 
+  // Strips from an SDK error every secret the flow could have echoed: the verifier, the live tokens,
+  // and -- for a reconnect -- the parked tokens and the client registration it actually presented.
+  private redactedOAuthError(err: unknown, reconnect: boolean, ...secrets: string[]): Error {
+    const kv = this.ctx.storage.kv;
+    const tokens = kv.get<OAuthTokens>("tokens");
+    const parked = reconnect ? kv.get<OAuthTokens>(RECONNECT_TOKENS_KEY) : undefined;
+    return safeOAuthError(err, [
+      ...secrets,
+      kv.get<string>("oauthVerifier"),
+      tokens?.access_token,
+      tokens?.refresh_token,
+      parked?.access_token,
+      parked?.refresh_token,
+    ], kv.get<StoredOAuthClientInformation>(reconnect ? RECONNECT_CLIENT_KEY : "oauthClient"));
+  }
+
   /**
    * Makes the credentials staged under `stageId` live (see `GatekeeperUser.commitReconnect`).
    * Throws when no reconnect awaits confirmation, its stage has expired, or a different one is
@@ -684,8 +720,14 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       this.ctx.storage.kv, Date.now(), stageId);
     if (!staged) throw new Error("No reconnect is awaiting confirmation. Please try again.");
     if (staged.tokens) this.ctx.storage.kv.put<OAuthTokens>("tokens", staged.tokens);
-    // The live session was opened under the credentials being replaced, so it goes with them.
+    // The live session was opened under the credentials being replaced, so it goes with them, as do
+    // the server record the flow observed and the registration and discovery a refresh will need.
     this.setSessionId(staged.sessionId ?? null);
+    this.ctx.storage.kv.put<ConnectedServer>("server", staged.server);
+    if (staged.client) this.ctx.storage.kv.put("oauthClient", staged.client);
+    else this.ctx.storage.kv.delete("oauthClient");
+    if (staged.discovery) this.ctx.storage.kv.put("oauthDiscovery", staged.discovery);
+    else this.ctx.storage.kv.delete("oauthDiscovery");
     this.ctx.storage.kv.put("expiredNotified", false);
   }
 
@@ -709,9 +751,9 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     // the user chose. A deployment-configured endpoint has an administrator's name on it, and letting
     // the far side rename itself in every approval prompt would undo that choice.
     const reported = displayName(info.serverInfo?.title ?? info.serverInfo?.name);
-    if (reported && server.provenance === "user") {
-      this.ctx.storage.kv.put<ConnectedServer>("server", { ...server, serverName: reported });
-    }
+    const observed: ConnectedServer =
+      reported && server.provenance === "user" ? { ...server, serverName: reported } : server;
+    if (!reconnect) this.ctx.storage.kv.put<ConnectedServer>("server", observed);
 
     // The initiation nonce authorized exactly one connect, which has now happened. Left in place, a
     // replayed connect URL could mint a second account against the same callback.
@@ -727,12 +769,22 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     if (reconnect) {
       // Everything the commit needs goes under one stage id: the tokens `saveTokens` parked (none
       // for a server with no credential of its own, staged all the same so the commit still has
-      // something to confirm) and the session the probe opened with them. The live record has not
-      // been touched, and is not until the Workshop names this id in `commitReconnect`.
-      const tokens = this.ctx.storage.kv.get<OAuthTokens>(RECONNECT_TOKENS_KEY) ?? null;
-      this.ctx.storage.kv.delete(RECONNECT_TOKENS_KEY);
-      const stageId = stageCredentials<StagedReconnect>(
-        this.ctx.storage.kv, { tokens, sessionId }, Date.now());
+      // something to confirm), the session the probe opened with them, the server record as this
+      // flow observed it, and the client registration and discovery the flow used. The live record
+      // has not been touched, and is not until the Workshop names this id in `commitReconnect`.
+      const take = <T>(key: string): T | undefined => {
+        const value = this.ctx.storage.kv.get<T>(key);
+        this.ctx.storage.kv.delete(key);
+        return value;
+      };
+      const tokens = take<OAuthTokens>(RECONNECT_TOKENS_KEY) ?? null;
+      const stageId = stageCredentials<StagedReconnect>(this.ctx.storage.kv, {
+        tokens,
+        sessionId,
+        server: observed,
+        client: take<StoredOAuthClientInformation>(RECONNECT_CLIENT_KEY),
+        discovery: take<OAuthDiscoveryState>(RECONNECT_DISCOVERY_KEY),
+      }, Date.now());
       handoff = await callback.reconnectComplete(
         stageId, tokens?.expiresAt ? new Date(tokens.expiresAt) : undefined);
     } else {
