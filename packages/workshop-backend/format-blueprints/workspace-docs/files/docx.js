@@ -235,6 +235,8 @@ async function parseHtml(fragments, namedEntities) {
 
 // --- CSS ---------------------------------------------------------------------------------------
 
+// Returns `[name, value]` pairs in cascade order: later declarations win, and `!important` ones are
+// moved after the rest so a plain later declaration cannot override them.
 function cssDeclarations(style) {
   const declarations = [];
   // Inline styles are short; a huge one is not worth allocating a declaration per fragment for.
@@ -242,12 +244,13 @@ function cssDeclarations(style) {
     const colon = part.indexOf(":");
     if (colon < 0) continue;
     const name = part.slice(0, colon).trim().toLowerCase();
-    const value = part.slice(colon + 1).replace(/!important\s*$/i, "").trim();
+    const important = /!important\s*$/i.test(part);
+    const value = (important ? part.slice(colon + 1, part.lastIndexOf("!")) : part.slice(colon + 1)).trim();
     if (name && value && !["inherit", "unset", "initial"].includes(value.toLowerCase())) {
-      declarations.push([name, value]);
+      declarations.push({name, value, important});
     }
   }
-  return declarations;
+  return declarations.sort((a, b) => a.important - b.important).map(({name, value}) => [name, value]);
 }
 
 // Returns an RRGGBB hex string for `#rgb`, `#rrggbb`, and `rgb()`/`rgba()` colors.
@@ -659,7 +662,8 @@ function walk(builder, node, parent) {
       if (block) builder.close();
       return;
     case "hr":
-      builder.paragraphs.push({...context.paragraph, style: context.style, runs: [], horizontalRule: true});
+      builder.open(context).horizontalRule = true;
+      builder.close();
       return;
     case "pre": {
       context.preformatted = true;

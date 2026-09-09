@@ -412,7 +412,8 @@ describe("Workspace Docs DOCX package", () => {
   });
 
   it("maps quotes, code blocks, inline code, and horizontal rules", async () => {
-    const html = '<blockquote>quoted</blockquote><pre>\n a  b\n\tc\n</pre><p>use <code>code</code></p><hr>';
+    const html = '<blockquote>quoted</blockquote><pre>\n a  b\n\tc\n</pre><p>use <code>code</code></p><hr>' +
+      "<ul><li><hr></li><li>item<hr></li></ul>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     expect(xml).toContain('<w:pStyle w:val="Quote"/>');
@@ -420,7 +421,10 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).toContain('<w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr><w:r><w:t xml:space="preserve"> a  b</w:t>' +
       '<w:br/><w:tab/><w:t xml:space="preserve">c</w:t></w:r></w:p>');
     expect(runContaining(xml, "code")).toContain('w:ascii="Courier New"');
-    expect(xml).toContain('<w:bottom w:val="single"');
+    expect(xml.match(/<w:bottom w:val="single"/g)).toHaveLength(3);
+    expect(xml.match(/<w:p>/g)).toHaveLength(7);
+    expect(xml).toContain('<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr><w:pBdr>');
+    expect(xml).toContain('<w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="D9D9D9"/></w:pBdr><w:spacing w:before="330" w:after="330"/><w:ind w:left="420"/>');
   });
 
   it("preserves paragraph structure inside semantic quotes", async () => {
@@ -648,6 +652,7 @@ describe("Workspace Docs DOCX package", () => {
     const anchors = Array.from({length: 1000}, (_, index) => `<a href="https://example.com/${index}"></a>`).join("");
     const html = `<p hidden>draft</p><p><span style="display: none">secret</span>${anchors}shown` +
       '<span style="display:none !important">also secret</span><span style="display:none;display:inline">reshown</span>' +
+      '<span style="display:none!important;display:inline">still secret</span>' +
       `<a href="https://example.com/kept">kept</a><a href="https://example.com/${"\u4e2d".repeat(3000)}">wide</a></p>` +
       "<dl><dt>term<dd>definition<dt><b>bold term</dt></dl>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
