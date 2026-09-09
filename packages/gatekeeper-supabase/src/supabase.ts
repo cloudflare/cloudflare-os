@@ -92,6 +92,24 @@ type StoredToken = {
   expiresAt: number;
 };
 
+/**
+ * A grant as persisted (or staged for a reconnect): the expiry is absolute, since the provider's
+ * relative `expiresIn` counts from the exchange, not from whenever the grant is later made live.
+ */
+type StoredGrant = {
+  accessToken: string;
+  refreshToken: string;
+  accessTokenExpiresAt: number;
+};
+
+function toStoredGrant(grant: SupabaseOAuthGrant, now: number): StoredGrant {
+  return {
+    accessToken: grant.accessToken,
+    refreshToken: grant.refreshToken,
+    accessTokenExpiresAt: now + grant.expiresIn * 1000,
+  };
+}
+
 // A mutating SQL statement queued for human approval and applied once approved.
 type StoredExecuteAction = {
   ref: string;
@@ -442,7 +460,10 @@ export class UserAccount extends DurableObject<Env> {
       throw new Error("Took too long to complete authorization. Please try again.");
     }
 
-    const grant = await exchangeAuthCode(code, clientId, clientSecret, `${getBaseUrl(this.env)}/oauth`);
+    const grant = toStoredGrant(
+      await exchangeAuthCode(code, clientId, clientSecret, `${getBaseUrl(this.env)}/oauth`),
+      Date.now(),
+    );
 
     let handoff: ConnectHandoff;
     if (stored.reconnect) {
@@ -452,7 +473,7 @@ export class UserAccount extends DurableObject<Env> {
       const stageId = stageCredentials(this.ctx.storage.kv, grant, Date.now());
       handoff = await callback.reconnectComplete(stageId);
     } else {
-      this.#storeGrant(grant.accessToken, grant.refreshToken, grant.expiresIn);
+      this.#storeGrant(grant);
       this.ctx.storage.kv.put("expiredNotified", false);
       try {
         const props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
@@ -471,16 +492,16 @@ export class UserAccount extends DurableObject<Env> {
 
   /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
   async commitReconnect(stageId: string): Promise<void> {
-    const grant = commitStagedCredentials<SupabaseOAuthGrant>(this.ctx.storage.kv, Date.now(), stageId);
+    const grant = commitStagedCredentials<StoredGrant>(this.ctx.storage.kv, Date.now(), stageId);
     if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
-    this.#storeGrant(grant.accessToken, grant.refreshToken, grant.expiresIn);
+    this.#storeGrant(grant);
     this.ctx.storage.kv.put("expiredNotified", false);
   }
 
-  #storeGrant(accessToken: string, refreshToken: string, expiresIn: number): void {
-    this.ctx.storage.kv.put("accessToken", accessToken);
-    this.ctx.storage.kv.put("refreshToken", refreshToken);
-    this.ctx.storage.kv.put<number>("accessTokenExpiresAt", Date.now() + expiresIn * 1000);
+  #storeGrant(grant: StoredGrant): void {
+    this.ctx.storage.kv.put("accessToken", grant.accessToken);
+    this.ctx.storage.kv.put("refreshToken", grant.refreshToken);
+    this.ctx.storage.kv.put<number>("accessTokenExpiresAt", grant.accessTokenExpiresAt);
   }
 
   /** Returns a valid access token (and its expiry), transparently refreshing when close to expiry. */
@@ -517,9 +538,10 @@ export class UserAccount extends DurableObject<Env> {
     }
 
     try {
-      const grant = await refreshAccessToken(refreshToken, clientId, clientSecret);
-      this.#storeGrant(grant.accessToken, grant.refreshToken, grant.expiresIn);
-      return { token: grant.accessToken, expiresAt: Date.now() + grant.expiresIn * 1000 };
+      const grant = toStoredGrant(
+        await refreshAccessToken(refreshToken, clientId, clientSecret), Date.now());
+      this.#storeGrant(grant);
+      return { token: grant.accessToken, expiresAt: grant.accessTokenExpiresAt };
     } catch (error) {
       // A revoked/expired refresh token surfaces as an auth error; record it so the UI prompts a
       // reconnect rather than surfacing a cryptic failure.
