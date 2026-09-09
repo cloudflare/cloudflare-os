@@ -352,7 +352,7 @@ describe("Workspace Docs DOCX package", () => {
     expect(runContaining(xml, "nestedplain")).toContain("<w:strike/>");
     expect(runContaining(xml, "clear")).not.toMatch(/w:color|w:shd/);
     expect(runContaining(xml, "own")).not.toContain("w:u ");
-    expect(runContaining(xml, "unshaded")).not.toContain("w:shd");
+    expect(runContaining(xml, "unshaded")).toContain('w:fill="FF0000"');
     expect(runContaining(xml, "struck u")).toContain("<w:strike/>");
     expect(runContaining(xml, "kept")).toContain('<w:u w:val="single"/>');
     expect(runContaining(xml, "struck u")).not.toContain("w:u ");
@@ -571,7 +571,7 @@ describe("Workspace Docs DOCX package", () => {
     const gifUrl = dataUrl("image/gif", gif(20, 10));
     const webpUrl = dataUrl("image/webp", webp(30, 15));
     const html = `<p><img src="${pngUrl}" alt="A &amp; B" style="width:800px;width:bogus">` +
-      `<img src="${pngUrl}" alt="repeat" width="50%"><img src="${jpegUrl}" alt="jpeg">` +
+      `<img src="${pngUrl}" alt="repeat" width="50%" style="width:-5px"><img src="${jpegUrl}" alt="jpeg">` +
       `<img src="${gifUrl}" alt="gif"><img src="${webpUrl}" alt="webp"></p>`;
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     expect([...entries.keys()].filter((name) => name.startsWith("word/media/"))).toEqual([
@@ -719,11 +719,12 @@ describe("Workspace Docs DOCX package", () => {
   });
 
   it("ignores self-closing foreign elements without rejecting surrounding content", async () => {
-    const html = "<p>before</p><svg/><svg><path/></svg><math/><p>after</p>";
+    const html = "<p>before</p><svg/><svg><path/></svg><math/><p>after<template><div>TEMPLATE_LEAK</div></template>tail</p>";
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     expect(xml).toContain(">before</w:t>");
-    expect(xml).toContain(">after</w:t>");
+    expect(xml).toContain(">aftertail</w:t>");
+    expect(xml).not.toContain("TEMPLATE_LEAK");
   });
 
   it("fails before returning a stream when parser or media limits are exceeded", async () => {

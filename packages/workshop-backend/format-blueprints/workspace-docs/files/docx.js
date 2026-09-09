@@ -163,13 +163,15 @@ function closeImplied(stack, tag) {
     : tag === "a" ? [["a"], []]
     : HEADING_STYLES[tag] ? [["p", ...Object.keys(HEADING_STYLES)], []]
     : BLOCK_TAGS.has(tag) ? [["p"], []] : [[], []];
+  // Never reach past an ignored wrapper (`template`, `svg`, ...): its content is not rendered, so a
+  // descendant must not reparent itself outside it.
   for (let index = stack.length - 1; index > 0 && closes.length; --index) {
     const open = stack[index].tag;
     if (closes.includes(open)) {
       stack.length = index;
       return;
     }
-    if (within.includes(open)) return;
+    if (within.includes(open) || IGNORED_TAGS.has(open)) return;
   }
 }
 
@@ -396,8 +398,9 @@ function deriveFormat(parent, node, declarations) {
       const color = cssColor(value);
       if (color != null) format.color = color || null;
     } else if (name === "background-color") {
-      const color = lower === "transparent" ? "" : cssColor(value);
-      if (color != null) format.shading = color || null;
+      // A transparent background lets the ancestor's shading show through, so it changes nothing.
+      const color = cssColor(value);
+      if (color) format.shading = color;
     }
   }
   if (decoration != null) {
@@ -533,7 +536,8 @@ function widthTwips(value) {
   const percent = /^(\d+(?:\.\d+)?)%$/.exec(trimmed);
   if (percent) return CONTENT_WIDTH_PIXELS * TWIPS_PER_PIXEL * Math.min(100, Number(percent[1])) / 100;
   if (trimmed.toLowerCase() === "auto") return null;
-  return cssLength(trimmed) ?? undefined;
+  const twips = cssLength(trimmed);
+  return twips == null || twips < 0 ? undefined : twips; // A negative width is invalid CSS.
 }
 
 // Requested display width in pixels from the `width` attribute or inline style (last valid
@@ -545,7 +549,7 @@ function requestedWidth(node) {
     const next = widthTwips(value);
     if (next !== undefined) twips = next;
   }
-  return twips != null && twips >= 0 ? twips / TWIPS_PER_PIXEL : null;
+  return twips == null ? null : twips / TWIPS_PER_PIXEL;
 }
 
 // --- Document builder --------------------------------------------------------------------------
