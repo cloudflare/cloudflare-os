@@ -654,34 +654,68 @@ function equalBytes(left, right) {
   return true;
 }
 
-function findOrAddMedia(bytes, mime, dimensions, mediaState) {
+// `media` describes the part: {extension, mime, aspect, pixels}. Raster images account their pixels
+// against the aggregate limit; SVG has no pixels (its size is bounded as text) and may have no
+// usable aspect ratio, in which case it fills its frame.
+function findOrAddMedia(bytes, media, mediaState) {
   const checksum = crc32(bytes);
   const key = `${bytes.byteLength}:${checksum}`;
   const candidates = mediaState.byChecksum.get(key) || [];
-  for (const media of candidates) {
-    if (equalBytes(media.bytes, bytes)) return media;
+  for (const existing of candidates) {
+    if (equalBytes(existing.bytes, bytes)) return existing;
   }
   if (mediaState.media.length >= MAX_MEDIA_COUNT) {
     throw new Error(`Deck contains too many embedded images for PowerPoint export (maximum ${MAX_MEDIA_COUNT}).`);
   }
-  const totalPixels = mediaState.totalPixels + dimensions.width * dimensions.height;
+  const totalPixels = mediaState.totalPixels + media.pixels;
   if (totalPixels > MAX_TOTAL_IMAGE_PIXELS) {
     throw new Error(`Deck images exceed the ${MAX_TOTAL_IMAGE_PIXELS}-pixel aggregate limit.`);
   }
   mediaState.totalPixels = totalPixels;
-  const extension = mime === "image/png" ? "png" : "jpeg";
-  const media = {
-    index: mediaState.media.length + 1,
-    extension,
-    mime,
-    width: dimensions.width,
-    height: dimensions.height,
-    bytes,
-  };
-  mediaState.media.push(media);
-  candidates.push(media);
+  const entry = {...media, index: mediaState.media.length + 1, bytes};
+  mediaState.media.push(entry);
+  candidates.push(entry);
   mediaState.byChecksum.set(key, candidates);
-  return media;
+  return entry;
+}
+
+// The SVG's intrinsic aspect ratio, from its viewBox or else its width/height attributes, so
+// `fit: "contain"` can letterbox the frame the way the browser's preserveAspectRatio does.
+// Returns null when neither is usable; the frame is then filled.
+function svgAspect(rootTag) {
+  const number = String.raw`[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?`;
+  const viewBox = new RegExp(String.raw`\sviewBox\s*=\s*["']\s*${number}[\s,]+${number}[\s,]+(${number})[\s,]+(${number})\s*["']`)
+    .exec(rootTag);
+  if (viewBox) {
+    const width = Number(viewBox[1]);
+    const height = Number(viewBox[2]);
+    return width > 0 && height > 0 ? width / height : null;
+  }
+  const width = new RegExp(String.raw`\swidth\s*=\s*["']\s*(${number})(?:px)?\s*["']`).exec(rootTag);
+  const height = new RegExp(String.raw`\sheight\s*=\s*["']\s*(${number})(?:px)?\s*["']`).exec(rootTag);
+  if (!width || !height) return null;
+  const ratio = Number(width[1]) / Number(height[1]);
+  return Number.isFinite(ratio) && ratio > 0 ? ratio : null;
+}
+
+// Embeds the markup as an SVG media part, byte for byte. The deck's SVG is trusted as authored:
+// nothing here validates or rewrites it, so scripts, external references and the like reach the
+// consumer, and the browser's render-time cleanup is the only line of defence there.
+function prepareSvgSource(markup, mediaState) {
+  if (!markup) return {placeholder: "Paste SVG markup"};
+  const cached = mediaState.bySource.get(markup);
+  if (cached) return cached;
+  const rootTag = /<svg[\s>][^>]*>?/.exec(markup);
+  if (!rootTag) {
+    const result = {placeholder: "Invalid SVG"};
+    mediaState.bySource.set(markup, result);
+    return result;
+  }
+  const result = {media: findOrAddMedia(encoder.encode(markup), {
+    extension: "svg", mime: "image/svg+xml", aspect: svgAspect(rootTag[0]), pixels: 0,
+  }, mediaState)};
+  mediaState.bySource.set(markup, result);
+  return result;
 }
 
 function prepareImageSource(value, label, limits, mediaState) {
@@ -731,7 +765,10 @@ function prepareImageSource(value, label, limits, mediaState) {
   if (dimensions.width * dimensions.height > MAX_IMAGE_PIXELS) {
     throw new Error(`${label} is ${dimensions.width} x ${dimensions.height}; images may contain at most ${MAX_IMAGE_PIXELS} pixels.`);
   }
-  const result = {media: findOrAddMedia(bytes, mime, dimensions, mediaState)};
+  const result = {media: findOrAddMedia(bytes, {
+    extension: mime === "image/png" ? "png" : "jpeg", mime,
+    aspect: dimensions.width / dimensions.height, pixels: dimensions.width * dimensions.height,
+  }, mediaState)};
   mediaState.bySource.set(value, result);
   return result;
 }
@@ -814,12 +851,14 @@ function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
       props.alt = text("alt");
       props.image = prepareImageSource(propsSource.src, `${label} image`, limits, mediaState);
       break;
-    case "svg":
-      props.markup = text("markup");
+    case "svg": {
+      const markup = text("markup");
       props.fit = text("fit");
       props.background = text("background");
-      props.brandBar = isBrandBar(props.markup);
+      props.brandBar = isBrandBar(markup);
+      if (!props.brandBar) props.image = prepareSvgSource(markup, mediaState);
       break;
+    }
     case "arrow":
       props.x1 = sourceScalar(propsSource.x1);
       props.y1 = sourceScalar(propsSource.y1);
@@ -846,7 +885,7 @@ function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
 const BRAND_BAR_ELEMENTS = new Set(["svg", "defs", "linearGradient", "stop", "rect"]);
 
 // The seed decks' bottom bar: a 1200x12 strip in the three brand colors built only from gradient
-// primitives. Authored content (text, paths) keeps the SVG placeholder instead of being replaced.
+// primitives. Authored content (text, paths) is embedded as an SVG picture instead.
 function isBrandBar(markup) {
   if (!/viewBox=["']0 0 1200 12["']/.test(markup)) return false;
   if (!["#FF6633", "#F6821F", "#FBAD41"].every(color => markup.includes(color))) return false;
@@ -1239,22 +1278,30 @@ function renderShape(state, block, name) {
   });
 }
 
+// Office 2016+ reads the SVG from the svgBlip extension; the blip itself is normally a raster
+// fallback for older consumers, which this exporter cannot rasterize, so it points at the SVG too.
+const SVG_BLIP_EXT_URI = "{96DAC541-7B7A-43D3-8B79-37D633B846F1}";
+const SVG_BLIP_NS = "http://schemas.microsoft.com/office/drawing/2016/SVG/main";
+
 function pictureXml(state, name, box, media, relationshipId, alt, radius, crop) {
   const id = nextShapeId(state);
   const sourceRectangle = crop
     ? `<a:srcRect l="${crop.left}" t="${crop.top}" r="${crop.right}" b="${crop.bottom}"/>`
     : "";
   const preset = radius > 0 ? "roundRect" : "rect";
+  const svgBlip = media.extension === "svg"
+    ? `<a:extLst><a:ext uri="${SVG_BLIP_EXT_URI}"><asvg:svgBlip xmlns:asvg="${SVG_BLIP_NS}" ` +
+      `r:embed="${relationshipId}"/></a:ext></a:extLst>`
+    : "";
   return `<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="${xmlAttribute(name)}" descr="${xmlAttribute(alt)}"/>` +
     '<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>' +
-    `<p:blipFill><a:blip r:embed="${relationshipId}" cstate="print"/>${sourceRectangle}` +
+    `<p:blipFill><a:blip r:embed="${relationshipId}" cstate="print">${svgBlip}</a:blip>${sourceRectangle}` +
     '<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>' + transformXml(box) +
     presetGeometry(preset, radius, box.width / PX_TO_EMU, box.height / PX_TO_EMU) +
     '<a:ln><a:noFill/></a:ln></p:spPr></p:pic>';
 }
 
-function imageCrop(media, boxWidth, boxHeight) {
-  const imageAspect = media.width / media.height;
+function imageCrop(imageAspect, boxWidth, boxHeight) {
   const boxAspect = Math.max(1e-9, boxWidth / Math.max(1e-9, boxHeight));
   if (imageAspect > boxAspect) {
     const crop = Math.round((1 - boxAspect / imageAspect) * 50000);
@@ -1262,6 +1309,17 @@ function imageCrop(media, boxWidth, boxHeight) {
   }
   const crop = Math.round((1 - imageAspect / boxAspect) * 50000);
   return {left: 0, top: crop, right: 0, bottom: crop};
+}
+
+// The largest box of the given aspect ratio centred inside `target` (CSS object-fit: contain).
+function containBox(target, imageAspect) {
+  const targetAspect = target.width / Math.max(1e-9, target.height);
+  if (imageAspect > targetAspect) {
+    const height = target.width / imageAspect;
+    return {x: target.x, y: target.y + (target.height - height) / 2, width: target.width, height};
+  }
+  const width = target.height * imageAspect;
+  return {x: target.x + (target.width - width) / 2, y: target.y, width, height: target.height};
 }
 
 function* renderPlaceholder(state, name, block, text, background, defaultWidth = 320, defaultHeight = 180) {
@@ -1290,33 +1348,21 @@ function* renderImage(state, block, name) {
   }
   const media = props.image.media;
   const target = pixelBox(block, 600, 675);
-  let x = target.x;
-  let y = target.y;
-  let width = target.width;
-  let height = target.height;
+  let box = target;
   let crop = null;
   if (props.fit === "cover") {
-    crop = imageCrop(media, width, height);
+    crop = imageCrop(media.aspect, target.width, target.height);
   } else if (props.fit !== "fill") {
-    const imageAspect = media.width / media.height;
-    const targetAspect = width / Math.max(1e-9, height);
-    if (imageAspect > targetAspect) {
-      const fittedHeight = width / imageAspect;
-      y += (height - fittedHeight) / 2;
-      height = fittedHeight;
-    } else {
-      const fittedWidth = height * imageAspect;
-      x += (width - fittedWidth) / 2;
-      width = fittedWidth;
-    }
+    box = containBox(target, media.aspect);
   }
   const radius = cssNumber(props.radius, 0, 0, 100000);
-  yield pictureXml(state, name, boxFromPixels(x, y, width, height), media,
+  yield pictureXml(state, name, boxFromPixels(box.x, box.y, box.width, box.height), media,
     props.relationshipId, props.alt, radius, crop);
 }
 
 function* renderSvg(state, block, name) {
-  if (block.props.brandBar) {
+  const props = block.props;
+  if (props.brandBar) {
     yield shapeXml(state, name, blockBox(block, 600, 337.5), {
       fill: gradientFill([
         {position: 0, color: "#FF6633"},
@@ -1326,8 +1372,22 @@ function* renderSvg(state, block, name) {
     });
     return;
   }
-  yield* renderPlaceholder(state, name, block,
-    "SVG not included in PowerPoint export", block.props.background, 600, 337.5);
+  const media = props.image.media;
+  if (!media) {
+    yield* renderPlaceholder(state, name, block, props.image.placeholder, props.background, 600, 337.5);
+    return;
+  }
+  const target = pixelBox(block, 600, 337.5);
+  if (props.background) {
+    yield shapeXml(state, `${name} background`,
+      boxFromPixels(target.x, target.y, target.width, target.height),
+      {fill: solidFill(parseColor(props.background))});
+  }
+  // The browser forces preserveAspectRatio from `fit`; consumers stretch the SVG viewport over the
+  // frame, so the same letterboxing is done by sizing the frame.
+  const box = props.fit === "stretch" || media.aspect == null ? target : containBox(target, media.aspect);
+  yield pictureXml(state, name, boxFromPixels(box.x, box.y, box.width, box.height), media,
+    props.relationshipId, undefined, 0, null);
 }
 
 function arrowColor(value) {
@@ -1447,8 +1507,10 @@ function contentTypes(slides, media) {
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="${CONTENT_TYPE_NS}">` +
     '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
     '<Default Extension="xml" ContentType="application/xml"/>';
-  if (media.some(item => item.extension === "png")) xml += '<Default Extension="png" ContentType="image/png"/>';
-  if (media.some(item => item.extension === "jpeg")) xml += '<Default Extension="jpeg" ContentType="image/jpeg"/>';
+  const mediaTypes = new Map(media.map(item => [item.extension, item.mime]));
+  for (const [extension, mime] of mediaTypes) {
+    xml += `<Default Extension="${extension}" ContentType="${mime}"/>`;
+  }
   xml += '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>' +
     '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>' +
     '<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>' +

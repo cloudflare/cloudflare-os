@@ -646,17 +646,15 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(relationships).not.toContain("TargetMode");
   });
 
-  it("uses visible native placeholders for unavailable images, arbitrary SVG, and unknown blocks", async () => {
+  it("uses visible native placeholders for unavailable images, empty or invalid SVG, and unknown blocks", async () => {
     const zip = await readZip(deckToPptx(oneSlide([
       block("image", {}),
       block("image", {src: "https://example.com/image.png"}),
       block("image", {src: "data:image/png;base64,AAAA"}),
       block("image", {src: dataUrl("jpeg", jpegWithoutScan(2, 4))}),
       block("image", {src: "data:image/gif;base64,R0lGODlh"}),
-      block("svg", {markup: "<svg><circle/></svg>", background: "#fff4e6"}),
-      // Brand-bar geometry and colors, but with authored content: not the seed decks' plain bar.
-      block("svg", {markup: '<svg viewBox="0 0 1200 12"><stop stop-color="#FF6633"/>' +
-        '<stop stop-color="#F6821F"/><stop stop-color="#FBAD41"/><text>Q3</text></svg>'}),
+      block("svg", {markup: "", background: "#fff4e6"}),
+      block("svg", {markup: "<div>not svg</div>"}),
       block("not-a-real-block", {}),
     ])));
     const xml = partText(zip, "ppt/slides/slide1.xml");
@@ -666,11 +664,11 @@ describe("Workspace Slides PPTX rendering", () => {
       "Remote image not included",
       "Malformed image data",
       "Unsupported or malformed image",
-      "SVG not included in PowerPoint export",
+      "Paste SVG markup",
+      "Invalid SVG",
       "?: not-a-real-block",
     ]) expect(xml).toContain(placeholder);
     expect(occurrences(xml, "Malformed image data")).toBe(2);
-    expect(occurrences(xml, "SVG not included in PowerPoint export")).toBe(2);
     expect(xml).not.toContain("<a:gradFill");
     expect(xml).not.toContain("<p:pic>");
     expect(zip.names.some(name => name.startsWith("ppt/media/"))).toBe(false);
@@ -678,6 +676,43 @@ describe("Workspace Slides PPTX rendering", () => {
     for (const name of zip.names.filter(entryName => entryName.endsWith(".rels"))) {
       expect(partText(zip, name)).not.toContain("TargetMode");
     }
+  });
+
+  it("embeds authored SVG verbatim as svgBlip pictures, letterboxed by its viewBox", async () => {
+    const chart = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">' +
+      '<script>alert(1)</script><text x="0" y="50">Q3 &amp; Q4</text></svg>';
+    // Brand-bar geometry and colors, but with authored content: not the seed decks' plain bar.
+    const notBrandBar = '<svg viewBox="0 0 1200 12"><stop stop-color="#FF6633"/>' +
+      '<stop stop-color="#F6821F"/><stop stop-color="#FBAD41"/><text>Q3</text></svg>';
+    const zip = await readZip(deckToPptx(oneSlide([
+      block("svg", {markup: chart, fit: "contain", background: "#fff4e6"}, {x: 0, y: 0, w: 400, h: 400}),
+      block("svg", {markup: chart, fit: "stretch"}, {x: 0, y: 0, w: 400, h: 400}),
+      block("svg", {markup: '<svg width="300" height="100px"><rect/></svg>'}, {x: 0, y: 0, w: 300, h: 300}),
+      block("svg", {markup: "<svg><rect/></svg>"}, {x: 0, y: 0, w: 300, h: 100}),
+      block("svg", {markup: notBrandBar}, {x: 0, y: 663, w: 1200, h: 12}),
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+
+    // Byte-for-byte: the exporter neither validates nor rewrites the markup.
+    expect(zip.names.filter(name => name.startsWith("ppt/media/"))).toEqual([
+      "ppt/media/image1.svg", "ppt/media/image2.svg", "ppt/media/image3.svg", "ppt/media/image4.svg",
+    ]);
+    expect(partText(zip, "ppt/media/image1.svg")).toBe(chart);
+    expect(partText(zip, "[Content_Types].xml")).toContain('<Default Extension="svg" ContentType="image/svg+xml"/>');
+    expect(partText(zip, "ppt/slides/_rels/slide1.xml.rels")).toContain('Target="../media/image1.svg"');
+
+    const contain = shapeByName(xml, "Block 1 svg");
+    expect(contain).toContain('<asvg:svgBlip xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main" r:embed="rId2"/>');
+    expect(contain).toContain('<a:blip r:embed="rId2" cstate="print">');
+    expect(contain).toContain(`<a:off x="0" y="${100 * 10160}"/><a:ext cx="${400 * 10160}" cy="${200 * 10160}"/>`);
+    expect(shapeByName(xml, "Block 1 svg background")).toContain('<a:srgbClr val="FFF4E6">');
+    expect(shapeByName(xml, "Block 2 svg")).toContain(`<a:off x="0" y="0"/><a:ext cx="${400 * 10160}" cy="${400 * 10160}"/>`);
+    expect(shapeByName(xml, "Block 2 svg")).toContain('r:embed="rId2"');
+    expect(shapeByName(xml, "Block 3 svg")).toContain(`<a:off x="0" y="${100 * 10160}"/><a:ext cx="${300 * 10160}" cy="${100 * 10160}"/>`);
+    expect(shapeByName(xml, "Block 4 svg")).toContain(`<a:off x="0" y="0"/><a:ext cx="${300 * 10160}" cy="${100 * 10160}"/>`);
+    expect(shapeByName(xml, "Block 5 svg")).toContain("<p:blipFill>");
+    expect(xml).not.toContain("<a:gradFill");
+    expect(xml).not.toContain("SVG not included");
   });
 
   it("exports a safe blank slide for empty or malformed decks", async () => {

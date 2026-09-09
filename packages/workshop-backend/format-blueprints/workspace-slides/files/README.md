@@ -370,13 +370,19 @@ limit checks. Identical image data is stored once. `fill`, `contain`, and
 never fetched or emitted as external relationships; they receive a visible
 placeholder instead.
 
-Arbitrary user-authored SVG is not embedded or rasterized. The exporter
-replaces the known bottom brand-bar SVG natively and displays a visible
-"SVG not included in PowerPoint export" placeholder for every other SVG.
-SVG-based charts and icons therefore are not faithfully represented in v1.
+SVG blocks are embedded as pictures through Office's `svgBlip` extension, which
+PowerPoint 2016 and later render natively. The markup is copied byte for byte and
+is trusted as authored: the exporter does not validate or sanitize it, so scripts,
+external references, and other active content in a block reach the consumer (the
+browser's render-time cleanup applies only to HTML and PDF export). The exporter
+cannot rasterize, so there is no PNG fallback; consumers without SVG support
+(Google Slides import, macOS Quick Look, older PowerPoint) show an empty frame.
+`contain` letterboxes the frame by the SVG's `viewBox` (or `width`/`height`)
+aspect ratio and `stretch` fills the block. The known bottom brand-bar SVG is
+still replaced with a native gradient.
 
-The following are intentionally deferred: arbitrary SVG and SVG
-rasterization, pixel-perfect browser layout, embedded fonts, remote images,
-native charts and tables, animations and transitions, speaker notes and
-comments, audio and video, hyperlinks, rounded-image clipping beyond a safe
-approximation, and PPTX import or edited-PPTX round trips.
+The following are intentionally deferred: SVG validation and rasterized
+fallbacks, pixel-perfect browser layout, embedded fonts, remote images, native
+charts and tables, animations and transitions, speaker notes and comments, audio
+and video, hyperlinks, rounded-image clipping beyond a safe approximation, and
+PPTX import or edited-PPTX round trips.
