@@ -271,10 +271,11 @@ function cssDeclarations(style) {
   return declarations.sort((a, b) => a.important - b.important).map(({name, value}) => [name, value]);
 }
 
-// Returns an RRGGBB hex string for `#rgb(a)`, `#rrggbb(aa)`, and `rgb()`/`rgba()` colors, "" for a
-// fully transparent color, and null for anything else.
+// Returns an RRGGBB hex string for `#rgb(a)`, `#rrggbb(aa)`, and `rgb()`/`rgba()` colors, "" for
+// `transparent` or a zero-alpha color, and null for anything else.
 function cssColor(value) {
   const input = value.trim().toLowerCase();
+  if (input === "transparent") return "";
   const hex = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(input)?.[1];
   if (hex) {
     if (hex.length === 4 && hex[3] === "0") return "";
@@ -398,9 +399,10 @@ function deriveFormat(parent, node, declarations) {
       const color = cssColor(value);
       if (color != null) format.color = color || null;
     } else if (name === "background-color") {
-      // A transparent background lets the ancestor's shading show through, so it changes nothing.
+      // A transparent background lets the ancestor's shading show through (and supersedes an
+      // earlier color declared on this same element).
       const color = cssColor(value);
-      if (color) format.shading = color;
+      if (color != null) format.shading = color || parent.shading;
     }
   }
   if (decoration != null) {

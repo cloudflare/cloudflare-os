@@ -338,7 +338,8 @@ describe("Workspace Docs DOCX package", () => {
       '<span style="text-decoration:underline;text-decoration:bogus">kept</span>' +
       '<a href="https://example.com/" style="text-decoration:none">bare link</a>' +
       '<u><a href="https://example.com/" style="text-decoration:none">still under</a></u>' +
-      '<span style="background-color:#ff0000"><span style="background-color:rgba(0,0,0,0)">unshaded</span></span></p>';
+      '<span style="background-color:#ff0000"><span style="background-color:rgba(0,0,0,0)">unshaded</span></span>' +
+      '<span style="background-color:#00ff00;background-color:transparent">stale</span></p>';
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     expect(runContaining(xml, "bold")).toContain("<w:b/>");
@@ -353,6 +354,7 @@ describe("Workspace Docs DOCX package", () => {
     expect(runContaining(xml, "clear")).not.toMatch(/w:color|w:shd/);
     expect(runContaining(xml, "own")).not.toContain("w:u ");
     expect(runContaining(xml, "unshaded")).toContain('w:fill="FF0000"');
+    expect(runContaining(xml, "stale")).not.toContain("w:shd");
     expect(runContaining(xml, "struck u")).toContain("<w:strike/>");
     expect(runContaining(xml, "kept")).toContain('<w:u w:val="single"/>');
     expect(runContaining(xml, "struck u")).not.toContain("w:u ");
