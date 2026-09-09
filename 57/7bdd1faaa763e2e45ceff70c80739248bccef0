@@ -1,0 +1,47 @@
+packages/gatekeeper-github/src/github.ts
+  s_3ca7dcdfd43170::t_721768989904a1 30,1332-1333,1390,1392-1393
+packages/gatekeeper-github/__tests__/github-api.test.ts
+  s_3ca7dcdfd43170::t_721768989904a1 4,203-222
+  s_3ca7dcdfd43170::t_045af59a38fd45 223-224
+packages/gatekeeper-github/src/github-api.ts
+  s_3ca7dcdfd43170::t_721768989904a1 416-423,430
+packages/workshop-frontend/src/connectHandoff.test.tsx
+  s_3ca7dcdfd43170::t_7b6bbbfd151f28 50,54
+  s_3ca7dcdfd43170::t_c35fbbffa87704 45-47,51-53,128
+  s_3ca7dcdfd43170::t_894ee90211cfc3 9-11,40-41,43-44,48-49,55-56,119-120,123,126,132,134-135,142-181
+  s_3ca7dcdfd43170::t_a213f9d14c0c70 182
+packages/workshop-frontend/src/components/auth/OAuthButtons.tsx
+  s_3ca7dcdfd43170::t_9cbf4dd53701dc 4-6,131-138
+packages/gatekeeper-kit/src/connect-pages.ts
+  s_3ca7dcdfd43170::t_9cbf4dd53701dc 151-156,194-198,203-216,218
+  s_3ca7dcdfd43170::t_894ee90211cfc3 4
+packages/mcp-shared/__tests__/account-endpoint.test.ts
+  s_3ca7dcdfd43170::t_9dc208caefb28d 136-140,154,158-161,181,549-586
+  s_3ca7dcdfd43170::t_ac44809b90c43a 587-588
+packages/mcp-shared/src/account.ts
+  s_3ca7dcdfd43170::t_9dc208caefb28d 698-752,843-844,849-850,1088
+packages/gatekeeper-kit/__tests__/connect-pages.test.ts
+  s_3ca7dcdfd43170::t_894ee90211cfc3 3-4,81-82,87-103,132,134-135
+  s_3ca7dcdfd43170::t_94bf9642b07aa3 2
+packages/workshop-frontend/src/connectHandoff.ts
+  s_3ca7dcdfd43170::t_9cbf4dd53701dc 10-12,84-85,89-94,98,102-107,120-122,128-134,145-149,152-160,169-171,174-175
+packages/workshop-frontend/src/components/auth/OAuthButtons.test.tsx
+  s_3ca7dcdfd43170::t_894ee90211cfc3 9-11,110-111,113,120-121
+  s_3ca7dcdfd43170::t_7b6bbbfd151f28 112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "577bdd1faaa763e2e45ceff70c80739248bccef0",
+  "prompts": {},
+  "sessions": {
+    "s_3ca7dcdfd43170": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "025ba785-ecf3-4814-b092-053b914bc1da",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
