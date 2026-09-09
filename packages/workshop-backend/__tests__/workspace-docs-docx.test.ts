@@ -360,7 +360,7 @@ describe("Workspace Docs DOCX package", () => {
       '<span style="font-family:Georgia, serif;font-size:16px;color:rgb(17, 34, 51);background-color:#fff3a3">styled</span>' +
       '<font face="Courier New" size="5" color="#abc">font</font>' +
       '<span style="text-align:right;margin-left:100px">inline</span></p>' +
-      '<div style="line-height:2;margin-left:40px;margin-left:0"><p style="line-height:normal;margin:0 0 0 8px;margin-left:16px;margin-left:bogus">cascade</p></div>';
+      '<div style="line-height:2;margin-left:40px;margin-left:0"><p style="line-height:normal;margin:0 0 0 8px;margin-left:16px;margin-left:bogus">cascade</p><p style="margin-left:16px;margin-left:auto">auto</p></div>';
     const {entries} = await readZip(await documentToDocx({blocks: [block(html)]}));
     const xml = text(entries, "word/document.xml");
     expect(xml).toContain('<w:spacing w:line="480" w:lineRule="auto"/>');
@@ -369,6 +369,7 @@ describe("Workspace Docs DOCX package", () => {
     expect(xml).not.toContain('w:val="right"');
     expect(xml).toContain(">inline</w:t>");
     expect(xml).toContain('<w:pPr><w:pStyle w:val="Normal"/><w:ind w:left="240"/></w:pPr><w:r><w:t xml:space="preserve">cascade</w:t>');
+    expect(xml).toContain('<w:spacing w:line="480" w:lineRule="auto"/><w:ind w:left="0"/></w:pPr><w:r><w:t xml:space="preserve">auto</w:t>');
     const styled = runContaining(xml, "styled");
     expect(styled).toContain('w:ascii="Georgia"');
     expect(styled).toContain('<w:sz w:val="24"/>');

@@ -373,6 +373,17 @@ function deriveFormat(parent, node, declarations) {
   return format;
 }
 
+// A value the browser accepts but Word cannot express (auto, percentages, font-relative units).
+const UNREPRESENTABLE_LENGTH = /^(?:auto|-?(?:\d+\.?\d*|\.\d+)(?:%|r?em|ch|ex|v(?:w|h|min|max)))$/i;
+
+// Winning indent in twips after `value`: a length replaces `previous`, an unrepresentable value
+// clears it, and an invalid declaration is dropped as the browser drops it.
+function indentValue(value, previous) {
+  const twips = cssLength(value);
+  if (twips != null) return twips;
+  return UNREPRESENTABLE_LENGTH.test(value.trim()) ? null : previous;
+}
+
 function deriveParagraph(parent, declarations) {
   const paragraph = {...parent};
   // Declarations on one element cascade: the last one that parses wins, and only it adds to the
@@ -385,9 +396,9 @@ function deriveParagraph(parent, declarations) {
       if (lower === "left" || lower === "start") paragraph.alignment = "left";
       else if (lower === "center" || lower === "right" || lower === "justify") paragraph.alignment = lower;
     } else if (name === "margin-left" || name === "margin") {
-      marginLeft = cssLength(name === "margin" ? cssBoxLeft(value) ?? "" : value) ?? marginLeft;
+      marginLeft = indentValue(name === "margin" ? cssBoxLeft(value) ?? "" : value, marginLeft);
     } else if (name === "padding-left" || name === "padding") {
-      paddingLeft = cssLength(name === "padding" ? cssBoxLeft(value) ?? "" : value) ?? paddingLeft;
+      paddingLeft = indentValue(name === "padding" ? cssBoxLeft(value) ?? "" : value, paddingLeft);
     } else if (name === "text-indent") {
       const twips = cssLength(value);
       if (twips != null) paragraph.firstLine = Math.max(-7200, Math.min(7200, twips));
