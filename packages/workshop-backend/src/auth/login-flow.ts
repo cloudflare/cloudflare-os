@@ -40,7 +40,8 @@ import { createWorkshopLogger } from "../observability";
 import { CLOUDFLARE_VENDOR_ID, type UserDurableObject } from "../user.js";
 import { readAdminConfig } from "../admin-config.js";
 import {
-  handoffTargetOrigin, hashPresentedSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS,
+  CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, newSecretToken,
+  PENDING_HANDOFF_LIFETIME_MS,
 } from "../connect-handoff.js";
 
 const logger = createWorkshopLogger("workshop.auth");
@@ -57,11 +58,13 @@ type PendingOutcome =
 type PendingResult = PendingOutcome & { expiresAt: number };
 
 /**
- * How long a started attempt waits for the gatekeeper to deliver, matching the gatekeepers' own
- * connect-nonce lifetime. The shorter PENDING_HANDOFF_LIFETIME_MS is for a delivered result and
+ * How long a started attempt waits for the gatekeeper to deliver: the one budget every flow that
+ * ends on the handoff page gets, sign-in and connect alike (CONNECT_FLOW_LIFETIME_MS, sized for the
+ * gatekeeper's nonces plus the handoff window), so a user the connect flow would still admit is not
+ * expired by the sign-in flow. The shorter PENDING_HANDOFF_LIFETIME_MS is for a delivered result and
  * would expire a user who is still at the provider's consent screen.
  */
-export const LOGIN_PENDING_LIFETIME_MS = 10 * 60 * 1000;
+export const LOGIN_PENDING_LIFETIME_MS = CONNECT_FLOW_LIFETIME_MS;
 
 // The connected account a sign-in persisted, by the user DO that owns it (see `PendingLogin.link`).
 type AccountLink = { userId: string; accountId: number };
