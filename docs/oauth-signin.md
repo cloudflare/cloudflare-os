@@ -15,11 +15,15 @@ only (ignored unless the allowlist is non-empty, to avoid locking everyone out).
 
 ## Identity: keyed by verified email
 
-The primary account key is always the user's **verified email**. Signing in with any allowlisted
+By default, the primary account key is the user's **verified email**. Signing in with any allowlisted
 gatekeeper that yields the same verified email resolves to the same account — its `UserDurableObject`
 is addressed by `idFromName(email)` (the same scheme as Cloudflare Access). Each gatekeeper must only
 return an email the provider has verified (Google `email_verified`, a GitHub primary+verified email,
 the Cloudflare account email); otherwise it returns null and can't be used to sign in.
+
+The deployment-only `AUTH_EMAIL_DOMAIN_ALIASES` opt-in supports the authorized same-local-part
+`heyodie.ai` → `totango.com` migration. See [email domain migration](email-domain-migration.md) for
+stable legacy IDs, collision-account switching, verified session provenance, and upstream rollout steps.
 
 ## Incremental scopes
 

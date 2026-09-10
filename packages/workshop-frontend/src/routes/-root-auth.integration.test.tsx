@@ -119,7 +119,8 @@ describe('root auth loading boundary (real AuthProvider, required gate and Sessi
     document.body.append(container)
     root = createRoot(container)
     auth = { token: 'token', authenticatedApi: null, isAuthenticated: false, isLoading: true,
-      error: null, login: vi.fn<typeof auth.login>(), logout: () => { void render({ token: null, authenticatedApi: null, isAuthenticated: false, isLoading: false }) } }
+      error: null, login: vi.fn<typeof auth.login>(), switchIdentity: vi.fn<typeof auth.switchIdentity>(),
+      logout: () => { void render({ token: null, authenticatedApi: null, isAuthenticated: false, isLoading: false }) } }
   })
 
   afterEach(async () => {
@@ -266,6 +267,19 @@ describe('root auth loading boundary (real AuthProvider, required gate and Sessi
     await saveDraft()
     await render({ authenticatedApi: null, isAuthenticated: false, isLoading: true })
     await authenticate(connection('bob'))
+    expect(container.querySelector('[data-probe]')?.textContent).toContain('fresh')
+    expect(container.querySelector('[data-probe]')?.textContent).not.toContain('saved')
+  })
+
+  it('remounts account caches immediately when the identity revision changes', async () => {
+    const first = connection()
+    await authenticate(first)
+    await saveDraft()
+    const next = connection('collision')
+    next.required.resolve([])
+    await render({ identityRevision: 1,
+      authenticatedApi: next.api as unknown as NonNullable<typeof auth.authenticatedApi> })
+    expect(first.disposeSubscription).toHaveBeenCalled()
     expect(container.querySelector('[data-probe]')?.textContent).toContain('fresh')
     expect(container.querySelector('[data-probe]')?.textContent).not.toContain('saved')
   })
