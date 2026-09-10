@@ -61,7 +61,8 @@ Everything else under `files/` (the README, assets) passes through unchanged, an
 for its contents if the bundler has a loader for it: JSON is inlined, a stylesheet is not (a gadget
 carries its CSS in the module that injects it). A file a bundle inlined is still shipped, because
 only TypeScript is build input: one side of a blueprint may be `.ts` while the other is still plain
-`.js`, and the un-migrated side keeps importing the `lib/*.js` module it always did.
+`.js`, and the un-migrated side keeps importing the `lib/*.js` module it always did -- but not a
+`lib/*.ts` one, which is compiled into the other side and not shipped.
 
 `cloudflare:workers` is the only import left for the runtime to resolve, and only on the server:
 the client is loaded as an ES module in a sandboxed iframe with nothing to resolve a bare import
@@ -75,7 +76,10 @@ present as both `.ts` and `.js`, a `.ts` file outside the entry/`lib/` layout, T
 `.tsx`/`.mts`/`.cts` (neither runtime has a loader for it), a `lib/` module no entry imports, an
 import that reaches outside `files/` by any path other than a library's exported subpath (a relative
 or absolute path into `libraries/`, a `src/` module, the package root, a bare specifier some
-`node_modules` resolves), or a library import of the wrong side or of a library that does not exist.
+`node_modules` resolves), a library import of the wrong side or of a library that does not exist, a
+dynamic `import()` of a computed path or of a template literal (the bundler cannot check the one and
+expands the other into every file the pattern matches), or a shipped JavaScript module that imports
+a `lib/*.ts` module, which is not in the archive.
 
 ### Type checks and tests
 
