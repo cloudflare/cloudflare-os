@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { MutationQueue, SubscriberRegistry } from "gadgets:sync/server";
+import { MutationQueue, SubscriberRegistry } from "@gadgets/bundled-blueprints/libraries/sync/server";
 import { ExportHandler, Gadget } from "../files/server.ts";
 import type { Operation, SheetsDocument } from "../files/lib/protocol.ts";
 import { workbookToXlsx } from "../files/lib/xlsx.ts";

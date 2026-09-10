@@ -4,7 +4,7 @@
 //
 // The sync library's vocabulary (a collaborator, an operation's status) is exported from both of
 // its entries; it is taken from the server's here because `OperationStatus` is only there.
-import type { Collaborator, OperationStatus } from "gadgets:sync/server";
+import type { Collaborator, OperationStatus } from "@gadgets/bundled-blueprints/libraries/sync/server";
 
 /** A top-level block's identity and content, as the client serializes it from the DOM. */
 export interface BlockContent {

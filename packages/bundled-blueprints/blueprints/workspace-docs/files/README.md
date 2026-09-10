@@ -8,14 +8,14 @@ This blueprint is built on the shared gadget libraries in `packages/bundled-blue
 (see that directory's README). The build inlines what it imports into the `client.js` and `server.js` it ships,
 so a gadget created from it carries its own copy of the libraries as of its creation.
 
-- `gadgets:ui/client` draws the chrome: the `el` element builder, the shared icon table, the
+- `@gadgets/bundled-blueprints/libraries/ui/client` draws the chrome: the `el` element builder, the shared icon table, the
   toolbar's buttons, groups, colour pickers and dropdown, the in-page prompt that stands in for the
   sandbox's blocked `window.prompt`, the save-status dot, and the reading and downscaling of a
   picked, dropped or pasted image.
-- `gadgets:sync/client` runs the browser's half of the collaboration loop: the debounced,
+- `@gadgets/bundled-blueprints/libraries/sync/client` runs the browser's half of the collaboration loop: the debounced,
   serialized, retrying save scheduler, the presence roster and its throttled reporter, and the
   `RpcTarget` the server calls back.
-- `gadgets:sync/server` runs the object's half: the mutation queue, the subscriber registry with its
+- `@gadgets/bundled-blueprints/libraries/sync/server` runs the object's half: the mutation queue, the subscriber registry with its
   presence announcements, and the per-block optimistic concurrency.
 
 Everything on top of them is this gadget's own: the editing commands, the paste sanitizer, the block

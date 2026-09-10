@@ -12,7 +12,7 @@ import {
   normalizeBaseVersion,
   normalizeCollaborator,
   operationStatus,
-} from "gadgets:sync/server";
+} from "@gadgets/bundled-blueprints/libraries/sync/server";
 import type {
   ApplyOperationResult,
   BlockUpsert,

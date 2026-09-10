@@ -4,11 +4,13 @@ The Docs, Sheets and Slides blueprints (and the wiki page editor this library wa
 alongside) each carried their own copy of the same few helpers: an element builder, an SVG icon factory, toolbar buttons and a dropdown, an
 in-page prompt (the sandboxed iframe blocks `window.prompt`), a save-status dot, relative
 timestamps, and the reading and downscaling of a pasted image. This library is those helpers once,
-imported as `gadgets:ui/client`. It is DOM-only: nothing here talks RPC or touches storage, and
-nothing here knows what a click means -- every control takes the gadget's action as an argument.
+imported as `@gadgets/bundled-blueprints/libraries/ui/client`. It is DOM-only: nothing here talks RPC
+or touches storage, and nothing here knows what a click means -- every control takes the gadget's
+action as an argument.
 
-`gadgets:ui/server` exists so that every library has both entries and a blueprint's server may
-import any of them uniformly. It exports one flag, `clientOnly`, and nothing else.
+`@gadgets/bundled-blueprints/libraries/ui/server` exists so that every library has both entries and a
+blueprint's server may import any of them uniformly. It exports one flag, `clientOnly`, and nothing
+else.
 
 ## What it exports
 

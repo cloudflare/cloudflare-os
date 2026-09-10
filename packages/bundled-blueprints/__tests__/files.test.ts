@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,8 +29,11 @@ async function sourceTree(files: Record<string, string>): Promise<string> {
   return directory;
 }
 
-/** This package's `libraries/`, where the build resolves `gadgets:<name>/<side>`. */
+/** This package's `libraries/`, where the build resolves a `${LIBRARY}/<name>/<side>` import. */
 const gadgetLibraries = resolve(dirname(fileURLToPath(import.meta.url)), "..", "libraries");
+
+/** How a blueprint imports a gadget library: this package's name and the exported subpath. */
+const LIBRARY = "@gadgets/bundled-blueprints/libraries";
 
 describe("bundled blueprint source", () => {
   it("reconstructs files deterministically", () => {
@@ -487,21 +490,22 @@ describe("bundled blueprint TypeScript sources", () => {
     it("inlines a library's entry and what it reaches, from libraries/", async () => {
       let directory = await sourceTree({
         "client.ts": [
-          'import { el } from "gadgets:ui/client";',
+          `import { el } from "${LIBRARY}/ui/client";`,
           'document.body.append(el("div", { text: "hi" }));',
         ].join("\n"),
-        "server.ts": 'export { MutationQueue } from "gadgets:sync/server";',
+        "server.ts": `export { MutationQueue } from "${LIBRARY}/sync/server";`,
       });
 
       let files = await readSourceFiles(directory, "example/files");
 
       // Nothing of the specifier survives: the archive is self-contained, and a gadget created from
-      // it carries its copy of the library.
+      // it carries its copy of the library. The fixture has no node_modules above it, so the
+      // package name resolved through the build's alias, not through an install.
       expect([...files.keys()]).toEqual(["client.js", "server.js"]);
       expect(files.get("client.js")).toContain("function el(");
-      expect(files.get("client.js")).not.toContain("gadgets:");
+      expect(files.get("client.js")).not.toContain("@gadgets/");
       expect(files.get("server.js")).toContain("MutationQueue = class");
-      expect(files.get("server.js")).not.toContain("gadgets:");
+      expect(files.get("server.js")).not.toContain("@gadgets/");
     });
 
     it.each([
@@ -509,18 +513,18 @@ describe("bundled blueprint TypeScript sources", () => {
       ["server", "client"],
     ] as const)("rejects %s.ts importing a library's %s side", async (entry, side) => {
       let directory = await sourceTree({
-        [`${entry}.ts`]: `import * as ui from "gadgets:ui/${side}";\nexport default ui;\n`,
+        [`${entry}.ts`]: `import * as ui from "${LIBRARY}/ui/${side}";\nexport default ui;\n`,
       });
 
       await expect(readSourceFiles(directory, "example/files")).rejects
-        .toThrow(new RegExp(`${entry}\\.ts failed to bundle: .*imports gadgets:ui/${side} from ` +
-            `the ${entry} side`, "su"));
+        .toThrow(`example/files: ${entry}.ts imports ${LIBRARY}/ui/${side} from the ${entry} side`);
     });
 
-    // The specifier is the libraries' only door: a relative path into libraries/ is an import
-    // outside the blueprint's files like any other, wherever in the blueprint it is
-    // written, so a blueprint cannot reach a library's src/ or the wrong side by path.
-    it.each([
+    // The package subpath is the libraries' only door: a path into libraries/, relative or
+    // absolute, is an import outside the blueprint's files like any other, wherever in the
+    // blueprint it is written, so a blueprint cannot reach a library's src/ or the wrong side by
+    // path.
+    const importers = [
       ["client.ts", (specifier: string) => ({
         "client.ts": `import * as ui from "${specifier}";\nexport default ui;\n`,
       })],
@@ -528,8 +532,13 @@ describe("bundled blueprint TypeScript sources", () => {
         "client.ts": 'export { ui } from "./lib/reach.ts";',
         "lib/reach.ts": `import * as ui from "${specifier}";\nexport { ui };\n`,
       })],
-    ])("rejects %s importing a library by relative path", async (importer, tree) => {
-      let directory = await sourceTree({ "client.ts": "" });
+    ] as const;
+
+    it.each(importers)("rejects %s importing a library by relative path", async (importer,
+        tree) => {
+      // esbuild resolves the import from the importer's real path (a temporary directory on macOS
+      // sits under a symlink), so the specifier has to climb from there for it to land at all.
+      let directory = await realpath(await sourceTree({ "client.ts": "" }));
       let specifier = relative(join(directory, dirname(importer)),
           join(gadgetLibraries, "ui", "server.ts")).replaceAll("\\", "/");
       expect(specifier.startsWith("../")).toBe(true);
@@ -542,24 +551,71 @@ describe("bundled blueprint TypeScript sources", () => {
           .toThrow(`${importer} imports ${specifier}, which is outside the blueprint's files`);
     });
 
-    it("rejects a library the repository does not have", async () => {
+    it.each(importers.flatMap(([importer, tree]) => [
+      [importer, tree, join(gadgetLibraries, "sync", "server.ts")],
+      [importer, tree, join(gadgetLibraries, "ui", "src", "dom.ts")],
+    ]))("rejects %s importing a library by absolute path", async (importer, tree, specifier) => {
+      let directory = await sourceTree(tree(specifier.replaceAll("\\", "/")));
+
+      await expect(readSourceFiles(directory, "example/files")).rejects
+          .toThrow(`${importer} imports ${specifier.replaceAll("\\", "/")}, which is outside the ` +
+              `blueprint's files`);
+    });
+
+    // A bare specifier some node_modules above the blueprint happens to satisfy resolves, unlike
+    // the ones in "rejects %s.ts importing %s" above, and is refused for where it landed.
+    it("rejects a bare import that a node_modules above the blueprint resolves", async () => {
+      let parent = await mkdtemp(join(tmpdir(), "bundled-blueprint-outside-"));
+      temporaryDirectories.push(parent);
+      let directory = join(parent, "files");
+      await mkdir(join(parent, "node_modules", "dep"), {recursive: true});
+      await writeFile(join(parent, "node_modules", "dep", "index.js"), "export const d = 1;");
+      await mkdir(directory);
+      await writeFile(join(directory, "client.ts"), 'import { d } from "dep"; console.log(d);');
+
+      await expect(readSourceFiles(directory, "example/files")).rejects
+        .toThrow("example/files: client.ts imports dep, which is outside the blueprint's files");
+    });
+
+    // A library that does not exist, or a subpath the package does not export, is not found where
+    // the alias points, and esbuild says so against the specifier as written.
+    it.each([
+      `${LIBRARY}/nope/client`,
+      `${LIBRARY}/ui`,
+      "@gadgets/bundled-blueprints",
+    ])("rejects %s, which names no library entry", async specifier => {
       let directory = await sourceTree({
-        "client.ts": 'import { x } from "gadgets:nope/client";\nx();\n',
+        "client.ts": `import * as ui from "${specifier}";\nexport default ui;\n`,
       });
 
       await expect(readSourceFiles(directory, "example/files")).rejects
-        .toThrow(/client\.ts failed to bundle: .*no gadget library named nope/su);
+        .toThrow(new RegExp(`client\\.ts failed to bundle: .*Could not resolve .*\\(originally "${
+          specifier}"\\)`, "su"));
     });
 
-    it.each(["gadgets:ui", "gadgets:ui/lib", "gadgets:ui/client/index.js", "gadgets:Ui/client"])(
-      "rejects %s, which is not a library specifier", async specifier => {
+    // Spellings that resolve to a file under libraries/ but are not the exported subpath: esbuild's
+    // extension probing takes `client.ts` and `client.js` to the same entry, and the alias takes
+    // any path under the package root to the file there.
+    it.each([`${LIBRARY}/ui/client.ts`, `${LIBRARY}/ui/client.js`, `${LIBRARY}/ui/src/dom.ts`])(
+      "rejects %s, which is not a library import", async specifier => {
         let directory = await sourceTree({
           "client.ts": `import * as ui from "${specifier}";\nexport default ui;\n`,
         });
 
         await expect(readSourceFiles(directory, "example/files")).rejects
-          .toThrow(new RegExp(`client\\.ts failed to bundle: .*${specifier.replaceAll("/", "\\/")} ` +
-              `is not a library \\(gadgets:<name>\\/client or gadgets:<name>\\/server\\)`, "su"));
+          .toThrow(`example/files: client.ts imports ${specifier}, which is not a library import ` +
+              `(${LIBRARY}/<name>/client or ${LIBRARY}/<name>/server)`);
       });
+
+    // A case-insensitive filesystem resolves the mis-cased name to the library, and the audit
+    // refuses the spelling; a case-sensitive one never finds it. Either way it fails.
+    it("rejects a mis-cased library name", async () => {
+      let directory = await sourceTree({
+        "client.ts": `import * as ui from "${LIBRARY}/Ui/client";\nexport default ui;\n`,
+      });
+
+      await expect(readSourceFiles(directory, "example/files")).rejects
+        .toThrow(/Ui\/client(?:, which is not a library import|"\))/u);
+    });
   });
 });

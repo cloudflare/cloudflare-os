@@ -9,7 +9,7 @@ and an `RpcTarget` for the callbacks. This library is that skeleton once, with n
 it knows nothing about blocks, cells or slides, and a gadget keeps its own model, protocol, DOM
 and export formats unchanged while it adopts the parts it re-implemented.
 
-## Server (`gadgets:sync/server`)
+## Server (`@gadgets/bundled-blueprints/libraries/sync/server`)
 
 - **`MutationQueue`** -- `run(work)` chains mutations so that each loads the state the previous
   one stored, whatever order their RPCs interleave in; a rejection reaches its caller alone.
@@ -38,7 +38,7 @@ The entry imports nothing from `cloudflare:workers`: the stubs are whatever the 
 `subscribe` receives, seen through the structural `SubscriberStub` (`dup`, `onRpcBroken`, the
 disposer).
 
-## Client (`gadgets:sync/client`)
+## Client (`@gadgets/bundled-blueprints/libraries/sync/client`)
 
 - **`SaveScheduler`** -- `schedule(delay?)` debounces (`DEBOUNCE_MS`), `flush()` serializes and
   a flush during a save folds into one more. The gadget supplies `save()`, which sends what is

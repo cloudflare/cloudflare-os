@@ -1,5 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { SubscriberRegistry } from "gadgets:sync/server";
+import { SubscriberRegistry } from "@gadgets/bundled-blueprints/libraries/sync/server";
 import type {
   Block,
   BlockInput,

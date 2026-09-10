@@ -18,8 +18,8 @@ blueprints/<name>/     one bundled blueprint, committed as reviewable source
   blueprint.json       install ID, presentation, provenance, bindings, version, revision
   files/               the gadget's code; may contain nested directories
     README.md
-    client.ts          import { el, iconBtn } from "gadgets:ui/client"
-    server.ts          import { MutationQueue } from "gadgets:sync/server"
+    client.ts          import { el } from "@gadgets/bundled-blueprints/libraries/ui/client"
+    server.ts          import { MutationQueue } from ".../libraries/sync/server"
     lib/protocol.ts    the document, operation and RPC types both sides share
   __tests__/           vitest, repo-only; never part of the archive
 libraries/<name>/      a gadget library: client.ts, server.ts, src/**, __tests__/** (see libraries/README.md)
@@ -36,14 +36,15 @@ generated Worker module. No binary archive is committed.
 ### Libraries
 
 A blueprint may import the shared **gadget libraries** in `libraries/` (see [its
-README](libraries/README.md)): `gadgets:<name>/client` from its client, `gadgets:<name>/server` from
-its server. The build resolves each to the library's entry and inlines what the entry uses into the
+README](libraries/README.md)) by this package's name and the subpath its `package.json` exports:
+`@gadgets/bundled-blueprints/libraries/<name>/client` from its client, `.../<name>/server` from its
+server. The build resolves each to the library's entry and inlines what the entry uses into the
 shipped `client.js` / `server.js`, as it does a `lib/` module, so the archive stays self-contained
 and a gadget created from the blueprint carries its own copy of the library as of its
 instantiation. A client may not import a library's server side (it would drag a Durable Object into
-the iframe), and a library is the one thing an import may reach outside `files/` for. The Docs,
-Sheets and Slides blueprints are built on the `ui` and `sync` libraries, with their own domain code
-in `files/`.
+the iframe), and a library, reached by that subpath, is the one thing an import may reach outside
+`files/` for. The Docs, Sheets and Slides blueprints are built on the `ui` and `sync` libraries,
+with their own domain code in `files/`.
 
 ### TypeScript sources
 
@@ -71,8 +72,9 @@ build error rather than a module that goes missing inside the sandbox.
 The build rejects a tree that would otherwise ship something other than what was written: an entry
 present as both `.ts` and `.js`, a `.ts` file outside the entry/`lib/` layout, TypeScript spelled
 `.tsx`/`.mts`/`.cts` (neither runtime has a loader for it), a `lib/` module no entry imports, an
-import that reaches outside `files/` (other than a library import), or a library import of the wrong
-side or of a library that does not exist.
+import that reaches outside `files/` by any path other than a library's exported subpath (a relative
+or absolute path into `libraries/`, a `src/` module, the package root, a bare specifier some
+`node_modules` resolves), or a library import of the wrong side or of a library that does not exist.
 
 ### Type checks and tests
 
@@ -96,9 +98,10 @@ each other, since a Durable Object has no `document`, iframe code cannot import
 
 Each follows its entries' imports, so a `lib/` or `src/` module is checked under the globals of
 whichever side imports it, and a module both sides import under both -- which is what keeps a
-shared module honest without forcing a server-only one to compile against the DOM. A
-`gadgets:<name>/<side>` import is mapped by `paths` to the library's entry in `libraries/`, so a
-blueprint is checked against the real signatures it imports.
+shared module honest without forcing a server-only one to compile against the DOM. A library import
+is this package referring to itself by name, which tsc resolves through the `exports` in
+`package.json` with no `paths` block, so a blueprint is checked against the real signatures it
+imports.
 
 Unit tests of a blueprint's `lib/` modules, or of its server, live in the blueprint's `__tests__/`
 and run under `pnpm test` (jsdom by default; a pure module's or a server's test declares
@@ -165,10 +168,13 @@ formats. The import command honors the same variable. Keeping deployment-owned f
 repo avoids modifying it when it is consumed as a submodule.
 
 A `BUNDLED_BLUEPRINTS_DIR` tree may be written in TypeScript like the blueprints here, and the build
-bundles it the same way: a syntax error or an import that does not resolve fails the build, and its
-`gadgets:` imports resolve to this package's `libraries/`. It is not type-checked, though. This
+bundles it the same way: a syntax error or an import that does not resolve fails the build, and it
+imports the gadget libraries by the same package name, which the build resolves to this package's
+`libraries/` without the tree having installed anything. It is not type-checked, though. This
 package's `tsconfig.*.json` programs are static and cover only `blueprints/` and `libraries/`, so a
-tree elsewhere needs its own `tsc` run in the repository that owns it, or can stay JavaScript.
+tree elsewhere needs its own `tsc` run in the repository that owns it, with
+`@gadgets/bundled-blueprints` linked into that workspace the way `@gadgets/scripts` already must
+be, so its editor and `tsc` resolve the same `exports`; or it can stay JavaScript.
 
 Directories using the previous `<name>.gadget` plus `<name>.json` layout remain supported, so an
 existing deployment can update this repo without coordinating a format conversion. Importing a new

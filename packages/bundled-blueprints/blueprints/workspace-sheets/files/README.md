@@ -159,15 +159,15 @@ Formatting keys accepted by the server are `b` (bold), `i` (italic), `u` (underl
 Both sides are built on the shared gadget libraries in `packages/bundled-blueprints/libraries`, which the build
 inlines into the `client.js` and `server.js` it ships.
 
-`gadgets:ui/client` draws the chrome: the element builder, the shared toolbar icons and controls
-(icon and segment buttons, groups, colour pickers, the dropdown behind the number-format menu), the
-in-page prompt that stands in for the `window.prompt` the sandbox blocks, and the save-status dot.
-`gadgets:sync/client` and `gadgets:sync/server` are the collaboration loop: the debounced,
-serialized, retrying save scheduler, the presence roster and heartbeat, the subscriber object the
-server calls back on, and in the Durable Object the mutation queue and the subscriber registry with
-its presence announcements (whose broadcasts are never awaited, so a callback may re-enter the
-queue). The cell model, the formula engine, the grid, the sheet tabs and the exports are this
-gadget's own.
+`@gadgets/bundled-blueprints/libraries/ui/client` draws the chrome: the element builder, the shared
+toolbar icons and controls (icon and segment buttons, groups, colour pickers, the dropdown behind the
+number-format menu), the in-page prompt that stands in for the `window.prompt` the sandbox blocks,
+and the save-status dot. `@gadgets/bundled-blueprints/libraries/sync/client` and `.../sync/server` are the
+collaboration loop: the debounced, serialized, retrying save scheduler, the presence roster and
+heartbeat, the subscriber object the server calls back on, and in the Durable Object the mutation
+queue and the subscriber registry with its presence announcements (whose broadcasts are never
+awaited, so a callback may re-enter the queue). The cell model, the formula engine, the grid, the
+sheet tabs and the exports are this gadget's own.
 
 In the repository the source is TypeScript under `blueprints/workspace-sheets/files/`
 (`client.ts`, `server.ts`, `lib/protocol.ts`, `lib/formula.ts`, `lib/xlsx.ts`, `lib/zip.ts`), which the build bundles

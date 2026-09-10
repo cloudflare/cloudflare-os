@@ -1,35 +1,38 @@
 # Gadget libraries
 
 Shared code the bundled blueprints import instead of carrying their own copies. A blueprint's
-`client.ts` and `server.ts` may import `gadgets:<name>/client` and `gadgets:<name>/server`; the
-blueprint build (`../src/files.ts`) resolves each to the library's entry here and inlines what the
-entry uses into the `client.js` / `server.js` the blueprint ships, the way it inlines a blueprint's
-own `lib/` modules. The archive stays self-contained, and a gadget created from the blueprint
-carries its own copy of the library as of its creation; nothing resolves the specifier at runtime,
-and a gadget the agent writes cannot import one.
+`client.ts` and `server.ts` import a library by this package's name and the subpath its
+`package.json` exports, `@gadgets/bundled-blueprints/libraries/<name>/client` and
+`.../<name>/server`; the blueprint build (`../src/files.ts`) resolves each to the library's entry
+here and inlines what the entry uses into the `client.js` / `server.js` the blueprint ships, the way
+it inlines a blueprint's own `lib/` modules. The archive stays self-contained, and a gadget created from the
+blueprint carries its own copy of the library as of its creation; nothing resolves the package name
+at runtime, and a gadget the agent writes cannot import one.
 
-Nothing here is deployed on its own, and nothing imports it by package name: the blueprint build
-and the package's type-check programs reach it by path, and the `gadgets:` specifier is the only
-door a blueprint has.
+Nothing here is deployed on its own. The package name is how tsc, vitest and an editor resolve the
+import, through `exports`, with no alias or `paths` block; the build resolves the same name to this
+directory itself, so a blueprint tree with no `node_modules` above it builds too.
 
 ## Layout
 
 ```
 <name>/
-  client.ts        entry of gadgets:<name>/client, inlined into a blueprint's client.js
-  server.ts        entry of gadgets:<name>/server, inlined into a blueprint's server.js
+  client.ts        entry of .../libraries/<name>/client, inlined into a blueprint's client.js
+  server.ts        entry of .../libraries/<name>/server, inlined into a blueprint's server.js
   src/**           the modules the two entries import; never shipped on their own
   __tests__/**     vitest, jsdom by default, `// @vitest-environment node` for a pure module;
                    `server.test.ts` / `<topic>.server.test.ts` for a test of the server side
   README.md        what the library does and how it is put together
 ```
 
-A library may import another (`gadgets:ui/client` from a library built on it, say); the blueprint
-build resolves that import the same way. A client entry may not import a library's server side, and
-the build rejects a blueprint that does: it would drag a Durable Object into the iframe. Nor may a
-blueprint import a library module by relative path (`../../../libraries/ui/src/el.ts`); the
-build rejects any relative import that leaves the blueprint's `files/`, so the specifier is the only
-door.
+A library may import another (`@gadgets/bundled-blueprints/libraries/ui/client` from a library built
+on it, say); the blueprint build resolves that import the same way. A client entry may not import a
+library's server side, and the build rejects a blueprint that does: it would drag a Durable Object
+into the iframe. A blueprint imports its own files by relative path and a library by package
+subpath; everything else the bundle inlines fails the build -- a relative or absolute path into
+`libraries/` (`../../../libraries/ui/src/el.ts`), a library's `src/` module by package path, the
+package root, or a bare specifier some `node_modules` above the blueprint happens to satisfy -- so
+the exported subpath is the only door.
 
 ## Rules for a library
 

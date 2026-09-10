@@ -64,7 +64,7 @@ function fakeStub() {
   return stub as typeof stub & Callbacks & SubscriberStub;
 }
 
-describe("gadgets:sync/server", () => {
+describe("sync/server", () => {
   it("serializes overlapping operations, versions their items and tells every subscriber", async () => {
     const gadget = new Gadget();
     const ada = fakeStub();
