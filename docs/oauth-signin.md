@@ -34,21 +34,28 @@ what persists a usable connected account. `GatekeeperVendor.connectAccount` take
 
 ## Sign-in flow
 
-1. The client calls `PublicApi.startGatekeeperLogin(vendorId)`. The backend creates a short-lived
-   `PendingLogin` DO, hands the gatekeeper a `LoginConnectCallbackImpl`, and returns the gatekeeper's
-   OAuth `url` plus an `attempt` stub (a capability wrapping the `PendingLogin` DO — no login id is
-   exposed to the client).
-2. The client opens `url` as a pop-up, keeping itself as the pop-up's opener.
+1. The client calls `PublicApi.startGatekeeperLogin(vendorId)`. The backend mints a per-flow
+   nonce, creates a short-lived `PendingLogin` DO named by the nonce's hash, hands the gatekeeper a
+   `LoginConnectCallbackImpl`, and returns the gatekeeper's OAuth `url`, the `nonce`, and an
+   `attempt` stub (a capability wrapping the `PendingLogin` DO — no login id is exposed to the
+   client). The handoff that follows is the same one every connect flow uses; see
+   [connect-handoff.md](connect-handoff.md).
+2. The client opens `url` as a disowned pop-up, writing the nonce into the pop-up's own
+   sessionStorage before navigating it (`openDisownedPopup` in `connectHandoff.ts`). No page in the
+   flow ever holds `window.opener`.
 3. When the gatekeeper finishes, it calls `complete(user)`. The callback reads
    `user.getAuthenticatedEmail()`, resolves/creates the email-keyed `UserDurableObject`, mints a
    session, and parks the `"<email>:<secret>"` token in the `PendingLogin` DO under the hash of a
-   fresh handoff ticket. `complete()` returns that ticket, and the gatekeeper's final page posts it to
-   its opener — exactly as the connect-account flow does (`connectHandoffPageHtml` in gatekeeper-kit).
-4. The opener calls `attempt.claim(ticket)`; the `PendingLogin` DO releases the token only for the
-   matching ticket, once. This is what binds the session to the browser that started the attempt:
-   the sign-in URL is a bearer capability, so whoever holds `attempt` without the ticket (an attacker
-   who phished a victim into finishing the flow) gets nothing, and the unclaimed token is wiped after
-   two minutes.
+   fresh handoff ticket. `complete()` returns that ticket, and the gatekeeper's final page
+   (`connectHandoffPageHtml` in gatekeeper-kit) navigates the pop-up to the Workshop's
+   `/connect/handoff` page with the ticket in the URL fragment.
+4. That page calls `PublicApi.confirmLogin(ticket, nonce)`, which finds the `PendingLogin` DO by the
+   nonce's hash and marks the delivered token confirmed if the ticket matches. The login tab polls
+   `attempt.receive()`, which releases the token only once it is confirmed, once. This is what binds
+   the session to the browser that started the attempt: the sign-in URL is a bearer capability, so
+   whoever holds `attempt` without the pop-up holding the nonce (an attacker who phished a victim
+   into finishing the flow) gets nothing, and the unreceived token is wiped after two minutes. The
+   pop-up never sees the token.
 5. The client stores the token and authenticates as usual.
 
 Sign-in does **not** persist a connected account: the minimal-scope grant is only used to read the
@@ -79,9 +86,10 @@ In local dev, `run-dev-server.ts` seeds each gatekeeper's `CLIENT_ID`/`CLIENT_SE
 ## Storage / bindings
 
 - `PendingLogin` (DO) — short-lived bridge between a gatekeeper login pop-up and the browser that
-  started the attempt, reached via `ctx.exports` (no explicit binding). Stores the delivered token
-  under the ticket's hash until `claim()` consumes it; an alarm wipes an unclaimed result after two
-  minutes.
+  started the attempt, reached via `ctx.exports` (no explicit binding) and named by the hash of the
+  attempt's nonce. Stores the delivered token under the ticket's hash until the pop-up's
+  `confirmLogin()` confirms it and the login tab's `receive()` consumes it; an alarm wipes an
+  unreceived result after two minutes.
 
 ## Code layout
 
@@ -93,4 +101,5 @@ auth/
 ```
 
 Client-side: `ServerConfigContext` exposes `authVendors` and `passwordAuthEnabled`;
-`components/auth/OAuthButtons` renders the sign-in options (pop-up + handoff ticket + `attempt.claim()`).
+`components/auth/OAuthButtons` renders the sign-in options (disowned pop-up carrying the nonce, polled
+`attempt.receive()`); `ConnectHandoffPage` is the pop-up's landing page (`confirmLogin(ticket, nonce)`).
