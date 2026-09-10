@@ -2,10 +2,12 @@
   "name": "@gadgets/bundled-blueprints",
   "version": "1.0.0",
   "private": true,
-  "description": "The blueprints a deployment ships with and offers as its standard output formats, the gadget libraries they import as `gadgets:<name>/client` and `gadgets:<name>/server`, and the build that turns a blueprint directory into the archives the Workshop backend installs. Not a deployable Worker; the backend's build scripts import `src/`.",
+  "description": "The blueprints a deployment ships with and offers as its standard output formats, the gadget libraries they import as `@gadgets/bundled-blueprints/libraries/<name>/client` and `.../server`, and the build that turns a blueprint directory into the archives the Workshop backend installs. Not a deployable Worker; the backend's build scripts import `src/`.",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./libraries/*/client": "./libraries/*/client.ts",
+    "./libraries/*/server": "./libraries/*/server.ts"
   },
   "scripts": {
     "test:run": "vitest run",

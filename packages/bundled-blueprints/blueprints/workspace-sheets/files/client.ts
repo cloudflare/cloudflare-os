@@ -1,8 +1,8 @@
 // ---------------------------------------------------------------------------
 // Sheets — a spreadsheet with a formula engine, built over the shared gadget
-// libraries: `gadgets:ui/client` draws the chrome and `gadgets:sync/client` keeps
-// this browser in step with the Durable Object. The cell model, the formula engine
-// and the grid are this gadget's own. See README.md for architecture.
+// libraries, imported by this package's name: `ui` draws the chrome and `sync`
+// keeps this browser in step with the Durable Object. The cell model, the formula
+// engine and the grid are this gadget's own. See README.md for architecture.
 // ---------------------------------------------------------------------------
 import {
   ICONS as UI_ICONS,
@@ -16,7 +16,7 @@ import {
   promptInline,
   segBtn,
   statusIndicator,
-} from "gadgets:ui/client";
+} from "@gadgets/bundled-blueprints/libraries/ui/client";
 import {
   PresenceReporter,
   PresenceRoster,
@@ -25,8 +25,8 @@ import {
   type SyncHost,
   collaboratorFor,
   createSubscriber,
-} from "gadgets:sync/client";
-import type { SelectOption } from "gadgets:ui/client";
+} from "@gadgets/bundled-blueprints/libraries/sync/client";
+import type { SelectOption } from "@gadgets/bundled-blueprints/libraries/ui/client";
 import type {
   Cell,
   CellFmt,

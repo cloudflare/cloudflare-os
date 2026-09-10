@@ -1,6 +1,7 @@
 /**
- * The sync library's browser entry (`gadgets:sync/client`): what a gadget's `client.js` needs to
- * keep one Durable Object and many browsers in step, without any of the gadget's own model.
+ * The sync library's browser entry (`@gadgets/bundled-blueprints/libraries/sync/client`): what a
+ * gadget's `client.js` needs to keep one Durable Object and many browsers in step, without any of
+ * the gadget's own model.
  *
  * - {@link SaveScheduler} debounces, serializes and retries saves; the gadget says what is dirty
  *   and how to send it.

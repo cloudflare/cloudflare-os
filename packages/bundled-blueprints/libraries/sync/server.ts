@@ -1,6 +1,7 @@
 /**
- * The sync library's server entry (`gadgets:sync/server`): what a gadget's Durable Object needs to
- * be the authority many browsers share, without any of the gadget's own model.
+ * The sync library's server entry (`@gadgets/bundled-blueprints/libraries/sync/server`): what a
+ * gadget's Durable Object needs to be the authority many browsers share, without any of the
+ * gadget's own model.
  *
  * - {@link MutationQueue} commits mutations in call order, each seeing the state the last one left.
  * - {@link SubscriberRegistry} keeps the subscribed browsers' stubs, fans events out to them with

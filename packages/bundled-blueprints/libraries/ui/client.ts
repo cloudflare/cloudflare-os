@@ -1,11 +1,12 @@
 /**
- * The ui library's browser entry (`gadgets:ui/client`): the DOM helpers the document-style gadgets
- * share, DOM-only -- nothing here talks RPC or storage. `el` builds elements and `icon` draws an SVG
- * from the `ICONS` paths; `iconBtn`, `segBtn`, `group`, `colorBtn` and `customSelect` assemble a
- * toolbar; `promptInline` stands in for the sandbox's blocked `window.prompt`; `statusIndicator`
- * is the save-status dot; `relativeTime` phrases a timestamp; and the image helpers turn a picked
- * or pasted file into a data URL that fits a budget. Each is documented at its definition, and the
- * README records where this behaviour deliberately differs from the copies it replaces.
+ * The ui library's browser entry (`@gadgets/bundled-blueprints/libraries/ui/client`): the DOM
+ * helpers the document-style gadgets share, DOM-only -- nothing here talks RPC or storage. `el`
+ * builds elements and `icon` draws an SVG from the `ICONS` paths; `iconBtn`, `segBtn`, `group`,
+ * `colorBtn` and `customSelect` assemble a toolbar; `promptInline` stands in for the sandbox's
+ * blocked `window.prompt`; `statusIndicator` is the save-status dot; `relativeTime` phrases a
+ * timestamp; and the image helpers turn a picked or pasted file into a data URL that fits a budget.
+ * Each is documented at its definition, and the README records where this behaviour deliberately
+ * differs from the copies it replaces.
  */
 
 export { type ElChild, type ElProps, type ElPropValue, el, icon } from "./src/dom.ts";

@@ -1,5 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { MutationQueue, SubscriberRegistry } from "gadgets:sync/server";
+import { MutationQueue, SubscriberRegistry } from "@gadgets/bundled-blueprints/libraries/sync/server";
 import { workbookToXlsx } from "./lib/xlsx.ts";
 import type {
   Cell,

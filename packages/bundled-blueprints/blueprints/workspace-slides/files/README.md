@@ -29,9 +29,9 @@ imported from the libraries in `packages/bundled-blueprints/libraries`, which th
 inlines into the two files installed here:
 
 ```ts
-import { el, loadImage, readFileAsDataURL } from "gadgets:ui/client";
-import { createSubscriber } from "gadgets:sync/client";   // client.ts
-import { SubscriberRegistry } from "gadgets:sync/server"; // server.ts
+import { el, loadImage, readFileAsDataURL } from "@gadgets/bundled-blueprints/libraries/ui/client";
+import { createSubscriber } from "@gadgets/bundled-blueprints/libraries/sync/client"; // client.ts
+import { SubscriberRegistry } from "@gadgets/bundled-blueprints/libraries/sync/server"; // server.ts
 ```
 
 - **`ui`** — `el(tag, props, children)` builds every element in

@@ -6,13 +6,14 @@
 // the running gadget and the agent that later edits it see one JavaScript file per side, as they
 // do for a blueprint written in plain JavaScript.
 
-import { access, lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Y from "yjs";
-import type { Metafile, Plugin } from "esbuild";
+import type { Metafile } from "esbuild";
+import pkg from "../package.json" with { type: "json" };
 
 const MAGIC = 0xec2e2d3a2300e317n;
 const VERSION = 1;
@@ -201,8 +202,8 @@ export async function readSourceFiles(
  *
  * `external` is what that runtime supplies, and it is little: the iframe supplies nothing, and the
  * Durable Object gets workerd's own `cloudflare:*`. Everything else a blueprint imports has to be a
- * file it owns or a gadget library (see {@link gadgetLibraryImports}), so a bare `import "yjs"`
- * fails this build rather than going missing inside the sandbox.
+ * file it owns or a gadget library (see {@link auditInputs}), so a bare `import "yjs"` fails this
+ * build rather than going missing inside the sandbox.
  */
 const ENTRY_POINTS = [
   { name: "client", platform: "browser", external: [] },
@@ -212,78 +213,28 @@ const ENTRY_POINTS = [
 type EntryPoint = (typeof ENTRY_POINTS)[number];
 
 /**
- * Where the shared gadget libraries live: `gadgets:<name>/<side>` names `<name>/<side>.ts` in this
- * package's `libraries/`, beside the `src/` this module is in.
+ * This package's name, read from its manifest so that it cannot drift from the `exports` there: a
+ * blueprint imports a gadget library as `<PACKAGE_NAME>/libraries/<name>/<side>`, the subpath the
+ * manifest exports, which is how tsc, vitest and an editor resolve the import with no alias.
  */
-const gadgetLibrariesDir = (): string =>
-  resolve(dirname(fileURLToPath(import.meta.url)), "..", "libraries");
-
-/** The shape of a library specifier: the library's directory name and the side imported. */
-const LIBRARY_SPECIFIER = /^gadgets:([a-z][a-z0-9-]*)\/(client|server)$/u;
+const PACKAGE_NAME: string = pkg.name;
 
 /**
- * Resolves a blueprint's `gadgets:<name>/<side>` imports to the library's entry in `libraries/`,
- * so esbuild inlines what the entry uses into the bundle the way it
- * inlines a `lib/` module. The archive stays self-contained: a gadget created from the blueprint
- * carries its own copy of the library as of its instantiation, and nothing resolves the specifier
- * at runtime.
- *
- * The side has to be the entry's -- a client that imported `gadgets:x/server` would drag a Durable
- * Object into the iframe -- and the library has to exist; a library's own import of another library
- * resolves through the same rule. Each failure is reported as the import that caused it.
+ * This package's root, beside the `src/` this module is in. The build aliases {@link PACKAGE_NAME}
+ * to it (see {@link bundleTypeScriptSources}), so a blueprint's library import resolves to the
+ * libraries this build ships with whether or not a `node_modules` above the blueprint could resolve
+ * the package: the tests' temporary fixtures and a `BUNDLED_BLUEPRINTS_DIR` tree elsewhere have
+ * none.
  */
-function gadgetLibraryImports(entry: EntryPoint): Plugin {
-  return {
-    name: "gadget-library-imports",
-    setup(pluginBuild) {
-      // A Go regular expression, so no `u` flag: esbuild compiles the filter itself.
-      pluginBuild.onResolve({ filter: /^gadgets:/ }, async args => {
-        const parsed = LIBRARY_SPECIFIER.exec(args.path);
-        if (!parsed) {
-          return { errors: [{ text: `${args.path} is not a library ` +
-              `(gadgets:<name>/client or gadgets:<name>/server)` }] };
-        }
-        const [, name, side] = parsed;
-        if (side !== entry.name) {
-          return { errors: [{ text: `imports ${args.path} from the ${entry.name} side` }] };
-        }
-        const path = join(gadgetLibrariesDir(), name, `${side}.ts`);
-        try {
-          await access(path);
-        } catch {
-          return { errors: [{ text: `no gadget library named ${name}` }] };
-        }
-        return { path };
-      });
-    },
-  };
-}
+const packageRoot = (): string => resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
- * Rejects a relative import written in the blueprint that resolves outside its files/ tree.
- *
- * Containment is decided where the import is written, not where it lands: a `../../x` from
- * `client.ts` is refused even if it would land somewhere the build otherwise inlines from, such as
- * a gadget library. The libraries have one door, the `gadgets:` specifier, so a blueprint cannot
- * reach a library's `src/` module by path and the metafile check in {@link bundleTypeScriptSources}
- * only ever sees library inputs that a library's own imports brought in. Imports written inside a
- * library pass through untouched; that same metafile check keeps them out of `node_modules`.
+ * The shape of a library import as a blueprint may write it: {@link LIBRARY_PREFIX} and then the
+ * library's directory name and the side imported, with no extension -- the two subpath patterns
+ * the manifest exports.
  */
-function ownFileImports(filesDir: string): Plugin {
-  return {
-    name: "own-file-imports",
-    setup(pluginBuild) {
-      // A Go regular expression, so no `u` flag: esbuild compiles the filter itself.
-      pluginBuild.onResolve({ filter: /^\.\.?\// }, args => {
-        if (!args.importer || !contains(filesDir, args.importer)) return undefined;
-        if (contains(filesDir, resolve(dirname(args.importer), args.path))) return undefined;
-        const importer = relative(filesDir, args.importer).replaceAll("\\", "/");
-        return { errors: [{ text: `${importer} imports ${args.path}, which is outside the ` +
-            `blueprint's files` }] };
-      });
-    },
-  };
-}
+const LIBRARY_PREFIX = `${PACKAGE_NAME}/libraries/`;
+const LIBRARY_SUBPATH = /^([a-z][a-z0-9-]*)\/(client|server)$/u;
 
 /**
  * Whether `path` is `directory` or under it. `relative` answers with a `..` first segment when it
@@ -371,22 +322,31 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  * still ships may import it too -- so a blueprint written in JavaScript builds exactly as it did
  * before TypeScript was allowed here.
  *
+ * A gadget library is inlined the same way. The blueprint imports it by this package's name
+ * (`<PACKAGE_NAME>/libraries/<name>/<side>`), and esbuild is given that name as an alias for the
+ * package root, so the import resolves to the libraries beside this module without a
+ * `node_modules` above the blueprint: a `BUNDLED_BLUEPRINTS_DIR` tree elsewhere builds against the
+ * libraries this build ships with. The archive stays self-contained -- a gadget created from the
+ * blueprint carries its own copy of the library as of its instantiation, and nothing resolves the
+ * package name at runtime.
+ *
  * Bundles are readable rather than minified, because the agent edits the installed file. The only
  * imports that survive are the ones the entry's runtime supplies (see {@link ENTRY_POINTS}); every
- * other specifier has to resolve to a file the blueprint owns or to a gadget library (see
- * {@link gadgetLibraryImports}). esbuild enforces that for bare specifiers, which it resolves or
- * fails on, but not for URLs: `import x from "https://..."` is left in the output as an external
- * without a word, so the bundle's surviving imports are checked against the entry's allowlist here.
+ * other specifier has to resolve to a file the blueprint owns or to a gadget library. esbuild
+ * enforces that for bare specifiers, which it resolves or fails on, but not for URLs: `import x
+ * from "https://..."` is left in the output as an external without a word, so the bundle's
+ * surviving imports are checked against the entry's allowlist here.
  *
  * Rejected, rather than silently mis-shipped: an entry or a `lib/` module present as both `x.ts`
  * and `x.js`, where TypeScript would type the one and the bundle ship the other; a `.ts` file that
  * is neither an entry nor under `lib/`; a TypeScript dialect the archive has no place for (see
  * {@link UNSUPPORTED_TYPESCRIPT_PATTERN}); a `lib/` module no entry imports, which would be dropped
- * from the archive; a relative import that escapes files/ (see {@link ownFileImports}), or a
- * library input from `node_modules`, either of which would inline code the blueprint does not own;
- * a dynamic `import()` of a computed path, which the bundler cannot check (see
- * {@link COMPUTED_DYNAMIC_IMPORT_PATTERN}); and a reference to `require` the bundler could not
- * resolve away, which would throw when reached (see {@link RESIDUAL_REQUIRE_PATTERN}).
+ * from the archive; an input the bundle inlined that is neither one of the blueprint's own files
+ * nor a library reached by its package subpath, from the right side, which would inline code the
+ * blueprint does not own (see {@link auditInputs}); a dynamic `import()` of a computed path, which
+ * the bundler cannot check (see {@link COMPUTED_DYNAMIC_IMPORT_PATTERN}); and a reference to
+ * `require` the bundler could not resolve away, which would throw when reached (see
+ * {@link RESIDUAL_REQUIRE_PATTERN}).
  */
 async function bundleTypeScriptSources(
   filesDir: string,
@@ -435,11 +395,10 @@ async function bundleTypeScriptSources(
   // (the importer's, for one) never needs it.
   const { build } = await import("esbuild");
   // esbuild reports every path it touches with symlinks resolved (a temporary directory on macOS
-  // sits under one), so the roots it is compared against are resolved the same way.
-  const [rootDir, librariesDir] = await Promise.all([
-    realpath(filesDir),
-    realpath(gadgetLibrariesDir()),
-  ]);
+  // sits under one), so the roots it is compared against, and the root it is given to resolve the
+  // package name to, are resolved the same way.
+  const [rootDir, packageDir] = await Promise.all([realpath(filesDir), realpath(packageRoot())]);
+  const librariesDir = join(packageDir, "libraries");
   // Every input esbuild inlined into some bundle, as an archive path: what the bundles can witness
   // of a `lib/` module being wanted.
   const bundled = new Set<string>();
@@ -452,7 +411,7 @@ async function bundleTypeScriptSources(
         entryPoints: [`${entry.name}.ts`],
         bundle: true,
         external: [...entry.external],
-        plugins: [ownFileImports(rootDir), gadgetLibraryImports(entry)],
+        alias: { [PACKAGE_NAME]: packageDir },
         format: "esm",
         platform: entry.platform,
         target: GADGET_TARGET,
@@ -471,22 +430,8 @@ async function bundleTypeScriptSources(
     } catch (err) {
       invalid(label, `${entry.name}.ts failed to bundle: ${errorMessage(err)}`);
     }
-    // Inputs are relative to files/. The plugins above decide what resolves, so this is defense in
-    // depth over what was actually inlined: an input that is not one of the blueprint's own files
-    // has to be under the libraries directory, and never from node_modules -- a library's npm
-    // dependency would be inlined into an archive nothing audits.
-    for (const input of Object.keys(metafile.inputs)) {
-      if (files.has(input)) {
-        bundled.add(input);
-        continue;
-      }
-      const absolute = resolve(rootDir, input);
-      const inLibraries = contains(librariesDir, absolute) &&
-          !absolute.split(/[\\/]/u).includes("node_modules");
-      if (!inLibraries) {
-        invalid(label, `${entry.name}.ts imports ${input}, which is outside the blueprint's files ` +
-            `and the gadget libraries`);
-      }
+    for (const input of auditInputs(metafile, entry, files, rootDir, librariesDir, label)) {
+      bundled.add(input);
     }
     for (const bundle of Object.values(metafile.outputs)) {
       for (const imported of bundle.imports) {
@@ -518,6 +463,85 @@ async function bundleTypeScriptSources(
     }
   }
   return new Map([...output].toSorted(([a], [b]) => compareNames(a, b)));
+}
+
+/**
+ * Walks what esbuild inlined into an entry's bundle, import by import, and rejects anything that is
+ * not the blueprint's own or a gadget library reached the one way a blueprint may reach one.
+ * Returns the blueprint's own files the bundle inlined, as archive paths.
+ *
+ * The walk starts at the entry and follows `metafile.inputs[*].imports`, so every input is met as
+ * the edge that brought it in and an error names the importer and the specifier as written. An
+ * import written in a blueprint file that lands outside the blueprint's files has to be a library
+ * import: spelled `<PACKAGE_NAME>/libraries/<name>/<side>` (see {@link LIBRARY_SUBPATH}), of the
+ * entry's own side -- a client that imported a library's server side would drag a Durable Object
+ * into the iframe -- and resolved to exactly that library's `<side>.ts`, since esbuild's extension
+ * probing would otherwise also accept a `client/index.ts` or a `client.tsx` beside it. Any other
+ * spelling -- a relative path that climbs out of files/, an absolute path, a bare specifier some
+ * `node_modules` above the blueprint happens to satisfy, the package root or one of its `src/`
+ * modules -- is refused, so the package subpath is the libraries' only door and a library's `src/`
+ * is not reachable from a blueprint by any path. An import written inside a library may reach any
+ * module under `libraries/`, but never `node_modules`: a library's npm dependency would be inlined
+ * into an archive nothing audits. An external import is not an input and is not walked; the
+ * bundle's surviving imports are checked against the entry's runtime in
+ * {@link bundleTypeScriptSources}.
+ *
+ * Types are erased before esbuild builds this graph, so an `import type` of the wrong side is not
+ * seen here and not an error: nothing of it reaches the bundle.
+ */
+function auditInputs(
+  metafile: Metafile,
+  entry: EntryPoint,
+  files: ReadonlyMap<string, string>,
+  rootDir: string,
+  librariesDir: string,
+  label: string,
+): Set<string> {
+  const own = new Set<string>();
+  const entryPath = `${entry.name}.ts`;
+  const seen = new Set([entryPath]);
+  const queue = [entryPath];
+  for (let importer = queue.pop(); importer !== undefined; importer = queue.pop()) {
+    if (files.has(importer)) own.add(importer);
+    for (const imported of metafile.inputs[importer]?.imports ?? []) {
+      if (imported.external) continue;
+      const input = imported.path;
+      const specifier = imported.original ?? input;
+      if (!files.has(input)) {
+        // Inputs are relative to files/.
+        const absolute = resolve(rootDir, input);
+        if (files.has(importer)) {
+          if (specifier !== PACKAGE_NAME && !specifier.startsWith(`${PACKAGE_NAME}/`)) {
+            invalid(label, `${importer} imports ${specifier}, which is outside the blueprint's ` +
+                `files`);
+          }
+          const library = specifier.startsWith(LIBRARY_PREFIX)
+              ? LIBRARY_SUBPATH.exec(specifier.slice(LIBRARY_PREFIX.length))
+              : null;
+          if (!library) {
+            invalid(label, `${importer} imports ${specifier}, which is not a library import ` +
+                `(${LIBRARY_PREFIX}<name>/client or ${LIBRARY_PREFIX}<name>/server)`);
+          }
+          const [, name, side] = library;
+          if (side !== entry.name) {
+            invalid(label, `${importer} imports ${specifier} from the ${entry.name} side`);
+          }
+          if (absolute !== join(librariesDir, name, `${side}.ts`)) {
+            invalid(label, `${importer} imports ${specifier}, which does not resolve to the ` +
+                `library's ${side}.ts`);
+          }
+        } else if (!contains(librariesDir, absolute) ||
+            absolute.split(/[\\/]/u).includes("node_modules")) {
+          invalid(label, `${importer} imports ${specifier}, which is outside the gadget libraries`);
+        }
+      }
+      if (!seen.has(input)) {
+        seen.add(input);
+        queue.push(input);
+      }
+    }
+  }
+  return own;
 }
 
 /**
@@ -571,7 +595,7 @@ function importedModules(
  * one resolves is the bundler's business: the path as written, an omitted extension, a directory's
  * index module, and the TypeScript source behind a JavaScript extension. A specifier reaching above
  * files/ resolves to nothing here -- the bundle rejects that as an import outside the blueprint
- * (see {@link ownFileImports}).
+ * (see {@link auditInputs}).
  */
 function resolveWithinFiles(importer: string, specifier: string): string[] {
   const segments = importer.split("/").slice(0, -1);
