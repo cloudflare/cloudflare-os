@@ -1,0 +1,25 @@
+packages/mcp-shared/src/account.ts
+  s_3ca7dcdfd43170::t_6a074d43f5d448 166-169,579,676-680
+packages/mcp-shared/__tests__/account-endpoint.test.ts
+  s_3ca7dcdfd43170::t_212a7f92c3b962 886-917
+packages/workshop-frontend/src/connectHandoff.test.tsx
+  s_3ca7dcdfd43170::t_6a074d43f5d448 171-173
+packages/workshop-frontend/src/connectHandoff.ts
+  s_3ca7dcdfd43170::t_6a074d43f5d448 90-94,96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8092b32b2b12d76aa788d164fd9bb8c2027d8aac",
+  "prompts": {},
+  "sessions": {
+    "s_3ca7dcdfd43170": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "025ba785-ecf3-4814-b092-053b914bc1da",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
