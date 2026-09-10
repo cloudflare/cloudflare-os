@@ -10,7 +10,7 @@ export {
   serializeArchive,
   validatePortablePaths,
 } from "./files.ts";
-export type { FormatBlueprintManifest, FormatBlueprintPresentation } from "./manifest.ts";
-export { parseFormatBlueprintManifest, parseFormatBlueprintPresentation } from "./manifest.ts";
+export type { BundledBlueprintManifest, BundledBlueprintPresentation } from "./manifest.ts";
+export { parseBundledBlueprintManifest, parseBundledBlueprintPresentation } from "./manifest.ts";
 export type { GeneratedModule, GenerateOptions } from "./generate.ts";
-export { BUNDLED_BLUEPRINTS_DIR, generateFormatBlueprintsModule } from "./generate.ts";
+export { BUNDLED_BLUEPRINTS_DIR, generateBundledBlueprintsModule } from "./generate.ts";

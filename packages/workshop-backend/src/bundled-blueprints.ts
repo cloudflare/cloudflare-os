@@ -1,8 +1,9 @@
-// Installing the deployment's bundled output-format blueprints.
+// Installing the deployment's bundled blueprints, which it then offers as its standard output
+// formats.
 //
 // The reviewable source and its presentation come from a directory chosen at build time (see
-// scripts/build-format-blueprints.ts), so a deployment ships its own formats by pointing
-// FORMAT_BLUEPRINTS_DIR at its own tree rather than by editing this repo.
+// scripts/build-bundled-blueprints.ts), so a deployment ships its own formats by pointing
+// BUNDLED_BLUEPRINTS_DIR at its own tree rather than by editing this repo.
 //
 // Installation writes an ordinary blueprint -- metadata into BLUEPRINTS, the code snapshot into
 // BLUEPRINT_CONTENT -- exactly as publishing does. Nothing downstream knows these are special:
@@ -11,7 +12,7 @@
 
 import { BlueprintMetadata, BlueprintPublicInfo } from "@gadgets/workshop-shared/api";
 import { BlueprintKvRecord, parseBlueprintArchive } from "./blueprint-archive.js";
-import { BundledFormatBlueprint, FORMAT_BLUEPRINTS } from "./generated/format-blueprints.js";
+import { BundledBlueprint, BUNDLED_BLUEPRINTS } from "./generated/bundled-blueprints.js";
 import { fingerprint } from "./admin-config.js";
 import { createWorkshopLogger } from "./observability";
 
@@ -27,8 +28,8 @@ type InstallEnv = Pick<Cloudflare.Env, "BLUEPRINTS" | "BLUEPRINT_CONTENT">;
  * description would otherwise build, deploy, and change nothing on a deployment that had already
  * installed. `contentHash` covers the generated archive, including direct edits to source files.
  */
-export function formatBlueprintsManifestVersion(): string {
-  return FORMAT_BLUEPRINTS
+export function bundledBlueprintsManifestVersion(): string {
+  return BUNDLED_BLUEPRINTS
       .map(e => `${e.blueprintId}@${e.revision}+${e.contentHash}+` +
           fingerprint(JSON.stringify([e.title, e.description, e.author, e.output])))
       .toSorted()
@@ -36,7 +37,7 @@ export function formatBlueprintsManifestVersion(): string {
 }
 
 // Install one bundled blueprint, returning its public info for the featured mirror.
-async function installOne(env: InstallEnv, entry: BundledFormatBlueprint)
+async function installOne(env: InstallEnv, entry: BundledBlueprint)
     : Promise<BlueprintPublicInfo> {
   // Parse through the ordinary archive reader so a corrupt bundled file fails the same way an
   // uploaded one would, rather than producing a half-installed blueprint.
@@ -78,17 +79,17 @@ async function installOne(env: InstallEnv, entry: BundledFormatBlueprint)
  * Install every bundled blueprint, skipping (and logging) any that fail. Returns the public info
  * of those that installed, so the caller can offer them to users.
  */
-export async function installFormatBlueprints(env: InstallEnv): Promise<BlueprintPublicInfo[]> {
+export async function installBundledBlueprints(env: InstallEnv): Promise<BlueprintPublicInfo[]> {
   let installed: BlueprintPublicInfo[] = [];
-  for (let entry of FORMAT_BLUEPRINTS) {
+  for (let entry of BUNDLED_BLUEPRINTS) {
     try {
       installed.push(await installOne(env, entry));
-      logger.info("installed format blueprint", {
+      logger.info("installed bundled blueprint", {
         event: "formats.install.ok", blueprintId: entry.blueprintId,
       });
     } catch (err) {
       // One bad archive must not deny the deployment the others.
-      logger.error("failed to install format blueprint", {
+      logger.error("failed to install bundled blueprint", {
         event: "formats.install.failed", blueprintId: entry.blueprintId, error: err,
       });
     }

@@ -38,20 +38,20 @@ const BUILT = ["dist", "node_modules"];
 
 /**
  * The blueprint set a deployment points the build at instead of the bundled one, when it does.
- * `FORMAT_BLUEPRINTS_DIR` may point outside the workspace, so this can be a `../` path. Resolved
- * exactly as `workshop-backend/scripts/build-format-blueprints.ts` resolves it: against that
- * package's root. Unset, the build reads `packages/format-blueprints/blueprints`, which the entry
+ * `BUNDLED_BLUEPRINTS_DIR` may point outside the workspace, so this can be a `../` path. Resolved
+ * exactly as `workshop-backend/scripts/build-bundled-blueprints.ts` resolves it: against that
+ * package's root. Unset, the build reads `packages/bundled-blueprints/blueprints`, which the entry
  * for that package below already covers.
  *
  * Read here only to build the watch-mode lists; a cached `vp run` strips it, and the suite it runs
  * (`vitest run`) never consults these exports.
  */
-const externalBlueprintsDir: WorkerInput[] = process.env.FORMAT_BLUEPRINTS_DIR
+const externalBlueprintsDir: WorkerInput[] = process.env.BUNDLED_BLUEPRINTS_DIR
   ? [{
     kind: "dir",
     path: relative(
       WORKSPACE_DIR,
-      resolve(WORKSPACE_DIR, "packages/workshop-backend", process.env.FORMAT_BLUEPRINTS_DIR),
+      resolve(WORKSPACE_DIR, "packages/workshop-backend", process.env.BUNDLED_BLUEPRINTS_DIR),
     ).replaceAll("\\", "/"),
   }]
   : [];
@@ -70,7 +70,7 @@ const WORKER_INPUTS: WorkerInput[] = [
   { kind: "dir", path: "packages/typed-storage", excludeDirs: BUILT },
   // The bundled blueprints, the libraries the blueprint build inlines into their archives, and the
   // build itself: an edit to any of them changes the generated module the Worker ships.
-  { kind: "dir", path: "packages/format-blueprints", excludeDirs: BUILT },
+  { kind: "dir", path: "packages/bundled-blueprints", excludeDirs: BUILT },
   ...externalBlueprintsDir,
   // The fixture gatekeeper the harness boots beside the Workshop. Split for the same reason the
   // backend is: `build:test-gatekeeper` validates this fixture into its own `.wrangler`, which is

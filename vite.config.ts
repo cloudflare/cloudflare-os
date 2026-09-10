@@ -92,7 +92,7 @@ export default defineConfig({
       '**/generated/**',
       // Bundled blueprint files are user-authored gadget source extracted verbatim for review. They
       // do not follow the host repository's lint rules and must round-trip without code changes.
-      '**/format-blueprints/blueprints/*/files/**',
+      '**/bundled-blueprints/blueprints/*/files/**',
       '**/*.gen.ts',
       '**/node_modules/**',
       '**/.wrangler/**',

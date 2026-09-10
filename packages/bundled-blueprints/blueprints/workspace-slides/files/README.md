@@ -25,7 +25,7 @@ and the shared `lib/protocol.ts` types under
 Three pieces of this deck are not its own: the element builder, the two
 steps that read an uploaded image, and the object the Durable Object calls
 back. They are shared with the other document-style gadgets and are
-imported from the libraries in `packages/format-blueprints/libraries`, which the build
+imported from the libraries in `packages/bundled-blueprints/libraries`, which the build
 inlines into the two files installed here:
 
 ```ts

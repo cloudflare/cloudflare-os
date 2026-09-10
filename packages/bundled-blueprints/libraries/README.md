@@ -1,6 +1,6 @@
 # Gadget libraries
 
-Shared code the bundled format blueprints import instead of carrying their own copies. A blueprint's
+Shared code the bundled blueprints import instead of carrying their own copies. A blueprint's
 `client.ts` and `server.ts` may import `gadgets:<name>/client` and `gadgets:<name>/server`; the
 blueprint build (`../src/files.ts`) resolves each to the library's entry here and inlines what the
 entry uses into the `client.js` / `server.js` the blueprint ships, the way it inlines a blueprint's
@@ -49,8 +49,8 @@ door.
 ## Tests
 
 ```
-pnpm --filter @gadgets/format-blueprints test:run   # the libraries' suites, with the blueprints'
-vp run -F @gadgets/format-blueprints build          # the type-check programs
+pnpm --filter @gadgets/bundled-blueprints test:run   # the libraries' suites, with the blueprints'
+vp run -F @gadgets/bundled-blueprints build          # the type-check programs
 ```
 
 The package's `tsconfig.client.json` checks each client entry under the DOM lib,

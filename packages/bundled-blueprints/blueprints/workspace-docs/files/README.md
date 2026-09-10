@@ -4,7 +4,7 @@ A single-document, Google-Docs-style rich-text editor with Durable Object persis
 
 ## Shared libraries
 
-This blueprint is built on the shared gadget libraries in `packages/format-blueprints/libraries`
+This blueprint is built on the shared gadget libraries in `packages/bundled-blueprints/libraries`
 (see that directory's README). The build inlines what it imports into the `client.js` and `server.js` it ships,
 so a gadget created from it carries its own copy of the libraries as of its creation.
 

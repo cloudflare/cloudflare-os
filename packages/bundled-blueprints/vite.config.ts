@@ -17,7 +17,7 @@ export default withVitestTask({
        * - `tsconfig.server-tests.json`: the tests of a server side, under Workers and Node types.
        * - `tsconfig.node.json`: `src/` (the build) and its tests, as the Node programs they are.
        *
-       * The backend's `build:format-blueprints` task bundles the same blueprint sources with esbuild,
+       * The backend's `build:bundled-blueprints` task bundles the same blueprint sources with esbuild,
        * so a module the bundler cannot resolve fails there, and a type error fails here.
        */
       build: {

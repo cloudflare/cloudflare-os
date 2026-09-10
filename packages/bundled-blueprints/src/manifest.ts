@@ -1,4 +1,4 @@
-// Manifest validation shared by the format-blueprint importer and generator. Keeping one parser
+// Manifest validation shared by the bundled-blueprint importer and generator. Keeping one parser
 // ensures an import cannot replace valid source with a manifest the following build would reject.
 
 // Icons a blueprint may declare. Duplicated from the shared API's OUTPUT_ICONS because these
@@ -9,7 +9,7 @@ const OUTPUT_ICONS = ["fileText", "gridNine", "presentation", "appWindow", "flow
 // Must match isReservedBlueprintKey() in src/blueprint-archive.ts.
 const RESERVED_BLUEPRINT_KEYS = new Set([".featured", ".adminConfig"]);
 
-export type FormatBlueprintManifest = {
+export type BundledBlueprintManifest = {
   blueprintId: string;
   title: string;
   description: string;
@@ -22,20 +22,20 @@ export type FormatBlueprintManifest = {
   bindings: Record<string, unknown>;
 };
 
-export type FormatBlueprintPresentation = Omit<FormatBlueprintManifest,
+export type BundledBlueprintPresentation = Omit<BundledBlueprintManifest,
     "created" | "version" | "lastUpdated" | "bindings">;
 
-export function parseFormatBlueprintPresentation(
+export function parseBundledBlueprintPresentation(
   label: string,
   raw: string,
-): FormatBlueprintPresentation {
+): BundledBlueprintPresentation {
   return parsePresentation(label, JSON.parse(raw), []);
 }
 
-export function parseFormatBlueprintManifest(
+export function parseBundledBlueprintManifest(
   name: string,
   raw: string,
-): FormatBlueprintManifest {
+): BundledBlueprintManifest {
   let label = `${name}/blueprint.json`;
   let bad = (message: string): never => { throw new Error(`${label}: ${message}`); };
   let parsed = JSON.parse(raw);
@@ -67,7 +67,7 @@ function parsePresentation(
   label: string,
   parsed: Record<string, unknown>,
   allowedExtra: string[],
-): FormatBlueprintPresentation {
+): BundledBlueprintPresentation {
   let bad = (message: string): never => { throw new Error(`${label}: ${message}`); };
   let {
     blueprintId, title, description, output, author, revision, $comment, ...rest
