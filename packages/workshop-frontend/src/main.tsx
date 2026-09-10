@@ -16,6 +16,7 @@ import { applySiteFavicon, cacheBustSiteLogoUrl } from './siteLogoUtils'
 import { getWorkshopRuntime, installNativeLoginCoordinator } from './runtime'
 import { installProductFeedbackDiagnostics } from './productFeedbackDiagnostics'
 import { newWorkshopWebSocketRpcSession } from './workshopWebSocketRpc'
+import { classifyRpcError } from './rpcErrors'
 
 installProductFeedbackDiagnostics()
 
@@ -61,11 +62,15 @@ async function devAutoLogin(stub: RpcStub<PublicApi>): Promise<void> {
 // Or maybe I (Kenton) was just holding it wrong, idk.
 //
 // Anyway, I pulled the connection management out into these globals instead.
-let lastConnectTime: number = 0;
+let connectionEstablishedAt = performance.now();
 
 const nativeRuntime = getWorkshopRuntime().kind === 'tauri';
 const INITIAL_BACKOFF_MS = nativeRuntime ? 500 : 1000;
 const MAX_BACKOFF_MS = nativeRuntime ? 5000 : 10000;
+// A single successful ping isn't stability: flapping sockets otherwise reset the retry budget
+// and repeatedly restart authentication. Keep the budget across outages until a connection lasts.
+const STABLE_CONNECTION_MS = 30000;
+let reconnectBackoff = INITIAL_BACKOFF_MS;
 // WebKit sometimes leaves a failed TLS WebSocket's pipelined ping unresolved rather than rejecting
 // it. A 20-second browser-safe probe made two transient native failures look like a minute-long
 // OAuth stall, so native retries use a bounded deadline while the web app retains its generous one.
@@ -92,7 +97,6 @@ const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> => {
 };
 
 function startConnection(onBroken?: (error: unknown) => void): RpcStub<PublicApi> {
-  lastConnectTime = Date.now();
   const apiOrigin = getWorkshopRuntime().apiOrigin;
   const wsUrl = `${apiOrigin.protocol === 'https:' ? 'wss:' : 'ws:'}//${apiOrigin.host}/api`;
   const stub = newWorkshopWebSocketRpcSession<PublicApi>(wsUrl);
@@ -107,16 +111,19 @@ const disposeQuietly = (stub: RpcStub<PublicApi>) => {
 // Connects with jittered backoff until a candidate answers a probe, and resolves only to that
 // proven connection: capnweb queues sends while a socket is still CONNECTING, so an unproven stub
 // looks fine right up until everything pipelined onto it fails at once.
-async function reconnect(): Promise<RpcStub<PublicApi>> {
+async function reconnect(connectionAgeMs = 0): Promise<RpcStub<PublicApi>> {
   // Fast recovery from one-off blips: skip the first backoff if the dying connection was up a while.
-  let skipSleep = Date.now() - lastConnectTime >= INITIAL_BACKOFF_MS;
-  let backoff = INITIAL_BACKOFF_MS;
+  let skipSleep = connectionAgeMs >= STABLE_CONNECTION_MS;
+  if (skipSleep) reconnectBackoff = INITIAL_BACKOFF_MS;
+  const startedAt = performance.now();
+  let attempts = 0;
   for (;;) {
     if (!skipSleep) {
-      await sleep(backoff * (0.85 + 0.3 * Math.random()));  // jittered against stampedes
-      backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+      await sleep(reconnectBackoff * (0.85 + 0.3 * Math.random()));  // jittered against stampedes
+      reconnectBackoff = Math.min(reconnectBackoff * 2, MAX_BACKOFF_MS);
     }
     skipSleep = false;
+    attempts = Math.min(attempts + 1, 1000000);
 
     let candidateBroken = false;
     let candidate!: RpcStub<PublicApi>;
@@ -126,8 +133,10 @@ async function reconnect(): Promise<RpcStub<PublicApi>> {
     });
     try {
       await withTimeout(candidate.ping(), RECONNECT_PROBE_TIMEOUT_MS);
-    } catch (probeError) {
-      console.debug('Reconnect attempt failed:', probeError);
+    } catch (error) {
+      console.debug('Reconnect attempt failed.', {
+        event: 'rpc.connection.probe.failed', attempts, errorClass: classifyRpcError(error),
+      });
       disposeQuietly(candidate);
       continue;
     }
@@ -137,9 +146,13 @@ async function reconnect(): Promise<RpcStub<PublicApi>> {
     }
 
     activeConnection = candidate;
+    connectionEstablishedAt = performance.now();
     lastProvenAt = Date.now();
     isConnectionLost = false;
-    console.warn('RPC connection restored.');
+    console.info('RPC connection restored.', {
+      event: 'rpc.connection.restored', attempts, elapsedMs: boundedElapsed(startedAt),
+      runtime: nativeRuntime ? 'native' : 'web',
+    });
     notifySubscribers();
     return candidate;
   }
@@ -152,7 +165,11 @@ function handleBroken(stub: RpcStub<PublicApi>, error: unknown) {
   isConnectionLost = true;
   activeConnection = null;
 
-  console.warn('RPC connection lost:', error);
+  const connectionAgeMs = boundedElapsed(connectionEstablishedAt);
+  console.warn('RPC connection lost.', {
+    event: 'rpc.connection.lost', connectionAgeMs, runtime: nativeRuntime ? 'native' : 'web',
+    errorClass: classifyRpcError(error),
+  });
 
   // Publish a stub for the connection we have not made yet, so the dead one stops being reachable
   // immediately. capnweb queues calls pipelined onto an unresolved `RpcPromise` and delivers them,
@@ -160,9 +177,14 @@ function handleBroken(stub: RpcStub<PublicApi>, error: unknown) {
   // instead of failing against a socket known to be gone. The `RpcPromise` takes ownership of its
   // resolution, keeping the proven stub on a single disposal path.
   const previous = currentStub;
-  currentStub = new RpcPromise<PublicApi>(reconnect());
+  currentStub = new RpcPromise<PublicApi>(reconnect(connectionAgeMs));
   disposeQuietly(previous);
   notifySubscribers();
+}
+
+// Diagnostics contain only local timing/counts, never remote exception messages or credentials.
+function boundedElapsed(startedAt: number): number {
+  return Math.min(86400000, Math.max(0, Math.round(performance.now() - startedAt)));
 }
 
 // Passive close detection misses sockets killed during laptop sleep or tab throttling, so on
@@ -177,9 +199,11 @@ async function probeOnWake() {
     lastProvenAt = Date.now();
   } catch (error) {
     if (currentStub !== suspect || isConnectionLost) return;  // a real broken event won the race
-    console.warn('Connection unresponsive after wake:', error);
-    // Disposal fires onRpcBroken → handleBroken recovers. Its skip-first-backoff path retries
-    // immediately — right for "the network just came back".
+    console.warn('Connection unresponsive after wake.', {
+      event: 'rpc.connection.wake.failed', errorClass: classifyRpcError(error),
+    });
+    // Disposal fires onRpcBroken → handleBroken recovers. A previously stable connection retries
+    // immediately; a recently restored one retains its backoff against repeated wake failures.
     disposeQuietly(suspect);
   } finally {
     probing = false;
