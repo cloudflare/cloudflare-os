@@ -484,6 +484,14 @@ describe("bundled blueprint TypeScript sources", () => {
     });
     let files = await readSourceFiles(supplied, "example/files");
     expect(files.get("server.js")).toMatch(/from "cloudflare:workers";/u);
+
+    // And only that one: the gadget's worker loader supplies no other `cloudflare:` module, so a
+    // Durable Object importing one has to fail here rather than when it is instantiated.
+    let unsupplied = await sourceTree({
+      "server.ts": 'import { env } from "cloudflare:test";\nexport default env;\n',
+    });
+    await expect(readSourceFiles(unsupplied, "example/files")).rejects
+      .toThrow(/server\.ts failed to bundle: .*Could not resolve "cloudflare:test"/su);
   });
 
   describe("gadget library imports", () => {

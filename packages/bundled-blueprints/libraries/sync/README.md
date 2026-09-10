@@ -44,9 +44,10 @@ disposer).
   a flush during a save folds into one more. The gadget supplies `save()`, which sends what is
   dirty and answers `"saved"`, `"conflict"` (rebased, re-sent at once) or `"pending"` (a draft
   waits on something else; the gadget schedules again), and `isDirty()`. A failed save is retried
-  after `retryDelay(failures)`: `RETRY_BASE_MS` doubling to `RETRY_MAX_MS`, reset by a success.
-  Statuses (`SaveStatus`) are `saving`, `saved`, `conflict`, `offline`, with `synced`
-  left for the gadget to report on a live update. `readOnly` makes it a no-op.
+  after `retryDelay(failures)`: `RETRY_BASE_MS` doubling to `RETRY_MAX_MS`, reset by a success,
+  with the failure left on the status line until the retry starts. Statuses (`SaveStatus`) are
+  `saving`, `saved`, `conflict`, `offline`, with `synced` left for the gadget to report on a live
+  update. `readOnly` makes it a no-op.
 - **`PresenceRoster<Cursor>`** -- `apply(event)` takes join, cursor and leave events (ignoring the
   client's own), keeping a position through a re-join; `people()`, `entries()`, `get(clientId)`;
   `expire(now?)` drops anyone silent for `STALE_MS`. `Cursor` is the gadget's position type,

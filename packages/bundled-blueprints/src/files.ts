@@ -201,13 +201,17 @@ export async function readSourceFiles(
  * ES module inside a sandboxed browser iframe, the server as a Durable Object class in workerd.
  *
  * `external` is what that runtime supplies, and it is little: the iframe supplies nothing, and the
- * Durable Object gets workerd's own `cloudflare:*`. Everything else a blueprint imports has to be a
- * file it owns or a gadget library (see {@link auditInputs}), so a bare `import "yjs"` fails this
- * build rather than going missing inside the sandbox.
+ * Durable Object gets `cloudflare:workers`, the one `cloudflare:` module the gadget's worker loader
+ * gives it (`loadGadgetWorker` in the backend's overseer.ts: no outbound network, so
+ * `cloudflare:sockets` is moot, and none of the flags behind the others). Everything else a
+ * blueprint imports has to be a file it owns or a gadget library (see {@link auditInputs}), so a
+ * bare `import "yjs"` fails this build rather than going missing inside the sandbox -- and so does
+ * `cloudflare:test`, which a `BUNDLED_BLUEPRINTS_DIR` tree no tsc program checks could otherwise
+ * ship to a Durable Object that fails to instantiate.
  */
 const ENTRY_POINTS = [
   { name: "client", platform: "browser", external: [] },
-  { name: "server", platform: "neutral", external: ["cloudflare:*"] },
+  { name: "server", platform: "neutral", external: ["cloudflare:workers"] },
 ] as const;
 
 type EntryPoint = (typeof ENTRY_POINTS)[number];
@@ -544,15 +548,9 @@ function auditInputs(
   return own;
 }
 
-/**
- * Whether `specifier` is one of the `external` patterns of an entry point: the pattern itself, or
- * anything under a pattern ending in `*` -- the only wildcard {@link ENTRY_POINTS} uses, and the
- * shape esbuild's own `external` matching gives it.
- */
-function matchesExternal(specifier: string, patterns: readonly string[]): boolean {
-  return patterns.some(pattern => pattern.endsWith("*")
-      ? specifier.startsWith(pattern.slice(0, -1))
-      : specifier === pattern);
+/** Whether `specifier` is one of the `external` modules of an entry point. */
+function matchesExternal(specifier: string, externals: readonly string[]): boolean {
+  return externals.includes(specifier);
 }
 
 /**

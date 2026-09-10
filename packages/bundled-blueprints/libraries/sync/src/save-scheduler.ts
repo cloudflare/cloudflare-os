@@ -59,6 +59,7 @@ export interface SaveSchedulerOptions {
 export class SaveScheduler {
   readonly #options: SaveSchedulerOptions;
   #timer: ReturnType<typeof setTimeout> | null = null;
+  #shown: SaveStatus | null = null;
   #inFlight = false;
   #saveAgain = false;
   #failures = 0;
@@ -81,8 +82,21 @@ export class SaveScheduler {
   schedule(delay = this.#options.debounceMs ?? DEBOUNCE_MS): void {
     if (this.#options.readOnly) return;
     this.#status("saving", "Saving…");
+    this.#arm(delay);
+  }
+
+  /**
+   * Starts (or restarts) the timer that saves after `delay`. What the status line says meanwhile is
+   * the caller's: `Saving…` after a keystroke, and after a failed save the failure, which stays up
+   * through the backoff rather than being replaced by a `Saving…` that nothing in flight justifies.
+   * The save announces itself when the timer fires, unless the line already says so.
+   */
+  #arm(delay: number): void {
     if (this.#timer) clearTimeout(this.#timer);
-    this.#timer = setTimeout(() => void this.flush(), delay);
+    this.#timer = setTimeout(() => {
+      if (this.#shown !== "saving") this.#status("saving", "Saving…");
+      void this.flush();
+    }, delay);
   }
 
   /** Forget a scheduled save. One in flight completes; nothing follows it unless it must. */
@@ -124,12 +138,17 @@ export class SaveScheduler {
       this.#inFlight = false;
       if (this.#saveAgain || (outcome !== "pending" && this.#options.isDirty())) {
         this.#saveAgain = false;
-        this.schedule(this.#failures ? retryDelay(this.#failures) : RETRY_BASE_MS);
+        if (this.#failures) {
+          this.#arm(retryDelay(this.#failures));
+        } else {
+          this.schedule(RETRY_BASE_MS);
+        }
       }
     }
   }
 
   #status(status: SaveStatus, message: string): void {
+    this.#shown = status;
     this.#options.onStatus?.(status, message);
   }
 }

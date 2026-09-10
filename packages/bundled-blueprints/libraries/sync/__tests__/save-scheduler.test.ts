@@ -70,7 +70,7 @@ describe("SaveScheduler", () => {
     const { scheduler, save, statuses, outcomes } = setup();
     outcomes.push(new Error("network"), new Error("network"), new Error("network"));
     await scheduler.flush();
-    expect(statuses).toEqual(["offline", "saving"]);
+    expect(statuses).toEqual(["offline"]);
     expect(scheduler.failures).toBe(1);
     await vi.advanceTimersByTimeAsync(retryDelay(1));
     expect(save).toHaveBeenCalledTimes(2);
@@ -85,6 +85,22 @@ describe("SaveScheduler", () => {
     expect(scheduler.failures).toBe(0);
     expect(statuses.at(-1)).toBe("saved");
     expect(scheduler.busy).toBe(false);
+  });
+
+  it("keeps the failure on the status line until the retry starts", async () => {
+    const { scheduler, save, statuses, messages, outcomes } = setup();
+    outcomes.push(new Error("network"));
+    scheduler.schedule();
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+    expect(save).toHaveBeenCalledTimes(1);
+    // Nothing is in flight during the backoff, so nothing says "Saving…" until the retry does.
+    expect(statuses).toEqual(["saving", "offline"]);
+    expect(messages.at(-1)).toBe("Save failed — retrying");
+    await vi.advanceTimersByTimeAsync(retryDelay(1) - 1);
+    expect(statuses).toEqual(["saving", "offline"]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(statuses).toEqual(["saving", "offline", "saving", "saved"]);
   });
 
   it("folds a flush during a save into one more save", async () => {
