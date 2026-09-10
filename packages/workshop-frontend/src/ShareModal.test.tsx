@@ -14,6 +14,7 @@ import type {
   ObserverBindingNeed,
   Overseer,
   ShareLinkInfo,
+  UserDirectoryRecord,
 } from '@gadgets/workshop-shared/api'
 
 const toastAdd = vi.hoisted(() => vi.fn<(toast: unknown) => void>())
@@ -24,6 +25,19 @@ testGlobal.IS_REACT_ACT_ENVIRONMENT = true
 afterAll(() => {
   if (previousActEnvironment === undefined) delete testGlobal.IS_REACT_ACT_ENVIRONMENT
   else testGlobal.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment
+})
+
+const previousScrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView')
+Object.defineProperty(Element.prototype, 'scrollIntoView', {
+  configurable: true,
+  value: vi.fn<Element['scrollIntoView']>(),
+})
+afterAll(() => {
+  if (previousScrollIntoView) {
+    Object.defineProperty(Element.prototype, 'scrollIntoView', previousScrollIntoView)
+  } else {
+    Reflect.deleteProperty(Element.prototype, 'scrollIntoView')
+  }
 })
 
 vi.mock('@cloudflare/kumo', () => {
@@ -71,6 +85,16 @@ vi.mock('./components/PersonAvatar', () => ({
 const copyToClipboard = vi.fn<(text: string) => Promise<boolean>>(async () => true)
 vi.mock('./clipboard', () => ({ copyToClipboard: (text: string) => copyToClipboard(text) }))
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 import ShareModal from './ShareModal'
 
 const METADATA = { id: 'trip-planner', title: 'Trip planner' } as GadgetMetadata
@@ -104,8 +128,12 @@ type OverseerOverrides = {
   listObserverRequirements?: (role: CollaboratorRole) => Promise<ObserverBindingNeed[]>
   collaborators?: CollaboratorInfo[]
   shareLinks?: ShareLinkInfo[]
-  addCollaborator?: () => Promise<CollaboratorInfo>
   updateShareLink?: (linkId: string, note?: string) => Promise<void>
+  addCollaborator?: (
+    userId: string,
+    role: CollaboratorRole,
+    note?: string,
+  ) => Promise<CollaboratorInfo | null>
 }
 
 function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
@@ -126,7 +154,19 @@ function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
   } as unknown as RpcStub<Overseer>
 }
 
-const fakeAuthenticatedApi = {} as RpcStub<AuthenticatedApi>
+type AuthenticatedApiOverrides = {
+  searchUsers?: (query: string, excludeIds: string[]) => Promise<UserDirectoryRecord[]>
+}
+
+function fakeAuthenticatedApi(overrides: AuthenticatedApiOverrides = {}): RpcStub<AuthenticatedApi> {
+  return {
+    searchUsers: async (query: string, _excludeIds: string[]) => query ? [{
+      id: `${query}@example.com`,
+      name: query === 'ada' ? 'Ada' : query,
+    }] : [],
+    ...overrides,
+  } as unknown as RpcStub<AuthenticatedApi>
+}
 
 function click(element: Element) {
   return act(async () => {
@@ -154,17 +194,21 @@ function verificationSection(rendered: HTMLElement, headingId: string): HTMLElem
   return section
 }
 
-async function typeUsername(rendered: HTMLElement, username: string) {
-  const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Username or email"]')!
+async function typeDirectorySearch(rendered: HTMLElement, query: string) {
+  const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
   const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
   await act(async () => {
-    setValue.call(input, username)
+    setValue.call(input, query)
     input.dispatchEvent(new Event('input', { bubbles: true }))
+    await new Promise(resolve => window.setTimeout(resolve, 225))
   })
 }
 
 async function invite(rendered: HTMLElement, username: string) {
-  await typeUsername(rendered, username)
+  await typeDirectorySearch(rendered, username)
+  const option = rendered.querySelector<HTMLButtonElement>('[role="option"]')
+  if (!option) throw new Error('Expected a directory search result.')
+  await click(option)
   await click(button(rendered, 'Invite'))
 }
 
@@ -184,7 +228,11 @@ describe('ShareModal', () => {
     container = undefined
   })
 
-  async function render(overseer: RpcStub<Overseer>, metadata: GadgetMetadata = METADATA) {
+  async function render(
+    overseer: RpcStub<Overseer>,
+    authenticatedApi = fakeAuthenticatedApi(),
+    metadata: GadgetMetadata = METADATA,
+  ) {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
@@ -196,8 +244,8 @@ describe('ShareModal', () => {
           overseer={overseer}
           metadata={metadata}
           currentUser={CURRENT_USER}
-          authenticatedApi={fakeAuthenticatedApi}
-        />,
+          authenticatedApi={authenticatedApi}
+        />
       )
     })
     // Let the load effects settle.
@@ -215,6 +263,14 @@ describe('ShareModal', () => {
     expect(rendered.textContent).toContain(WORKSPACE_URL)
   })
 
+  it('keeps Invite disabled until a recipient can be submitted', async () => {
+    const rendered = await render(fakeOverseer())
+    expect(button(rendered, 'Invite').disabled).toBe(true)
+
+    await invite(rendered, 'ada')
+    expect(button(rendered, 'Invite').disabled).toBe(true)
+  })
+
   it('copies the plain workspace link, never a share-link secret', async () => {
     const rendered = await render(fakeOverseer())
     await invite(rendered, 'ada')
@@ -223,6 +279,313 @@ describe('ShareModal', () => {
 
     expect(copyToClipboard).toHaveBeenCalledWith(WORKSPACE_URL)
     expect(rendered.textContent).toContain('Link copied')
+  })
+
+  it('excludes existing people and submits the selected directory result id', async () => {
+    const addCollaborator = vi.fn<(
+      userId: string,
+      role: CollaboratorRole,
+      note?: string,
+    ) => Promise<CollaboratorInfo | null>>(async (userId, role) => ({
+      profile: { type: 'user' as const, id: userId, name: 'Ada Lovelace' },
+      role,
+      addedBy: [],
+    }))
+    const existingCollaborator: CollaboratorInfo = {
+      profile: { type: 'user', id: 'maximo@cloudflare.com', name: 'maximo' },
+      role: 'use',
+      addedBy: [],
+    }
+    const searchUsers = vi.fn<(
+      query: string,
+      excludeIds: string[],
+    ) => Promise<UserDirectoryRecord[]>>(async () => [
+      { id: 'ada@cloudflare.com', name: 'Ada Lovelace' },
+    ])
+    const rendered = await render(
+      fakeOverseer({ addCollaborator, collaborators: [existingCollaborator] }),
+      fakeAuthenticatedApi({ searchUsers }),
+    )
+
+    await typeDirectorySearch(rendered, 'love')
+    expect(searchUsers).toHaveBeenCalledWith('love', [
+      'dan@cloudflare.com',
+      'maximo@cloudflare.com',
+    ])
+    expect(rendered.textContent).toContain('Ada Lovelace')
+    expect(rendered.textContent).toContain('ada@cloudflare.com')
+
+    await click(rendered.querySelector<HTMLButtonElement>('[role="option"]')!)
+    expect(rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')?.value)
+      .toBe('Ada Lovelace')
+    await click(button(rendered, 'Invite'))
+
+    expect(addCollaborator).toHaveBeenCalledWith('ada@cloudflare.com', 'use', undefined)
+  })
+
+  it('excludes the workspace owner when the caller is a collaborator', async () => {
+    const searchUsers = vi.fn<(
+      query: string,
+      excludeIds: string[],
+    ) => Promise<UserDirectoryRecord[]>>(async () => [])
+    const rendered = await render(
+      fakeOverseer(),
+      fakeAuthenticatedApi({ searchUsers }),
+      { ...METADATA, owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' } } as GadgetMetadata,
+    )
+
+    await typeDirectorySearch(rendered, 'own')
+    expect(searchUsers).toHaveBeenCalledWith('own', ['dan@cloudflare.com', 'owner@cloudflare.com'])
+  })
+
+  it('submits a typed exact id when the directory has not indexed the account', async () => {
+    const addCollaborator = vi.fn<(
+      userId: string,
+      role: CollaboratorRole,
+      note?: string,
+    ) => Promise<CollaboratorInfo | null>>(async (userId, role) => ({
+      profile: { type: 'user' as const, id: userId, name: 'Dormant User' },
+      role,
+      addedBy: [],
+    }))
+    const rendered = await render(
+      fakeOverseer({ addCollaborator }),
+      fakeAuthenticatedApi({ searchUsers: async () => [] }),
+    )
+
+    await typeDirectorySearch(rendered, 'dormant@example.com')
+    expect(rendered.textContent).toContain('No users found.')
+    const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
+    await act(async () => input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    ))
+
+    expect(addCollaborator).toHaveBeenCalledWith('dormant@example.com', 'use', undefined)
+  })
+
+  it('does not submit a raw query while search is pending', async () => {
+    const pending = deferred<UserDirectoryRecord[]>()
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>()
+    const rendered = await render(
+      fakeOverseer({ addCollaborator }),
+      fakeAuthenticatedApi({ searchUsers: async () => pending.promise }),
+    )
+
+    await typeDirectorySearch(rendered, 'alex')
+    const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
+    expect(button(rendered, 'Invite').disabled).toBe(true)
+    await act(async () => input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    ))
+    expect(addCollaborator).not.toHaveBeenCalled()
+
+    await act(async () => {
+      pending.resolve([{ id: 'alex.smith@example.com', name: 'Alex Smith' }])
+      await Promise.resolve()
+    })
+    // Enter picks the highlighted match rather than submitting the raw text.
+    await act(async () => input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    ))
+    expect(input.value).toBe('Alex Smith')
+    expect(addCollaborator).not.toHaveBeenCalled()
+  })
+
+  it('still invites the typed canonical id when unrelated users match it', async () => {
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, role) => ({
+      profile: { type: 'user' as const, id: userId, name: 'Alex' },
+      role,
+      addedBy: [],
+    }))
+    const rendered = await render(
+      fakeOverseer({ addCollaborator }),
+      fakeAuthenticatedApi({ searchUsers: async () => [{ id: 'alexander@example.com', name: 'Alexander' }] }),
+    )
+
+    // The directory is backfilled lazily, so "alex" may be a real account it has not indexed yet.
+    await typeDirectorySearch(rendered, 'alex')
+    expect(rendered.textContent).toContain('Alexander')
+    expect(button(rendered, 'Invite').disabled).toBe(false)
+    await click(button(rendered, 'Invite'))
+    expect(addCollaborator).toHaveBeenCalledWith('alex', 'use', undefined)
+  })
+
+  it('falls back to a direct invite when the directory lookup fails', async () => {
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, role) => ({
+      profile: { type: 'user' as const, id: userId, name: 'Dormant User' },
+      role,
+      addedBy: [],
+    }))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const rendered = await render(
+      fakeOverseer({ addCollaborator }),
+      fakeAuthenticatedApi({ searchUsers: async () => { throw new Error('offline') } }),
+    )
+
+    await typeDirectorySearch(rendered, 'dormant@example.com')
+    expect(rendered.textContent).toContain('User search is temporarily unavailable.')
+    expect(button(rendered, 'Invite').disabled).toBe(false)
+    const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
+    await act(async () => input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    ))
+    expect(addCollaborator).toHaveBeenCalledWith('dormant@example.com', 'use', undefined)
+    consoleError.mockRestore()
+  })
+
+  it('hides the result popover on blur or Escape and keeps the query', async () => {
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, role) => ({
+      profile: { type: 'user' as const, id: userId, name: 'Alex' },
+      role,
+      addedBy: [],
+    }))
+    const rendered = await render(
+      fakeOverseer({ addCollaborator }),
+      fakeAuthenticatedApi({ searchUsers: async () => [{ id: 'alexander@example.com', name: 'Alexander' }] }),
+    )
+    const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
+    const listbox = () => rendered.querySelector('[role="listbox"]')
+
+    await typeDirectorySearch(rendered, 'alex')
+    expect(listbox()).not.toBeNull()
+    expect(input.getAttribute('aria-expanded')).toBe('true')
+
+    // Tabbing on to the role picker or Invite button must not leave the list covering them.
+    await act(async () => input.dispatchEvent(new FocusEvent('focusout', { bubbles: true })))
+    expect(listbox()).toBeNull()
+    expect(input.getAttribute('aria-expanded')).toBe('false')
+    expect(input.getAttribute('aria-activedescendant')).toBeNull()
+    expect(input.value).toBe('alex')
+    expect(button(rendered, 'Invite').disabled).toBe(false)
+
+    await act(async () => input.dispatchEvent(new FocusEvent('focusin', { bubbles: true })))
+    expect(listbox()).not.toBeNull()
+
+    // Escape closes the popover without reaching the dialog, and Enter then submits the typed id.
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    const dialogSawEscape = vi.fn<(event: Event) => void>()
+    document.addEventListener('keydown', dialogSawEscape)
+    try {
+      await act(async () => input.dispatchEvent(escape))
+    } finally {
+      document.removeEventListener('keydown', dialogSawEscape)
+    }
+    expect(escape.defaultPrevented).toBe(true)
+    expect(dialogSawEscape).not.toHaveBeenCalled()
+    expect(listbox()).toBeNull()
+    await act(async () => input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    ))
+    expect(addCollaborator).toHaveBeenCalledWith('alex', 'use', undefined)
+
+    // Arrow keys reopen the list instead of moving a hidden highlight.
+    await typeDirectorySearch(rendered, 'alex')
+    await act(async () => input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    ))
+    expect(listbox()).toBeNull()
+    await act(async () => input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    ))
+    expect(listbox()).not.toBeNull()
+    expect(input.getAttribute('aria-activedescendant'))
+      .toBe(`${input.getAttribute('aria-controls')}-option-0`)
+  })
+
+  it('ignores stale searches and selects the highlighted result with Enter', async () => {
+    const first = deferred<UserDirectoryRecord[]>()
+    const second = deferred<UserDirectoryRecord[]>()
+    const searchUsers = vi.fn<(
+      query: string,
+      excludeIds: string[],
+    ) => Promise<UserDirectoryRecord[]>>(
+      query => query === 'ada' ? first.promise : second.promise,
+    )
+    const rendered = await render(
+      fakeOverseer(),
+      fakeAuthenticatedApi({ searchUsers }),
+    )
+
+    await typeDirectorySearch(rendered, 'ada')
+    await typeDirectorySearch(rendered, 'grace')
+    await act(async () => {
+      second.resolve([{ id: 'grace@example.com', name: 'Grace Hopper' }])
+      await Promise.resolve()
+    })
+    expect(rendered.textContent).toContain('Grace Hopper')
+
+    await act(async () => {
+      first.resolve([{ id: 'ada@example.com', name: 'Ada Lovelace' }])
+      await Promise.resolve()
+    })
+    expect(rendered.textContent).not.toContain('Ada Lovelace')
+
+    const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(input.value).toBe('Grace Hopper')
+  })
+
+  it('scrolls the keyboard-active directory result into view', async () => {
+    const scrollIntoView = vi.fn<Element['scrollIntoView']>()
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView')
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+
+    try {
+      const results = Array.from({ length: 10 }, (_, index) => ({
+        id: `user${index}@example.com`,
+        name: `User ${index}`,
+      }))
+      const rendered = await render(
+        fakeOverseer(),
+        fakeAuthenticatedApi({ searchUsers: async () => results }),
+      )
+      await typeDirectorySearch(rendered, 'user')
+
+      const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
+      await act(async () => {
+        for (let index = 0; index < 6; index++) {
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+        }
+      })
+
+      const activeId = input.getAttribute('aria-activedescendant')
+      expect(activeId).toBe(`${input.getAttribute('aria-controls')}-option-6`)
+      expect(scrollIntoView.mock.instances.at(-1)).toBe(document.getElementById(activeId!))
+      expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'nearest' })
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(Element.prototype, 'scrollIntoView', originalScrollIntoView)
+      } else {
+        Reflect.deleteProperty(Element.prototype, 'scrollIntoView')
+      }
+    }
+  })
+
+  it('keeps share links available while directory search loads or fails', async () => {
+    const offline = deferred<UserDirectoryRecord[]>()
+    const searchUsers = (query: string) => query === 'offline' ? offline.promise : Promise.resolve([])
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const rendered = await render(
+      fakeOverseer(),
+      fakeAuthenticatedApi({ searchUsers }),
+    )
+    await typeDirectorySearch(rendered, 'offline')
+    expect(rendered.textContent).toContain('Searching…')
+    expect(button(rendered, 'Create a share link').disabled).toBe(false)
+
+    await act(async () => {
+      offline.reject(new Error('offline'))
+      await Promise.resolve()
+    })
+    expect(rendered.textContent).toContain('User search is temporarily unavailable.')
+    expect(button(rendered, 'Create a share link').disabled).toBe(false)
+
+    await typeDirectorySearch(rendered, 'nobody')
+    expect(rendered.textContent).toContain('No users found.')
+    consoleError.mockRestore()
   })
 
   it('names the connections a recipient must verify for the selected role', async () => {
@@ -307,7 +670,7 @@ describe('ShareModal', () => {
         addedBy: [],
       }],
       shareLinks: [SHARE_LINK],
-    }), restrictedMetadata)
+    }), fakeAuthenticatedApi(), restrictedMetadata)
 
     // The inline warning replaces the old full-panel "can't be shared" wall: the server allows
     // sharing after the restricted latch (refusing only unverifiable producers), so the modal
@@ -329,9 +692,12 @@ describe('ShareModal', () => {
     expect(button(rendered, 'Copy Team link').disabled).toBe(false)
     expect(button(rendered, 'Revoke Team link').disabled).toBe(false)
     const usernameInput =
-      rendered.querySelector<HTMLInputElement>('input[aria-label="Username or email"]')!
+      rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
     expect(usernameInput.disabled).toBe(false)
-    await typeUsername(rendered, 'ada')
+    await typeDirectorySearch(rendered, 'ada')
+    const option = rendered.querySelector<HTMLButtonElement>('[role="option"]')
+    if (!option) throw new Error('Expected a directory search result.')
+    await click(option)
     expect(button(rendered, 'Invite').disabled).toBe(false)
   })
 
@@ -345,7 +711,7 @@ describe('ShareModal', () => {
       'access to that data.'
     const rendered = await render(fakeOverseer({
       addCollaborator: async () => { throw new Error(refusal) },
-    }), restrictedMetadata)
+    }), fakeAuthenticatedApi(), restrictedMetadata)
 
     await invite(rendered, 'ada')
 
