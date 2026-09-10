@@ -15,6 +15,7 @@ import type {
   GatekeeperUser,
   GatekeeperUserVerifier,
   GatekeeperVendor,
+  ObservationAuthorizer,
   ObservationDescription,
   ObservationDomainSharingPolicy,
   ResourceConfiguratorFrame,
@@ -270,6 +271,15 @@ export class GitHubOrganizationGatekeeper
   /** Returns the complete read-only source API declarations. */
   async getTypeScriptTypes(): Promise<string> {
     return TYPES_CODE;
+  }
+
+  /**
+   * Explicitly opts this ambient singleton out of a discovery catalog. Repositories are discovered
+   * on demand through searchRepositories(); returning null reveals no account or repository data.
+   * Keep the authorizer parameter: the Workshop passes it over RPC even for an absent catalog.
+   */
+  async getAgentCatalog(_authorizer: NativeRpcStub<ObservationAuthorizer>): Promise<null> {
+    return null;
   }
 
   /** Reports that this read-only gatekeeper has no actions. */
