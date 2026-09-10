@@ -14,16 +14,23 @@ export class UserDirectoryDurableObject extends DurableObject<Cloudflare.Env> {
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      search_text TEXT NOT NULL
+      search_text TEXT NOT NULL,
+      rev INTEGER NOT NULL
     ) STRICT`);
   }
 
-  /** Insert or update one user's record. */
-  syncUser(record: UserDirectoryRecord): void {
+  /**
+   * Insert or update one user's record. `rev` is the user DO's profile revision: a record already
+   * at a higher revision is left alone, so syncs that arrive out of order still converge on the
+   * newest profile.
+   */
+  syncUser(record: UserDirectoryRecord, rev: number): void {
     this.ctx.storage.sql.exec(
-      `INSERT INTO users (id, name, search_text) VALUES (?, ?, ?)
-       ON CONFLICT (id) DO UPDATE SET name = excluded.name, search_text = excluded.search_text`,
-      record.id, record.name, `${record.id}\n${record.name}`.toLowerCase());
+      `INSERT INTO users (id, name, search_text, rev) VALUES (?, ?, ?, ?)
+       ON CONFLICT (id) DO UPDATE SET name = excluded.name, search_text = excluded.search_text,
+         rev = excluded.rev
+       WHERE excluded.rev > users.rev`,
+      record.id, record.name, `${record.id}\n${record.name}`.toLowerCase(), rev);
   }
 
   /**
