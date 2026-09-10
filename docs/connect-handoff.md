@@ -225,7 +225,11 @@ to secure and test. The redirect is the single transport, and it works for a gat
   `not_found_handling: single-page-application`, which covers it. The path literal is pinned by a
   test in both `gatekeeper-kit` and `workshop-frontend`.
 - The kit and the Workshop deploy together: the kit's page navigates to the Workshop path and the
-  Workshop's flow starts return the nonce the page needs.
+  Workshop's flow starts return the nonce the page needs. The switch is not negotiated, so a
+  Workshop tab loaded before a deploy that changes the handoff needs a reload before its next
+  connect: a connect it starts afterwards writes no nonce, and the popup lands on "This link isn't
+  valid" (whose copy says to reload). An old kit's completion page reaches nobody. Every RPC shape
+  change in this repo has the same stale-tab window, and there is no reload mechanism for it.
 - Each connect costs one SPA load in the popup (the handoff page), with its own WebSocket session.
 - A connect completes even if the Workshop tab was closed: the popup redeems the ticket itself, and
   the account is in the user's list the next time any tab subscribes.
@@ -244,13 +248,14 @@ which Workshops may bind to it at all.
 | --- | --- |
 | "Pop-up blocked. Please allow pop-ups and try again." | `openDisownedPopup` in `connectHandoff.ts`. Sign-in shows it in `OAuthButtons`' error banner; connect call sites log it and toast their own generic title: "Failed to start connection flow" / "Failed to start reconnect flow" (`GatekeeperModal.tsx`, `BlueprintLandingPage.tsx`), "Failed to start connection flow" / "Failed to start re-authentication flow" (`ResourcePicker.tsx`, `ObserverConfigModal.tsx`), "Failed to start connection" (`OnboardingWizard.tsx`, `routes/gatekeepers.tsx`), "Failed to start Cloudflare connection" (`OutOfCreditsModal.tsx`, `UsageSettings.tsx`). |
 | "This browser blocks storage in pop-ups, so the flow cannot complete. Allow site data for this site and try again." | `openDisownedPopup` in `connectHandoff.ts`, when the nonce cannot be written into the popup's `sessionStorage`; the popup is closed again and nothing is started, since the flow could never complete. Surfaced like the pop-up-blocked error above. |
-| "This link isn't valid" | `INVALID` in `ConnectHandoffPage.tsx`: the fragment holds no ticket, or the popup's storage holds no nonce record (the page was opened some other way, or storage is unreadable there). Shown without a server call. |
+| "This link isn't valid" | `INVALID` in `ConnectHandoffPage.tsx`: the fragment holds no ticket, or the popup's storage holds no nonce record (the page was opened some other way, storage is unreadable there, or the Workshop tab predates the deploy that introduced the nonce and wrote none). Shown without a server call; the copy tells the user to reload the Workshop. |
 | "You're signed out" | `SIGNED_OUT` in `ConnectHandoffPage.tsx`: a connect popup whose `useAuth` found no `authToken` in `localStorage`. In a Cloudflare Access deployment `useAuth` always holds a pipelined stub, so a lapsed Access identity is rejected server-side and shows as "Could not complete the connection" with the auth error instead. |
-| "Could not complete the connection" + server message | `ConnectHandoffPage.tsx`; the message is `completeConnectHandoff`'s, "This connection attempt has expired. Please try again." from `user.ts` for an unknown, spent or expired ticket or nonce, or a mismatched pair. |
+| "Could not complete the connection" + server message | `ConnectHandoffPage.tsx`; the message is `completeConnectHandoff`'s, "This connection attempt has expired. Please try again." from `user.ts` for an unknown, spent or expired ticket or nonce, or a mismatched pair. A redemption that failed because the popup's RPC connection dropped is presented again once the session reconnects (`main.tsx` publishes one replacement stub per outage, on which the page's `useAuth` re-authenticates); while the connection is down the page shows "Finishing up…" instead of the transport error. The retry is safe because ticket and nonce are single-use: a repeat of a call that did land is refused as expired. |
 | "Could not sign in" + server message | `ConnectHandoffPage.tsx`; the message is `EXPIRED_MESSAGE` from `login-flow.ts` ("This sign-in attempt has expired. Please try again.") or the reason `LoginConnectCallbackImpl` recorded with `PendingLogin.fail()` (no verified email, sign-ups disabled, "Sign-in failed. Please try again."). `PendingLogin.#result()` clears an expired or failed result as it reports it, so the reason goes to whichever of the popup's `confirmLogin()` or the login tab's `receive()` reads first, and the other surface (`OAuthButtons`' error banner in the tab, or the popup) shows `EXPIRED_MESSAGE`. |
 
 Expiry sweeps run without the user: the user DO's `alarm()` drops a staged connect whose ticket did
 not come back within `PENDING_HANDOFF_LIFETIME_MS` (revoking the grant via `#dropPendingConnect`)
 and a flow whose nonce was never presented within `CONNECT_FLOW_LIFETIME_MS` (nothing to revoke);
 the `PendingLogin` alarm wipes an unreceived login result after `PENDING_HANDOFF_LIFETIME_MS`, or an
-attempt the gatekeeper never delivered to after `LOGIN_PENDING_LIFETIME_MS`.
+attempt the gatekeeper never delivered to after `LOGIN_PENDING_LIFETIME_MS`, which is
+`CONNECT_FLOW_LIFETIME_MS`: one budget for every flow that ends on the handoff page.
