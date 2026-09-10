@@ -61,8 +61,10 @@ Why the popup's storage:
 - Every popup gets a fresh window name (`uniquePopupName('gadgets-connect')` /
   `uniquePopupName('gatekeeper-login')`): `window.open('', existingName)` returns an existing window
   *without navigating it*, and a popup still parked on a provider page is cross-origin, so the
-  storage write would throw. `openConnectWindow` closes the previous connect popup this tab holds,
-  best-effort, before opening the next.
+  storage write would throw. The name carries a random suffix (`crypto.randomUUID()`) rather than a
+  per-document counter: a reload resets a counter while an old disowned popup keeps its name.
+  `openConnectWindow` closes the previous connect popup this tab holds, best-effort, before opening
+  the next.
 
 Server side, for connects: `openConnectFlow(accountId)` in `user.ts` records
 `{ nonceHash, accountId, expiresAt }` in `pendingConnectFlows`, alive for `CONNECT_FLOW_LIFETIME_MS`

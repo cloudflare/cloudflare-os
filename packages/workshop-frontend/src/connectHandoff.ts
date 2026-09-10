@@ -86,12 +86,13 @@ export function openDisownedPopup(url: string, name: string, handoff: PopupHando
   return popup
 }
 
-let popupCounter = 0
-
-/** A window name no earlier call in this document produced: `<prefix>-<n>`. */
+/**
+ * A window name no popup this origin still has open can share: `<prefix>-<uuid>`. A per-document
+ * counter would restart on reload while an earlier disowned popup, still parked on a provider
+ * page, keeps its name, and `window.open('', thatName)` would hand that cross-origin window back.
+ */
 export function uniquePopupName(prefix: string): string {
-  popupCounter += 1
-  return `${prefix}-${popupCounter}`
+  return `${prefix}-${crypto.randomUUID()}`
 }
 
 // The connect popup this document opened last, closed before the next one opens: a stale popup

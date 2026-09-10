@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   HANDOFF_KEY, HANDOFF_PATH, openConnectWindow, readPopupHandoff, ticketFromHandoffFragment,
+  uniquePopupName,
 } from './connectHandoff'
 import { createRouter } from './router'
 
@@ -99,6 +100,16 @@ describe('openConnectWindow', () => {
       .toThrow(/blocks storage in pop-ups/)
     expect(popup.close).toHaveBeenCalledOnce()
     expect(popup.location.replace).not.toHaveBeenCalled()
+  })
+})
+
+describe('uniquePopupName', () => {
+  it('names each popup with a random suffix, not a counter', () => {
+    const first = uniquePopupName('gadgets-connect')
+    const second = uniquePopupName('gadgets-connect')
+    expect(first).toMatch(/^gadgets-connect-[0-9a-f-]{36}$/)
+    expect(second).toMatch(/^gadgets-connect-[0-9a-f-]{36}$/)
+    expect(second).not.toBe(first)
   })
 })
 
