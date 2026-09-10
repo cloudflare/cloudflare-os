@@ -263,4 +263,74 @@ describe('OAuthButtons', () => {
     expect(open).not.toHaveBeenCalled()
     expect(dispose).toHaveBeenCalledOnce()
   })
+
+  it('keeps the buttons disabled while a receive() is in flight after the popup reports closed', async () => {
+    // The server releases the token exactly once. A click that tore down a receive() the server is
+    // answering would discard that token, so the buttons come back only between calls.
+    const popup = fakePopup()
+    vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
+    const slow = deferred<string | null>()
+    receive.mockReturnValue(slow.promise)
+    mount()
+
+    await clickSignIn()
+    await settle()
+    await tick()
+    expect(receive).toHaveBeenCalledOnce()
+
+    popup.closed = true
+    await tick()
+    expect(button().disabled).toBe(true)
+
+    slow.resolve(null)
+    await settle()
+    receive.mockResolvedValue(null)
+    await tick()
+    expect(button().disabled).toBe(false)
+  })
+
+  it('a second click during an in-flight receive() lets it finish first', async () => {
+    // The buttons came back between two polls, and the next receive() is in flight when the user
+    // clicks again. The new attempt waits for that call; when it releases the token, the first
+    // attempt completes the login and no second one is started.
+    const popup = fakePopup()
+    const open = vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
+    const slow = deferred<string | null>()
+    const dispose = vi.fn<() => void>()
+    const startGatekeeperLogin = vi.fn<() => Promise<{ url: string; nonce: string; attempt: RpcStub<LoginAttempt> }>>(
+      async () => ({
+        url: URL,
+        nonce: NONCE,
+        attempt: { receive, [Symbol.dispose]: dispose } as unknown as RpcStub<LoginAttempt>,
+      }))
+    const stub = { startGatekeeperLogin } as unknown as RpcStub<PublicApi>
+    receive.mockResolvedValueOnce(null).mockReturnValue(slow.promise)
+    const onSuccess = mount(stub)
+
+    await clickSignIn()
+    await settle()
+    popup.closed = true
+    await tick()
+    expect(button().disabled).toBe(false)
+    await tick()
+    expect(receive).toHaveBeenCalledTimes(2)
+
+    await clickSignIn()
+    await settle()
+    expect(button().disabled).toBe(true)
+    expect(dispose).not.toHaveBeenCalled()
+    expect(startGatekeeperLogin).toHaveBeenCalledOnce()
+
+    slow.resolve(TOKEN)
+    await settle()
+    await settle()
+
+    expect(localStorage.getItem('authToken')).toBe(TOKEN)
+    expect(onSuccess).toHaveBeenCalledOnce()
+    expect(open).toHaveBeenCalledOnce()
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(startGatekeeperLogin).toHaveBeenCalledOnce()
+    await tick()
+    expect(receive).toHaveBeenCalledTimes(2)
+  })
 })

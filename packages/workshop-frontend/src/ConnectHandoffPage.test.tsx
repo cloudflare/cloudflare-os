@@ -41,6 +41,8 @@ describe('ConnectHandoffPage', () => {
   const confirmLogin = vi.fn<(ticket: string, nonce: string) => Promise<void>>()
   const stub = { confirmLogin } as unknown as RpcStub<PublicApi>
   const close = vi.fn<() => void>()
+  // What the RpcContext provider hands the page; a reconnect replaces `stub` with a new object.
+  let provider: { stub: RpcStub<PublicApi>; connectionLost: boolean }
 
   beforeEach(() => {
     vi.spyOn(window, 'close').mockImplementation(close)
@@ -55,6 +57,7 @@ describe('ConnectHandoffPage', () => {
     close.mockReset()
     testState.isLoading = false
     testState.authenticatedApi = null
+    provider = { stub, connectionLost: false }
     sessionStorage.clear()
     window.history.replaceState(null, '', '/')
   })
@@ -73,7 +76,7 @@ describe('ConnectHandoffPage', () => {
   let strictMode = false
   function tree() {
     const page = (
-      <RpcContext.Provider value={{ stub, connectionLost: false }}>
+      <RpcContext.Provider value={provider}>
         <ConnectHandoffPage />
       </RpcContext.Provider>
     )
@@ -82,6 +85,7 @@ describe('ConnectHandoffPage', () => {
 
   async function render({ strict = false } = {}) {
     strictMode = strict
+    provider = { stub, connectionLost: false }
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -134,7 +138,7 @@ describe('ConnectHandoffPage', () => {
     const page = await render()
 
     expect(page.textContent).toContain("This link isn't valid")
-    expect(page.textContent).toContain('Go back to the Workshop and start the connection again.')
+    expect(page.textContent).toContain('Reload the Workshop and start the connection again.')
     expect(completeConnectHandoff).not.toHaveBeenCalled()
     expect(confirmLogin).not.toHaveBeenCalled()
     expect(window.location.hash).toBe('')
@@ -202,5 +206,74 @@ describe('ConnectHandoffPage', () => {
 
     expect(completeConnectHandoff).toHaveBeenCalledExactlyOnceWith(TICKET, NONCE)
     expect(page.textContent).toContain('Connected')
+  })
+
+  it('retries over the reconnected session when the first attempt died with the socket', async () => {
+    // capnweb rejects every call pending on a socket that closes, and main.tsx then publishes a
+    // stub for the replacement connection on which useAuth re-authenticates. The redemption is
+    // presented again over that session; ticket and nonce are single-use server-side, so a repeat
+    // of a call that did land is refused as expired and changes nothing.
+    completeConnectHandoff
+      .mockRejectedValueOnce(new Error('RPC session was broken'))
+      .mockResolvedValueOnce(undefined)
+    signedIn()
+    arrive(TICKET, { kind: 'connect', nonce: NONCE })
+
+    const page = await render()
+    expect(completeConnectHandoff).toHaveBeenCalledExactlyOnceWith(TICKET, NONCE)
+    expect(page.textContent).toContain('Could not complete the connection')
+
+    provider = { stub, connectionLost: true }
+    await rerender()
+    expect(page.textContent).toContain('Finishing up…')
+    expect(page.textContent).not.toContain('Could not complete the connection')
+    expect(completeConnectHandoff).toHaveBeenCalledOnce()
+
+    provider = { stub: { confirmLogin } as unknown as RpcStub<PublicApi>, connectionLost: false }
+    signedIn()
+    await rerender()
+    await settle()
+
+    expect(completeConnectHandoff).toHaveBeenCalledTimes(2)
+    expect(completeConnectHandoff).toHaveBeenLastCalledWith(TICKET, NONCE)
+    expect(page.textContent).toContain('Connected')
+    expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('does not retry on a re-render with the same session', async () => {
+    completeConnectHandoff.mockRejectedValue(new Error('This connection attempt has expired.'))
+    signedIn()
+    arrive(TICKET, { kind: 'connect', nonce: NONCE })
+
+    const page = await render({ strict: true })
+    await rerender()
+    await settle()
+
+    expect(completeConnectHandoff).toHaveBeenCalledOnce()
+    expect(page.textContent).toContain('This connection attempt has expired.')
+  })
+
+  it('retries a sign-in confirmation over the reconnected session', async () => {
+    confirmLogin
+      .mockRejectedValueOnce(new Error('RPC session was broken'))
+      .mockResolvedValueOnce(undefined)
+    arrive(TICKET, { kind: 'login', nonce: NONCE })
+
+    const page = await render()
+    expect(confirmLogin).toHaveBeenCalledExactlyOnceWith(TICKET, NONCE)
+    expect(page.textContent).toContain('Could not sign in')
+
+    // The same session again: nothing is re-sent.
+    await rerender()
+    await settle()
+    expect(confirmLogin).toHaveBeenCalledOnce()
+
+    provider = { stub: { confirmLogin } as unknown as RpcStub<PublicApi>, connectionLost: false }
+    await rerender()
+    await settle()
+
+    expect(confirmLogin).toHaveBeenCalledTimes(2)
+    expect(confirmLogin).toHaveBeenLastCalledWith(TICKET, NONCE)
+    expect(page.textContent).toContain('Signed in')
   })
 })

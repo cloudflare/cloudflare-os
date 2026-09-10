@@ -1,14 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
-import { useRpcStub } from './RpcContext'
+import type { RpcStub } from 'capnweb'
+import type { AuthenticatedApi, PublicApi } from '@gadgets/workshop-shared/api'
+import { useConnectionLost, useRpcStub } from './RpcContext'
 import { useAuth } from './useAuth'
 import { readPopupHandoff, ticketFromHandoffFragment } from './connectHandoff'
 
-/** What the page tells the user once the outcome is known: a heading and one line of detail. */
-type Outcome = { title: string; detail: string }
+/**
+ * What the page tells the user once the outcome is known: a heading and one line of detail.
+ * `failed` marks a redemption the server or the transport rejected, as opposed to one that never
+ * reached the server (INVALID, SIGNED_OUT) or succeeded.
+ */
+type Outcome = { title: string; detail: string; failed?: true }
 
 const INVALID: Outcome = {
   title: "This link isn't valid",
-  detail: 'Go back to the Workshop and start the connection again.',
+  detail: 'Reload the Workshop and start the connection again.',
 }
 const SIGNED_OUT: Outcome = {
   title: "You're signed out",
@@ -33,11 +39,17 @@ const CLOSE_HINT = 'You can close this window.'
  * without waiting on the root's auth, with its own `useAuth` for the connect case.
  *
  * The fragment is stripped once read, and the storage record is spent as it is read, so neither a
- * reload nor a re-render can present the ticket twice. This page is the only surface a rejected
+ * reload nor a re-render can present the ticket twice. The one repeat is deliberate: a redemption
+ * that failed is presented again over the next session, when the RPC connection has been replaced
+ * after an outage (`main.tsx` swaps the stub once per reconnect, and `useAuth` re-authenticates on
+ * it). That is safe because ticket and nonce are single-use server-side: if the first call did
+ * reach the server, the repeat is refused as expired and changes nothing; if it died with the
+ * socket, the repeat is the first the server hears of it. This page is the only surface a rejected
  * ticket is reported on, so the server's message is shown verbatim.
  */
 export default function ConnectHandoffPage() {
   const rpcStub = useRpcStub()
+  const connectionLost = useConnectionLost()
   const { authenticatedApi, isLoading } = useAuth(rpcStub)
   // Read once: the storage record is consumed by reading it, and the fragment is stripped below.
   const [{ ticket, handoff }] = useState(() => ({
@@ -45,8 +57,10 @@ export default function ConnectHandoffPage() {
     handoff: readPopupHandoff(),
   }))
   const [result, setResult] = useState<Outcome | null>(null)
-  // The ticket is presented at most once per page, whatever re-renders or StrictMode replays.
-  const sentRef = useRef(false)
+  // The session the ticket was last presented over. It is presented at most once per session,
+  // whatever re-renders or StrictMode replays, and again over a new session only if the previous
+  // presentation failed.
+  const sentWithRef = useRef<RpcStub<AuthenticatedApi> | RpcStub<PublicApi> | null>(null)
 
   // In an effect rather than during render: the router patches replaceState.
   useEffect(() => {
@@ -54,35 +68,48 @@ export default function ConnectHandoffPage() {
   }, [])
 
   useEffect(() => {
-    if (sentRef.current || ticket === null || handoff === null) return
-    let redemption: Promise<void>
+    if (ticket === null || handoff === null) return
+    let api: RpcStub<AuthenticatedApi> | RpcStub<PublicApi>
+    let redeem: () => Promise<void>
     let done: Outcome
     let failed: string
     if (handoff.kind === 'connect') {
       if (isLoading || authenticatedApi === null) return
-      redemption = authenticatedApi.completeConnectHandoff(ticket, handoff.nonce)
+      api = authenticatedApi
+      redeem = () => authenticatedApi.completeConnectHandoff(ticket, handoff.nonce)
       done = { title: 'Connected', detail: CLOSE_HINT }
       failed = 'Could not complete the connection'
     } else {
-      redemption = rpcStub.confirmLogin(ticket, handoff.nonce)
+      api = rpcStub
+      redeem = () => rpcStub.confirmLogin(ticket, handoff.nonce)
       done = { title: 'Signed in', detail: CLOSE_HINT }
       failed = 'Could not sign in'
     }
-    sentRef.current = true
-    redemption.then(
+    if (sentWithRef.current === api) return
+    if (sentWithRef.current !== null && !result?.failed) return
+    sentWithRef.current = api
+    setResult(null)
+    redeem().then(
       () => {
         // Browsers may refuse to close a window a script did not open; the hint covers that.
         window.close()
         setResult(done)
       },
       (err: unknown) => {
-        setResult({ title: failed, detail: err instanceof Error ? err.message : String(err) })
+        setResult({
+          title: failed,
+          detail: err instanceof Error ? err.message : String(err),
+          failed: true,
+        })
       },
     )
-  }, [ticket, handoff, isLoading, authenticatedApi, rpcStub])
+  }, [ticket, handoff, isLoading, authenticatedApi, rpcStub, result])
 
   let outcome = result
   if (ticket === null || handoff === null) outcome = INVALID
+  // A failure while the connection is down is the socket's, not the server's: the redemption is
+  // presented again once the session is back, so show the wait rather than a transient error.
+  else if (outcome?.failed && connectionLost) outcome = null
   else if (outcome === null && handoff.kind === 'connect' && !isLoading && authenticatedApi === null) {
     outcome = SIGNED_OUT
   }

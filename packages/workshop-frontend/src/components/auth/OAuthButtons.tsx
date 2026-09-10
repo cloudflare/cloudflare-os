@@ -27,16 +27,22 @@ const RECEIVE_POLL_MS = 1000
  * `attempt.receive()`, which releases the session token only once the ticket is confirmed and only
  * to the holder of the `attempt` capability; the popup never sees the token. On success the token
  * is stored and the app re-authenticates.
+ *
+ * A newer attempt waits for the previous one's in-flight `receive()` before tearing it down: the
+ * server releases the token exactly once, so a call cancelled mid-flight could discard a token
+ * that had already been handed out, leaving the user to sign in twice.
  */
 export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButtonsProps) {
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<string | null>(null)
 
-  // The attempt in flight, if any, as the function that tears it down: stops the receive poll and
-  // disposes the login RPC (Cap'n Web treats this as a best-effort cancel and frees the client-side
-  // pending call). Run when the component unmounts mid-login (e.g. the user navigates away) and
-  // when a new attempt starts, so at most one attempt is ever polling.
-  const attemptRef = useRef<(() => void) | null>(null)
+  // The attempt in flight, if any, as the function that tears it down: waits for a receive() still
+  // in flight, then stops the poll and disposes the login RPC (Cap'n Web treats this as a
+  // best-effort cancel and frees the client-side pending call). Resolves to whether the attempt
+  // ended up receiving the token, in which case its own continuation completes the login. Run when
+  // the component unmounts mid-login (e.g. the user navigates away) and when a new attempt starts,
+  // so at most one attempt is ever polling.
+  const attemptRef = useRef<(() => Promise<boolean>) | null>(null)
   const mountedRef = useRef(true)
   useEffect(() => {
     // Re-assert on (re)mount: under StrictMode the effect runs mount→cleanup→mount, and the cleanup
@@ -46,7 +52,7 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
     mountedRef.current = true
     return () => {
       mountedRef.current = false
-      attemptRef.current?.()
+      void attemptRef.current?.()
       attemptRef.current = null
     }
   }, [])
@@ -54,8 +60,12 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
   if (vendors.length === 0) return null
 
   const start = async (vendorId: string) => {
-    attemptRef.current?.()
-    attemptRef.current = null
+    // Disable the buttons at once, then let the previous attempt finish a receive() it may have in
+    // flight: if that call releases the token, the previous attempt completes the login and this
+    // one has nothing to do.
+    setPending(vendorId)
+    const previousReceived = await attemptRef.current?.()
+    if (!mountedRef.current || previousReceived) return
     setError(null)
     setPending(vendorId)
     try {
@@ -83,21 +93,28 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
       // Resolve once the attempt releases the token; reject if it fails or is torn down.
       const token = await new Promise<string>((resolve, reject) => {
         let settled = false
-        let receiving = false
+        let received = false
+        // The receive() call in flight, if any, as a promise that settles once its outcome has been
+        // handled here; never rejects.
+        let inflight: Promise<void> | null = null
         const poll = window.setInterval(() => {
           // Not necessarily a cancellation: the popup closes itself after confirming, and a
           // provider that swaps browsing context groups (COOP) reports it closed while the flow is
           // still running. So just hand the buttons back and keep polling. If the user really
           // closed it, nothing arrives: the poll ends with the next attempt, on unmount, or when
-          // the attempt expires server-side, which then shows as the expiry error.
-          if (popup.closed && mountedRef.current) setPending(null)
+          // the attempt expires server-side, which then shows as the expiry error. The buttons
+          // stay disabled while a receive() is in flight, though: a second click at that moment
+          // would tear down a call the server may be answering with the token.
+          if (popup.closed && inflight === null && mountedRef.current) setPending(null)
           // A receive() still in flight is not re-entered.
-          if (receiving) return
-          receiving = true
-          attempt.receive()
+          if (inflight !== null) return
+          inflight = attempt.receive()
             .then(t => {
-              receiving = false
-              if (t !== null) finish(() => resolve(t))
+              inflight = null
+              if (t !== null) {
+                received = true
+                finish(() => resolve(t))
+              }
             })
             .catch(e => finish(() => reject(e instanceof Error ? e : new Error('Could not sign in'))))
         }, RECEIVE_POLL_MS)
@@ -109,7 +126,11 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           dispose()
           fn()
         }
-        attemptRef.current = () => finish(() => reject(CANCELLED))
+        attemptRef.current = async () => {
+          await inflight
+          if (!settled) finish(() => reject(CANCELLED))
+          return received
+        }
       })
       // Best-effort: the page closes itself anyway, and a COOP swap leaves the handle dead.
       try { popup.close() } catch { /* severed */ }
